@@ -3,6 +3,7 @@
   import { getCachedFiles, setCachedFiles, getCacheTimestamp } from './lib/cache.js';
 
   const ADDRESS_SECRETS_KEY = 'nearbytes-address-secrets';
+  type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
 
   function getStoredSecret(addr: string): string {
     try {
@@ -59,10 +60,45 @@
   let wasNewVolume = $state(false); // opened with address, fileCount === 0; after first upload show "Set secret"
   let showSetSecretModal = $state(false);
   let setSecretInput = $state('');
+  let searchQuery = $state('');
+  let sortBy = $state<'newest' | 'oldest' | 'name' | 'size'>('newest');
+  let selectedBlobHash = $state<string | null>(null);
+  let previewKind = $state<PreviewKind>('none');
+  let previewUrl = $state('');
+  let previewText = $state('');
+  let previewLoading = $state(false);
+  let previewError = $state('');
+  let currentPreviewObjectUrl: string | null = null;
   // When address has files but no stored secret: hold data until they set a secret to view
   let pendingUnlockData = $state<{ auth: Auth; volumeId: string; files: FileMetadata[] } | null>(null);
   let showSetSecretToViewModal = $state(false);
   let setSecretToViewInput = $state('');
+
+  const visibleFiles = $derived.by(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const filtered = query
+      ? fileList.filter((file) => file.filename.toLowerCase().includes(query))
+      : fileList;
+    const sorted = [...filtered];
+    if (sortBy === 'name') {
+      sorted.sort((a, b) => a.filename.localeCompare(b.filename));
+      return sorted;
+    }
+    if (sortBy === 'size') {
+      sorted.sort((a, b) => b.size - a.size);
+      return sorted;
+    }
+    if (sortBy === 'oldest') {
+      sorted.sort((a, b) => a.createdAt - b.createdAt);
+      return sorted;
+    }
+    sorted.sort((a, b) => b.createdAt - a.createdAt);
+    return sorted;
+  });
+
+  const selectedFile = $derived.by(
+    () => visibleFiles.find((file) => file.blobHash === selectedBlobHash) ?? null
+  );
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
@@ -86,6 +122,13 @@
       isOffline = false;
       isLoading = false;
       wasNewVolume = false;
+      searchQuery = '';
+      selectedBlobHash = null;
+      previewKind = 'none';
+      previewText = '';
+      previewError = '';
+      previewLoading = false;
+      revokePreviewUrl();
       return;
     }
     debounceTimer = setTimeout(() => {
@@ -199,6 +242,12 @@
       showSetSecretToViewModal = false;
       modalError = '';
       secretInput = '';
+      selectedBlobHash = null;
+      previewKind = 'none';
+      previewText = '';
+      previewError = '';
+      previewLoading = false;
+      revokePreviewUrl();
     }
   });
 
@@ -384,6 +433,145 @@
     }
   });
 
+  $effect(() => {
+    if (visibleFiles.length === 0) {
+      selectedBlobHash = null;
+      return;
+    }
+    const selectedStillVisible = selectedBlobHash
+      ? visibleFiles.some((file) => file.blobHash === selectedBlobHash)
+      : false;
+    if (!selectedStillVisible) {
+      selectedBlobHash = visibleFiles[0].blobHash;
+    }
+  });
+
+  function revokePreviewUrl() {
+    if (currentPreviewObjectUrl) {
+      URL.revokeObjectURL(currentPreviewObjectUrl);
+      currentPreviewObjectUrl = null;
+    }
+    previewUrl = '';
+  }
+
+  function detectPreviewKind(file: FileMetadata): PreviewKind {
+    const mime = file.mimeType ?? '';
+    const filename = file.filename.toLowerCase();
+    if (mime.startsWith('image/')) return 'image';
+    if (mime.startsWith('video/')) return 'video';
+    if (mime.startsWith('audio/')) return 'audio';
+    if (mime.includes('pdf')) return 'pdf';
+    if (
+      mime.startsWith('text/') ||
+      mime.includes('json') ||
+      mime.includes('xml') ||
+      mime.includes('javascript')
+    ) {
+      return 'text';
+    }
+    if (mime === '' || mime === 'application/octet-stream') {
+      if (/\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(filename)) return 'image';
+      if (/\.(mp4|webm|mov|m4v|avi|mkv)$/i.test(filename)) return 'video';
+      if (/\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(filename)) return 'audio';
+      if (/\.pdf$/i.test(filename)) return 'pdf';
+      if (/\.(txt|md|json|xml|csv|log|yaml|yml|js|ts|css|html)$/i.test(filename)) return 'text';
+    }
+    return 'unsupported';
+  }
+
+  $effect(() => {
+    let cancelled = false;
+    const file = selectedFile;
+
+    previewError = '';
+    previewText = '';
+    previewLoading = false;
+    revokePreviewUrl();
+
+    if (!file || !auth) {
+      previewKind = 'none';
+      return;
+    }
+
+    const kind = detectPreviewKind(file);
+    previewKind = kind;
+    if (kind === 'unsupported') {
+      return;
+    }
+
+    previewLoading = true;
+    (async () => {
+      try {
+        const blob = await downloadFile(auth, file.blobHash);
+        if (cancelled) return;
+        if (kind === 'text') {
+          const raw = await blob.text();
+          if (cancelled) return;
+          const textLimit = 24000;
+          previewText = raw.length > textLimit ? `${raw.slice(0, textLimit)}\n\n...truncated` : raw;
+        } else {
+          const objectUrl = URL.createObjectURL(blob);
+          currentPreviewObjectUrl = objectUrl;
+          previewUrl = objectUrl;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          previewError = error instanceof Error ? error.message : 'Unable to load preview';
+        }
+      } finally {
+        if (!cancelled) {
+          previewLoading = false;
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  function selectFile(file: FileMetadata) {
+    selectedBlobHash = file.blobHash;
+  }
+
+  async function openFileInViewer(file: FileMetadata) {
+    if (!auth) return;
+    const popup = window.open('', '_blank', 'noopener,noreferrer');
+    try {
+      errorMessage = '';
+      const blob = await downloadFile(auth, file.blobHash);
+      const viewUrl = URL.createObjectURL(blob);
+      if (popup) {
+        popup.location.href = viewUrl;
+      } else {
+        const a = document.createElement('a');
+        a.href = viewUrl;
+        a.download = file.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+      setTimeout(() => URL.revokeObjectURL(viewUrl), 60000);
+    } catch (error) {
+      if (popup) {
+        popup.close();
+      }
+      errorMessage = error instanceof Error ? error.message : 'Open failed';
+    }
+  }
+
+  function handleFileRowKeydown(e: KeyboardEvent, file: FileMetadata) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      openFileInViewer(file);
+      return;
+    }
+    if (e.key === ' ') {
+      e.preventDefault();
+      selectFile(file);
+    }
+  }
+
   // Refresh file list
   async function refreshFiles() {
     if (!auth || !volumeId) return;
@@ -510,6 +698,11 @@
   function formatDate(timestamp: number): string {
     const date = new Date(timestamp);
     return date.toLocaleString();
+  }
+
+  function formatShortDate(timestamp: number): string {
+    const date = new Date(timestamp);
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   }
 </script>
 
@@ -650,56 +843,98 @@
         </div>
       </div>
     {:else}
-      <!-- File grid -->
-      <div class="file-grid">
-        {#each fileList as file (file.blobHash)}
-          <div
-            class="file-card"
-            data-filename={file.filename}
-            tabindex="0"
-            role="button"
-            onclick={() => handleDownload(file)}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDownload(file); } }}
-          >
-            <div class="file-icon">
-              {#if file.mimeType?.startsWith('image/')}
-                🖼️
-              {:else if file.mimeType?.startsWith('text/')}
-                📄
-              {:else if file.mimeType?.includes('pdf')}
-                📕
-              {:else}
-                📦
-              {/if}
+      <div class="file-manager">
+        <section class="file-list-pane">
+          <div class="manager-toolbar">
+            <input
+              type="text"
+              class="manager-search"
+              placeholder="Search files"
+              bind:value={searchQuery}
+              aria-label="Search files"
+            />
+            <select class="manager-sort" bind:value={sortBy} aria-label="Sort files">
+              <option value="newest">Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="name">Name</option>
+              <option value="size">Size</option>
+            </select>
+          </div>
+          <div class="file-list-head">
+            <span>Name</span>
+            <span>Size</span>
+            <span>Date</span>
+          </div>
+          {#if visibleFiles.length === 0}
+            <div class="list-empty">No files match your search.</div>
+          {:else}
+            <div class="file-list-scroll">
+              {#each visibleFiles as file (file.blobHash)}
+                <div
+                  class="file-row"
+                  class:selected={selectedBlobHash === file.blobHash}
+                  data-filename={file.filename}
+                  tabindex="0"
+                  role="button"
+                  onclick={() => selectFile(file)}
+                  ondblclick={() => openFileInViewer(file)}
+                  onkeydown={(e) => handleFileRowKeydown(e, file)}
+                >
+                  <span class="file-row-name" title={file.filename}>{file.filename}</span>
+                  <span class="file-row-size">{formatSize(file.size)}</span>
+                  <span class="file-row-date">{formatShortDate(file.createdAt)}</span>
+                </div>
+              {/each}
             </div>
-            <div class="file-info">
-              <div class="file-name" title={file.filename}>{file.filename}</div>
-              <div class="file-meta">
-                <span>{formatSize(file.size)}</span>
-                <span>•</span>
-                <span>{formatDate(file.createdAt)}</span>
+          {/if}
+        </section>
+        <section class="preview-pane">
+          {#if selectedFile}
+            <div class="preview-header">
+              <div>
+                <h3 class="preview-title" title={selectedFile.filename}>{selectedFile.filename}</h3>
+                <p class="preview-meta">
+                  {selectedFile.mimeType || 'Unknown type'} • {formatSize(selectedFile.size)} • {formatDate(selectedFile.createdAt)}
+                </p>
+              </div>
+              <div class="preview-actions">
+                <button type="button" class="manager-btn" onclick={() => openFileInViewer(selectedFile)}>
+                  Open
+                </button>
+                <button type="button" class="manager-btn" onclick={() => handleDownload(selectedFile)}>
+                  Download
+                </button>
+                <button type="button" class="manager-btn danger" onclick={() => handleDelete(selectedFile.filename)}>
+                  Delete
+                </button>
               </div>
             </div>
-            <div class="file-actions">
-              <button
-                class="action-btn download-btn"
-                onclick={(e) => { e.stopPropagation(); handleDownload(file); }}
-                title="Download {file.filename}"
-                aria-label="Download {file.filename}"
-              >
-                ⬇
-              </button>
-              <button
-                class="action-btn delete-btn"
-                onclick={(e) => { e.stopPropagation(); handleDelete(file.filename); }}
-                title="Delete {file.filename}"
-                aria-label="Delete {file.filename}"
-              >
-                ×
-              </button>
+            <div class="preview-body">
+              {#if previewLoading}
+                <p class="preview-message">Loading preview…</p>
+              {:else if previewError}
+                <p class="preview-message error">{previewError}</p>
+              {:else if previewKind === 'image' && previewUrl}
+                <img class="preview-image" src={previewUrl} alt={"Preview of " + selectedFile.filename} />
+              {:else if previewKind === 'video' && previewUrl}
+                <!-- svelte-ignore a11y_media_has_caption -->
+                <video class="preview-media" controls src={previewUrl}></video>
+              {:else if previewKind === 'audio' && previewUrl}
+                <audio class="preview-audio" controls src={previewUrl}></audio>
+              {:else if previewKind === 'pdf' && previewUrl}
+                <iframe class="preview-pdf" src={previewUrl} title={"PDF preview: " + selectedFile.filename}></iframe>
+              {:else if previewKind === 'text'}
+                <pre class="preview-text">{previewText}</pre>
+              {:else}
+                <p class="preview-message">Preview unavailable. Double-click the file to open it.</p>
+              {/if}
             </div>
-          </div>
-        {/each}
+          {:else}
+            <div class="preview-empty">
+              <p>Select a file to preview.</p>
+            </div>
+          {/if}
+        </section>
       </div>
     {/if}
   </main>
@@ -1079,115 +1314,243 @@
     color: #5a6fd6;
   }
 
-  /* File grid */
-  .file-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 1.25rem;
+  /* File manager */
+  .file-manager {
+    height: 100%;
     max-width: 1200px;
     margin: 0 auto;
-    max-height: 100%;
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .file-list-pane {
+    min-height: 0;
+    background: rgba(26, 26, 46, 0.55);
+    border: 1px solid rgba(102, 126, 234, 0.2);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
   }
 
-  .file-card {
-    background: rgba(26, 26, 46, 0.6);
-    border: 1px solid rgba(102, 126, 234, 0.2);
-    border-radius: 12px;
-    padding: 1.25rem;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    animation: fadeIn 0.3s ease;
+  .manager-toolbar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    border-bottom: 1px solid rgba(102, 126, 234, 0.18);
   }
 
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  .file-card:hover {
-    transform: translateY(-2px);
-    border-color: #667eea;
-    background: rgba(26, 26, 46, 0.8);
-    box-shadow: 0 8px 24px rgba(102, 126, 234, 0.2);
-  }
-
-  .file-card:focus {
-    outline: 2px solid #667eea;
-    outline-offset: 2px;
-  }
-
-  .file-icon {
-    font-size: 2rem;
-    flex-shrink: 0;
-  }
-
-  .file-info {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .file-name {
-    font-weight: 500;
+  .manager-search,
+  .manager-sort {
+    border: 1px solid rgba(102, 126, 234, 0.35);
+    background: rgba(10, 10, 15, 0.35);
     color: #e0e0e0;
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    outline: none;
+  }
+
+  .manager-search:focus,
+  .manager-sort:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.12);
+  }
+
+  .file-list-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
+    color: rgba(224, 224, 224, 0.56);
+    border-bottom: 1px solid rgba(102, 126, 234, 0.12);
+  }
+
+  .file-list-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    scrollbar-width: none;
+  }
+
+  .file-list-scroll::-webkit-scrollbar {
+    display: none;
+  }
+
+  .file-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.6rem 0.75rem;
+    cursor: default;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    transition: background 0.15s ease;
+  }
+
+  .file-row:hover {
+    background: rgba(102, 126, 234, 0.08);
+  }
+
+  .file-row.selected {
+    background: rgba(102, 126, 234, 0.16);
+  }
+
+  .file-row:focus {
+    outline: 2px solid rgba(102, 126, 234, 0.5);
+    outline-offset: -2px;
+  }
+
+  .file-row-name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    margin-bottom: 0.25rem;
+    color: #e8e8e8;
   }
 
-  .file-meta {
+  .file-row-size,
+  .file-row-date {
+    font-size: 0.75rem;
+    color: rgba(224, 224, 224, 0.58);
+  }
+
+  .list-empty {
+    padding: 1rem;
+    color: rgba(224, 224, 224, 0.65);
+    font-size: 0.875rem;
+  }
+
+  .preview-pane {
+    min-height: 0;
+    background: rgba(26, 26, 46, 0.55);
+    border: 1px solid rgba(102, 126, 234, 0.2);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .preview-header {
+    padding: 1rem;
+    border-bottom: 1px solid rgba(102, 126, 234, 0.18);
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+
+  .preview-title {
+    margin: 0;
+    color: #f5f5f5;
+    font-size: 1rem;
+    font-weight: 600;
+    max-width: 48ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .preview-meta {
+    margin: 0.25rem 0 0;
+    color: rgba(224, 224, 224, 0.58);
     font-size: 0.8125rem;
-    color: rgba(224, 224, 224, 0.5);
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
   }
 
-  .file-actions {
+  .preview-actions {
     display: flex;
     gap: 0.5rem;
-    flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
-  .action-btn {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    width: 32px;
-    height: 32px;
+  .manager-btn {
+    border: 1px solid rgba(102, 126, 234, 0.35);
+    background: rgba(10, 10, 15, 0.35);
+    color: #d9e2ff;
+    border-radius: 8px;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.8125rem;
+    cursor: pointer;
+  }
+
+  .manager-btn:hover {
+    background: rgba(102, 126, 234, 0.18);
+  }
+
+  .manager-btn.danger {
+    border-color: rgba(248, 113, 113, 0.45);
+    color: #fecaca;
+  }
+
+  .manager-btn.danger:hover {
+    background: rgba(248, 113, 113, 0.16);
+  }
+
+  .preview-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 1rem;
+    scrollbar-width: none;
+  }
+
+  .preview-body::-webkit-scrollbar {
+    display: none;
+  }
+
+  .preview-image,
+  .preview-media {
+    width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 8px;
+    background: rgba(10, 10, 15, 0.5);
+  }
+
+  .preview-audio {
+    width: 100%;
+    margin-top: 0.5rem;
+  }
+
+  .preview-pdf {
+    width: 100%;
+    min-height: 420px;
+    height: 100%;
+    border: 0;
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .preview-text {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: #d9d9d9;
+  }
+
+  .preview-message {
+    margin: 0;
+    color: rgba(224, 224, 224, 0.76);
+  }
+
+  .preview-message.error {
+    color: #fca5a5;
+  }
+
+  .preview-empty {
+    flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
-    color: rgba(224, 224, 224, 0.7);
-    font-size: 1.25rem;
-    transition: all 0.2s;
-    padding: 0;
-  }
-
-  .action-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.2);
-  }
-
-  .download-btn:hover {
-    color: #667eea;
-    border-color: #667eea;
-  }
-
-  .delete-btn:hover {
-    color: #f87171;
-    border-color: #f87171;
+    color: rgba(224, 224, 224, 0.65);
+    font-size: 0.9375rem;
   }
 
   /* Unlock modal */
@@ -1322,6 +1685,50 @@
 
     .file-area {
       padding: 1rem;
+    }
+
+    .file-manager {
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+
+    .file-list-pane {
+      max-height: 38vh;
+    }
+
+    .preview-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .preview-actions {
+      justify-content: flex-start;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .secret-input-wrapper {
+      grid-template-columns: 1fr;
+    }
+
+    .loading-spinner {
+      justify-self: start;
+    }
+
+    .manager-toolbar {
+      grid-template-columns: 1fr;
+    }
+
+    .file-list-head {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .file-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .file-row-date {
+      display: none;
     }
   }
 </style>
