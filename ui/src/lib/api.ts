@@ -61,6 +61,7 @@ export interface TimelineResponse {
 }
 
 export type RootKind = 'main' | 'backup';
+export type RootProvider = 'local' | 'dropbox' | 'mega' | 'gdrive';
 export type RootStrategy =
   | { name: 'all-keys' }
   | { name: 'allowlist'; channelKeys: string[] };
@@ -68,6 +69,7 @@ export type RootStrategy =
 export interface RootConfigEntry {
   id: string;
   kind: RootKind;
+  provider: RootProvider;
   path: string;
   enabled: boolean;
   writable: boolean;
@@ -111,6 +113,50 @@ export interface RootsConfigResponse {
   configPath: string | null;
   config: RootsConfig;
   runtime: RootsRuntimeSnapshot;
+}
+
+export interface DiscoveredNearbytesSource {
+  provider: RootProvider;
+  path: string;
+  markerFile: string;
+  autoUpdate: boolean;
+}
+
+export interface DiscoverSourcesResponse {
+  scannedAt: number;
+  sourceCount: number;
+  sources: DiscoveredNearbytesSource[];
+}
+
+export interface VolumeWatchReady {
+  volumeId: string;
+  autoUpdate: boolean;
+  mode: 'filesystem' | 'none';
+  providers: RootProvider[];
+}
+
+export interface VolumeWatchUpdate {
+  volumeId: string;
+  change: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
+  path: string;
+  timestamp: number;
+}
+
+export interface VolumeWatchError {
+  volumeId: string;
+  message: string;
+  timestamp: number;
+}
+
+export interface VolumeWatchHandlers {
+  onReady?: (event: VolumeWatchReady) => void;
+  onUpdate?: (event: VolumeWatchUpdate) => void;
+  onError?: (error: Error | VolumeWatchError) => void;
+  onClose?: () => void;
+}
+
+export interface VolumeWatchConnection {
+  close(): void;
 }
 
 export interface ApiError {
@@ -300,6 +346,88 @@ export async function updateRootsConfig(config: RootsConfig): Promise<RootsConfi
 }
 
 /**
+ * Scans local synced directories for `.nearbytes` marker folders.
+ */
+export async function discoverSources(params?: {
+  maxDepth?: number;
+  maxDirectories?: number;
+}): Promise<DiscoverSourcesResponse> {
+  const query = new URLSearchParams();
+  if (params?.maxDepth !== undefined) {
+    query.set('maxDepth', String(params.maxDepth));
+  }
+  if (params?.maxDirectories !== undefined) {
+    query.set('maxDirectories', String(params.maxDirectories));
+  }
+
+  const suffix = query.toString();
+  const endpoint = suffix.length > 0 ? `/sources/discover?${suffix}` : '/sources/discover';
+  return apiRequest<DiscoverSourcesResponse>(endpoint, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Opens a streaming connection that emits volume updates pushed by the backend.
+ */
+export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWatchConnection {
+  const abortController = new AbortController();
+
+  void (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/watch/volume`, {
+        method: 'GET',
+        headers: createAuthHeaders(auth),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        const apiError = await parseError(response);
+        throw new Error(apiError.error.message || 'Failed to open watch stream');
+      }
+
+      if (!response.body) {
+        throw new Error('Watch stream is not available');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let boundaryIndex = buffer.indexOf('\n\n');
+        while (boundaryIndex >= 0) {
+          const message = buffer.slice(0, boundaryIndex);
+          buffer = buffer.slice(boundaryIndex + 2);
+          parseWatchMessage(message, handlers);
+          boundaryIndex = buffer.indexOf('\n\n');
+        }
+      }
+
+      handlers.onClose?.();
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        handlers.onClose?.();
+        return;
+      }
+      handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+      handlers.onClose?.();
+    }
+  })();
+
+  return {
+    close() {
+      abortController.abort();
+    },
+  };
+}
+
+/**
  * Downloads a file by blob hash.
  * Returns the file as a Blob.
  */
@@ -316,4 +444,44 @@ export async function downloadFile(auth: Auth, blobHash: string): Promise<Blob> 
   }
 
   return response.blob();
+}
+
+function parseWatchMessage(rawMessage: string, handlers: VolumeWatchHandlers): void {
+  const normalized = rawMessage.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  let eventName = 'message';
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(dataLines.join('\n'));
+  } catch {
+    return;
+  }
+
+  if (eventName === 'watch-ready') {
+    handlers.onReady?.(payload as VolumeWatchReady);
+    return;
+  }
+  if (eventName === 'volume-update') {
+    handlers.onUpdate?.(payload as VolumeWatchUpdate);
+    return;
+  }
+  if (eventName === 'watch-error') {
+    handlers.onError?.(payload as VolumeWatchError);
+  }
 }

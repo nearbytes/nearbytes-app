@@ -1,5 +1,6 @@
 import { promises as fs, constants as fsConstants } from 'fs';
 import { rootAcceptsChannel, type RootConfigEntry, type RootsConfig } from '../config/roots.js';
+import { ensureNearbytesMarker } from '../config/sourceDiscovery.js';
 import { StorageError } from '../types/errors.js';
 import type { StorageBackend } from '../types/storage.js';
 import { FilesystemStorageBackend } from './filesystem.js';
@@ -275,6 +276,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     await Promise.all(
       targets.map(async (state) => {
         try {
+          await ensureNearbytesMarker(state.config.path);
           await state.backend.writeFile(relativePath, data);
           this.lastWriteFailures.delete(state.config.id);
           successCount += 1;

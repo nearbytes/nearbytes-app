@@ -38,6 +38,13 @@ interface ListFilesResponseBody {
   }>;
 }
 
+interface DiscoverSourcesResponseBody {
+  sourceCount: number;
+  sources: Array<{
+    path: string;
+  }>;
+}
+
 function typedBody<T>(response: Response): T {
   return response.body as unknown as T;
 }
@@ -70,6 +77,7 @@ describe('Nearbytes API (multi-root)', () => {
         {
           id: 'main-1',
           kind: 'main',
+          provider: 'local',
           path: mainRoot,
           enabled: true,
           writable: true,
@@ -78,6 +86,7 @@ describe('Nearbytes API (multi-root)', () => {
         {
           id: 'backup-1',
           kind: 'backup',
+          provider: 'mega',
           path: backupRoot,
           enabled: true,
           writable: true,
@@ -202,5 +211,46 @@ describe('Nearbytes API (multi-root)', () => {
           : (downloadRes as unknown as { text?: string }).text ?? '';
 
     expect(bodyText).toBe('split-root-content');
+  });
+
+  it('discovers .nearbytes marker sources in configured scan paths', async () => {
+    const markerPath = path.join(backupRoot, '.nearbytes');
+    await fs.writeFile(markerPath, 'nearbytes-source', 'utf8');
+    const originalScanPaths = process.env.NEARBYTES_SOURCE_SCAN_DIRS;
+    process.env.NEARBYTES_SOURCE_SCAN_DIRS = tempDir;
+
+    try {
+      const res = await request(app).get('/sources/discover').expect(200);
+      const body = typedBody<DiscoverSourcesResponseBody>(res);
+      expect(body.sourceCount).toBeGreaterThanOrEqual(1);
+      const expectedRoot = path.resolve(await fs.realpath(backupRoot));
+      const found = body.sources.some((source) => path.resolve(source.path) === expectedRoot);
+      expect(found).toBe(true);
+    } finally {
+      process.env.NEARBYTES_SOURCE_SCAN_DIRS = originalScanPaths;
+    }
+  });
+
+  it('recreates .nearbytes marker after deletion for configured roots', async () => {
+    const openRes = await request(app).post('/open').send({ secret: SECRET }).expect(200);
+    const token = typedBody<OpenResponseBody>(openRes).token as string;
+
+    await request(app)
+      .post('/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('marker-seed'), 'marker-seed.txt')
+      .expect(200);
+
+    const markerPath = path.join(mainRoot, '.nearbytes');
+    await fs.stat(markerPath);
+    await fs.rm(markerPath, { force: true });
+
+    await request(app)
+      .post('/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('marker-recreate'), 'marker-recreate.txt')
+      .expect(200);
+
+    await fs.stat(markerPath);
   });
 });

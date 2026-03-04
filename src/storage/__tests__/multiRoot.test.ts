@@ -24,6 +24,7 @@ describe('MultiRootStorageBackend', () => {
         {
           id: 'main-1',
           kind: 'main',
+          provider: 'local',
           path: mainRoot,
           enabled: true,
           writable: true,
@@ -32,6 +33,7 @@ describe('MultiRootStorageBackend', () => {
         {
           id: 'backup-1',
           kind: 'backup',
+          provider: 'dropbox',
           path: backupRoot,
           enabled: true,
           writable: true,
@@ -64,6 +66,7 @@ describe('MultiRootStorageBackend', () => {
         {
           id: 'main-1',
           kind: 'main',
+          provider: 'local',
           path: join(dir, 'main-missing'),
           enabled: true,
           writable: false,
@@ -72,6 +75,7 @@ describe('MultiRootStorageBackend', () => {
         {
           id: 'backup-1',
           kind: 'backup',
+          provider: 'mega',
           path: backupRoot,
           enabled: true,
           writable: true,
@@ -102,6 +106,7 @@ describe('MultiRootStorageBackend', () => {
         {
           id: 'main-1',
           kind: 'main',
+          provider: 'local',
           path: mainRoot,
           enabled: true,
           writable: true,
@@ -110,6 +115,7 @@ describe('MultiRootStorageBackend', () => {
         {
           id: 'backup-1',
           kind: 'backup',
+          provider: 'gdrive',
           path: brokenBackupPath,
           enabled: true,
           writable: true,

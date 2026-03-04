@@ -5,6 +5,7 @@ import { createCryptoOperations } from '../crypto/index.js';
 import { createFileService } from '../domain/fileService.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { loadOrCreateRootsConfig } from '../config/roots.js';
+import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { createApp } from './app.js';
 import { parseTokenKey } from './auth.js';
@@ -30,6 +31,16 @@ async function main(): Promise<void> {
   });
   if (loaded.created) {
     console.log(`Created default roots config at: ${loaded.configPath}`);
+  }
+
+  const markerResults = await ensureNearbytesMarkers(loaded.config.roots);
+  const markerFailures = markerResults.filter((entry) => !entry.ok);
+  if (markerFailures.length > 0) {
+    for (const failure of markerFailures) {
+      console.warn(
+        `Warning: failed to ensure .nearbytes marker for root ${failure.rootId} (${failure.path}): ${failure.error}`
+      );
+    }
   }
 
   const storage = new MultiRootStorageBackend(loaded.config);

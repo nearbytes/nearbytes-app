@@ -37,6 +37,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "chokidar": "^4.0.3",
     "commander": "^11.1.0",
     "cors": "^2.8.6",
     "express": "^4.22.1",

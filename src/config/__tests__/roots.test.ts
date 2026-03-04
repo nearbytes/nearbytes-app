@@ -18,6 +18,7 @@ describe('roots config', () => {
         {
           id: 'main-a',
           kind: 'main',
+          provider: 'local',
           path: './storage-a',
           enabled: true,
           writable: true,
@@ -26,6 +27,7 @@ describe('roots config', () => {
         {
           id: 'backup-a',
           kind: 'backup',
+          provider: 'dropbox',
           path: './storage-b',
           enabled: true,
           writable: false,
@@ -54,6 +56,7 @@ describe('roots config', () => {
           {
             id: 'bad-main',
             kind: 'main',
+            provider: 'local',
             path: '/tmp/root',
             enabled: true,
             writable: true,
@@ -84,6 +87,7 @@ describe('roots config', () => {
         {
           id: 'backup-a',
           kind: 'backup',
+          provider: 'mega',
           path: join(dir, 'backup-root'),
           enabled: true,
           writable: true,
@@ -107,6 +111,24 @@ describe('roots config', () => {
     const config = createDefaultRootsConfig('/tmp/nearbytes-default-root');
     expect(config.version).toBe(1);
     expect(config.roots).toHaveLength(1);
+    expect(config.roots[0].provider).toBe('local');
     expect(config.roots[0].strategy.name).toBe('all-keys');
+  });
+
+  it('defaults provider to local when omitted for backward compatibility', () => {
+    const parsed = parseRootsConfig({
+      version: 1,
+      roots: [
+        {
+          id: 'legacy-main',
+          kind: 'main',
+          path: '/tmp/legacy-root',
+          enabled: true,
+          writable: true,
+          strategy: { name: 'all-keys' },
+        },
+      ],
+    });
+    expect(parsed.roots[0].provider).toBe('local');
   });
 });

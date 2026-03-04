@@ -8,12 +8,16 @@
     downloadFile,
     getRootsConfig,
     updateRootsConfig,
+    discoverSources,
+    watchVolume,
     type Auth,
     type FileMetadata,
     type TimelineEvent,
     type RootConfigEntry,
+    type RootProvider,
     type RootsConfig,
     type RootsRuntimeSnapshot,
+    type DiscoveredNearbytesSource,
   } from './lib/api.js';
   import { getCachedFiles, setCachedFiles } from './lib/cache.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
@@ -123,6 +127,20 @@
   let rootsSuccess = $state('');
   let rootsLoading = $state(false);
   let rootsSaving = $state(false);
+  let discoveredSources = $state<DiscoveredNearbytesSource[]>([]);
+  let sourceDiscoveryLoading = $state(false);
+  let sourceDiscoveryError = $state('');
+  let autoSyncEnabled = $state(false);
+  let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
+  let isRefreshing = $state(false);
+  let watchConnectionSerial = 0;
+  let watchDisconnect: (() => void) | null = null;
+  let autoRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  type SourceRow = {
+    source: DiscoveredNearbytesSource;
+    alreadyRegistered: boolean;
+  };
 
   const activePins = $derived.by(() => {
     pinClock;
@@ -134,6 +152,29 @@
     const secret = buildSecret(a, addressPassword.trim());
     return activePins.find((pin) => pin.id === secret) ?? null;
   });
+
+  const discoveredSourceRows = $derived.by(() => {
+    const seen = new Set<string>();
+    const rows: SourceRow[] = [];
+    for (const source of discoveredSources) {
+      const key = normalizeComparablePath(source.path);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const alreadyRegistered = rootsDraft.some(
+        (root) => normalizeComparablePath(root.path) === key
+      );
+      rows.push({ source, alreadyRegistered });
+    }
+    rows.sort((left, right) => left.source.path.localeCompare(right.source.path));
+    return rows;
+  });
+
+  const sourceRows = $derived.by(() => discoveredSourceRows.filter((row) => !row.alreadyRegistered));
+  const alreadyRegisteredSourceCount = $derived.by(
+    () => discoveredSourceRows.filter((row) => row.alreadyRegistered).length
+  );
 
   $effect(() => {
     const interval = setInterval(() => {
@@ -311,6 +352,84 @@
     };
   });
 
+  function stopVolumeWatch() {
+    if (watchDisconnect) {
+      watchDisconnect();
+      watchDisconnect = null;
+    }
+    if (autoRefreshTimer) {
+      clearTimeout(autoRefreshTimer);
+      autoRefreshTimer = null;
+    }
+    autoSyncEnabled = false;
+    autoSyncStatus = 'idle';
+  }
+
+  function scheduleAutoRefresh() {
+    if (autoRefreshTimer) {
+      return;
+    }
+    autoRefreshTimer = setTimeout(() => {
+      autoRefreshTimer = null;
+      void refreshFiles();
+    }, 260);
+  }
+
+  $effect(() => {
+    const currentAuth = auth;
+    const currentVolumeId = volumeId;
+    watchConnectionSerial += 1;
+    const serial = watchConnectionSerial;
+    stopVolumeWatch();
+
+    if (!currentAuth || !currentVolumeId) {
+      return;
+    }
+
+    autoSyncStatus = 'connecting';
+    const connection = watchVolume(currentAuth, {
+      onReady: (event) => {
+        if (serial !== watchConnectionSerial || event.volumeId !== currentVolumeId) {
+          return;
+        }
+        autoSyncEnabled = event.autoUpdate;
+        autoSyncStatus = event.autoUpdate ? 'active' : 'unsupported';
+      },
+      onUpdate: (event) => {
+        if (serial !== watchConnectionSerial || event.volumeId !== currentVolumeId) {
+          return;
+        }
+        scheduleAutoRefresh();
+      },
+      onError: () => {
+        if (serial !== watchConnectionSerial) {
+          return;
+        }
+        autoSyncEnabled = false;
+        autoSyncStatus = 'error';
+      },
+      onClose: () => {
+        if (serial !== watchConnectionSerial) {
+          return;
+        }
+        if (autoSyncStatus === 'connecting' || autoSyncStatus === 'active') {
+          autoSyncEnabled = false;
+          autoSyncStatus = 'error';
+        }
+      },
+    });
+    watchDisconnect = () => {
+      connection.close();
+    };
+
+    return () => {
+      connection.close();
+      if (watchDisconnect) {
+        watchDisconnect = null;
+      }
+    };
+  });
+
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     const a = address.trim();
@@ -481,6 +600,7 @@
     return {
       id: `${idPrefix}-${uniqueSuffix}`,
       kind,
+      provider: 'local',
       path: '',
       enabled: true,
       writable: true,
@@ -579,6 +699,7 @@
       version: 1,
       roots: rootsDraft.map((root) => ({
         ...root,
+        provider: root.provider,
         strategy:
           root.kind === 'main'
             ? { name: 'all-keys' as const }
@@ -591,6 +712,87 @@
               },
       })),
     };
+  }
+
+  function formatProvider(provider: RootProvider): string {
+    if (provider === 'gdrive') return 'Google Drive';
+    if (provider === 'dropbox') return 'Dropbox';
+    if (provider === 'mega') return 'MEGA';
+    return 'Local';
+  }
+
+  function normalizeComparablePath(value: string): string {
+    const normalized = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    if (normalized === '') return '';
+    if (normalized.startsWith('/')) {
+      return normalized.toLowerCase();
+    }
+    return normalized.toLowerCase();
+  }
+
+  function rootIdFromSource(source: DiscoveredNearbytesSource, kind: 'main' | 'backup'): string {
+    const base = `${kind}-${source.provider}-${Math.random().toString(16).slice(2, 8)}`;
+    return base.toLowerCase();
+  }
+
+  function addSourceAsRoot(source: DiscoveredNearbytesSource, kind: 'main' | 'backup') {
+    const normalizedPath = normalizeComparablePath(source.path);
+    const exists = rootsDraft.some(
+      (root) => normalizeComparablePath(root.path) === normalizedPath
+    );
+    if (exists) {
+      rootsSuccess = `${source.path} is already configured.`;
+      return;
+    }
+
+    const nextRoot: RootConfigEntry = {
+      id: rootIdFromSource(source, kind),
+      kind,
+      provider: source.provider,
+      path: source.path,
+      enabled: true,
+      writable: true,
+      strategy: kind === 'main' ? { name: 'all-keys' } : { name: 'allowlist', channelKeys: [] },
+    };
+    rootsDraft = [...rootsDraft, nextRoot];
+    rootsSuccess = `Added ${formatProvider(source.provider)} source as ${kind} root.`;
+  }
+
+  async function scanSources() {
+    sourceDiscoveryLoading = true;
+    sourceDiscoveryError = '';
+    rootsSuccess = '';
+    try {
+      const response = await discoverSources();
+      discoveredSources = response.sources;
+      const uniqueDiscovered = new Map<string, DiscoveredNearbytesSource>();
+      for (const source of response.sources) {
+        const key = normalizeComparablePath(source.path);
+        if (!uniqueDiscovered.has(key)) {
+          uniqueDiscovered.set(key, source);
+        }
+      }
+      const dedupedCount = uniqueDiscovered.size;
+      if (dedupedCount === 0) {
+        rootsSuccess = 'No .nearbytes sources found in synced folders.';
+      } else {
+        const registeredKeys = new Set(
+          rootsDraft.map((root) => normalizeComparablePath(root.path))
+        );
+        const newCount = Array.from(uniqueDiscovered.keys()).filter(
+          (key) => !registeredKeys.has(key)
+        ).length;
+        if (newCount === 0) {
+          rootsSuccess = 'All discovered sources are already registered.';
+        } else {
+          rootsSuccess = `Discovered ${newCount} new source${newCount === 1 ? '' : 's'}.`;
+        }
+      }
+    } catch (error) {
+      sourceDiscoveryError = error instanceof Error ? error.message : 'Failed to discover sources';
+    } finally {
+      sourceDiscoveryLoading = false;
+    }
   }
 
   async function saveRootsPanel() {
@@ -761,7 +963,8 @@
 
   // Refresh file list
   async function refreshFiles() {
-    if (!auth || !volumeId) return;
+    if (!auth || !volumeId || isRefreshing) return;
+    isRefreshing = true;
 
     try {
       const response = await listFiles(auth);
@@ -783,6 +986,8 @@
       } else {
         errorMessage = error instanceof Error ? error.message : 'Failed to refresh';
       }
+    } finally {
+      isRefreshing = false;
     }
   }
 
@@ -1024,6 +1229,24 @@
           <span class="status-value">{formatDate(lastRefresh)}</span>
         </div>
       {/if}
+      {#if volumeId}
+        <div class="status-item">
+          <span class="status-label">Sync:</span>
+          <span class="status-value">
+            {#if autoSyncStatus === 'connecting'}
+              Connecting…
+            {:else if autoSyncEnabled}
+              Auto
+            {:else if autoSyncStatus === 'unsupported'}
+              Manual
+            {:else if autoSyncStatus === 'error'}
+              Manual (watch offline)
+            {:else}
+              Manual
+            {/if}
+          </span>
+        </div>
+      {/if}
       {#if isHistoryMode}
         <div class="status-item history-indicator">
           <span>History mode (read-only)</span>
@@ -1039,7 +1262,7 @@
           <span>{errorMessage}</span>
         </div>
       {/if}
-      {#if volumeId && !isLoading}
+      {#if volumeId && !isLoading && !autoSyncEnabled}
         <button class="refresh-btn" onclick={refreshFiles} title="Refresh file list">
           ↻ Refresh
         </button>
@@ -1071,6 +1294,14 @@
             <button type="button" class="roots-action-btn" onclick={() => addRoot('backup')}>
               Add Backup
             </button>
+            <button
+              type="button"
+              class="roots-action-btn"
+              onclick={scanSources}
+              disabled={sourceDiscoveryLoading}
+            >
+              {sourceDiscoveryLoading ? 'Scanning…' : 'Scan Sources'}
+            </button>
             <button type="button" class="roots-action-btn" onclick={reloadRootsPanel} disabled={rootsLoading}>
               Reload
             </button>
@@ -1088,6 +1319,9 @@
         {#if rootsError}
           <p class="roots-error">{rootsError}</p>
         {/if}
+        {#if sourceDiscoveryError}
+          <p class="roots-error">{sourceDiscoveryError}</p>
+        {/if}
         {#if rootsSuccess}
           <p class="roots-success">{rootsSuccess}</p>
         {/if}
@@ -1098,6 +1332,40 @@
           {:else if rootsDraft.length === 0}
             <p class="roots-info">No roots configured yet. Add a main root first.</p>
           {:else}
+            {#if sourceRows.length > 0}
+              <section class="source-discovery" aria-label="Discovered synced sources">
+                <p class="roots-info">Discovered `.nearbytes` sources</p>
+                <div class="source-list">
+                  {#each sourceRows as row (row.source.path)}
+                    <article class="source-card">
+                      <div class="source-meta">
+                        <span class="source-provider">{formatProvider(row.source.provider)}</span>
+                        <span class="source-path" title={row.source.path}>{row.source.path}</span>
+                      </div>
+                      <div class="source-actions">
+                        <button
+                          type="button"
+                          class="roots-action-btn"
+                          onclick={() => addSourceAsRoot(row.source, 'main')}
+                        >
+                          Add Main
+                        </button>
+                        <button
+                          type="button"
+                          class="roots-action-btn"
+                          onclick={() => addSourceAsRoot(row.source, 'backup')}
+                        >
+                          Add Backup
+                        </button>
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              </section>
+            {:else if discoveredSourceRows.length > 0 && alreadyRegisteredSourceCount > 0}
+              <p class="roots-info">All discovered sources are already registered.</p>
+            {/if}
+
             <div class="roots-list">
               {#each rootsDraft as root, index (root.id + ':' + index)}
                 <article class="root-card">
@@ -1120,6 +1388,20 @@
                       >
                         <option value="main">main</option>
                         <option value="backup">backup</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Provider</span>
+                      <select
+                        class="root-input"
+                        value={root.provider}
+                        onchange={(e) =>
+                          updateRootField(index, 'provider', (e.currentTarget as HTMLSelectElement).value as RootProvider)}
+                      >
+                        <option value="local">local</option>
+                        <option value="dropbox">dropbox</option>
+                        <option value="mega">mega</option>
+                        <option value="gdrive">gdrive</option>
                       </select>
                     </label>
                     <label class="root-check">
@@ -1855,6 +2137,61 @@
     display: flex;
     flex-direction: column;
     gap: 0.65rem;
+  }
+
+  .source-discovery {
+    margin-bottom: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .source-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .source-card {
+    border: 1px solid rgba(125, 211, 252, 0.25);
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.36);
+    padding: 0.5rem 0.6rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .source-meta {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    flex: 1;
+  }
+
+  .source-provider {
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(103, 232, 249, 0.92);
+  }
+
+  .source-path {
+    color: rgba(224, 242, 254, 0.88);
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 0.72rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .source-actions {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
   }
 
   .root-card {

@@ -4,6 +4,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import multer from 'multer';
 import { parseRootsConfig, saveRootsConfig } from '../config/roots.js';
+import { discoverNearbytesSources, ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import type { CryptoOperations } from '../crypto/index.js';
 import type { FileService } from '../domain/fileService.js';
 import type { StorageBackend } from '../types/storage.js';
@@ -12,6 +13,7 @@ import { bytesToHex } from '../utils/encoding.js';
 import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import { ApiError } from './errors.js';
 import { encodeSecretToken, getSecretFromRequest, validateSecret } from './auth.js';
+import { VolumeWatchHub } from './volumeWatchHub.js';
 import {
   getStorageDiagnostics,
   getChannelDiagnostics,
@@ -44,6 +46,7 @@ export interface RouteDependencies {
  */
 export function createRoutes(deps: RouteDependencies): Router {
   const router = Router();
+  const watchHub = new VolumeWatchHub(deps.storage, deps.resolvedStorageDir);
   const upload = multer({
     storage: multer.diskStorage({
       destination: (_req, _file, callback) => callback(null, os.tmpdir()),
@@ -62,6 +65,7 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/config/roots', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    await ensureNearbytesMarkers(multiRootStorage.getRootsConfig().roots);
     const runtime = await multiRootStorage.getRuntimeSnapshot();
     res.json({
       configPath: deps.rootsConfigPath ?? null,
@@ -91,12 +95,29 @@ export function createRoutes(deps: RouteDependencies): Router {
     await saveRootsConfig(deps.rootsConfigPath, nextConfig);
     const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
     multiRootStorage.updateRootsConfig(nextConfig);
+    await ensureNearbytesMarkers(nextConfig.roots);
     const runtime = await multiRootStorage.getRuntimeSnapshot();
 
     res.json({
       configPath: deps.rootsConfigPath,
       config: nextConfig,
       runtime,
+    });
+  }));
+
+  router.get('/sources/discover', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const maxDepth = parseOptionalInt(req.query.maxDepth);
+    const maxDirectories = parseOptionalInt(req.query.maxDirectories);
+    const sources = await discoverNearbytesSources({
+      maxDepth,
+      maxDirectories,
+    });
+
+    res.json({
+      scannedAt: Date.now(),
+      sourceCount: sources.length,
+      sources,
     });
   }));
 
@@ -179,6 +200,55 @@ export function createRoutes(deps: RouteDependencies): Router {
       });
     })
   );
+
+  router.get('/watch/volume', requireSecret(deps), async (req, res, next) => {
+    try {
+      const secret = res.locals.secret as string;
+      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+
+      const subscription = watchHub.subscribe(
+        volumeId,
+        (update) => writeSseEvent(res, 'volume-update', update),
+        (error) =>
+          writeSseEvent(res, 'watch-error', {
+            volumeId,
+            message: error.message,
+            timestamp: Date.now(),
+          })
+      );
+
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      writeSseEvent(res, 'watch-ready', subscription.ready);
+
+      if (!subscription.ready.autoUpdate) {
+        writeSseEvent(res, 'watch-ended', {
+          volumeId,
+          reason: 'Auto-update is unavailable for the active storage roots.',
+          timestamp: Date.now(),
+        });
+        res.end();
+        subscription.unsubscribe();
+        return;
+      }
+
+      const heartbeatTimer = setInterval(() => {
+        writeSseEvent(res, 'heartbeat', { timestamp: Date.now() });
+      }, 20000);
+
+      req.on('close', () => {
+        clearInterval(heartbeatTimer);
+        subscription.unsubscribe();
+        res.end();
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
 
   router.get(
     '/timeline',
@@ -371,6 +441,28 @@ function assertLocalConfigRequest(req: Request): void {
   }
 
   throw new ApiError(403, 'FORBIDDEN', 'Config endpoints are local-only');
+}
+
+function parseOptionalInt(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function writeSseEvent(res: Response, eventName: string, payload: unknown): void {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function isLoopbackAddress(value: string | undefined): boolean {

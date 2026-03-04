@@ -4,6 +4,7 @@ import path from 'path';
 import { z } from 'zod';
 
 export type RootKind = 'main' | 'backup';
+export type RootProvider = 'local' | 'dropbox' | 'mega' | 'gdrive';
 
 export interface AllKeysStrategy {
   readonly name: 'all-keys';
@@ -19,6 +20,7 @@ export type RootStrategy = AllKeysStrategy | AllowlistStrategy;
 export interface RootConfigEntry {
   readonly id: string;
   readonly kind: RootKind;
+  readonly provider: RootProvider;
   readonly path: string;
   readonly enabled: boolean;
   readonly writable: boolean;
@@ -45,6 +47,7 @@ const allowlistStrategySchema = z.object({
 const rootConfigEntrySchema = z.object({
   id: z.string().trim().min(1, 'Root id is required'),
   kind: z.enum(['main', 'backup']),
+  provider: z.enum(['local', 'dropbox', 'mega', 'gdrive']).default('local'),
   path: z.string().trim().min(1, 'Root path is required'),
   enabled: z.boolean().default(true),
   writable: z.boolean().default(true),
@@ -71,6 +74,7 @@ export function createDefaultRootsConfig(defaultRootPath: string): RootsConfig {
       {
         id: 'main-default',
         kind: 'main',
+        provider: 'local',
         path: path.resolve(defaultRootPath),
         enabled: true,
         writable: true,
@@ -101,6 +105,7 @@ export function parseRootsConfig(value: unknown): RootsConfig {
       return {
         id,
         kind: root.kind,
+        provider: root.provider,
         path: normalizedPath,
         enabled: root.enabled,
         writable: root.writable,
@@ -126,6 +131,7 @@ export function parseRootsConfig(value: unknown): RootsConfig {
     return {
       id,
       kind: root.kind,
+      provider: root.provider,
       path: normalizedPath,
       enabled: root.enabled,
       writable: root.writable,
