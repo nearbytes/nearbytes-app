@@ -24,6 +24,7 @@
   import ArmedActionButton from './components/ArmedActionButton.svelte';
 
   const PINNED_VOLUMES_KEY = 'nearbytes-pinned-volumes';
+  const ROOT_SUGGESTIONS_DISMISSED_KEY = 'nearbytes-dismissed-suggestions-v1';
   const DAY_MS = 24 * 60 * 60 * 1000;
   const WEEK_MS = 7 * DAY_MS;
   const MONTH_MS = 30 * DAY_MS;
@@ -88,6 +89,29 @@
     }
   }
 
+  function loadDismissedRootSuggestions(): string[] {
+    try {
+      const raw = localStorage.getItem(ROOT_SUGGESTIONS_DISMISSED_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((value) => typeof value === 'string')
+        .map((value) => normalizeComparablePath(value))
+        .filter((value, index, all) => value.length > 0 && all.indexOf(value) === index);
+    } catch {
+      return [];
+    }
+  }
+
+  function persistDismissedRootSuggestions(values: string[]): void {
+    try {
+      localStorage.setItem(ROOT_SUGGESTIONS_DISMISSED_KEY, JSON.stringify(values));
+    } catch {
+      // ignore
+    }
+  }
+
   // State: address = main input; effectiveSecret = sent to API
   let address = $state('');
   let addressPassword = $state('');
@@ -130,6 +154,9 @@
   let rootsLoading = $state(false);
   let rootsSaving = $state(false);
   let discoveredSources = $state<DiscoveredNearbytesSource[]>([]);
+  let dismissedRootSuggestions = $state<string[]>(loadDismissedRootSuggestions());
+  let rootsAdvancedOpen = $state(false);
+  let hasAutoScannedRoots = $state(false);
   let sourceDiscoveryLoading = $state(false);
   let sourceDiscoveryError = $state('');
   let autoSyncEnabled = $state(false);
@@ -142,6 +169,7 @@
   type SourceRow = {
     source: DiscoveredNearbytesSource;
     alreadyRegistered: boolean;
+    dismissed: boolean;
   };
   type VolumeRouteRow = {
     index: number;
@@ -165,8 +193,13 @@
     return activePins.find((pin) => pin.id === secret) ?? null;
   });
 
+  const dismissedRootSuggestionSet = $derived.by(
+    () => new Set(dismissedRootSuggestions.map((value) => normalizeComparablePath(value)))
+  );
+
   const discoveredSourceRows = $derived.by(() => {
     const uniqueSources = new Map<string, DiscoveredNearbytesSource>();
+    const dismissedSet = dismissedRootSuggestionSet;
     for (const source of discoveredSources) {
       const key = normalizeComparablePath(source.path);
       const existing = uniqueSources.get(key);
@@ -179,13 +212,24 @@
       const alreadyRegistered = rootsDraft.some(
         (root) => normalizeComparablePath(root.path) === key
       );
-      return { source, alreadyRegistered };
+      const dismissed = source.sourceType === 'suggested' && dismissedSet.has(key);
+      return { source, alreadyRegistered, dismissed };
     });
     rows.sort((left, right) => left.source.path.localeCompare(right.source.path));
     return rows;
   });
 
-  const sourceRows = $derived.by(() => discoveredSourceRows.filter((row) => !row.alreadyRegistered));
+  const sourceRows = $derived.by(
+    () => discoveredSourceRows.filter((row) => !row.alreadyRegistered && !row.dismissed)
+  );
+  const markerSourceRows = $derived.by(() => sourceRows.filter((row) => row.source.sourceType === 'marker'));
+  const suggestedSourceRows = $derived.by(
+    () => sourceRows.filter((row) => row.source.sourceType === 'suggested')
+  );
+  const dismissedSuggestionCount = $derived.by(
+    () =>
+      discoveredSourceRows.filter((row) => row.source.sourceType === 'suggested' && row.dismissed).length
+  );
   const alreadyRegisteredSourceCount = $derived.by(
     () => discoveredSourceRows.filter((row) => row.alreadyRegistered).length
   );
@@ -231,6 +275,10 @@
       pinnedVolumes = cleaned;
       persistPinnedVolumes(cleaned);
     }
+  });
+
+  $effect(() => {
+    persistDismissedRootSuggestions(dismissedRootSuggestions);
   });
 
   $effect(() => {
@@ -716,12 +764,29 @@
     rootsDraft = next;
   }
 
+  function recommendRootKindForMaterialize(): 'main' | 'backup' {
+    const hasMain = rootsDraft.some((root) => root.kind === 'main');
+    return hasMain ? 'backup' : 'main';
+  }
+
   function updateRootField<K extends keyof RootConfigEntry>(index: number, field: K, value: RootConfigEntry[K]) {
     const next = [...rootsDraft];
     if (!next[index]) return;
     next[index] = {
       ...next[index],
       [field]: value,
+    };
+    rootsDraft = next;
+  }
+
+  function updateRootPath(index: number, value: string) {
+    const next = [...rootsDraft];
+    const current = next[index];
+    if (!current) return;
+    next[index] = {
+      ...current,
+      path: value,
+      provider: detectProviderFromPath(value),
     };
     rootsDraft = next;
   }
@@ -745,6 +810,88 @@
 
   function removeRoot(index: number) {
     rootsDraft = rootsDraft.filter((_, i) => i !== index);
+  }
+
+  function mergeRootEntries(primary: RootConfigEntry, secondary: RootConfigEntry): RootConfigEntry {
+    const enabled = primary.enabled || secondary.enabled;
+    const writable = primary.writable || secondary.writable;
+    if (primary.kind === 'main' || secondary.kind === 'main') {
+      return {
+        ...primary,
+        kind: 'main',
+        enabled,
+        writable,
+        strategy: { name: 'all-keys' },
+      };
+    }
+
+    const primaryKeys =
+      primary.strategy.name === 'allowlist'
+        ? primary.strategy.channelKeys.map((entry) => normalizeChannelKey(entry))
+        : [];
+    const secondaryKeys =
+      secondary.strategy.name === 'allowlist'
+        ? secondary.strategy.channelKeys.map((entry) => normalizeChannelKey(entry))
+        : [];
+    const mergedKeys = Array.from(new Set([...primaryKeys, ...secondaryKeys]))
+      .filter((entry) => entry.length > 0)
+      .sort((left, right) => left.localeCompare(right));
+
+    return {
+      ...primary,
+      kind: 'backup',
+      enabled,
+      writable,
+      strategy: {
+        name: 'allowlist',
+        channelKeys: mergedKeys,
+      },
+    };
+  }
+
+  function mergeRootPrompt(sourceIndex: number) {
+    const source = rootsDraft[sourceIndex];
+    if (!source) return;
+    if (rootsDraft.length < 2) {
+      rootsError = 'Add at least one more root before merging.';
+      return;
+    }
+
+    const fallbackTarget = rootsDraft.find((_, index) => index !== sourceIndex);
+    const targetIdInput = window.prompt(`Merge "${source.id}" into root id:`, fallbackTarget?.id ?? '');
+    if (targetIdInput === null) {
+      return;
+    }
+
+    const targetId = targetIdInput.trim();
+    if (targetId.length === 0) {
+      rootsError = 'Target root id is required.';
+      return;
+    }
+
+    const targetIndex = rootsDraft.findIndex((root, index) => index !== sourceIndex && root.id === targetId);
+    if (targetIndex < 0) {
+      rootsError = `Root "${targetId}" not found.`;
+      return;
+    }
+
+    const target = rootsDraft[targetIndex];
+    const sourcePath = normalizeComparablePath(source.path);
+    const targetPath = normalizeComparablePath(target.path);
+    if (sourcePath !== targetPath) {
+      const proceed = window.confirm(
+        `Roots have different paths.\n\nSource: ${source.path}\nTarget: ${target.path}\n\nMerge keeps target path and removes source root. Continue?`
+      );
+      if (!proceed) {
+        return;
+      }
+    }
+
+    const next = [...rootsDraft];
+    next[targetIndex] = mergeRootEntries(target, source);
+    next.splice(sourceIndex, 1);
+    rootsDraft = next;
+    rootsSuccess = `Merged "${source.id}" into "${target.id}". Save to apply.`;
   }
 
   async function reloadRootsPanel() {
@@ -788,6 +935,21 @@
     return 'Local';
   }
 
+  function detectProviderFromPath(pathValue: string): RootProvider {
+    const lower = pathValue.toLowerCase();
+    if (lower.includes('dropbox')) return 'dropbox';
+    if (
+      lower.includes('google drive') ||
+      lower.includes('googledrive') ||
+      lower.includes('google-drive') ||
+      lower.includes('gdrive')
+    ) {
+      return 'gdrive';
+    }
+    if (lower.includes('mega')) return 'mega';
+    return 'local';
+  }
+
   function normalizeComparablePath(value: string): string {
     const normalized = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
     if (normalized === '') return '';
@@ -825,7 +987,7 @@
     return base.toLowerCase();
   }
 
-  function addSourceAsRoot(source: DiscoveredNearbytesSource, kind: 'main' | 'backup') {
+  function addSourceAsRoot(source: DiscoveredNearbytesSource, kind: 'main' | 'backup'): boolean {
     const sourcePath = ensureNearbytesPath(source.path, source.provider);
     const normalizedPath = normalizeComparablePath(sourcePath);
     const exists = rootsDraft.some(
@@ -833,7 +995,7 @@
     );
     if (exists) {
       rootsSuccess = `${sourcePath} is already configured.`;
-      return;
+      return false;
     }
 
     const nextRoot: RootConfigEntry = {
@@ -847,12 +1009,48 @@
     };
     rootsDraft = [...rootsDraft, nextRoot];
     rootsSuccess = `Added ${formatProvider(source.provider)} source as ${kind} root.`;
+    return true;
   }
 
-  async function scanSources() {
+  function materializeSuggestedRoot(source: DiscoveredNearbytesSource, kind: 'main' | 'backup') {
+    const pathLabel = ensureNearbytesPath(source.path, source.provider);
+    const roleLabel = kind === 'main' ? 'Main' : 'Backup';
+    const proceed = window.confirm(`Use ${pathLabel} as a ${roleLabel} root?`);
+    if (!proceed) {
+      return;
+    }
+
+    const added = addSourceAsRoot(source, kind);
+    if (!added) {
+      return;
+    }
+    const normalized = normalizeComparablePath(source.path);
+    const nextDismissed = dismissedRootSuggestions.filter((entry) => entry !== normalized);
+    if (nextDismissed.length !== dismissedRootSuggestions.length) {
+      dismissedRootSuggestions = nextDismissed;
+    }
+  }
+
+  function dismissSuggestedRoot(source: DiscoveredNearbytesSource) {
+    const normalized = normalizeComparablePath(source.path);
+    if (dismissedRootSuggestions.includes(normalized)) {
+      return;
+    }
+    dismissedRootSuggestions = [...dismissedRootSuggestions, normalized];
+    rootsSuccess = `Won't suggest ${source.path} again.`;
+  }
+
+  function restoreDismissedRootSuggestions() {
+    dismissedRootSuggestions = [];
+    rootsSuccess = 'Suggestion visibility restored.';
+  }
+
+  async function scanSources(options?: { silent?: boolean }) {
     sourceDiscoveryLoading = true;
     sourceDiscoveryError = '';
-    rootsSuccess = '';
+    if (!options?.silent) {
+      rootsSuccess = '';
+    }
     try {
       const response = await discoverSources();
       discoveredSources = response.sources;
@@ -866,7 +1064,9 @@
       }
       const dedupedCount = uniqueDiscovered.size;
       if (dedupedCount === 0) {
-        rootsSuccess = 'No synced sources found.';
+        if (!options?.silent) {
+          rootsSuccess = 'No synced sources found.';
+        }
       } else {
         const registeredKeys = new Set(
           rootsDraft.map((root) => normalizeComparablePath(root.path))
@@ -878,9 +1078,13 @@
           (source) => source.sourceType === 'suggested'
         ).length;
         if (newCount === 0) {
-          rootsSuccess = 'All discovered sources are already registered.';
+          if (!options?.silent) {
+            rootsSuccess = 'All discovered sources are already registered.';
+          }
         } else {
-          rootsSuccess = `Found ${newCount} new source${newCount === 1 ? '' : 's'} (${suggestedCount} default suggestion${suggestedCount === 1 ? '' : 's'}).`;
+          if (!options?.silent) {
+            rootsSuccess = `Found ${newCount} new source${newCount === 1 ? '' : 's'} (${suggestedCount} default suggestion${suggestedCount === 1 ? '' : 's'}).`;
+          }
         }
       }
     } catch (error) {
@@ -948,15 +1152,15 @@
 
   function routeButtonLabel(row: VolumeRouteRow): string {
     if (row.kind === 'main') {
-      return row.routable ? 'Main Active' : 'Enable Main';
+      return row.routable ? 'Always On' : 'Enable Main';
     }
     if (row.routable) {
-      return 'Using Volume';
+      return 'Active';
     }
     if (row.selected && (!row.enabled || !row.writable)) {
-      return 'Enable Root';
+      return 'Repair Route';
     }
-    return 'Use Volume';
+    return 'Use For Volume';
   }
 
   async function saveRootsPanel() {
@@ -979,6 +1183,10 @@
     showRootsPanel = !showRootsPanel;
     if (showRootsPanel && rootsDraft.length === 0 && !rootsLoading) {
       await reloadRootsPanel();
+    }
+    if (showRootsPanel && !sourceDiscoveryLoading && !hasAutoScannedRoots) {
+      hasAutoScannedRoots = true;
+      void scanSources({ silent: true });
     }
   }
 
@@ -1534,29 +1742,33 @@
     {#if showRootsPanel}
       <section class="roots-panel" aria-label="Storage roots configuration">
         <div class="roots-panel-header">
-          <div>
+          <div class="roots-title-wrap">
             <p class="roots-eyebrow">Storage Roots</p>
+            <h3 class="roots-title">Automatic Root Orchestration</h3>
+            <p class="roots-subtitle">
+              Suggested roots are ghosted until you confirm. Save commits the materialized roots.
+            </p>
             <p class="roots-path" title={rootsConfigPath ?? ''}>
               {rootsConfigPath ? `Config: ${rootsConfigPath}` : 'Config path unavailable'}
             </p>
           </div>
           <div class="roots-actions">
-            <button type="button" class="roots-action-btn" onclick={() => addRoot('main')}>
-              Add Main
-            </button>
-            <button type="button" class="roots-action-btn" onclick={() => addRoot('backup')}>
-              Add Backup
+            <button
+              type="button"
+              class="roots-action-btn"
+              onclick={() => scanSources()}
+              disabled={sourceDiscoveryLoading}
+            >
+              {sourceDiscoveryLoading ? 'Finding…' : 'Find More Roots'}
             </button>
             <button
               type="button"
               class="roots-action-btn"
-              onclick={scanSources}
-              disabled={sourceDiscoveryLoading}
+              onclick={() => {
+                rootsAdvancedOpen = !rootsAdvancedOpen;
+              }}
             >
-              {sourceDiscoveryLoading ? 'Scanning…' : 'Scan Sources'}
-            </button>
-            <button type="button" class="roots-action-btn" onclick={reloadRootsPanel} disabled={rootsLoading}>
-              Reload
+              {rootsAdvancedOpen ? 'Simple' : 'Advanced'}
             </button>
             <button
               type="button"
@@ -1566,6 +1778,25 @@
             >
               {rootsSaving ? 'Saving…' : 'Save'}
             </button>
+            {#if rootsAdvancedOpen}
+              <button type="button" class="roots-action-btn" onclick={() => addRoot('main')}>
+                New Main
+              </button>
+              <button type="button" class="roots-action-btn" onclick={() => addRoot('backup')}>
+                New Backup
+              </button>
+              <button
+                type="button"
+                class="roots-action-btn"
+                onclick={restoreDismissedRootSuggestions}
+                disabled={dismissedSuggestionCount === 0}
+              >
+                Show Hidden
+              </button>
+              <button type="button" class="roots-action-btn" onclick={reloadRootsPanel} disabled={rootsLoading}>
+                Reload
+              </button>
+            {/if}
           </div>
         </div>
 
@@ -1582,56 +1813,118 @@
         <div class="roots-scroll">
           {#if rootsLoading}
             <p class="roots-info">Loading roots configuration…</p>
-          {:else if rootsDraft.length === 0}
-            <p class="roots-info">No roots configured yet. Add a main root first.</p>
           {:else}
-            {#if sourceRows.length > 0}
-              <section class="source-discovery" aria-label="Discovered synced sources">
-                <p class="roots-info">Discovered and suggested synced sources</p>
-                <div class="source-list">
-                  {#each sourceRows as row (row.source.path)}
-                    <article class="source-card">
-                      <div class="source-meta">
-                        <div class="source-provider-row">
-                          <span class="source-provider">{formatProvider(row.source.provider)}</span>
-                          <span class="source-origin">{sourceTypeLabel(row.source)}</span>
-                        </div>
-                        <span class="source-path" title={row.source.path}>{row.source.path}</span>
+            <section class="source-discovery" aria-label="Discovered synced sources">
+              <div class="roots-section-head">
+                <p class="roots-section-title">Suggested Roots</p>
+                <p class="roots-section-caption">Ghost cards become real roots only after confirmation.</p>
+              </div>
+              {#if suggestedSourceRows.length === 0 && markerSourceRows.length === 0}
+                <p class="roots-info">
+                  {discoveredSourceRows.length === 0
+                    ? 'No suggestions yet. Use “Find More Roots”.'
+                    : 'No pending suggestions. All discovered sources are already materialized or hidden.'}
+                </p>
+              {:else}
+                <div class="ghost-grid">
+                  {#each suggestedSourceRows as row (row.source.path)}
+                    <article class="ghost-root-card">
+                      <div class="ghost-root-head">
+                        <span class="source-provider">{formatProvider(row.source.provider)}</span>
+                        <span class="source-origin">{sourceTypeLabel(row.source)}</span>
                       </div>
+                      <span class="source-path" title={row.source.path}>{row.source.path}</span>
+                      <p class="ghost-copy">
+                        Suggested sync path. Materialize as main or backup when you want it active.
+                      </p>
                       <div class="source-actions">
                         <button
                           type="button"
                           class="roots-action-btn"
-                          onclick={() => addSourceAsRoot(row.source, 'main')}
+                          onclick={() => materializeSuggestedRoot(row.source, recommendRootKindForMaterialize())}
                         >
-                          Add Main
+                          {recommendRootKindForMaterialize() === 'main' ? 'Use as Main' : 'Use as Backup'}
                         </button>
+                        {#if rootsAdvancedOpen}
+                          <button
+                            type="button"
+                            class="roots-action-btn"
+                            onclick={() =>
+                              materializeSuggestedRoot(
+                                row.source,
+                                recommendRootKindForMaterialize() === 'main' ? 'backup' : 'main'
+                              )}
+                          >
+                            {recommendRootKindForMaterialize() === 'main' ? 'Use as Backup' : 'Use as Main'}
+                          </button>
+                        {/if}
                         <button
                           type="button"
-                          class="roots-action-btn"
-                          onclick={() => addSourceAsRoot(row.source, 'backup')}
+                          class="roots-action-btn subtle"
+                          onclick={() => dismissSuggestedRoot(row.source)}
                         >
-                          Add Backup
+                          Do Not Suggest
                         </button>
                       </div>
                     </article>
                   {/each}
+                  {#each markerSourceRows as row (row.source.path)}
+                    <article class="ghost-root-card marker">
+                      <div class="ghost-root-head">
+                        <span class="source-provider">{formatProvider(row.source.provider)}</span>
+                        <span class="source-origin">{sourceTypeLabel(row.source)}</span>
+                      </div>
+                      <span class="source-path" title={row.source.path}>{row.source.path}</span>
+                      <p class="ghost-copy">
+                        Existing `.nearbytes` marker detected. Ready to materialize immediately.
+                      </p>
+                      <div class="source-actions">
+                        <button
+                          type="button"
+                          class="roots-action-btn"
+                          onclick={() => materializeSuggestedRoot(row.source, recommendRootKindForMaterialize())}
+                        >
+                          {recommendRootKindForMaterialize() === 'main' ? 'Use as Main' : 'Use as Backup'}
+                        </button>
+                        {#if rootsAdvancedOpen}
+                          <button
+                            type="button"
+                            class="roots-action-btn"
+                            onclick={() =>
+                              materializeSuggestedRoot(
+                                row.source,
+                                recommendRootKindForMaterialize() === 'main' ? 'backup' : 'main'
+                              )}
+                          >
+                            {recommendRootKindForMaterialize() === 'main' ? 'Use as Backup' : 'Use as Main'}
+                          </button>
+                        {/if}
+                      </div>
+                    </article>
+                  {/each}
                 </div>
-              </section>
-            {:else if discoveredSourceRows.length > 0 && alreadyRegisteredSourceCount > 0}
-              <p class="roots-info">All discovered sources are already registered.</p>
-            {/if}
+              {/if}
+              {#if alreadyRegisteredSourceCount > 0}
+                <p class="roots-info muted">
+                  {alreadyRegisteredSourceCount} discovered source{alreadyRegisteredSourceCount === 1 ? '' : 's'} already materialized.
+                </p>
+              {/if}
+              {#if dismissedSuggestionCount > 0}
+                <p class="roots-info muted">
+                  {dismissedSuggestionCount} suggestion{dismissedSuggestionCount === 1 ? '' : 's'} hidden.
+                </p>
+              {/if}
+            </section>
 
             {#if volumeId && volumeRouteRows.length > 0}
               <section class="volume-root-selector" aria-label="Route current volume across roots">
                 <div class="volume-selector-head">
-                  <p class="roots-info">
-                    Volume routing for <code>{volumeId}</code>
-                  </p>
+                  <p class="roots-section-title">Volume Routing</p>
                   <span class="volume-selector-summary">
                     {routedRootCount} active root{routedRootCount === 1 ? '' : 's'}
                   </span>
                 </div>
+                <p class="roots-info volume-key" title={volumeId}>{volumeId}</p>
                 <div class="volume-selector-grid">
                   {#each volumeRouteRows as row (row.rootId + ':' + row.index)}
                     <button
@@ -1654,96 +1947,82 @@
               </section>
             {/if}
 
-            <div class="roots-list">
+            <section class="roots-active" aria-label="Materialized roots">
+              <div class="roots-section-head">
+                <p class="roots-section-title">Materialized Roots</p>
+                <p class="roots-section-caption">These roots are persisted in config and used at runtime.</p>
+              </div>
+              <div class="roots-list">
               {#each rootsDraft as root, index (root.id + ':' + index)}
                 <article class="root-card">
+                  <div class="root-card-head">
+                    <div class="root-pill-row">
+                      <span class="root-provider-pill">{formatProvider(root.provider)}</span>
+                      <span class="root-kind-pill">
+                        {root.kind === 'main' ? 'all volumes' : 'selected volumes'}
+                      </span>
+                      <span class="root-id-pill">{root.id}</span>
+                    </div>
+                    {#if rootsAdvancedOpen}
+                      <div class="root-card-actions">
+                        <label class="root-check">
+                          <input
+                            type="checkbox"
+                            checked={root.enabled}
+                            onchange={(e) => updateRootField(index, 'enabled', (e.currentTarget as HTMLInputElement).checked)}
+                          />
+                          enabled
+                        </label>
+                        <label class="root-check">
+                          <input
+                            type="checkbox"
+                            checked={root.writable}
+                            onchange={(e) => updateRootField(index, 'writable', (e.currentTarget as HTMLInputElement).checked)}
+                          />
+                          writable
+                        </label>
+                      </div>
+                    {:else}
+                      <span class="root-active-pill" class:inactive={!root.enabled || !root.writable}>
+                        {!root.enabled ? 'disabled' : root.writable ? 'active' : 'read-only'}
+                      </span>
+                    {/if}
+                  </div>
+
                   <div class="root-row">
-                    <label>
-                      <span>ID</span>
+                    <label class="root-field">
+                      <span>Path</span>
                       <input
                         type="text"
-                        class="root-input"
-                        value={root.id}
-                        oninput={(e) => updateRootField(index, 'id', (e.currentTarget as HTMLInputElement).value)}
+                        class="root-input root-path-input"
+                        value={root.path}
+                        oninput={(e) => updateRootPath(index, (e.currentTarget as HTMLInputElement).value)}
                       />
                     </label>
-                    <label>
-                      <span>Kind</span>
-                      <select
-                        class="root-input"
-                        value={root.kind}
-                        onchange={(e) => updateRootKind(index, (e.currentTarget as HTMLSelectElement).value as 'main' | 'backup')}
-                      >
-                        <option value="main">main</option>
-                        <option value="backup">backup</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>Provider</span>
-                      <select
-                        class="root-input"
-                        value={root.provider}
-                        onchange={(e) =>
-                          updateRootField(index, 'provider', (e.currentTarget as HTMLSelectElement).value as RootProvider)}
-                      >
-                        <option value="local">local</option>
-                        <option value="dropbox">dropbox</option>
-                        <option value="mega">mega</option>
-                        <option value="gdrive">gdrive</option>
-                      </select>
-                    </label>
-                    <label class="root-check">
-                      <input
-                        type="checkbox"
-                        checked={root.enabled}
-                        onchange={(e) => updateRootField(index, 'enabled', (e.currentTarget as HTMLInputElement).checked)}
-                      />
-                      enabled
-                    </label>
-                    <label class="root-check">
-                      <input
-                        type="checkbox"
-                        checked={root.writable}
-                        onchange={(e) => updateRootField(index, 'writable', (e.currentTarget as HTMLInputElement).checked)}
-                      />
-                      writable
-                    </label>
+                    <button
+                      type="button"
+                      class="root-merge"
+                      onclick={() => mergeRootPrompt(index)}
+                      disabled={rootsDraft.length < 2}
+                    >
+                      Merge…
+                    </button>
                     <button type="button" class="root-remove" onclick={() => removeRoot(index)}>
                       Remove
                     </button>
                   </div>
 
-                  <label>
-                    <span>Path</span>
-                    <input
-                      type="text"
-                      class="root-input root-path-input"
-                      value={root.path}
-                      oninput={(e) => updateRootField(index, 'path', (e.currentTarget as HTMLInputElement).value)}
-                    />
-                  </label>
-
-                  <div class="root-row strategy-row">
-                    <label>
-                      <span>Strategy</span>
-                      <select class="root-input" disabled={root.kind === 'main'}>
-                        <option value={root.kind === 'main' ? 'all-keys' : 'allowlist'}>
-                          {root.kind === 'main' ? 'all-keys' : 'allowlist'}
-                        </option>
-                      </select>
+                  {#if root.kind === 'backup'}
+                    <label class="root-allowlist">
+                      <span>Allowed volume keys (comma-separated)</span>
+                      <input
+                        type="text"
+                        class="root-input"
+                        value={getAllowlistText(root)}
+                        oninput={(e) => setAllowlistText(index, (e.currentTarget as HTMLInputElement).value)}
+                      />
                     </label>
-                    {#if root.kind === 'backup'}
-                      <label class="root-allowlist">
-                        <span>Allowlist channel keys (comma-separated)</span>
-                        <input
-                          type="text"
-                          class="root-input"
-                          value={getAllowlistText(root)}
-                          oninput={(e) => setAllowlistText(index, (e.currentTarget as HTMLInputElement).value)}
-                        />
-                      </label>
-                    {/if}
-                  </div>
+                  {/if}
 
                   {#if volumeId}
                     {@const routeRow = volumeRouteRows.find((entry) => entry.index === index)}
@@ -1753,8 +2032,8 @@
                         <span class="root-volume-state" class:active={routeRow.routable}>
                           {routeRow.kind === 'main'
                             ? routeRow.routable
-                              ? 'active (main)'
-                              : 'disabled (main)'
+                              ? 'active on main'
+                              : 'main disabled'
                             : routeRow.routable
                               ? 'active'
                               : routeRow.selected
@@ -1774,7 +2053,50 @@
                     {/if}
                   {/if}
 
-                  {#if rootsRuntime}
+                  {#if rootsAdvancedOpen}
+                    <div class="root-advanced-grid">
+                      <label>
+                        <span>Root ID</span>
+                        <input
+                          type="text"
+                          class="root-input"
+                          value={root.id}
+                          oninput={(e) => updateRootField(index, 'id', (e.currentTarget as HTMLInputElement).value)}
+                        />
+                      </label>
+                      <label>
+                        <span>Kind</span>
+                        <select
+                          class="root-input"
+                          value={root.kind}
+                          onchange={(e) =>
+                            updateRootKind(index, (e.currentTarget as HTMLSelectElement).value as 'main' | 'backup')}
+                        >
+                          <option value="main">main</option>
+                          <option value="backup">backup</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>Provider (optional override)</span>
+                        <select
+                          class="root-input"
+                          value={root.provider}
+                          onchange={(e) =>
+                            updateRootField(index, 'provider', (e.currentTarget as HTMLSelectElement).value as RootProvider)}
+                        >
+                          <option value="local">local</option>
+                          <option value="dropbox">dropbox</option>
+                          <option value="mega">mega</option>
+                          <option value="gdrive">gdrive</option>
+                        </select>
+                      </label>
+                    </div>
+                    <p class="roots-info muted">
+                      Provider is auto-detected from path and used mainly for source labeling and watch hints.
+                    </p>
+                  {/if}
+
+                  {#if rootsRuntime && rootsAdvancedOpen}
                     {@const runtime = rootsRuntime.roots.find((entry) => entry.id === root.id)}
                     {#if runtime}
                       <div class="root-runtime">
@@ -1794,7 +2116,11 @@
                   {/if}
                 </article>
               {/each}
-            </div>
+              </div>
+            </section>
+            {#if rootsDraft.length === 0}
+              <p class="roots-info">No roots configured yet. Materialize a suggestion or create a root manually.</p>
+            {/if}
           {/if}
         </div>
       </section>
@@ -2027,8 +2353,9 @@
 
 <style>
   :global(html, body, #app) {
-    height: 100%;
-    overflow: hidden;
+    min-height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   :global(*, *::before, *::after) {
@@ -2044,11 +2371,13 @@
   }
 
   .app {
-    height: 100dvh;
+    width: 100%;
+    min-height: 100dvh;
+    height: auto;
     display: flex;
     flex-direction: column;
     background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
-    overflow: hidden;
+    overflow: visible;
   }
 
   /* Header */
@@ -2063,8 +2392,8 @@
   }
 
   .header-content {
-    max-width: 1200px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     display: flex;
     align-items: center;
     gap: 2rem;
@@ -2224,12 +2553,13 @@
   }
 
   .pins-content {
-    max-width: 1200px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     display: flex;
     align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
+    width: 100%;
   }
 
   .pin-chip-wrap {
@@ -2269,8 +2599,8 @@
     gap: 1.5rem;
     flex-wrap: wrap;
     font-size: 0.875rem;
-    max-width: 1200px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     width: 100%;
   }
 
@@ -2351,57 +2681,83 @@
 
   /* File area */
   .file-area {
-    flex: 1;
-    min-height: 0;
+    flex: 0 0 auto;
+    min-height: auto;
     padding: 2rem;
-    overflow: hidden;
+    overflow: visible;
     transition: background-color 0.3s ease;
   }
 
   .volume-workspace {
-    max-width: 1200px;
-    margin: 0 auto;
-    height: 100%;
+    max-width: none;
+    margin: 0;
+    width: 100%;
+    height: auto;
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    min-height: 0;
+    min-height: auto;
   }
 
   .roots-panel {
-    max-width: 1200px;
-    margin: 0 auto 1rem;
-    border: 1px solid rgba(56, 189, 248, 0.3);
-    border-radius: 14px;
-    background: linear-gradient(130deg, rgba(15, 23, 42, 0.78), rgba(30, 41, 59, 0.7));
-    padding: 0.85rem;
+    max-width: none;
+    margin: 0 0 1rem;
+    border: 1px solid rgba(125, 211, 252, 0.28);
+    border-radius: 18px;
+    background:
+      radial-gradient(120% 110% at 0% 0%, rgba(45, 212, 191, 0.16), transparent 52%),
+      radial-gradient(100% 120% at 100% 0%, rgba(56, 189, 248, 0.1), transparent 58%),
+      linear-gradient(145deg, rgba(12, 23, 45, 0.9), rgba(15, 23, 42, 0.82));
+    padding: 1rem;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    max-height: 42vh;
-    min-height: 200px;
+    gap: 0.85rem;
+    max-height: none;
+    min-height: 220px;
   }
 
   .roots-panel-header {
     display: flex;
     justify-content: space-between;
-    gap: 1rem;
+    gap: 1.1rem;
     align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .roots-title-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: min(100%, 460px);
+  }
+
+  .roots-title {
+    margin: 0;
+    font-size: 1.1rem;
+    color: rgba(224, 242, 254, 0.98);
+    letter-spacing: 0.01em;
+  }
+
+  .roots-subtitle {
+    margin: 0;
+    color: rgba(191, 219, 254, 0.84);
+    font-size: 0.78rem;
+    max-width: 60ch;
   }
 
   .roots-eyebrow {
     margin: 0;
-    color: rgba(125, 211, 252, 0.85);
-    letter-spacing: 0.08em;
+    color: rgba(94, 234, 212, 0.82);
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    font-size: 0.72rem;
+    font-size: 0.68rem;
   }
 
   .roots-path {
-    margin: 0.2rem 0 0;
+    margin: 0.25rem 0 0;
     font-size: 0.78rem;
     color: rgba(191, 219, 254, 0.82);
-    max-width: 56ch;
+    max-width: 62ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2409,25 +2765,41 @@
 
   .roots-actions {
     display: flex;
-    gap: 0.45rem;
+    gap: 0.5rem;
     flex-wrap: wrap;
     justify-content: flex-end;
+    align-items: center;
   }
 
   .roots-action-btn {
-    border: 1px solid rgba(125, 211, 252, 0.35);
-    border-radius: 8px;
-    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(125, 211, 252, 0.36);
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.5);
     color: #dbeafe;
-    padding: 0.35rem 0.6rem;
-    font-size: 0.78rem;
+    padding: 0.42rem 0.78rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
     cursor: pointer;
+    transition: all 0.18s ease;
+  }
+
+  .roots-action-btn:hover:not(:disabled) {
+    border-color: rgba(94, 234, 212, 0.6);
+    background: rgba(17, 94, 89, 0.32);
   }
 
   .roots-action-btn.primary {
-    border-color: rgba(110, 231, 183, 0.55);
+    border-color: rgba(94, 234, 212, 0.65);
     color: #bbf7d0;
-    background: rgba(6, 95, 70, 0.35);
+    background: rgba(6, 95, 70, 0.42);
+    box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.18) inset;
+  }
+
+  .roots-action-btn.subtle {
+    color: rgba(191, 219, 254, 0.82);
+    border-color: rgba(148, 163, 184, 0.36);
+    background: rgba(15, 23, 42, 0.34);
   }
 
   .roots-action-btn:disabled {
@@ -2439,7 +2811,7 @@
   .roots-success,
   .roots-info {
     margin: 0;
-    font-size: 0.82rem;
+    font-size: 0.8rem;
   }
 
   .roots-error {
@@ -2454,78 +2826,121 @@
     color: rgba(191, 219, 254, 0.85);
   }
 
+  .roots-info.muted {
+    color: rgba(148, 163, 184, 0.88);
+    font-size: 0.74rem;
+  }
+
   .roots-scroll {
-    overflow: auto;
-    min-height: 0;
+    overflow: visible;
+    min-height: auto;
     scrollbar-width: none;
-    padding-right: 0.15rem;
+    padding-right: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
   }
 
   .roots-scroll::-webkit-scrollbar {
     display: none;
   }
 
+  .roots-section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+
+  .roots-section-title {
+    margin: 0;
+    color: rgba(224, 242, 254, 0.95);
+    font-size: 0.92rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+
+  .roots-section-caption {
+    margin: 0;
+    color: rgba(148, 163, 184, 0.85);
+    font-size: 0.74rem;
+  }
+
   .roots-list {
     display: flex;
     flex-direction: column;
-    gap: 0.65rem;
+    gap: 0.72rem;
   }
 
   .source-discovery {
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .ghost-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.55rem;
+  }
+
+  .ghost-root-card {
+    border: 1px dashed rgba(125, 211, 252, 0.38);
+    border-radius: 14px;
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.3), rgba(15, 23, 42, 0.45));
+    padding: 0.62rem 0.68rem;
     display: flex;
     flex-direction: column;
     gap: 0.45rem;
+    opacity: 0.9;
+    transition: all 0.18s ease;
   }
 
-  .source-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+  .ghost-root-card:hover {
+    opacity: 1;
+    border-color: rgba(94, 234, 212, 0.56);
+    transform: translateY(-1px);
   }
 
-  .source-card {
-    border: 1px solid rgba(125, 211, 252, 0.25);
-    border-radius: 10px;
-    background: rgba(15, 23, 42, 0.36);
-    padding: 0.5rem 0.6rem;
+  .ghost-root-card.marker {
+    border-style: solid;
+    border-color: rgba(94, 234, 212, 0.5);
+    background: linear-gradient(145deg, rgba(4, 120, 87, 0.24), rgba(15, 23, 42, 0.55));
+  }
+
+  .ghost-root-head {
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    align-items: center;
-    gap: 0.75rem;
+    gap: 0.5rem;
     flex-wrap: wrap;
   }
 
-  .source-meta {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.18rem;
-    flex: 1;
-  }
-
-  .source-provider-row {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    flex-wrap: wrap;
+  .ghost-copy {
+    margin: 0;
+    color: rgba(191, 219, 254, 0.86);
+    font-size: 0.72rem;
+    line-height: 1.32;
   }
 
   .source-provider {
-    font-size: 0.7rem;
+    font-size: 0.64rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(103, 232, 249, 0.92);
+    color: rgba(103, 232, 249, 0.94);
+    font-weight: 700;
   }
 
   .source-origin {
-    font-size: 0.64rem;
-    color: rgba(191, 219, 254, 0.78);
-    border: 1px solid rgba(148, 163, 184, 0.32);
+    font-size: 0.62rem;
+    color: rgba(224, 242, 254, 0.85);
+    border: 1px solid rgba(148, 163, 184, 0.4);
     border-radius: 999px;
-    padding: 0.05rem 0.4rem;
+    padding: 0.1rem 0.42rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.07em;
   }
 
   .source-path {
@@ -2539,19 +2954,20 @@
 
   .source-actions {
     display: flex;
-    gap: 0.35rem;
+    gap: 0.4rem;
     flex-wrap: wrap;
+    margin-top: 0.15rem;
   }
 
   .volume-root-selector {
-    border: 1px solid rgba(125, 211, 252, 0.2);
-    border-radius: 10px;
-    background: rgba(15, 23, 42, 0.34);
-    padding: 0.55rem;
-    margin-bottom: 0.75rem;
+    border: 1px solid rgba(125, 211, 252, 0.22);
+    border-radius: 14px;
+    background: rgba(15, 23, 42, 0.42);
+    padding: 0.68rem 0.72rem;
+    margin-bottom: 0.15rem;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.55rem;
   }
 
   .volume-selector-head {
@@ -2563,8 +2979,19 @@
   }
 
   .volume-selector-summary {
-    font-size: 0.7rem;
-    color: rgba(191, 219, 254, 0.84);
+    font-size: 0.72rem;
+    color: rgba(191, 219, 254, 0.88);
+  }
+
+  .volume-key {
+    font-family: 'Monaco', 'Menlo', monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border: 1px solid rgba(125, 211, 252, 0.2);
+    border-radius: 10px;
+    padding: 0.34rem 0.48rem;
+    background: rgba(15, 23, 42, 0.35);
   }
 
   .volume-selector-grid {
@@ -2576,20 +3003,26 @@
   .volume-route-btn {
     border: 1px solid rgba(125, 211, 252, 0.3);
     border-radius: 10px;
-    background: rgba(15, 23, 42, 0.42);
+    background: rgba(15, 23, 42, 0.48);
     color: #dbeafe;
-    padding: 0.45rem 0.55rem;
+    padding: 0.5rem 0.58rem;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.18rem;
+    gap: 0.2rem;
     cursor: pointer;
     min-width: 0;
+    transition: all 0.18s ease;
+  }
+
+  .volume-route-btn:hover:not(:disabled) {
+    border-color: rgba(94, 234, 212, 0.62);
+    transform: translateY(-1px);
   }
 
   .volume-route-btn.routed {
-    border-color: rgba(16, 185, 129, 0.6);
-    background: rgba(6, 78, 59, 0.28);
+    border-color: rgba(16, 185, 129, 0.7);
+    background: rgba(6, 78, 59, 0.34);
   }
 
   .volume-route-btn.main {
@@ -2626,14 +3059,91 @@
     color: rgba(191, 219, 254, 0.82);
   }
 
-  .root-card {
-    border: 1px solid rgba(148, 163, 184, 0.24);
-    border-radius: 10px;
-    padding: 0.65rem;
+  .roots-active {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    background: rgba(15, 23, 42, 0.42);
+    gap: 0.62rem;
+  }
+
+  .root-card {
+    border: 1px solid rgba(148, 163, 184, 0.26);
+    border-radius: 14px;
+    padding: 0.72rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.58rem;
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.48), rgba(30, 41, 59, 0.34));
+  }
+
+  .root-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+  }
+
+  .root-pill-row {
+    display: flex;
+    align-items: center;
+    gap: 0.38rem;
+    flex-wrap: wrap;
+  }
+
+  .root-provider-pill,
+  .root-kind-pill,
+  .root-id-pill {
+    border-radius: 999px;
+    padding: 0.12rem 0.46rem;
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .root-provider-pill {
+    background: rgba(8, 145, 178, 0.22);
+    border: 1px solid rgba(103, 232, 249, 0.45);
+    color: rgba(125, 211, 252, 0.96);
+  }
+
+  .root-kind-pill {
+    background: rgba(51, 65, 85, 0.4);
+    border: 1px solid rgba(148, 163, 184, 0.42);
+    color: rgba(226, 232, 240, 0.88);
+  }
+
+  .root-id-pill {
+    background: rgba(17, 24, 39, 0.5);
+    border: 1px solid rgba(71, 85, 105, 0.45);
+    color: rgba(148, 163, 184, 0.92);
+    text-transform: none;
+    letter-spacing: 0.01em;
+    font-family: 'Monaco', 'Menlo', monospace;
+  }
+
+  .root-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.42rem;
+    flex-wrap: wrap;
+  }
+
+  .root-active-pill {
+    border-radius: 999px;
+    border: 1px solid rgba(16, 185, 129, 0.5);
+    background: rgba(6, 78, 59, 0.3);
+    color: #bbf7d0;
+    padding: 0.18rem 0.5rem;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+
+  .root-active-pill.inactive {
+    border-color: rgba(248, 113, 113, 0.45);
+    background: rgba(127, 29, 29, 0.22);
+    color: #fecaca;
   }
 
   .root-row {
@@ -2643,23 +3153,36 @@
     flex-wrap: wrap;
   }
 
-  .root-row label {
+  .root-row label,
+  .root-advanced-grid label,
+  .root-field {
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
     min-width: 120px;
     color: rgba(191, 219, 254, 0.85);
-    font-size: 0.74rem;
+    font-size: 0.72rem;
+  }
+
+  .root-field {
+    flex: 1;
+    min-width: 240px;
   }
 
   .root-input {
     border: 1px solid rgba(125, 211, 252, 0.34);
-    border-radius: 8px;
+    border-radius: 10px;
     background: rgba(15, 23, 42, 0.55);
     color: #e2e8f0;
-    padding: 0.4rem 0.55rem;
+    padding: 0.46rem 0.6rem;
     font-size: 0.8rem;
     min-width: 0;
+  }
+
+  .root-input:focus {
+    outline: none;
+    border-color: rgba(94, 234, 212, 0.62);
+    box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.12);
   }
 
   .root-path-input {
@@ -2671,26 +3194,62 @@
     align-items: center;
     min-width: 0;
     gap: 0.35rem;
-    font-size: 0.76rem;
+    font-size: 0.73rem;
+    color: rgba(191, 219, 254, 0.86);
+    border: 1px solid rgba(71, 85, 105, 0.42);
+    border-radius: 999px;
+    padding: 0.2rem 0.5rem;
+    background: rgba(15, 23, 42, 0.4);
   }
 
   .root-remove {
-    border: 1px solid rgba(248, 113, 113, 0.45);
+    border: 1px solid rgba(248, 113, 113, 0.55);
     background: rgba(127, 29, 29, 0.32);
     color: #fecaca;
-    border-radius: 8px;
-    padding: 0.42rem 0.6rem;
+    border-radius: 10px;
+    padding: 0.5rem 0.66rem;
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: 0.72rem;
+    font-weight: 700;
   }
 
-  .strategy-row {
-    align-items: stretch;
+  .root-remove:hover {
+    background: rgba(185, 28, 28, 0.3);
+  }
+
+  .root-merge {
+    border: 1px solid rgba(125, 211, 252, 0.4);
+    background: rgba(15, 23, 42, 0.52);
+    color: rgba(191, 219, 254, 0.95);
+    border-radius: 10px;
+    padding: 0.5rem 0.66rem;
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .root-merge:hover:not(:disabled) {
+    border-color: rgba(94, 234, 212, 0.58);
+    background: rgba(17, 94, 89, 0.3);
+  }
+
+  .root-merge:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .root-allowlist {
-    flex: 1;
     min-width: 220px;
+  }
+
+  .root-advanced-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.45rem;
+  }
+
+  .root-advanced-grid label {
+    min-width: 0;
   }
 
   .root-volume-route {
@@ -2723,11 +3282,11 @@
   .root-route-btn {
     margin-left: auto;
     border: 1px solid rgba(125, 211, 252, 0.35);
-    border-radius: 8px;
+    border-radius: 999px;
     background: rgba(15, 23, 42, 0.6);
     color: #dbeafe;
     font-size: 0.72rem;
-    padding: 0.3rem 0.55rem;
+    padding: 0.34rem 0.64rem;
     cursor: pointer;
   }
 
@@ -2745,8 +3304,10 @@
     display: flex;
     gap: 0.6rem;
     flex-wrap: wrap;
-    font-size: 0.72rem;
+    font-size: 0.7rem;
     color: rgba(191, 219, 254, 0.82);
+    border-top: 1px solid rgba(71, 85, 105, 0.36);
+    padding-top: 0.45rem;
   }
 
   .root-runtime-error {
@@ -2761,7 +3322,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
-    min-height: 0;
+    min-height: auto;
   }
 
   .time-machine-head {
@@ -2939,21 +3500,21 @@
 
   /* File manager */
   .file-manager {
-    flex: 1;
-    min-height: 0;
+    flex: 0 0 auto;
+    min-height: auto;
     display: grid;
     grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
     gap: 1rem;
   }
 
   .file-list-pane {
-    min-height: 0;
+    min-height: auto;
     background: rgba(26, 26, 46, 0.55);
     border: 1px solid rgba(102, 126, 234, 0.2);
     border-radius: 12px;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .manager-toolbar {
@@ -3003,9 +3564,9 @@
   }
 
   .file-list-scroll {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
+    flex: 0 0 auto;
+    min-height: auto;
+    overflow: visible;
     scrollbar-width: none;
   }
 
@@ -3057,13 +3618,13 @@
   }
 
   .preview-pane {
-    min-height: 0;
+    min-height: auto;
     background: rgba(26, 26, 46, 0.55);
     border: 1px solid rgba(102, 126, 234, 0.2);
     border-radius: 12px;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .preview-header {
@@ -3123,9 +3684,9 @@
   }
 
   .preview-body {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
+    flex: 0 0 auto;
+    min-height: auto;
+    overflow: visible;
     padding: 1rem;
     scrollbar-width: none;
   }
@@ -3177,7 +3738,7 @@
   }
 
   .preview-empty {
-    flex: 1;
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3230,7 +3791,7 @@
     }
 
     .file-list-pane {
-      max-height: 38vh;
+      max-height: none;
     }
 
     .preview-header {
