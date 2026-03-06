@@ -20,6 +20,27 @@ interface ConfigRootsResponseBody {
   config: RootsConfig;
 }
 
+interface ConsolidationPlanResponseBody {
+  plan: {
+    source: {
+      id: string;
+      fileCount: number;
+    };
+    candidates: Array<{
+      id: string;
+      eligible: boolean;
+    }>;
+  };
+}
+
+interface ConsolidationResponseBody extends ConfigRootsResponseBody {
+  result: {
+    sourceId: string;
+    targetId: string;
+    movedFiles: number;
+  };
+}
+
 interface OpenResponseBody {
   token?: string;
   volumeId: string;
@@ -56,16 +77,19 @@ describe('Nearbytes API (multi-root)', () => {
   let rootsConfigPath: string;
   let mainRoot: string;
   let backupRoot: string;
+  let backupRoot2: string;
 
   beforeAll(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-multi-root-api-'));
     mainRoot = path.join(tempDir, 'main-root');
     backupRoot = path.join(tempDir, 'backup-root');
+    backupRoot2 = path.join(tempDir, 'backup-root-2');
     rootsConfigPath = path.join(tempDir, 'roots.json');
     tokenKey = randomBytes(32);
 
     await fs.mkdir(mainRoot, { recursive: true });
     await fs.mkdir(backupRoot, { recursive: true });
+    await fs.mkdir(backupRoot2, { recursive: true });
 
     const crypto = createCryptoOperations();
     const keyPair = await crypto.deriveKeys(createSecret(SECRET));
@@ -88,6 +112,18 @@ describe('Nearbytes API (multi-root)', () => {
           kind: 'backup',
           provider: 'mega',
           path: backupRoot,
+          enabled: true,
+          writable: true,
+          strategy: {
+            name: 'allowlist',
+            channelKeys: [volumeId],
+          },
+        },
+        {
+          id: 'backup-2',
+          kind: 'backup',
+          provider: 'dropbox',
+          path: backupRoot2,
           enabled: true,
           writable: true,
           strategy: {
@@ -123,7 +159,7 @@ describe('Nearbytes API (multi-root)', () => {
     const localRes = await request(app).get('/config/roots').expect(200);
     const localBody = typedBody<ConfigRootsResponseBody>(localRes);
     expect(localBody.config).toBeDefined();
-    expect(localBody.config.roots).toHaveLength(2);
+    expect(localBody.config.roots).toHaveLength(3);
 
     await request(app)
       .get('/config/roots')
@@ -252,5 +288,33 @@ describe('Nearbytes API (multi-root)', () => {
       .expect(200);
 
     await fs.stat(markerPath);
+  });
+
+  it('provides consolidation candidates and consolidates one backup root into another', async () => {
+    const openRes = await request(app).post('/open').send({ secret: SECRET }).expect(200);
+    const token = typedBody<OpenResponseBody>(openRes).token as string;
+
+    await request(app)
+      .post('/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('consolidate-me'), 'consolidate-me.txt')
+      .expect(200);
+
+    const planRes = await request(app)
+      .get('/config/roots/consolidate/backup-1/plan')
+      .expect(200);
+    const planBody = typedBody<ConsolidationPlanResponseBody>(planRes);
+    const destination = planBody.plan.candidates.find((candidate) => candidate.id === 'backup-2');
+    expect(destination?.eligible).toBe(true);
+
+    const consolidateRes = await request(app)
+      .post('/config/roots/consolidate')
+      .send({ sourceId: 'backup-1', targetId: 'backup-2' })
+      .expect(200);
+    const consolidateBody = typedBody<ConsolidationResponseBody>(consolidateRes);
+    expect(consolidateBody.result.sourceId).toBe('backup-1');
+    expect(consolidateBody.result.targetId).toBe('backup-2');
+    expect(consolidateBody.config.roots.some((root) => root.id === 'backup-1')).toBe(false);
+    expect(consolidateBody.config.roots.some((root) => root.id === 'backup-2')).toBe(true);
   });
 });

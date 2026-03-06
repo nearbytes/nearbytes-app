@@ -126,6 +126,55 @@ export interface RootsConfigResponse {
   runtime: RootsRuntimeSnapshot;
 }
 
+export interface RootConsolidationSource {
+  id: string;
+  kind: RootKind;
+  provider: RootProvider;
+  path: string;
+  fileCount: number;
+  totalBytes: number;
+}
+
+export interface RootConsolidationCandidate {
+  id: string;
+  kind: RootKind;
+  provider: RootProvider;
+  path: string;
+  sameDevice: boolean;
+  filesToTransfer: number;
+  bytesToTransfer: number;
+  availableBytes?: number;
+  enoughSpace: boolean;
+  eligible: boolean;
+  reason?: string;
+}
+
+export interface RootConsolidationPlan {
+  generatedAt: number;
+  source: RootConsolidationSource;
+  candidates: RootConsolidationCandidate[];
+}
+
+export interface RootConsolidationPlanResponse {
+  plan: RootConsolidationPlan;
+}
+
+export interface RootConsolidationResult {
+  sourceId: string;
+  targetId: string;
+  movedFiles: number;
+  renamedFiles: number;
+  copiedFiles: number;
+  removedSourceFiles: number;
+  skippedExisting: number;
+  bytesTransferred: number;
+  sameDevice: boolean;
+}
+
+export interface RootConsolidationResponse extends RootsConfigResponse {
+  result: RootConsolidationResult;
+}
+
 export interface DiscoveredNearbytesSource {
   provider: RootProvider;
   path: string;
@@ -371,6 +420,46 @@ export async function updateRootsConfig(config: RootsConfig): Promise<RootsConfi
     method: 'PUT',
     body: JSON.stringify({ config }),
   });
+}
+
+/**
+ * Reads valid destination candidates for consolidating one root into another.
+ */
+export async function getRootConsolidationPlan(sourceId: string): Promise<RootConsolidationPlanResponse> {
+  const encodedSourceId = encodeURIComponent(sourceId);
+  return apiRequest<RootConsolidationPlanResponse>(`/config/roots/consolidate/${encodedSourceId}/plan`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Consolidates one root into another and removes the source root from config.
+ */
+export async function consolidateRoot(sourceId: string, targetId: string): Promise<RootConsolidationResponse> {
+  return apiRequest<RootConsolidationResponse>('/config/roots/consolidate', {
+    method: 'POST',
+    body: JSON.stringify({ sourceId, targetId }),
+  });
+}
+
+/**
+ * Opens a configured root path in the OS file manager.
+ */
+export async function openRootInFileManager(rootId: string): Promise<void> {
+  try {
+    await apiRequest('/config/roots/open-file-manager', {
+      method: 'POST',
+      body: JSON.stringify({ rootId }),
+    });
+  } catch (error) {
+    if (!(error instanceof Error) || !/not found|404/i.test(error.message)) {
+      throw error;
+    }
+    await apiRequest('/config/open-file-manager', {
+      method: 'POST',
+      body: JSON.stringify({ rootId }),
+    });
+  }
 }
 
 /**

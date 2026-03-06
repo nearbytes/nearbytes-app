@@ -1,5 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { Router } from 'express';
+import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import os from 'os';
 import multer from 'multer';
@@ -19,8 +20,11 @@ import {
   getChannelDiagnostics,
 } from './storageDiagnostics.js';
 import {
+  consolidateRootBodySchema,
+  consolidateRootParamSchema,
   fileHashParamSchema,
   fileNameParamSchema,
+  openRootInFileManagerBodySchema,
   openBodySchema,
   parseWithSchema,
   renameFolderBodySchema,
@@ -105,6 +109,54 @@ export function createRoutes(deps: RouteDependencies): Router {
       runtime,
     });
   }));
+
+  router.get('/config/roots/consolidate/:sourceId/plan', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const { sourceId } = parseWithSchema(consolidateRootParamSchema, req.params);
+    const plan = await multiRootStorage.getConsolidationPlan(sourceId);
+    res.json({ plan });
+  }));
+
+  router.post('/config/roots/consolidate', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.rootsConfigPath) {
+      throw new ApiError(500, 'INTERNAL_ERROR', 'Roots config path is not configured');
+    }
+
+    const { sourceId, targetId } = parseWithSchema(consolidateRootBodySchema, req.body);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const consolidated = await multiRootStorage.consolidateRoot(sourceId, targetId);
+    await saveRootsConfig(deps.rootsConfigPath, consolidated.config);
+    await ensureNearbytesMarkers(consolidated.config.roots);
+    const runtime = await multiRootStorage.getRuntimeSnapshot();
+
+    res.json({
+      result: consolidated.result,
+      configPath: deps.rootsConfigPath,
+      config: consolidated.config,
+      runtime,
+    });
+  }));
+
+  const openRootInFileManagerHandler = asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const { rootId } = parseWithSchema(openRootInFileManagerBodySchema, req.body);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const root = multiRootStorage.getRootsConfig().roots.find((entry) => entry.id === rootId);
+    if (!root) {
+      throw new ApiError(404, 'NOT_FOUND', `Root not found: ${rootId}`);
+    }
+
+    await openInFileManager(root.path);
+    res.json({
+      ok: true,
+      rootId: root.id,
+      path: root.path,
+    });
+  });
+  router.post('/config/roots/open-file-manager', openRootInFileManagerHandler);
+  router.post('/config/open-file-manager', openRootInFileManagerHandler);
 
   router.get('/sources/discover', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
@@ -488,4 +540,29 @@ function isLoopbackAddress(value: string | undefined): boolean {
     return normalized.slice('::ffff:'.length) === '127.0.0.1';
   }
   return false;
+}
+
+async function openInFileManager(targetPath: string): Promise<void> {
+  const launcher =
+    process.platform === 'darwin'
+      ? { command: 'open', args: [targetPath] }
+      : process.platform === 'win32'
+        ? { command: 'explorer', args: [targetPath] }
+        : { command: 'xdg-open', args: [targetPath] };
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(launcher.command, launcher.args, {
+      stdio: 'ignore',
+      detached: true,
+    });
+
+    child.once('error', (error) => reject(error));
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ApiError(500, 'INTERNAL_ERROR', `Failed to open file manager: ${message}`);
+  });
 }

@@ -24,6 +24,19 @@ export const renameFolderBodySchema = z.object({
   merge: z.boolean().optional().default(false),
 });
 
+export const consolidateRootParamSchema = z.object({
+  sourceId: z.string().trim().min(1, 'Source root id is required'),
+});
+
+export const consolidateRootBodySchema = z.object({
+  sourceId: z.string().trim().min(1, 'Source root id is required'),
+  targetId: z.string().trim().min(1, 'Destination root id is required'),
+});
+
+export const openRootInFileManagerBodySchema = z.object({
+  rootId: z.string().trim().min(1, 'Root id is required'),
+});
+
 /**
  * Parses and validates input using a Zod schema.
  */

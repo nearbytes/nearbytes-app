@@ -9,12 +9,16 @@
     downloadFile,
     getRootsConfig,
     updateRootsConfig,
+    getRootConsolidationPlan,
+    consolidateRoot as consolidateRootApi,
+    openRootInFileManager,
     discoverSources,
     watchVolume,
     type Auth,
     type FileMetadata,
     type TimelineEvent,
     type RootConfigEntry,
+    type RootConsolidationCandidate,
     type RootProvider,
     type RootsConfig,
     type RootsRuntimeSnapshot,
@@ -157,6 +161,12 @@
   let dismissedRootSuggestions = $state<string[]>(loadDismissedRootSuggestions());
   let rootsAdvancedOpen = $state(false);
   let hasAutoScannedRoots = $state(false);
+  let consolidatingRootIndex = $state<number | null>(null);
+  let consolidateCandidates = $state<RootConsolidationCandidate[]>([]);
+  let consolidateTargetId = $state('');
+  let consolidateLoading = $state(false);
+  let consolidateApplying = $state(false);
+  let consolidateMessage = $state('');
   let sourceDiscoveryLoading = $state(false);
   let sourceDiscoveryError = $state('');
   let autoSyncEnabled = $state(false);
@@ -229,6 +239,12 @@
   const dismissedSuggestionCount = $derived.by(
     () =>
       discoveredSourceRows.filter((row) => row.source.sourceType === 'suggested' && row.dismissed).length
+  );
+  const discoveredExistingSourceCount = $derived.by(
+    () => discoveredSourceRows.filter((row) => row.source.sourceType === 'marker').length
+  );
+  const discoveredSuggestedSourceCount = $derived.by(
+    () => discoveredSourceRows.filter((row) => row.source.sourceType === 'suggested').length
   );
   const alreadyRegisteredSourceCount = $derived.by(
     () => discoveredSourceRows.filter((row) => row.alreadyRegistered).length
@@ -737,6 +753,7 @@
     rootsConfigPath = configPath;
     rootsRuntime = runtime;
     rootsDraft = config.roots.map(cloneRoot);
+    cancelConsolidation();
   }
 
   function getAllowlistText(root: RootConfigEntry): string {
@@ -762,11 +779,6 @@
       },
     };
     rootsDraft = next;
-  }
-
-  function recommendRootKindForMaterialize(): 'main' | 'backup' {
-    const hasMain = rootsDraft.some((root) => root.kind === 'main');
-    return hasMain ? 'backup' : 'main';
   }
 
   function updateRootField<K extends keyof RootConfigEntry>(index: number, field: K, value: RootConfigEntry[K]) {
@@ -809,89 +821,113 @@
   }
 
   function removeRoot(index: number) {
-    rootsDraft = rootsDraft.filter((_, i) => i !== index);
-  }
-
-  function mergeRootEntries(primary: RootConfigEntry, secondary: RootConfigEntry): RootConfigEntry {
-    const enabled = primary.enabled || secondary.enabled;
-    const writable = primary.writable || secondary.writable;
-    if (primary.kind === 'main' || secondary.kind === 'main') {
-      return {
-        ...primary,
-        kind: 'main',
-        enabled,
-        writable,
-        strategy: { name: 'all-keys' },
-      };
+    if (!canRemoveRoot(index)) {
+      rootsError = 'At least one enabled main root is required.';
+      return;
     }
-
-    const primaryKeys =
-      primary.strategy.name === 'allowlist'
-        ? primary.strategy.channelKeys.map((entry) => normalizeChannelKey(entry))
-        : [];
-    const secondaryKeys =
-      secondary.strategy.name === 'allowlist'
-        ? secondary.strategy.channelKeys.map((entry) => normalizeChannelKey(entry))
-        : [];
-    const mergedKeys = Array.from(new Set([...primaryKeys, ...secondaryKeys]))
-      .filter((entry) => entry.length > 0)
-      .sort((left, right) => left.localeCompare(right));
-
-    return {
-      ...primary,
-      kind: 'backup',
-      enabled,
-      writable,
-      strategy: {
-        name: 'allowlist',
-        channelKeys: mergedKeys,
-      },
-    };
+    rootsDraft = rootsDraft.filter((_, i) => i !== index);
+    if (consolidatingRootIndex === index) {
+      cancelConsolidation();
+    } else if (consolidatingRootIndex !== null && consolidatingRootIndex > index) {
+      consolidatingRootIndex -= 1;
+    }
   }
 
-  function mergeRootPrompt(sourceIndex: number) {
+  function canRemoveRoot(index: number): boolean {
+    const root = rootsDraft[index];
+    if (!root) return false;
+    const nextRoots = rootsDraft.filter((_, i) => i !== index);
+    return nextRoots.some((entry) => entry.kind === 'main' && entry.enabled);
+  }
+
+  async function openRootFolder(rootId: string) {
+    rootsError = '';
+    rootsSuccess = '';
+    try {
+      await openRootInFileManager(rootId);
+      rootsSuccess = 'Opened root in file manager.';
+    } catch (error) {
+      rootsError = error instanceof Error ? error.message : 'Failed to open root in file manager';
+    }
+  }
+
+  function cancelConsolidation() {
+    consolidatingRootIndex = null;
+    consolidateCandidates = [];
+    consolidateTargetId = '';
+    consolidateMessage = '';
+    consolidateLoading = false;
+    consolidateApplying = false;
+  }
+
+  async function beginConsolidation(sourceIndex: number) {
     const source = rootsDraft[sourceIndex];
     if (!source) return;
-    if (rootsDraft.length < 2) {
-      rootsError = 'Add at least one more root before merging.';
-      return;
-    }
+    consolidatingRootIndex = sourceIndex;
+    consolidateCandidates = [];
+    consolidateTargetId = '';
+    consolidateMessage = '';
+    consolidateLoading = true;
+    rootsError = '';
 
-    const fallbackTarget = rootsDraft.find((_, index) => index !== sourceIndex);
-    const targetIdInput = window.prompt(`Merge "${source.id}" into root id:`, fallbackTarget?.id ?? '');
-    if (targetIdInput === null) {
-      return;
-    }
-
-    const targetId = targetIdInput.trim();
-    if (targetId.length === 0) {
-      rootsError = 'Target root id is required.';
-      return;
-    }
-
-    const targetIndex = rootsDraft.findIndex((root, index) => index !== sourceIndex && root.id === targetId);
-    if (targetIndex < 0) {
-      rootsError = `Root "${targetId}" not found.`;
-      return;
-    }
-
-    const target = rootsDraft[targetIndex];
-    const sourcePath = normalizeComparablePath(source.path);
-    const targetPath = normalizeComparablePath(target.path);
-    if (sourcePath !== targetPath) {
-      const proceed = window.confirm(
-        `Roots have different paths.\n\nSource: ${source.path}\nTarget: ${target.path}\n\nMerge keeps target path and removes source root. Continue?`
-      );
-      if (!proceed) {
-        return;
+    try {
+      const response = await getRootConsolidationPlan(source.id);
+      const candidates = response.plan.candidates.filter((candidate) => candidate.eligible);
+      consolidateCandidates = candidates;
+      if (candidates.length > 0) {
+        consolidateTargetId = candidates[0].id;
+        consolidateMessage = `Move ${response.plan.source.fileCount} file(s) from this root into one destination.`;
+      } else {
+        const firstReason = response.plan.candidates.find((candidate) => candidate.reason)?.reason;
+        consolidateMessage = firstReason ?? 'No compatible destinations are available.';
       }
+    } catch (error) {
+      consolidateMessage =
+        error instanceof Error ? error.message : 'Failed to load consolidation destinations';
+      consolidateCandidates = [];
+    } finally {
+      consolidateLoading = false;
+    }
+  }
+
+  async function applyConsolidation() {
+    if (consolidatingRootIndex === null) return;
+    const source = rootsDraft[consolidatingRootIndex];
+    if (!source) return;
+    if (consolidateTargetId.trim() === '') {
+      consolidateMessage = 'Choose a destination root first.';
+      return;
     }
 
-    const next = [...rootsDraft];
-    next[targetIndex] = mergeRootEntries(target, source);
-    next.splice(sourceIndex, 1);
-    rootsDraft = next;
-    rootsSuccess = `Merged "${source.id}" into "${target.id}". Save to apply.`;
+    const destination = rootsDraft.find((root) => root.id === consolidateTargetId);
+    if (!destination) {
+      consolidateMessage = 'Destination root no longer exists.';
+      return;
+    }
+
+    const destinationLabel = `${formatProvider(destination.provider)} • ${destination.path}`;
+    const proceed = window.confirm(
+      `Consolidate "${source.path}" into:\n${destinationLabel}\n\nThis moves data and removes the source root from configuration.`
+    );
+    if (!proceed) {
+      return;
+    }
+
+    consolidateApplying = true;
+    rootsError = '';
+    rootsSuccess = '';
+    try {
+      const response = await consolidateRootApi(source.id, consolidateTargetId);
+      applyRootsState(response.config, response.runtime, response.configPath);
+      rootsSuccess = 'Consolidation complete. Source root removed.';
+      cancelConsolidation();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Consolidation failed';
+      consolidateMessage = message;
+      rootsError = message;
+    } finally {
+      consolidateApplying = false;
+    }
   }
 
   async function reloadRootsPanel() {
@@ -983,8 +1019,15 @@
   }
 
   function rootIdFromSource(source: DiscoveredNearbytesSource, kind: 'main' | 'backup'): string {
-    const base = `${kind}-${source.provider}-${Math.random().toString(16).slice(2, 8)}`;
-    return base.toLowerCase();
+    const base = `${kind}-${source.provider}`;
+    let attempt = 1;
+    while (true) {
+      const candidate = `${base}-${attempt}`.toLowerCase();
+      if (!rootsDraft.some((root) => root.id === candidate)) {
+        return candidate;
+      }
+      attempt += 1;
+    }
   }
 
   function addSourceAsRoot(source: DiscoveredNearbytesSource, kind: 'main' | 'backup'): boolean {
@@ -1009,6 +1052,27 @@
     };
     rootsDraft = [...rootsDraft, nextRoot];
     rootsSuccess = `Added ${formatProvider(source.provider)} source as ${kind} root.`;
+    return true;
+  }
+
+  function addSourceAsReadOnlyRoot(source: DiscoveredNearbytesSource): boolean {
+    const sourcePath = ensureNearbytesPath(source.path, source.provider);
+    const normalizedPath = normalizeComparablePath(sourcePath);
+    const exists = rootsDraft.some((root) => normalizeComparablePath(root.path) === normalizedPath);
+    if (exists) {
+      return false;
+    }
+
+    const nextRoot: RootConfigEntry = {
+      id: rootIdFromSource(source, 'backup'),
+      kind: 'backup',
+      provider: source.provider,
+      path: sourcePath,
+      enabled: true,
+      writable: false,
+      strategy: { name: 'allowlist', channelKeys: [] },
+    };
+    rootsDraft = [...rootsDraft, nextRoot];
     return true;
   }
 
@@ -1048,6 +1112,7 @@
   async function scanSources(options?: { silent?: boolean }) {
     sourceDiscoveryLoading = true;
     sourceDiscoveryError = '';
+    rootsError = '';
     if (!options?.silent) {
       rootsSuccess = '';
     }
@@ -1063,28 +1128,33 @@
         }
       }
       const dedupedCount = uniqueDiscovered.size;
+      const existingSources = Array.from(uniqueDiscovered.values()).filter(
+        (source) => source.sourceType === 'marker'
+      );
+
+      let autoAddedReadOnlyRoots = 0;
+      for (const source of existingSources) {
+        if (addSourceAsReadOnlyRoot(source)) {
+          autoAddedReadOnlyRoots += 1;
+        }
+      }
+
+      if (autoAddedReadOnlyRoots > 0) {
+        const saved = await updateRootsConfig(buildRootsConfigPayload());
+        applyRootsState(saved.config, saved.runtime, saved.configPath);
+      }
+
       if (dedupedCount === 0) {
         if (!options?.silent) {
           rootsSuccess = 'No synced sources found.';
         }
-      } else {
-        const registeredKeys = new Set(
-          rootsDraft.map((root) => normalizeComparablePath(root.path))
-        );
-        const newCount = Array.from(uniqueDiscovered.keys()).filter(
-          (key) => !registeredKeys.has(key)
-        ).length;
-        const suggestedCount = Array.from(uniqueDiscovered.values()).filter(
-          (source) => source.sourceType === 'suggested'
-        ).length;
-        if (newCount === 0) {
-          if (!options?.silent) {
-            rootsSuccess = 'All discovered sources are already registered.';
-          }
+      } else if (!options?.silent) {
+        if (autoAddedReadOnlyRoots > 0) {
+          rootsSuccess = `Connected ${autoAddedReadOnlyRoots} existing source${autoAddedReadOnlyRoots === 1 ? '' : 's'} as read-only roots.`;
+        } else if (existingSources.length > 0) {
+          rootsSuccess = `Found ${existingSources.length} existing source${existingSources.length === 1 ? '' : 's'}. Already connected.`;
         } else {
-          if (!options?.silent) {
-            rootsSuccess = `Found ${newCount} new source${newCount === 1 ? '' : 's'} (${suggestedCount} default suggestion${suggestedCount === 1 ? '' : 's'}).`;
-          }
+          rootsSuccess = 'No existing .nearbytes sources found. Suggestions stay hidden.';
         }
       }
     } catch (error) {
@@ -1150,17 +1220,30 @@
     rootsSuccess = `Volume removed from backup root "${root.id}". Save to apply.`;
   }
 
-  function routeButtonLabel(row: VolumeRouteRow): string {
+  function routeCardStatus(row: VolumeRouteRow): string {
     if (row.kind === 'main') {
-      return row.routable ? 'Always On' : 'Enable Main';
+      return row.routable ? 'Always used (main)' : 'Main root is disabled';
     }
     if (row.routable) {
-      return 'Active';
+      return 'Used for this volume';
     }
     if (row.selected && (!row.enabled || !row.writable)) {
-      return 'Repair Route';
+      return 'Selected but unavailable';
     }
-    return 'Use For Volume';
+    return 'Not used for this volume';
+  }
+
+  function routeCardActionLabel(row: VolumeRouteRow): string {
+    if (row.kind === 'main') {
+      return row.routable ? 'Always On' : 'Enable';
+    }
+    if (row.routable) {
+      return 'Stop Using';
+    }
+    if (row.selected && (!row.enabled || !row.writable)) {
+      return 'Fix + Use';
+    }
+    return 'Use';
   }
 
   async function saveRootsPanel() {
@@ -1744,13 +1827,15 @@
         <div class="roots-panel-header">
           <div class="roots-title-wrap">
             <p class="roots-eyebrow">Storage Roots</p>
-            <h3 class="roots-title">Automatic Root Orchestration</h3>
+            <h3 class="roots-title">Storage Locations</h3>
             <p class="roots-subtitle">
-              Suggested roots are ghosted until you confirm. Save commits the materialized roots.
+              Choose where data lives. Save applies changes.
             </p>
-            <p class="roots-path" title={rootsConfigPath ?? ''}>
-              {rootsConfigPath ? `Config: ${rootsConfigPath}` : 'Config path unavailable'}
-            </p>
+            {#if rootsAdvancedOpen}
+              <p class="roots-path" title={rootsConfigPath ?? ''}>
+                {rootsConfigPath ? `Config: ${rootsConfigPath}` : 'Config path unavailable'}
+              </p>
+            {/if}
           </div>
           <div class="roots-actions">
             <button
@@ -1785,14 +1870,6 @@
               <button type="button" class="roots-action-btn" onclick={() => addRoot('backup')}>
                 New Backup
               </button>
-              <button
-                type="button"
-                class="roots-action-btn"
-                onclick={restoreDismissedRootSuggestions}
-                disabled={dismissedSuggestionCount === 0}
-              >
-                Show Hidden
-              </button>
               <button type="button" class="roots-action-btn" onclick={reloadRootsPanel} disabled={rootsLoading}>
                 Reload
               </button>
@@ -1816,141 +1893,42 @@
           {:else}
             <section class="source-discovery" aria-label="Discovered synced sources">
               <div class="roots-section-head">
-                <p class="roots-section-title">Suggested Roots</p>
-                <p class="roots-section-caption">Ghost cards become real roots only after confirmation.</p>
+                <p class="roots-section-title">Source Discovery</p>
+                <p class="roots-section-caption">Existing `.nearbytes` sources are auto-connected read-only.</p>
               </div>
-              {#if suggestedSourceRows.length === 0 && markerSourceRows.length === 0}
+              {#if discoveredSourceRows.length === 0}
                 <p class="roots-info">
-                  {discoveredSourceRows.length === 0
-                    ? 'No suggestions yet. Use “Find More Roots”.'
-                    : 'No pending suggestions. All discovered sources are already materialized or hidden.'}
+                  No sources discovered yet. Use “Find More Roots”.
                 </p>
               {:else}
-                <div class="ghost-grid">
-                  {#each suggestedSourceRows as row (row.source.path)}
-                    <article class="ghost-root-card">
-                      <div class="ghost-root-head">
-                        <span class="source-provider">{formatProvider(row.source.provider)}</span>
-                        <span class="source-origin">{sourceTypeLabel(row.source)}</span>
-                      </div>
-                      <span class="source-path" title={row.source.path}>{row.source.path}</span>
-                      <p class="ghost-copy">
-                        Suggested sync path. Materialize as main or backup when you want it active.
-                      </p>
-                      <div class="source-actions">
-                        <button
-                          type="button"
-                          class="roots-action-btn"
-                          onclick={() => materializeSuggestedRoot(row.source, recommendRootKindForMaterialize())}
-                        >
-                          {recommendRootKindForMaterialize() === 'main' ? 'Use as Main' : 'Use as Backup'}
-                        </button>
-                        {#if rootsAdvancedOpen}
-                          <button
-                            type="button"
-                            class="roots-action-btn"
-                            onclick={() =>
-                              materializeSuggestedRoot(
-                                row.source,
-                                recommendRootKindForMaterialize() === 'main' ? 'backup' : 'main'
-                              )}
-                          >
-                            {recommendRootKindForMaterialize() === 'main' ? 'Use as Backup' : 'Use as Main'}
-                          </button>
-                        {/if}
-                        <button
-                          type="button"
-                          class="roots-action-btn subtle"
-                          onclick={() => dismissSuggestedRoot(row.source)}
-                        >
-                          Do Not Suggest
-                        </button>
-                      </div>
-                    </article>
-                  {/each}
-                  {#each markerSourceRows as row (row.source.path)}
-                    <article class="ghost-root-card marker">
-                      <div class="ghost-root-head">
-                        <span class="source-provider">{formatProvider(row.source.provider)}</span>
-                        <span class="source-origin">{sourceTypeLabel(row.source)}</span>
-                      </div>
-                      <span class="source-path" title={row.source.path}>{row.source.path}</span>
-                      <p class="ghost-copy">
-                        Existing `.nearbytes` marker detected. Ready to materialize immediately.
-                      </p>
-                      <div class="source-actions">
-                        <button
-                          type="button"
-                          class="roots-action-btn"
-                          onclick={() => materializeSuggestedRoot(row.source, recommendRootKindForMaterialize())}
-                        >
-                          {recommendRootKindForMaterialize() === 'main' ? 'Use as Main' : 'Use as Backup'}
-                        </button>
-                        {#if rootsAdvancedOpen}
-                          <button
-                            type="button"
-                            class="roots-action-btn"
-                            onclick={() =>
-                              materializeSuggestedRoot(
-                                row.source,
-                                recommendRootKindForMaterialize() === 'main' ? 'backup' : 'main'
-                              )}
-                          >
-                            {recommendRootKindForMaterialize() === 'main' ? 'Use as Backup' : 'Use as Main'}
-                          </button>
-                        {/if}
-                      </div>
-                    </article>
-                  {/each}
-                </div>
+                <p class="roots-info">
+                  Discovered {discoveredExistingSourceCount} existing source{discoveredExistingSourceCount === 1 ? '' : 's'}
+                  and {discoveredSuggestedSourceCount} suggestion{discoveredSuggestedSourceCount === 1 ? '' : 's'}.
+                </p>
+                <p class="roots-info muted">
+                  Suggestions are hidden. Existing sources are connected automatically as read-only roots.
+                </p>
               {/if}
               {#if alreadyRegisteredSourceCount > 0}
                 <p class="roots-info muted">
                   {alreadyRegisteredSourceCount} discovered source{alreadyRegisteredSourceCount === 1 ? '' : 's'} already materialized.
                 </p>
               {/if}
-              {#if dismissedSuggestionCount > 0}
+              {#if rootsAdvancedOpen && dismissedSuggestionCount > 0}
                 <p class="roots-info muted">
                   {dismissedSuggestionCount} suggestion{dismissedSuggestionCount === 1 ? '' : 's'} hidden.
                 </p>
               {/if}
             </section>
 
-            {#if volumeId && volumeRouteRows.length > 0}
-              <section class="volume-root-selector" aria-label="Route current volume across roots">
-                <div class="volume-selector-head">
-                  <p class="roots-section-title">Volume Routing</p>
-                  <span class="volume-selector-summary">
-                    {routedRootCount} active root{routedRootCount === 1 ? '' : 's'}
-                  </span>
-                </div>
-                <p class="roots-info volume-key" title={volumeId}>{volumeId}</p>
-                <div class="volume-selector-grid">
-                  {#each volumeRouteRows as row (row.rootId + ':' + row.index)}
-                    <button
-                      type="button"
-                      class="volume-route-btn"
-                      class:routed={row.routable}
-                      class:main={row.kind === 'main'}
-                      class:inactive={!row.routable}
-                      disabled={row.kind === 'main' && row.routable}
-                      onclick={() => routeRootForCurrentVolume(row.index)}
-                      title={row.kind === 'main' ? 'Main roots always write all keys when enabled and writable' : 'Toggle this volume on this backup root'}
-                    >
-                      <span class="volume-route-provider">{formatProvider(row.provider)}</span>
-                      <span class="volume-route-id">{row.rootId}</span>
-                      <span class="volume-route-state">{routeButtonLabel(row)}</span>
-                    </button>
-                  {/each}
-                </div>
-                <p class="roots-info">Changes apply to runtime after pressing Save.</p>
-              </section>
-            {/if}
-
             <section class="roots-active" aria-label="Materialized roots">
               <div class="roots-section-head">
-                <p class="roots-section-title">Materialized Roots</p>
-                <p class="roots-section-caption">These roots are persisted in config and used at runtime.</p>
+                <p class="roots-section-title">Configured Roots</p>
+                {#if volumeId}
+                  <p class="roots-section-caption">
+                    This open volume currently uses {routedRootCount} root{routedRootCount === 1 ? '' : 's'}.
+                  </p>
+                {/if}
               </div>
               <div class="roots-list">
               {#each rootsDraft as root, index (root.id + ':' + index)}
@@ -1958,10 +1936,10 @@
                   <div class="root-card-head">
                     <div class="root-pill-row">
                       <span class="root-provider-pill">{formatProvider(root.provider)}</span>
-                      <span class="root-kind-pill">
-                        {root.kind === 'main' ? 'all volumes' : 'selected volumes'}
-                      </span>
-                      <span class="root-id-pill">{root.id}</span>
+                      <span class="root-kind-pill">{root.kind}</span>
+                      {#if rootsAdvancedOpen}
+                        <span class="root-id-pill">{root.id}</span>
+                      {/if}
                     </div>
                     {#if rootsAdvancedOpen}
                       <div class="root-card-actions">
@@ -1984,14 +1962,14 @@
                       </div>
                     {:else}
                       <span class="root-active-pill" class:inactive={!root.enabled || !root.writable}>
-                        {!root.enabled ? 'disabled' : root.writable ? 'active' : 'read-only'}
+                        {!root.enabled ? 'Off' : root.writable ? 'On' : 'Read-only'}
                       </span>
                     {/if}
                   </div>
 
                   <div class="root-row">
                     <label class="root-field">
-                      <span>Path</span>
+                      <span>Folder</span>
                       <input
                         type="text"
                         class="root-input root-path-input"
@@ -2001,18 +1979,65 @@
                     </label>
                     <button
                       type="button"
-                      class="root-merge"
-                      onclick={() => mergeRootPrompt(index)}
+                      class="root-open"
+                      onclick={() => openRootFolder(root.id)}
+                    >
+                      Open in File Manager
+                    </button>
+                    <button
+                      type="button"
+                      class="root-consolidate"
+                      onclick={() =>
+                        consolidatingRootIndex === index ? cancelConsolidation() : beginConsolidation(index)}
                       disabled={rootsDraft.length < 2}
                     >
-                      Merge…
+                      {consolidatingRootIndex === index ? 'Cancel' : 'Consolidate…'}
                     </button>
-                    <button type="button" class="root-remove" onclick={() => removeRoot(index)}>
+                    <button
+                      type="button"
+                      class="root-remove"
+                      onclick={() => removeRoot(index)}
+                      disabled={!canRemoveRoot(index)}
+                      title={!canRemoveRoot(index) ? 'At least one enabled main root is required' : ''}
+                    >
                       Remove
                     </button>
                   </div>
 
-                  {#if root.kind === 'backup'}
+                  {#if consolidatingRootIndex === index}
+                    <div class="root-consolidation-row">
+                      {#if consolidateLoading}
+                        <span class="roots-info">Loading destinations…</span>
+                      {:else if consolidateCandidates.length === 0}
+                        <span class="roots-info">{consolidateMessage}</span>
+                      {:else}
+                        <select
+                          class="root-input root-consolidation-select"
+                          bind:value={consolidateTargetId}
+                          aria-label="Consolidation destination"
+                        >
+                          {#each consolidateCandidates as candidate (candidate.id)}
+                            <option value={candidate.id}>
+                              {formatProvider(candidate.provider)} • {candidate.path}
+                            </option>
+                          {/each}
+                        </select>
+                        <button
+                          type="button"
+                          class="root-route-btn"
+                          onclick={applyConsolidation}
+                          disabled={consolidateApplying || consolidateTargetId.trim() === ''}
+                        >
+                          {consolidateApplying ? 'Consolidating…' : 'Consolidate Here'}
+                        </button>
+                        {#if consolidateMessage}
+                          <span class="roots-info muted">{consolidateMessage}</span>
+                        {/if}
+                      {/if}
+                    </div>
+                  {/if}
+
+                  {#if root.kind === 'backup' && rootsAdvancedOpen}
                     <label class="root-allowlist">
                       <span>Allowed volume keys (comma-separated)</span>
                       <input
@@ -2028,17 +2053,9 @@
                     {@const routeRow = volumeRouteRows.find((entry) => entry.index === index)}
                     {#if routeRow}
                       <div class="root-volume-route">
-                        <span class="root-volume-label">Current volume</span>
+                        <span class="root-volume-label">Open volume</span>
                         <span class="root-volume-state" class:active={routeRow.routable}>
-                          {routeRow.kind === 'main'
-                            ? routeRow.routable
-                              ? 'active on main'
-                              : 'main disabled'
-                            : routeRow.routable
-                              ? 'active'
-                              : routeRow.selected
-                                ? 'selected but disabled'
-                                : 'not selected'}
+                          {routeCardStatus(routeRow)}
                         </span>
                         <button
                           type="button"
@@ -2047,7 +2064,7 @@
                           disabled={routeRow.kind === 'main' && routeRow.routable}
                           onclick={() => routeRootForCurrentVolume(index)}
                         >
-                          {routeButtonLabel(routeRow)}
+                          {routeCardActionLabel(routeRow)}
                         </button>
                       </div>
                     {/if}
@@ -2796,12 +2813,6 @@
     box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.18) inset;
   }
 
-  .roots-action-btn.subtle {
-    color: rgba(191, 219, 254, 0.82);
-    border-color: rgba(148, 163, 184, 0.36);
-    background: rgba(15, 23, 42, 0.34);
-  }
-
   .roots-action-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
@@ -2878,185 +2889,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.55rem;
-  }
-
-  .ghost-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 0.55rem;
-  }
-
-  .ghost-root-card {
-    border: 1px dashed rgba(125, 211, 252, 0.38);
-    border-radius: 14px;
-    background: linear-gradient(145deg, rgba(15, 23, 42, 0.3), rgba(15, 23, 42, 0.45));
-    padding: 0.62rem 0.68rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-    opacity: 0.9;
-    transition: all 0.18s ease;
-  }
-
-  .ghost-root-card:hover {
-    opacity: 1;
-    border-color: rgba(94, 234, 212, 0.56);
-    transform: translateY(-1px);
-  }
-
-  .ghost-root-card.marker {
-    border-style: solid;
-    border-color: rgba(94, 234, 212, 0.5);
-    background: linear-gradient(145deg, rgba(4, 120, 87, 0.24), rgba(15, 23, 42, 0.55));
-  }
-
-  .ghost-root-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-
-  .ghost-copy {
-    margin: 0;
-    color: rgba(191, 219, 254, 0.86);
-    font-size: 0.72rem;
-    line-height: 1.32;
-  }
-
-  .source-provider {
-    font-size: 0.64rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(103, 232, 249, 0.94);
-    font-weight: 700;
-  }
-
-  .source-origin {
-    font-size: 0.62rem;
-    color: rgba(224, 242, 254, 0.85);
-    border: 1px solid rgba(148, 163, 184, 0.4);
-    border-radius: 999px;
-    padding: 0.1rem 0.42rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-  }
-
-  .source-path {
-    color: rgba(224, 242, 254, 0.88);
-    font-family: 'Monaco', 'Menlo', monospace;
-    font-size: 0.72rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .source-actions {
-    display: flex;
-    gap: 0.4rem;
-    flex-wrap: wrap;
-    margin-top: 0.15rem;
-  }
-
-  .volume-root-selector {
-    border: 1px solid rgba(125, 211, 252, 0.22);
-    border-radius: 14px;
-    background: rgba(15, 23, 42, 0.42);
-    padding: 0.68rem 0.72rem;
-    margin-bottom: 0.15rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-  }
-
-  .volume-selector-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-  }
-
-  .volume-selector-summary {
-    font-size: 0.72rem;
-    color: rgba(191, 219, 254, 0.88);
-  }
-
-  .volume-key {
-    font-family: 'Monaco', 'Menlo', monospace;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    border: 1px solid rgba(125, 211, 252, 0.2);
-    border-radius: 10px;
-    padding: 0.34rem 0.48rem;
-    background: rgba(15, 23, 42, 0.35);
-  }
-
-  .volume-selector-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 0.45rem;
-  }
-
-  .volume-route-btn {
-    border: 1px solid rgba(125, 211, 252, 0.3);
-    border-radius: 10px;
-    background: rgba(15, 23, 42, 0.48);
-    color: #dbeafe;
-    padding: 0.5rem 0.58rem;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.2rem;
-    cursor: pointer;
-    min-width: 0;
-    transition: all 0.18s ease;
-  }
-
-  .volume-route-btn:hover:not(:disabled) {
-    border-color: rgba(94, 234, 212, 0.62);
-    transform: translateY(-1px);
-  }
-
-  .volume-route-btn.routed {
-    border-color: rgba(16, 185, 129, 0.7);
-    background: rgba(6, 78, 59, 0.34);
-  }
-
-  .volume-route-btn.main {
-    border-style: dashed;
-  }
-
-  .volume-route-btn.inactive {
-    opacity: 0.92;
-  }
-
-  .volume-route-btn:disabled {
-    opacity: 0.6;
-    cursor: default;
-  }
-
-  .volume-route-provider {
-    font-size: 0.66rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(103, 232, 249, 0.9);
-  }
-
-  .volume-route-id {
-    font-size: 0.78rem;
-    color: rgba(224, 242, 254, 0.94);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    width: 100%;
-  }
-
-  .volume-route-state {
-    font-size: 0.7rem;
-    color: rgba(191, 219, 254, 0.82);
   }
 
   .roots-active {
@@ -3217,7 +3049,28 @@
     background: rgba(185, 28, 28, 0.3);
   }
 
-  .root-merge {
+  .root-remove:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .root-open {
+    border: 1px solid rgba(125, 211, 252, 0.4);
+    background: rgba(15, 23, 42, 0.5);
+    color: rgba(191, 219, 254, 0.95);
+    border-radius: 10px;
+    padding: 0.5rem 0.66rem;
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .root-open:hover:not(:disabled) {
+    border-color: rgba(94, 234, 212, 0.58);
+    background: rgba(17, 94, 89, 0.28);
+  }
+
+  .root-consolidate {
     border: 1px solid rgba(125, 211, 252, 0.4);
     background: rgba(15, 23, 42, 0.52);
     color: rgba(191, 219, 254, 0.95);
@@ -3228,14 +3081,30 @@
     font-weight: 700;
   }
 
-  .root-merge:hover:not(:disabled) {
+  .root-consolidate:hover:not(:disabled) {
     border-color: rgba(94, 234, 212, 0.58);
     background: rgba(17, 94, 89, 0.3);
   }
 
-  .root-merge:disabled {
+  .root-consolidate:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .root-consolidation-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    border: 1px solid rgba(125, 211, 252, 0.2);
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.4);
+    padding: 0.45rem 0.5rem;
+  }
+
+  .root-consolidation-select {
+    flex: 1;
+    min-width: 260px;
   }
 
   .root-allowlist {
@@ -3257,17 +3126,16 @@
     align-items: center;
     gap: 0.45rem;
     flex-wrap: wrap;
-    border: 1px solid rgba(125, 211, 252, 0.18);
+    border: 1px solid rgba(125, 211, 252, 0.24);
     border-radius: 8px;
     padding: 0.4rem 0.5rem;
-    background: rgba(15, 23, 42, 0.35);
+    background: rgba(15, 23, 42, 0.42);
   }
 
   .root-volume-label {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: rgba(125, 211, 252, 0.8);
+    font-size: 0.72rem;
+    color: rgba(191, 219, 254, 0.92);
+    font-weight: 600;
   }
 
   .root-volume-state {
