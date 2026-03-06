@@ -1,6 +1,6 @@
 {
   "name": "nearbytes-crypto",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "NearBytes cryptographic storage protocol - immutable data collections with end-to-end encryption",
   "type": "module",
   "main": "dist/index.js",
@@ -118,7 +118,7 @@
         "owner": "${env.NEARBYTES_RELEASE_OWNER}",
         "repo": "${env.NEARBYTES_RELEASE_REPO}",
         "releaseType": "release",
-        "tagName": "v${version}"
+        "vPrefixedTagName": true
       }
     ]
   }
