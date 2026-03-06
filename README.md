@@ -116,6 +116,43 @@ npm install
 npm run build
 ```
 
+## Electron Desktop (Shared API/UI)
+
+Nearbytes now supports a desktop runtime via Electron while preserving the existing
+server-side and browser workflows.
+
+### Dev / Build Targets
+
+You can run these with `yarn <script>` or `npm run <script>`:
+
+- `dev-run`: run Electron desktop in dev mode (Vite UI + shared API runtime)
+- `dev-test`: run shared tests + desktop smoke validation
+- `dev-build`: build server + UI + Electron runtime artifacts
+- `production-build`: build desktop installers (publish disabled)
+- `production-build:publish`: build and publish desktop installers (CI/tag use)
+- `deploy`: interactive tag helper that asks for version and pushes `v*` release tag
+
+### Desktop Security Model
+
+- Desktop runtime binds API to `127.0.0.1` on a random port.
+- API requires a runtime desktop token via `x-nearbytes-desktop-token`.
+- Session `{port, token, expiresAt, pid}` is written locally with `0600` permissions.
+- Local trusted tools can discover current API runtime with:
+
+```bash
+nearbytes desktop api-info --json
+```
+
+### Desktop Environment Variables
+
+- `NEARBYTES_ELECTRON_DEV_SERVER_URL` (default: empty) - when set, Electron loads this dev UI URL
+- `NEARBYTES_DESKTOP_SESSION_FILE` (default: `~/.nearbytes/desktop-session.json`) - desktop API session file
+- `NEARBYTES_DESKTOP_SESSION_TTL_MS` (default: `28800000`) - desktop API token/session lifetime
+- `NEARBYTES_DISABLE_AUTO_UPDATE=1` - disables auto-update checks in desktop runtime
+- `NEARBYTES_RELEASE_OWNER` / `NEARBYTES_RELEASE_REPO` - repository used by installer publishing and updater metadata
+
+More details: [docs/electron.md](docs/electron.md), [docs/releasing-desktop.md](docs/releasing-desktop.md)
+
 ## Quick Start (CLI)
 
 ### 1. Setup a Channel

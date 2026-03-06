@@ -227,7 +227,26 @@ export interface ApiError {
   };
 }
 
-const API_BASE = ''; // Use Vite proxy
+interface DesktopRuntimeConfig {
+  apiBaseUrl: string;
+  desktopToken: string;
+  isDesktop: boolean;
+}
+
+interface NearbytesDesktopBridge {
+  getRuntimeConfig?: () => Promise<DesktopRuntimeConfig>;
+  getApiBaseUrl?: () => Promise<string>;
+  getDesktopToken?: () => Promise<string>;
+  isDesktop?: (() => boolean) | boolean;
+}
+
+const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
+  apiBaseUrl: '',
+  desktopToken: '',
+  isDesktop: false,
+};
+
+let runtimeConfigPromise: Promise<DesktopRuntimeConfig> | null = null;
 
 /**
  * Creates auth headers for API requests.
@@ -241,6 +260,58 @@ function createAuthHeaders(auth: Auth): HeadersInit {
   return {
     'x-nearbytes-secret': auth.secret,
   };
+}
+
+function getDesktopBridge(): NearbytesDesktopBridge | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const globalWindow = window as unknown as { nearbytesDesktop?: NearbytesDesktopBridge };
+  if (!globalWindow.nearbytesDesktop) {
+    return null;
+  }
+  return globalWindow.nearbytesDesktop;
+}
+
+function isElectronRenderer(): boolean {
+  if (typeof navigator === 'undefined') {
+    return false;
+  }
+  return /\bElectron\//.test(navigator.userAgent);
+}
+
+async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {
+  if (runtimeConfigPromise) {
+    return runtimeConfigPromise;
+  }
+
+  const bridge = getDesktopBridge();
+  if (!bridge) {
+    if (isElectronRenderer()) {
+      runtimeConfigPromise = Promise.reject(
+        new Error('Nearbytes desktop bridge is unavailable in Electron renderer.')
+      );
+      return runtimeConfigPromise;
+    }
+    runtimeConfigPromise = Promise.resolve(WEB_RUNTIME_CONFIG);
+    return runtimeConfigPromise;
+  }
+
+  runtimeConfigPromise = (async () => {
+    if (typeof bridge.getRuntimeConfig !== 'function') {
+      throw new Error('Nearbytes desktop bridge is missing getRuntimeConfig().');
+    }
+    const config = await bridge.getRuntimeConfig();
+    if (!config || config.apiBaseUrl.trim().length === 0 || config.desktopToken.trim().length === 0) {
+      throw new Error('Nearbytes desktop bridge returned invalid runtime config.');
+    }
+    return {
+      apiBaseUrl: config.apiBaseUrl,
+      desktopToken: config.desktopToken,
+      isDesktop: config.isDesktop === true,
+    };
+  })();
+  return runtimeConfigPromise;
 }
 
 /**
@@ -271,6 +342,7 @@ async function apiRequest<T>(
   options: RequestInit & { auth?: Auth } = {}
 ): Promise<T> {
   const { auth, ...fetchOptions } = options;
+  const runtimeConfig = await getRuntimeConfig();
   const headers = new Headers(fetchOptions.headers);
 
   if (auth) {
@@ -283,8 +355,11 @@ async function apiRequest<T>(
   if (!headers.has('Content-Type') && fetchOptions.body instanceof FormData === false) {
     headers.set('Content-Type', 'application/json');
   }
+  if (runtimeConfig.desktopToken.trim().length > 0) {
+    headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
+  }
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const response = await fetch(`${runtimeConfig.apiBaseUrl}${endpoint}`, {
     ...fetchOptions,
     headers,
   });
@@ -492,9 +567,15 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
 
   void (async () => {
     try {
-      const response = await fetch(`${API_BASE}/watch/volume`, {
+      const runtimeConfig = await getRuntimeConfig();
+      const headers = new Headers(createAuthHeaders(auth));
+      if (runtimeConfig.desktopToken.trim().length > 0) {
+        headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
+      }
+
+      const response = await fetch(`${runtimeConfig.apiBaseUrl}/watch/volume`, {
         method: 'GET',
-        headers: createAuthHeaders(auth),
+        headers,
         signal: abortController.signal,
       });
 
@@ -549,8 +630,13 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
  * Returns the file as a Blob.
  */
 export async function downloadFile(auth: Auth, blobHash: string): Promise<Blob> {
+  const runtimeConfig = await getRuntimeConfig();
   const headers = new Headers(createAuthHeaders(auth));
-  const response = await fetch(`${API_BASE}/file/${blobHash}`, {
+  if (runtimeConfig.desktopToken.trim().length > 0) {
+    headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
+  }
+
+  const response = await fetch(`${runtimeConfig.apiBaseUrl}/file/${blobHash}`, {
     method: 'GET',
     headers,
   });

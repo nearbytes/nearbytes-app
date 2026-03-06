@@ -1,6 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { Router } from 'express';
 import { spawn } from 'child_process';
+import { timingSafeEqual } from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import multer from 'multer';
@@ -44,6 +45,8 @@ export interface RouteDependencies {
   readonly resolvedStorageDir?: string;
   /** Absolute roots config path for /config/roots endpoints. */
   readonly rootsConfigPath?: string;
+  /** Optional runtime token required in desktop mode. */
+  readonly desktopApiToken?: string;
 }
 
 /**
@@ -66,6 +69,21 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
+
+  if (deps.desktopApiToken) {
+    router.use((req, _res, next) => {
+      if (req.path === '/health') {
+        next();
+        return;
+      }
+      const providedToken = req.get('x-nearbytes-desktop-token');
+      if (!providedToken || !tokensEqual(providedToken, deps.desktopApiToken!)) {
+        next(new ApiError(401, 'UNAUTHORIZED', 'Missing or invalid desktop token'));
+        return;
+      }
+      next();
+    });
+  }
 
   router.get('/config/roots', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
@@ -540,6 +558,15 @@ function isLoopbackAddress(value: string | undefined): boolean {
     return normalized.slice('::ffff:'.length) === '127.0.0.1';
   }
   return false;
+}
+
+function tokensEqual(actual: string, expected: string): boolean {
+  const actualBuffer = Buffer.from(actual.trim());
+  const expectedBuffer = Buffer.from(expected.trim());
+  if (actualBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
 async function openInFileManager(targetPath: string): Promise<void> {

@@ -1,5 +1,7 @@
 import express, { type RequestHandler } from 'express';
 import cors from 'cors';
+import path from 'path';
+import { existsSync } from 'fs';
 import type { CryptoOperations } from '../crypto/index.js';
 import type { FileService } from '../domain/fileService.js';
 import type { StorageBackend } from '../types/storage.js';
@@ -20,6 +22,10 @@ export interface AppDependencies {
   readonly resolvedStorageDir?: string;
   /** Absolute roots config path; used by /config/roots endpoints. */
   readonly rootsConfigPath?: string;
+  /** Runtime token required by desktop mode for all API routes. */
+  readonly desktopApiToken?: string;
+  /** Optional static UI build directory served by the same process. */
+  readonly uiDistPath?: string;
 }
 
 /**
@@ -33,7 +39,12 @@ export function createApp(deps: AppDependencies): express.Express {
     cors({
       origin: deps.corsOrigin,
       methods: ['GET', 'POST', 'PUT', 'DELETE'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'x-nearbytes-secret'],
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'x-nearbytes-secret',
+        'x-nearbytes-desktop-token',
+      ],
     })
   );
 
@@ -41,6 +52,28 @@ export function createApp(deps: AppDependencies): express.Express {
   app.use(requestLogger());
 
   app.use(createRoutes(deps));
+
+  const uiDistPath = resolveUiDistPath(deps.uiDistPath);
+  if (uiDistPath) {
+    const indexPath = path.join(uiDistPath, 'index.html');
+    app.use(express.static(uiDistPath));
+    app.get('*', (req, res, next) => {
+      if (req.method !== 'GET') {
+        next();
+        return;
+      }
+      if (!req.accepts('html')) {
+        next();
+        return;
+      }
+      res.sendFile(indexPath, (error) => {
+        if (error) {
+          next(error);
+        }
+      });
+    });
+  }
+
   app.use(notFoundHandler);
   app.use(errorHandler);
 
@@ -56,4 +89,16 @@ function requestLogger(): RequestHandler {
     });
     next();
   };
+}
+
+function resolveUiDistPath(value: string | undefined): string | null {
+  if (!value || value.trim().length === 0) {
+    return null;
+  }
+  const resolved = path.resolve(value);
+  const indexPath = path.join(resolved, 'index.html');
+  if (!existsSync(indexPath)) {
+    return null;
+  }
+  return resolved;
 }

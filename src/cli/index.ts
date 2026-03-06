@@ -10,6 +10,7 @@ import { registerFileAddCommand } from './commands/file-add.js';
 import { registerFileRemoveCommand } from './commands/file-remove.js';
 import { registerFileListCommand } from './commands/file-list.js';
 import { registerFileGetCommand } from './commands/file-get.js';
+import { registerDesktopCommand } from './commands/desktop.js';
 
 const program = new Command();
 
@@ -30,7 +31,7 @@ registerFileAddCommand(program);
 registerFileRemoveCommand(program);
 registerFileListCommand(program);
 registerFileGetCommand(program);
+registerDesktopCommand(program);
 
 // Parse arguments and execute
 program.parse();
-
