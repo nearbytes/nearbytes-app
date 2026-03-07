@@ -3415,13 +3415,14 @@
   .file-area-top {
     display: grid;
     gap: 0.85rem;
-    justify-items: start;
+    justify-items: end;
   }
 
   .sources-launcher {
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: flex-end;
+    width: 100%;
   }
 
   .sources-launcher-btn {
@@ -3455,6 +3456,7 @@
 
   .sources-flyout {
     width: min(880px, 100%);
+    justify-self: end;
   }
 
   .sources-flyout :global(.storage-panel.global-mode) {

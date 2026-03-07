@@ -46,6 +46,12 @@
 
   const DISMISSED_DISCOVERY_KEY = 'nearbytes-source-discovery-dismissed-v1';
   const RESERVE_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
+  const DESTINATION_MODES = [
+    { value: 'off', label: 'Off', caption: 'ignore this location' },
+    { value: 'history', label: 'History', caption: 'keep the event log' },
+    { value: 'new-files', label: 'New files', caption: 'keep what arrives now' },
+    { value: 'everything', label: 'Everything', caption: 'keep old and new files' },
+  ] as const;
   const DEFAULT_DESTINATION: VolumeDestinationConfig = {
     sourceId: '',
     enabled: true,
@@ -431,13 +437,94 @@
   function protectionLabel(destination: VolumeDestinationConfig | null, sourceId: string): string {
     const tone = protectionTone(destination, sourceId);
     if (tone === 'durable') return 'Guaranteed';
-    if (tone === 'replica') return 'Data';
-    if (tone === 'events') return 'Updates';
+    if (tone === 'replica') return 'New files';
+    if (tone === 'events') return 'History';
     return 'Off';
   }
 
   function volumeBadgeText(targetVolumeId: string | null): string {
-    return hasDurableDestination(targetVolumeId) ? 'Guaranteed somewhere' : 'Needs care';
+    return hasDurableDestination(targetVolumeId) ? 'Guaranteed somewhere' : 'Not guaranteed';
+  }
+
+  function destinationMode(
+    destination: VolumeDestinationConfig | null
+  ): 'off' | 'history' | 'new-files' | 'everything' {
+    if (!destination || !destination.enabled) return 'off';
+    if (!destination.storeEvents) return 'off';
+    if (!destination.storeBlocks) return 'history';
+    if (!destination.copySourceBlocks) return 'new-files';
+    return 'everything';
+  }
+
+  function setDestinationMode(
+    targetVolumeId: string | null,
+    sourceId: string,
+    nextMode: 'off' | 'history' | 'new-files' | 'everything'
+  ): void {
+    if (!configDraft) return;
+    upsertDestination(targetVolumeId, sourceId);
+    const apply = (destination: VolumeDestinationConfig): VolumeDestinationConfig => {
+      if (nextMode === 'off') {
+        return {
+          ...destination,
+          enabled: false,
+          storeEvents: false,
+          storeBlocks: false,
+          copySourceBlocks: false,
+        };
+      }
+      if (nextMode === 'history') {
+        return {
+          ...destination,
+          enabled: true,
+          storeEvents: true,
+          storeBlocks: false,
+          copySourceBlocks: false,
+        };
+      }
+      if (nextMode === 'new-files') {
+        return {
+          ...destination,
+          enabled: true,
+          storeEvents: true,
+          storeBlocks: true,
+          copySourceBlocks: false,
+        };
+      }
+      return {
+        ...destination,
+        enabled: true,
+        storeEvents: true,
+        storeBlocks: true,
+        copySourceBlocks: true,
+      };
+    };
+
+    if (targetVolumeId === null) {
+      configDraft = {
+        ...configDraft,
+        defaultVolume: {
+          destinations: configDraft.defaultVolume.destinations.map((destination) =>
+            destination.sourceId === sourceId ? apply(destination) : destination
+          ),
+        },
+      };
+      return;
+    }
+
+    const entry = ensureExplicitVolumePolicy(targetVolumeId);
+    const volumeIndex = configDraft.volumes.findIndex((volume) => volume.volumeId === targetVolumeId);
+    const nextVolumes = [...configDraft.volumes];
+    nextVolumes[volumeIndex] = {
+      ...entry,
+      destinations: entry.destinations.map((destination) =>
+        destination.sourceId === sourceId ? apply(destination) : destination
+      ),
+    };
+    configDraft = {
+      ...configDraft,
+      volumes: nextVolumes,
+    };
   }
 
   function sourceSuggestionRows(): Array<{
@@ -485,12 +572,12 @@
   }
 
   function selectedPolicyTitle(): string {
-    if (selectedPolicyVolumeId === null) return 'New volumes';
+    if (selectedPolicyVolumeId === null) return 'Next volume';
     return policyVolumeLabel(selectedPolicyVolumeId);
   }
 
   function selectedPolicyMeta(): string {
-    if (selectedPolicyVolumeId === null) return 'Used next time you open a volume';
+    if (selectedPolicyVolumeId === null) return 'Default rule for volumes that do not have their own saved policy yet';
     if (volumeId === selectedPolicyVolumeId && currentVolumeHint && currentVolumeHint.trim() !== '') {
       return volumeShortLabel(selectedPolicyVolumeId);
     }
@@ -520,8 +607,8 @@
     cards.push({
       key: '__default__',
       volumeId: null,
-      title: 'New volumes',
-      meta: 'Used next time',
+      title: 'Next volume',
+      meta: 'default rule',
       usesFile: false,
       isCurrent: false,
       isDefault: true,
@@ -884,7 +971,7 @@
         <div>
           <p class="panel-eyebrow">Keep</p>
           <h2>Volume storage</h2>
-          <p class="panel-caption">Choose where each volume keeps its updates and encrypted data.</p>
+          <p class="panel-caption">Choose where each volume keeps its history and encrypted files.</p>
         </div>
         <div class="panel-actions">
           <button type="button" class="panel-btn subtle" onclick={loadPanel}>
@@ -930,7 +1017,7 @@
               <p class="volume-card-meta">{card.meta}</p>
             </div>
             <span class="volume-card-badge" class:safe={card.safe} class:warning={!card.safe}>
-              {card.safe ? 'Guaranteed somewhere' : 'Needs care'}
+              {card.safe ? 'Guaranteed somewhere' : 'Not guaranteed'}
             </span>
           </button>
         {/each}
@@ -963,12 +1050,13 @@
           </div>
         </div>
 
-        <p class="detail-note">Pick at least one destination marked <strong>Guaranteed</strong> if this volume must never be discarded.</p>
+        <p class="detail-note">Pick at least one location marked <strong>Guaranteed</strong> if this volume must never be discarded.</p>
 
         <div class="destination-grid">
           {#each configDraft.sources as source (source.id)}
             {@const destination = destinationFor(selectedPolicyVolumeId, source.id)}
             {@const status = sourceStatus(source.id)}
+            {@const modeValue = destinationMode(destination)}
             <article class="destination-card" class:safe={protectionTone(destination, source.id) === 'durable'}>
               <div class="destination-head">
                 <div>
@@ -979,11 +1067,18 @@
                 <span class={`mini-badge tone-${protectionTone(destination, source.id)}`}>{protectionLabel(destination, source.id)}</span>
               </div>
 
-              <div class="chip-row dense">
-                <label class="toggle-chip strong"><input type="checkbox" checked={destination?.enabled ?? false} onchange={(event) => updateDestinationField(selectedPolicyVolumeId, source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)} /><span>Keep here</span></label>
-                <label class="toggle-chip"><input type="checkbox" checked={destination?.storeEvents ?? false} onchange={(event) => updateDestinationField(selectedPolicyVolumeId, source.id, 'storeEvents', (event.currentTarget as HTMLInputElement).checked)} /><span>Updates</span></label>
-                <label class="toggle-chip"><input type="checkbox" checked={destination?.storeBlocks ?? false} onchange={(event) => updateDestinationField(selectedPolicyVolumeId, source.id, 'storeBlocks', (event.currentTarget as HTMLInputElement).checked)} /><span>Data</span></label>
-                <label class="toggle-chip"><input type="checkbox" checked={destination?.copySourceBlocks ?? false} disabled={!(destination?.storeBlocks ?? false)} onchange={(event) => updateDestinationField(selectedPolicyVolumeId, source.id, 'copySourceBlocks', (event.currentTarget as HTMLInputElement).checked)} /><span>Mirror</span></label>
+              <div class="mode-grid" role="group" aria-label={`Storage mode for ${compactPath(source.path)}`}>
+                {#each DESTINATION_MODES as option (option.value)}
+                  <button
+                    type="button"
+                    class="mode-btn"
+                    class:selected={modeValue === option.value}
+                    onclick={() => setDestinationMode(selectedPolicyVolumeId, source.id, option.value)}
+                  >
+                    <span class="mode-label">{option.label}</span>
+                    <span class="mode-caption">{option.caption}</span>
+                  </button>
+                {/each}
               </div>
 
               <div class="field-grid two-up compact-fields">
@@ -998,7 +1093,7 @@
                 <label class="field-block compact-field">
                   <span>When full</span>
                   <select class="panel-input" value={destination?.fullPolicy ?? 'block-writes'} onchange={(event) => updateDestinationField(selectedPolicyVolumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}>
-                    <option value="block-writes">Pause new data</option>
+                    <option value="block-writes">Pause new files</option>
                     <option value="drop-older-blocks">Trim spare data</option>
                   </select>
                 </label>
@@ -1472,6 +1567,61 @@
     font-weight: 700;
   }
 
+  .destination-card.safe {
+    border-color: rgba(45, 212, 191, 0.22);
+    background:
+      radial-gradient(140% 120% at 0% 0%, rgba(45, 212, 191, 0.08), transparent 48%),
+      rgba(8, 17, 31, 0.78);
+  }
+
+  .mode-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+
+  .mode-btn {
+    min-width: 0;
+    display: grid;
+    gap: 0.18rem;
+    justify-items: start;
+    text-align: left;
+    min-height: 64px;
+    padding: 0.72rem 0.78rem;
+    border-radius: 14px;
+    border: 1px solid rgba(56, 189, 248, 0.16);
+    background: rgba(10, 19, 34, 0.52);
+    color: rgba(226, 232, 240, 0.88);
+    cursor: pointer;
+    transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+  }
+
+  .mode-btn:hover {
+    transform: translateY(-1px);
+    border-color: rgba(96, 165, 250, 0.28);
+    background: rgba(12, 24, 43, 0.84);
+  }
+
+  .mode-btn.selected {
+    border-color: rgba(34, 211, 238, 0.42);
+    background:
+      radial-gradient(140% 120% at 0% 0%, rgba(34, 211, 238, 0.14), transparent 44%),
+      rgba(12, 24, 43, 0.88);
+    box-shadow: 0 10px 22px rgba(2, 6, 23, 0.2);
+  }
+
+  .mode-label {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: rgba(240, 249, 255, 0.98);
+  }
+
+  .mode-caption {
+    font-size: 0.71rem;
+    color: rgba(186, 230, 253, 0.72);
+    line-height: 1.25;
+  }
+
   .detail-head-actions {
     justify-content: flex-end;
     margin-left: auto;
@@ -1494,6 +1644,10 @@
 
     .volume-grid {
       grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    }
+
+    .mode-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>
