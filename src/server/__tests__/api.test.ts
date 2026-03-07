@@ -16,6 +16,7 @@ const SECRET_OTHER = 'nearbytes-other-secret';
 const SECRET_SNAPSHOT = 'nearbytes-snapshot-secret';
 const SECRET_TIMELINE = 'nearbytes-timeline-secret';
 const SECRET_RENAME_FOLDER = 'nearbytes-rename-folder-secret';
+const FILE_SECRET_PREFIX = 'nb-file-secret:v1:';
 
 describe('Nearbytes API', () => {
   let tempDir: string;
@@ -268,5 +269,26 @@ describe('Nearbytes API', () => {
     expect(timelineRes.body.events[1].timestamp).toBeLessThanOrEqual(
       timelineRes.body.events[2].timestamp
     );
+  });
+
+  it('returns compact bearer tokens for file-backed secrets', async () => {
+    const payloadBytes = Buffer.alloc(24 * 1024, 0x61);
+    const fileBackedSecret = `${FILE_SECRET_PREFIX}${payloadBytes.toString('base64url')}`;
+
+    const openRes = await request(app)
+      .post('/open')
+      .send({ secret: fileBackedSecret })
+      .expect(200);
+
+    const token = openRes.body.token as string;
+    expect(token).toBeTypeOf('string');
+    expect(token.length).toBeLessThan(128);
+
+    const listRes = await request(app)
+      .get('/files')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(Array.isArray(listRes.body.files)).toBe(true);
   });
 });

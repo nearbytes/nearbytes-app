@@ -1,9 +1,12 @@
 # Nearbytes Local API Server
 
-Nearbytes Phase 2 exposes the Phase 1 file service over a stateless HTTP API.
+Nearbytes Phase 2 exposes the Phase 1 file service over a local HTTP API.
 
-**Stateless rule:** Every request must include either the secret or a self-contained
-Bearer token that decrypts back to the secret. The server stores no sessions.
+**Auth rule:** `POST /open` receives the secret once and returns a compact
+Bearer token backed by the running server process. Subsequent requests normally
+use that short token. Direct `x-nearbytes-secret` auth is still accepted, and
+legacy stateless Bearer tokens remain supported when `NEARBYTES_SERVER_TOKEN_KEY`
+is configured.
 
 ## Base URL
 
@@ -15,15 +18,16 @@ http://localhost:3000
 
 Two auth modes are supported:
 
-- `Authorization: Bearer <token>` (preferred, stateless token)
+- `Authorization: Bearer <token>` (preferred, compact in-process session token)
 - `x-nearbytes-secret: <secret>` (header secret)
 
 **Precedence:** If both are provided, the Bearer token is used.
 
 ### Token mode
 
-Set `NEARBYTES_SERVER_TOKEN_KEY` (32 bytes, hex or base64/base64url). When enabled,
-`POST /open` returns a `token` that can be used for all subsequent requests.
+`POST /open` returns a compact bearer token that can be used for subsequent
+requests. If `NEARBYTES_SERVER_TOKEN_KEY` is configured, the server also accepts
+legacy stateless Bearer tokens for compatibility with older clients.
 
 ## Error format
 

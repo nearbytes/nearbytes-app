@@ -30,9 +30,11 @@
     Activity,
     Download,
     Eye,
+    FileText,
     FolderTree,
     HardDrive,
     History,
+    Image as ImageIcon,
     Plus,
     RefreshCw,
     Search,
@@ -51,6 +53,7 @@
     password: string;
     secretFilePayload: string;
     secretFileName: string;
+    secretFileMimeType: string;
     collapsed: boolean;
     createdAt: number;
   }
@@ -63,6 +66,8 @@
       secretFilePayload:
         typeof overrides.secretFilePayload === 'string' ? overrides.secretFilePayload.trim() : '',
       secretFileName: typeof overrides.secretFileName === 'string' ? overrides.secretFileName.trim() : '',
+      secretFileMimeType:
+        typeof overrides.secretFileMimeType === 'string' ? overrides.secretFileMimeType.trim() : '',
       collapsed: overrides.collapsed ?? false,
       createdAt: overrides.createdAt ?? Date.now(),
     };
@@ -80,6 +85,7 @@
           typeof value.password === 'string' &&
           (value.secretFilePayload === undefined || typeof value.secretFilePayload === 'string') &&
           (value.secretFileName === undefined || typeof value.secretFileName === 'string') &&
+          (value.secretFileMimeType === undefined || typeof value.secretFileMimeType === 'string') &&
           typeof value.collapsed === 'boolean'
       )
       .map((value) =>
@@ -89,6 +95,7 @@
           password: value.password,
           secretFilePayload: value.secretFilePayload,
           secretFileName: value.secretFileName,
+          secretFileMimeType: value.secretFileMimeType,
           collapsed: value.collapsed,
           createdAt: value.createdAt,
         })
@@ -154,6 +161,26 @@
       return trimSecretPart(mount.secretFileName);
     }
     return trimSecretPart(mount.address);
+  }
+
+  function base64UrlToBase64(value: string): string {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const remainder = normalized.length % 4;
+    if (remainder === 0) return normalized;
+    return `${normalized}${'='.repeat(4 - remainder)}`;
+  }
+
+  function secretFilePayloadDataUrl(mount: VolumeMount): string | null {
+    const payload = trimSecretPart(mount.secretFilePayload);
+    if (!payload.startsWith(FILE_SECRET_PREFIX)) return null;
+    const encoded = payload.slice(FILE_SECRET_PREFIX.length);
+    if (encoded === '') return null;
+    const mimeType = trimSecretPart(mount.secretFileMimeType) || 'application/octet-stream';
+    return `data:${mimeType};base64,${base64UrlToBase64(encoded)}`;
+  }
+
+  function hasImageSecretPreview(mount: VolumeMount): boolean {
+    return hasFileSecret(mount) && trimSecretPart(mount.secretFileMimeType).startsWith('image/');
   }
 
   function loadDismissedRootSuggestions(): string[] {
@@ -857,7 +884,13 @@
     const trimmedValue = trimSecretPart(value);
     const next = mounts.map((mount) =>
       mount.id === mountId
-        ? { ...mount, address: trimmedValue, secretFilePayload: '', secretFileName: '' }
+        ? {
+            ...mount,
+            address: trimmedValue,
+            secretFilePayload: '',
+            secretFileName: '',
+            secretFileMimeType: '',
+          }
         : mount
     );
     mounts = next;
@@ -870,7 +903,13 @@
     const trimmedValue = trimSecretPart(value);
     const next = mounts.map((mount) =>
       mount.id === mountId
-        ? { ...mount, password: trimmedValue, secretFilePayload: '', secretFileName: '' }
+        ? {
+            ...mount,
+            password: trimmedValue,
+            secretFilePayload: '',
+            secretFileName: '',
+            secretFileMimeType: '',
+          }
         : mount
     );
     mounts = next;
@@ -892,6 +931,7 @@
             password: '',
             secretFilePayload: payload,
             secretFileName: label,
+            secretFileMimeType: trimSecretPart(file.type),
             collapsed: false,
           }
         : { ...mount, collapsed: true }
@@ -902,21 +942,42 @@
     pendingMountId = mountId;
   }
 
+  function mountIdFromDropTarget(target: EventTarget | null): string | null {
+    if (!(target instanceof Element)) return null;
+    const mountNode = target.closest<HTMLElement>('[data-mount-id]');
+    return mountNode?.dataset.mountId ?? null;
+  }
+
+  function prepareMountForSecretDrop(target: EventTarget | null): string {
+    const explicitTargetId = mountIdFromDropTarget(target);
+    if (explicitTargetId && mounts.some((mount) => mount.id === explicitTargetId)) {
+      return explicitTargetId;
+    }
+
+    const expandedActiveMount = mounts.find(
+      (mount) => mount.id === activeMountId && !mount.collapsed
+    );
+    if (expandedActiveMount) {
+      return expandedActiveMount.id;
+    }
+
+    const nextMount = createMount();
+    const collapsedExisting = mounts.map((mount) => ({ ...mount, collapsed: true }));
+    mounts = [...collapsedExisting, nextMount];
+    activeMountId = nextMount.id;
+    return nextMount.id;
+  }
+
   async function handleSecretFileDrop(event: DragEvent) {
     event.preventDefault();
+    event.stopPropagation();
     isSecretDropTarget = false;
     const file = event.dataTransfer?.files?.[0];
     if (!file) return;
 
-    let targetMountId = activeMountId;
-    if (!targetMountId) {
-      const nextMount = createMount();
-      mounts = [nextMount];
-      targetMountId = nextMount.id;
-    }
-
     try {
       errorMessage = '';
+      const targetMountId = prepareMountForSecretDrop(event.target);
       await applySecretFileToMount(file, targetMountId);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to use secret file';
@@ -1911,7 +1972,7 @@
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
           {@const isPending = pendingMountId === mount.id}
           {#if expanded}
-            <div class="volume-chip expanded">
+            <div class="volume-chip expanded" data-mount-id={mount.id}>
               <div class="header-dock">
                 <div class="header-dock-main editing">
                   <div class="secret-input-wrapper in-dock">
@@ -2007,6 +2068,7 @@
               type="button"
               class="volume-chip"
               class:selected={mount.id === activeMountId && mount.collapsed}
+              data-mount-id={mount.id}
               aria-label={mountLabel(mount) || 'Volume entry'}
               onclick={(event) => handleChipClick(event, mount.id)}
               ondblclick={(event) => handleChipDoubleClick(event, mount.id)}
@@ -2014,7 +2076,29 @@
               <div class="header-dock">
                 <div class="header-dock-main">
                   <div class="header-dock-badge" class:loading={isPending}>
-                    <p class="header-dock-name" title={mountLabel(mount)}>{mountLabel(mount)}</p>
+                    <div class="header-dock-badge-top">
+                      {#if hasFileSecret(mount)}
+                        <span class="secret-file-preview" class:image={hasImageSecretPreview(mount)}>
+                          {#if hasImageSecretPreview(mount) && secretFilePayloadDataUrl(mount)}
+                            <img
+                              class="secret-file-preview-image"
+                              src={secretFilePayloadDataUrl(mount) ?? ''}
+                              alt=""
+                              aria-hidden="true"
+                            />
+                          {:else}
+                            <span class="secret-file-preview-icon" aria-hidden="true">
+                              {#if trimSecretPart(mount.secretFileMimeType).startsWith('image/')}
+                                <ImageIcon size={13} strokeWidth={2.1} />
+                              {:else}
+                                <FileText size={13} strokeWidth={2.1} />
+                              {/if}
+                            </span>
+                          {/if}
+                        </span>
+                      {/if}
+                      <p class="header-dock-name" title={mountLabel(mount)}>{mountLabel(mount)}</p>
+                    </div>
                     {#if isPending}
                       <span class="badge-meter" aria-hidden="true">
                         <span class="badge-meter-bar"></span>
@@ -2845,6 +2929,13 @@
     color: rgba(224, 242, 254, 0.98);
   }
 
+  .header-dock-badge-top {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
   .volume-chip-expanded {
     max-height: 0;
     opacity: 0;
@@ -2867,11 +2958,45 @@
     font-size: 0.92rem;
     font-weight: 600;
     color: rgba(240, 249, 255, 0.96);
+    min-width: 0;
     max-width: min(52vw, 620px);
     text-overflow: ellipsis;
     overflow: hidden;
     white-space: nowrap;
     letter-spacing: 0.01em;
+  }
+
+  .secret-file-preview {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    overflow: hidden;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(96, 165, 250, 0.22);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .secret-file-preview.image {
+    background: rgba(7, 14, 28, 0.94);
+    border-color: rgba(125, 211, 252, 0.28);
+  }
+
+  .secret-file-preview-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .secret-file-preview-icon {
+    color: rgba(191, 219, 254, 0.9);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .header-dock-actions {

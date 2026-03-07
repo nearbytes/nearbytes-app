@@ -7,6 +7,10 @@ import type { FileService } from '../domain/fileService.js';
 import type { StorageBackend } from '../types/storage.js';
 import { createRoutes } from './routes.js';
 import { errorHandler, notFoundHandler } from './errors.js';
+import {
+  InMemorySecretSessionStore,
+  type SecretSessionStore,
+} from './secretSessions.js';
 
 /**
  * Dependencies required to construct the API app.
@@ -16,6 +20,7 @@ export interface AppDependencies {
   readonly crypto: CryptoOperations;
   readonly storage: StorageBackend;
   readonly tokenKey?: Uint8Array;
+  readonly sessionStore?: SecretSessionStore;
   readonly corsOrigin: string | string[] | boolean;
   readonly maxUploadBytes: number;
   /** Resolved absolute storage path; used for debug endpoints and diagnostics. */
@@ -33,6 +38,7 @@ export interface AppDependencies {
  */
 export function createApp(deps: AppDependencies): express.Express {
   const app = express();
+  const sessionStore = deps.sessionStore ?? new InMemorySecretSessionStore();
   app.disable('x-powered-by');
 
   app.use(
@@ -51,7 +57,12 @@ export function createApp(deps: AppDependencies): express.Express {
   app.use(express.json({ limit: '1mb' }));
   app.use(requestLogger());
 
-  app.use(createRoutes(deps));
+  app.use(
+    createRoutes({
+      ...deps,
+      sessionStore,
+    })
+  );
 
   const uiDistPath = resolveUiDistPath(deps.uiDistPath);
   if (uiDistPath) {

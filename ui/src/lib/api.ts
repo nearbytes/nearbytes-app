@@ -280,6 +280,25 @@ function isElectronRenderer(): boolean {
   return /\bElectron\//.test(navigator.userAgent);
 }
 
+function useSameOriginDesktopProxy(runtimeConfig: DesktopRuntimeConfig): boolean {
+  if (!runtimeConfig.isDesktop || typeof window === 'undefined') {
+    return false;
+  }
+  const { protocol, hostname, port } = window.location;
+  return (
+    (protocol === 'http:' || protocol === 'https:') &&
+    (hostname === '127.0.0.1' || hostname === 'localhost') &&
+    port === '5173'
+  );
+}
+
+function getRequestBaseUrl(runtimeConfig: DesktopRuntimeConfig): string {
+  if (useSameOriginDesktopProxy(runtimeConfig)) {
+    return '';
+  }
+  return runtimeConfig.apiBaseUrl;
+}
+
 async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {
   if (runtimeConfigPromise) {
     return runtimeConfigPromise;
@@ -359,7 +378,7 @@ async function apiRequest<T>(
     headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
   }
 
-  const response = await fetch(`${runtimeConfig.apiBaseUrl}${endpoint}`, {
+  const response = await fetch(`${getRequestBaseUrl(runtimeConfig)}${endpoint}`, {
     ...fetchOptions,
     headers,
   });
@@ -573,7 +592,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
         headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
       }
 
-      const response = await fetch(`${runtimeConfig.apiBaseUrl}/watch/volume`, {
+      const response = await fetch(`${getRequestBaseUrl(runtimeConfig)}/watch/volume`, {
         method: 'GET',
         headers,
         signal: abortController.signal,
@@ -636,7 +655,7 @@ export async function downloadFile(auth: Auth, blobHash: string): Promise<Blob> 
     headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
   }
 
-  const response = await fetch(`${runtimeConfig.apiBaseUrl}/file/${blobHash}`, {
+  const response = await fetch(`${getRequestBaseUrl(runtimeConfig)}/file/${blobHash}`, {
     method: 'GET',
     headers,
   });

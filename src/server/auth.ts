@@ -3,6 +3,7 @@ import type { Secret } from '../types/keys.js';
 import { createSecret } from '../types/keys.js';
 import { ApiError } from './errors.js';
 import { base64ToBytes, base64UrlToBytes, hexToBytes } from '../utils/encoding.js';
+import type { SecretSessionStore } from './secretSessions.js';
 
 const AES_GCM_IV_LENGTH = 12;
 const AES_GCM_TAG_LENGTH = 16;
@@ -13,11 +14,14 @@ const AES_GCM_KEY_LENGTH = 32;
  */
 export interface AuthConfig {
   readonly tokenKey?: Uint8Array;
+  readonly sessionStore?: SecretSessionStore;
 }
 
 /**
  * Extracts and validates the Nearbytes secret from an HTTP request.
  * Auth precedence: Bearer token wins, otherwise x-nearbytes-secret header.
+ * Bearer tokens first resolve against the in-memory session store, then fall back
+ * to stateless token decoding for backward compatibility.
  */
 export async function getSecretFromRequest(
   req: Request,
@@ -29,11 +33,16 @@ export async function getSecretFromRequest(
     if (!match) {
       throw new ApiError(401, 'UNAUTHORIZED', 'Invalid Authorization header');
     }
-    if (!config.tokenKey) {
-      throw new ApiError(401, 'UNAUTHORIZED', 'Bearer tokens are not enabled');
+    const bearerToken = match[1];
+    const sessionSecret = config.sessionStore?.getSecret(bearerToken);
+    if (sessionSecret) {
+      return validateSecret(sessionSecret);
     }
-    const secret = await decodeSecretToken(match[1], config.tokenKey);
-    return validateSecret(secret);
+    if (config.tokenKey) {
+      const secret = await decodeSecretToken(bearerToken, config.tokenKey);
+      return validateSecret(secret);
+    }
+    throw new ApiError(401, 'UNAUTHORIZED', 'Invalid token');
   }
 
   const headerSecret = req.get('x-nearbytes-secret');

@@ -222,9 +222,10 @@ const data = await getFile(secret, files[0].blobHash);
 
 ## Phase 2: Local File Server API
 
-Nearbytes includes a stateless local API server that exposes the Phase 1 file
-service over HTTP. Every request supplies either a secret header or a stateless
-Bearer token derived from the secret.
+Nearbytes includes a local API server that exposes the Phase 1 file service over
+HTTP. `POST /open` accepts the full secret in the request body and returns a
+compact Bearer token backed by the running server process. Subsequent requests
+normally use that short token instead of resending the secret.
 
 ### Run the server
 
@@ -245,7 +246,7 @@ Environment variables:
 - `PORT` (default: `3000`) - Server port
 - `NEARBYTES_STORAGE_DIR` (default: `$HOME/MEGA/NearbytesStorage/NearbytesStorage` on macOS/Linux, `%USERPROFILE%\MEGA\NearbytesStorage\NearbytesStorage` on Windows) - Storage directory. **Single source of truth** for where the server reads/writes `channels/` and `blocks/`. At this time the app uses only the MEGA cloud synced path by default. Set this only if your MEGA folder is in a different location (see below).
 - `NEARBYTES_ROOTS_CONFIG` (default: `~/.nearbytes/roots.json`) - Local multi-root manifest path
-- `NEARBYTES_SERVER_TOKEN_KEY` (optional) - 32-byte key (hex or base64) to enable Bearer tokens
+- `NEARBYTES_SERVER_TOKEN_KEY` (optional) - 32-byte key (hex or base64) to keep accepting legacy stateless Bearer tokens as a compatibility fallback
 - `NEARBYTES_CORS_ORIGIN` (default: `http://localhost:5173`) - CORS origin
 - `NEARBYTES_MAX_UPLOAD_MB` (default: `50`) - Maximum upload size in MB
 

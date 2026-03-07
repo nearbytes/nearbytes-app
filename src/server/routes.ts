@@ -15,6 +15,7 @@ import { bytesToHex } from '../utils/encoding.js';
 import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import { ApiError } from './errors.js';
 import { encodeSecretToken, getSecretFromRequest, validateSecret } from './auth.js';
+import type { SecretSessionStore } from './secretSessions.js';
 import { VolumeWatchHub } from './volumeWatchHub.js';
 import {
   getStorageDiagnostics,
@@ -40,6 +41,7 @@ export interface RouteDependencies {
   readonly crypto: CryptoOperations;
   readonly storage: StorageBackend;
   readonly tokenKey?: Uint8Array;
+  readonly sessionStore?: SecretSessionStore;
   readonly maxUploadBytes: number;
   /** Resolved absolute storage path; used for debug endpoints. */
   readonly resolvedStorageDir?: string;
@@ -236,7 +238,9 @@ export function createRoutes(deps: RouteDependencies): Router {
         files: files.map(mapFile),
       };
 
-      if (deps.tokenKey) {
+      if (deps.sessionStore) {
+        response.token = deps.sessionStore.createSession(validatedSecret);
+      } else if (deps.tokenKey) {
         response.token = await encodeSecretToken(validatedSecret, deps.tokenKey);
       }
 
@@ -426,7 +430,7 @@ export function createRoutes(deps: RouteDependencies): Router {
 
 function requireSecret(deps: RouteDependencies): RequestHandler {
   return (req, res, next) => {
-    void getSecretFromRequest(req, { tokenKey: deps.tokenKey })
+    void getSecretFromRequest(req, { tokenKey: deps.tokenKey, sessionStore: deps.sessionStore })
       .then((secret) => {
         res.locals.secret = secret;
         next();
