@@ -29,6 +29,7 @@
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import {
     Activity,
+    ClipboardPaste,
     Download,
     Eye,
     FileText,
@@ -57,6 +58,8 @@
 
   type NearbytesDesktopBridge = {
     fetchRemoteFile?: (url: string) => Promise<DesktopRemoteFile>;
+    getClipboardImageStatus?: () => Promise<{ hasImage: boolean }>;
+    readClipboardImage?: () => Promise<DesktopRemoteFile | null>;
   };
 
   type SecretFileHashEntry = {
@@ -348,21 +351,37 @@
     }
   }
 
+  function looksLikeMediaUrl(value: string): boolean {
+    try {
+      const url = new URL(value);
+      const pathname = url.pathname.toLowerCase();
+      return /\.(png|jpe?g|gif|webp|bmp|svg|heic|avif|mp4|mov|webm|mp3|wav|ogg|pdf)$/i.test(pathname);
+    } catch {
+      return false;
+    }
+  }
+
   function extractUrlFromHtml(html: string): string | null {
     const trimmed = html.trim();
     if (trimmed === '') return null;
     try {
       const doc = new DOMParser().parseFromString(trimmed, 'text/html');
+      const baseHref = doc.querySelector('base[href]')?.getAttribute('href') ?? '';
       const media = doc.querySelector('img[src], source[src], video[src], audio[src]');
       if (media instanceof HTMLElement) {
         const src = media.getAttribute('src');
-        if (src && isHttpUrl(src)) {
-          return src;
+        if (src) {
+          try {
+            const resolved = new URL(src, baseHref || undefined).href;
+            if (isHttpUrl(resolved)) {
+              return resolved;
+            }
+          } catch {
+            if (isHttpUrl(src)) {
+              return src;
+            }
+          }
         }
-      }
-      const anchor = doc.querySelector('a[href]');
-      if (anchor instanceof HTMLAnchorElement && isHttpUrl(anchor.href)) {
-        return anchor.href;
       }
     } catch {
       return null;
@@ -390,6 +409,9 @@
     if (!isHttpUrl(url)) {
       return null;
     }
+    if (trimSecretPart(mimeType).toLowerCase() === 'text/html' && !looksLikeMediaUrl(url)) {
+      return null;
+    }
     return {
       url,
       filename: sanitizeDroppedFilename(filename),
@@ -403,32 +425,38 @@
       return downloadUrl;
     }
 
-    const uriList = dataTransfer
-      .getData('text/uri-list')
-      .split('\n')
-      .map((entry) => entry.trim())
-      .find((entry) => entry !== '' && !entry.startsWith('#') && isHttpUrl(entry));
-    if (uriList) {
-      return { url: uriList };
-    }
-
-    const publicUrl = trimSecretPart(dataTransfer.getData('public.url'));
-    if (isHttpUrl(publicUrl)) {
-      return { url: publicUrl };
-    }
-
-    const uniformResourceLocator = trimSecretPart(dataTransfer.getData('UniformResourceLocator'));
-    if (isHttpUrl(uniformResourceLocator)) {
-      return { url: uniformResourceLocator };
-    }
-
     const htmlUrl = extractUrlFromHtml(dataTransfer.getData('text/html'));
     if (htmlUrl) {
       return { url: htmlUrl };
     }
 
+    const uriList = dataTransfer
+      .getData('text/uri-list')
+      .split('\n')
+      .map((entry) => entry.trim())
+      .find(
+        (entry) =>
+          entry !== '' &&
+          !entry.startsWith('#') &&
+          isHttpUrl(entry) &&
+          looksLikeMediaUrl(entry)
+      );
+    if (uriList) {
+      return { url: uriList };
+    }
+
+    const publicUrl = trimSecretPart(dataTransfer.getData('public.url'));
+    if (isHttpUrl(publicUrl) && looksLikeMediaUrl(publicUrl)) {
+      return { url: publicUrl };
+    }
+
+    const uniformResourceLocator = trimSecretPart(dataTransfer.getData('UniformResourceLocator'));
+    if (isHttpUrl(uniformResourceLocator) && looksLikeMediaUrl(uniformResourceLocator)) {
+      return { url: uniformResourceLocator };
+    }
+
     const plainText = trimSecretPart(dataTransfer.getData('text/plain'));
-    if (isHttpUrl(plainText)) {
+    if (isHttpUrl(plainText) && looksLikeMediaUrl(plainText)) {
       return { url: plainText };
     }
 
@@ -475,6 +503,30 @@
     });
   }
 
+  async function fileFromClipboardImage(): Promise<File | null> {
+    const bridge = getDesktopBridge();
+    if (!bridge || typeof bridge.readClipboardImage !== 'function') {
+      return null;
+    }
+
+    const clipboardFile = await bridge.readClipboardImage();
+    if (!clipboardFile) {
+      return null;
+    }
+
+    const bytes = base64ToBytes(clipboardFile.bytesBase64);
+    const mimeType = trimSecretPart(clipboardFile.mimeType) || 'image/png';
+    let filename = trimSecretPart(clipboardFile.filename) || 'clipboard-image';
+    if (!/\.[a-z0-9]+$/i.test(filename)) {
+      filename = `${filename}${extensionFromMimeType(mimeType)}`;
+    }
+
+    return new File([bytes], sanitizeDroppedFilename(filename, 'clipboard-image'), {
+      type: mimeType,
+      lastModified: Date.now(),
+    });
+  }
+
   async function fileFromRemoteDrop(dataTransfer: DataTransfer): Promise<File | null> {
     const descriptor = extractRemoteDropDescriptor(dataTransfer);
     if (!descriptor) {
@@ -493,6 +545,9 @@
 
     const blob = await response.blob();
     const responseType = trimSecretPart(response.headers.get('content-type') ?? '');
+    if (responseType.toLowerCase().startsWith('text/html')) {
+      throw new Error('Dragged page URL instead of media. Drag the image itself, or use Copy Image then paste.');
+    }
     const mimeType = responseType || trimSecretPart(blob.type) || descriptor.mimeType || 'application/octet-stream';
     let filename = trimSecretPart(descriptor.filename ?? '');
     if (filename === '') {
@@ -597,6 +652,8 @@
   let pendingMountId = $state<string | null>(null);
   let secretPasteTargetMountId = $state<string | null>(null);
   let secretFileHashes = $state<Record<string, SecretFileHashEntry>>({});
+  let clipboardImageAvailable = $state(false);
+  let clipboardImageLoading = $state(false);
   let isHeaderHovering = $state(false);
   let isSecretDropTarget = $state(false);
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
@@ -648,6 +705,62 @@
   const dismissedRootSuggestionSet = $derived.by(
     () => new Set(dismissedRootSuggestions.map((value) => normalizeComparablePath(value)))
   );
+
+  $effect(() => {
+    const expandedMount = mounts.find((mount) => mount.id === activeMountId && !mount.collapsed);
+    if (!expandedMount) {
+      clipboardImageAvailable = false;
+      clipboardImageLoading = false;
+      return;
+    }
+
+    const bridge = getDesktopBridge();
+    if (!bridge || typeof bridge.getClipboardImageStatus !== 'function') {
+      clipboardImageAvailable = false;
+      return;
+    }
+
+    let cancelled = false;
+    let pollingTimer: ReturnType<typeof setInterval> | null = null;
+
+    const refresh = async () => {
+      try {
+        const status = await bridge.getClipboardImageStatus?.();
+        if (!cancelled) {
+          clipboardImageAvailable = Boolean(status?.hasImage);
+        }
+      } catch {
+        if (!cancelled) {
+          clipboardImageAvailable = false;
+        }
+      }
+    };
+
+    void refresh();
+    const handleWindowFocus = () => {
+      void refresh();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refresh();
+      }
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    pollingTimer = setInterval(() => {
+      void refresh();
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      if (pollingTimer) {
+        clearInterval(pollingTimer);
+      }
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  });
 
   const discoveredSourceRows = $derived.by(() => {
     const uniqueSources = new Map<string, DiscoveredNearbytesSource>();
@@ -1351,6 +1464,25 @@
     } catch (error) {
       errorMessage = dropFailureMessage(error, 'Failed to use secret file');
       pendingMountId = null;
+    }
+  }
+
+  async function handlePasteImageButton(mountId: string) {
+    clipboardImageLoading = true;
+    try {
+      errorMessage = '';
+      const file = await fileFromClipboardImage();
+      if (!file) {
+        clipboardImageAvailable = false;
+        errorMessage = 'Clipboard does not contain an image.';
+        return;
+      }
+      secretPasteTargetMountId = mountId;
+      await applySecretFileToMount(file, mountId);
+    } catch (error) {
+      errorMessage = dropFailureMessage(error, 'Failed to use clipboard image as secret');
+    } finally {
+      clipboardImageLoading = false;
     }
   }
 
@@ -2442,6 +2574,22 @@
                     />
                     {#if isLoading && mount.id === activeMountId}
                       <span class="loading-spinner"></span>
+                    {/if}
+                  </div>
+                  <div class="secret-input-hint-row">
+                    <p class="secret-input-hint">
+                      Drop an image/file here, or press <kbd>Cmd/Ctrl</kbd> + <kbd>V</kbd>.
+                    </p>
+                    {#if clipboardImageAvailable || clipboardImageLoading}
+                      <button
+                        type="button"
+                        class="workspace-toggle secret-clipboard-btn"
+                        onclick={() => handlePasteImageButton(mount.id)}
+                        disabled={clipboardImageLoading}
+                      >
+                        <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                        <span>{clipboardImageLoading ? 'Reading…' : 'Paste Image'}</span>
+                      </button>
                     {/if}
                   </div>
                 </div>
@@ -3761,6 +3909,42 @@
 
   .secret-input-wrapper.in-dock {
     width: 100%;
+  }
+
+  .secret-input-hint-row {
+    margin-top: 0.42rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+  }
+
+  .secret-input-hint {
+    margin: 0;
+    font-size: 0.72rem;
+    color: rgba(191, 219, 254, 0.64);
+    letter-spacing: 0.01em;
+  }
+
+  .secret-input-hint kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.25rem;
+    padding: 0 0.34rem;
+    border-radius: 0.42rem;
+    border: 1px solid rgba(96, 165, 250, 0.18);
+    background: rgba(10, 18, 33, 0.7);
+    color: rgba(226, 232, 240, 0.86);
+    font-size: 0.68rem;
+    font-weight: 600;
+    font-family: inherit;
+    vertical-align: middle;
+  }
+
+  .secret-clipboard-btn {
+    min-width: 126px;
   }
 
   .secret-input {

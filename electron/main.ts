@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import { existsSync } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -132,6 +132,24 @@ function registerIpc(): void {
     return {
       filename: filenameFromRemoteResponse(url, response.headers.get('content-disposition')),
       mimeType: response.headers.get('content-type') ?? 'application/octet-stream',
+      bytesBase64: bytes.toString('base64'),
+    };
+  });
+  ipcMain.handle('nearbytes-desktop:get-clipboard-image-status', () => {
+    const image = clipboard.readImage();
+    return {
+      hasImage: !image.isEmpty(),
+    };
+  });
+  ipcMain.handle('nearbytes-desktop:read-clipboard-image', () => {
+    const image = clipboard.readImage();
+    if (image.isEmpty()) {
+      return null;
+    }
+    const bytes = image.toPNG();
+    return {
+      filename: 'clipboard-image.png',
+      mimeType: 'image/png',
       bytesBase64: bytes.toString('base64'),
     };
   });
