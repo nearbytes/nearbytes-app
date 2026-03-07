@@ -38,6 +38,7 @@
     Plus,
     RefreshCw,
     Search,
+    Settings2,
     Trash2,
     X,
   } from 'lucide-svelte';
@@ -850,20 +851,12 @@
     }
   }
 
-  function handleChipClick(event: MouseEvent, mountId: string) {
+  function handleChipClick(mountId: string) {
     const target = mounts.find((mount) => mount.id === mountId);
     if (!target || !target.collapsed) {
       return;
     }
     selectMount(mountId);
-  }
-
-  function handleChipDoubleClick(event: MouseEvent, mountId: string) {
-    const target = mounts.find((mount) => mount.id === mountId);
-    if (!target || !target.collapsed) {
-      return;
-    }
-    reopenMount(mountId);
   }
 
   function collapseExpandedMountFromOutside(target: EventTarget | null) {
@@ -2015,7 +2008,7 @@
                     text="Remove"
                     icon={Trash2}
                     armed={true}
-                    armDelayMs={1000}
+                    armDelayMs={0}
                     autoDisarmMs={3000}
                     resetKey={`${mount.id}:${mount.address}:${mount.password}:${expanded}`}
                     onPress={() => removeMount(mount.id)}
@@ -2064,50 +2057,65 @@
               </div>
             </div>
           {:else}
-            <button
-              type="button"
-              class="volume-chip"
+            <div
+              class="volume-chip collapsed-shell"
               class:selected={mount.id === activeMountId && mount.collapsed}
               data-mount-id={mount.id}
-              aria-label={mountLabel(mount) || 'Volume entry'}
-              onclick={(event) => handleChipClick(event, mount.id)}
-              ondblclick={(event) => handleChipDoubleClick(event, mount.id)}
             >
-              <div class="header-dock">
-                <div class="header-dock-main">
-                  <div class="header-dock-badge" class:loading={isPending}>
-                    <div class="header-dock-badge-top">
-                      {#if hasFileSecret(mount)}
-                        <span class="secret-file-preview" class:image={hasImageSecretPreview(mount)}>
-                          {#if hasImageSecretPreview(mount) && secretFilePayloadDataUrl(mount)}
-                            <img
-                              class="secret-file-preview-image"
-                              src={secretFilePayloadDataUrl(mount) ?? ''}
-                              alt=""
-                              aria-hidden="true"
-                            />
-                          {:else}
-                            <span class="secret-file-preview-icon" aria-hidden="true">
-                              {#if trimSecretPart(mount.secretFileMimeType).startsWith('image/')}
-                                <ImageIcon size={13} strokeWidth={2.1} />
-                              {:else}
-                                <FileText size={13} strokeWidth={2.1} />
-                              {/if}
-                            </span>
-                          {/if}
+              <button
+                type="button"
+                class="volume-chip-select"
+                aria-label={mountLabel(mount) || 'Volume entry'}
+                onclick={() => handleChipClick(mount.id)}
+              >
+                <div class="header-dock">
+                  <div class="header-dock-main">
+                    <div class="header-dock-badge" class:loading={isPending}>
+                      <div class="header-dock-badge-top">
+                        {#if hasFileSecret(mount)}
+                          <span class="secret-file-preview" class:image={hasImageSecretPreview(mount)}>
+                            {#if hasImageSecretPreview(mount) && secretFilePayloadDataUrl(mount)}
+                              <img
+                                class="secret-file-preview-image"
+                                src={secretFilePayloadDataUrl(mount) ?? ''}
+                                alt=""
+                                aria-hidden="true"
+                              />
+                            {:else}
+                              <span class="secret-file-preview-icon" aria-hidden="true">
+                                {#if trimSecretPart(mount.secretFileMimeType).startsWith('image/')}
+                                  <ImageIcon size={13} strokeWidth={2.1} />
+                                {:else}
+                                  <FileText size={13} strokeWidth={2.1} />
+                                {/if}
+                              </span>
+                            {/if}
+                          </span>
+                        {/if}
+                        <p class="header-dock-name" title={mountLabel(mount)}>{mountLabel(mount)}</p>
+                      </div>
+                      {#if isPending}
+                        <span class="badge-meter" aria-hidden="true">
+                          <span class="badge-meter-bar"></span>
                         </span>
                       {/if}
-                      <p class="header-dock-name" title={mountLabel(mount)}>{mountLabel(mount)}</p>
                     </div>
-                    {#if isPending}
-                      <span class="badge-meter" aria-hidden="true">
-                        <span class="badge-meter-bar"></span>
-                      </span>
-                    {/if}
                   </div>
                 </div>
-              </div>
-            </button>
+              </button>
+              <button
+                type="button"
+                class="volume-chip-config-btn"
+                aria-label={`Edit ${mountLabel(mount) || 'volume'}`}
+                title="Edit volume"
+                onclick={(event) => {
+                  event.stopPropagation();
+                  reopenMount(mount.id);
+                }}
+              >
+                <Settings2 size={14} strokeWidth={2} />
+              </button>
+            </div>
           {/if}
         {/each}
         <button
@@ -2705,7 +2713,7 @@
                     class="manager-btn danger"
                     text="Delete"
                     armed={true}
-                    armDelayMs={1000}
+                    armDelayMs={0}
                     autoDisarmMs={3000}
                     disabled={isHistoryMode}
                     resetKey={`${selectedFile.blobHash}:${isHistoryMode}`}
@@ -2830,10 +2838,15 @@
     font: inherit;
     color: inherit;
     text-align: left;
-    cursor: pointer;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.04),
       0 14px 32px rgba(2, 6, 23, 0.28);
+  }
+
+  .volume-chip.collapsed-shell {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
   }
 
   .volume-chip.expanded {
@@ -2903,6 +2916,67 @@
     gap: 0.5rem;
     min-height: 42px;
     transition: padding 0.24s ease;
+  }
+
+  .volume-chip-select {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    padding: 0;
+    min-width: 0;
+    flex: 1 1 auto;
+    cursor: pointer;
+  }
+
+  .volume-chip-select:hover .header-dock {
+    background: linear-gradient(180deg, rgba(14, 29, 50, 0.36), rgba(9, 21, 39, 0.18));
+  }
+
+  .volume-chip-select:focus-visible {
+    outline: none;
+  }
+
+  .volume-chip-select:focus-visible .header-dock {
+    background: linear-gradient(180deg, rgba(14, 29, 50, 0.46), rgba(9, 21, 39, 0.26));
+    box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.18);
+  }
+
+  .volume-chip-config-btn {
+    appearance: none;
+    border: 0;
+    border-left: 1px solid rgba(56, 189, 248, 0.14);
+    background: linear-gradient(180deg, rgba(9, 18, 33, 0.36), rgba(7, 14, 26, 0.18));
+    color: rgba(186, 230, 253, 0.72);
+    width: 34px;
+    min-width: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition:
+      background-color 0.2s ease,
+      color 0.2s ease,
+      border-color 0.2s ease,
+      transform 0.2s ease;
+  }
+
+  .volume-chip-config-btn:hover {
+    background: linear-gradient(180deg, rgba(18, 35, 60, 0.9), rgba(11, 22, 40, 0.84));
+    border-left-color: rgba(96, 165, 250, 0.3);
+    color: rgba(240, 249, 255, 0.96);
+    transform: translateX(1px);
+  }
+
+  .volume-chip-config-btn:focus-visible {
+    outline: none;
+    background: linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9));
+    border-left-color: rgba(125, 211, 252, 0.36);
+    color: rgba(240, 249, 255, 0.98);
+    box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.18);
   }
 
   .header-dock-main {

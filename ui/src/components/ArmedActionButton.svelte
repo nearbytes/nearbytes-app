@@ -2,7 +2,7 @@
   let {
     text,
     armed = false,
-    armDelayMs = 1000,
+    armDelayMs = 0,
     autoDisarmMs = 3000,
     disabled = false,
     title = '',
@@ -59,13 +59,15 @@
 
   function arm() {
     isArmedState = true;
-    confirmReady = false;
+    confirmReady = armDelayMs <= 0;
     clearTimers();
-    readyTimer = setTimeout(() => {
-      if (isArmedState) {
-        confirmReady = true;
-      }
-    }, armDelayMs);
+    if (armDelayMs > 0) {
+      readyTimer = setTimeout(() => {
+        if (isArmedState) {
+          confirmReady = true;
+        }
+      }, armDelayMs);
+    }
     disarmTimer = setTimeout(() => {
       if (isArmedState) {
         disarm();
@@ -102,7 +104,7 @@
     return 'Click again to confirm';
   });
 
-  const computedDisabled = $derived.by(() => disabled || (armed && isArmedState && !confirmReady));
+  const computedDisabled = $derived.by(() => disabled);
 
   $effect(() => {
     resetKey;
