@@ -11,6 +11,9 @@
     ariaExpanded,
     resetKey = null,
     keepTextWhenArmed = false,
+    icon = null,
+    iconSize = 15,
+    iconStrokeWidth = 2,
     class: className = '',
     onPress,
   }: {
@@ -25,6 +28,9 @@
     ariaExpanded?: boolean;
     resetKey?: string | number | null;
     keepTextWhenArmed?: boolean;
+    icon?: any;
+    iconSize?: number;
+    iconStrokeWidth?: number;
     class?: string;
     onPress?: () => void;
   } = $props();
@@ -125,5 +131,23 @@
   aria-expanded={ariaExpanded}
   onclick={handleClick}
 >
-  {buttonLabel}
+  <span class="armed-button-content">
+    {#if icon}
+      <icon class="armed-button-icon" size={iconSize} strokeWidth={iconStrokeWidth}></icon>
+    {/if}
+    <span>{buttonLabel}</span>
+  </span>
 </button>
+
+<style>
+  .armed-button-content {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+  }
+
+  .armed-button-icon {
+    flex: 0 0 auto;
+  }
+</style>

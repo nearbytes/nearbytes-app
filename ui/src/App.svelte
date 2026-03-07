@@ -36,6 +36,8 @@
     Plus,
     RefreshCw,
     Search,
+    Trash2,
+    X,
   } from 'lucide-svelte';
 
   const VOLUME_MOUNTS_KEY = 'nearbytes-volume-mounts-v1';
@@ -161,6 +163,7 @@
   const initialMounts = loadVolumeMounts();
   let mounts = $state<VolumeMount[]>(initialMounts);
   let activeMountId = $state(initialMounts[0]?.id ?? '');
+  let pendingMountId = $state<string | null>(null);
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
   let showStatusPanel = $state(false);
   let showTimeMachinePanel = $state(false);
@@ -615,6 +618,7 @@
       previewLoading = false;
       previewBlobCache.clear();
       revokePreviewUrl();
+      pendingMountId = null;
       return;
     }
     debounceTimer = setTimeout(() => {
@@ -629,6 +633,7 @@
   async function tryOpenAddress(a: string, p: string) {
     if (!a) return;
     const openSecret = buildSecret(a, p);
+    const requestedMountId = activeMountId;
     isLoading = true;
     errorMessage = '';
     isOffline = false;
@@ -671,6 +676,9 @@
       timelinePosition = 0;
     } finally {
       isLoading = false;
+      if (pendingMountId === requestedMountId) {
+        pendingMountId = null;
+      }
     }
   }
 
@@ -709,6 +717,7 @@
     const collapsedExisting = mounts.map((mount) => ({ ...mount, collapsed: true }));
     mounts = [...collapsedExisting, nextMount];
     activeMountId = nextMount.id;
+    pendingMountId = null;
   }
 
   function selectMount(mountId: string) {
@@ -718,11 +727,13 @@
       removeMount(mountId);
       return;
     }
+    pendingMountId = mountId;
     mounts = mounts.map((mount) => ({ ...mount, collapsed: true }));
     activeMountId = mountId;
   }
 
   function reopenMount(mountId: string) {
+    pendingMountId = null;
     mounts = mounts.map((mount) =>
       mount.id === mountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
     );
@@ -736,12 +747,18 @@
       removeMount(mountId);
       return;
     }
+    if (pendingMountId === mountId) {
+      pendingMountId = null;
+    }
     mounts = mounts.map((mount) =>
       mount.id === mountId ? { ...mount, collapsed: true } : mount
     );
   }
 
   function removeMount(mountId: string) {
+    if (pendingMountId === mountId) {
+      pendingMountId = null;
+    }
     const next = mounts.filter((mount) => mount.id !== mountId);
     mounts = next;
     if (activeMountId !== mountId) return;
@@ -756,14 +773,16 @@
   }
 
   function handleChipClick(event: MouseEvent, mountId: string) {
-    if (event.target instanceof Element && event.target.closest('.chip-remove-btn')) {
+    const target = mounts.find((mount) => mount.id === mountId);
+    if (!target || !target.collapsed) {
       return;
     }
     selectMount(mountId);
   }
 
   function handleChipDoubleClick(event: MouseEvent, mountId: string) {
-    if (event.target instanceof Element && event.target.closest('.chip-remove-btn')) {
+    const target = mounts.find((mount) => mount.id === mountId);
+    if (!target || !target.collapsed) {
       return;
     }
     reopenMount(mountId);
@@ -1732,25 +1751,11 @@
       <div class="mounts-row">
         {#each mounts as mount (mount.id)}
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
-          <div
-            class="volume-chip"
-            class:expanded={expanded}
-            role="button"
-            tabindex="0"
-            aria-label={mountLabel(mount) || 'Volume entry'}
-            onclick={(event) => handleChipClick(event, mount.id)}
-            ondblclick={(event) => handleChipDoubleClick(event, mount.id)}
-            onkeydown={(event) => {
-              if (event.target !== event.currentTarget) return;
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                selectMount(mount.id);
-              }
-            }}
-          >
-            <div class="header-dock">
-              <div class="header-dock-main" class:editing={expanded}>
-                {#if expanded}
+          {@const isPending = pendingMountId === mount.id}
+          {#if expanded}
+            <div class="volume-chip expanded">
+              <div class="header-dock">
+                <div class="header-dock-main editing">
                   <div class="secret-input-wrapper in-dock">
                     <input
                       type="text"
@@ -1759,7 +1764,6 @@
                       aria-label="Volume address"
                       oninput={(event) =>
                         updateMountAddress(mount.id, (event.currentTarget as HTMLInputElement).value)}
-                      onclick={(event) => event.stopPropagation()}
                     />
                     <input
                       type="password"
@@ -1769,76 +1773,100 @@
                       autocomplete="current-password"
                       oninput={(event) =>
                         updateMountPassword(mount.id, (event.currentTarget as HTMLInputElement).value)}
-                      onclick={(event) => event.stopPropagation()}
                     />
                     {#if isLoading && mount.id === activeMountId}
                       <span class="loading-spinner"></span>
                     {/if}
                   </div>
-                {:else}
-                  <p class="header-dock-name" title={mountLabel(mount)}>{mountLabel(mount)}</p>
-                {/if}
+                </div>
+                <button
+                  type="button"
+                  class="chip-collapse-btn"
+                  onclick={() => collapseMount(mount.id)}
+                  aria-label="Collapse"
+                  title="Collapse"
+                >
+                  <X size={14} strokeWidth={2.1} />
+                </button>
               </div>
-              {#if expanded}
-                <div class="chip-controls">
+              <div class="volume-chip-expanded expanded">
+                <div class="header-dock-actions">
                   <ArmedActionButton
-                    class="chip-remove-btn"
-                    text="×"
+                    class="panel-action-btn danger"
+                    text="Remove"
+                    icon={Trash2}
                     armed={true}
                     armDelayMs={1000}
                     autoDisarmMs={3000}
-                    keepTextWhenArmed={true}
                     resetKey={`${mount.id}:${mount.address}:${mount.password}:${expanded}`}
                     onPress={() => removeMount(mount.id)}
-                    title="Remove"
-                    ariaLabel="Remove"
+                    title="Remove volume"
+                    ariaLabel="Remove volume"
                   />
-                </div>
-              {/if}
-            </div>
-            {#if expanded}
-              <div class="volume-chip-expanded expanded">
-                <div class="header-dock-actions">
-                  <button
-                    type="button"
-                    class="workspace-toggle"
-                    class:active={showStatusPanel}
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      showStatusPanel = !showStatusPanel;
-                    }}
-                  >
-                    <Activity class="button-icon" size={15} strokeWidth={2} />
-                    <span>Status</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="workspace-toggle"
-                    class:active={showTimeMachinePanel}
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      showTimeMachinePanel = !showTimeMachinePanel;
-                    }}
-                  >
-                    <History class="button-icon" size={15} strokeWidth={2} />
-                    <span>Timeline</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="workspace-toggle"
-                    class:active={showRootsPanel}
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      toggleRootsPanel();
-                    }}
-                  >
-                    <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                    <span>Storage</span>
-                  </button>
+                  <div class="header-dock-actions-main">
+                    <button
+                      type="button"
+                      class="workspace-toggle"
+                      class:active={showStatusPanel}
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        showStatusPanel = !showStatusPanel;
+                      }}
+                    >
+                      <Activity class="button-icon" size={15} strokeWidth={2} />
+                      <span>Status</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="workspace-toggle"
+                      class:active={showTimeMachinePanel}
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        showTimeMachinePanel = !showTimeMachinePanel;
+                      }}
+                    >
+                      <History class="button-icon" size={15} strokeWidth={2} />
+                      <span>Timeline</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="workspace-toggle"
+                      class:active={showRootsPanel}
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        toggleRootsPanel();
+                      }}
+                    >
+                      <HardDrive class="button-icon" size={15} strokeWidth={2} />
+                      <span>Storage</span>
+                    </button>
+                  </div>
                 </div>
               </div>
-            {/if}
-          </div>
+            </div>
+          {:else}
+            <button
+              type="button"
+              class="volume-chip"
+              class:selected={mount.id === activeMountId && mount.collapsed}
+              aria-label={mountLabel(mount) || 'Volume entry'}
+              onclick={(event) => handleChipClick(event, mount.id)}
+              ondblclick={(event) => handleChipDoubleClick(event, mount.id)}
+            >
+              <div class="header-dock">
+                <div class="header-dock-main">
+                  <div class="header-dock-badge" class:loading={isPending}>
+                    <p class="header-dock-name" title={mountLabel(mount)}>{mountLabel(mount)}</p>
+                    {#if isPending}
+                      <span class="badge-meter" aria-hidden="true">
+                        <span class="badge-meter-bar"></span>
+                      </span>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            </button>
+          {/if}
         {/each}
         <button type="button" class="mount-add-btn" onclick={addMount} aria-label="Add" title="Add">
           <Plus size={16} strokeWidth={2.2} />
@@ -2532,6 +2560,7 @@
   }
 
   .volume-chip {
+    appearance: none;
     border: 1px solid rgba(56, 189, 248, 0.22);
     border-radius: 14px;
     background:
@@ -2542,6 +2571,10 @@
     padding: 0.1rem;
     transition: max-width 0.28s ease, border-radius 0.28s ease, background-color 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease, transform 0.28s ease;
     overflow: hidden;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.04),
       0 14px 32px rgba(2, 6, 23, 0.28);
@@ -2556,6 +2589,14 @@
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.05),
       0 24px 56px rgba(2, 6, 23, 0.36);
+    cursor: default;
+  }
+
+  .volume-chip.selected {
+    border-color: rgba(96, 165, 250, 0.38);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      0 18px 38px rgba(2, 6, 23, 0.3);
   }
 
   .header-dock {
@@ -2579,6 +2620,19 @@
 
   .header-dock-main.editing {
     align-items: stretch;
+  }
+
+  .header-dock-badge {
+    min-width: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.38rem;
+    padding: 0.1rem 0;
+  }
+
+  .header-dock-badge.loading .header-dock-name {
+    color: rgba(224, 242, 254, 0.98);
   }
 
   .volume-chip-expanded {
@@ -2613,9 +2667,19 @@
   .header-dock-actions {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .header-dock-actions-main {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
     gap: 0.45rem;
     flex-wrap: wrap;
-    justify-content: flex-end;
+    margin-left: auto;
   }
 
   .workspace-toggle {
@@ -2724,31 +2788,113 @@
     to { transform: rotate(360deg); }
   }
 
-  .chip-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.2rem;
+  .badge-meter {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: 3px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(56, 189, 248, 0.16);
+    box-shadow:
+      inset 0 0 0 1px rgba(56, 189, 248, 0.08),
+      0 0 18px rgba(34, 211, 238, 0.12);
   }
 
-  :global(.chip-remove-btn) {
-    border: 1px solid rgba(248, 113, 113, 0.34);
-    background: rgba(69, 10, 10, 0.64);
-    color: rgba(254, 202, 202, 0.96);
-    border-radius: 11px;
-    width: 32px;
-    height: 32px;
+  .badge-meter-bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -42%;
+    width: 42%;
+    border-radius: inherit;
+    background: linear-gradient(
+      90deg,
+      rgba(34, 211, 238, 0),
+      rgba(125, 211, 252, 0.98) 52%,
+      rgba(34, 211, 238, 0)
+    );
+    animation: badge-meter-slide 1.08s ease-in-out infinite;
+  }
+
+  @keyframes badge-meter-slide {
+    0% {
+      left: -42%;
+    }
+    100% {
+      left: 100%;
+    }
+  }
+
+  .chip-collapse-btn {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    background: rgba(11, 19, 34, 0.5);
+    color: rgba(203, 213, 225, 0.72);
+    border-radius: 999px;
+    width: 24px;
+    height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
-    line-height: 1;
-    font-size: 0.92rem;
     padding: 0;
+    cursor: pointer;
+    transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
   }
 
-  :global(.chip-remove-btn.armed) {
-    border-color: rgba(248, 113, 113, 0.9);
-    background: linear-gradient(180deg, rgba(220, 38, 38, 0.82), rgba(153, 27, 27, 0.9));
+  .chip-collapse-btn:hover {
+    background: rgba(15, 23, 42, 0.82);
+    border-color: rgba(148, 163, 184, 0.34);
+    color: rgba(226, 232, 240, 0.94);
+    transform: translateY(-1px);
+  }
+
+  :global(.panel-action-btn) {
+    border: 1px solid rgba(56, 189, 248, 0.24);
+    background: rgba(12, 24, 43, 0.82);
+    color: rgba(226, 232, 240, 0.92);
+    border-radius: 11px;
+    padding: 0 0.72rem;
+    min-height: 30px;
+    min-width: 116px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.46rem;
+    font-size: 0.76rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  :global(.panel-action-btn:hover:not(:disabled)) {
+    background: rgba(18, 34, 60, 0.94);
+    border-color: rgba(96, 165, 250, 0.34);
+    transform: translateY(-1px);
+  }
+
+  :global(.panel-action-btn:disabled) {
+    cursor: default;
+  }
+
+  :global(.panel-action-btn.danger) {
+    border-color: rgba(248, 113, 113, 0.24);
+    background: rgba(67, 20, 20, 0.62);
+    color: rgba(254, 226, 226, 0.95);
+  }
+
+  :global(.panel-action-btn.danger:hover:not(:disabled)) {
+    border-color: rgba(252, 165, 165, 0.4);
+    background: rgba(88, 24, 24, 0.76);
+  }
+
+  :global(.panel-action-btn.danger.armed) {
+    border-color: rgba(252, 165, 165, 0.84);
+    background: linear-gradient(180deg, rgba(220, 38, 38, 0.86), rgba(153, 27, 27, 0.92));
+    color: #fff5f5;
+    box-shadow: 0 12px 24px rgba(127, 29, 29, 0.24);
   }
 
   .mount-add-btn {
@@ -3840,6 +3986,11 @@
       justify-content: flex-start;
     }
 
+    .header-dock-actions-main {
+      justify-content: flex-start;
+      margin-left: 0;
+    }
+
     .secret-input-wrapper {
       grid-template-columns: 1fr 1fr auto;
     }
@@ -3894,6 +4045,11 @@
       padding: 0 0.68rem;
     }
 
+    :global(.panel-action-btn) {
+      min-width: auto;
+      width: 100%;
+    }
+
     .mount-add-btn {
       width: 32px;
       height: 32px;
@@ -3918,6 +4074,15 @@
     .loading-spinner {
       grid-area: spinner;
       justify-self: start;
+    }
+
+    .header-dock-actions {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .header-dock-actions-main {
+      width: 100%;
     }
 
     .time-machine-head {
