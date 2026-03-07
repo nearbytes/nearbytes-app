@@ -143,10 +143,23 @@
 
   function persistVolumeMounts(mounts: VolumeMount[]): void {
     try {
-      localStorage.setItem(VOLUME_MOUNTS_KEY, JSON.stringify(mounts));
+      localStorage.setItem(VOLUME_MOUNTS_KEY, JSON.stringify(snapshotVolumeMounts(mounts)));
     } catch {
       // ignore
     }
+  }
+
+  function snapshotVolumeMounts(input: VolumeMount[]): VolumeMount[] {
+    return input.map((mount) => ({
+      id: mount.id,
+      address: mount.address,
+      password: mount.password,
+      secretFilePayload: mount.secretFilePayload,
+      secretFileName: mount.secretFileName,
+      secretFileMimeType: mount.secretFileMimeType,
+      collapsed: mount.collapsed,
+      createdAt: mount.createdAt,
+    }));
   }
 
   function trimSecretPart(value: string): string {
@@ -621,10 +634,17 @@
 
   function persistDismissedRootSuggestions(values: string[]): void {
     try {
-      localStorage.setItem(ROOT_SUGGESTIONS_DISMISSED_KEY, JSON.stringify(values));
+      localStorage.setItem(
+        ROOT_SUGGESTIONS_DISMISSED_KEY,
+        JSON.stringify(snapshotDismissedRootSuggestions(values))
+      );
     } catch {
       // ignore
     }
+  }
+
+  function snapshotDismissedRootSuggestions(values: string[]): string[] {
+    return [...values];
   }
 
   // State: address = main input; effectiveSecret = sent to API
@@ -697,6 +717,7 @@
   let watchConnectionSerial = 0;
   let watchDisconnect: (() => void) | null = null;
   let autoRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let volumeOpenSerial = 0;
 
   type SourceRow = {
     source: DiscoveredNearbytesSource;
@@ -924,8 +945,8 @@
     }
 
     const payload: PersistedUiState = {
-      volumeMounts: mounts,
-      dismissedRootSuggestions,
+      volumeMounts: snapshotVolumeMounts(mounts),
+      dismissedRootSuggestions: snapshotDismissedRootSuggestions(dismissedRootSuggestions),
     };
     const bridge = getDesktopBridge();
     const persistTimer = setTimeout(() => {
@@ -1048,6 +1069,16 @@
       timelinePlayTimer = null;
     }
     isTimelinePlaying = false;
+  }
+
+  function delayReject<T>(ms: number, message: string): Promise<T> {
+    return new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(message)), ms);
+    });
+  }
+
+  async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+    return Promise.race([promise, delayReject<T>(ms, message)]);
   }
 
   function setTimelinePosition(next: number) {
@@ -1248,14 +1279,22 @@
 
   async function tryOpenSecret(openSecret: string, label: string, requestedMountId: string) {
     if (!openSecret) return;
+    const serial = ++volumeOpenSerial;
     isLoading = true;
     errorMessage = '';
     isOffline = false;
     try {
-      const response = await openVolume(openSecret);
+      const response = await withTimeout(
+        openVolume(openSecret),
+        12000,
+        'Opening this volume timed out. Check the storage roots and try again.'
+      );
       const authResult = response.token
         ? { type: 'token' as const, token: response.token }
         : { type: 'secret' as const, secret: openSecret };
+      if (serial !== volumeOpenSerial || activeMountId !== requestedMountId) {
+        return;
+      }
       if (response.token) {
         sessionStorage.setItem('nearbytes-token', response.token);
       } else {
@@ -1269,9 +1308,24 @@
       unlockedAddress = label;
       fileList = response.files;
       previewBlobCache.clear();
-      await setCachedFiles(response.volumeId, response.files);
-      await refreshTimeline(false);
+      isVolumeTransitioning = false;
+      pendingMountId = null;
+      void setCachedFiles(response.volumeId, response.files).catch((error) => {
+        console.warn('Failed to cache volume file list:', error);
+      });
+      void refreshTimeline(false).catch((error) => {
+        if (serial !== volumeOpenSerial || activeMountId !== requestedMountId) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : 'Failed to load timeline';
+        if (!errorMessage) {
+          errorMessage = message;
+        }
+      });
     } catch (error) {
+      if (serial !== volumeOpenSerial || activeMountId !== requestedMountId) {
+        return;
+      }
       if (volumeId) {
         const cached = await getCachedFiles(volumeId);
         if (cached) {
@@ -1289,11 +1343,13 @@
       timelineEvents = [];
       timelinePosition = 0;
     } finally {
-      isLoading = false;
-      if (activeMountId === requestedMountId) {
+      if (serial === volumeOpenSerial) {
+        isLoading = false;
+      }
+      if (serial === volumeOpenSerial && activeMountId === requestedMountId) {
         isVolumeTransitioning = false;
       }
-      if (pendingMountId === requestedMountId) {
+      if (serial === volumeOpenSerial && pendingMountId === requestedMountId) {
         pendingMountId = null;
       }
     }
