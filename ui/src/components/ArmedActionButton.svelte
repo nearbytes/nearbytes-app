@@ -10,6 +10,7 @@
     ariaHasPopup,
     ariaExpanded,
     resetKey = null,
+    keepTextWhenArmed = false,
     class: className = '',
     onPress,
   }: {
@@ -23,6 +24,7 @@
     ariaHasPopup?: string;
     ariaExpanded?: boolean;
     resetKey?: string | number | null;
+    keepTextWhenArmed?: boolean;
     class?: string;
     onPress?: () => void;
   } = $props();
@@ -84,6 +86,7 @@
 
   const buttonLabel = $derived.by(() => {
     if (!armed) return text;
+    if (keepTextWhenArmed) return text;
     if (!isArmedState) return text;
     return confirmReady ? 'Confirm' : 'Confirm...';
   });

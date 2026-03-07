@@ -26,71 +26,84 @@
   } from './lib/api.js';
   import { getCachedFiles, setCachedFiles } from './lib/cache.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
+  import {
+    Activity,
+    Download,
+    Eye,
+    FolderTree,
+    HardDrive,
+    History,
+    Plus,
+    RefreshCw,
+    Search,
+  } from 'lucide-svelte';
 
-  const PINNED_VOLUMES_KEY = 'nearbytes-pinned-volumes';
+  const VOLUME_MOUNTS_KEY = 'nearbytes-volume-mounts-v1';
   const ROOT_SUGGESTIONS_DISMISSED_KEY = 'nearbytes-dismissed-suggestions-v1';
-  const DAY_MS = 24 * 60 * 60 * 1000;
-  const WEEK_MS = 7 * DAY_MS;
-  const MONTH_MS = 30 * DAY_MS;
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
-  type PinDuration = 'day' | 'week' | 'month';
-  type PinnedVolume = {
+  type VolumeMount = {
     id: string;
-    name: string;
     address: string;
     password: string;
-    secret: string;
-    expiresAt: number;
-    pinnedAt: number;
-  };
-
-  function buildSecret(addr: string, password: string): string {
-    return password ? `${addr}:${password}` : addr;
+    collapsed: boolean;
+    createdAt: number;
   }
 
-  function durationToMs(duration: PinDuration): number {
-    if (duration === 'day') return DAY_MS;
-    if (duration === 'week') return WEEK_MS;
-    return MONTH_MS;
+  function createMount(overrides: Partial<VolumeMount> = {}): VolumeMount {
+    return {
+      id: overrides.id ?? `mount-${Math.random().toString(16).slice(2, 10)}`,
+      address: overrides.address ?? '',
+      password: overrides.password ?? '',
+      collapsed: overrides.collapsed ?? false,
+      createdAt: overrides.createdAt ?? Date.now(),
+    };
   }
 
-  function normalizePins(input: unknown): PinnedVolume[] {
+  function normalizeMounts(input: unknown): VolumeMount[] {
     if (!Array.isArray(input)) return [];
-    const now = Date.now();
     return input
       .filter((value) => typeof value === 'object' && value !== null)
-      .map((value) => value as Partial<PinnedVolume>)
+      .map((value) => value as Partial<VolumeMount>)
       .filter(
         (value) =>
           typeof value.id === 'string' &&
-          typeof value.name === 'string' &&
           typeof value.address === 'string' &&
           typeof value.password === 'string' &&
-          typeof value.secret === 'string' &&
-          typeof value.expiresAt === 'number' &&
-          typeof value.pinnedAt === 'number'
+          typeof value.collapsed === 'boolean'
       )
-      .filter((value) => (value.expiresAt as number) > now)
-      .sort((a, b) => (b.pinnedAt as number) - (a.pinnedAt as number)) as PinnedVolume[];
+      .map((value) =>
+        createMount({
+          id: value.id,
+          address: value.address,
+          password: value.password,
+          collapsed: value.collapsed,
+          createdAt: value.createdAt,
+        })
+      );
   }
 
-  function loadPinnedVolumes(): PinnedVolume[] {
+  function loadVolumeMounts(): VolumeMount[] {
     try {
-      const raw = localStorage.getItem(PINNED_VOLUMES_KEY);
-      if (!raw) return [];
-      return normalizePins(JSON.parse(raw));
+      const raw = localStorage.getItem(VOLUME_MOUNTS_KEY);
+      if (!raw) return [createMount()];
+      const mounts = normalizeMounts(JSON.parse(raw));
+      return mounts;
     } catch {
-      return [];
+      return [createMount()];
     }
   }
 
-  function persistPinnedVolumes(pins: PinnedVolume[]): void {
+  function persistVolumeMounts(mounts: VolumeMount[]): void {
     try {
-      localStorage.setItem(PINNED_VOLUMES_KEY, JSON.stringify(pins));
+      localStorage.setItem(VOLUME_MOUNTS_KEY, JSON.stringify(mounts));
     } catch {
       // ignore
     }
+  }
+
+  function buildSecret(addr: string, password: string): string {
+    return password ? `${addr}:${password}` : addr;
   }
 
   function loadDismissedRootSuggestions(): string[] {
@@ -145,14 +158,12 @@
   let selectedFolder = $state('');
   let currentPreviewObjectUrl: string | null = null;
   const previewBlobCache = new Map<string, Blob>();
-  let pinnedVolumes = $state<PinnedVolume[]>(loadPinnedVolumes());
-  let showPinMenu = $state(false);
-  let pinClock = $state(Date.now());
+  const initialMounts = loadVolumeMounts();
+  let mounts = $state<VolumeMount[]>(initialMounts);
+  let activeMountId = $state(initialMounts[0]?.id ?? '');
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
   let showStatusPanel = $state(false);
   let showTimeMachinePanel = $state(false);
-  let topbarHovered = $state(false);
-  let topbarFocused = $state(false);
   let showRootsPanel = $state(false);
   let rootsConfigPath = $state<string | null>(null);
   let rootsRuntime = $state<RootsRuntimeSnapshot | null>(null);
@@ -195,17 +206,6 @@
     enabled: boolean;
     writable: boolean;
   };
-
-  const activePins = $derived.by(() => {
-    pinClock;
-    return normalizePins(pinnedVolumes);
-  });
-  const matchedPinned = $derived.by(() => {
-    const a = address.trim();
-    if (!a) return null;
-    const secret = buildSecret(a, addressPassword.trim());
-    return activePins.find((pin) => pin.id === secret) ?? null;
-  });
 
   const dismissedRootSuggestionSet = $derived.by(
     () => new Set(dismissedRootSuggestions.map((value) => normalizeComparablePath(value)))
@@ -282,42 +282,53 @@
   const routedRootCount = $derived.by(() => volumeRouteRows.filter((row) => row.routable).length);
 
   $effect(() => {
-    const interval = setInterval(() => {
-      pinClock = Date.now();
-    }, 60000);
-    return () => clearInterval(interval);
+    const currentMount = mounts.find((mount) => mount.id === activeMountId);
+    if (currentMount) return;
+    if (mounts.length === 0) {
+      if (activeMountId !== '') activeMountId = '';
+      if (address !== '') address = '';
+      if (addressPassword !== '') addressPassword = '';
+      return;
+    }
+    activeMountId = mounts[0].id;
   });
 
   $effect(() => {
-    pinClock;
-    const cleaned = normalizePins(pinnedVolumes);
-    if (cleaned.length !== pinnedVolumes.length) {
-      pinnedVolumes = cleaned;
-      persistPinnedVolumes(cleaned);
+    const currentMount = mounts.find((mount) => mount.id === activeMountId);
+    if (!currentMount) return;
+    if (address !== currentMount.address) {
+      address = currentMount.address;
     }
+    if (addressPassword !== currentMount.password) {
+      addressPassword = currentMount.password;
+    }
+  });
+
+  $effect(() => {
+    const index = mounts.findIndex((mount) => mount.id === activeMountId);
+    if (index < 0) return;
+    const currentMount = mounts[index];
+    if (currentMount.address === address && currentMount.password === addressPassword) {
+      return;
+    }
+    const next = [...mounts];
+    next[index] = {
+      ...currentMount,
+      address,
+      password: addressPassword,
+    };
+    mounts = next;
+  });
+
+  $effect(() => {
+    persistVolumeMounts(mounts);
   });
 
   $effect(() => {
     persistDismissedRootSuggestions(dismissedRootSuggestions);
   });
 
-  $effect(() => {
-    if (matchedPinned && showPinMenu) {
-      showPinMenu = false;
-    }
-  });
-
   const isHistoryMode = $derived.by(() => timelinePosition < timelineEvents.length);
-  const showUtilityChrome = $derived.by(
-    () => address.trim() === '' || topbarHovered || topbarFocused || showPinMenu
-  );
-  const activeVolumeLabel = $derived.by(() => {
-    const current = unlockedAddress.trim();
-    if (current !== '') return current;
-    const pending = address.trim();
-    if (pending !== '') return pending;
-    return 'No volume selected';
-  });
 
   const timelineMarker = $derived.by(() => {
     if (timelineEvents.length === 0) return 'No history yet';
@@ -602,7 +613,6 @@
       previewText = '';
       previewError = '';
       previewLoading = false;
-      showPinMenu = false;
       previewBlobCache.clear();
       revokePreviewUrl();
       return;
@@ -686,49 +696,97 @@
     }
   });
 
-  function pinCurrentCombo(duration: PinDuration) {
-    const a = address.trim();
-    if (!a) {
-      errorMessage = 'Enter an address before pinning';
-      showPinMenu = false;
+  function mountLabel(mount: VolumeMount): string {
+    return mount.address.trim();
+  }
+
+  function isMountEmpty(mount: VolumeMount): boolean {
+    return mount.address.trim() === '' && mount.password.trim() === '';
+  }
+
+  function addMount() {
+    const nextMount = createMount();
+    const collapsedExisting = mounts.map((mount) => ({ ...mount, collapsed: true }));
+    mounts = [...collapsedExisting, nextMount];
+    activeMountId = nextMount.id;
+  }
+
+  function selectMount(mountId: string) {
+    const target = mounts.find((mount) => mount.id === mountId);
+    if (!target) return;
+    if (isMountEmpty(target)) {
+      removeMount(mountId);
       return;
     }
-    const p = addressPassword.trim();
-    const secret = buildSecret(a, p);
-    const now = Date.now();
-    const next = normalizePins(pinnedVolumes).filter((pin) => pin.id !== secret);
-    next.unshift({
-      id: secret,
-      name: a,
-      address: a,
-      password: p,
-      secret,
-      expiresAt: now + durationToMs(duration),
-      pinnedAt: now,
-    });
-    pinnedVolumes = next;
-    persistPinnedVolumes(next);
-    showPinMenu = false;
+    mounts = mounts.map((mount) => ({ ...mount, collapsed: true }));
+    activeMountId = mountId;
   }
 
-  function usePinnedVolume(pin: PinnedVolume) {
-    const sameSelection = address.trim() === pin.address && addressPassword.trim() === pin.password;
-    address = pin.address;
-    addressPassword = pin.password;
-    showPinMenu = false;
-    if (sameSelection) {
-      tryOpenAddress(pin.address, pin.password);
+  function reopenMount(mountId: string) {
+    mounts = mounts.map((mount) =>
+      mount.id === mountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
+    );
+    activeMountId = mountId;
+  }
+
+  function collapseMount(mountId: string) {
+    const target = mounts.find((mount) => mount.id === mountId);
+    if (!target) return;
+    if (isMountEmpty(target)) {
+      removeMount(mountId);
+      return;
+    }
+    mounts = mounts.map((mount) =>
+      mount.id === mountId ? { ...mount, collapsed: true } : mount
+    );
+  }
+
+  function removeMount(mountId: string) {
+    const next = mounts.filter((mount) => mount.id !== mountId);
+    mounts = next;
+    if (activeMountId !== mountId) return;
+    const fallback = next[0];
+    if (fallback) {
+      activeMountId = fallback.id;
+    } else {
+      activeMountId = '';
+      address = '';
+      addressPassword = '';
     }
   }
 
-  function removePinnedVolume(pinId: string) {
-    const next = normalizePins(pinnedVolumes).filter((pin) => pin.id !== pinId);
-    pinnedVolumes = next;
-    persistPinnedVolumes(next);
+  function handleChipClick(event: MouseEvent, mountId: string) {
+    if (event.target instanceof Element && event.target.closest('.chip-remove-btn')) {
+      return;
+    }
+    selectMount(mountId);
   }
 
-  function togglePinMenu() {
-    showPinMenu = !showPinMenu;
+  function handleChipDoubleClick(event: MouseEvent, mountId: string) {
+    if (event.target instanceof Element && event.target.closest('.chip-remove-btn')) {
+      return;
+    }
+    reopenMount(mountId);
+  }
+
+  function updateMountAddress(mountId: string, value: string) {
+    const next = mounts.map((mount) =>
+      mount.id === mountId ? { ...mount, address: value } : mount
+    );
+    mounts = next;
+    if (mountId === activeMountId) {
+      address = value;
+    }
+  }
+
+  function updateMountPassword(mountId: string, value: string) {
+    const next = mounts.map((mount) =>
+      mount.id === mountId ? { ...mount, password: value } : mount
+    );
+    mounts = next;
+    if (mountId === activeMountId) {
+      addressPassword = value;
+    }
   }
 
   function createDraftRoot(kind: 'main' | 'backup'): RootConfigEntry {
@@ -1654,6 +1712,9 @@
 </script>
 
 <svelte:window onkeydown={(e) => {
+  if (e.key === 'Escape') {
+    collapseMount(activeMountId);
+  }
   if (e.key === 'Delete' && e.target instanceof HTMLElement) {
     const fileItem = e.target.closest('[data-filename]');
     if (fileItem) {
@@ -1663,164 +1724,125 @@
       }
     }
   }
-}} onpointerdown={(e) => {
-  if (!(e.target instanceof Element)) return;
-  if (!showPinMenu) return;
-  if (
-    e.target.closest('.pin-menu') ||
-    e.target.closest('.top-pin-btn') ||
-    e.target.closest('.top-unpin-btn')
-  ) {
-    return;
-  }
-  showPinMenu = false;
 }} />
 
 <div class="app">
   <header class="header">
-    <div
-      class="header-shell"
-      role="group"
-      aria-label="Volume quick controls"
-      onmouseenter={() => {
-        topbarHovered = true;
-      }}
-      onmouseleave={() => {
-        topbarHovered = false;
-        showPinMenu = false;
-      }}
-      onfocusin={() => {
-        topbarFocused = true;
-      }}
-      onfocusout={(event) => {
-        if (!(event.currentTarget instanceof HTMLElement)) return;
-        const next = event.relatedTarget;
-        if (next instanceof Node && event.currentTarget.contains(next)) return;
-        topbarFocused = false;
-      }}
-    >
-      <div class="volume-chip" class:expanded={showUtilityChrome}>
-        <div class="header-dock">
-          <div class="header-dock-main" class:editing={showUtilityChrome}>
-            {#if showUtilityChrome}
-              <div class="secret-input-wrapper in-dock">
-                <input
-                  type="text"
-                  placeholder="Enter address..."
-                  bind:value={address}
-                  class="secret-input"
-                  aria-label="Volume address"
-                />
-                <input
-                  type="password"
-                  placeholder="Password (optional)"
-                  bind:value={addressPassword}
-                  class="secret-input password-input"
-                  aria-label="Optional volume password"
-                  autocomplete="current-password"
-                />
-                {#if isLoading}
-                  <span class="loading-spinner"></span>
+    <div class="header-shell">
+      <div class="mounts-row">
+        {#each mounts as mount (mount.id)}
+          {@const expanded = mount.id === activeMountId && !mount.collapsed}
+          <div
+            class="volume-chip"
+            class:expanded={expanded}
+            role="button"
+            tabindex="0"
+            aria-label={mountLabel(mount) || 'Volume entry'}
+            onclick={(event) => handleChipClick(event, mount.id)}
+            ondblclick={(event) => handleChipDoubleClick(event, mount.id)}
+            onkeydown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                selectMount(mount.id);
+              }
+            }}
+          >
+            <div class="header-dock">
+              <div class="header-dock-main" class:editing={expanded}>
+                {#if expanded}
+                  <div class="secret-input-wrapper in-dock">
+                    <input
+                      type="text"
+                      value={mount.address}
+                      class="secret-input"
+                      aria-label="Volume address"
+                      oninput={(event) =>
+                        updateMountAddress(mount.id, (event.currentTarget as HTMLInputElement).value)}
+                      onclick={(event) => event.stopPropagation()}
+                    />
+                    <input
+                      type="password"
+                      value={mount.password}
+                      class="secret-input password-input"
+                      aria-label="Optional volume password"
+                      autocomplete="current-password"
+                      oninput={(event) =>
+                        updateMountPassword(mount.id, (event.currentTarget as HTMLInputElement).value)}
+                      onclick={(event) => event.stopPropagation()}
+                    />
+                    {#if isLoading && mount.id === activeMountId}
+                      <span class="loading-spinner"></span>
+                    {/if}
+                  </div>
+                {:else}
+                  <p class="header-dock-name" title={mountLabel(mount)}>{mountLabel(mount)}</p>
                 {/if}
               </div>
-            {:else}
-              <p class="header-dock-name" title={activeVolumeLabel}>{activeVolumeLabel}</p>
-            {/if}
-          </div>
-          <div class="top-pin-cap" aria-label="Pin controls">
-            {#if matchedPinned}
-              {#if showUtilityChrome}
-                <ArmedActionButton
-                  class="top-unpin-btn"
-                  text="×"
-                  armed={true}
-                  armDelayMs={900}
-                  autoDisarmMs={3000}
-                  resetKey={matchedPinned.id}
-                  onPress={() => removePinnedVolume(matchedPinned.id)}
-                  ariaLabel="Forget pinned volume"
-                />
+              {#if expanded}
+                <div class="chip-controls">
+                  <ArmedActionButton
+                    class="chip-remove-btn"
+                    text="×"
+                    armed={true}
+                    armDelayMs={1000}
+                    autoDisarmMs={3000}
+                    keepTextWhenArmed={true}
+                    resetKey={`${mount.id}:${mount.address}:${mount.password}:${expanded}`}
+                    onPress={() => removeMount(mount.id)}
+                    title="Remove"
+                    ariaLabel="Remove"
+                  />
+                </div>
               {/if}
-            {:else}
-              <button
-                type="button"
-                class="top-pin-btn"
-                aria-label="Pin volume"
-                aria-haspopup="menu"
-                aria-expanded={showPinMenu}
-                disabled={address.trim() === ''}
-                onclick={togglePinMenu}
-              >
-                ⌁
-              </button>
-            {/if}
-            {#if showPinMenu}
-              <div class="pin-menu pin-menu-dock" role="menu" aria-label="Pin volume duration">
-                <button type="button" class="pin-menu-item" role="menuitem" onclick={() => pinCurrentCombo('day')}>
-                  Pin for 1 day
-                </button>
-                <button type="button" class="pin-menu-item" role="menuitem" onclick={() => pinCurrentCombo('week')}>
-                  Pin for 1 week
-                </button>
-                <button type="button" class="pin-menu-item" role="menuitem" onclick={() => pinCurrentCombo('month')}>
-                  Pin for 1 month
-                </button>
-              </div>
-            {/if}
-          </div>
-        </div>
-
-        <div class="volume-chip-expanded" class:expanded={showUtilityChrome}>
-          <div class="header-dock-actions">
-            <button
-              type="button"
-              class="workspace-toggle"
-              class:active={showStatusPanel}
-              onclick={() => {
-                showStatusPanel = !showStatusPanel;
-              }}
-            >
-              Status
-            </button>
-            <button
-              type="button"
-              class="workspace-toggle"
-              class:active={showTimeMachinePanel}
-              onclick={() => {
-                showTimeMachinePanel = !showTimeMachinePanel;
-              }}
-            >
-              Time Machine
-            </button>
-            <button
-              type="button"
-              class="workspace-toggle"
-              class:active={showRootsPanel}
-              onclick={toggleRootsPanel}
-            >
-              Roots
-            </button>
-          </div>
-          {#if activePins.length > 0}
-            <div class="pins-bar">
-              <div class="pins-content">
-                {#each activePins as pin (pin.id)}
-                  <div class="pin-chip-wrap">
-                    <button
-                      type="button"
-                      class="pin-chip"
-                      class:active={matchedPinned?.id === pin.id}
-                      onclick={() => usePinnedVolume(pin)}
-                      title={"Open pinned volume " + pin.name}
-                    >
-                      {pin.name}
-                    </button>
-                  </div>
-                {/each}
-              </div>
             </div>
-          {/if}
-        </div>
+            {#if expanded}
+              <div class="volume-chip-expanded expanded">
+                <div class="header-dock-actions">
+                  <button
+                    type="button"
+                    class="workspace-toggle"
+                    class:active={showStatusPanel}
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      showStatusPanel = !showStatusPanel;
+                    }}
+                  >
+                    <Activity class="button-icon" size={15} strokeWidth={2} />
+                    <span>Status</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="workspace-toggle"
+                    class:active={showTimeMachinePanel}
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      showTimeMachinePanel = !showTimeMachinePanel;
+                    }}
+                  >
+                    <History class="button-icon" size={15} strokeWidth={2} />
+                    <span>Timeline</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="workspace-toggle"
+                    class:active={showRootsPanel}
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      toggleRootsPanel();
+                    }}
+                  >
+                    <HardDrive class="button-icon" size={15} strokeWidth={2} />
+                    <span>Storage</span>
+                  </button>
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/each}
+        <button type="button" class="mount-add-btn" onclick={addMount} aria-label="Add" title="Add">
+          <Plus size={16} strokeWidth={2.2} />
+        </button>
       </div>
     </div>
   </header>
@@ -1880,7 +1902,8 @@
       {/if}
       {#if volumeId && !isLoading && !autoSyncEnabled}
         <button class="refresh-btn" onclick={refreshFiles} title="Refresh file list">
-          ↻ Refresh
+          <RefreshCw class="button-icon" size={15} strokeWidth={2} />
+          <span>Refresh</span>
         </button>
       {/if}
     </div>
@@ -1916,6 +1939,7 @@
               onclick={() => scanSources()}
               disabled={sourceDiscoveryLoading}
             >
+              <Search class="button-icon" size={15} strokeWidth={2} />
               {sourceDiscoveryLoading ? 'Finding…' : 'Find More Roots'}
             </button>
             <button
@@ -1937,9 +1961,11 @@
             </button>
             {#if rootsAdvancedOpen}
               <button type="button" class="roots-action-btn" onclick={() => addRoot('main')}>
+                <Plus class="button-icon" size={15} strokeWidth={2} />
                 New Main
               </button>
               <button type="button" class="roots-action-btn" onclick={() => addRoot('backup')}>
+                <Plus class="button-icon" size={15} strokeWidth={2} />
                 New Backup
               </button>
               <button type="button" class="roots-action-btn" onclick={reloadRootsPanel} disabled={rootsLoading}>
@@ -2234,7 +2260,7 @@
       <section class="time-machine panel-surface" aria-label="Volume timeline">
         <div class="time-machine-head">
           <div>
-            <p class="time-machine-eyebrow">Time Machine</p>
+            <p class="time-machine-eyebrow">Timeline</p>
             <p class="time-machine-marker">{timelineMarker}</p>
           </div>
           <div class="time-machine-actions">
@@ -2348,6 +2374,7 @@
                 disabled={selectedFolder.trim() === '' || isHistoryMode}
                 title={isHistoryMode ? 'Jump to Latest before renaming folders' : 'Rename selected folder'}
               >
+                <FolderTree class="button-icon" size={15} strokeWidth={2} />
                 Rename Folder
               </button>
             </div>
@@ -2390,9 +2417,11 @@
                 </div>
                 <div class="preview-actions">
                   <button type="button" class="manager-btn" onclick={() => openFileInViewer(selectedFile)}>
+                    <Eye class="button-icon" size={15} strokeWidth={2} />
                     Open
                   </button>
                   <button type="button" class="manager-btn" onclick={() => handleDownload(selectedFile)}>
+                    <Download class="button-icon" size={15} strokeWidth={2} />
                     Download
                   </button>
                   <ArmedActionButton
@@ -2458,7 +2487,7 @@
     padding: 0;
     background: #0a0a0f;
     color: #e0e0e0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-family: 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   }
 
   .app {
@@ -2467,14 +2496,17 @@
     height: auto;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+    background:
+      radial-gradient(120% 140% at 0% 0%, rgba(34, 211, 238, 0.09), transparent 48%),
+      radial-gradient(110% 130% at 100% 0%, rgba(14, 165, 233, 0.08), transparent 42%),
+      linear-gradient(180deg, #050b16 0%, #09111d 44%, #060912 100%);
     overflow: visible;
   }
 
   .header {
-    background: rgba(10, 18, 34, 0.88);
-    backdrop-filter: blur(14px);
-    border-bottom: 1px solid rgba(102, 126, 234, 0.2);
+    background: rgba(7, 14, 28, 0.84);
+    backdrop-filter: blur(18px);
+    border-bottom: 1px solid rgba(56, 189, 248, 0.14);
     padding: 0.75rem 2rem 0.9rem;
     position: sticky;
     top: 0;
@@ -2482,6 +2514,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
+    box-shadow: 0 20px 60px rgba(2, 6, 23, 0.36);
   }
 
   .header-shell {
@@ -2491,34 +2524,49 @@
     align-items: flex-start;
   }
 
+  .mounts-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+  }
+
   .volume-chip {
-    border: 1px solid rgba(102, 126, 234, 0.35);
-    border-radius: 10px;
-    background: rgba(10, 10, 15, 0.35);
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    border-radius: 14px;
+    background:
+      linear-gradient(180deg, rgba(12, 25, 45, 0.9), rgba(9, 18, 34, 0.88));
     width: fit-content;
     min-width: 132px;
-    max-width: min(72vw, 360px);
+    max-width: min(72vw, 420px);
     padding: 0.1rem;
-    transition: max-width 0.28s ease, border-radius 0.28s ease, background-color 0.28s ease, border-color 0.28s ease;
+    transition: max-width 0.28s ease, border-radius 0.28s ease, background-color 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease, transform 0.28s ease;
     overflow: hidden;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.04),
+      0 14px 32px rgba(2, 6, 23, 0.28);
   }
 
   .volume-chip.expanded {
-    max-width: min(96vw, 1600px);
-    border-radius: 12px;
-    background: rgba(12, 18, 32, 0.62);
-    border-color: rgba(125, 211, 252, 0.35);
+    max-width: min(96vw, 1500px);
+    border-radius: 18px;
+    background:
+      linear-gradient(180deg, rgba(10, 23, 43, 0.96), rgba(8, 18, 35, 0.94));
+    border-color: rgba(56, 189, 248, 0.34);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      0 24px 56px rgba(2, 6, 23, 0.36);
   }
 
   .header-dock {
     border: 0;
     background: transparent;
-    padding: 0.3rem 0.35rem 0.3rem 0.62rem;
+    padding: 0.36rem 0.42rem 0.36rem 0.7rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.45rem;
-    min-height: 38px;
+    gap: 0.5rem;
+    min-height: 42px;
     transition: padding 0.24s ease;
   }
 
@@ -2552,48 +2600,14 @@
 
   .header-dock-name {
     margin: 0;
-    font-size: 0.86rem;
+    font-size: 0.92rem;
     font-weight: 600;
-    color: rgba(239, 246, 255, 0.95);
+    color: rgba(240, 249, 255, 0.96);
     max-width: min(52vw, 620px);
     text-overflow: ellipsis;
     overflow: hidden;
     white-space: nowrap;
-  }
-
-  .top-pin-cap {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-left: 1px solid rgba(148, 163, 184, 0.35);
-    min-width: 28px;
-    min-height: 26px;
-    padding-left: 0.42rem;
-    margin-left: 0.22rem;
-  }
-
-  .top-pin-btn {
-    border: 0;
-    background: transparent;
-    color: rgba(219, 234, 254, 0.9);
-    font-size: 0.88rem;
-    line-height: 1;
-    width: 20px;
-    height: 20px;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background-color 0.2s ease, color 0.2s ease;
-  }
-
-  .top-pin-btn:hover:not(:disabled) {
-    background: rgba(59, 130, 246, 0.2);
-    color: #dbeafe;
-  }
-
-  .top-pin-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
+    letter-spacing: 0.01em;
   }
 
   .header-dock-actions {
@@ -2605,25 +2619,37 @@
   }
 
   .workspace-toggle {
-    border: 1px solid rgba(96, 165, 250, 0.34);
-    background: rgba(15, 23, 42, 0.54);
-    color: rgba(219, 234, 254, 0.9);
-    border-radius: 999px;
-    padding: 0.34rem 0.72rem;
+    border: 1px solid rgba(56, 189, 248, 0.24);
+    background: rgba(12, 24, 43, 0.82);
+    color: rgba(226, 232, 240, 0.92);
+    border-radius: 11px;
+    padding: 0 0.72rem;
+    min-height: 30px;
+    min-width: 116px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.46rem;
     font-size: 0.76rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
     line-height: 1;
     cursor: pointer;
-    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
   .workspace-toggle:hover {
-    background: rgba(30, 64, 175, 0.28);
+    background: rgba(18, 34, 60, 0.94);
+    border-color: rgba(96, 165, 250, 0.34);
+    transform: translateY(-1px);
   }
 
   .workspace-toggle.active {
-    border-color: rgba(45, 212, 191, 0.62);
-    background: rgba(13, 148, 136, 0.23);
-    color: #ccfbf1;
+    border-color: rgba(34, 211, 238, 0.48);
+    background: linear-gradient(180deg, rgba(16, 66, 91, 0.96), rgba(10, 44, 66, 0.96));
+    color: #ecfeff;
+    box-shadow: 0 10px 24px rgba(6, 182, 212, 0.16);
   }
 
   .panel-surface {
@@ -2657,20 +2683,22 @@
 
   .secret-input {
     width: 100%;
-    padding: 0.65rem 0.9rem;
-    font-size: 0.96rem;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(102, 126, 234, 0.34);
-    border-radius: 10px;
+    min-height: 44px;
+    padding: 0 0.95rem;
+    font-size: 0.95rem;
+    background: rgba(10, 18, 33, 0.82);
+    border: 1px solid rgba(96, 165, 250, 0.24);
+    border-radius: 12px;
     color: #e0e0e0;
     outline: none;
     transition: all 0.2s ease;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
   .secret-input:focus {
-    border-color: #667eea;
-    background: rgba(255, 255, 255, 0.08);
-    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.12);
+    border-color: rgba(56, 189, 248, 0.52);
+    background: rgba(10, 18, 33, 0.96);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
   }
 
   .secret-input:disabled {
@@ -2696,106 +2724,64 @@
     to { transform: rotate(360deg); }
   }
 
-  :global(.top-unpin-btn) {
-    border: 1px solid rgba(248, 113, 113, 0.55);
-    background: rgba(127, 29, 29, 0.28);
-    color: #fecaca;
-    border-radius: 6px;
-    width: 22px;
-    height: 22px;
-    padding: 0;
+  .chip-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+  }
+
+  :global(.chip-remove-btn) {
+    border: 1px solid rgba(248, 113, 113, 0.34);
+    background: rgba(69, 10, 10, 0.64);
+    color: rgba(254, 202, 202, 0.96);
+    border-radius: 11px;
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
-    font-size: 0.84rem;
     line-height: 1;
+    font-size: 0.92rem;
+    padding: 0;
   }
 
-  :global(.top-unpin-btn.armed) {
-    border-color: rgba(239, 68, 68, 0.8);
-    background: rgba(220, 38, 38, 0.45);
+  :global(.chip-remove-btn.armed) {
+    border-color: rgba(248, 113, 113, 0.9);
+    background: linear-gradient(180deg, rgba(220, 38, 38, 0.82), rgba(153, 27, 27, 0.9));
   }
 
-  .pin-menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 0.5rem);
-    min-width: 170px;
-    background: rgba(17, 17, 32, 0.95);
-    border: 1px solid rgba(102, 126, 234, 0.35);
-    border-radius: 10px;
-    padding: 0.35rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    z-index: 150;
-    backdrop-filter: blur(8px);
-  }
-
-  .pin-menu-dock {
-    right: -0.25rem;
-    top: calc(100% + 0.35rem);
-  }
-
-  .pin-menu-item {
-    text-align: left;
-    border: 0;
-    background: transparent;
-    color: #dde5ff;
-    padding: 0.5rem 0.6rem;
-    border-radius: 8px;
-    font-size: 0.8125rem;
-    cursor: pointer;
-  }
-
-  .pin-menu-item:hover {
-    background: rgba(102, 126, 234, 0.2);
-  }
-
-  .pins-bar {
-    padding: 0.6rem 2rem 0;
-    margin-top: 0.15rem;
-  }
-
-  .pins-content {
-    max-width: none;
-    margin: 0;
-    display: flex;
+  .mount-add-btn {
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    background: rgba(12, 24, 43, 0.82);
+    color: #dbeafe;
+    border-radius: 12px;
+    width: 36px;
+    height: 36px;
+    font-size: 1rem;
+    line-height: 1;
+    display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    width: 100%;
-  }
-
-  .pin-chip-wrap {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-  }
-
-  .pin-chip {
-    border: 1px solid rgba(102, 126, 234, 0.35);
-    background: rgba(10, 10, 15, 0.35);
-    color: #dce5ff;
-    border-radius: 999px;
-    padding: 0.38rem 0.75rem;
-    font-size: 0.8125rem;
+    justify-content: center;
     cursor: pointer;
+    padding: 0;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
-  .pin-chip:hover {
-    background: rgba(102, 126, 234, 0.2);
+  .mount-add-btn:hover {
+    background: rgba(16, 32, 56, 0.96);
+    border-color: rgba(96, 165, 250, 0.42);
+    transform: translateY(-1px);
   }
 
-  .pin-chip.active {
-    border-color: rgba(102, 126, 234, 0.75);
-    background: rgba(102, 126, 234, 0.28);
-    color: #eef2ff;
-    box-shadow: inset 0 0 0 1px rgba(102, 126, 234, 0.3);
+  :global(.button-icon) {
+    flex: 0 0 auto;
   }
 
   /* Status bar */
   .status-bar {
-    background: rgba(10, 10, 15, 0.6);
-    border-bottom: 1px solid rgba(102, 126, 234, 0.1);
+    background: linear-gradient(180deg, rgba(8, 17, 31, 0.92), rgba(7, 14, 26, 0.88));
+    border-bottom: 1px solid rgba(56, 189, 248, 0.1);
     padding: 0.75rem 2rem;
     display: flex;
     align-items: center;
@@ -2805,7 +2791,7 @@
     max-width: none;
     margin: 0;
     width: 100%;
-    border-top: 1px solid rgba(125, 211, 252, 0.12);
+    border-top: 1px solid rgba(56, 189, 248, 0.1);
   }
 
   .status-item {
@@ -2826,21 +2812,21 @@
   }
 
   .volume-id-btn {
-    background: rgba(102, 126, 234, 0.1);
-    border: 1px solid rgba(102, 126, 234, 0.3);
-    border-radius: 6px;
-    padding: 0.25rem 0.75rem;
+    background: rgba(12, 24, 43, 0.82);
+    border: 1px solid rgba(56, 189, 248, 0.24);
+    border-radius: 11px;
+    padding: 0.32rem 0.82rem;
     font-family: 'Monaco', 'Menlo', monospace;
     font-size: 0.8125rem;
-    color: #667eea;
+    color: rgba(125, 211, 252, 0.96);
     cursor: pointer;
     transition: all 0.2s;
     position: relative;
   }
 
   .volume-id-btn:hover {
-    background: rgba(102, 126, 234, 0.2);
-    border-color: #667eea;
+    background: rgba(16, 32, 56, 0.96);
+    border-color: rgba(96, 165, 250, 0.34);
   }
 
   .copied-indicator {
@@ -2862,20 +2848,25 @@
   }
 
   .refresh-btn {
-    background: rgba(102, 126, 234, 0.2);
-    border: 1px solid rgba(102, 126, 234, 0.3);
-    border-radius: 6px;
-    padding: 0.375rem 0.875rem;
-    color: #667eea;
+    background: rgba(12, 24, 43, 0.82);
+    border: 1px solid rgba(56, 189, 248, 0.24);
+    border-radius: 11px;
+    min-height: 32px;
+    padding: 0 0.8rem;
+    color: rgba(226, 232, 240, 0.92);
     cursor: pointer;
-    font-size: 0.875rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
     transition: all 0.2s;
     margin-left: auto;
   }
 
   .refresh-btn:hover {
-    background: rgba(102, 126, 234, 0.3);
-    border-color: #667eea;
+    background: rgba(16, 32, 56, 0.96);
+    border-color: rgba(96, 165, 250, 0.34);
   }
 
   .refresh-btn:disabled {
@@ -2906,12 +2897,12 @@
   .roots-panel {
     max-width: none;
     margin: 0 0 1rem;
-    border: 1px solid rgba(125, 211, 252, 0.28);
+    border: 1px solid rgba(56, 189, 248, 0.22);
     border-radius: 18px;
     background:
-      radial-gradient(120% 110% at 0% 0%, rgba(45, 212, 191, 0.16), transparent 52%),
-      radial-gradient(100% 120% at 100% 0%, rgba(56, 189, 248, 0.1), transparent 58%),
-      linear-gradient(145deg, rgba(12, 23, 45, 0.9), rgba(15, 23, 42, 0.82));
+      radial-gradient(120% 110% at 0% 0%, rgba(34, 211, 238, 0.12), transparent 50%),
+      radial-gradient(100% 120% at 100% 0%, rgba(14, 165, 233, 0.1), transparent 56%),
+      linear-gradient(145deg, rgba(9, 20, 39, 0.96), rgba(8, 18, 35, 0.9));
     padding: 1rem;
     display: flex;
     flex-direction: column;
@@ -2976,28 +2967,33 @@
   }
 
   .roots-action-btn {
-    border: 1px solid rgba(125, 211, 252, 0.36);
-    border-radius: 999px;
-    background: rgba(15, 23, 42, 0.5);
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    border-radius: 12px;
+    background: rgba(12, 24, 43, 0.82);
     color: #dbeafe;
-    padding: 0.42rem 0.78rem;
-    font-size: 0.75rem;
+    min-height: 34px;
+    padding: 0 0.82rem;
+    font-size: 0.76rem;
     font-weight: 600;
     letter-spacing: 0.02em;
     cursor: pointer;
     transition: all 0.18s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
   }
 
   .roots-action-btn:hover:not(:disabled) {
-    border-color: rgba(94, 234, 212, 0.6);
-    background: rgba(17, 94, 89, 0.32);
+    border-color: rgba(96, 165, 250, 0.34);
+    background: rgba(16, 32, 56, 0.96);
   }
 
   .roots-action-btn.primary {
-    border-color: rgba(94, 234, 212, 0.65);
-    color: #bbf7d0;
-    background: rgba(6, 95, 70, 0.42);
-    box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.18) inset;
+    border-color: rgba(34, 211, 238, 0.48);
+    color: #ecfeff;
+    background: linear-gradient(180deg, rgba(16, 66, 91, 0.96), rgba(10, 44, 66, 0.96));
+    box-shadow: 0 10px 24px rgba(6, 182, 212, 0.16);
   }
 
   .roots-action-btn:disabled {
@@ -3370,9 +3366,11 @@
   }
 
   .time-machine {
-    border: 1px solid rgba(125, 211, 252, 0.22);
-    border-radius: 14px;
-    background: linear-gradient(135deg, rgba(15, 23, 42, 0.7), rgba(30, 41, 59, 0.55));
+    border: 1px solid rgba(56, 189, 248, 0.18);
+    border-radius: 16px;
+    background:
+      radial-gradient(140% 120% at 0% 0%, rgba(34, 211, 238, 0.08), transparent 44%),
+      linear-gradient(180deg, rgba(9, 20, 39, 0.96), rgba(8, 18, 35, 0.9));
     padding: 0.9rem;
     display: flex;
     flex-direction: column;
@@ -3408,18 +3406,24 @@
   }
 
   .tm-btn {
-    border: 1px solid rgba(125, 211, 252, 0.34);
-    border-radius: 8px;
-    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    border-radius: 11px;
+    background: rgba(12, 24, 43, 0.82);
     color: #dbeafe;
-    padding: 0.38rem 0.75rem;
+    min-height: 34px;
+    padding: 0 0.8rem;
     cursor: pointer;
-    font-size: 0.8125rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
   }
 
   .tm-btn.live {
-    border-color: rgba(96, 165, 250, 0.65);
-    background: rgba(59, 130, 246, 0.2);
+    border-color: rgba(34, 211, 238, 0.48);
+    background: linear-gradient(180deg, rgba(16, 66, 91, 0.96), rgba(10, 44, 66, 0.96));
   }
 
   .tm-btn:disabled {
@@ -3576,9 +3580,10 @@
 
   .file-list-pane {
     min-height: auto;
-    background: rgba(26, 26, 46, 0.55);
-    border: 1px solid rgba(102, 126, 234, 0.2);
-    border-radius: 12px;
+    background:
+      linear-gradient(180deg, rgba(9, 20, 39, 0.96), rgba(8, 18, 35, 0.9));
+    border: 1px solid rgba(56, 189, 248, 0.16);
+    border-radius: 16px;
     display: flex;
     flex-direction: column;
     overflow: visible;
@@ -3595,11 +3600,12 @@
   .manager-search,
   .manager-sort,
   .manager-folder {
-    border: 1px solid rgba(102, 126, 234, 0.35);
-    background: rgba(10, 10, 15, 0.35);
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    background: rgba(10, 18, 33, 0.82);
     color: #e0e0e0;
-    border-radius: 8px;
-    padding: 0.5rem 0.75rem;
+    border-radius: 12px;
+    min-height: 38px;
+    padding: 0 0.8rem;
     font-size: 0.875rem;
     outline: none;
   }
@@ -3607,8 +3613,8 @@
   .manager-search:focus,
   .manager-sort:focus,
   .manager-folder:focus {
-    border-color: #667eea;
-    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.12);
+    border-color: rgba(56, 189, 248, 0.52);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
   }
 
   .manager-folder {
@@ -3686,9 +3692,10 @@
 
   .preview-pane {
     min-height: auto;
-    background: rgba(26, 26, 46, 0.55);
-    border: 1px solid rgba(102, 126, 234, 0.2);
-    border-radius: 12px;
+    background:
+      linear-gradient(180deg, rgba(9, 20, 39, 0.96), rgba(8, 18, 35, 0.9));
+    border: 1px solid rgba(56, 189, 248, 0.16);
+    border-radius: 16px;
     display: flex;
     flex-direction: column;
     overflow: visible;
@@ -3728,17 +3735,23 @@
   }
 
   :global(.manager-btn) {
-    border: 1px solid rgba(102, 126, 234, 0.35);
-    background: rgba(10, 10, 15, 0.35);
-    color: #d9e2ff;
-    border-radius: 8px;
-    padding: 0.45rem 0.7rem;
-    font-size: 0.8125rem;
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    background: rgba(12, 24, 43, 0.82);
+    color: rgba(226, 232, 240, 0.92);
+    border-radius: 11px;
+    min-height: 34px;
+    padding: 0 0.82rem;
+    font-size: 0.78rem;
+    font-weight: 600;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
   }
 
   :global(.manager-btn:hover) {
-    background: rgba(102, 126, 234, 0.18);
+    background: rgba(16, 32, 56, 0.96);
   }
 
   :global(.manager-btn.danger) {
@@ -3831,10 +3844,6 @@
       grid-template-columns: 1fr 1fr auto;
     }
 
-    .pins-bar {
-      padding: 0.6rem 1rem 0;
-    }
-
     .status-bar {
       padding: 0.75rem 1rem;
     }
@@ -3881,6 +3890,13 @@
 
     .workspace-toggle {
       font-size: 0.72rem;
+      min-width: auto;
+      padding: 0 0.68rem;
+    }
+
+    .mount-add-btn {
+      width: 32px;
+      height: 32px;
     }
 
     .secret-input-wrapper {

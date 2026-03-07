@@ -4,7 +4,13 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   plugins: [
-    svelte(),
+    svelte({
+      dynamicCompileOptions({ filename }) {
+        if (filename.includes('node_modules/lucide-svelte/')) {
+          return { runes: false };
+        }
+      },
+    }),
     VitePWA({
       registerType: 'autoUpdate',
       workbox: {
