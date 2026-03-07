@@ -10,6 +10,7 @@ const PBKDF2_ITERATIONS = 100000;
 const PBKDF2_HASH = 'SHA-256';
 const PRIVATE_KEY_SALT = new TextEncoder().encode('nearbytes-private-key-v1');
 const SYMMETRIC_KEY_SALT = new TextEncoder().encode('nearbytes-sym-key-derivation-v1');
+const FILE_SECRET_PREFIX = 'nb-file-secret:v1:';
 
 // ECDSA P-256 curve order (n) in hex
 // n = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
@@ -31,7 +32,7 @@ export async function deriveKeys(secret: Secret): Promise<KeyPair> {
       throw new KeyDerivationError('Web Crypto API not available');
     }
 
-    const secretBytes = new TextEncoder().encode(secret);
+    const secretBytes = decodeSecretBytes(secret);
 
     // Derive private key seed
     const privateKeySeed = await deriveSeed(crypto, secretBytes, PRIVATE_KEY_SALT, 32);
@@ -74,6 +75,20 @@ export async function deriveKeys(secret: Secret): Promise<KeyPair> {
       error instanceof Error ? error : undefined
     );
   }
+}
+
+function decodeSecretBytes(secret: Secret): Uint8Array {
+  const secretValue = secret as string;
+  if (!secretValue.startsWith(FILE_SECRET_PREFIX)) {
+    return new TextEncoder().encode(secretValue);
+  }
+
+  const encodedPayload = secretValue.slice(FILE_SECRET_PREFIX.length);
+  if (encodedPayload.length === 0) {
+    throw new KeyDerivationError('File-backed secret payload is empty');
+  }
+
+  return new Uint8Array(base64UrlToBytes(encodedPayload));
 }
 
 /**

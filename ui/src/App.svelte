@@ -42,12 +42,15 @@
 
   const VOLUME_MOUNTS_KEY = 'nearbytes-volume-mounts-v1';
   const ROOT_SUGGESTIONS_DISMISSED_KEY = 'nearbytes-dismissed-suggestions-v1';
+  const FILE_SECRET_PREFIX = 'nb-file-secret:v1:';
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
   type VolumeMount = {
     id: string;
     address: string;
     password: string;
+    secretFilePayload: string;
+    secretFileName: string;
     collapsed: boolean;
     createdAt: number;
   }
@@ -55,8 +58,11 @@
   function createMount(overrides: Partial<VolumeMount> = {}): VolumeMount {
     return {
       id: overrides.id ?? `mount-${Math.random().toString(16).slice(2, 10)}`,
-      address: overrides.address ?? '',
-      password: overrides.password ?? '',
+      address: typeof overrides.address === 'string' ? overrides.address.trim() : '',
+      password: typeof overrides.password === 'string' ? overrides.password.trim() : '',
+      secretFilePayload:
+        typeof overrides.secretFilePayload === 'string' ? overrides.secretFilePayload.trim() : '',
+      secretFileName: typeof overrides.secretFileName === 'string' ? overrides.secretFileName.trim() : '',
       collapsed: overrides.collapsed ?? false,
       createdAt: overrides.createdAt ?? Date.now(),
     };
@@ -72,6 +78,8 @@
           typeof value.id === 'string' &&
           typeof value.address === 'string' &&
           typeof value.password === 'string' &&
+          (value.secretFilePayload === undefined || typeof value.secretFilePayload === 'string') &&
+          (value.secretFileName === undefined || typeof value.secretFileName === 'string') &&
           typeof value.collapsed === 'boolean'
       )
       .map((value) =>
@@ -79,6 +87,8 @@
           id: value.id,
           address: value.address,
           password: value.password,
+          secretFilePayload: value.secretFilePayload,
+          secretFileName: value.secretFileName,
           collapsed: value.collapsed,
           createdAt: value.createdAt,
         })
@@ -104,8 +114,46 @@
     }
   }
 
+  function trimSecretPart(value: string): string {
+    return value.trim();
+  }
+
   function buildSecret(addr: string, password: string): string {
-    return password ? `${addr}:${password}` : addr;
+    const trimmedAddress = trimSecretPart(addr);
+    const trimmedPassword = trimSecretPart(password);
+    return trimmedPassword ? `${trimmedAddress}:${trimmedPassword}` : trimmedAddress;
+  }
+
+  function hasFileSecret(mount: VolumeMount): boolean {
+    return trimSecretPart(mount.secretFilePayload) !== '';
+  }
+
+  function bytesToBase64Url(bytes: Uint8Array): string {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      const chunk = bytes.subarray(index, index + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+  }
+
+  function buildFileSecretPayload(bytes: Uint8Array): string {
+    return `${FILE_SECRET_PREFIX}${bytesToBase64Url(bytes)}`;
+  }
+
+  function buildMountSecret(mount: VolumeMount): string {
+    if (hasFileSecret(mount)) {
+      return trimSecretPart(mount.secretFilePayload);
+    }
+    return buildSecret(mount.address, mount.password);
+  }
+
+  function mountDisplayLabel(mount: VolumeMount): string {
+    if (trimSecretPart(mount.secretFileName) !== '') {
+      return trimSecretPart(mount.secretFileName);
+    }
+    return trimSecretPart(mount.address);
   }
 
   function loadDismissedRootSuggestions(): string[] {
@@ -164,6 +212,8 @@
   let mounts = $state<VolumeMount[]>(initialMounts);
   let activeMountId = $state(initialMounts[0]?.id ?? '');
   let pendingMountId = $state<string | null>(null);
+  let isHeaderHovering = $state(false);
+  let isSecretDropTarget = $state(false);
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
   let showStatusPanel = $state(false);
   let showTimeMachinePanel = $state(false);
@@ -591,13 +641,14 @@
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
-    const a = address.trim();
-    const p = addressPassword.trim();
+    const currentMount = mounts.find((mount) => mount.id === activeMountId);
+    const openSecret = currentMount ? buildMountSecret(currentMount) : '';
+    const openLabel = currentMount ? mountLabel(currentMount) : '';
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
-    if (a === '') {
+    if (!currentMount || openSecret === '') {
       stopTimelinePlayback();
       effectiveSecret = '';
       unlockedAddress = '';
@@ -622,7 +673,7 @@
       return;
     }
     debounceTimer = setTimeout(() => {
-      tryOpenAddress(a, p);
+      tryOpenSecret(openSecret, openLabel, currentMount.id);
       debounceTimer = null;
     }, 500);
     return () => {
@@ -630,10 +681,8 @@
     };
   });
 
-  async function tryOpenAddress(a: string, p: string) {
-    if (!a) return;
-    const openSecret = buildSecret(a, p);
-    const requestedMountId = activeMountId;
+  async function tryOpenSecret(openSecret: string, label: string, requestedMountId: string) {
+    if (!openSecret) return;
     isLoading = true;
     errorMessage = '';
     isOffline = false;
@@ -652,7 +701,7 @@
       lastRefresh = Date.now();
       errorMessage = response.storageHint ?? '';
       effectiveSecret = openSecret;
-      unlockedAddress = a;
+      unlockedAddress = label;
       fileList = response.files;
       previewBlobCache.clear();
       await setCachedFiles(response.volumeId, response.files);
@@ -683,8 +732,10 @@
   }
 
   $effect(() => {
-    const a = address.trim();
-    if (a !== '' && a !== unlockedAddress && effectiveSecret !== '') {
+    const currentMount = mounts.find((mount) => mount.id === activeMountId);
+    const currentSecret = currentMount ? buildMountSecret(currentMount) : '';
+    const currentLabel = currentMount ? mountLabel(currentMount) : '';
+    if (currentSecret !== '' && (currentSecret !== effectiveSecret || currentLabel !== unlockedAddress) && effectiveSecret !== '') {
       stopTimelinePlayback();
       effectiveSecret = '';
       unlockedAddress = '';
@@ -705,11 +756,11 @@
   });
 
   function mountLabel(mount: VolumeMount): string {
-    return mount.address.trim();
+    return mountDisplayLabel(mount);
   }
 
   function isMountEmpty(mount: VolumeMount): boolean {
-    return mount.address.trim() === '' && mount.password.trim() === '';
+    return trimSecretPart(mount.address) === '' && trimSecretPart(mount.password) === '' && !hasFileSecret(mount);
   }
 
   function addMount() {
@@ -788,23 +839,88 @@
     reopenMount(mountId);
   }
 
+  function collapseExpandedMountFromOutside(target: EventTarget | null) {
+    if (!activeMountId) return;
+    const activeMount = mounts.find((mount) => mount.id === activeMountId);
+    if (!activeMount || activeMount.collapsed) return;
+    if (!(target instanceof Element)) {
+      collapseMount(activeMountId);
+      return;
+    }
+    if (target.closest('.volume-chip.expanded')) {
+      return;
+    }
+    collapseMount(activeMountId);
+  }
+
   function updateMountAddress(mountId: string, value: string) {
+    const trimmedValue = trimSecretPart(value);
     const next = mounts.map((mount) =>
-      mount.id === mountId ? { ...mount, address: value } : mount
+      mount.id === mountId
+        ? { ...mount, address: trimmedValue, secretFilePayload: '', secretFileName: '' }
+        : mount
     );
     mounts = next;
     if (mountId === activeMountId) {
-      address = value;
+      address = trimmedValue;
     }
   }
 
   function updateMountPassword(mountId: string, value: string) {
+    const trimmedValue = trimSecretPart(value);
     const next = mounts.map((mount) =>
-      mount.id === mountId ? { ...mount, password: value } : mount
+      mount.id === mountId
+        ? { ...mount, password: trimmedValue, secretFilePayload: '', secretFileName: '' }
+        : mount
     );
     mounts = next;
     if (mountId === activeMountId) {
-      addressPassword = value;
+      addressPassword = trimmedValue;
+    }
+  }
+
+  async function applySecretFileToMount(file: File, mountId: string) {
+    const fileBytes = new Uint8Array(await file.arrayBuffer());
+    const payload = buildFileSecretPayload(fileBytes);
+    const label = trimSecretPart(file.name) || 'secret-file';
+
+    mounts = mounts.map((mount) =>
+      mount.id === mountId
+        ? {
+            ...mount,
+            address: label,
+            password: '',
+            secretFilePayload: payload,
+            secretFileName: label,
+            collapsed: false,
+          }
+        : { ...mount, collapsed: true }
+    );
+    activeMountId = mountId;
+    address = label;
+    addressPassword = '';
+    pendingMountId = mountId;
+  }
+
+  async function handleSecretFileDrop(event: DragEvent) {
+    event.preventDefault();
+    isSecretDropTarget = false;
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) return;
+
+    let targetMountId = activeMountId;
+    if (!targetMountId) {
+      const nextMount = createMount();
+      mounts = [nextMount];
+      targetMountId = nextMount.id;
+    }
+
+    try {
+      errorMessage = '';
+      await applySecretFileToMount(file, targetMountId);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to use secret file';
+      pendingMountId = null;
     }
   }
 
@@ -1743,11 +1859,53 @@
       }
     }
   }
+}} onpointerdown={(event) => {
+  collapseExpandedMountFromOutside(event.target);
 }} />
 
 <div class="app">
   <header class="header">
-    <div class="header-shell">
+    <div
+      class="header-shell"
+      class:secret-drop-target={isSecretDropTarget}
+      role="group"
+      aria-label="Volume controls"
+      onmouseenter={() => {
+        isHeaderHovering = true;
+      }}
+      onmouseleave={() => {
+        isHeaderHovering = false;
+      }}
+      onfocusin={() => {
+        isHeaderHovering = true;
+      }}
+      onfocusout={(event) => {
+        const relatedTarget = event.relatedTarget;
+        if (relatedTarget instanceof Node && (event.currentTarget as HTMLElement).contains(relatedTarget)) {
+          return;
+        }
+        isHeaderHovering = false;
+      }}
+      ondragenter={(event) => {
+        if (event.dataTransfer?.types.includes('Files')) {
+          isSecretDropTarget = true;
+        }
+      }}
+      ondragover={(event) => {
+        if (!event.dataTransfer?.types.includes('Files')) return;
+        event.preventDefault();
+        isSecretDropTarget = true;
+        event.dataTransfer.dropEffect = 'copy';
+      }}
+      ondragleave={(event) => {
+        const relatedTarget = event.relatedTarget;
+        if (relatedTarget instanceof Node && (event.currentTarget as HTMLElement).contains(relatedTarget)) {
+          return;
+        }
+        isSecretDropTarget = false;
+      }}
+      ondrop={handleSecretFileDrop}
+    >
       <div class="mounts-row">
         {#each mounts as mount (mount.id)}
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
@@ -1868,7 +2026,14 @@
             </button>
           {/if}
         {/each}
-        <button type="button" class="mount-add-btn" onclick={addMount} aria-label="Add" title="Add">
+        <button
+          type="button"
+          class="mount-add-btn"
+          class:visible={isHeaderHovering || isSecretDropTarget}
+          onclick={addMount}
+          aria-label="Add volume"
+          title="Add volume"
+        >
           <Plus size={16} strokeWidth={2.2} />
         </button>
       </div>
@@ -2550,6 +2715,13 @@
     flex-direction: column;
     gap: 0.7rem;
     align-items: flex-start;
+    position: relative;
+    transition: transform 0.24s ease, filter 0.24s ease;
+  }
+
+  .header-shell.secret-drop-target {
+    transform: translateY(-1px);
+    filter: drop-shadow(0 14px 28px rgba(34, 211, 238, 0.12));
   }
 
   .mounts-row {
@@ -2593,10 +2765,48 @@
   }
 
   .volume-chip.selected {
-    border-color: rgba(96, 165, 250, 0.38);
+    border-color: rgba(45, 212, 191, 0.46);
+    background:
+      radial-gradient(120% 180% at 0% 0%, rgba(45, 212, 191, 0.16), transparent 52%),
+      linear-gradient(180deg, rgba(11, 28, 43, 0.96), rgba(8, 18, 34, 0.94));
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.05),
-      0 18px 38px rgba(2, 6, 23, 0.3);
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 0 0 1px rgba(34, 211, 238, 0.12),
+      0 18px 38px rgba(2, 6, 23, 0.34),
+      0 12px 32px rgba(13, 148, 136, 0.14);
+  }
+
+  .volume-chip.selected .header-dock {
+    padding-left: 0.78rem;
+  }
+
+  .volume-chip.selected .header-dock-badge {
+    position: relative;
+    padding-left: 0.72rem;
+  }
+
+  .volume-chip.selected .header-dock-badge::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(165, 243, 252, 1) 0%, rgba(34, 211, 238, 0.96) 62%, rgba(34, 211, 238, 0) 100%);
+    box-shadow:
+      0 0 0 1px rgba(103, 232, 249, 0.26),
+      0 0 14px rgba(34, 211, 238, 0.46);
+  }
+
+  .volume-chip.selected .header-dock-name {
+    color: rgba(236, 254, 255, 0.98);
+    text-shadow: 0 0 16px rgba(34, 211, 238, 0.12);
+  }
+
+  .volume-chip.selected .badge-meter {
+    background: rgba(34, 211, 238, 0.18);
   }
 
   .header-dock {
@@ -2898,12 +3108,12 @@
   }
 
   .mount-add-btn {
-    border: 1px solid rgba(56, 189, 248, 0.3);
-    background: rgba(12, 24, 43, 0.82);
-    color: #dbeafe;
-    border-radius: 12px;
-    width: 36px;
-    height: 36px;
+    border: 1px solid rgba(56, 189, 248, 0.14);
+    background: rgba(10, 19, 34, 0.52);
+    color: rgba(191, 219, 254, 0.78);
+    border-radius: 999px;
+    width: 30px;
+    height: 30px;
     font-size: 1rem;
     line-height: 1;
     display: inline-flex;
@@ -2911,12 +3121,29 @@
     justify-content: center;
     cursor: pointer;
     padding: 0;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-3px) scale(0.94);
+    transition:
+      opacity 0.18s ease,
+      transform 0.22s ease,
+      background-color 0.2s ease,
+      border-color 0.2s ease,
+      color 0.2s ease,
+      box-shadow 0.2s ease;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
+  .mount-add-btn.visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+
   .mount-add-btn:hover {
-    background: rgba(16, 32, 56, 0.96);
-    border-color: rgba(96, 165, 250, 0.42);
+    background: rgba(16, 32, 56, 0.88);
+    border-color: rgba(96, 165, 250, 0.28);
+    color: rgba(224, 242, 254, 0.96);
     transform: translateY(-1px);
   }
 
@@ -4031,6 +4258,14 @@
 
     .preview-actions {
       justify-content: flex-start;
+    }
+  }
+
+  @media (hover: none) {
+    .mount-add-btn {
+      opacity: 1;
+      pointer-events: auto;
+      transform: none;
     }
   }
 
