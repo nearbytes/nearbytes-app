@@ -46,6 +46,20 @@ export const importRecipientReferencesBodySchema = z.object({
   bundle: z.unknown(),
 });
 
+export const publishIdentityBodySchema = z.object({
+  identitySecret: z.string().min(1, 'Identity secret is required'),
+  profile: z.object({
+    displayName: z.string().trim().min(1, 'Display name is required'),
+    bio: z.string().optional(),
+  }),
+});
+
+export const sendChatMessageBodySchema = z.object({
+  identitySecret: z.string().min(1, 'Identity secret is required'),
+  body: z.string().optional(),
+  attachment: z.unknown().optional(),
+});
+
 export const consolidateRootParamSchema = z.object({
   sourceId: z.string().trim().min(1, 'Source root id is required'),
 });

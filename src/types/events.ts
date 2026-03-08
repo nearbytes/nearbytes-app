@@ -60,11 +60,15 @@ export function createSignature(bytes: Uint8Array): Signature {
  * CREATE_FILE: Adds a file to the volume
  * DELETE_FILE: Removes a file from the volume
  * RENAME_FILE: Renames a logical filename within the volume
+ * DECLARE_IDENTITY: Publishes an identity-signed profile record into the volume
+ * CHAT_MESSAGE: Publishes an identity-signed chat message into the volume
  */
 export enum EventType {
   CREATE_FILE = 'CREATE_FILE',
   DELETE_FILE = 'DELETE_FILE',
   RENAME_FILE = 'RENAME_FILE',
+  DECLARE_IDENTITY = 'DECLARE_IDENTITY',
+  CHAT_MESSAGE = 'CHAT_MESSAGE',
 }
 
 /**
@@ -85,6 +89,22 @@ export enum EventType {
  * - toFileName: The destination logical filename
  * - hash: Must be empty hash (all zeros) - not used for rename
  * - encryptedKey: Must be empty - not used for rename
+ *
+ * For DECLARE_IDENTITY events:
+ * - fileName: Reserved, MUST be empty
+ * - hash: Must be empty hash (all zeros)
+ * - encryptedKey: Must be empty
+ * - authorPublicKey: Signer identity public key hex
+ * - record: Canonical JSON string encoding of nb.identity.record.v1
+ * - publishedAt: Event publication timestamp
+ *
+ * For CHAT_MESSAGE events:
+ * - fileName: Reserved, MUST be empty
+ * - hash: Must be empty hash (all zeros)
+ * - encryptedKey: Must be empty
+ * - authorPublicKey: Signer identity public key hex
+ * - message: Canonical JSON string encoding of nb.chat.message.v1
+ * - publishedAt: Event publication timestamp
  */
 export interface EventPayload {
   readonly type: EventType;
@@ -116,6 +136,22 @@ export interface EventPayload {
    * Unix timestamp in milliseconds when the file was renamed (RENAME_FILE only)
    */
   readonly renamedAt?: number;
+  /**
+   * Identity public key hex for DECLARE_IDENTITY and CHAT_MESSAGE events
+   */
+  readonly authorPublicKey?: string;
+  /**
+   * Canonical JSON string encoding of nb.identity.record.v1
+   */
+  readonly record?: string;
+  /**
+   * Canonical JSON string encoding of nb.chat.message.v1
+   */
+  readonly message?: string;
+  /**
+   * Unix timestamp in milliseconds when the chat/identity event was published
+   */
+  readonly publishedAt?: number;
 }
 
 /**
@@ -142,6 +178,10 @@ export interface SerializedEvent {
     readonly createdAt?: number;
     readonly deletedAt?: number;
     readonly renamedAt?: number;
+    readonly authorPublicKey?: string;
+    readonly record?: string;
+    readonly message?: string;
+    readonly publishedAt?: number;
   };
   readonly signature: string; // Base64
 }

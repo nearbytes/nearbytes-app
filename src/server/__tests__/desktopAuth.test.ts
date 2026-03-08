@@ -4,6 +4,7 @@ import path from 'path';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCryptoOperations } from '../../crypto/index.js';
+import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from '../../domain/fileService.js';
 import { type RootsConfig } from '../../config/roots.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
@@ -60,8 +61,10 @@ describe('Desktop API token enforcement', () => {
     const storage = new MultiRootStorageBackend(rootsConfig);
     const crypto = createCryptoOperations();
     const fileService = createFileService({ crypto, storage });
+    const chatService = createChatService({ crypto, storage });
     app = createApp({
       fileService,
+      chatService,
       crypto,
       storage,
       corsOrigin: true,

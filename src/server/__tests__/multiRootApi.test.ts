@@ -6,6 +6,7 @@ import request from 'supertest';
 import type { Response } from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCryptoOperations } from '../../crypto/index.js';
+import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from '../../domain/fileService.js';
 import { createSecret } from '../../types/keys.js';
 import { bytesToHex } from '../../utils/encoding.js';
@@ -170,9 +171,11 @@ describe('Nearbytes API (multi-root)', () => {
 
     const storage = new MultiRootStorageBackend(rootsConfig);
     const fileService = createFileService({ crypto, storage });
+    const chatService = createChatService({ crypto, storage });
 
     app = createApp({
       fileService,
+      chatService,
       crypto,
       storage,
       tokenKey,

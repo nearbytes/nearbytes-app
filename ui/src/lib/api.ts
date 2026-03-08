@@ -66,6 +66,55 @@ export interface RecipientReferenceBundle {
   items: RecipientReferenceBundleItem[];
 }
 
+export interface IdentityProfile {
+  displayName: string;
+  bio?: string;
+}
+
+export interface IdentityRecord {
+  p: 'nb.identity.record.v1';
+  k: string;
+  ts: number;
+  profile: IdentityProfile;
+  sig: string;
+}
+
+export interface ChatAttachment {
+  kind: 'nb.src.ref.v1';
+  name: string;
+  mime?: string;
+  createdAt?: number;
+  ref: SourceFileReference;
+}
+
+export interface ChatMessage {
+  p: 'nb.chat.message.v1';
+  k: string;
+  ts: number;
+  body?: string;
+  attachment?: ChatAttachment;
+  sig: string;
+}
+
+export interface PublishedIdentity {
+  eventHash: string;
+  authorPublicKey: string;
+  publishedAt: number;
+  record: IdentityRecord;
+}
+
+export interface PublishedChatMessage {
+  eventHash: string;
+  authorPublicKey: string;
+  publishedAt: number;
+  message: ChatMessage;
+}
+
+export interface VolumeChatState {
+  identities: PublishedIdentity[];
+  messages: PublishedChatMessage[];
+}
+
 export interface ReferenceExportResponse<TBundle> {
   bundle: TBundle;
   serialized: string;
@@ -75,6 +124,14 @@ export interface ReferenceExportResponse<TBundle> {
 export interface ReferenceImportResponse {
   imported: FileMetadata[];
   importedCount: number;
+}
+
+export interface PublishIdentityResponse {
+  published: PublishedIdentity;
+}
+
+export interface SendChatMessageResponse {
+  sent: PublishedChatMessage;
 }
 
 export interface OpenVolumeResponse {
@@ -672,6 +729,41 @@ export async function importRecipientReferences(
     method: 'POST',
     auth,
     body: JSON.stringify({ bundle }),
+  });
+}
+
+export async function listChat(auth: Auth): Promise<VolumeChatState> {
+  return apiRequest<VolumeChatState>('/chat', {
+    method: 'GET',
+    auth,
+  });
+}
+
+export async function publishIdentity(
+  auth: Auth,
+  identitySecret: string,
+  profile: IdentityProfile
+): Promise<PublishIdentityResponse> {
+  return apiRequest<PublishIdentityResponse>('/chat/identities', {
+    method: 'POST',
+    auth,
+    body: JSON.stringify({ identitySecret, profile }),
+  });
+}
+
+export async function sendChatMessage(
+  auth: Auth,
+  identitySecret: string,
+  input: { body?: string; attachment?: ChatAttachment }
+): Promise<SendChatMessageResponse> {
+  return apiRequest<SendChatMessageResponse>('/chat/messages', {
+    method: 'POST',
+    auth,
+    body: JSON.stringify({
+      identitySecret,
+      body: input.body,
+      attachment: input.attachment,
+    }),
   });
 }
 

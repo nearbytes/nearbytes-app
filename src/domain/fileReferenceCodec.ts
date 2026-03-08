@@ -142,6 +142,10 @@ export function parseRecipientReferenceBundle(value: unknown): RecipientReferenc
   };
 }
 
+export function parseSourceFileReferenceValue(value: unknown): SourceFileReference {
+  return parseSourceFileReference(value, 'Source reference');
+}
+
 export function parseSourceReferenceJson(text: string): SourceReferenceBundle | null {
   const parsed = parseJsonProtocol(text);
   if (!parsed || parsed.p !== 'nb.src.refs.v1') {

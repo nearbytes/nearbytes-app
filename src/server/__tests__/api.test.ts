@@ -5,6 +5,7 @@ import path from 'path';
 import request from 'supertest';
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { createCryptoOperations } from '../../crypto/index.js';
+import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from '../../domain/fileService.js';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';
 import { createApp } from '../app.js';
@@ -33,9 +34,11 @@ describe('Nearbytes API', () => {
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(tempDir);
     const fileService = createFileService({ crypto, storage });
+    const chatService = createChatService({ crypto, storage });
 
     app = createApp({
       fileService,
+      chatService,
       crypto,
       storage,
       tokenKey,
@@ -419,5 +422,69 @@ describe('Nearbytes API', () => {
       .expect(200);
 
     expect(Array.isArray(listRes.body.files)).toBe(true);
+  });
+
+  it('publishes signed identities and chat messages through the API', async () => {
+    const volumeSecret = 'nearbytes-chat-volume-secret';
+    const identitySecret = 'nearbytes-chat-identity-secret';
+
+    const openRes = await request(app).post('/open').send({ secret: volumeSecret }).expect(200);
+    const token = openRes.body.token as string;
+
+    const identityRes = await request(app)
+      .post('/chat/identities')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        identitySecret,
+        profile: {
+          displayName: 'Ada',
+          bio: 'Volume chat sender',
+        },
+      })
+      .expect(200);
+
+    expect(identityRes.body.published.record.profile.displayName).toBe('Ada');
+
+    await request(app)
+      .post('/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .field('filename', 'chat.txt')
+      .attach('file', Buffer.from('chat attachment'), 'chat.txt')
+      .expect(200);
+
+    const exportRes = await request(app)
+      .post('/references/source/export')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ filenames: ['chat.txt'] })
+      .expect(200);
+
+    const item = exportRes.body.bundle.items[0];
+
+    const messageRes = await request(app)
+      .post('/chat/messages')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        identitySecret,
+        body: 'hello',
+        attachment: {
+          kind: 'nb.src.ref.v1',
+          name: item.name,
+          mime: item.mime,
+          createdAt: item.createdAt,
+          ref: item.ref,
+        },
+      })
+      .expect(200);
+
+    expect(messageRes.body.sent.message.body).toBe('hello');
+
+    const chatRes = await request(app)
+      .get('/chat')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(chatRes.body.identities).toHaveLength(1);
+    expect(chatRes.body.messages).toHaveLength(1);
+    expect(chatRes.body.messages[0].message.attachment.name).toBe('chat.txt');
   });
 });

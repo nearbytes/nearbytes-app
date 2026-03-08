@@ -21,7 +21,13 @@
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
+  import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
+  import {
+    NEARBYTES_DRAG_TYPE,
+    parseNearbytesDragPayload,
+    type NearbytesDragPayload,
+  } from './lib/nearbytesDrag.js';
   import {
     Activity,
     ClipboardPaste,
@@ -37,6 +43,7 @@
     History,
     Image as ImageIcon,
     LayoutGrid,
+    MessageSquareText,
     Plus,
     RefreshCw,
     Rows3,
@@ -48,7 +55,6 @@
 
   const VOLUME_MOUNTS_KEY = 'nearbytes-volume-mounts-v1';
   const FILE_SECRET_PREFIX = 'nb-file-secret:v1:';
-  const NEARBYTES_DRAG_TYPE = 'application/x-nearbytes-file';
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
   type DesktopRemoteFile = {
@@ -95,13 +101,8 @@
     fileName: string;
   };
 
-  type NearbytesDragPayload = {
-    blobHash: string;
-    filename: string;
-    mimeType?: string;
-  };
-
   type FileManagerViewMode = 'icons' | 'details';
+  type VolumeWorkspaceMode = 'files' | 'chat';
 
   type AppReferenceClipboard = {
     bundle: SourceReferenceBundle;
@@ -609,29 +610,6 @@
     });
   }
 
-  function parseNearbytesDragPayload(raw: string): NearbytesDragPayload | null {
-    if (trimSecretPart(raw) === '') {
-      return null;
-    }
-    try {
-      const parsed = JSON.parse(raw) as Partial<NearbytesDragPayload>;
-      if (
-        !parsed ||
-        typeof parsed.blobHash !== 'string' ||
-        typeof parsed.filename !== 'string'
-      ) {
-        return null;
-      }
-      return {
-        blobHash: parsed.blobHash,
-        filename: parsed.filename,
-        mimeType: typeof parsed.mimeType === 'string' ? parsed.mimeType : '',
-      };
-    } catch {
-      return null;
-    }
-  }
-
   async function fileFromNearbytesTransfer(dataTransfer: DataTransfer): Promise<File | null> {
     const payload = parseNearbytesDragPayload(dataTransfer.getData(NEARBYTES_DRAG_TYPE));
     if (!payload || !auth) {
@@ -736,6 +714,7 @@
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
   let isRefreshing = $state(false);
+  let volumeWorkspaceMode = $state<VolumeWorkspaceMode>('files');
   let fileManagerViewMode = $state<FileManagerViewMode>('icons');
   let fileManagerSplit = $state(38);
   let fileManagerElement = $state<HTMLElement | null>(null);
@@ -1858,6 +1837,16 @@
     showPreviewPane = false;
   }
 
+  function selectVolumeWorkspaceMode(mode: VolumeWorkspaceMode) {
+    volumeWorkspaceMode = mode;
+    if (mode === 'chat') {
+      showPreviewPane = false;
+      renamingFileName = null;
+      renameDraft = '';
+      fileManagerActive = false;
+    }
+  }
+
   function toggleColumnSort(column: 'name' | 'size' | 'date') {
     if (column === 'name') {
       sortBy = sortBy === 'name' ? 'name-desc' : 'name';
@@ -2851,7 +2840,34 @@
       </section>
       {/if}
 
-      {#if viewFiles.length === 0 && !isLoading}
+      <div class="workspace-mode-bar panel-surface" role="tablist" aria-label="Volume workspace">
+        <button
+          type="button"
+          class="workspace-mode-btn"
+          class:active={volumeWorkspaceMode === 'files'}
+          role="tab"
+          aria-selected={volumeWorkspaceMode === 'files'}
+          onclick={() => selectVolumeWorkspaceMode('files')}
+        >
+          <File size={15} strokeWidth={2} />
+          <span>Files</span>
+        </button>
+        <button
+          type="button"
+          class="workspace-mode-btn"
+          class:active={volumeWorkspaceMode === 'chat'}
+          role="tab"
+          aria-selected={volumeWorkspaceMode === 'chat'}
+          onclick={() => selectVolumeWorkspaceMode('chat')}
+        >
+          <MessageSquareText size={15} strokeWidth={2} />
+          <span>Chat</span>
+        </button>
+      </div>
+
+      {#if volumeWorkspaceMode === 'chat'}
+        <VolumeChat {auth} {volumeId} readonlyMode={isHistoryMode} />
+      {:else if viewFiles.length === 0 && !isLoading}
         <div class="empty-state">
           <div class="empty-content">
             <svg class="empty-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -4086,6 +4102,55 @@
     width: 100%;
     overflow: auto;
     scrollbar-width: thin;
+  }
+
+  .workspace-mode-bar {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    align-self: flex-start;
+    padding: 0.35rem;
+    border-radius: 16px;
+    border: 1px solid rgba(56, 189, 248, 0.14);
+    background: rgba(7, 16, 30, 0.76);
+    backdrop-filter: blur(18px);
+  }
+
+  .workspace-mode-btn {
+    appearance: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: rgba(191, 219, 254, 0.72);
+    border-radius: 12px;
+    min-height: 38px;
+    padding: 0 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      color 0.18s ease,
+      border-color 0.18s ease,
+      background-color 0.18s ease,
+      transform 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+
+  .workspace-mode-btn:hover {
+    color: rgba(224, 242, 254, 0.94);
+    background: rgba(12, 26, 46, 0.9);
+    border-color: rgba(96, 165, 250, 0.18);
+    transform: translateY(-1px);
+  }
+
+  .workspace-mode-btn.active {
+    color: rgba(236, 254, 255, 0.98);
+    background: linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94));
+    border-color: rgba(34, 211, 238, 0.34);
+    box-shadow: 0 10px 24px rgba(6, 182, 212, 0.14);
   }
 
   .volume-workspace {

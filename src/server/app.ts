@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { existsSync } from 'fs';
 import type { CryptoOperations } from '../crypto/index.js';
+import type { ChatService } from '../domain/chatService.js';
 import type { FileService } from '../domain/fileService.js';
 import type { StorageBackend } from '../types/storage.js';
 import { createRoutes } from './routes.js';
@@ -17,6 +18,7 @@ import {
  */
 export interface AppDependencies {
   readonly fileService: FileService;
+  readonly chatService: ChatService;
   readonly crypto: CryptoOperations;
   readonly storage: StorageBackend;
   readonly tokenKey?: Uint8Array;

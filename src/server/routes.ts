@@ -8,6 +8,7 @@ import multer from 'multer';
 import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
 import { discoverNearbytesSources, ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import type { CryptoOperations } from '../crypto/index.js';
+import type { ChatService } from '../domain/chatService.js';
 import type { FileService } from '../domain/fileService.js';
 import type { StorageBackend } from '../types/storage.js';
 import { openVolume } from '../domain/volume.js';
@@ -33,8 +34,10 @@ import {
   openRootInFileManagerBodySchema,
   openBodySchema,
   parseWithSchema,
+  publishIdentityBodySchema,
   renameFileBodySchema,
   renameFolderBodySchema,
+  sendChatMessageBodySchema,
   uploadFieldsSchema,
 } from './validation.js';
 
@@ -43,6 +46,7 @@ import {
  */
 export interface RouteDependencies {
   readonly fileService: FileService;
+  readonly chatService: ChatService;
   readonly crypto: CryptoOperations;
   readonly storage: StorageBackend;
   readonly tokenKey?: Uint8Array;
@@ -353,6 +357,38 @@ export function createRoutes(deps: RouteDependencies): Router {
       const secret = res.locals.secret as string;
       const snapshot = await deps.fileService.computeSnapshot(secret);
       res.json({ snapshot });
+    })
+  );
+
+  router.get(
+    '/chat',
+    requireSecret(deps),
+    asyncHandler(async (_req, res) => {
+      const secret = res.locals.secret as string;
+      const chat = await deps.chatService.listChat(secret);
+      res.json(chat);
+    })
+  );
+
+  router.post(
+    '/chat/identities',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { identitySecret, profile } = parseWithSchema(publishIdentityBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const published = await deps.chatService.publishIdentity(secret, identitySecret, profile);
+      res.json({ published });
+    })
+  );
+
+  router.post(
+    '/chat/messages',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { identitySecret, body, attachment } = parseWithSchema(sendChatMessageBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const sent = await deps.chatService.sendMessage(secret, identitySecret, { body, attachment });
+      res.json({ sent });
     })
   );
 

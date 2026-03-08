@@ -3,6 +3,7 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import type express from 'express';
 import { createCryptoOperations } from '../crypto/index.js';
+import { createChatService } from '../domain/chatService.js';
 import { createFileService } from '../domain/fileService.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { loadOrCreateRootsConfig } from '../config/roots.js';
@@ -78,6 +79,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
 
   const storage = new MultiRootStorageBackend(loaded.config);
   const fileService = createFileService({ crypto, storage });
+  const chatService = createChatService({ crypto, storage });
   const primaryMainRoot =
     loaded.config.defaultVolume.destinations
       .map((destination) => loaded.config.sources.find((source) => source.id === destination.sourceId))
@@ -89,6 +91,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
 
   const app = createApp({
     fileService,
+    chatService,
     crypto,
     storage,
     tokenKey,
