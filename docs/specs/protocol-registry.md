@@ -31,6 +31,8 @@ Examples:
 | `nb.refs.v1` | Encrypted file reference bundle | `v1` | Draft |
 | `nb.src.ref.v1` | Source-bound encrypted file reference object | `v1` | Draft |
 | `nb.src.refs.v1` | Source-bound encrypted file reference bundle | `v1` | Draft |
+| `nb.identity.record.v1` | Public signed sender identity record | `v1` | Draft |
+| `nb.chat.message.v1` | Identity-signed chat message payload | `v1` | Draft |
 | `nb.manifest.v1` | Plaintext chunk manifest schema (encrypted at rest) | `v1` | Draft |
 | `nb.content.single.v1` | Single-block encrypted file descriptor | `v1` | Draft |
 | `nb.content.manifest.v1` | Encrypted-manifest file descriptor | `v1` | Draft |
