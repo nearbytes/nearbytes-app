@@ -1,32 +1,21 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import {
     downloadFile,
     exportSourceReferences,
     listChat,
-    publishIdentity,
     sendChatMessage,
     type Auth,
     type ChatAttachment,
-    type PublishedIdentity,
     type VolumeChatState,
   } from '../lib/api.js';
   import {
     buildIdentitySecret,
-    createConfiguredIdentity,
-    loadActiveIdentityId,
-    loadConfiguredIdentities,
-    persistActiveIdentityId,
-    persistConfiguredIdentities,
     type ConfiguredIdentity,
   } from '../lib/chatIdentities.js';
   import { NEARBYTES_DRAG_TYPE, parseNearbytesDragPayload } from '../lib/nearbytesDrag.js';
   import {
-    Check,
-    ChevronDown,
     MessageSquareText,
     Paperclip,
-    Plus,
     RefreshCw,
     Send,
     UserRound,
@@ -38,61 +27,33 @@
     volumeId = null,
     readonlyMode = false,
     historyState = null,
+    activeIdentity = null,
+    identityNeedsPublish = false,
+    ensureIdentityPublished = async () => null,
+    onChatMutated = undefined,
+    externalRefreshVersion = 0,
   } = $props<{
     auth: Auth | null;
     volumeId: string | null;
     readonlyMode?: boolean;
     historyState?: VolumeChatState | null;
+    activeIdentity?: ConfiguredIdentity | null;
+    identityNeedsPublish?: boolean;
+    ensureIdentityPublished?: () => Promise<ConfiguredIdentity | null>;
+    onChatMutated?: (() => Promise<void> | void) | undefined;
+    externalRefreshVersion?: number;
   }>();
 
   let chatState = $state<VolumeChatState>({ identities: [], messages: [] });
-  let identities = $state<ConfiguredIdentity[]>([]);
-  let activeIdentityId = $state('');
-  let manageOpen = $state(false);
   let draftBody = $state('');
   let pendingAttachment = $state<ChatAttachment | null>(null);
   let loading = $state(false);
   let refreshing = $state(false);
   let sending = $state(false);
-  let publishing = $state(false);
   let errorMessage = $state('');
-  let successMessage = $state('');
   let dragActive = $state(false);
-  let hydrated = false;
   let requestedVolumeId = '';
-
-  onMount(() => {
-    identities = loadConfiguredIdentities();
-    activeIdentityId = loadActiveIdentityId();
-    hydrated = true;
-  });
-
-  $effect(() => {
-    if (!hydrated) {
-      return;
-    }
-    persistConfiguredIdentities(identities);
-  });
-
-  $effect(() => {
-    if (!hydrated) {
-      return;
-    }
-    persistActiveIdentityId(activeIdentityId);
-  });
-
-  $effect(() => {
-    if (identities.length === 0) {
-      if (activeIdentityId !== '') {
-        activeIdentityId = '';
-      }
-      return;
-    }
-    if (identities.some((identity) => identity.id === activeIdentityId)) {
-      return;
-    }
-    activeIdentityId = identities[0].id;
-  });
+  let appliedExternalRefreshVersion = -1;
 
   $effect(() => {
     const nextVolumeId = volumeId ?? '';
@@ -101,7 +62,6 @@
       requestedVolumeId = '';
       loading = false;
       refreshing = false;
-      successMessage = '';
       errorMessage = '';
       return;
     }
@@ -112,68 +72,31 @@
     void refreshChat(true);
   });
 
-  const activeIdentity = $derived.by(
-    () => identities.find((identity) => identity.id === activeIdentityId) ?? null
-  );
-
   const effectiveChatState = $derived.by(() => historyState ?? chatState);
 
   const identityByPublicKey = $derived.by(() => {
-    const map = new Map<string, PublishedIdentity>();
+    const map = new Map<string, VolumeChatState['identities'][number]>();
     for (const identity of effectiveChatState.identities) {
       map.set(identity.authorPublicKey, identity);
     }
     return map;
   });
 
-  const activePublishedIdentity = $derived.by(() => {
-    if (!activeIdentity?.publicKey) {
-      return null;
+  $effect(() => {
+    if (!auth || !volumeId || historyState) {
+      appliedExternalRefreshVersion = externalRefreshVersion;
+      return;
     }
-    return identityByPublicKey.get(activeIdentity.publicKey) ?? null;
+    if (appliedExternalRefreshVersion === externalRefreshVersion) {
+      return;
+    }
+    const nextVersion = externalRefreshVersion;
+    appliedExternalRefreshVersion = nextVersion;
+    if (nextVersion === 0) {
+      return;
+    }
+    void refreshChat();
   });
-
-  const identityNeedsPublish = $derived.by(() => {
-    if (!activeIdentity) {
-      return false;
-    }
-    if (!activeIdentity.publicKey || !activePublishedIdentity) {
-      return true;
-    }
-    return (
-      activePublishedIdentity.record.profile.displayName !== activeIdentity.displayName.trim() ||
-      (activePublishedIdentity.record.profile.bio ?? '') !== activeIdentity.bio.trim()
-    );
-  });
-
-  function addIdentity() {
-    const next = createConfiguredIdentity();
-    identities = [...identities, next];
-    activeIdentityId = next.id;
-    manageOpen = true;
-  }
-
-  function removeIdentity(identityId: string) {
-    identities = identities.filter((identity) => identity.id !== identityId);
-    if (activeIdentityId === identityId) {
-      activeIdentityId = identities.find((identity) => identity.id !== identityId)?.id ?? '';
-    }
-  }
-
-  function updateIdentity(identityId: string, patch: Partial<ConfiguredIdentity>) {
-    identities = identities.map((identity) =>
-      identity.id === identityId
-        ? createConfiguredIdentity({
-            ...identity,
-            ...patch,
-            publicKey:
-              patch.address !== undefined || patch.password !== undefined
-                ? undefined
-                : patch.publicKey ?? identity.publicKey,
-          })
-        : identity
-    );
-  }
 
   async function refreshChat(initial = false) {
     if (!auth || !volumeId) {
@@ -195,47 +118,6 @@
     }
   }
 
-  async function ensurePublishedIdentity(): Promise<ConfiguredIdentity | null> {
-    if (!auth || !activeIdentity) {
-      errorMessage = 'Choose an identity first.';
-      return null;
-    }
-    if (activeIdentity.address.trim() === '') {
-      errorMessage = 'Identity secret is required.';
-      manageOpen = true;
-      return null;
-    }
-    if (activeIdentity.displayName.trim() === '') {
-      errorMessage = 'Display name is required before publishing.';
-      manageOpen = true;
-      return null;
-    }
-    if (!identityNeedsPublish && activeIdentity.publicKey) {
-      return activeIdentity;
-    }
-
-    publishing = true;
-    try {
-      errorMessage = '';
-      const published = await publishIdentity(auth, buildIdentitySecret(activeIdentity), {
-        displayName: activeIdentity.displayName.trim(),
-        bio: activeIdentity.bio.trim() || undefined,
-      });
-      updateIdentity(activeIdentity.id, { publicKey: published.published.authorPublicKey });
-      await refreshChat();
-      successMessage = `Published identity ${activeIdentity.displayName.trim()}.`;
-      return {
-        ...activeIdentity,
-        publicKey: published.published.authorPublicKey,
-      };
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to publish identity';
-      return null;
-    } finally {
-      publishing = false;
-    }
-  }
-
   async function handleSendMessage() {
     if (!auth || readonlyMode || sending) {
       return;
@@ -244,8 +126,9 @@
     if (body === '' && !pendingAttachment) {
       return;
     }
-    const publishedIdentity = await ensurePublishedIdentity();
+    const publishedIdentity = await ensureIdentityPublished();
     if (!publishedIdentity) {
+      errorMessage = 'Publish an identity from the top bar before sending.';
       return;
     }
 
@@ -259,6 +142,7 @@
       draftBody = '';
       pendingAttachment = null;
       await refreshChat();
+      await onChatMutated?.();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to send message';
     } finally {
@@ -291,6 +175,9 @@
   async function handleDrop(event: DragEvent) {
     event.preventDefault();
     dragActive = false;
+    if (readonlyMode) {
+      return;
+    }
     if (!event.dataTransfer || !event.dataTransfer.types.includes(NEARBYTES_DRAG_TYPE)) {
       return;
     }
@@ -359,110 +246,23 @@
       </div>
     </div>
     <div class="chat-header-actions">
+      <div class="chat-identity-pill">
+        <UserRound size={15} strokeWidth={2} />
+        <span>{activeIdentity?.displayName || 'Choose an identity above'}</span>
+      </div>
       <button
         type="button"
         class="chat-icon-btn"
         onclick={() => void refreshChat()}
-        disabled={!auth || refreshing || readonlyMode}
+        disabled={!auth || refreshing || historyState !== null}
       >
         <RefreshCw size={15} strokeWidth={2} />
-      </button>
-      <button type="button" class="chat-select-btn" onclick={() => (manageOpen = !manageOpen)}>
-        <UserRound size={15} strokeWidth={2} />
-        <span>{activeIdentity?.displayName || 'Choose identity'}</span>
-        <ChevronDown size={14} strokeWidth={2} />
       </button>
     </div>
   </div>
 
-  {#if manageOpen}
-    <section class="identity-panel">
-      <div class="identity-panel-list">
-        {#if identities.length === 0}
-          <p class="identity-empty">No configured identities yet.</p>
-        {:else}
-          {#each identities as identity (identity.id)}
-            <button
-              type="button"
-              class="identity-chip"
-              class:active={identity.id === activeIdentityId}
-              onclick={() => (activeIdentityId = identity.id)}
-            >
-              <div>
-                <strong>{identity.displayName || 'Unnamed identity'}</strong>
-                <span>{identity.address || 'Secret pending'}</span>
-              </div>
-              {#if identity.publicKey}
-                <Check size={14} strokeWidth={2} />
-              {/if}
-            </button>
-          {/each}
-        {/if}
-        <button type="button" class="identity-add-btn" onclick={addIdentity}>
-          <Plus size={14} strokeWidth={2} />
-          Add identity
-        </button>
-      </div>
-
-      {#if activeIdentity}
-        <div class="identity-editor">
-          <label>
-            <span>Identity secret</span>
-            <input
-              type="text"
-              value={activeIdentity.address}
-              oninput={(event) => updateIdentity(activeIdentity.id, { address: (event.currentTarget as HTMLInputElement).value })}
-              placeholder="address or secret seed"
-            />
-          </label>
-          <label>
-            <span>Password (optional)</span>
-            <input
-              type="password"
-              value={activeIdentity.password}
-              oninput={(event) => updateIdentity(activeIdentity.id, { password: (event.currentTarget as HTMLInputElement).value })}
-              placeholder="optional"
-            />
-          </label>
-          <label>
-            <span>Display name</span>
-            <input
-              type="text"
-              value={activeIdentity.displayName}
-              oninput={(event) => updateIdentity(activeIdentity.id, { displayName: (event.currentTarget as HTMLInputElement).value })}
-              placeholder="Ada"
-            />
-          </label>
-          <label>
-            <span>Bio</span>
-            <textarea
-              rows="3"
-              oninput={(event) => updateIdentity(activeIdentity.id, { bio: (event.currentTarget as HTMLTextAreaElement).value })}
-              placeholder="Who is speaking from this key?"
-            >{activeIdentity.bio}</textarea>
-          </label>
-          <div class="identity-editor-actions">
-            <button type="button" class="chat-secondary-btn" onclick={() => removeIdentity(activeIdentity.id)}>
-              Remove
-            </button>
-            <button
-              type="button"
-              class="chat-primary-btn"
-              onclick={() => void ensurePublishedIdentity()}
-              disabled={!auth || publishing || readonlyMode}
-            >
-              {publishing ? 'Publishing…' : identityNeedsPublish ? 'Publish identity' : 'Published'}
-            </button>
-          </div>
-        </div>
-      {/if}
-    </section>
-  {/if}
-
   {#if errorMessage}
     <p class="chat-banner error">{errorMessage}</p>
-  {:else if successMessage}
-    <p class="chat-banner success">{successMessage}</p>
   {/if}
 
   <div class="chat-layout">
@@ -530,7 +330,7 @@
       <div class="chat-composer-head">
         <div>
           <p class="chat-eyebrow">Compose</p>
-          <h4>{readonlyMode ? 'Read-only right now' : activeIdentity?.displayName || 'Pick an identity to send'}</h4>
+          <h4>{readonlyMode ? 'Read-only right now' : activeIdentity?.displayName || 'Pick an identity above'}</h4>
         </div>
         {#if identityNeedsPublish && activeIdentity}
           <span class="chat-status-pill">Publish identity to send</span>
@@ -589,8 +389,7 @@
   .chat-header,
   .chat-composer-head,
   .chat-message-head,
-  .chat-composer-actions,
-  .identity-editor-actions {
+  .chat-composer-actions {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -599,6 +398,7 @@
 
   .chat-title-wrap,
   .chat-header-actions,
+  .chat-identity-pill,
   .chat-pending-attachment,
   .chat-attachment {
     display: inline-flex;
@@ -632,17 +432,13 @@
   }
 
   .chat-header-actions,
-  .identity-editor-actions,
   .chat-composer-actions {
     flex-wrap: wrap;
   }
 
-  .chat-select-btn,
   .chat-primary-btn,
   .chat-secondary-btn,
   .chat-icon-btn,
-  .identity-add-btn,
-  .identity-chip,
   .chat-attachment {
     appearance: none;
     border: 1px solid rgba(56, 189, 248, 0.18);
@@ -656,16 +452,22 @@
     transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
   }
 
-  .chat-select-btn:hover,
   .chat-primary-btn:hover,
   .chat-secondary-btn:hover,
   .chat-icon-btn:hover,
-  .identity-add-btn:hover,
-  .identity-chip:hover,
   .chat-attachment:hover {
     border-color: rgba(96, 165, 250, 0.34);
     background: rgba(12, 28, 48, 0.96);
     transform: translateY(-1px);
+  }
+
+  .chat-identity-pill {
+    min-height: 38px;
+    padding: 0 0.9rem;
+    border-radius: 14px;
+    border: 1px solid rgba(56, 189, 248, 0.12);
+    background: rgba(8, 20, 38, 0.6);
+    color: rgba(224, 242, 254, 0.84);
   }
 
   .chat-primary-btn {
@@ -694,11 +496,6 @@
     color: rgba(252, 165, 165, 0.96);
   }
 
-  .chat-banner.success {
-    background: rgba(20, 83, 45, 0.22);
-    color: rgba(134, 239, 172, 0.96);
-  }
-
   .chat-layout {
     flex: 1 1 auto;
     min-height: 0;
@@ -708,8 +505,7 @@
   }
 
   .chat-feed,
-  .chat-composer,
-  .identity-panel {
+  .chat-composer {
     min-height: 0;
     border-radius: 20px;
     border: 1px solid rgba(56, 189, 248, 0.1);
@@ -764,8 +560,7 @@
   }
 
   .chat-textarea,
-  .identity-editor input,
-  .identity-editor textarea {
+  .chat-composer textarea {
     width: 100%;
     border-radius: 16px;
     border: 1px solid rgba(56, 189, 248, 0.14);
@@ -793,54 +588,8 @@
     justify-content: space-between;
   }
 
-  .identity-panel {
-    display: grid;
-    grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
-    gap: 1rem;
-    padding: 1rem;
-    overflow: auto;
-  }
-
-  .identity-panel-list,
-  .identity-editor {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .identity-chip {
-    justify-content: space-between;
-    text-align: left;
-  }
-
-  .identity-chip.active {
-    border-color: rgba(34, 211, 238, 0.34);
-    background: linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94));
-  }
-
-  .identity-chip div {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-  }
-
-  .identity-chip span,
-  .identity-empty {
-    color: rgba(191, 219, 254, 0.66);
-    font-size: 0.82rem;
-  }
-
-  .identity-editor label {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    color: rgba(191, 219, 254, 0.78);
-    font-size: 0.86rem;
-  }
-
   @media (max-width: 980px) {
-    .chat-layout,
-    .identity-panel {
+    .chat-layout {
       grid-template-columns: 1fr;
     }
   }

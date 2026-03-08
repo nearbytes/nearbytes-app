@@ -9,6 +9,7 @@
     downloadFile,
     exportSourceReferences,
     importSourceReferences,
+    publishIdentity,
     renameFile,
     watchVolume,
     type Auth,
@@ -18,6 +19,15 @@
     type VolumeChatState,
   } from './lib/api.js';
   import { getCachedFiles, setCachedFiles } from './lib/cache.js';
+  import {
+    buildIdentitySecret,
+    createConfiguredIdentity,
+    loadActiveIdentityId,
+    loadConfiguredIdentities,
+    persistActiveIdentityId,
+    persistConfiguredIdentities,
+    type ConfiguredIdentity,
+  } from './lib/chatIdentities.js';
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
@@ -51,6 +61,7 @@
     Search,
     Settings2,
     Trash2,
+    UserRound,
     X,
   } from 'lucide-svelte';
 
@@ -715,6 +726,14 @@
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
   let isRefreshing = $state(false);
+  let configuredIdentities = $state<ConfiguredIdentity[]>([]);
+  let activeChatIdentityId = $state('');
+  let showIdentityManager = $state(false);
+  let identityManagerLoading = $state(false);
+  let identityManagerMessage = $state('');
+  let identityManagerError = $state('');
+  let identityHydrated = false;
+  let chatRefreshVersion = $state(0);
   let volumeWorkspaceMode = $state<VolumeWorkspaceMode>('files');
   let fileManagerViewMode = $state<FileManagerViewMode>('icons');
   let fileManagerSplit = $state(38);
@@ -731,6 +750,10 @@
   }
 
   onMount(() => {
+    configuredIdentities = loadConfiguredIdentities();
+    activeChatIdentityId = loadActiveIdentityId();
+    identityHydrated = true;
+
     const bridge = getDesktopBridge();
     if (!bridge || typeof bridge.loadUiState !== 'function') {
       persistedUiStateReady = true;
@@ -752,6 +775,33 @@
         persistedUiStateReady = true;
       }
     })();
+  });
+
+  $effect(() => {
+    if (!identityHydrated) {
+      return;
+    }
+    persistConfiguredIdentities(configuredIdentities);
+  });
+
+  $effect(() => {
+    if (!identityHydrated) {
+      return;
+    }
+    persistActiveIdentityId(activeChatIdentityId);
+  });
+
+  $effect(() => {
+    if (configuredIdentities.length === 0) {
+      if (activeChatIdentityId !== '') {
+        activeChatIdentityId = '';
+      }
+      return;
+    }
+    if (configuredIdentities.some((identity) => identity.id === activeChatIdentityId)) {
+      return;
+    }
+    activeChatIdentityId = configuredIdentities[0].id;
   });
 
   $effect(() => {
@@ -935,12 +985,12 @@
     return timelineMarkerText(event, timelinePosition, timelineEvents.length);
   });
 
-  const historicalChatState = $derived.by((): VolumeChatState => {
+  function reconstructChatStateFromTimeline(limit: number): VolumeChatState {
     const identitiesByPublicKey = new Map<string, VolumeChatState['identities'][number]>();
     const messages: VolumeChatState['messages'] = [];
-    const limit = Math.max(0, Math.min(timelinePosition, timelineEvents.length));
+    const clampedLimit = Math.max(0, Math.min(limit, timelineEvents.length));
 
-    for (let index = 0; index < limit; index += 1) {
+    for (let index = 0; index < clampedLimit; index += 1) {
       const event = timelineEvents[index];
       if (
         event.type === 'DECLARE_IDENTITY' &&
@@ -974,6 +1024,46 @@
       identities: Array.from(identitiesByPublicKey.values()),
       messages,
     };
+  }
+
+  const historicalChatState = $derived.by((): VolumeChatState =>
+    reconstructChatStateFromTimeline(timelinePosition)
+  );
+
+  const latestTimelineChatState = $derived.by((): VolumeChatState =>
+    reconstructChatStateFromTimeline(timelineEvents.length)
+  );
+
+  const activeChatIdentity = $derived.by(
+    () => configuredIdentities.find((identity) => identity.id === activeChatIdentityId) ?? null
+  );
+
+  const publishedIdentityByPublicKey = $derived.by(() => {
+    const map = new Map<string, VolumeChatState['identities'][number]>();
+    for (const identity of latestTimelineChatState.identities) {
+      map.set(identity.authorPublicKey, identity);
+    }
+    return map;
+  });
+
+  const activePublishedIdentity = $derived.by(() => {
+    if (!activeChatIdentity?.publicKey) {
+      return null;
+    }
+    return publishedIdentityByPublicKey.get(activeChatIdentity.publicKey) ?? null;
+  });
+
+  const activeChatIdentityNeedsPublish = $derived.by(() => {
+    if (!activeChatIdentity) {
+      return false;
+    }
+    if (!activeChatIdentity.publicKey || !activePublishedIdentity) {
+      return true;
+    }
+    return (
+      activePublishedIdentity.record.profile.displayName !== activeChatIdentity.displayName.trim() ||
+      (activePublishedIdentity.record.profile.bio ?? '') !== activeChatIdentity.bio.trim()
+    );
   });
 
   const viewFiles = $derived.by(() => {
@@ -1953,6 +2043,97 @@
     }
   }
 
+  function addConfiguredChatIdentity() {
+    const next = createConfiguredIdentity();
+    configuredIdentities = [...configuredIdentities, next];
+    activeChatIdentityId = next.id;
+    showIdentityManager = true;
+    identityManagerError = '';
+    identityManagerMessage = '';
+  }
+
+  function updateConfiguredChatIdentity(identityId: string, patch: Partial<ConfiguredIdentity>) {
+    configuredIdentities = configuredIdentities.map((identity) =>
+      identity.id === identityId
+        ? createConfiguredIdentity({
+            ...identity,
+            ...patch,
+            publicKey:
+              patch.address !== undefined || patch.password !== undefined
+                ? undefined
+                : patch.publicKey ?? identity.publicKey,
+          })
+        : identity
+    );
+  }
+
+  function removeConfiguredChatIdentity(identityId: string) {
+    configuredIdentities = configuredIdentities.filter((identity) => identity.id !== identityId);
+    if (activeChatIdentityId === identityId) {
+      activeChatIdentityId =
+        configuredIdentities.find((identity) => identity.id !== identityId)?.id ?? '';
+    }
+    identityManagerError = '';
+    identityManagerMessage = '';
+  }
+
+  async function handleChatMutated() {
+    await refreshTimeline();
+    chatRefreshVersion += 1;
+  }
+
+  async function publishActiveChatIdentity(): Promise<ConfiguredIdentity | null> {
+    if (!auth || !activeChatIdentity) {
+      identityManagerError = 'Choose an identity first.';
+      identityManagerMessage = '';
+      return null;
+    }
+    if (isHistoryMode) {
+      identityManagerError = 'History mode is read-only. Jump to Latest before publishing.';
+      identityManagerMessage = '';
+      return null;
+    }
+    if (activeChatIdentity.address.trim() === '') {
+      identityManagerError = 'Identity secret is required.';
+      identityManagerMessage = '';
+      showIdentityManager = true;
+      return null;
+    }
+    if (activeChatIdentity.displayName.trim() === '') {
+      identityManagerError = 'Display name is required before publishing.';
+      identityManagerMessage = '';
+      showIdentityManager = true;
+      return null;
+    }
+    if (!activeChatIdentityNeedsPublish && activeChatIdentity.publicKey) {
+      return activeChatIdentity;
+    }
+
+    identityManagerLoading = true;
+    identityManagerError = '';
+    identityManagerMessage = '';
+    try {
+      const published = await publishIdentity(auth, buildIdentitySecret(activeChatIdentity), {
+        displayName: activeChatIdentity.displayName.trim(),
+        bio: activeChatIdentity.bio.trim() || undefined,
+      });
+      updateConfiguredChatIdentity(activeChatIdentity.id, {
+        publicKey: published.published.authorPublicKey,
+      });
+      await handleChatMutated();
+      identityManagerMessage = `Published ${activeChatIdentity.displayName.trim()} to this volume.`;
+      return {
+        ...activeChatIdentity,
+        publicKey: published.published.authorPublicKey,
+      };
+    } catch (error) {
+      identityManagerError = error instanceof Error ? error.message : 'Failed to publish identity';
+      return null;
+    } finally {
+      identityManagerLoading = false;
+    }
+  }
+
   function toggleColumnSort(column: 'name' | 'size' | 'date') {
     if (column === 'name') {
       sortBy = sortBy === 'name' ? 'name-desc' : 'name';
@@ -2762,6 +2943,173 @@
           </button>
         </div>
       </div>
+
+      {#if volumeWorkspaceMode === 'chat'}
+        <div class="identity-row panel-surface">
+          <div class="identity-row-head">
+            <div class="identity-row-title">
+              <UserRound class="button-icon" size={15} strokeWidth={2} />
+              <span>Identities</span>
+            </div>
+            <div class="identity-row-actions">
+              <button
+                type="button"
+                class="workspace-toggle"
+                onclick={() => (showIdentityManager = !showIdentityManager)}
+              >
+                <Settings2 class="button-icon" size={15} strokeWidth={2} />
+                <span>{showIdentityManager ? 'Hide editor' : 'Edit'}</span>
+              </button>
+              <button
+                type="button"
+                class="workspace-toggle"
+                onclick={() => void publishActiveChatIdentity()}
+                disabled={!auth || isHistoryMode || identityManagerLoading || !activeChatIdentity}
+                title={
+                  !auth
+                    ? 'Open a volume before publishing'
+                    : isHistoryMode
+                      ? 'Jump to Latest before publishing'
+                      : ''
+                }
+              >
+                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                <span>
+                  {identityManagerLoading
+                    ? 'Publishing…'
+                    : activeChatIdentityNeedsPublish
+                      ? 'Publish identity'
+                      : 'Published'}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div class="identity-chip-row">
+            {#if configuredIdentities.length === 0}
+              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
+                <Plus size={14} strokeWidth={2} />
+                <span>Add identity</span>
+              </button>
+            {:else}
+              {#each configuredIdentities as identity (identity.id)}
+                <button
+                  type="button"
+                  class="identity-pill"
+                  class:active={identity.id === activeChatIdentityId}
+                  onclick={() => {
+                    activeChatIdentityId = identity.id;
+                    identityManagerError = '';
+                    identityManagerMessage = '';
+                  }}
+                >
+                  <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
+                  <span class="identity-pill-state">
+                    {#if identity.id === activeChatIdentityId && activeChatIdentityNeedsPublish}
+                      Needs publish
+                    {:else if identity.publicKey}
+                      Published
+                    {:else}
+                      Local
+                    {/if}
+                  </span>
+                </button>
+              {/each}
+              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
+                <Plus size={14} strokeWidth={2} />
+                <span>New</span>
+              </button>
+            {/if}
+          </div>
+
+          <p class="identity-row-note">
+            Publish writes a signed <code>DECLARE_IDENTITY</code> event into the current volume log.
+          </p>
+
+          {#if identityManagerError}
+            <p class="identity-row-banner error">{identityManagerError}</p>
+          {:else if identityManagerMessage}
+            <p class="identity-row-banner success">{identityManagerMessage}</p>
+          {/if}
+
+          {#if showIdentityManager && activeChatIdentity}
+            <div class="identity-editor-panel">
+              <label>
+                <span>Identity secret</span>
+                <input
+                  type="text"
+                  value={activeChatIdentity.address}
+                  oninput={(event) =>
+                    updateConfiguredChatIdentity(activeChatIdentity.id, {
+                      address: (event.currentTarget as HTMLInputElement).value,
+                    })}
+                  placeholder="address or secret seed"
+                />
+              </label>
+              <label>
+                <span>Password (optional)</span>
+                <input
+                  type="password"
+                  value={activeChatIdentity.password}
+                  oninput={(event) =>
+                    updateConfiguredChatIdentity(activeChatIdentity.id, {
+                      password: (event.currentTarget as HTMLInputElement).value,
+                    })}
+                  placeholder="optional"
+                />
+              </label>
+              <label>
+                <span>Display name</span>
+                <input
+                  type="text"
+                  value={activeChatIdentity.displayName}
+                  oninput={(event) =>
+                    updateConfiguredChatIdentity(activeChatIdentity.id, {
+                      displayName: (event.currentTarget as HTMLInputElement).value,
+                    })}
+                  placeholder="Ada"
+                />
+              </label>
+              <label class="identity-editor-panel-wide">
+                <span>Bio</span>
+                <textarea
+                  rows="2"
+                  oninput={(event) =>
+                    updateConfiguredChatIdentity(activeChatIdentity.id, {
+                      bio: (event.currentTarget as HTMLTextAreaElement).value,
+                    })}
+                  placeholder="Who is speaking from this key?"
+                >{activeChatIdentity.bio}</textarea>
+              </label>
+              <div class="identity-editor-panel-actions">
+                <button
+                  type="button"
+                  class="workspace-toggle remove"
+                  onclick={() => removeConfiguredChatIdentity(activeChatIdentity.id)}
+                >
+                  <Trash2 class="button-icon" size={15} strokeWidth={2} />
+                  <span>Remove</span>
+                </button>
+                <button
+                  type="button"
+                  class="workspace-toggle"
+                  onclick={() => void publishActiveChatIdentity()}
+                  disabled={!auth || isHistoryMode || identityManagerLoading}
+                >
+                  <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                  <span>
+                    {identityManagerLoading
+                      ? 'Publishing…'
+                      : activeChatIdentityNeedsPublish
+                        ? 'Publish to volume'
+                        : 'Published'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   </header>
 
@@ -2980,6 +3328,11 @@
           {volumeId}
           readonlyMode={isHistoryMode}
           historyState={isHistoryMode ? historicalChatState : null}
+          activeIdentity={activeChatIdentity}
+          identityNeedsPublish={activeChatIdentityNeedsPublish}
+          ensureIdentityPublished={publishActiveChatIdentity}
+          onChatMutated={handleChatMutated}
+          externalRefreshVersion={chatRefreshVersion}
         />
       {:else if viewFiles.length === 0 && !isLoading}
         <div class="empty-state">
@@ -3357,6 +3710,176 @@
     gap: 0.45rem;
     flex-wrap: wrap;
     width: 100%;
+  }
+
+  .identity-row {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    padding: 0.78rem 0.9rem;
+    border: 1px solid rgba(56, 189, 248, 0.14);
+    border-radius: 18px;
+    background:
+      radial-gradient(140% 120% at 0% 0%, rgba(34, 211, 238, 0.08), transparent 42%),
+      linear-gradient(180deg, rgba(9, 20, 39, 0.9), rgba(8, 18, 35, 0.84));
+  }
+
+  .identity-row-head,
+  .identity-row-actions,
+  .identity-editor-panel-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+  }
+
+  .identity-row-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: rgba(224, 242, 254, 0.92);
+  }
+
+  .identity-chip-row {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    overflow-x: auto;
+    padding-bottom: 0.1rem;
+    scrollbar-width: thin;
+  }
+
+  .identity-pill {
+    appearance: none;
+    border: 1px solid rgba(56, 189, 248, 0.16);
+    background: rgba(8, 20, 38, 0.74);
+    color: rgba(226, 232, 240, 0.92);
+    border-radius: 15px;
+    min-height: 42px;
+    padding: 0.58rem 0.82rem;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 0.12rem;
+    min-width: 132px;
+    font: inherit;
+    cursor: pointer;
+    transition:
+      border-color 0.18s ease,
+      background-color 0.18s ease,
+      transform 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+
+  .identity-pill:hover {
+    border-color: rgba(96, 165, 250, 0.32);
+    background: rgba(12, 28, 48, 0.92);
+    transform: translateY(-1px);
+  }
+
+  .identity-pill.active {
+    border-color: rgba(34, 211, 238, 0.38);
+    background: linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94));
+    box-shadow: 0 10px 24px rgba(6, 182, 212, 0.12);
+  }
+
+  .identity-pill.add {
+    min-width: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .identity-pill-name {
+    font-size: 0.84rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .identity-pill-state {
+    font-size: 0.72rem;
+    color: rgba(191, 219, 254, 0.66);
+    white-space: nowrap;
+  }
+
+  .identity-row-note {
+    margin: 0;
+    font-size: 0.78rem;
+    color: rgba(186, 230, 253, 0.68);
+  }
+
+  .identity-row-note code {
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 0.74rem;
+    color: rgba(224, 242, 254, 0.9);
+  }
+
+  .identity-row-banner {
+    margin: 0;
+    align-self: flex-start;
+    border-radius: 999px;
+    padding: 0.38rem 0.72rem;
+    font-size: 0.8rem;
+  }
+
+  .identity-row-banner.error {
+    background: rgba(127, 29, 29, 0.22);
+    color: rgba(252, 165, 165, 0.96);
+  }
+
+  .identity-row-banner.success {
+    background: rgba(20, 83, 45, 0.22);
+    color: rgba(134, 239, 172, 0.96);
+  }
+
+  .identity-editor-panel {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+    align-items: start;
+  }
+
+  .identity-editor-panel label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    color: rgba(191, 219, 254, 0.78);
+    font-size: 0.82rem;
+  }
+
+  .identity-editor-panel input,
+  .identity-editor-panel textarea {
+    width: 100%;
+    border-radius: 14px;
+    border: 1px solid rgba(56, 189, 248, 0.14);
+    background: rgba(4, 15, 28, 0.88);
+    color: rgba(239, 246, 255, 0.94);
+    font: inherit;
+    padding: 0.75rem 0.85rem;
+  }
+
+  .identity-editor-panel-wide {
+    grid-column: 1 / -1;
+  }
+
+  .identity-editor-panel-actions {
+    grid-column: 1 / -1;
+  }
+
+  .workspace-toggle.remove {
+    border-color: rgba(248, 113, 113, 0.22);
+    background: rgba(67, 20, 20, 0.56);
+    color: rgba(254, 226, 226, 0.95);
+  }
+
+  .workspace-toggle.remove:hover {
+    border-color: rgba(252, 165, 165, 0.38);
+    background: rgba(88, 24, 24, 0.72);
   }
 
   .mounts-actions {
@@ -5160,6 +5683,10 @@
       gap: 0.75rem;
     }
 
+    .identity-editor-panel {
+      grid-template-columns: 1fr;
+    }
+
     .time-machine {
       padding: 0.75rem;
     }
@@ -5265,6 +5792,11 @@
 
     .header-dock-actions {
       flex-direction: column;
+      align-items: stretch;
+    }
+
+    .identity-row-head,
+    .identity-row-actions {
       align-items: stretch;
     }
 
