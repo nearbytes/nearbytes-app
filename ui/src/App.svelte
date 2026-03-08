@@ -15,6 +15,7 @@
   } from './lib/api.js';
   import { getCachedFiles, setCachedFiles } from './lib/cache.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
+  import AudioPreview from './components/AudioPreview.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import {
@@ -2970,7 +2971,11 @@
                   <!-- svelte-ignore a11y_media_has_caption -->
                   <video class="preview-media" controls src={previewUrl}></video>
                 {:else if previewKind === 'audio' && previewUrl}
-                  <audio class="preview-audio" controls src={previewUrl}></audio>
+                  <AudioPreview
+                    src={previewUrl}
+                    title={displayFileName(selectedFile)}
+                    mimeType={selectedFile.mimeType}
+                  />
                 {:else if previewKind === 'pdf' && previewUrl}
                   <iframe class="preview-pdf" src={previewUrl} title={"PDF preview: " + selectedFile.filename}></iframe>
                 {:else if previewKind === 'text'}
@@ -2997,9 +3002,9 @@
 
 <style>
   :global(html, body, #app) {
+    height: 100%;
     min-height: 100%;
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;
   }
 
   :global(*, *::before, *::after) {
@@ -3012,19 +3017,20 @@
     background: #0a0a0f;
     color: #e0e0e0;
     font-family: 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    overscroll-behavior: none;
   }
 
   .app {
     width: 100%;
     min-height: 100dvh;
-    height: auto;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     background:
       radial-gradient(120% 140% at 0% 0%, rgba(34, 211, 238, 0.09), transparent 48%),
       radial-gradient(110% 130% at 100% 0%, rgba(14, 165, 233, 0.08), transparent 42%),
       linear-gradient(180deg, #050b16 0%, #09111d 44%, #060912 100%);
-    overflow: visible;
+    overflow: hidden;
   }
 
   .header {
@@ -3803,7 +3809,7 @@
     min-height: 0;
     height: 100%;
     padding: 2rem;
-    overflow: visible;
+    overflow: hidden;
     transition: background-color 0.3s ease;
     position: relative;
     display: flex;
@@ -3840,8 +3846,9 @@
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    min-height: 100%;
+    min-height: 0;
     flex: 1 1 auto;
+    overflow: hidden;
   }
 
   .volume-transition-state {
@@ -4071,7 +4078,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 60vh;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
   }
 
   .empty-content {
