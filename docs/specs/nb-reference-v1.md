@@ -19,6 +19,14 @@ This specification does not define:
 3. CBOR/COSE wire formats.
 4. Logical filename transport for clipboard-oriented multi-file workflows.
 
+Introductory use cases (non-normative):
+
+1. **Per-destination-volume cut and paste**: a sender may target a specific destination volume public key, place the resulting reference on the clipboard or another transport, and rely on import succeeding only when that destination volume is open.
+2. **Chat-style sharing by public key**: although this specification is written in terms of recipient volumes, the same recipient-binding pattern also fits systems where participants introduce themselves by public key and references are addressed to that key.
+3. **Sealed delivery for later reveal**: a sender may derive a future recipient volume public key from a high-entropy secret, create references now, distribute them early, and reveal the secret later so holders can finally open the recipient volume and import the references.
+
+These are all the same cryptographic shape: a reference is usable once the recipient context can derive the private key matching the targeted public key and can still reach the referenced ciphertext blocks.
+
 ## 2. Terms
 
 1. **Volume Secret**: user input used to open a volume (`address` or `address:password`).
@@ -41,6 +49,12 @@ Security requirement:
 
 1. Volume secrets MUST have high entropy.
 2. Weak human passwords are vulnerable to offline guessing.
+
+Security intuition (non-normative):
+
+1. A holder that cannot derive the private key for recipient volume `k.r` cannot recover the FEK.
+2. For such a holder, the reference is only a transport object containing hashes, sizes, recipient identity, and opaque capsule bytes.
+3. The reference alone does not reveal plaintext file contents.
 
 ## 4. Wire Encoding
 
@@ -97,6 +111,11 @@ To generate capsule `k`:
 Tampering rule:
 
 1. Any change to `c` or `k.r` MUST cause unwrap failure via AAD authentication failure.
+
+Practical interpretation (non-normative):
+
+1. If you are not the targeted recipient volume, the copy/paste payload is not directly useful.
+2. You can forward it, store it, or inspect its public metadata, but you cannot make semantic use of the file contents from the reference alone.
 
 ## 7. Multi-Block Target Rule
 

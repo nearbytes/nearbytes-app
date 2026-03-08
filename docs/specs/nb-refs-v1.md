@@ -16,6 +16,12 @@ This specification does not define:
 2. ciphertext-block transport;
 3. conflict-resolution UI beyond overwrite rejection.
 
+Security intuition (non-normative):
+
+1. A party that cannot open recipient volume `r` cannot unwrap any nested FEK capsules in the bundle.
+2. For such a party, the bundle is only filenames, hashes, sizes, recipient identity, and opaque wrapped-key material.
+3. The bundle alone does not reveal plaintext file contents.
+
 ## 2. Terms
 
 1. **Bundle**: a clipboard- or message-safe object containing one or more file reference entries.
@@ -92,12 +98,16 @@ Given active volume context:
 
 Writers SHOULD:
 
-1. use `nb.refs.v1` for clipboard and messaging transfers, even for a single file;
+1. use `nb.refs.v1` when the sender intentionally targets a known destination volume, including for single-file transfer;
 2. include each logical filename in `items[i].name`;
 3. include `mime` when known;
 4. include `createdAt` when preserving original file timestamps is desired.
 
 Single-file bare `nb.ref.v1` remains valid, but it does not carry a logical filename and is therefore not sufficient by itself for clipboard-oriented multi-file paste UX.
+
+Default clipboard note:
+
+1. When destination volume is not known at copy time, writers SHOULD prefer `nb.src.refs.v1` instead of `nb.refs.v1`.
 
 ## 8. Failure Conditions
 
