@@ -15,6 +15,7 @@ const API_PREFIXES = [
   '/files',
   '/upload',
   '/file',
+  '/references',
   '/health',
   '/timeline',
   '/snapshot',
@@ -133,7 +134,7 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
         runtimeCaching: [
           {
-            urlPattern: /^\/(open|files|upload|file|health|timeline|snapshot|config|sources|watch)/,
+            urlPattern: /^\/(open|files|upload|file|references|health|timeline|snapshot|config|sources|watch)/,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'nearbytes-api-cache',

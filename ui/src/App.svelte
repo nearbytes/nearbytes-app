@@ -1784,6 +1784,12 @@
     selectionAnchorBlobHash = anchorBlobHash;
   }
 
+  function clearSelection() {
+    setSelection([], null, null);
+    renamingBlobHash = null;
+    renameDraft = '';
+  }
+
   function selectFile(
     file: FileMetadata,
     options: {
@@ -3011,7 +3017,7 @@
                               event.stopPropagation();
                               startRenaming(file);
                             }}
-                            onclick={(event) => event.stopPropagation()}
+                            onclick={(event) => handleFilePointerSelect(event, file)}
                           >
                             {displayFileName(file)}
                           </button>
@@ -3049,7 +3055,7 @@
                                 event.stopPropagation();
                                 startRenaming(file);
                               }}
-                              onclick={(event) => event.stopPropagation()}
+                              onclick={(event) => handleFilePointerSelect(event, file)}
                             >
                               {displayFileName(file)}
                             </button>
@@ -3062,6 +3068,13 @@
                     {/if}
                   </div>
                 {/each}
+                <button
+                  type="button"
+                  class="file-list-clear-hitbox"
+                  aria-label="Clear file selection"
+                  tabindex="-1"
+                  onclick={clearSelection}
+                ></button>
               </div>
             {/if}
           </section>
@@ -4525,6 +4538,22 @@
     align-content: start;
     gap: 0.7rem;
     padding: 0.9rem;
+  }
+
+  .file-list-clear-hitbox {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    display: block;
+    width: 100%;
+    min-height: 3rem;
+    padding: 0;
+    margin: 0;
+    cursor: default;
+  }
+
+  .file-list-scroll.icons .file-list-clear-hitbox {
+    grid-column: 1 / -1;
   }
 
   .file-row {
