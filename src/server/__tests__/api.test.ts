@@ -492,7 +492,14 @@ describe('Nearbytes API', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    expect(timelineRes.body.events.some((event: { type: string }) => event.type === 'DECLARE_IDENTITY')).toBe(true);
-    expect(timelineRes.body.events.some((event: { type: string }) => event.type === 'CHAT_MESSAGE')).toBe(true);
+    const identityTimelineEvent = timelineRes.body.events.find(
+      (event: { type: string }) => event.type === 'DECLARE_IDENTITY'
+    );
+    const chatTimelineEvent = timelineRes.body.events.find(
+      (event: { type: string }) => event.type === 'CHAT_MESSAGE'
+    );
+
+    expect(identityTimelineEvent?.record?.profile?.displayName).toBe('Ada');
+    expect(chatTimelineEvent?.message?.body).toBe('hello');
   });
 });

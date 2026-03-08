@@ -181,6 +181,8 @@ export interface TimelineEvent {
   body?: string;
   attachmentName?: string;
   summary?: string;
+  record?: IdentityRecord;
+  message?: ChatMessage;
 }
 
 export interface TimelineResponse {

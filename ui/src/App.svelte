@@ -15,6 +15,7 @@
     type FileMetadata,
     type SourceReferenceBundle,
     type TimelineEvent,
+    type VolumeChatState,
   } from './lib/api.js';
   import { getCachedFiles, setCachedFiles } from './lib/cache.js';
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
@@ -932,6 +933,47 @@
     if (timelinePosition === 0) return `Genesis • 0/${timelineEvents.length}`;
     const event = timelineEvents[timelinePosition - 1];
     return timelineMarkerText(event, timelinePosition, timelineEvents.length);
+  });
+
+  const historicalChatState = $derived.by((): VolumeChatState => {
+    const identitiesByPublicKey = new Map<string, VolumeChatState['identities'][number]>();
+    const messages: VolumeChatState['messages'] = [];
+    const limit = Math.max(0, Math.min(timelinePosition, timelineEvents.length));
+
+    for (let index = 0; index < limit; index += 1) {
+      const event = timelineEvents[index];
+      if (
+        event.type === 'DECLARE_IDENTITY' &&
+        event.authorPublicKey &&
+        event.record
+      ) {
+        identitiesByPublicKey.set(event.authorPublicKey, {
+          eventHash: event.eventHash,
+          authorPublicKey: event.authorPublicKey,
+          publishedAt: event.publishedAt ?? event.timestamp,
+          record: event.record,
+        });
+        continue;
+      }
+
+      if (
+        event.type === 'CHAT_MESSAGE' &&
+        event.authorPublicKey &&
+        event.message
+      ) {
+        messages.push({
+          eventHash: event.eventHash,
+          authorPublicKey: event.authorPublicKey,
+          publishedAt: event.publishedAt ?? event.timestamp,
+          message: event.message,
+        });
+      }
+    }
+
+    return {
+      identities: Array.from(identitiesByPublicKey.values()),
+      messages,
+    };
   });
 
   const viewFiles = $derived.by(() => {
@@ -2933,7 +2975,12 @@
       </div>
 
       {#if volumeWorkspaceMode === 'chat'}
-        <VolumeChat {auth} {volumeId} readonlyMode={isHistoryMode} />
+        <VolumeChat
+          {auth}
+          {volumeId}
+          readonlyMode={isHistoryMode}
+          historyState={isHistoryMode ? historicalChatState : null}
+        />
       {:else if viewFiles.length === 0 && !isLoading}
         <div class="empty-state">
           <div class="empty-content">

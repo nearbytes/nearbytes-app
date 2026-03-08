@@ -37,10 +37,12 @@
     auth = null,
     volumeId = null,
     readonlyMode = false,
+    historyState = null,
   } = $props<{
     auth: Auth | null;
     volumeId: string | null;
     readonlyMode?: boolean;
+    historyState?: VolumeChatState | null;
   }>();
 
   let chatState = $state<VolumeChatState>({ identities: [], messages: [] });
@@ -114,9 +116,11 @@
     () => identities.find((identity) => identity.id === activeIdentityId) ?? null
   );
 
+  const effectiveChatState = $derived.by(() => historyState ?? chatState);
+
   const identityByPublicKey = $derived.by(() => {
     const map = new Map<string, PublishedIdentity>();
-    for (const identity of chatState.identities) {
+    for (const identity of effectiveChatState.identities) {
       map.set(identity.authorPublicKey, identity);
     }
     return map;
@@ -355,7 +359,12 @@
       </div>
     </div>
     <div class="chat-header-actions">
-      <button type="button" class="chat-icon-btn" onclick={() => void refreshChat()} disabled={!auth || refreshing}>
+      <button
+        type="button"
+        class="chat-icon-btn"
+        onclick={() => void refreshChat()}
+        disabled={!auth || refreshing || readonlyMode}
+      >
         <RefreshCw size={15} strokeWidth={2} />
       </button>
       <button type="button" class="chat-select-btn" onclick={() => (manageOpen = !manageOpen)}>
@@ -440,7 +449,7 @@
               type="button"
               class="chat-primary-btn"
               onclick={() => void ensurePublishedIdentity()}
-              disabled={!auth || publishing}
+              disabled={!auth || publishing || readonlyMode}
             >
               {publishing ? 'Publishing…' : identityNeedsPublish ? 'Publish identity' : 'Published'}
             </button>
@@ -458,12 +467,18 @@
 
   <div class="chat-layout">
     <section class="chat-feed">
-      {#if loading}
+      {#if loading && !historyState}
         <p class="chat-empty">Loading chat…</p>
-      {:else if chatState.messages.length === 0}
-        <p class="chat-empty">No messages yet. Publish an identity and start the conversation.</p>
+      {:else if effectiveChatState.messages.length === 0}
+        <p class="chat-empty">
+          {#if readonlyMode}
+            No messages at this point in history.
+          {:else}
+            No messages yet. Publish an identity and start the conversation.
+          {/if}
+        </p>
       {:else}
-        {#each chatState.messages as entry (entry.eventHash)}
+        {#each effectiveChatState.messages as entry (entry.eventHash)}
           <article class="chat-message-card">
             <header class="chat-message-head">
               <strong>{senderLabel(entry.authorPublicKey)}</strong>
@@ -538,7 +553,12 @@
       {/if}
       <p class="chat-drop-hint">Drag a Nearbytes file here to attach it as a signed source reference.</p>
       <div class="chat-composer-actions">
-        <button type="button" class="chat-secondary-btn" onclick={() => void refreshChat()} disabled={!auth || refreshing}>
+        <button
+          type="button"
+          class="chat-secondary-btn"
+          onclick={() => void refreshChat()}
+          disabled={!auth || refreshing || readonlyMode}
+        >
           Refresh
         </button>
         <button

@@ -14,7 +14,12 @@ import { serializeEventPayload } from '../storage/serialization.js';
 import { openVolume, loadEventLog, verifyEventLog } from './volume.js';
 import type { FileMetadata } from './fileEvents.js';
 import type { EventLogEntry } from '../types/volume.js';
-import { parseChatMessageJson, parseIdentityRecordJson } from './chatCodec.js';
+import {
+  parseChatMessageJson,
+  parseIdentityRecordJson,
+  type ChatMessage,
+  type IdentityRecord,
+} from './chatCodec.js';
 import {
   createRecipientKeyCapsule,
   decryptFileForVolume,
@@ -89,6 +94,8 @@ export interface TimelineEvent {
   body?: string;
   attachmentName?: string;
   summary?: string;
+  record?: IdentityRecord;
+  message?: ChatMessage;
 }
 
 export interface RenameFolderSummary {
@@ -176,6 +183,8 @@ interface StoredTimelineRow {
   body?: string;
   attachmentName?: string;
   summary?: string;
+  record?: IdentityRecord;
+  message?: ChatMessage;
 }
 
 /**
@@ -996,6 +1005,8 @@ function mapEntriesToTimeline(entries: EventLogEntry[]): TimelineEvent[] {
     body: row.body,
     attachmentName: row.attachmentName,
     summary: row.summary,
+    record: row.record,
+    message: row.message,
   }));
 }
 
@@ -1120,6 +1131,7 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
         authorPublicKey: payload.authorPublicKey,
         displayName,
         summary: displayName ? `Published ${displayName}` : 'Published identity',
+        record: identityRecord ?? undefined,
       });
       continue;
     }
@@ -1141,6 +1153,7 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
         body,
         attachmentName,
         summary: body ?? attachmentName ?? 'Attachment message',
+        message: chatMessage ?? undefined,
       });
     }
   }
