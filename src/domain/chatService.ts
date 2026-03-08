@@ -2,7 +2,7 @@ import type { CryptoOperations } from '../crypto/index.js';
 import type { KeyPair, Secret } from '../types/keys.js';
 import { createSecret } from '../types/keys.js';
 import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
-import type { EventPayload, Hash } from '../types/events.js';
+import type { EventPayload } from '../types/events.js';
 import { createEncryptedData, EMPTY_HASH, EventType } from '../types/events.js';
 import { defaultPathMapper } from '../types/storage.js';
 import { ChannelStorage } from '../storage/channel.js';
@@ -18,7 +18,6 @@ import {
   serializeIdentityRecord,
   verifyChatMessage,
   verifyIdentityRecord,
-  type ChatAttachment,
   type ChatMessage,
   type IdentityProfile,
   type IdentityRecord,
