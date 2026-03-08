@@ -701,10 +701,10 @@
   let copiedVolumeId = $state(false);
   let searchQuery = $state('');
   let sortBy = $state<'newest' | 'oldest' | 'name' | 'name-desc' | 'size' | 'size-asc'>('newest');
-  let selectedBlobHash = $state<string | null>(null);
-  let selectedBlobHashes = $state<string[]>([]);
-  let selectionAnchorBlobHash = $state<string | null>(null);
-  let renamingBlobHash = $state<string | null>(null);
+  let selectedFileName = $state<string | null>(null);
+  let selectedFileNames = $state<string[]>([]);
+  let selectionAnchorFileName = $state<string | null>(null);
+  let renamingFileName = $state<string | null>(null);
   let renameDraft = $state('');
   let renamePending = $state(false);
   let timelineEvents = $state<TimelineEvent[]>([]);
@@ -975,11 +975,11 @@
   );
 
   const selectedFiles = $derived.by(() =>
-    visibleFiles.filter((file) => selectedBlobHashes.includes(file.blobHash))
+    visibleFiles.filter((file) => selectedFileNames.includes(file.filename))
   );
 
   const selectedFile = $derived.by(
-    () => visibleFiles.find((file) => file.blobHash === selectedBlobHash) ?? null
+    () => visibleFiles.find((file) => file.filename === selectedFileName) ?? null
   );
   const activeMount = $derived.by(() => mounts.find((mount) => mount.id === activeMountId) ?? null);
   const currentMountedVolumePresentation = $derived.by<MountedVolumePresentation | null>(() => {
@@ -1036,8 +1036,8 @@
     return formatShortDate(value);
   }
 
-  function isFileSelected(blobHash: string): boolean {
-    return selectedBlobHashes.includes(blobHash);
+  function isFileSelected(filename: string): boolean {
+    return selectedFileNames.includes(filename);
   }
 
   function fileBaseName(filename: string): string {
@@ -1264,7 +1264,7 @@
       timelineEvents = [];
       timelinePosition = 0;
       searchQuery = '';
-      selectedBlobHash = null;
+      selectedFileName = null;
       previewKind = 'none';
       previewText = '';
       previewError = '';
@@ -1386,7 +1386,7 @@
       auth = null;
       volumeId = null;
       lastRefresh = null;
-      selectedBlobHash = null;
+      selectedFileName = null;
       previewKind = 'none';
       previewText = '';
       previewError = '';
@@ -1659,33 +1659,33 @@
 
   $effect(() => {
     if (visibleFiles.length === 0) {
-      selectedBlobHash = null;
-      selectedBlobHashes = [];
-      selectionAnchorBlobHash = null;
-      renamingBlobHash = null;
+      selectedFileName = null;
+      selectedFileNames = [];
+      selectionAnchorFileName = null;
+      renamingFileName = null;
       showPreviewPane = false;
       return;
     }
-    const visibleBlobHashes = new Set(visibleFiles.map((file) => file.blobHash));
-    const nextSelected = selectedBlobHashes.filter((blobHash) => visibleBlobHashes.has(blobHash));
-    if (nextSelected.length !== selectedBlobHashes.length) {
-      selectedBlobHashes = nextSelected;
+    const visibleFileNames = new Set(visibleFiles.map((file) => file.filename));
+    const nextSelected = selectedFileNames.filter((filename) => visibleFileNames.has(filename));
+    if (nextSelected.length !== selectedFileNames.length) {
+      selectedFileNames = nextSelected;
     }
-    if (selectionAnchorBlobHash && !visibleBlobHashes.has(selectionAnchorBlobHash)) {
-      selectionAnchorBlobHash = nextSelected[0] ?? null;
+    if (selectionAnchorFileName && !visibleFileNames.has(selectionAnchorFileName)) {
+      selectionAnchorFileName = nextSelected[0] ?? null;
     }
-    if (!selectedBlobHash || !visibleBlobHashes.has(selectedBlobHash)) {
-      selectedBlobHash = nextSelected[0] ?? null;
+    if (!selectedFileName || !visibleFileNames.has(selectedFileName)) {
+      selectedFileName = nextSelected[0] ?? null;
     }
-    if (renamingBlobHash && !visibleBlobHashes.has(renamingBlobHash)) {
-      renamingBlobHash = null;
+    if (renamingFileName && !visibleFileNames.has(renamingFileName)) {
+      renamingFileName = null;
       renameDraft = '';
     }
-    if (nextSelected.length === 0 && renamingBlobHash) {
-      renamingBlobHash = null;
+    if (nextSelected.length === 0 && renamingFileName) {
+      renamingFileName = null;
       renameDraft = '';
     }
-    if ((nextSelected[0] ?? null) === null && selectedBlobHash === null) {
+    if ((nextSelected[0] ?? null) === null && selectedFileName === null) {
       showPreviewPane = false;
     }
   });
@@ -1778,15 +1778,15 @@
     };
   });
 
-  function setSelection(nextSelection: string[], activeBlobHash: string | null, anchorBlobHash: string | null) {
-    selectedBlobHashes = nextSelection;
-    selectedBlobHash = activeBlobHash;
-    selectionAnchorBlobHash = anchorBlobHash;
+  function setSelection(nextSelection: string[], activeFileName: string | null, anchorFileName: string | null) {
+    selectedFileNames = nextSelection;
+    selectedFileName = activeFileName;
+    selectionAnchorFileName = anchorFileName;
   }
 
   function clearSelection() {
     setSelection([], null, null);
-    renamingBlobHash = null;
+    renamingFileName = null;
     renameDraft = '';
   }
 
@@ -1798,58 +1798,58 @@
       additiveRange?: boolean;
     } = {}
   ) {
-    const targetBlobHash = file.blobHash;
-    const filesByBlobHash = new Map(visibleFiles.map((item) => [item.blobHash, item]));
-    const targetIndex = visibleFiles.findIndex((item) => item.blobHash === targetBlobHash);
-    const anchorBlobHash =
-      selectionAnchorBlobHash && filesByBlobHash.has(selectionAnchorBlobHash)
-        ? selectionAnchorBlobHash
-        : selectedBlobHash && filesByBlobHash.has(selectedBlobHash)
-          ? selectedBlobHash
-          : targetBlobHash;
+    const targetFileName = file.filename;
+    const visibleFileNames = new Set(visibleFiles.map((item) => item.filename));
+    const targetIndex = visibleFiles.findIndex((item) => item.filename === targetFileName);
+    const anchorFileName =
+      selectionAnchorFileName && visibleFileNames.has(selectionAnchorFileName)
+        ? selectionAnchorFileName
+        : selectedFileName && visibleFileNames.has(selectedFileName)
+          ? selectedFileName
+          : targetFileName;
 
     if (options.range && targetIndex >= 0) {
-      const anchorIndex = visibleFiles.findIndex((item) => item.blobHash === anchorBlobHash);
+      const anchorIndex = visibleFiles.findIndex((item) => item.filename === anchorFileName);
       const start = Math.min(anchorIndex >= 0 ? anchorIndex : targetIndex, targetIndex);
       const end = Math.max(anchorIndex >= 0 ? anchorIndex : targetIndex, targetIndex);
-      const rangeSelection = visibleFiles.slice(start, end + 1).map((item) => item.blobHash);
+      const rangeSelection = visibleFiles.slice(start, end + 1).map((item) => item.filename);
       const nextSelection = options.additiveRange
-        ? Array.from(new Set([...selectedBlobHashes, ...rangeSelection]))
+        ? Array.from(new Set([...selectedFileNames, ...rangeSelection]))
         : rangeSelection;
-      setSelection(nextSelection, targetBlobHash, anchorBlobHash);
-      renamingBlobHash = null;
+      setSelection(nextSelection, targetFileName, anchorFileName);
+      renamingFileName = null;
       renameDraft = '';
       return;
     }
 
     if (options.toggle) {
-      const nextSelection = isFileSelected(targetBlobHash)
-        ? selectedBlobHashes.filter((blobHash) => blobHash !== targetBlobHash)
-        : [...selectedBlobHashes, targetBlobHash];
+      const nextSelection = isFileSelected(targetFileName)
+        ? selectedFileNames.filter((filename) => filename !== targetFileName)
+        : [...selectedFileNames, targetFileName];
       setSelection(
         nextSelection,
-        nextSelection.includes(targetBlobHash) ? targetBlobHash : (nextSelection.at(-1) ?? null),
-        targetBlobHash
+        nextSelection.includes(targetFileName) ? targetFileName : (nextSelection.at(-1) ?? null),
+        targetFileName
       );
-      renamingBlobHash = null;
+      renamingFileName = null;
       renameDraft = '';
       return;
     }
 
-    setSelection([targetBlobHash], targetBlobHash, targetBlobHash);
-    renamingBlobHash = null;
+    setSelection([targetFileName], targetFileName, targetFileName);
+    renamingFileName = null;
     renameDraft = '';
   }
 
   function openPreviewPane(file?: FileMetadata) {
     if (file) {
-      if (!isFileSelected(file.blobHash)) {
-        setSelection([file.blobHash], file.blobHash, file.blobHash);
+      if (!isFileSelected(file.filename)) {
+        setSelection([file.filename], file.filename, file.filename);
       } else {
-        selectedBlobHash = file.blobHash;
+        selectedFileName = file.filename;
       }
     }
-    if (selectedBlobHash) {
+    if (selectedFileName) {
       showPreviewPane = true;
     }
   }
@@ -1895,7 +1895,7 @@
       fileManagerElement.contains(activeElement)
     ) {
       event.preventDefault();
-      if (renamingBlobHash) {
+      if (renamingFileName) {
         cancelRenaming();
         return;
       }
@@ -2035,20 +2035,20 @@
     if (!auth || isHistoryMode) {
       return;
     }
-    setSelection([file.blobHash], file.blobHash, file.blobHash);
-    renamingBlobHash = file.blobHash;
+    setSelection([file.filename], file.filename, file.filename);
+    renamingFileName = file.filename;
     renameDraft = fileBaseName(file.filename);
     renamePending = false;
   }
 
   function cancelRenaming() {
-    renamingBlobHash = null;
+    renamingFileName = null;
     renameDraft = '';
     renamePending = false;
   }
 
   async function commitRename(file: FileMetadata) {
-    if (renamePending || renamingBlobHash !== file.blobHash) {
+    if (renamePending || renamingFileName !== file.filename) {
       return;
     }
     if (!auth || isHistoryMode) {
@@ -2078,7 +2078,7 @@
       await refreshFiles();
       const renamed = fileList.find((entry) => entry.filename === nextFilename) ?? null;
       if (renamed) {
-        setSelection([renamed.blobHash], renamed.blobHash, renamed.blobHash);
+        setSelection([renamed.filename], renamed.filename, renamed.filename);
       }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Rename failed';
@@ -2940,11 +2940,11 @@
               <div class="manager-summary">
                 <span>{visibleFiles.length} file{visibleFiles.length === 1 ? '' : 's'}</span>
                 <span>
-                  {selectedBlobHashes.length === 0
+                  {selectedFileNames.length === 0
                     ? 'No selection'
-                    : selectedBlobHashes.length === 1 && selectedFile
+                    : selectedFileNames.length === 1 && selectedFile
                       ? displayFileName(selectedFile)
-                      : `${selectedBlobHashes.length} selected`}
+                      : `${selectedFileNames.length} selected`}
                 </span>
               </div>
             </div>
@@ -2971,12 +2971,12 @@
                     </span>
                   </div>
                 {/if}
-                {#each visibleFiles as file (file.blobHash)}
+                {#each visibleFiles as file (file.filename)}
                   {@const FileIcon = fileIconComponent(file)}
                   <div
                     class:file-card={fileManagerViewMode === 'icons'}
                     class:file-row={fileManagerViewMode === 'details'}
-                    class:selected={isFileSelected(file.blobHash)}
+                    class:selected={isFileSelected(file.filename)}
                     data-filename={file.filename}
                     draggable="true"
                     tabindex="0"
@@ -2991,7 +2991,7 @@
                         <FileIcon size={28} strokeWidth={1.8} />
                       </div>
                       <div class="file-card-copy">
-                        {#if renamingBlobHash === file.blobHash}
+                        {#if renamingFileName === file.filename}
                           <input
                             type="text"
                             class="file-rename-input"
@@ -3029,7 +3029,7 @@
                           <FileIcon size={15} strokeWidth={2} />
                         </span>
                         <div class="file-row-copy">
-                          {#if renamingBlobHash === file.blobHash}
+                          {#if renamingFileName === file.filename}
                             <input
                               type="text"
                               class="file-rename-input"
