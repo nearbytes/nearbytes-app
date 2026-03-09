@@ -2626,6 +2626,7 @@
       // Update cache
       await setCachedFiles(volumeId, response.files);
       await refreshTimeline(true);
+      chatRefreshVersion += 1;
     } catch (error) {
       // Try cached data
       const cached = await getCachedFiles(volumeId);
@@ -3668,6 +3669,7 @@
             {:else}
               <div
                 class="file-manager"
+                role="presentation"
                 bind:this={fileManagerElement}
                 style:grid-template-columns={fileManagerTemplate}
                 onpointerdown={() => {

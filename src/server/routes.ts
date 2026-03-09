@@ -395,7 +395,7 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.post(
     '/upload',
     requireSecret(deps),
-    upload.single('file'),
+    upload.single('file') as unknown as RequestHandler,
     asyncHandler(async (req, res) => {
       if (!req.file) {
         throw new ApiError(400, 'INVALID_REQUEST', 'File is required');

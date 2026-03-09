@@ -8,4 +8,4 @@ export NEARBYTES_STORAGE_DIR="${NEARBYTES_STORAGE_DIR:-$HOME/MEGA/nearbytes}"
 echo "Using MEGA storage dir: $NEARBYTES_STORAGE_DIR"
 
 # Run both server and UI
-npm run dev
+yarn dev

@@ -2,6 +2,7 @@
   "name": "nearbytes-crypto",
   "version": "0.5.1",
   "private": true,
+  "packageManager": "yarn@4.10.3",
   "description": "NearBytes cryptographic storage protocol - immutable data collections with end-to-end encryption",
   "workspaces": [
     "ui"
@@ -24,17 +25,18 @@
     "start": "node dist/cli/index.js",
     "server": "node dist/server/index.js",
     "type-check": "tsc --noEmit",
-    "dev:server": "npm run build --silent && npm run server",
+    "dev:server": "yarn build && yarn server",
     "dev:ui": "yarn --cwd ui dev",
-    "dev": "concurrently -k \"npm run dev:server\" \"npm run dev:ui\"",
+    "dev": "concurrently -k \"yarn dev:server\" \"yarn dev:ui\"",
     "mega": "bash scripts/run-mega-dev.sh",
     "desktop": "electron dist-electron/electron/main.js",
-    "desktop:run": "npm run build --silent && npm run build:electron --silent && wait-on http-get://127.0.0.1:5173 && cross-env NODE_ENV=development NEARBYTES_ELECTRON_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist-electron/electron/main.js",
-    "dev-run": "concurrently -k \"yarn --cwd ui dev --host 127.0.0.1 --port 5173 --strictPort\" \"npm run desktop:run\"",
-    "dev-test": "npm run type-check && npm run test && npm run build:electron && node scripts/desktop-smoke.mjs",
-    "dev-build": "npm run build && npm run build:ui && npm run build:electron",
-    "production-build": "npm run dev-build && node scripts/run-electron-builder.mjs --publish never",
-    "production-build:publish": "npm run dev-build && node scripts/run-electron-builder.mjs --publish always",
+    "desktop:run": "yarn build && yarn build:electron && wait-on http-get://127.0.0.1:5173 && cross-env NODE_ENV=development NEARBYTES_ELECTRON_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist-electron/electron/main.js",
+    "dev-run": "concurrently -k \"yarn --cwd ui dev --host 127.0.0.1 --port 5173 --strictPort\" \"yarn desktop:run\"",
+    "run-dev": "yarn dev-run",
+    "dev-test": "yarn type-check && yarn test && yarn build:electron && node scripts/desktop-smoke.mjs",
+    "dev-build": "yarn build && yarn build:ui && yarn build:electron",
+    "production-build": "yarn dev-build && node scripts/run-electron-builder.mjs --publish never",
+    "production-build:publish": "yarn dev-build && node scripts/run-electron-builder.mjs --publish always",
     "deploy": "node scripts/release-tag.mjs"
   },
   "keywords": [
@@ -62,7 +64,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.25",
-    "@types/multer": "^2.0.0",
+    "@types/multer": "2.0.0",
     "@types/node": "^20.10.0",
     "@types/supertest": "^6.0.3",
     "@typescript-eslint/eslint-plugin": "^6.13.0",

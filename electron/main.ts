@@ -280,7 +280,7 @@ async function loadRuntimeModule(): Promise<RuntimeModule> {
     path.join(process.cwd(), 'dist', 'server', 'runtime.js'),
   ]);
   if (!runtimePath) {
-    throw new Error('Could not locate dist/server/runtime.js. Run `npm run build` first.');
+    throw new Error('Could not locate dist/server/runtime.js. Run `yarn build` first.');
   }
 
   const imported = (await import(pathToFileURL(runtimePath).href)) as Partial<RuntimeModule>;

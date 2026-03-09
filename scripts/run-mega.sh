@@ -11,4 +11,4 @@ mkdir -p "$NEARBYTES_STORAGE_DIR"
 echo "Using storage dir: $NEARBYTES_STORAGE_DIR"
 
 # Run the server
-npm run server
+yarn server

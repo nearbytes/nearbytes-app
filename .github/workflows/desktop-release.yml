@@ -25,13 +25,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: yarn
 
       - name: Install root dependencies
-        run: npm ci
-
-      - name: Install UI dependencies
-        run: npm --prefix ui ci
+        run: yarn install --immutable
 
       - name: Resolve release repository env
         shell: bash
@@ -42,7 +39,7 @@ jobs:
           echo "NEARBYTES_RELEASE_REPO=${REPO}" >> "$GITHUB_ENV"
 
       - name: Build and publish installers
-        run: npm run production-build:publish
+        run: yarn production-build:publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Default to unsigned CI artifacts to avoid empty-signing env failures.

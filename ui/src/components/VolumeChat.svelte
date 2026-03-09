@@ -19,7 +19,6 @@
   import {
     MessageSquareText,
     Paperclip,
-    RefreshCw,
     Send,
     X,
   } from 'lucide-svelte';
@@ -52,7 +51,6 @@
   let draftBody = $state('');
   let pendingAttachment = $state<ChatAttachment | null>(null);
   let loading = $state(false);
-  let refreshing = $state(false);
   let sending = $state(false);
   let errorMessage = $state('');
   let dragActive = $state(false);
@@ -66,7 +64,6 @@
       chatState = { identities: [], messages: [] };
       requestedVolumeId = '';
       loading = false;
-      refreshing = false;
       errorMessage = '';
       selectedProfilePublicKey = '';
       return;
@@ -143,8 +140,6 @@
     }
     if (initial) {
       loading = true;
-    } else {
-      refreshing = true;
     }
     try {
       errorMessage = '';
@@ -153,7 +148,6 @@
       errorMessage = error instanceof Error ? error.message : 'Failed to load chat';
     } finally {
       loading = false;
-      refreshing = false;
     }
   }
 
@@ -327,15 +321,6 @@
           {activeIdentity ? 'Change' : 'Join'}
         </button>
       {/if}
-      <button
-        type="button"
-        class="chat-icon-btn"
-        onclick={() => void refreshChat()}
-        disabled={!auth || refreshing || historyState !== null}
-        aria-label="Refresh chat"
-      >
-        <RefreshCw size={14} strokeWidth={2} />
-      </button>
     </div>
   </div>
 
