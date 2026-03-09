@@ -237,7 +237,7 @@
   }
 
   function volumeShortLabel(value: string | null): string {
-    if (!value) return 'New volume';
+    if (!value) return 'New space';
     if (value.length <= 18) return value;
     return `${value.slice(0, 10)}...${value.slice(-6)}`;
   }
@@ -381,7 +381,7 @@
 
   function removeSource(sourceId: string): void {
     if (!configDraft || configDraft.sources.length <= 1) {
-      errorMessage = 'Nearbytes needs at least one source.';
+      errorMessage = 'Nearbytes needs at least one storage location.';
       return;
     }
     configDraft = {
@@ -653,8 +653,8 @@
   }
 
   function discoveryActionLabel(action: DiscoveryAction): string {
-    if (action === 'added-source') return 'Source added';
-    if (action === 'added-volume-target') return 'Target enabled';
+    if (action === 'added-source') return 'Location added';
+    if (action === 'added-volume-target') return 'Sync enabled';
     if (action === 'available-share') return 'Needs review';
     return 'Already known';
   }
@@ -693,7 +693,7 @@
       lastSavedSignature = serializeConfig(cloneConfig(response.config));
       autosaveStatus = 'idle';
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to load storage settings';
+      errorMessage = error instanceof Error ? error.message : 'Failed to load location settings';
     } finally {
       loading = false;
     }
@@ -733,7 +733,7 @@
       const response = await discoverSources();
       discoveredSources = response.sources;
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to scan';
+      errorMessage = error instanceof Error ? error.message : 'Failed to scan folders';
     } finally {
       discoveryLoading = false;
     }
@@ -758,7 +758,7 @@
         ...configDraft,
         sources: [...configDraft.sources, createSource(selectedPath)],
       };
-      successMessage = 'Added.';
+      successMessage = 'Added location.';
       return;
     }
     configDraft = {
@@ -795,7 +795,7 @@
       ...configDraft,
       sources: [...configDraft.sources, createSource(source.path)],
     };
-    successMessage = `Added ${formatProvider(source.provider)}.`;
+    successMessage = `Added location from ${formatProvider(source.provider)}.`;
   }
 
   function dismissDiscovery(source: DiscoveredNearbytesSource) {
@@ -809,7 +809,7 @@
     successMessage = '';
     try {
       await openRootInFileManager(sourceId);
-      successMessage = 'Opened.';
+      successMessage = 'Opened folder.';
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to open';
     }
@@ -828,7 +828,7 @@
         mergeTargetId = mergeCandidates[0].id;
         mergeMessage = `Move ${response.plan.source.fileCount} item(s).`;
       } else {
-        mergeMessage = 'No compatible destination.';
+        mergeMessage = 'No compatible location.';
       }
     } catch (error) {
       mergeMessage = error instanceof Error ? error.message : 'Failed to prepare move';
@@ -883,8 +883,8 @@
     {#if mode === 'global'}
       <div class="panel-head">
         <div>
-          <p class="panel-eyebrow">Sources</p>
-          <h2>Data locations</h2>
+          <p class="panel-eyebrow">Locations</p>
+          <h2>Storage locations</h2>
           <p class="panel-caption">Nearbytes reads from these folders. Writable ones can also receive new encrypted data.</p>
         </div>
         <div class="panel-actions">
@@ -917,14 +917,14 @@
           <div class="cluster-head">
             <div>
               <p class="cluster-title">Discovery details</p>
-              <p class="cluster-caption">Latest automatic source scan and the changes it applied.</p>
+              <p class="cluster-caption">Latest automatic location scan and the changes it applied.</p>
             </div>
             <span class="summary-badge" title="Latest automatic discovery summary.">
-              {discoveryDetails.summary.sourcesAdded} source(s) · {discoveryDetails.summary.volumeTargetsAdded} target(s)
+              {discoveryDetails.summary.sourcesAdded} location(s) · {discoveryDetails.summary.volumeTargetsAdded} sync rule(s)
             </span>
           </div>
           {#if discoveryDetails.items.length === 0}
-            <p class="storage-message">No Nearbytes shares were detected in the latest scan.</p>
+            <p class="storage-message">No Nearbytes storage locations were detected in the latest scan.</p>
           {:else}
             <div class="discovery-detail-groups">
               {#each discoveryGroups() as group (group.provider)}
@@ -954,12 +954,12 @@
                           </div>
                           {#if item.addedTargetVolumeIds.length > 0}
                             <p class="detail-copy">
-                              Linked to {item.addedTargetVolumeIds.map(shortVolumeId).join(', ')}.
+                              Enabled for spaces {item.addedTargetVolumeIds.map(shortVolumeId).join(', ')}.
                             </p>
                           {/if}
                           {#if item.unknownVolumeIds.length > 0}
                             <p class="detail-copy">
-                              Other volume directories detected: {item.unknownVolumeIds.map(shortVolumeId).join(', ')}.
+                              Other space directories detected: {item.unknownVolumeIds.map(shortVolumeId).join(', ')}.
                             </p>
                           {/if}
                         </div>
@@ -985,7 +985,7 @@
           <div class="cluster-head">
             <div>
               <p class="cluster-title">Discovered folders</p>
-              <p class="cluster-caption">Marker-based discovery stays separate from your saved source list.</p>
+              <p class="cluster-caption">Marker-based discovery stays separate from your saved locations list.</p>
             </div>
             {#if dismissedSuggestionCount() > 0}
               <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
@@ -1007,7 +1007,7 @@
                   </div>
                   <div class="scan-actions">
                     <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                      <span>Use</span>
+                      <span>Add</span>
                     </button>
                     <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
                       <span>Hide</span>
@@ -1023,8 +1023,8 @@
       <section class="panel-cluster" bind:this={defaultsSectionElement}>
         <div class="cluster-head">
           <div>
-            <p class="cluster-title">Saved sources</p>
-            <p class="cluster-caption">At least one source must remain connected.</p>
+            <p class="cluster-title">Saved locations</p>
+            <p class="cluster-caption">At least one location must remain connected.</p>
           </div>
           <span class="summary-badge" title="Saved locations Nearbytes can read from or write to.">
             {configDraft.sources.length} connected
@@ -1109,9 +1109,9 @@
                 <details class="usage-details">
                   <summary
                     class="usage-details-summary"
-                    title="Show which volumes are using space in this location. Entries are sorted by total Nearbytes size."
+                    title="Show which spaces are using space in this location. Entries are sorted by total Nearbytes size."
                   >
-                    <span>Stored volumes</span>
+                    <span>Stored spaces</span>
                     <span class="mini-badge">{sortedUsageVolumes(source.id).length}</span>
                   </summary>
                   <div class="usage-volume-list">
@@ -1151,7 +1151,7 @@
                 </button>
                 <label class="toggle-chip strong compact-inline-toggle">
                   <input type="checkbox" checked={source.enabled} onchange={(event) => updateSourceField(source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)} />
-                  <span>Use</span>
+                  <span>Use location</span>
                 </label>
                 <label class="toggle-chip compact-inline-toggle">
                   <input type="checkbox" checked={source.writable} onchange={(event) => updateSourceField(source.id, 'writable', (event.currentTarget as HTMLInputElement).checked)} />
@@ -1176,11 +1176,11 @@
               {#if mergeSourceId === source.id}
                 <div class="merge-box">
                   {#if mergeLoading}
-                    <p class="storage-message">Finding a compatible destination...</p>
+                    <p class="storage-message">Finding a compatible location...</p>
                   {:else if mergeCandidates.length === 0}
                     <p class="storage-message">{mergeMessage}</p>
                   {:else}
-                    <p class="merge-copy">Move this folder's stored data into another saved source, then remove it.</p>
+                    <p class="merge-copy">Move this folder's stored data into another saved location, then remove it.</p>
                     <select class="panel-input" bind:value={mergeTargetId}>
                       {#each mergeCandidates as candidate (candidate.id)}
                         <option value={candidate.id}>{candidate.path}</option>
@@ -1203,13 +1203,13 @@
       <section class="panel-cluster">
         <div class="cluster-head">
           <div>
-            <p class="cluster-title">Default for newly opened volumes</p>
-            <p class="cluster-caption">Used only when a volume does not have its own saved keep rule yet.</p>
+            <p class="cluster-title">Defaults for newly opened spaces</p>
+            <p class="cluster-caption">Used only when a space does not have its own saved keep rule yet.</p>
           </div>
           <span
             class="summary-badge"
             class:warning={!hasDurableDestination(null)}
-            title="A protected copy means Nearbytes will keep one full copy of the volume in at least one writable location."
+            title="A protected copy means Nearbytes will keep one full copy of the space in at least one writable location."
           >
             {volumeBadgeText(null)}
           </span>
@@ -1236,7 +1236,7 @@
                     ? canReuseOtherGuaranteedCopies(destination)
                       ? 'This location keeps a spare full copy. If space runs tight, Nearbytes may drop it only after another protected full copy exists elsewhere.'
                       : 'This location keeps a protected full copy. Nearbytes will not reclaim it automatically.'
-                    : 'This location is not currently keeping this volume.'}
+                    : 'This location is not currently keeping this space.'}
                 >
                   {protectionLabel(destination, source.id)}
                 </span>
@@ -1249,7 +1249,7 @@
                     checked={keepsFullCopy(destination)}
                     onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
                   />
-                  <span title="Keep the full encrypted history and file blocks for this volume in this location. Turning this on in more than one location may duplicate the same encrypted data.">Keep a full copy</span>
+                  <span title="Keep the full encrypted history and file blocks for this space in this location. Turning this on in more than one location may duplicate the same encrypted data.">Keep a full copy</span>
                 </label>
               </div>
 
@@ -1286,12 +1286,12 @@
                     This location keeps a protected copy that Nearbytes will not reclaim automatically.
                   {/if}
                 {:else}
-                  This location is not keeping this volume yet.
+                  This location is not keeping this space yet.
                 {/if}
               </p>
 
               <div class="source-facts">
-                <span>{source.enabled ? 'Source on' : 'Source off'}</span>
+                <span>{source.enabled ? 'Location on' : 'Location off'}</span>
                 <span>{source.writable ? 'Can write' : 'Read only'}</span>
                 <span>{status?.availableBytes !== undefined ? formatSize(status.availableBytes) : 'n/a free'}</span>
               </div>
@@ -1316,7 +1316,7 @@
           <span
             class="summary-badge"
             class:warning={!hasDurableDestination(volumeId)}
-            title="A protected copy means Nearbytes will keep one full copy of this volume in at least one writable location."
+            title="A protected copy means Nearbytes will keep one full copy of this space in at least one writable location."
           >
             {volumeBadgeText(volumeId)}
           </span>
@@ -1341,7 +1341,7 @@
           <div class="cluster-head">
             <div>
               <p class="cluster-title">Discovered folders</p>
-              <p class="cluster-caption">Use a found folder right here without leaving this sheet.</p>
+              <p class="cluster-caption">Add a found folder right here without leaving this sheet.</p>
             </div>
           </div>
           {#if discoveryLoading}
@@ -1358,7 +1358,7 @@
                   </div>
                   <div class="scan-actions">
                     <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                      <span>Use</span>
+                      <span>Add</span>
                     </button>
                     <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
                       <span>Hide</span>
@@ -1372,7 +1372,7 @@
       {/if}
 
       {#if !volumeId}
-        <p class="storage-message">Open this volume first, then choose which locations keep a full copy.</p>
+        <p class="storage-message">Open this space first, then choose which locations keep a full copy.</p>
       {:else}
         <div class="destination-grid compact-destination-grid">
           {#each configDraft.sources as source (source.id)}
@@ -1391,7 +1391,7 @@
                     ? canReuseOtherGuaranteedCopies(destination)
                       ? 'This location keeps a spare full copy. If space runs tight, Nearbytes may drop it only after another protected full copy exists elsewhere.'
                       : 'This location keeps a protected full copy. Nearbytes will not reclaim it automatically.'
-                    : 'This location is not currently keeping this volume.'}
+                    : 'This location is not currently keeping this space.'}
                 >
                   {protectionLabel(destination, source.id)}
                 </span>
@@ -1417,7 +1417,7 @@
                   checked={keepsFullCopy(destination)}
                   onchange={(event) => setKeepFullCopy(volumeId, source.id, (event.currentTarget as HTMLInputElement).checked)}
                 />
-                <span title="Keep the full encrypted history and file blocks for this volume in this location. Turning this on in more than one location may duplicate the same encrypted data.">Keep a full copy</span>
+                <span title="Keep the full encrypted history and file blocks for this space in this location. Turning this on in more than one location may duplicate the same encrypted data.">Keep a full copy</span>
               </label>
 
               <label class="field-block compact-field">
@@ -1452,13 +1452,13 @@
                     This location keeps a protected copy that Nearbytes will not reclaim automatically.
                   {/if}
                 {:else}
-                  This location is not keeping this volume yet.
+                  This location is not keeping this space yet.
                 {/if}
               </p>
 
               <div class="source-facts">
                 <span>{status?.availableBytes !== undefined ? formatSize(status.availableBytes) : 'n/a free'}</span>
-                <span>{source.enabled ? 'Source on' : 'Source off'}</span>
+                <span>{source.enabled ? 'Location on' : 'Location off'}</span>
                 <span>{source.writable ? 'Can write' : 'Read only'}</span>
               </div>
 
@@ -1491,7 +1491,7 @@
             <ArmedActionButton
               class="panel-btn subtle compact danger"
               icon={Trash2}
-              text="Forget saved keep rule"
+              text="Forget saved space rule"
               armed={true}
               autoDisarmMs={3000}
               onPress={() => removeVolumePolicy(volumeId)}

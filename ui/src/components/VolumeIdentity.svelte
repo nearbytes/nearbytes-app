@@ -53,7 +53,7 @@
         <img
           class="volume-identity-preview-image"
           src={previewDataUrl}
-          alt={fileName || label || 'Volume preview'}
+          alt={fileName || label || 'Space preview'}
         />
       {:else}
         <span class="volume-identity-preview-icon" aria-hidden="true">

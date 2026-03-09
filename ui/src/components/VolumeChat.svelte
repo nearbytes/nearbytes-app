@@ -160,7 +160,7 @@
       return;
     }
     if (!activeIdentity) {
-      errorMessage = 'Join this volume with one identity before sending.';
+      errorMessage = 'Join this space with one identity before sending.';
       onOpenIdentityManager?.();
       return;
     }
@@ -182,7 +182,7 @@
           ? await onEnsureIdentityPublished(activeIdentity)
           : await publishIdentityFromChat(activeIdentity);
         if (!publishSucceeded) {
-          errorMessage = 'The current profile could not be published to this volume.';
+          errorMessage = 'The current profile could not be published to this space.';
           return;
         }
       }
@@ -353,7 +353,7 @@
       {#if identityNeedsPublish && activeIdentity}
         <span
           class="chat-status-pill"
-          title="Your local profile changed, but the updated public identity record has not been published to this volume yet."
+          title="Your local profile changed, but the updated public identity record has not been published to this space yet."
         >
           Profile unpublished
         </span>
@@ -388,7 +388,7 @@
         </div>
         <div>
           <dt>Scope</dt>
-          <dd>{selectedProfile.localOnly ? 'Local draft' : 'Published to this volume'}</dd>
+          <dd>{selectedProfile.localOnly ? 'Local draft' : 'Published to this space'}</dd>
         </div>
         {#if selectedProfile.publishedAt}
           <div>
@@ -413,7 +413,7 @@
           {#if readonlyMode}
             No messages at this point in history.
           {:else}
-            No messages yet. Join this volume and start the conversation.
+            No messages yet. Join this space and start the conversation.
           {/if}
         </p>
       {:else}
@@ -482,12 +482,12 @@
             ? 'History mode'
             : activeIdentity?.displayName
               ? `Writing as ${activeIdentity.displayName}`
-              : 'Join this volume to send messages'}
+              : 'Join this space to send messages'}
         </p>
       </div>
       <textarea
         class="chat-textarea"
-        placeholder={activeIdentity ? 'Message' : 'Join this volume with one identity to send'}
+        placeholder={activeIdentity ? 'Message' : 'Join this space with one identity to send'}
         bind:value={draftBody}
         disabled={!auth || readonlyMode || !activeIdentity}
       ></textarea>

@@ -75,6 +75,9 @@
   const VOLUME_MOUNTS_KEY = 'nearbytes-volume-mounts-v1';
   const SOURCE_DISCOVERY_UI_KEY = 'nearbytes-source-discovery-ui-v1';
   const FILE_SECRET_PREFIX = 'nb-file-secret:v1:';
+  const WORKSPACE_DIVIDER_WIDTH = 14;
+  const WORKSPACE_FILE_PANE_MIN_WIDTH = 360;
+  const WORKSPACE_CHAT_PANE_MIN_WIDTH = 180;
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
   type DesktopRemoteFile = {
@@ -123,6 +126,13 @@
     createdAt: number;
   };
 
+  function normalizeWorkspaceSplit(value: number | undefined): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return 56;
+    }
+    return Math.max(1, Math.min(99, value));
+  }
+
   type MountedVolumePresentation = {
     volumeId: string;
     label: string;
@@ -157,10 +167,7 @@
       collapsed: overrides.collapsed ?? false,
       showFilesPane: overrides.showFilesPane ?? true,
       showChatPane: overrides.showChatPane ?? false,
-      workspaceSplit:
-        typeof overrides.workspaceSplit === 'number' && Number.isFinite(overrides.workspaceSplit)
-          ? Math.max(34, Math.min(66, overrides.workspaceSplit))
-          : 56,
+      workspaceSplit: normalizeWorkspaceSplit(overrides.workspaceSplit),
       createdAt: overrides.createdAt ?? Date.now(),
     };
   }
@@ -267,21 +274,21 @@
       .map(([provider]) => formatSourceProvider(provider as SourceProvider));
     const details: string[] = [];
     if (result.summary.sourcesAdded > 0) {
-      details.push(`${result.summary.sourcesAdded} source${result.summary.sourcesAdded === 1 ? '' : 's'} added`);
+      details.push(`${result.summary.sourcesAdded} location${result.summary.sourcesAdded === 1 ? '' : 's'} added`);
     }
     if (result.summary.volumeTargetsAdded > 0) {
       details.push(
-        `${result.summary.volumeTargetsAdded} volume target${result.summary.volumeTargetsAdded === 1 ? '' : 's'} enabled`
+        `sync enabled for ${result.summary.volumeTargetsAdded} known space${result.summary.volumeTargetsAdded === 1 ? '' : 's'}`
       );
     }
     if (result.summary.availableShares > 0) {
-      details.push(`${result.summary.availableShares} share${result.summary.availableShares === 1 ? '' : 's'} to review`);
+      details.push(`${result.summary.availableShares} location${result.summary.availableShares === 1 ? '' : 's'} to review`);
     }
-    const providerCopy = providers.length > 0 ? joinLabels(providers) : 'shared storage';
+    const providerCopy = providers.length > 0 ? joinLabels(providers) : 'your synced folders';
     if (details.length === 0) {
-      return `New Nearbytes shares detected in ${providerCopy}.`;
+      return `New Nearbytes storage locations detected in ${providerCopy}.`;
     }
-    return `New Nearbytes shares detected in ${providerCopy}. ${details.join(', ')}.`;
+    return `New Nearbytes storage locations detected in ${providerCopy}. ${details.join(', ')}.`;
   }
 
   function collectKnownVolumeIdsForDiscovery(): string[] {
@@ -1523,7 +1530,9 @@
   const workspaceSplit = $derived.by(() => activeMount?.workspaceSplit ?? 56);
   const showSplitWorkspace = $derived.by(() => showFilesWorkspace && showChatWorkspace);
   const workspacePanelsTemplate = $derived.by(() =>
-    showSplitWorkspace ? `minmax(0, 1fr) 14px minmax(240px, ${100 - workspaceSplit}%)` : '1fr'
+    showSplitWorkspace
+      ? `minmax(0, 1fr) ${WORKSPACE_DIVIDER_WIDTH}px minmax(${WORKSPACE_CHAT_PANE_MIN_WIDTH}px, ${100 - workspaceSplit}%)`
+      : '1fr'
   );
   const fileManagerTemplate = $derived.by(
     () => (showPreviewPane ? `minmax(300px, ${fileManagerSplit}%) 14px minmax(360px, 1fr)` : '1fr')
@@ -1638,13 +1647,14 @@
     if (!container || !showSplitWorkspace) return;
     event.preventDefault();
     const rect = container.getBoundingClientRect();
-    const minLeft = 360;
-    const minRight = 240;
+    const minLeft = WORKSPACE_FILE_PANE_MIN_WIDTH;
+    const minRight = WORKSPACE_CHAT_PANE_MIN_WIDTH;
 
     const updateSplit = (clientX: number) => {
-      const clamped = Math.min(rect.width - minRight, Math.max(minLeft, clientX - rect.left));
+      const maxLeft = Math.max(minLeft, rect.width - minRight);
+      const clamped = Math.min(maxLeft, Math.max(minLeft, clientX - rect.left));
       updateActiveMountWorkspace({
-        workspaceSplit: Math.max(34, Math.min(66, (clamped / rect.width) * 100)),
+        workspaceSplit: normalizeWorkspaceSplit((clamped / rect.width) * 100),
       });
     };
 
@@ -1886,7 +1896,7 @@
       const response = await withTimeout(
         openVolume(openSecret),
         12000,
-        'Opening this volume timed out. Check the storage roots and try again.'
+        'Opening this space timed out. Check the storage locations and try again.'
       );
       const authResult = response.token
         ? { type: 'token' as const, token: response.token }
@@ -1936,11 +1946,11 @@
           isOffline = true;
           errorMessage = 'Using cached data. Backend unavailable.';
         } else {
-          errorMessage = error instanceof Error ? error.message : 'Failed to load volume';
+          errorMessage = error instanceof Error ? error.message : 'Failed to load space';
           fileList = [];
         }
       } else {
-        errorMessage = error instanceof Error ? error.message : 'Failed to load volume';
+        errorMessage = error instanceof Error ? error.message : 'Failed to load space';
         fileList = [];
       }
       timelineEvents = [];
@@ -2560,7 +2570,7 @@
       if (Object.keys(nextAssignments).length !== Object.keys(volumeChatIdentityAssignments).length) {
         volumeChatIdentityAssignments = nextAssignments;
         identityManagerError = '';
-        identityManagerMessage = 'Identity secret changed. Rejoin any volume chats explicitly.';
+        identityManagerMessage = 'Identity secret changed. Rejoin any space chats explicitly.';
       }
     }
   }
@@ -2613,7 +2623,7 @@
     options: { announceSuccess?: boolean; openManagerOnError?: boolean } = {}
   ): Promise<ConfiguredIdentity | null> {
     if (!auth) {
-      identityManagerError = 'Open a volume before publishing an identity.';
+      identityManagerError = 'Open a space before publishing an identity.';
       identityManagerMessage = '';
       return null;
     }
@@ -2657,7 +2667,7 @@
       });
       await handleChatMutated();
       if (options.announceSuccess) {
-        identityManagerMessage = `Published ${identity.displayName.trim()} to this volume.`;
+        identityManagerMessage = `Published ${identity.displayName.trim()} to this space.`;
       }
       return {
         ...identity,
@@ -2688,7 +2698,7 @@
 
   async function joinCurrentVolumeChat(): Promise<ConfiguredIdentity | null> {
     if (!auth || !volumeId) {
-      identityManagerError = 'Open a volume before joining chat.';
+      identityManagerError = 'Open a space before joining chat.';
       identityManagerMessage = '';
       return null;
     }
@@ -2714,7 +2724,7 @@
       [volumeId]: publishedIdentity.id,
     };
     identityManagerError = '';
-    identityManagerMessage = `Joined this volume as ${publishedIdentity.displayName.trim()}.`;
+    identityManagerMessage = `Joined this space as ${publishedIdentity.displayName.trim()}.`;
     return publishedIdentity;
   }
 
@@ -2800,7 +2810,7 @@
 
   async function importNearbytesBundleIntoCurrentVolume(bundle: SourceReferenceBundle) {
     if (!auth || !effectiveSecret) {
-      throw new Error('Open a destination volume before pasting.');
+      throw new Error('Open a destination space before pasting.');
     }
     if (isHistoryMode) {
       throw new Error('History mode is read-only. Jump to Latest before pasting.');
@@ -3006,7 +3016,7 @@
       errorMessage = '';
       if (e.dataTransfer?.types.includes(NEARBYTES_DRAG_TYPE)) {
         if (!auth || !effectiveSecret) {
-          throw new Error('Open a destination volume before pasting.');
+          throw new Error('Open a destination space before pasting.');
         }
         const bundle = await exportSourceReferenceBundleFromDrag(
           auth,
@@ -3277,7 +3287,7 @@
       class="header-shell"
       class:secret-drop-target={isSecretDropTarget}
       role="group"
-      aria-label="Volume controls"
+      aria-label="Space controls"
       onmouseenter={() => {
         isHeaderHovering = true;
       }}
@@ -3327,7 +3337,7 @@
                       type="text"
                       value={mount.address}
                       class="secret-input"
-                      aria-label="Volume address"
+                      aria-label="Space address"
                       oninput={(event) =>
                         updateMountAddress(mount.id, (event.currentTarget as HTMLInputElement).value)}
                     />
@@ -3335,7 +3345,7 @@
                       type="password"
                       value={mount.password}
                       class="secret-input password-input"
-                      aria-label="Optional volume password"
+                      aria-label="Optional space password"
                       autocomplete="current-password"
                       oninput={(event) =>
                         updateMountPassword(mount.id, (event.currentTarget as HTMLInputElement).value)}
@@ -3434,8 +3444,8 @@
                     autoDisarmMs={3000}
                     resetKey={`${mount.id}:${mount.address}:${mount.password}:${expanded}`}
                     onPress={() => removeMount(mount.id)}
-                    title="Remove volume"
-                    ariaLabel="Remove volume"
+                    title="Remove space"
+                    ariaLabel="Remove space"
                   />
                   <button
                     type="button"
@@ -3447,7 +3457,7 @@
                     }}
                   >
                     <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                    <span>Keep</span>
+                      <span>Rules</span>
                   </button>
                 </div>
               </div>
@@ -3461,7 +3471,7 @@
               <button
                 type="button"
                 class="volume-chip-select"
-                aria-label={mountLabel(mount) || 'Volume entry'}
+                aria-label={mountLabel(mount) || 'Space entry'}
                 onclick={() => handleChipClick(mount.id)}
               >
                 <div class="header-dock">
@@ -3489,8 +3499,8 @@
               <button
                 type="button"
                 class="volume-chip-config-btn"
-                aria-label={`Edit ${mountLabel(mount) || 'volume'}`}
-                title="Edit volume"
+                aria-label={`Edit ${mountLabel(mount) || 'space'}`}
+                title="Edit space"
                 onclick={(event) => {
                   event.stopPropagation();
                   reopenMount(mount.id);
@@ -3543,8 +3553,8 @@
             type="button"
             class="header-tool-btn"
             class:active={showSourcesPanel}
-            aria-label="Storage"
-            title="Storage"
+            aria-label="Locations"
+            title="Locations"
             onclick={(event) => {
               event.stopPropagation();
               toggleSourcesPanel();
@@ -3572,8 +3582,8 @@
             class="mount-add-btn"
             class:visible={isHeaderHovering || isSecretDropTarget}
             onclick={addMount}
-            aria-label="Add volume"
-            title="Add volume"
+            aria-label="Add space"
+            title="Add space"
           >
             <Plus size={15} strokeWidth={2.2} />
           </button>
@@ -3595,7 +3605,7 @@
                 disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
                 title={
                   !auth
-                    ? 'Open a volume before joining'
+                    ? 'Open a space before joining'
                     : isHistoryMode
                       ? 'Jump to Latest before joining'
                       : ''
@@ -3607,7 +3617,7 @@
                     ? 'Joining…'
                     : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
                       ? 'Joined'
-                      : 'Join this volume'}
+                      : 'Join this space'}
                 </span>
               </button>
               <button
@@ -3617,7 +3627,7 @@
                 disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
                 title={
                   !auth
-                    ? 'Open a volume before publishing'
+                    ? 'Open a space before publishing'
                     : isHistoryMode
                       ? 'Jump to Latest before publishing'
                       : ''
@@ -3677,12 +3687,12 @@
           </div>
 
           <p class="identity-row-note">
-            This volume will chat as
+            This space will chat as
             <strong>{joinedChatIdentity?.displayName || 'no identity yet'}</strong>.
-            Joining is an explicit per-volume local choice.
+            Joining is an explicit per-space local choice.
           </p>
           <p class="identity-row-note">
-            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into this volume.
+            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into this space.
           </p>
 
           {#if identityManagerError}
@@ -3760,7 +3770,7 @@
                     {identityManagerLoading
                       ? 'Publishing…'
                       : selectedChatIdentityNeedsPublish
-                        ? 'Publish to volume'
+                        ? 'Publish to space'
                         : 'Published'}
                   </span>
                 </button>
@@ -3777,8 +3787,8 @@
     <div class="status-bar panel-surface">
       {#if volumeId}
         <div class="status-item">
-          <span class="status-label">Volume:</span>
-          <button class="volume-id-btn" onclick={copyVolumeId} title="Copy volume ID">
+          <span class="status-label">Space ID:</span>
+          <button class="volume-id-btn" onclick={copyVolumeId} title="Copy space ID">
             {volumeId.slice(0, 16)}...
             {#if copiedVolumeId}
               <span class="copied-indicator">✓ Copied</span>
@@ -3873,7 +3883,7 @@
             <path d="M32 32V56" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
           </svg>
           <p class="empty-hint">Enter an address to access your files</p>
-          <p class="empty-subhint">Or drag and drop files here to create a new volume</p>
+          <p class="empty-subhint">Or drag and drop files here to create a new space</p>
         </div>
       </div>
     {:else}
@@ -3882,13 +3892,13 @@
         <div class="volume-transition-state panel-surface" aria-live="polite">
           <div class="volume-transition-spinner"></div>
           <div class="volume-transition-copy">
-            <p class="volume-transition-title">Switching volume</p>
+            <p class="volume-transition-title">Switching space</p>
             <p class="volume-transition-subtitle">Replaying history off-screen…</p>
           </div>
         </div>
       {:else}
       {#if showTimeMachinePanel}
-      <section class="time-machine panel-surface" aria-label="Volume timeline">
+      <section class="time-machine panel-surface" aria-label="Space timeline">
         <div class="time-machine-head">
           <div>
             <p class="time-machine-eyebrow">Timeline</p>
@@ -3961,7 +3971,7 @@
       </section>
       {/if}
 
-      <div class="workspace-mode-bar panel-surface" role="group" aria-label="Volume workspace">
+      <div class="workspace-mode-bar panel-surface" role="group" aria-label="Space workspace">
         <button
           type="button"
           class="workspace-mode-btn"
@@ -4071,7 +4081,7 @@
                           class="manager-btn toolbar-btn"
                           onclick={() => void pasteCopiedFiles()}
                           disabled={!auth || isHistoryMode}
-                          title={!auth ? 'Open a destination volume before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
+                          title={!auth ? 'Open a destination space before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
                         >
                           <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
                           Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
@@ -4342,7 +4352,7 @@
   {#if sourceDiscoveryToast}
     <aside class="discovery-toast panel-surface" role="status" aria-live="polite">
       <div class="discovery-toast-copy">
-        <p class="discovery-toast-title">Nearbytes shares updated</p>
+        <p class="discovery-toast-title">Storage locations updated</p>
         <p>{sourceDiscoveryToast.message}</p>
       </div>
       <div class="discovery-toast-actions">
@@ -4352,7 +4362,7 @@
         </button>
         <button type="button" class="discovery-toast-btn" onclick={openSourceDiscoveryDefaults}>
           <Settings2 class="button-icon" size={15} strokeWidth={2} />
-          <span>Edit defaults</span>
+          <span>Edit rules</span>
         </button>
       </div>
       <button

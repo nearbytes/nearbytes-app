@@ -31,7 +31,7 @@ export function createChatAttachmentFromSourceBundle(
 ): { attachment: ChatAttachment; truncated: boolean } {
   const [firstItem] = bundle.items;
   if (!firstItem) {
-    throw new Error('Source reference bundle is empty.');
+    throw new Error('Nearbytes file reference is empty.');
   }
   return {
     attachment: {
@@ -52,7 +52,7 @@ export async function importMountedSourceReferenceBundle(
 ): Promise<ReferenceImportResponse> {
   const sourceSecret = resolveMountedSourceSecret(bundle.s);
   if (!sourceSecret) {
-    throw new Error('Source volume is not mounted or unlocked locally.');
+    throw new Error('Source space is not mounted or unlocked locally.');
   }
   return importSourceReferences(auth, bundle, sourceSecret);
 }
