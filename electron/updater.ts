@@ -62,8 +62,8 @@ type StagedUpdate =
 const DESKTOP_UPDATER_EVENT = 'nearbytes-desktop:update-state';
 const DEFAULT_RELEASE_OWNER = 'GabeGiancarlo';
 const DEFAULT_RELEASE_REPO = 'Nearbytes';
-const UPDATE_RECHECK_INTERVAL_MS = 15 * 60 * 1000;
-const UPDATE_FOCUS_RECHECK_DEBOUNCE_MS = 15 * 1000;
+const UPDATE_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
+const UPDATE_FOCUS_RECHECK_DEBOUNCE_MS = UPDATE_RECHECK_INTERVAL_MS;
 
 const trackedWindows = new Set<BrowserWindow>();
 
@@ -344,7 +344,7 @@ rm -rf "$OLD_APP" "$STAGE_DIR"
 
 if [ "$RELAUNCH" = "1" ]; then
   log "relaunching installed app"
-  open -a "$TARGET_APP"
+  open "$TARGET_APP"
 fi
 `;
 }
