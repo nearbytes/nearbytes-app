@@ -9,12 +9,16 @@
     downloadFile,
     exportSourceReferences,
     publishIdentity,
+    reconcileDiscoveredSources,
     renameFile,
+    watchSources,
     watchVolume,
     type Auth,
     type ChatAttachment,
     type FileMetadata,
+    type ReconcileSourcesResponse,
     type SourceReferenceBundle,
+    type SourceProvider,
     type TimelineEvent,
     type VolumeChatState,
   } from './lib/api.js';
@@ -69,6 +73,7 @@
   } from 'lucide-svelte';
 
   const VOLUME_MOUNTS_KEY = 'nearbytes-volume-mounts-v1';
+  const SOURCE_DISCOVERY_UI_KEY = 'nearbytes-source-discovery-ui-v1';
   const FILE_SECRET_PREFIX = 'nb-file-secret:v1:';
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
@@ -80,6 +85,13 @@
 
   type PersistedUiState = {
     volumeMounts?: unknown;
+    sourceDiscovery?: unknown;
+  };
+
+  type PersistedSourceDiscoveryUiState = {
+    lastAcknowledgedRunKey: string;
+    latestRunKey: string;
+    latestResult: ReconcileSourcesResponse | null;
   };
 
   type NearbytesDesktopBridge = {
@@ -124,6 +136,11 @@
   type AppReferenceClipboard = {
     bundle: SourceReferenceBundle;
     itemCount: number;
+  };
+
+  type DiscoveryToastState = {
+    runKey: string;
+    message: string;
   };
 
   function createMount(overrides: Partial<VolumeMount> = {}): VolumeMount {
@@ -219,6 +236,213 @@
       workspaceSplit: mount.workspaceSplit,
       createdAt: mount.createdAt,
     }));
+  }
+
+  function formatSourceProvider(provider: SourceProvider): string {
+    if (provider === 'gdrive') return 'Google Drive';
+    if (provider === 'dropbox') return 'Dropbox';
+    if (provider === 'mega') return 'MEGA';
+    if (provider === 'icloud') return 'Apple/iCloud';
+    if (provider === 'onedrive') return 'OneDrive';
+    return 'Local';
+  }
+
+  function joinLabels(values: string[]): string {
+    if (values.length <= 1) {
+      return values[0] ?? 'shared storage';
+    }
+    if (values.length === 2) {
+      return `${values[0]} and ${values[1]}`;
+    }
+    return `${values.slice(0, -1).join(', ')}, and ${values[values.length - 1]}`;
+  }
+
+  function hasMeaningfulSourceDiscovery(result: ReconcileSourcesResponse): boolean {
+    return result.summary.meaningfulItemCount > 0;
+  }
+
+  function buildSourceDiscoveryToastMessage(result: ReconcileSourcesResponse): string {
+    const providers = Object.entries(result.summary.providers)
+      .filter(([, counts]) => counts && (counts.sourcesAdded > 0 || counts.volumeTargetsAdded > 0 || counts.availableShares > 0))
+      .map(([provider]) => formatSourceProvider(provider as SourceProvider));
+    const details: string[] = [];
+    if (result.summary.sourcesAdded > 0) {
+      details.push(`${result.summary.sourcesAdded} source${result.summary.sourcesAdded === 1 ? '' : 's'} added`);
+    }
+    if (result.summary.volumeTargetsAdded > 0) {
+      details.push(
+        `${result.summary.volumeTargetsAdded} volume target${result.summary.volumeTargetsAdded === 1 ? '' : 's'} enabled`
+      );
+    }
+    if (result.summary.availableShares > 0) {
+      details.push(`${result.summary.availableShares} share${result.summary.availableShares === 1 ? '' : 's'} to review`);
+    }
+    const providerCopy = providers.length > 0 ? joinLabels(providers) : 'shared storage';
+    if (details.length === 0) {
+      return `New Nearbytes shares detected in ${providerCopy}.`;
+    }
+    return `New Nearbytes shares detected in ${providerCopy}. ${details.join(', ')}.`;
+  }
+
+  function collectKnownVolumeIdsForDiscovery(): string[] {
+    const values = new Set<string>();
+    for (const mount of mounts) {
+      if (mount.volumeId) {
+        values.add(mount.volumeId.trim().toLowerCase());
+      }
+    }
+    if (volumeId) {
+      values.add(volumeId.trim().toLowerCase());
+    }
+    return Array.from(values.values()).sort((left, right) => left.localeCompare(right));
+  }
+
+  function acknowledgeSourceDiscovery(runKey: string): void {
+    lastAcknowledgedSourceDiscoveryRunKey = runKey;
+    if (sourceDiscoveryToast?.runKey === runKey) {
+      sourceDiscoveryToast = null;
+    }
+  }
+
+  function openSourcesPanelWithFocus(focus: 'discovery' | 'defaults' | null): void {
+    sourceDiscoveryPanelFocus = focus;
+    showSourcesPanel = true;
+    showVolumeStoragePanel = false;
+  }
+
+  function stopSourceDiscoveryWatch(): void {
+    if (sourceDiscoveryScheduleTimer) {
+      clearTimeout(sourceDiscoveryScheduleTimer);
+      sourceDiscoveryScheduleTimer = null;
+    }
+    if (sourceDiscoveryWatchDisconnect) {
+      sourceDiscoveryWatchDisconnect();
+      sourceDiscoveryWatchDisconnect = null;
+    }
+  }
+
+  function scheduleSourceDiscovery(delayMs = 180): void {
+    if (!persistedUiStateReady) {
+      return;
+    }
+    if (sourceDiscoveryScheduleTimer) {
+      clearTimeout(sourceDiscoveryScheduleTimer);
+    }
+    sourceDiscoveryScheduleTimer = setTimeout(() => {
+      sourceDiscoveryScheduleTimer = null;
+      void runSourceDiscoveryReconcile();
+    }, delayMs);
+  }
+
+  async function runSourceDiscoveryReconcile(): Promise<void> {
+    if (sourceDiscoveryInFlight) {
+      sourceDiscoveryQueued = true;
+      return;
+    }
+    sourceDiscoveryInFlight = true;
+    try {
+      const result = await reconcileDiscoveredSources(collectKnownVolumeIdsForDiscovery());
+      const previousRunKey = latestSourceDiscoveryRunKey;
+      latestSourceDiscovery = result;
+      latestSourceDiscoveryRunKey = result.runKey;
+      if (previousRunKey !== result.runKey) {
+        sourceDiscoveryRefreshToken += 1;
+      }
+      if (hasMeaningfulSourceDiscovery(result) && result.runKey !== lastAcknowledgedSourceDiscoveryRunKey) {
+        sourceDiscoveryToast = {
+          runKey: result.runKey,
+          message: buildSourceDiscoveryToastMessage(result),
+        };
+      } else if (sourceDiscoveryToast?.runKey !== result.runKey || !hasMeaningfulSourceDiscovery(result)) {
+        sourceDiscoveryToast = null;
+      }
+    } catch (error) {
+      console.warn('Failed to reconcile source discovery:', error);
+    } finally {
+      sourceDiscoveryInFlight = false;
+      if (sourceDiscoveryQueued) {
+        sourceDiscoveryQueued = false;
+        void runSourceDiscoveryReconcile();
+      }
+    }
+  }
+
+  function openSourceDiscoveryDetails(): void {
+    if (sourceDiscoveryToast) {
+      acknowledgeSourceDiscovery(sourceDiscoveryToast.runKey);
+    }
+    openSourcesPanelWithFocus('discovery');
+  }
+
+  function openSourceDiscoveryDefaults(): void {
+    if (sourceDiscoveryToast) {
+      acknowledgeSourceDiscovery(sourceDiscoveryToast.runKey);
+    }
+    openSourcesPanelWithFocus('defaults');
+  }
+
+  function normalizeDiscoveryResult(value: unknown): ReconcileSourcesResponse | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    const candidate = value as Partial<ReconcileSourcesResponse>;
+    if (typeof candidate.runKey !== 'string' || !candidate.summary || !Array.isArray(candidate.items)) {
+      return null;
+    }
+    return candidate as ReconcileSourcesResponse;
+  }
+
+  function normalizePersistedSourceDiscovery(input: unknown): PersistedSourceDiscoveryUiState {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return {
+        lastAcknowledgedRunKey: '',
+        latestRunKey: '',
+        latestResult: null,
+      };
+    }
+    const candidate = input as {
+      lastAcknowledgedRunKey?: unknown;
+      latestRunKey?: unknown;
+      latestResult?: unknown;
+    };
+    const latestResult = normalizeDiscoveryResult(candidate.latestResult);
+    return {
+      lastAcknowledgedRunKey:
+        typeof candidate.lastAcknowledgedRunKey === 'string' ? candidate.lastAcknowledgedRunKey : '',
+      latestRunKey:
+        typeof candidate.latestRunKey === 'string'
+          ? candidate.latestRunKey
+          : latestResult?.runKey ?? '',
+      latestResult,
+    };
+  }
+
+  function loadPersistedSourceDiscovery(): PersistedSourceDiscoveryUiState {
+    try {
+      const raw = localStorage.getItem(SOURCE_DISCOVERY_UI_KEY);
+      if (!raw) {
+        return {
+          lastAcknowledgedRunKey: '',
+          latestRunKey: '',
+          latestResult: null,
+        };
+      }
+      return normalizePersistedSourceDiscovery(JSON.parse(raw));
+    } catch {
+      return {
+        lastAcknowledgedRunKey: '',
+        latestRunKey: '',
+        latestResult: null,
+      };
+    }
+  }
+
+  function persistSourceDiscoveryLocally(state: PersistedSourceDiscoveryUiState): void {
+    try {
+      localStorage.setItem(SOURCE_DISCOVERY_UI_KEY, JSON.stringify(state));
+    } catch {
+      // ignore
+    }
   }
 
   function trimSecretPart(value: string): string {
@@ -764,6 +988,17 @@
   let watchDisconnect: (() => void) | null = null;
   let autoRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let volumeOpenSerial = 0;
+  let latestSourceDiscovery = $state<ReconcileSourcesResponse | null>(null);
+  let latestSourceDiscoveryRunKey = $state('');
+  let lastAcknowledgedSourceDiscoveryRunKey = $state('');
+  let sourceDiscoveryToast = $state<DiscoveryToastState | null>(null);
+  let sourceDiscoveryRefreshToken = $state(0);
+  let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | null>(null);
+  let sourceDiscoveryInFlight = false;
+  let sourceDiscoveryQueued = false;
+  let sourceDiscoveryScheduleTimer: ReturnType<typeof setTimeout> | null = null;
+  let sourceDiscoveryWatchDisconnect: (() => void) | null = null;
+  let lastStoragePanelOpen = false;
 
   function preferredActiveMountId(nextMounts: VolumeMount[]): string {
     return nextMounts.find((mount) => !mount.collapsed)?.id ?? nextMounts[0]?.id ?? '';
@@ -774,6 +1009,10 @@
     activeChatIdentityId = loadActiveIdentityId();
     volumeChatIdentityAssignments = loadVolumeIdentityAssignments();
     identityHydrated = true;
+    const localDiscoveryState = loadPersistedSourceDiscovery();
+    latestSourceDiscovery = localDiscoveryState.latestResult;
+    latestSourceDiscoveryRunKey = localDiscoveryState.latestRunKey;
+    lastAcknowledgedSourceDiscoveryRunKey = localDiscoveryState.lastAcknowledgedRunKey;
 
     const bridge = getDesktopBridge();
     if (!bridge || typeof bridge.loadUiState !== 'function') {
@@ -790,6 +1029,10 @@
           mounts = nextMounts.length > 0 ? nextMounts : [createMount()];
           activeMountId = preferredActiveMountId(mounts);
         }
+        const discoveryState = normalizePersistedSourceDiscovery(nextState?.sourceDiscovery);
+        latestSourceDiscovery = discoveryState.latestResult;
+        latestSourceDiscoveryRunKey = discoveryState.latestRunKey;
+        lastAcknowledgedSourceDiscoveryRunKey = discoveryState.lastAcknowledgedRunKey;
       } catch (error) {
         console.warn('Failed to hydrate desktop UI state:', error);
       } finally {
@@ -949,8 +1192,14 @@
       return;
     }
 
+    const sourceDiscoveryState: PersistedSourceDiscoveryUiState = {
+      lastAcknowledgedRunKey: lastAcknowledgedSourceDiscoveryRunKey,
+      latestRunKey: latestSourceDiscoveryRunKey,
+      latestResult: latestSourceDiscovery,
+    };
     const payload: PersistedUiState = {
       volumeMounts: snapshotVolumeMounts(mounts),
+      sourceDiscovery: sourceDiscoveryState,
     };
     const bridge = getDesktopBridge();
     const persistTimer = setTimeout(() => {
@@ -961,11 +1210,63 @@
         return;
       }
       persistVolumeMounts(mounts);
+      persistSourceDiscoveryLocally(sourceDiscoveryState);
     }, 120);
 
     return () => {
       clearTimeout(persistTimer);
     };
+  });
+
+  $effect(() => {
+    if (!persistedUiStateReady) {
+      return;
+    }
+
+    scheduleSourceDiscovery(0);
+    const handleWindowFocus = () => {
+      scheduleSourceDiscovery(0);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleSourceDiscovery(0);
+      }
+    };
+    const pollingTimer = setInterval(() => {
+      scheduleSourceDiscovery(0);
+    }, 5 * 60 * 1000);
+    const sourceWatch = watchSources({
+      onUpdate() {
+        scheduleSourceDiscovery(180);
+      },
+      onError(error) {
+        console.warn('Source watch unavailable:', error);
+      },
+      onClose() {
+        sourceDiscoveryWatchDisconnect = null;
+      },
+    });
+    sourceDiscoveryWatchDisconnect = () => {
+      sourceWatch.close();
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(pollingTimer);
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      stopSourceDiscoveryWatch();
+    };
+  });
+
+  $effect(() => {
+    const storagePanelOpen = showSourcesPanel || showVolumeStoragePanel;
+    if (storagePanelOpen && !lastStoragePanelOpen) {
+      scheduleSourceDiscovery(0);
+    }
+    lastStoragePanelOpen = storagePanelOpen;
   });
 
   const isHistoryMode = $derived.by(() => timelinePosition < timelineEvents.length);
@@ -1932,6 +2233,7 @@
 
   function toggleVolumeStoragePanel() {
     showVolumeStoragePanel = !showVolumeStoragePanel;
+    sourceDiscoveryPanelFocus = null;
     if (showVolumeStoragePanel) {
       showSourcesPanel = false;
     }
@@ -1939,6 +2241,7 @@
 
   function toggleSourcesPanel() {
     showSourcesPanel = !showSourcesPanel;
+    sourceDiscoveryPanelFocus = null;
     if (showSourcesPanel) {
       showVolumeStoragePanel = false;
     }
@@ -3546,6 +3849,9 @@
           mode="global"
           {volumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
+          discoveryDetails={latestSourceDiscovery}
+          refreshToken={sourceDiscoveryRefreshToken}
+          focusSection={sourceDiscoveryPanelFocus}
         />
       </div>
     {:else if showVolumeStoragePanel}
@@ -3554,6 +3860,7 @@
           mode="volume"
           {volumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
+          refreshToken={sourceDiscoveryRefreshToken}
         />
       </div>
     {:else if address.trim() === ''}
@@ -4031,6 +4338,33 @@
       </div>
     {/if}
   </main>
+
+  {#if sourceDiscoveryToast}
+    <aside class="discovery-toast panel-surface" role="status" aria-live="polite">
+      <div class="discovery-toast-copy">
+        <p class="discovery-toast-title">Nearbytes shares updated</p>
+        <p>{sourceDiscoveryToast.message}</p>
+      </div>
+      <div class="discovery-toast-actions">
+        <button type="button" class="discovery-toast-btn" onclick={openSourceDiscoveryDetails}>
+          <Search class="button-icon" size={15} strokeWidth={2} />
+          <span>Details</span>
+        </button>
+        <button type="button" class="discovery-toast-btn" onclick={openSourceDiscoveryDefaults}>
+          <Settings2 class="button-icon" size={15} strokeWidth={2} />
+          <span>Edit defaults</span>
+        </button>
+      </div>
+      <button
+        type="button"
+        class="discovery-toast-close"
+        aria-label="Dismiss discovery notice"
+        onclick={() => acknowledgeSourceDiscovery(sourceDiscoveryToast?.runKey ?? '')}
+      >
+        <X size={15} strokeWidth={2} />
+      </button>
+    </aside>
+  {/if}
 
 </div>
 
@@ -5130,6 +5464,102 @@
     scrollbar-width: thin;
   }
 
+  .discovery-toast {
+    position: fixed;
+    right: 1.25rem;
+    bottom: 1.25rem;
+    z-index: 40;
+    width: min(420px, calc(100vw - 2rem));
+    display: grid;
+    gap: 0.9rem;
+    padding: 0.95rem 1rem 1rem;
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    background:
+      linear-gradient(180deg, rgba(9, 20, 36, 0.98), rgba(6, 14, 24, 0.98)),
+      rgba(6, 14, 24, 0.96);
+    box-shadow:
+      0 22px 44px rgba(2, 6, 23, 0.42),
+      inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .discovery-toast-copy {
+    display: grid;
+    gap: 0.32rem;
+    padding-right: 2rem;
+  }
+
+  .discovery-toast-copy p {
+    margin: 0;
+  }
+
+  .discovery-toast-title {
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: rgba(236, 254, 255, 0.98);
+  }
+
+  .discovery-toast-copy :not(.discovery-toast-title) {
+    font-size: 0.79rem;
+    line-height: 1.45;
+    color: rgba(191, 219, 254, 0.82);
+  }
+
+  .discovery-toast-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+  }
+
+  .discovery-toast-btn {
+    appearance: none;
+    border: 1px solid rgba(56, 189, 248, 0.24);
+    border-radius: 11px;
+    background: rgba(12, 24, 43, 0.82);
+    color: rgba(226, 232, 240, 0.92);
+    min-height: 34px;
+    padding: 0 0.82rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    transition:
+      background-color 0.18s ease,
+      border-color 0.18s ease,
+      transform 0.18s ease;
+  }
+
+  .discovery-toast-btn:hover {
+    background: rgba(16, 32, 56, 0.96);
+    border-color: rgba(96, 165, 250, 0.34);
+    transform: translateY(-1px);
+  }
+
+  .discovery-toast-close {
+    position: absolute;
+    top: 0.7rem;
+    right: 0.72rem;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: rgba(191, 219, 254, 0.7);
+    cursor: pointer;
+    padding: 0.12rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+      color 0.18s ease,
+      transform 0.18s ease;
+  }
+
+  .discovery-toast-close:hover {
+    color: rgba(236, 254, 255, 0.95);
+    transform: scale(1.04);
+  }
+
   .workspace-mode-bar {
     display: inline-flex;
     align-items: center;
@@ -6156,6 +6586,12 @@
     .toolbar-btn {
       justify-self: stretch;
     }
+
+    .discovery-toast {
+      right: 1rem;
+      bottom: 1rem;
+      width: min(100%, calc(100vw - 1.5rem));
+    }
   }
 
   @media (hover: none) {
@@ -6252,6 +6688,22 @@
 
     .file-row-date {
       display: none;
+    }
+
+    .discovery-toast {
+      left: 0.75rem;
+      right: 0.75rem;
+      bottom: 0.75rem;
+      width: auto;
+    }
+
+    .discovery-toast-actions {
+      flex-direction: column;
+    }
+
+    .discovery-toast-btn {
+      width: 100%;
+      justify-content: center;
     }
   }
 </style>

@@ -7,6 +7,7 @@ import os from 'os';
 import multer from 'multer';
 import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
 import { discoverNearbytesSources, ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
+import { reconcileDiscoveredSources } from '../config/sourceReconcile.js';
 import type { CryptoOperations } from '../crypto/index.js';
 import type { ChatService } from '../domain/chatService.js';
 import type { FileService } from '../domain/fileService.js';
@@ -18,6 +19,7 @@ import { ApiError } from './errors.js';
 import { encodeSecretToken, getSecretFromRequest, validateSecret } from './auth.js';
 import type { SecretSessionStore } from './secretSessions.js';
 import { VolumeWatchHub } from './volumeWatchHub.js';
+import { SourceWatchHub } from './sourceWatchHub.js';
 import {
   getStorageDiagnostics,
   getChannelDiagnostics,
@@ -35,6 +37,7 @@ import {
   openBodySchema,
   parseWithSchema,
   publishIdentityBodySchema,
+  reconcileDiscoveredSourcesBodySchema,
   renameFileBodySchema,
   renameFolderBodySchema,
   sendChatMessageBodySchema,
@@ -66,6 +69,7 @@ export interface RouteDependencies {
 export function createRoutes(deps: RouteDependencies): Router {
   const router = Router();
   const watchHub = new VolumeWatchHub(deps.storage, deps.resolvedStorageDir);
+  const sourceWatchHub = new SourceWatchHub();
   const upload = multer({
     storage: multer.diskStorage({
       destination: (_req, _file, callback) => callback(null, os.tmpdir()),
@@ -203,6 +207,85 @@ export function createRoutes(deps: RouteDependencies): Router {
       sources,
     });
   }));
+
+  router.post('/sources/reconcile', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.rootsConfigPath) {
+      throw new ApiError(500, 'INTERNAL_ERROR', 'Roots config path is not configured');
+    }
+
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const { knownVolumeIds } = parseWithSchema(reconcileDiscoveredSourcesBodySchema, req.body ?? {});
+    const reconciled = await reconcileDiscoveredSources({
+      currentConfig: multiRootStorage.getRootsConfig(),
+      knownVolumeIds,
+    });
+
+    let activeConfig = multiRootStorage.getRootsConfig();
+    if (reconciled.changed) {
+      await saveRootsConfig(deps.rootsConfigPath, reconciled.config);
+      multiRootStorage.updateRootsConfig(reconciled.config);
+      await multiRootStorage.reconcileConfiguredVolumes();
+      await ensureNearbytesMarkers(reconciled.config.sources);
+      activeConfig = reconciled.config;
+    }
+
+    const runtime = await multiRootStorage.getRuntimeSnapshot();
+    res.json({
+      runKey: reconciled.runKey,
+      changed: reconciled.changed,
+      knownVolumeIds: reconciled.knownVolumeIds,
+      summary: reconciled.summary,
+      items: reconciled.items,
+      configPath: deps.rootsConfigPath,
+      config: activeConfig,
+      runtime,
+    });
+  }));
+
+  router.get('/watch/sources', async (req, res, next) => {
+    try {
+      assertLocalConfigRequest(req);
+      const subscription = await sourceWatchHub.subscribe(
+        (update) => writeSseEvent(res, 'source-watch-update', update),
+        (error) =>
+          writeSseEvent(res, 'watch-error', {
+            message: error.message,
+            timestamp: Date.now(),
+          })
+      );
+
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      writeSseEvent(res, 'source-watch-ready', subscription.ready);
+
+      if (!subscription.ready.autoUpdate) {
+        writeSseEvent(res, 'watch-ended', {
+          reason: 'Auto-discovery watch is unavailable for local source roots.',
+          timestamp: Date.now(),
+        });
+        res.end();
+        subscription.unsubscribe();
+        return;
+      }
+
+      const heartbeatTimer = setInterval(() => {
+        writeSseEvent(res, 'heartbeat', { timestamp: Date.now() });
+      }, 20000);
+
+      req.on('close', () => {
+        clearInterval(heartbeatTimer);
+        subscription.unsubscribe();
+        res.end();
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
 
   if (deps.resolvedStorageDir) {
     router.get('/__debug/storage', asyncHandler(async (_req, res) => {

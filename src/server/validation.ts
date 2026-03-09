@@ -73,6 +73,18 @@ export const openRootInFileManagerBodySchema = z.object({
   rootId: z.string().trim().min(1, 'Root id is required'),
 });
 
+export const reconcileDiscoveredSourcesBodySchema = z.object({
+  knownVolumeIds: z
+    .array(
+      z
+        .string()
+        .trim()
+        .regex(/^[a-f0-9]{64,200}$/i, 'Known volume ids must be lowercase or uppercase hex')
+    )
+    .optional()
+    .default([]),
+});
+
 /**
  * Parses and validates input using a Zod schema.
  */

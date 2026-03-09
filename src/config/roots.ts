@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { z } from 'zod';
 
-export type RootProvider = 'local' | 'dropbox' | 'mega' | 'gdrive';
+export type RootProvider = 'local' | 'dropbox' | 'mega' | 'gdrive' | 'icloud' | 'onedrive';
 export type StorageFullPolicy = 'block-writes' | 'drop-older-blocks';
 
 export interface SourceConfigEntry {
@@ -50,7 +50,7 @@ const fullPolicySchema = z.enum(['block-writes', 'drop-older-blocks']);
 
 const sourceConfigEntrySchema = z.object({
   id: z.string().trim().min(1, 'Source id is required'),
-  provider: z.enum(['local', 'dropbox', 'mega', 'gdrive']).default('local'),
+  provider: z.enum(['local', 'dropbox', 'mega', 'gdrive', 'icloud', 'onedrive']).default('local'),
   path: z.string().trim().min(1, 'Source path is required'),
   enabled: z.boolean().default(true),
   writable: z.boolean().default(true),
@@ -96,7 +96,7 @@ const legacyAllowlistStrategySchema = z.object({
 const legacyRootConfigEntrySchema = z.object({
   id: z.string().trim().min(1, 'Root id is required'),
   kind: z.enum(['main', 'backup']),
-  provider: z.enum(['local', 'dropbox', 'mega', 'gdrive']).default('local'),
+  provider: z.enum(['local', 'dropbox', 'mega', 'gdrive', 'icloud', 'onedrive']).default('local'),
   path: z.string().trim().min(1, 'Root path is required'),
   enabled: z.boolean().default(true),
   writable: z.boolean().default(true),

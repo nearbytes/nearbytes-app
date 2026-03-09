@@ -164,7 +164,9 @@ function registerIpc(): void {
     if (!rawState || typeof rawState !== 'object' || Array.isArray(rawState)) {
       throw new Error('Desktop UI state must be an object.');
     }
-    await writeDesktopUiState(rawState as { volumeMounts?: unknown; dismissedRootSuggestions?: unknown });
+    await writeDesktopUiState(
+      rawState as { volumeMounts?: unknown; sourceDiscovery?: unknown; dismissedRootSuggestions?: unknown }
+    );
     return true;
   });
   ipcMain.handle('nearbytes-desktop:choose-directory', async (_event, rawInitialPath: unknown) => {

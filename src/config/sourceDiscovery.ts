@@ -1,4 +1,4 @@
-import { promises as fs, type Dirent } from 'fs';
+import { promises as fs, type Dirent, type Stats } from 'fs';
 import os from 'os';
 import path from 'path';
 import type { RootProvider, SourceConfigEntry } from './roots.js';
@@ -8,7 +8,27 @@ export interface DiscoveredNearbytesSource {
   readonly path: string;
   readonly markerFile: string;
   readonly autoUpdate: boolean;
-  readonly sourceType: 'marker' | 'suggested';
+  readonly sourceType: 'marker' | 'layout' | 'suggested';
+}
+
+export interface NearbytesScanRoot {
+  readonly provider: RootProvider;
+  readonly path: string;
+}
+
+export interface NearbytesRootInspection {
+  readonly path: string;
+  readonly markerFile: string;
+  readonly hasMarker: boolean;
+  readonly hasBlocks: boolean;
+  readonly hasChannels: boolean;
+  readonly volumeIds: string[];
+  readonly sourceType: 'marker' | 'layout';
+}
+
+export interface DetectedNearbytesSource extends NearbytesRootInspection {
+  readonly provider: RootProvider;
+  readonly autoUpdate: boolean;
 }
 
 export interface MarkerEnsureResult {
@@ -32,6 +52,7 @@ interface QueueEntry {
 
 const DEFAULT_MAX_DEPTH = 4;
 const DEFAULT_MAX_DIRECTORIES = 4000;
+const CHANNEL_DIRECTORY_REGEX = /^[a-f0-9]{64,200}$/i;
 export const NEARBYTES_MARKER_FILE = '.nearbytes';
 const DEFAULT_NEARBYTES_DIRECTORY = 'nearbytes';
 const SKIP_DIRECTORY_NAMES = new Set([
@@ -44,24 +65,36 @@ const SKIP_DIRECTORY_NAMES = new Set([
   '.cache',
 ]);
 
+export async function discoverNearbytesScanRoots(options?: {
+  readonly includeDefaultRoots?: boolean;
+}): Promise<NearbytesScanRoot[]> {
+  const candidates = await buildScanCandidates(options);
+  return candidates.sort((left, right) => {
+    if (left.provider !== right.provider) {
+      return left.provider.localeCompare(right.provider);
+    }
+    return left.path.localeCompare(right.path);
+  });
+}
+
 /**
- * Discovers local Nearbytes roots by scanning synced folders for `.nearbytes` markers.
+ * Discovers actual Nearbytes roots by scanning synced folders for markers or storage layout.
  */
-export async function discoverNearbytesSources(options?: {
+export async function discoverNearbytesRoots(options?: {
   readonly maxDepth?: number;
   readonly maxDirectories?: number;
-}): Promise<DiscoveredNearbytesSource[]> {
+  readonly includeDefaultRoots?: boolean;
+}): Promise<DetectedNearbytesSource[]> {
   const maxDepth = clampInt(options?.maxDepth, DEFAULT_MAX_DEPTH, 1, 8);
   const maxDirectories = clampInt(options?.maxDirectories, DEFAULT_MAX_DIRECTORIES, 100, 50000);
-
-  const candidates = await buildScanCandidates();
+  const candidates = await buildScanCandidates(options);
   const seenRoots = new Set<string>();
-  const discovered: DiscoveredNearbytesSource[] = [];
+  const discovered: DetectedNearbytesSource[] = [];
 
   for (const candidate of candidates) {
-    const markerDirs = await scanForMarkers(candidate.path, maxDepth, maxDirectories);
-    for (const markerDir of markerDirs) {
-      const canonicalDir = await resolveCanonicalDirectoryPath(markerDir);
+    const roots = await scanForNearbytesRoots(candidate.path, maxDepth, maxDirectories);
+    for (const root of roots) {
+      const canonicalDir = await resolveCanonicalDirectoryPath(root.path);
       if (!canonicalDir) {
         continue;
       }
@@ -71,14 +104,36 @@ export async function discoverNearbytesSources(options?: {
       }
       seenRoots.add(canonicalKey);
       discovered.push({
-        provider: candidate.provider,
+        ...root,
         path: canonicalDir,
         markerFile: path.join(canonicalDir, NEARBYTES_MARKER_FILE),
+        provider: candidate.provider,
         autoUpdate: true,
-        sourceType: 'marker',
       });
     }
+  }
 
+  discovered.sort(compareDiscoveredSource);
+  return discovered;
+}
+
+/**
+ * Discovers local Nearbytes roots and suggested provider folders for manual adoption.
+ */
+export async function discoverNearbytesSources(options?: {
+  readonly maxDepth?: number;
+  readonly maxDirectories?: number;
+  readonly includeDefaultRoots?: boolean;
+}): Promise<DiscoveredNearbytesSource[]> {
+  const candidates = await buildScanCandidates(options);
+  const discoveredRoots = await discoverNearbytesRoots(options);
+  const seenRoots = new Set<string>();
+  const discovered: DiscoveredNearbytesSource[] = discoveredRoots.map((source) => {
+    seenRoots.add(toCanonicalPathKey(source.path));
+    return source;
+  });
+
+  for (const candidate of candidates) {
     if (!isSyncedProvider(candidate.provider)) {
       continue;
     }
@@ -99,13 +154,7 @@ export async function discoverNearbytesSources(options?: {
     });
   }
 
-  discovered.sort((left, right) => {
-    if (left.provider !== right.provider) {
-      return left.provider.localeCompare(right.provider);
-    }
-    return left.path.localeCompare(right.path);
-  });
-
+  discovered.sort(compareDiscoveredSource);
   return discovered;
 }
 
@@ -158,32 +207,69 @@ export async function ensureNearbytesMarker(rootPath: string): Promise<boolean> 
   return true;
 }
 
-async function buildScanCandidates(): Promise<ScanCandidate[]> {
-  const home = os.homedir();
-  const candidates: ScanCandidate[] = [
-    { provider: 'dropbox', path: path.join(home, 'Dropbox') },
-    { provider: 'mega', path: path.join(home, 'MEGA') },
-    { provider: 'mega', path: path.join(home, 'Mega') },
-    { provider: 'gdrive', path: path.join(home, 'Google Drive') },
-  ];
-
-  const cloudStorage = path.join(home, 'Library', 'CloudStorage');
-  const cloudEntries = await safeReadDir(cloudStorage);
-  for (const entry of cloudEntries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    const provider = classifyProvider(entry.name);
-    if (!provider) {
-      continue;
-    }
-    candidates.push({
-      provider,
-      path: path.join(cloudStorage, entry.name),
-    });
+export async function inspectNearbytesRoot(rootPath: string): Promise<NearbytesRootInspection | null> {
+  const resolvedRoot = path.resolve(rootPath);
+  const stats = await safeStat(resolvedRoot);
+  if (!stats?.isDirectory()) {
+    return null;
   }
 
+  const markerFile = path.join(resolvedRoot, NEARBYTES_MARKER_FILE);
+  const channelsPath = path.join(resolvedRoot, 'channels');
+  const blocksPath = path.join(resolvedRoot, 'blocks');
+  const hasMarker = await hasMarkerFile(resolvedRoot);
+  const hasChannels = await isDirectory(channelsPath);
+  const hasBlocks = await isDirectory(blocksPath);
+  if (!hasMarker && !hasChannels && !hasBlocks) {
+    return null;
+  }
+
+  return {
+    path: resolvedRoot,
+    markerFile,
+    hasMarker,
+    hasBlocks,
+    hasChannels,
+    volumeIds: hasChannels ? await listVolumeIds(channelsPath) : [],
+    sourceType: hasMarker ? 'marker' : 'layout',
+  };
+}
+
+async function buildScanCandidates(options?: {
+  readonly includeDefaultRoots?: boolean;
+}): Promise<ScanCandidate[]> {
+  const home = os.homedir();
+  const candidates: ScanCandidate[] = [];
   const envPaths = parseScanPathsFromEnv(process.env.NEARBYTES_SOURCE_SCAN_DIRS);
+  const includeDefaultRoots = options?.includeDefaultRoots ?? envPaths.length === 0;
+
+  if (includeDefaultRoots) {
+    candidates.push(
+      { provider: 'dropbox', path: path.join(home, 'Dropbox') },
+      { provider: 'mega', path: path.join(home, 'MEGA') },
+      { provider: 'mega', path: path.join(home, 'Mega') },
+      { provider: 'gdrive', path: path.join(home, 'Google Drive') },
+      { provider: 'onedrive', path: path.join(home, 'OneDrive') },
+      { provider: 'icloud', path: path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs') }
+    );
+
+    const cloudStorage = path.join(home, 'Library', 'CloudStorage');
+    const cloudEntries = await safeReadDir(cloudStorage);
+    for (const entry of cloudEntries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const provider = classifyNearbytesProviderName(entry.name);
+      if (!provider) {
+        continue;
+      }
+      candidates.push({
+        provider,
+        path: path.join(cloudStorage, entry.name),
+      });
+    }
+  }
+
   for (const envPath of envPaths) {
     candidates.push({
       provider: 'local',
@@ -210,10 +296,14 @@ async function buildScanCandidates(): Promise<ScanCandidate[]> {
   return Array.from(deduped.values());
 }
 
-async function scanForMarkers(rootPath: string, maxDepth: number, maxDirectories: number): Promise<string[]> {
+async function scanForNearbytesRoots(
+  rootPath: string,
+  maxDepth: number,
+  maxDirectories: number
+): Promise<NearbytesRootInspection[]> {
   const queue: QueueEntry[] = [{ path: rootPath, depth: 0 }];
   const visited = new Set<string>();
-  const markerDirs: string[] = [];
+  const discovered: NearbytesRootInspection[] = [];
   let scanned = 0;
 
   while (queue.length > 0) {
@@ -233,8 +323,9 @@ async function scanForMarkers(rootPath: string, maxDepth: number, maxDirectories
     visited.add(normalized);
     scanned += 1;
 
-    if (await hasMarkerFile(normalized)) {
-      markerDirs.push(normalized);
+    const inspection = await inspectNearbytesRoot(normalized);
+    if (inspection) {
+      discovered.push(inspection);
     }
 
     if (current.depth >= maxDepth) {
@@ -259,7 +350,7 @@ async function scanForMarkers(rootPath: string, maxDepth: number, maxDirectories
     }
   }
 
-  return markerDirs;
+  return discovered;
 }
 
 async function hasMarkerFile(dirPath: string): Promise<boolean> {
@@ -294,10 +385,16 @@ function toCanonicalPathKey(targetPath: string): string {
   return normalized;
 }
 
-function classifyProvider(entryName: string): RootProvider | null {
+export function classifyNearbytesProviderName(entryName: string): RootProvider | null {
   const lower = entryName.toLowerCase();
   if (lower.includes('dropbox')) {
     return 'dropbox';
+  }
+  if (lower.includes('onedrive')) {
+    return 'onedrive';
+  }
+  if (lower.includes('icloud') || lower.includes('apple') || lower.includes('clouddocs')) {
+    return 'icloud';
   }
   if (lower.includes('googledrive') || lower.includes('google-drive') || lower.includes('google drive')) {
     return 'gdrive';
@@ -309,7 +406,7 @@ function classifyProvider(entryName: string): RootProvider | null {
 }
 
 function isSyncedProvider(provider: RootProvider): boolean {
-  return provider === 'dropbox' || provider === 'mega' || provider === 'gdrive';
+  return provider !== 'local';
 }
 
 function buildSuggestedNearbytesPath(candidatePath: string): string {
@@ -333,6 +430,27 @@ function parseScanPathsFromEnv(value: string | undefined): string[] {
     .map((entry) => path.resolve(entry));
 }
 
+async function listVolumeIds(channelsPath: string): Promise<string[]> {
+  const entries = await safeReadDir(channelsPath);
+  return entries
+    .filter((entry) => entry.isDirectory() && CHANNEL_DIRECTORY_REGEX.test(entry.name))
+    .map((entry) => entry.name.toLowerCase())
+    .sort((left, right) => left.localeCompare(right));
+}
+
+async function isDirectory(targetPath: string): Promise<boolean> {
+  const stats = await safeStat(targetPath);
+  return Boolean(stats?.isDirectory());
+}
+
+async function safeStat(targetPath: string): Promise<Stats | null> {
+  try {
+    return await fs.stat(targetPath);
+  } catch {
+    return null;
+  }
+}
+
 async function safeReadDir(dirPath: string): Promise<Dirent[]> {
   try {
     return await fs.readdir(dirPath, { withFileTypes: true });
@@ -349,4 +467,25 @@ function clampInt(value: number | undefined, fallback: number, min: number, max:
   if (normalized < min) return min;
   if (normalized > max) return max;
   return normalized;
+}
+
+function compareDiscoveredSource(
+  left: Pick<DiscoveredNearbytesSource, 'provider' | 'path' | 'sourceType'>,
+  right: Pick<DiscoveredNearbytesSource, 'provider' | 'path' | 'sourceType'>
+): number {
+  const leftPriority = sourceTypePriority(left.sourceType);
+  const rightPriority = sourceTypePriority(right.sourceType);
+  if (leftPriority !== rightPriority) {
+    return leftPriority - rightPriority;
+  }
+  if (left.provider !== right.provider) {
+    return left.provider.localeCompare(right.provider);
+  }
+  return left.path.localeCompare(right.path);
+}
+
+function sourceTypePriority(value: DiscoveredNearbytesSource['sourceType']): number {
+  if (value === 'marker') return 0;
+  if (value === 'layout') return 1;
+  return 2;
 }

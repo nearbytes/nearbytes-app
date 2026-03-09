@@ -4,6 +4,7 @@ import path from 'path';
 
 export interface DesktopUiState {
   readonly volumeMounts?: unknown;
+  readonly sourceDiscovery?: unknown;
   readonly dismissedRootSuggestions?: unknown;
 }
 
@@ -22,6 +23,7 @@ export async function readDesktopUiState(): Promise<DesktopUiState> {
     }
     return {
       volumeMounts: (parsed as DesktopUiState).volumeMounts,
+      sourceDiscovery: (parsed as DesktopUiState).sourceDiscovery,
       dismissedRootSuggestions: (parsed as DesktopUiState).dismissedRootSuggestions,
     };
   } catch (error) {

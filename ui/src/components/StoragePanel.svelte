@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     chooseDirectoryPath,
     consolidateRoot,
@@ -8,6 +8,8 @@
     getRootsConfig,
     hasDesktopDirectoryPicker,
     openRootInFileManager,
+    type DiscoveryAction,
+    type ReconcileSourcesResponse,
     updateRootsConfig,
     type DiscoveredNearbytesSource,
     type RootConsolidationCandidate,
@@ -36,6 +38,9 @@
     mode = 'volume',
     volumeId = null,
     currentVolumePresentation = null,
+    discoveryDetails = null,
+    refreshToken = 0,
+    focusSection = null,
   } = $props<{
     mode?: 'global' | 'volume';
     volumeId: string | null;
@@ -46,6 +51,9 @@
       fileMimeType: string;
       fileName: string;
     } | null;
+    discoveryDetails?: ReconcileSourcesResponse | null;
+    refreshToken?: number;
+    focusSection?: 'discovery' | 'defaults' | null;
   }>();
 
   const DISMISSED_DISCOVERY_KEY = 'nearbytes-source-discovery-dismissed-v1';
@@ -80,8 +88,27 @@
   let mergeMessage = $state('');
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
+  let lastRefreshToken = $state(0);
+  let lastFocusSection = $state<'discovery' | 'defaults' | null>(null);
+  let discoveryDetailsElement = $state<HTMLElement | null>(null);
+  let defaultsSectionElement = $state<HTMLElement | null>(null);
   onMount(() => {
     void loadPanel();
+  });
+
+  $effect(() => {
+    if (refreshToken === 0 || refreshToken === lastRefreshToken) return;
+    lastRefreshToken = refreshToken;
+    void loadPanel();
+  });
+
+  $effect(() => {
+    if (!focusSection || focusSection === lastFocusSection) return;
+    lastFocusSection = focusSection;
+    void tick().then(() => {
+      const target = focusSection === 'discovery' ? discoveryDetailsElement : defaultsSectionElement;
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   });
 
   $effect(() => {
@@ -158,6 +185,10 @@
   function detectProviderFromPath(value: string): SourceProvider {
     const lower = value.toLowerCase();
     if (lower.includes('dropbox')) return 'dropbox';
+    if (lower.includes('onedrive')) return 'onedrive';
+    if (lower.includes('icloud') || lower.includes('clouddocs') || lower.includes('mobile documents')) {
+      return 'icloud';
+    }
     if (lower.includes('google drive') || lower.includes('googledrive') || lower.includes('gdrive')) {
       return 'gdrive';
     }
@@ -169,6 +200,8 @@
     if (provider === 'gdrive') return 'Google Drive';
     if (provider === 'dropbox') return 'Dropbox';
     if (provider === 'mega') return 'MEGA';
+    if (provider === 'icloud') return 'Apple/iCloud';
+    if (provider === 'onedrive') return 'OneDrive';
     return 'Local';
   }
 
@@ -549,7 +582,7 @@
     for (const source of discoveredSources) {
       const key = normalizeComparablePath(source.path);
       const current = unique.get(key);
-      if (!current || source.sourceType === 'marker') {
+      if (!current || sourceSuggestionPriority(source.sourceType) < sourceSuggestionPriority(current.sourceType)) {
         unique.set(key, source);
       }
     }
@@ -592,6 +625,48 @@
 
   function hasSourcePath(source: SourceConfigEntry): boolean {
     return source.path.trim() !== '';
+  }
+
+  function sourceSuggestionPriority(value: DiscoveredNearbytesSource['sourceType']): number {
+    if (value === 'marker') return 0;
+    if (value === 'layout') return 1;
+    return 2;
+  }
+
+  function discoveryGroups(): Array<{
+    provider: SourceProvider;
+    items: ReconcileSourcesResponse['items'];
+  }> {
+    if (!discoveryDetails) return [];
+    const grouped = new Map<SourceProvider, ReconcileSourcesResponse['items']>();
+    for (const item of discoveryDetails.items) {
+      const current = grouped.get(item.provider) ?? ([] as ReconcileSourcesResponse['items']);
+      current.push(item);
+      grouped.set(item.provider, current);
+    }
+    return Array.from(grouped.entries())
+      .map(([provider, items]) => ({
+        provider,
+        items: [...items].sort((left, right) => left.path.localeCompare(right.path)),
+      }))
+      .sort((left, right) => formatProvider(left.provider).localeCompare(formatProvider(right.provider)));
+  }
+
+  function discoveryActionLabel(action: DiscoveryAction): string {
+    if (action === 'added-source') return 'Source added';
+    if (action === 'added-volume-target') return 'Target enabled';
+    if (action === 'available-share') return 'Needs review';
+    return 'Already known';
+  }
+
+  function shortVolumeId(value: string): string {
+    if (value.length <= 18) return value;
+    return `${value.slice(0, 10)}...${value.slice(-6)}`;
+  }
+
+  async function openDiscoverySource(item: ReconcileSourcesResponse['items'][number]) {
+    if (!item.configuredSourceId) return;
+    await openSourceFolder(item.configuredSourceId);
   }
 
   function sortedUsageVolumes(sourceId: string) {
@@ -837,6 +912,74 @@
         <p class="panel-path">{configPath}</p>
       {/if}
 
+      {#if discoveryDetails}
+        <section class="panel-cluster discovery-details-cluster" bind:this={discoveryDetailsElement}>
+          <div class="cluster-head">
+            <div>
+              <p class="cluster-title">Discovery details</p>
+              <p class="cluster-caption">Latest automatic source scan and the changes it applied.</p>
+            </div>
+            <span class="summary-badge" title="Latest automatic discovery summary.">
+              {discoveryDetails.summary.sourcesAdded} source(s) · {discoveryDetails.summary.volumeTargetsAdded} target(s)
+            </span>
+          </div>
+          {#if discoveryDetails.items.length === 0}
+            <p class="storage-message">No Nearbytes shares were detected in the latest scan.</p>
+          {:else}
+            <div class="discovery-detail-groups">
+              {#each discoveryGroups() as group (group.provider)}
+                <div class="discovery-detail-group">
+                  <div class="detail-group-head">
+                    <p class="scan-provider">{formatProvider(group.provider)}</p>
+                    <span class="mini-badge">{group.items.length}</span>
+                  </div>
+                  <div class="discovery-grid">
+                    {#each group.items as item (item.path)}
+                      <article class="scan-card detail-scan-card">
+                        <div class="scan-copy">
+                          <p class="scan-path">{item.path}</p>
+                          <div class="source-facts compact-detail-facts">
+                            <span>{item.classification === 'marker' ? 'Marker' : 'Layout'}</span>
+                            {#if item.hasChannels}
+                              <span>Channels</span>
+                            {/if}
+                            {#if item.hasBlocks}
+                              <span>Blocks</span>
+                            {/if}
+                          </div>
+                          <div class="detail-action-list">
+                            {#each item.actions as action (action)}
+                              <span class="mini-badge">{discoveryActionLabel(action)}</span>
+                            {/each}
+                          </div>
+                          {#if item.addedTargetVolumeIds.length > 0}
+                            <p class="detail-copy">
+                              Linked to {item.addedTargetVolumeIds.map(shortVolumeId).join(', ')}.
+                            </p>
+                          {/if}
+                          {#if item.unknownVolumeIds.length > 0}
+                            <p class="detail-copy">
+                              Other volume directories detected: {item.unknownVolumeIds.map(shortVolumeId).join(', ')}.
+                            </p>
+                          {/if}
+                        </div>
+                        {#if item.configuredSourceId}
+                          <div class="scan-actions">
+                            <button type="button" class="panel-btn subtle compact" onclick={() => void openDiscoverySource(item)}>
+                              <span>Open</span>
+                            </button>
+                          </div>
+                        {/if}
+                      </article>
+                    {/each}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {/if}
+
       {#if discoveryOpen}
         <section class="panel-cluster scan-cluster">
           <div class="cluster-head">
@@ -877,7 +1020,7 @@
         </section>
       {/if}
 
-      <section class="panel-cluster">
+      <section class="panel-cluster" bind:this={defaultsSectionElement}>
         <div class="cluster-head">
           <div>
             <p class="cluster-title">Saved sources</p>
@@ -1704,6 +1847,23 @@
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 
+  .discovery-detail-groups {
+    display: grid;
+    gap: 0.85rem;
+  }
+
+  .discovery-detail-group {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .detail-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+  }
+
   .discovery-grid {
     grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   }
@@ -1734,6 +1894,10 @@
 
   .scan-card {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detail-scan-card {
+    gap: 0.75rem;
   }
 
   .source-card-head {
@@ -1828,6 +1992,25 @@
     font-size: 0.76rem;
     color: rgba(186, 230, 253, 0.72);
     justify-content: space-between;
+  }
+
+  .compact-detail-facts {
+    justify-content: flex-start;
+    gap: 0.45rem;
+  }
+
+  .detail-action-list {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .detail-copy {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.35;
+    color: rgba(186, 230, 253, 0.74);
   }
 
   .compact-source-actions {

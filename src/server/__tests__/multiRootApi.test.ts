@@ -67,6 +67,19 @@ interface DiscoverSourcesResponseBody {
   }>;
 }
 
+interface ReconcileSourcesResponseBody extends ConfigRootsResponseBody {
+  runKey: string;
+  changed: boolean;
+  summary: {
+    sourcesAdded: number;
+    volumeTargetsAdded: number;
+  };
+  items: Array<{
+    configuredSourceId?: string;
+    addedTargetVolumeIds: string[];
+  }>;
+}
+
 function typedBody<T>(response: Response): T {
   return response.body as unknown as T;
 }
@@ -79,9 +92,11 @@ describe('Nearbytes API (multi-root)', () => {
   let mainRoot: string;
   let backupRoot: string;
   let backupRoot2: string;
+  const previousHome = process.env.HOME;
 
   beforeAll(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-multi-root-api-'));
+    process.env.HOME = tempDir;
     mainRoot = path.join(tempDir, 'main-root');
     backupRoot = path.join(tempDir, 'backup-root');
     backupRoot2 = path.join(tempDir, 'backup-root-2');
@@ -187,6 +202,7 @@ describe('Nearbytes API (multi-root)', () => {
   });
 
   afterAll(async () => {
+    process.env.HOME = previousHome;
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -296,6 +312,44 @@ describe('Nearbytes API (multi-root)', () => {
       const expectedRoot = path.resolve(await fs.realpath(backupRoot));
       const found = body.sources.some((source) => path.resolve(source.path) === expectedRoot);
       expect(found).toBe(true);
+    } finally {
+      process.env.NEARBYTES_SOURCE_SCAN_DIRS = originalScanPaths;
+    }
+  });
+
+  it('reconciles discovered shares into sources and explicit volume destinations', async () => {
+    const originalScanPaths = process.env.NEARBYTES_SOURCE_SCAN_DIRS;
+    const discoveredRoot = path.join(tempDir, 'icloud-share');
+    const openRes = await request(app).post('/open').send({ secret: SECRET }).expect(200);
+    const openBody = typedBody<OpenResponseBody>(openRes);
+    await fs.mkdir(path.join(discoveredRoot, 'channels', openBody.volumeId), { recursive: true });
+    await fs.mkdir(path.join(discoveredRoot, 'blocks'), { recursive: true });
+
+    process.env.NEARBYTES_SOURCE_SCAN_DIRS = discoveredRoot;
+
+    try {
+      const reconcileRes = await request(app)
+        .post('/sources/reconcile')
+        .send({ knownVolumeIds: [openBody.volumeId] })
+        .expect(200);
+      const reconcileBody = typedBody<ReconcileSourcesResponseBody>(reconcileRes);
+
+      expect(reconcileBody.changed).toBe(true);
+      expect(reconcileBody.summary.sourcesAdded).toBe(1);
+      expect(reconcileBody.summary.volumeTargetsAdded).toBe(1);
+      expect(reconcileBody.runKey).toMatch(/^[a-f0-9]{64}$/);
+
+      const expectedRoot = path.resolve(await fs.realpath(discoveredRoot));
+      const addedSource = reconcileBody.config.sources.find(
+        (source) => path.resolve(source.path) === expectedRoot
+      );
+      expect(addedSource).toBeDefined();
+      expect(reconcileBody.items[0]?.configuredSourceId).toBe(addedSource?.id);
+      expect(reconcileBody.items[0]?.addedTargetVolumeIds).toEqual([openBody.volumeId]);
+
+      const persistedConfigRaw = await fs.readFile(rootsConfigPath, 'utf8');
+      const persistedConfig = JSON.parse(persistedConfigRaw) as ConfigRootsResponseBody['config'];
+      expect(persistedConfig.sources.some((source) => path.resolve(source.path) === expectedRoot)).toBe(true);
     } finally {
       process.env.NEARBYTES_SOURCE_SCAN_DIRS = originalScanPaths;
     }

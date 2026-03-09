@@ -211,7 +211,7 @@ export interface RenameFileResponse {
   renamed: RenameFileSummary;
 }
 
-export type SourceProvider = 'local' | 'dropbox' | 'mega' | 'gdrive';
+export type SourceProvider = 'local' | 'dropbox' | 'mega' | 'gdrive' | 'icloud' | 'onedrive';
 export type RootProvider = SourceProvider;
 export type StorageFullPolicy = 'block-writes' | 'drop-older-blocks';
 
@@ -360,13 +360,60 @@ export interface DiscoveredNearbytesSource {
   path: string;
   markerFile: string;
   autoUpdate: boolean;
-  sourceType: 'marker' | 'suggested';
+  sourceType: 'marker' | 'layout' | 'suggested';
 }
 
 export interface DiscoverSourcesResponse {
   scannedAt: number;
   sourceCount: number;
   sources: DiscoveredNearbytesSource[];
+}
+
+export type DiscoveryAction =
+  | 'added-source'
+  | 'added-volume-target'
+  | 'available-share'
+  | 'already-known-source';
+
+export interface DiscoveryProviderSummary {
+  detected: number;
+  sourcesAdded: number;
+  volumeTargetsAdded: number;
+  availableShares: number;
+}
+
+export interface ReconciledDiscoveredSourceItem {
+  provider: SourceProvider;
+  path: string;
+  markerFile: string;
+  classification: 'marker' | 'layout';
+  hasMarker: boolean;
+  hasBlocks: boolean;
+  hasChannels: boolean;
+  configuredSourceId?: string;
+  detectedVolumeIds: string[];
+  matchedVolumeIds: string[];
+  unknownVolumeIds: string[];
+  addedTargetVolumeIds: string[];
+  actions: DiscoveryAction[];
+}
+
+export interface ReconciledSourcesSummary {
+  scannedAt: number;
+  discoveredCount: number;
+  sourcesAdded: number;
+  volumeTargetsAdded: number;
+  availableShares: number;
+  meaningfulItemCount: number;
+  providers: Partial<Record<SourceProvider, DiscoveryProviderSummary>>;
+}
+
+export interface ReconcileSourcesResponse extends RootsConfigResponse {
+  runKey: string;
+  changed: boolean;
+  knownVolumeIds: string[];
+  summary: ReconciledSourcesSummary;
+  items: ReconciledDiscoveredSourceItem[];
 }
 
 export interface VolumeWatchReady {
@@ -389,10 +436,35 @@ export interface VolumeWatchError {
   timestamp: number;
 }
 
+export interface SourceWatchReady {
+  autoUpdate: boolean;
+  mode: 'filesystem' | 'none';
+  providers: SourceProvider[];
+}
+
+export interface SourceWatchUpdate {
+  reason: 'rescan';
+  timestamp: number;
+  changedPaths: string[];
+  providers: SourceProvider[];
+}
+
+export interface SourceWatchError {
+  message: string;
+  timestamp: number;
+}
+
 export interface VolumeWatchHandlers {
   onReady?: (event: VolumeWatchReady) => void;
   onUpdate?: (event: VolumeWatchUpdate) => void;
   onError?: (error: Error | VolumeWatchError) => void;
+  onClose?: () => void;
+}
+
+export interface SourceWatchHandlers {
+  onReady?: (event: SourceWatchReady) => void;
+  onUpdate?: (event: SourceWatchUpdate) => void;
+  onError?: (error: Error | SourceWatchError) => void;
   onClose?: () => void;
 }
 
@@ -868,6 +940,78 @@ export async function discoverSources(params?: {
   });
 }
 
+export async function reconcileDiscoveredSources(
+  knownVolumeIds: string[] = []
+): Promise<ReconcileSourcesResponse> {
+  return apiRequest<ReconcileSourcesResponse>('/sources/reconcile', {
+    method: 'POST',
+    body: JSON.stringify({ knownVolumeIds }),
+  });
+}
+
+export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnection {
+  const abortController = new AbortController();
+
+  void (async () => {
+    try {
+      const runtimeConfig = await getRuntimeConfig();
+      const headers = new Headers();
+      if (runtimeConfig.desktopToken.trim().length > 0) {
+        headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
+      }
+
+      const response = await fetch(`${getRequestBaseUrl(runtimeConfig)}/watch/sources`, {
+        method: 'GET',
+        headers,
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        const apiError = await parseError(response);
+        throw new Error(apiError.error.message || 'Failed to open source watch stream');
+      }
+
+      if (!response.body) {
+        throw new Error('Source watch stream is not available');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let boundaryIndex = buffer.indexOf('\n\n');
+        while (boundaryIndex >= 0) {
+          const message = buffer.slice(0, boundaryIndex);
+          buffer = buffer.slice(boundaryIndex + 2);
+          parseSourceWatchMessage(message, handlers);
+          boundaryIndex = buffer.indexOf('\n\n');
+        }
+      }
+
+      handlers.onClose?.();
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        handlers.onClose?.();
+        return;
+      }
+      handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+      handlers.onClose?.();
+    }
+  })();
+
+  return {
+    close() {
+      abortController.abort();
+    },
+  };
+}
+
 /**
  * Opens a streaming connection that emits volume updates pushed by the backend.
  */
@@ -995,5 +1139,45 @@ function parseWatchMessage(rawMessage: string, handlers: VolumeWatchHandlers): v
   }
   if (eventName === 'watch-error') {
     handlers.onError?.(payload as VolumeWatchError);
+  }
+}
+
+function parseSourceWatchMessage(rawMessage: string, handlers: SourceWatchHandlers): void {
+  const normalized = rawMessage.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  let eventName = 'message';
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(dataLines.join('\n'));
+  } catch {
+    return;
+  }
+
+  if (eventName === 'source-watch-ready') {
+    handlers.onReady?.(payload as SourceWatchReady);
+    return;
+  }
+  if (eventName === 'source-watch-update') {
+    handlers.onUpdate?.(payload as SourceWatchUpdate);
+    return;
+  }
+  if (eventName === 'watch-error') {
+    handlers.onError?.(payload as SourceWatchError);
   }
 }
