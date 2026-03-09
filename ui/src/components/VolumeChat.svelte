@@ -314,7 +314,12 @@
     </div>
     <div class="chat-header-actions">
       {#if identityNeedsPublish && activeIdentity}
-        <span class="chat-status-pill">Update pending</span>
+        <span
+          class="chat-status-pill"
+          title="Your local profile changed, but the updated public identity record has not been published to this volume yet."
+        >
+          Profile unpublished
+        </span>
       {/if}
       {#if !readonlyMode}
         <button type="button" class="chat-secondary-btn" onclick={() => onOpenIdentityManager?.()}>
@@ -482,6 +487,7 @@
 
 <style>
   .chat-shell {
+    width: 100%;
     height: 100%;
     min-height: 0;
     display: flex;

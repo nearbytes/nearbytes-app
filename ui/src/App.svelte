@@ -1228,7 +1228,7 @@
   const workspaceSplit = $derived.by(() => activeMount?.workspaceSplit ?? 56);
   const showSplitWorkspace = $derived.by(() => showFilesWorkspace && showChatWorkspace);
   const workspacePanelsTemplate = $derived.by(() =>
-    showSplitWorkspace ? `minmax(360px, ${workspaceSplit}%) 14px minmax(320px, 1fr)` : '1fr'
+    showSplitWorkspace ? `minmax(0, 1fr) 14px minmax(320px, ${100 - workspaceSplit}%)` : '1fr'
   );
   const fileManagerTemplate = $derived.by(
     () => (showPreviewPane ? `minmax(300px, ${fileManagerSplit}%) 14px minmax(360px, 1fr)` : '1fr')
@@ -3500,6 +3500,7 @@
   <!-- Main file area -->
   <main
     class="file-area"
+    class:volume-workspace-active={!showSourcesPanel && !showVolumeStoragePanel && address.trim() !== ''}
     class:dragging={isDragging}
     ondragover={handleDragOver}
     ondragleave={handleDragLeave}
@@ -5084,6 +5085,10 @@
     gap: 1rem;
   }
 
+  .file-area.volume-workspace-active {
+    padding: 0;
+  }
+
   .workspace-panel-view {
     flex: 1 1 auto;
     min-height: 0;
@@ -5097,6 +5102,7 @@
     align-items: center;
     gap: 0.4rem;
     align-self: flex-start;
+    margin: 0;
     padding: 0.22rem;
     border-radius: 14px;
     border: 1px solid rgba(56, 189, 248, 0.14);
@@ -5146,6 +5152,7 @@
     max-width: none;
     margin: 0;
     width: 100%;
+    padding: 0.85rem 1rem 1rem;
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -5169,6 +5176,7 @@
     min-height: 0;
     display: flex;
     overflow: hidden;
+    width: 100%;
   }
 
   .volume-transition-state {
@@ -5446,6 +5454,7 @@
   .file-manager {
     flex: 1 1 auto;
     min-height: 0;
+    width: 100%;
     display: grid;
     gap: 0;
     align-items: stretch;
@@ -6052,7 +6061,14 @@
       padding: 1rem;
     }
 
+    .file-area.volume-workspace-active {
+      padding: 0;
+    }
+
     .volume-workspace {
+      margin: 0;
+      width: 100%;
+      padding: 0.75rem 0.8rem 0.85rem;
       gap: 0.75rem;
     }
 
