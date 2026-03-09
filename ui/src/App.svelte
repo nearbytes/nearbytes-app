@@ -43,6 +43,7 @@
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
+  import SecretSeedFields from './components/SecretSeedFields.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
@@ -1087,6 +1088,7 @@
   let fileManagerSplit = $state(38);
   let fileManagerElement = $state<HTMLElement | null>(null);
   let workspacePanelsElement = $state<HTMLElement | null>(null);
+  let timelineEventsElement = $state<HTMLElement | null>(null);
   let fileManagerActive = $state(false);
   let appReferenceClipboard = $state<AppReferenceClipboard | null>(null);
   let watchConnectionSerial = 0;
@@ -1105,6 +1107,7 @@
   let sourceDiscoveryScheduleTimer: ReturnType<typeof setTimeout> | null = null;
   let sourceDiscoveryWatchDisconnect: (() => void) | null = null;
   let lastStoragePanelOpen = false;
+  let timelineAutoFollow = true;
 
   function preferredActiveMountId(nextMounts: VolumeMount[]): string {
     return nextMounts.find((mount) => !mount.collapsed)?.id ?? nextMounts[0]?.id ?? '';
@@ -1818,6 +1821,24 @@
     timelinePosition = clamped;
   }
 
+  function timelineCurrentIndex(): number {
+    if (timelinePosition === 0 || timelineEvents.length === 0) {
+      return -1;
+    }
+    return Math.min(timelinePosition - 1, timelineEvents.length - 1);
+  }
+
+  function isElementNearTimelineEnd(element: HTMLElement, threshold = 28): boolean {
+    return element.scrollWidth - element.scrollLeft - element.clientWidth <= threshold;
+  }
+
+  function handleTimelineScroll() {
+    if (!timelineEventsElement) {
+      return;
+    }
+    timelineAutoFollow = isElementNearTimelineEnd(timelineEventsElement);
+  }
+
   function jumpToLatest() {
     stopTimelinePlayback();
     setTimelinePosition(timelineEvents.length);
@@ -1884,6 +1905,26 @@
     return () => {
       stopTimelinePlayback();
     };
+  });
+
+  $effect(() => {
+    const element = timelineEventsElement;
+    if (!element || !showTimeMachinePanel) {
+      return;
+    }
+    const currentIndex = timelineCurrentIndex();
+    void tick().then(() => {
+      const currentEvent = element.querySelector<HTMLElement>('.tm-event.current');
+      if (currentEvent) {
+        currentEvent.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return;
+      }
+      if (timelinePosition >= timelineEvents.length || timelineAutoFollow) {
+        element.scrollLeft = element.scrollWidth;
+      } else if (currentIndex <= 0) {
+        element.scrollLeft = 0;
+      }
+    });
   });
 
   function stopVolumeWatch() {
@@ -2140,7 +2181,7 @@
     secretPasteTargetMountId = nextMount.id;
     void tick().then(() => {
       const input = document.querySelector<HTMLInputElement>(
-        `.volume-chip.expanded[data-mount-id="${nextMount.id}"] .secret-input`
+        `.volume-chip.expanded[data-mount-id="${nextMount.id}"] .secret-seed-fields input`
       );
       input?.focus();
     });
@@ -3465,22 +3506,18 @@
               <div class="header-dock">
                 <div class="header-dock-main editing">
                   <div class="secret-input-wrapper in-dock">
-                    <input
-                      type="text"
+                    <SecretSeedFields
+                      dense={true}
                       value={mount.address}
-                      class="secret-input"
-                      aria-label="Space address"
-                      oninput={(event) =>
-                        updateMountAddress(mount.id, (event.currentTarget as HTMLInputElement).value)}
-                    />
-                    <input
-                      type="password"
-                      value={mount.password}
-                      class="secret-input password-input"
-                      aria-label="Optional space password"
-                      autocomplete="current-password"
-                      oninput={(event) =>
-                        updateMountPassword(mount.id, (event.currentTarget as HTMLInputElement).value)}
+                      password={mount.password}
+                      valueLabel="Space secret"
+                      valueAriaLabel="Space address"
+                      valuePlaceholder="address or secret seed"
+                      passwordLabel="Password (optional)"
+                      passwordAriaLabel="Optional space password"
+                      passwordPlaceholder="optional"
+                      onValueInput={(value) => updateMountAddress(mount.id, value)}
+                      onPasswordInput={(value) => updateMountPassword(mount.id, value)}
                     />
                     {#if isLoading && mount.id === activeMountId}
                       <span class="loading-spinner"></span>
@@ -3835,30 +3872,26 @@
 
           {#if selectedChatIdentity}
             <div class="identity-editor-panel">
-              <label>
-                <span>Identity secret</span>
-                <input
-                  type="text"
+              <div class="identity-editor-panel-wide">
+                <SecretSeedFields
                   value={selectedChatIdentity.address}
-                  oninput={(event) =>
+                  password={selectedChatIdentity.password}
+                  valueLabel="Identity secret"
+                  valueAriaLabel="Identity secret"
+                  valuePlaceholder="address or secret seed"
+                  passwordLabel="Password (optional)"
+                  passwordAriaLabel="Optional identity password"
+                  passwordPlaceholder="optional"
+                  onValueInput={(value) =>
                     updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      address: (event.currentTarget as HTMLInputElement).value,
+                      address: value,
                     })}
-                  placeholder="address or secret seed"
-                />
-              </label>
-              <label>
-                <span>Password (optional)</span>
-                <input
-                  type="password"
-                  value={selectedChatIdentity.password}
-                  oninput={(event) =>
+                  onPasswordInput={(value) =>
                     updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      password: (event.currentTarget as HTMLInputElement).value,
+                      password: value,
                     })}
-                  placeholder="optional"
                 />
-              </label>
+              </div>
               <label>
                 <span>Display name</span>
                 <input
@@ -4076,7 +4109,7 @@
           </div>
         </div>
         {#if timelineEvents.length > 0}
-          <div class="tm-events">
+          <div class="tm-events" bind:this={timelineEventsElement} onscroll={handleTimelineScroll}>
             {#each timelineEvents as event, index (event.eventHash)}
               <button
                 type="button"
@@ -5273,7 +5306,7 @@
     flex: 1;
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.75rem;
     align-items: center;
     position: relative;
@@ -5319,7 +5352,7 @@
     min-width: 126px;
   }
 
-  .secret-input {
+  :global(.secret-seed-fields input) {
     width: 100%;
     min-height: 44px;
     padding: 0 0.95rem;
@@ -5333,18 +5366,18 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
-  .secret-input:focus {
+  :global(.secret-seed-fields input:focus) {
     border-color: rgba(56, 189, 248, 0.52);
     background: rgba(10, 18, 33, 0.96);
     box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
   }
 
-  .secret-input:disabled {
+  :global(.secret-seed-fields input:disabled) {
     opacity: 0.6;
     cursor: not-allowed;
   }
 
-  .secret-input::placeholder {
+  :global(.secret-seed-fields input::placeholder) {
     color: rgba(224, 224, 224, 0.4);
   }
 
@@ -6748,7 +6781,7 @@
     }
 
     .secret-input-wrapper {
-      grid-template-columns: 1fr 1fr auto;
+      grid-template-columns: 1fr auto;
     }
 
     .status-bar {
@@ -6870,19 +6903,14 @@
     }
 
     .secret-input-wrapper {
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: 1fr;
       grid-template-areas:
-        'address address address'
-        'password password password'
+        'fields'
         'spinner spinner spinner';
     }
 
-    .secret-input-wrapper > input:first-child {
-      grid-area: address;
-    }
-
-    .secret-input-wrapper > input:nth-child(2) {
-      grid-area: password;
+    .secret-input-wrapper :global(.secret-seed-fields) {
+      grid-area: fields;
     }
 
     .loading-spinner {

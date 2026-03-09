@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm } from 'fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -164,5 +164,75 @@ describe('roots config', () => {
       ],
     });
     expect(parsed.sources[0].provider).toBe('local');
+  });
+
+  it('rejects configs without any durable default storage location', () => {
+    expect(() =>
+      parseRootsConfig({
+        version: 2,
+        sources: [
+          {
+            id: 'src-local',
+            provider: 'local',
+            path: '/tmp/nearbytes-no-default',
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+          },
+        ],
+        defaultVolume: {
+          destinations: [],
+        },
+        volumes: [],
+      })
+    ).toThrow(/durable default storage location/i);
+  });
+
+  it('self-heals existing configs by restoring the home Nearbytes location as a default route', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-roots-config-'));
+    const configPath = join(dir, 'roots.json');
+    const bootstrapRoot = join(dir, 'home-nearbytes');
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        version: 2,
+        sources: [
+          {
+            id: 'src-orphan',
+            provider: 'local',
+            path: join(dir, 'orphan-root'),
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+          },
+        ],
+        defaultVolume: {
+          destinations: [],
+        },
+        volumes: [],
+      }, null, 2)}\n`,
+      'utf8'
+    );
+
+    const loaded = await loadOrCreateRootsConfig({
+      configPath,
+      defaultRootPath: bootstrapRoot,
+    });
+
+    expect(
+      loaded.config.sources.some((source) => source.path === bootstrapRoot && source.provider === 'local')
+    ).toBe(true);
+    expect(loaded.config.defaultVolume.destinations.length).toBeGreaterThan(0);
+    const saved = parseRootsConfig(JSON.parse(await readFile(configPath, 'utf8')));
+    expect(
+      saved.defaultVolume.destinations.some((destination) => {
+        const source = saved.sources.find((entry) => entry.id === destination.sourceId);
+        return source?.path === bootstrapRoot;
+      })
+    ).toBe(true);
+
+    await rm(dir, { recursive: true, force: true });
   });
 });

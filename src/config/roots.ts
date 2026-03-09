@@ -175,6 +175,14 @@ export function parseRootsConfig(value: unknown): RootsConfig {
   const normalizedDefault: DefaultVolumePolicy = {
     destinations: normalizeDestinationList(parsed.defaultVolume.destinations, sourceIds),
   };
+  if (
+    !normalizedDefault.destinations.some((destination) => {
+      const source = normalizedSources.find((entry) => entry.id === destination.sourceId);
+      return Boolean(source?.enabled && source.writable && isDurableDestination(destination));
+    })
+  ) {
+    throw new Error('At least one durable default storage location is required');
+  }
   const seenVolumeIds = new Set<string>();
   const normalizedVolumes = parsed.volumes.map((volume) => {
     const volumeId = volume.volumeId.trim().toLowerCase();
@@ -231,7 +239,15 @@ export async function loadOrCreateRootsConfig(options: {
 
   try {
     const raw = await fs.readFile(configPath, 'utf8');
-    const parsed = parseRootsConfig(JSON.parse(raw));
+    const parsedRaw = JSON.parse(raw);
+    const healedCandidate = ensureBootstrapSourceOnRawConfig(parsedRaw, options.defaultRootPath);
+    const parsed = ensureBootstrapSourceAndDefaultDestination(
+      parseRootsConfig(healedCandidate),
+      options.defaultRootPath
+    );
+    if (healedCandidate !== parsedRaw || !rootsConfigEquals(parsedRaw, parsed)) {
+      await saveRootsConfig(configPath, parsed);
+    }
     return {
       configPath,
       config: parsed,
@@ -300,6 +316,149 @@ export function isDurableDestination(destination: VolumeDestinationConfig): bool
     destination.copySourceBlocks &&
     destination.fullPolicy === 'block-writes'
   );
+}
+
+function ensureBootstrapSourceOnRawConfig(value: unknown, defaultRootPath: string): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  if ((value as { version?: unknown }).version !== ROOTS_CONFIG_VERSION) {
+    return value;
+  }
+
+  const candidate = value as {
+    sources?: unknown;
+    defaultVolume?: { destinations?: unknown };
+  };
+  if (!Array.isArray(candidate.sources)) {
+    return value;
+  }
+
+  const bootstrapPath = path.resolve(defaultRootPath);
+  const normalizedSources = candidate.sources.filter((entry) => entry && typeof entry === 'object') as Array<{
+    id?: unknown;
+    provider?: unknown;
+    path?: unknown;
+  }>;
+
+  const existingBootstrap = normalizedSources.find(
+    (entry) => typeof entry.path === 'string' && path.resolve(entry.path) === bootstrapPath
+  );
+  const nextSources = existingBootstrap
+    ? candidate.sources
+    : [
+        ...candidate.sources,
+        {
+          id: 'src-home',
+          provider: 'local',
+          path: bootstrapPath,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ];
+
+  const currentDefaultDestinations = Array.isArray(candidate.defaultVolume?.destinations)
+    ? candidate.defaultVolume?.destinations
+    : [];
+  const nextDefaultVolume =
+    currentDefaultDestinations.length > 0
+      ? candidate.defaultVolume
+      : {
+          destinations: [
+            ...currentDefaultDestinations,
+            {
+              sourceId: existingBootstrap?.id && typeof existingBootstrap.id === 'string' ? existingBootstrap.id : 'src-home',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 5,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        };
+
+  if (nextSources === candidate.sources && nextDefaultVolume === candidate.defaultVolume) {
+    return value;
+  }
+
+  return {
+    ...candidate,
+    sources: nextSources,
+    defaultVolume: nextDefaultVolume,
+  };
+}
+
+function ensureBootstrapSourceAndDefaultDestination(
+  config: RootsConfig,
+  defaultRootPath: string
+): RootsConfig {
+  const bootstrapPath = path.resolve(defaultRootPath);
+  const existingBootstrapSource =
+    config.sources.find((source) => path.resolve(source.path) === bootstrapPath) ?? null;
+  const bootstrapSource =
+    existingBootstrapSource ??
+    ({
+      id: 'src-home',
+      provider: 'local',
+      path: bootstrapPath,
+      enabled: true,
+      writable: true,
+      reservePercent: 5,
+      opportunisticPolicy: 'drop-older-blocks',
+    } satisfies SourceConfigEntry);
+
+  const nextSources = existingBootstrapSource ? config.sources : [...config.sources, bootstrapSource];
+  const hasDurableDefaultDestination = config.defaultVolume.destinations.some((destination) => {
+    const source = nextSources.find((entry) => entry.id === destination.sourceId);
+    return Boolean(source?.enabled && source.writable && isDurableDestination(destination));
+  });
+
+  if (hasDurableDefaultDestination && existingBootstrapSource) {
+    return config;
+  }
+
+  const nextDefaultDestinations = hasDurableDefaultDestination
+    ? config.defaultVolume.destinations
+    : dedupeDestinationList([
+        ...config.defaultVolume.destinations,
+        {
+          sourceId: bootstrapSource.id,
+          enabled: true,
+          storeEvents: true,
+          storeBlocks: true,
+          copySourceBlocks: true,
+          reservePercent: 5,
+          fullPolicy: 'block-writes',
+        },
+      ]);
+
+  return {
+    version: ROOTS_CONFIG_VERSION,
+    sources: nextSources,
+    defaultVolume: {
+      destinations: nextDefaultDestinations,
+    },
+    volumes: config.volumes,
+  };
+}
+
+function dedupeDestinationList(destinations: readonly VolumeDestinationConfig[]): VolumeDestinationConfig[] {
+  const deduped = new Map<string, VolumeDestinationConfig>();
+  for (const destination of destinations) {
+    deduped.set(destination.sourceId, { ...destination });
+  }
+  return Array.from(deduped.values());
+}
+
+function rootsConfigEquals(left: unknown, right: RootsConfig): boolean {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }
 
 function normalizeDestinationList(

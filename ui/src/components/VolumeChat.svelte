@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import {
     listChat,
     publishIdentity,
@@ -61,6 +62,9 @@
   let selectedProfilePublicKey = $state('');
   let requestedVolumeId = '';
   let appliedExternalRefreshVersion = -1;
+  let feedElement = $state<HTMLElement | null>(null);
+  let shouldAutoFollow = true;
+  let lastRenderedMessageCount = 0;
 
   $effect(() => {
     const nextVolumeId = volumeId ?? '';
@@ -339,6 +343,40 @@
       minute: '2-digit',
     }).format(value);
   }
+
+  function isNearBottom(element: HTMLElement, threshold = 28): boolean {
+    return element.scrollHeight - element.scrollTop - element.clientHeight <= threshold;
+  }
+
+  function handleFeedScroll() {
+    if (!feedElement) {
+      return;
+    }
+    shouldAutoFollow = isNearBottom(feedElement);
+  }
+
+  $effect(() => {
+    const element = feedElement;
+    const messageCount = effectiveChatState.messages.length;
+    const readonlyView = readonlyMode || historyState !== null;
+    if (!element) {
+      lastRenderedMessageCount = messageCount;
+      return;
+    }
+
+    const appendedMessages = messageCount > lastRenderedMessageCount;
+    lastRenderedMessageCount = messageCount;
+    if (readonlyView || !appendedMessages || !shouldAutoFollow) {
+      return;
+    }
+
+    void tick().then(() => {
+      if (!feedElement) {
+        return;
+      }
+      feedElement.scrollTop = feedElement.scrollHeight;
+    });
+  });
 </script>
 
 <div class="chat-shell panel-surface">
@@ -416,7 +454,7 @@
   {/if}
 
   <div class="chat-layout">
-    <section class="chat-feed">
+    <section class="chat-feed" bind:this={feedElement} onscroll={handleFeedScroll}>
       {#if loading && !historyState}
         <p class="chat-empty">Loading chat…</p>
       {:else if effectiveChatState.messages.length === 0}
