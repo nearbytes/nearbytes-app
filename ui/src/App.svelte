@@ -1197,21 +1197,11 @@
   let sourceDiscoveryWatchDisconnect: (() => void) | null = null;
   let lastStoragePanelOpen = false;
   let timelineAutoFollow = true;
+  let draggingMountId = $state<string | null>(null);
+  let dragOverMountId = $state<string | null>(null);
 
   function preferredActiveMountId(nextMounts: VolumeMount[]): string {
     return nextMounts.find((mount) => !mount.collapsed)?.id ?? nextMounts[0]?.id ?? '';
-  }
-
-  function moveMountToFront(nextMounts: VolumeMount[], mountId: string): VolumeMount[] {
-    const index = nextMounts.findIndex((mount) => mount.id === mountId);
-    if (index <= 0) {
-      return nextMounts;
-    }
-    const target = nextMounts[index];
-    if (!target) {
-      return nextMounts;
-    }
-    return [target, ...nextMounts.slice(0, index), ...nextMounts.slice(index + 1)];
   }
 
   onMount(() => {
@@ -2365,18 +2355,15 @@
     }
     pendingMountId = mountId;
     secretPasteTargetMountId = null;
-    mounts = moveMountToFront(mounts.map((mount) => ({ ...mount, collapsed: true })), mountId);
+    mounts = mounts.map((mount) => ({ ...mount, collapsed: true }));
     activeMountId = mountId;
   }
 
   function reopenMount(mountId: string) {
     pendingMountId = null;
     secretPasteTargetMountId = mountId;
-    mounts = moveMountToFront(
-      mounts.map((mount) =>
-        mount.id === mountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
-      ),
-      mountId
+    mounts = mounts.map((mount) =>
+      mount.id === mountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
     );
     activeMountId = mountId;
   }
@@ -2506,12 +2493,106 @@
           }
         : { ...mount, collapsed: true }
     );
-    mounts = moveMountToFront(mounts, mountId);
     activeMountId = mountId;
     address = label;
     addressPassword = '';
     pendingMountId = mountId;
     secretPasteTargetMountId = null;
+  }
+
+  function clearMountDragState() {
+    draggingMountId = null;
+    dragOverMountId = null;
+  }
+
+  function reorderMounts(draggedId: string, targetId: string) {
+    if (draggedId === targetId) return;
+    const fromIndex = mounts.findIndex((mount) => mount.id === draggedId);
+    const toIndex = mounts.findIndex((mount) => mount.id === targetId);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+    const next = [...mounts];
+    const [moved] = next.splice(fromIndex, 1);
+    const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
+    next.splice(insertIndex, 0, moved);
+    mounts = next;
+  }
+
+  function moveMountToEnd(draggedId: string) {
+    const fromIndex = mounts.findIndex((mount) => mount.id === draggedId);
+    if (fromIndex < 0 || fromIndex === mounts.length - 1) return;
+    const next = [...mounts];
+    const [moved] = next.splice(fromIndex, 1);
+    next.push(moved);
+    mounts = next;
+  }
+
+  function handleMountDragStart(event: DragEvent, mountId: string) {
+    if (!event.dataTransfer) return;
+    draggingMountId = mountId;
+    dragOverMountId = null;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', mountId);
+    const ghost = document.createElement('div');
+    ghost.style.width = '46px';
+    ghost.style.height = '46px';
+    ghost.style.borderRadius = '12px';
+    ghost.style.background =
+      'linear-gradient(180deg, rgba(12, 25, 45, 0.92), rgba(9, 18, 34, 0.9))';
+    ghost.style.border = '1px solid rgba(56, 189, 248, 0.22)';
+    ghost.style.boxShadow = '0 10px 20px rgba(2, 6, 23, 0.35)';
+    ghost.style.position = 'absolute';
+    ghost.style.top = '-9999px';
+    ghost.style.left = '-9999px';
+    document.body.appendChild(ghost);
+    event.dataTransfer.setDragImage(ghost, 23, 23);
+    requestAnimationFrame(() => ghost.remove());
+  }
+
+  function handleMountDragOver(event: DragEvent, mountId: string) {
+    if (!draggingMountId || draggingMountId === mountId) return;
+    event.preventDefault();
+    dragOverMountId = mountId;
+    reorderMounts(draggingMountId, mountId);
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function handleMountDragEnter(event: DragEvent, mountId: string) {
+    if (!draggingMountId || draggingMountId === mountId) return;
+    event.preventDefault();
+    dragOverMountId = mountId;
+  }
+
+  function handleMountDrop(event: DragEvent, mountId: string) {
+    if (!event.dataTransfer) return;
+    event.preventDefault();
+    const draggedId = event.dataTransfer.getData('text/plain') || draggingMountId;
+    if (!draggedId) return;
+    reorderMounts(draggedId, mountId);
+    clearMountDragState();
+  }
+
+  function handleMountDragEnd() {
+    clearMountDragState();
+  }
+
+  function handleMountRowDragOver(event: DragEvent) {
+    if (!draggingMountId) return;
+    event.preventDefault();
+    dragOverMountId = null;
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function handleMountRowDrop(event: DragEvent) {
+    if (!event.dataTransfer) return;
+    event.preventDefault();
+    const draggedId = event.dataTransfer.getData('text/plain') || draggingMountId;
+    if (!draggedId) return;
+    moveMountToEnd(draggedId);
+    clearMountDragState();
   }
 
   function mountIdFromDropTarget(target: EventTarget | null): string | null {
@@ -3670,7 +3751,12 @@
       }}
       ondrop={handleSecretFileDrop}
     >
-      <div class="mounts-row">
+      <div
+        class="mounts-row"
+        class:dragging={draggingMountId !== null}
+        ondragover={handleMountRowDragOver}
+        ondrop={handleMountRowDrop}
+      >
         {#each mounts as mount (mount.id)}
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
           {@const isPending = pendingMountId === mount.id}
@@ -3808,13 +3894,28 @@
             <div
               class="volume-chip collapsed-shell parked"
               class:selected={mount.id === activeMountId && mount.collapsed}
+              class:dragging={draggingMountId === mount.id}
+              class:drag-over={dragOverMountId === mount.id}
               data-mount-id={mount.id}
+              draggable={true}
+              ondragstart={(event) => handleMountDragStart(event, mount.id)}
+              ondragenter={(event) => handleMountDragEnter(event, mount.id)}
+              ondragover={(event) => handleMountDragOver(event, mount.id)}
+              ondrop={(event) => handleMountDrop(event, mount.id)}
+              ondragend={handleMountDragEnd}
+              title="Drag to reorder"
             >
               <button
                 type="button"
                 class="volume-chip-select"
                 aria-label={mountLabel(mount) || 'Space entry'}
                 onclick={() => handleChipClick(mount.id)}
+                draggable={true}
+                ondragstart={(event) => handleMountDragStart(event, mount.id)}
+                ondragenter={(event) => handleMountDragEnter(event, mount.id)}
+                ondragover={(event) => handleMountDragOver(event, mount.id)}
+                ondrop={(event) => handleMountDrop(event, mount.id)}
+                ondragend={handleMountDragEnd}
               >
                 <div class="header-dock">
                   <div class="header-dock-main">
@@ -4836,6 +4937,58 @@
     width: 100%;
   }
 
+  .mounts-row.dragging .volume-chip {
+    cursor: grab;
+  }
+
+  .mounts-row.dragging .volume-chip.collapsed-shell.parked,
+  .mounts-row.dragging .volume-chip.collapsed-shell.parked:hover,
+  .mounts-row.dragging .volume-chip.collapsed-shell.parked:focus-within,
+  .mounts-row.dragging .volume-chip.collapsed-shell.parked.selected {
+    min-width: 46px;
+    max-width: 46px;
+    transform: translateX(0) scale(1);
+  }
+
+  .mounts-row.dragging .volume-chip.collapsed-shell.parked .header-dock {
+    padding: 0.32rem;
+  }
+
+  .mounts-row.dragging .volume-chip.collapsed-shell.parked .header-dock-badge,
+  .mounts-row.dragging .volume-chip.collapsed-shell.parked .header-dock-badge-top {
+    gap: 0;
+  }
+
+  .mounts-row.dragging .volume-chip.collapsed-shell.parked :global(.volume-identity-copy) {
+    max-width: 0;
+    opacity: 0;
+    transform: translateX(-5px);
+  }
+
+  .mounts-row.dragging .volume-chip.selected {
+    border-color: rgba(56, 189, 248, 0.22);
+    background:
+      linear-gradient(180deg, rgba(12, 25, 45, 0.9), rgba(9, 18, 34, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.04),
+      0 14px 32px rgba(2, 6, 23, 0.28);
+  }
+
+  .mounts-row.dragging .volume-chip.collapsed-shell.selected {
+    margin-left: 0;
+  }
+
+  .mounts-row.dragging .volume-chip.selected .header-dock-badge {
+    padding-left: 0;
+  }
+
+  .mounts-row.dragging .volume-chip.selected .header-dock-badge::before {
+    width: 0;
+    height: 0;
+    opacity: 0;
+    box-shadow: none;
+  }
+
   .identity-row {
     width: 100%;
     display: flex;
@@ -5090,34 +5243,27 @@
     max-width: min(72vw, 420px);
   }
 
-  .volume-chip.collapsed-shell.parked:hover {
+  .volume-chip.collapsed-shell.parked:hover,
+  .volume-chip.collapsed-shell.parked.selected {
     min-width: 132px;
     max-width: min(72vw, 420px);
   }
 
-  .volume-chip.collapsed-shell.parked:focus-within .header-dock {
+  .volume-chip.collapsed-shell.parked:focus-within .header-dock,
+  .volume-chip.collapsed-shell.parked:hover .header-dock,
+  .volume-chip.collapsed-shell.parked.selected .header-dock {
     padding: 0.26rem 0.36rem 0.26rem 0.62rem;
   }
 
-  .volume-chip.collapsed-shell.parked:hover .header-dock {
-    padding: 0.26rem 0.36rem 0.26rem 0.62rem;
-  }
-
-  .volume-chip.collapsed-shell.parked:focus-within .header-dock-badge-top {
+  .volume-chip.collapsed-shell.parked:hover .header-dock-badge-top,
+  .volume-chip.collapsed-shell.parked:focus-within .header-dock-badge-top,
+  .volume-chip.collapsed-shell.parked.selected .header-dock-badge-top {
     gap: 0.5rem;
   }
 
-  .volume-chip.collapsed-shell.parked:hover .header-dock-badge-top {
-    gap: 0.5rem;
-  }
-
-  .volume-chip.collapsed-shell.parked:focus-within :global(.volume-identity-copy) {
-    max-width: 220px;
-    opacity: 1;
-    transform: translateX(0);
-  }
-
-  .volume-chip.collapsed-shell.parked:hover :global(.volume-identity-copy) {
+  .volume-chip.collapsed-shell.parked:focus-within :global(.volume-identity-copy),
+  .volume-chip.collapsed-shell.parked:hover :global(.volume-identity-copy),
+  .volume-chip.collapsed-shell.parked.selected :global(.volume-identity-copy) {
     max-width: 220px;
     opacity: 1;
     transform: translateX(0);
@@ -5149,6 +5295,21 @@
       0 12px 32px rgba(13, 148, 136, 0.14);
   }
 
+  .volume-chip.collapsed-shell.selected {
+    margin-left: -1rem;
+  }
+
+  .volume-chip.dragging {
+    opacity: 0.6;
+  }
+
+  .volume-chip.drag-over {
+    border-color: rgba(56, 189, 248, 0.6);
+    box-shadow:
+      inset 0 0 0 1px rgba(56, 189, 248, 0.28),
+      0 18px 34px rgba(2, 6, 23, 0.3);
+  }
+
   .volume-chip.selected .header-dock {
     padding-left: 0.72rem;
   }
@@ -5175,21 +5336,6 @@
 
   .volume-chip.selected .badge-meter {
     background: rgba(34, 211, 238, 0.18);
-  }
-
-  .volume-chip.selected.parked .header-dock {
-    padding-left: 0.32rem;
-  }
-
-  .volume-chip.selected.parked .header-dock-badge {
-    padding-left: 0;
-  }
-
-  .volume-chip.selected.parked .header-dock-badge::before {
-    width: 0;
-    height: 0;
-    opacity: 0;
-    box-shadow: none;
   }
 
   .header-dock {
