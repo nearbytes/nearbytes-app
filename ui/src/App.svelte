@@ -1211,6 +1211,7 @@
   let dragRaf = 0;
   let dragClientX = 0;
   const mountNodes = new Map<string, HTMLElement>();
+  let mountDragListenersActive = false;
 
   function preferredActiveMountId(nextMounts: VolumeMount[]): string {
     return nextMounts.find((mount) => !mount.collapsed)?.id ?? nextMounts[0]?.id ?? '';
@@ -2522,6 +2523,12 @@
   }
 
   function clearMountDragState() {
+    if (mountDragListenersActive) {
+      window.removeEventListener('pointermove', handleMountPointerMove);
+      window.removeEventListener('pointerup', handleMountPointerUp);
+      window.removeEventListener('pointercancel', handleMountPointerCancel);
+      mountDragListenersActive = false;
+    }
     if (dragRaf) {
       cancelAnimationFrame(dragRaf);
     }
@@ -2602,6 +2609,12 @@
     suppressMountClick = false;
     const captureTarget = event.currentTarget instanceof HTMLElement ? event.currentTarget : node;
     captureTarget.setPointerCapture(event.pointerId);
+    if (!mountDragListenersActive) {
+      window.addEventListener('pointermove', handleMountPointerMove);
+      window.addEventListener('pointerup', handleMountPointerUp);
+      window.addEventListener('pointercancel', handleMountPointerCancel);
+      mountDragListenersActive = true;
+    }
   }
 
   function handleMountPointerMove(event: PointerEvent) {
