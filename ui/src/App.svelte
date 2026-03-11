@@ -1200,6 +1200,7 @@
   let lastStoragePanelOpen = false;
   let timelineAutoFollow = true;
   let draggingMountId = $state<string | null>(null);
+  let dragPreparedMountId = $state<string | null>(null);
   let dragOverMountId = $state<string | null>(null);
   let dragPointerId = $state<number | null>(null);
   let dragStartX = $state(0);
@@ -1210,6 +1211,7 @@
   let suppressMountClick = $state(false);
   let dragRaf = 0;
   let dragClientX = 0;
+  let dragCaptureElement: HTMLElement | null = null;
   const mountNodes = new Map<string, HTMLElement>();
   let mountDragListenersActive = false;
 
@@ -1224,6 +1226,10 @@
         mountNodes.delete(mountId);
       },
     };
+  }
+
+  function isMountReorderActive(mountId: string): boolean {
+    return dragPreparedMountId === mountId || draggingMountId === mountId;
   }
 
   onMount(() => {
@@ -2532,6 +2538,11 @@
     if (dragRaf) {
       cancelAnimationFrame(dragRaf);
     }
+    if (dragCaptureElement && dragPointerId !== null && dragCaptureElement.hasPointerCapture(dragPointerId)) {
+      dragCaptureElement.releasePointerCapture(dragPointerId);
+    }
+    dragCaptureElement = null;
+    dragPreparedMountId = null;
     draggingMountId = null;
     dragOverMountId = null;
     dragPointerId = null;
@@ -2596,6 +2607,7 @@
     const node = mountNodes.get(mountId);
     if (!node) return;
     event.preventDefault();
+    dragPreparedMountId = mountId;
     dragPointerId = event.pointerId;
     draggingMountId = mountId;
     dragOverMountId = null;
@@ -2609,6 +2621,7 @@
     suppressMountClick = false;
     const captureTarget = event.currentTarget instanceof HTMLElement ? event.currentTarget : node;
     captureTarget.setPointerCapture(event.pointerId);
+    dragCaptureElement = captureTarget;
     if (!mountDragListenersActive) {
       window.addEventListener('pointermove', handleMountPointerMove);
       window.addEventListener('pointerup', handleMountPointerUp);
@@ -2625,6 +2638,7 @@
       return;
     }
     event.preventDefault();
+    dragPreparedMountId = draggingMountId;
     dragMoved = true;
     dragClientX = event.clientX;
     scheduleDragUpdate();
@@ -2637,23 +2651,11 @@
       dragClientX = event.clientX;
       applyDragUpdate(dragClientX);
     }
-    if (
-      event.currentTarget instanceof HTMLElement &&
-      event.currentTarget.hasPointerCapture(event.pointerId)
-    ) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
     clearMountDragState();
   }
 
   function handleMountPointerCancel(event: PointerEvent) {
     if (dragPointerId !== event.pointerId) return;
-    if (
-      event.currentTarget instanceof HTMLElement &&
-      event.currentTarget.hasPointerCapture(event.pointerId)
-    ) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
     clearMountDragState();
   }
 
@@ -3964,6 +3966,7 @@
               <div
                 class="volume-chip collapsed-shell parked"
                 class:selected={mount.id === activeMountId && mount.collapsed}
+                class:drag-armed={isMountReorderActive(mount.id)}
                 class:dragging={draggingMountId === mount.id && dragMoved}
                 class:drag-over={dragOverMountId === mount.id && dragMoved}
                 data-mount-id={mount.id}
@@ -5249,32 +5252,32 @@
     transform: translateX(-5px);
   }
 
-  .volume-chip.collapsed-shell.parked:focus-within:not(.dragging) {
+  .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) {
     min-width: 132px;
     max-width: min(72vw, 420px);
   }
 
-  .volume-chip.collapsed-shell.parked:hover:not(.dragging),
-  .volume-chip.collapsed-shell.parked.selected:not(.dragging) {
+  .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging),
+  .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) {
     min-width: 132px;
     max-width: min(72vw, 420px);
   }
 
-  .volume-chip.collapsed-shell.parked:focus-within:not(.dragging) .header-dock,
-  .volume-chip.collapsed-shell.parked:hover:not(.dragging) .header-dock,
-  .volume-chip.collapsed-shell.parked.selected:not(.dragging) .header-dock {
+  .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) .header-dock,
+  .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) .header-dock,
+  .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) .header-dock {
     padding: 0.26rem 0.36rem 0.26rem 0.62rem;
   }
 
-  .volume-chip.collapsed-shell.parked:hover:not(.dragging) .header-dock-badge-top,
-  .volume-chip.collapsed-shell.parked:focus-within:not(.dragging) .header-dock-badge-top,
-  .volume-chip.collapsed-shell.parked.selected:not(.dragging) .header-dock-badge-top {
+  .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) .header-dock-badge-top,
+  .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) .header-dock-badge-top,
+  .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) .header-dock-badge-top {
     gap: 0.5rem;
   }
 
-  .volume-chip.collapsed-shell.parked:focus-within:not(.dragging) :global(.volume-identity-copy),
-  .volume-chip.collapsed-shell.parked:hover:not(.dragging) :global(.volume-identity-copy),
-  .volume-chip.collapsed-shell.parked.selected:not(.dragging) :global(.volume-identity-copy) {
+  .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
+  .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
+  .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) :global(.volume-identity-copy) {
     max-width: 220px;
     opacity: 1;
     transform: translateX(0);
@@ -5357,6 +5360,34 @@
     z-index: 40;
   }
 
+  .volume-chip.drag-armed {
+    min-width: 46px;
+    max-width: 46px;
+    transition: none;
+  }
+
+  .volume-chip.drag-armed .header-dock {
+    padding: 0.32rem;
+  }
+
+  .volume-chip.drag-armed .header-dock-badge,
+  .volume-chip.drag-armed .header-dock-badge-top {
+    gap: 0;
+  }
+
+  .volume-chip.drag-armed :global(.volume-identity-copy) {
+    max-width: 0;
+    opacity: 0;
+    transform: translateX(-5px);
+  }
+
+  .volume-chip.drag-armed .header-dock-badge::before {
+    width: 0;
+    height: 0;
+    opacity: 0;
+    box-shadow: none;
+  }
+
   .volume-chip.dragging .header-dock {
     padding: 0.32rem;
   }
@@ -5381,6 +5412,15 @@
 
   .volume-chip.dragging .volume-chip-select {
     cursor: grabbing;
+  }
+
+  .volume-chip.drag-armed .volume-chip-config-btn,
+  .volume-chip.dragging .volume-chip-config-btn {
+    width: 0;
+    min-width: 0;
+    opacity: 0;
+    pointer-events: none;
+    border-left-color: transparent;
   }
 
   .header-dock {
