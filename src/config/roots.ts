@@ -6,6 +6,14 @@ import { z } from 'zod';
 export type RootProvider = 'local' | 'dropbox' | 'mega' | 'gdrive' | 'icloud' | 'onedrive';
 export type StorageFullPolicy = 'block-writes' | 'drop-older-blocks';
 
+export interface ProviderManagedSourceIntegration {
+  readonly kind: 'provider-managed';
+  readonly provider: string;
+  readonly managedShareId: string;
+}
+
+export type SourceIntegrationConfig = ProviderManagedSourceIntegration;
+
 export interface SourceConfigEntry {
   readonly id: string;
   readonly provider: RootProvider;
@@ -15,6 +23,7 @@ export interface SourceConfigEntry {
   readonly reservePercent: number;
   readonly opportunisticPolicy: StorageFullPolicy;
   readonly moveFromSourceId?: string;
+  readonly integration?: SourceIntegrationConfig;
 }
 
 export interface VolumeDestinationConfig {
@@ -48,6 +57,11 @@ const LEGACY_ROOTS_CONFIG_VERSION = 1 as const;
 const CHANNEL_KEY_REGEX = /^[a-f0-9]{64,200}$/;
 
 const fullPolicySchema = z.enum(['block-writes', 'drop-older-blocks']);
+const providerManagedSourceIntegrationSchema = z.object({
+  kind: z.literal('provider-managed'),
+  provider: z.string().trim().min(1, 'Provider-managed integration provider is required'),
+  managedShareId: z.string().trim().min(1, 'Managed share id is required'),
+});
 
 const sourceConfigEntrySchema = z.object({
   id: z.string().trim().min(1, 'Source id is required'),
@@ -58,6 +72,7 @@ const sourceConfigEntrySchema = z.object({
   reservePercent: z.number().int().min(0).max(95).default(5),
   opportunisticPolicy: fullPolicySchema.default('drop-older-blocks'),
   moveFromSourceId: z.string().trim().min(1).optional(),
+  integration: providerManagedSourceIntegrationSchema.optional(),
 });
 
 const volumeDestinationSchema = z.object({
@@ -172,6 +187,13 @@ export function parseRootsConfig(value: unknown): RootsConfig {
       reservePercent: source.reservePercent,
       opportunisticPolicy: source.opportunisticPolicy,
       moveFromSourceId: source.moveFromSourceId?.trim() || undefined,
+      integration: source.integration
+        ? {
+            kind: 'provider-managed',
+            provider: source.integration.provider.trim(),
+            managedShareId: source.integration.managedShareId.trim(),
+          }
+        : undefined,
     } satisfies SourceConfigEntry;
   });
 

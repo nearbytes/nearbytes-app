@@ -1,10 +1,15 @@
 # MEGA Integration Guide
 
-This guide explains how Nearbytes integrates with MEGA desktop sync folder to provide cloud-backed storage for encrypted files.
+This guide explains how Nearbytes integrates with MEGA for cloud-backed encrypted storage.
 
 ## Overview
 
-At this time the app uses **only the MEGA cloud synced path** by default: when `NEARBYTES_STORAGE_DIR` is not set, the server uses `$HOME/MEGA/NearbytesStorage/NearbytesStorage` (or the Windows equivalent). Nearbytes writes files to that directory, and the MEGA desktop app syncs them to the cloud.
+Two MEGA modes are now available:
+
+- Legacy folder mode: Nearbytes writes directly into a local MEGA-synced folder controlled by `NEARBYTES_STORAGE_DIR`.
+- Managed provider mode: the desktop app can control MEGAcmd directly for provider-managed shares. Set `NEARBYTES_MEGACMD_DIR` if the MEGAcmd binaries are not already on `PATH`.
+
+The legacy path below still works and remains useful for manual setups. The provider-managed flow is the preferred desktop onboarding path when you want Nearbytes to control login, sharing, and sync startup.
 
 **Shared workflow:** The team uses a shared MEGA folder with structure **MEGA** (top level) → **NearbytesStorage** → **NearbytesStorage** → **blocks**, **channels**. Anyone who clones the repo and is a shared member of that MEGA folder should sync it locally to the standard path (or set `NEARBYTES_STORAGE_DIR`); with the shared secrets they can run the app and see the same photos; new channels and uploads sync via MEGA.
 

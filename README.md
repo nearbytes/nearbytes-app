@@ -151,6 +151,9 @@ nearbytes desktop api-info --json
 - `NEARBYTES_DESKTOP_SESSION_FILE` (default: `~/.nearbytes/desktop-session.json`) - desktop API session file
 - `NEARBYTES_DESKTOP_SESSION_TTL_MS` (default: `28800000`) - desktop API token/session lifetime
 - `NEARBYTES_DISABLE_AUTO_UPDATE=1` - disables auto-update checks in desktop runtime
+- `NEARBYTES_GOOGLE_CLIENT_ID` / `NEARBYTES_GOOGLE_CLIENT_SECRET` - optional fallback for Google Drive managed-share OAuth; you can now paste the Desktop app client id directly in the app
+- `NEARBYTES_MEGACMD_DIR` - optional override if you want to point Nearbytes at an existing MEGAcmd install; otherwise the app can fetch the helper automatically
+- `NEARBYTES_MEGA_REMOTE_BASE` (default: `/Nearbytes`) - remote MEGA folder prefix for Nearbytes-managed shares
 - `NEARBYTES_RELEASE_OWNER` / `NEARBYTES_RELEASE_REPO` - repository used by installer publishing and updater metadata
 
 More details: [docs/electron.md](docs/electron.md), [docs/releasing-desktop.md](docs/releasing-desktop.md)
@@ -246,11 +249,14 @@ The server runs on `http://localhost:3000` by default.
 Environment variables:
 
 - `PORT` (default: `3000`) - Server port
-- `NEARBYTES_STORAGE_DIR` (default: `$HOME/MEGA/NearbytesStorage/NearbytesStorage` on macOS/Linux, `%USERPROFILE%\MEGA\NearbytesStorage\NearbytesStorage` on Windows) - Storage directory. **Single source of truth** for where the server reads/writes `channels/` and `blocks/`. At this time the app uses only the MEGA cloud synced path by default. Set this only if your MEGA folder is in a different location (see below).
+- `NEARBYTES_STORAGE_DIR` (default: `$HOME/MEGA/NearbytesStorage/NearbytesStorage` on macOS/Linux, `%USERPROFILE%\MEGA\NearbytesStorage\NearbytesStorage` on Windows) - Storage directory for the legacy direct-folder mode. Set this only if your MEGA sync folder is in a different location (see below).
 - `NEARBYTES_ROOTS_CONFIG` (default: `~/.nearbytes/roots.json`) - Local multi-root manifest path
 - `NEARBYTES_SERVER_TOKEN_KEY` (optional) - 32-byte key (hex or base64) to keep accepting legacy stateless Bearer tokens as a compatibility fallback
 - `NEARBYTES_CORS_ORIGIN` (default: `http://localhost:5173`) - CORS origin
 - `NEARBYTES_MAX_UPLOAD_MB` (default: `50`) - Maximum upload size in MB
+- `NEARBYTES_GOOGLE_CLIENT_ID` / `NEARBYTES_GOOGLE_CLIENT_SECRET` - optional fallback for Google Drive managed-share OAuth
+- `NEARBYTES_MEGACMD_DIR` - optional directory containing the MEGAcmd binaries for Nearbytes-managed MEGA shares
+- `NEARBYTES_MEGA_REMOTE_BASE` (default: `/Nearbytes`) - remote MEGA folder prefix for Nearbytes-managed shares
 
 **Shared cloud structure:** The team uses a shared MEGA folder with structure **MEGA** (top level) → **NearbytesStorage** → **NearbytesStorage** → **blocks**, **channels**. Anyone who clones the repo and is a shared member of that MEGA folder should sync it locally to the standard path (or set `NEARBYTES_STORAGE_DIR`); with the shared secrets they can run the app and see the same photos; new channels and uploads sync via MEGA.
 

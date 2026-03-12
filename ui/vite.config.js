@@ -23,6 +23,8 @@ const API_PREFIXES = [
   '/__debug',
   '/config',
   '/sources',
+  '/integrations',
+  '/links',
   '/watch',
   '/folders',
 ];

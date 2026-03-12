@@ -12,6 +12,7 @@ import {
   InMemorySecretSessionStore,
   type SecretSessionStore,
 } from './secretSessions.js';
+import type { ManagedShareService, ManagedShareServiceOptions } from '../integrations/managedShares.js';
 
 /**
  * Dependencies required to construct the API app.
@@ -33,6 +34,10 @@ export interface AppDependencies {
   readonly desktopApiToken?: string;
   /** Optional static UI build directory served by the same process. */
   readonly uiDistPath?: string;
+  /** Optional provider integration overrides, mainly for desktop/runtime wiring and tests. */
+  readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
+  /** Optional pre-built managed share service. */
+  readonly managedShareService?: ManagedShareService;
 }
 
 /**

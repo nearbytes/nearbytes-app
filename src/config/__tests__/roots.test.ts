@@ -149,6 +149,48 @@ describe('roots config', () => {
     ]);
   });
 
+  it('preserves provider-managed integration metadata on sources', () => {
+    const parsed = parseRootsConfig({
+      version: 2,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'gdrive',
+          path: '/tmp/nearbytes-managed-gdrive',
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'gdrive',
+            managedShareId: 'share-gdrive-1',
+          },
+        },
+      ],
+      defaultVolume: {
+        destinations: [
+          {
+            sourceId: 'src-main',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+      volumes: [],
+    });
+
+    expect(parsed.sources[0]?.integration).toEqual({
+      kind: 'provider-managed',
+      provider: 'gdrive',
+      managedShareId: 'share-gdrive-1',
+    });
+  });
+
   it('defaults provider to local when omitted for backward compatibility', () => {
     const parsed = parseRootsConfig({
       version: 1,

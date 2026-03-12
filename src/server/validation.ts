@@ -85,6 +85,93 @@ export const reconcileDiscoveredSourcesBodySchema = z.object({
     .default([]),
 });
 
+const providerLabelSchema = z.string().trim().min(1);
+
+export const providerAccountIdParamSchema = z.object({
+  id: z.string().trim().min(1, 'Provider account id is required'),
+});
+
+export const providerIdParamSchema = z.object({
+  provider: z.string().trim().min(1, 'Provider is required'),
+});
+
+export const managedShareIdParamSchema = z.object({
+  shareId: z.string().trim().min(1, 'Managed share id is required'),
+});
+
+export const connectProviderAccountBodySchema = z.object({
+  provider: z.string().trim().min(1, 'Provider is required'),
+  label: providerLabelSchema.optional(),
+  email: z.string().trim().email('Provider email must be valid').optional(),
+  preferred: z.boolean().optional().default(false),
+  authSessionId: z.string().trim().min(1).optional(),
+  credentials: z
+    .object({
+      email: z.string().trim().email('Provider email must be valid').optional(),
+      password: z.string().min(1, 'Provider password is required').optional(),
+      mfaCode: z.string().trim().min(1).optional(),
+    })
+    .optional(),
+});
+
+export const configureProviderBodySchema = z.object({
+  clientId: z.string().trim().min(1).optional(),
+  clientSecret: z.string().trim().min(1).optional(),
+});
+
+export const createManagedShareBodySchema = z.object({
+  provider: z.string().trim().min(1, 'Provider is required'),
+  accountId: z.string().trim().min(1, 'Provider account id is required'),
+  label: providerLabelSchema,
+  localPath: z.string().trim().min(1).optional(),
+  role: z.enum(['owner', 'recipient', 'link']).optional(),
+  volumeId: z
+    .string()
+    .trim()
+    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .optional(),
+  remoteDescriptor: z.record(z.string(), z.unknown()).optional(),
+  capabilities: z.array(z.string().trim().min(1)).optional(),
+});
+
+export const inviteManagedShareBodySchema = z.object({
+  emails: z.array(z.string().trim().email('Invite emails must be valid')).min(1, 'At least one email is required'),
+});
+
+export const attachManagedShareBodySchema = z.object({
+  volumeId: z
+    .string()
+    .trim()
+    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex'),
+});
+
+export const acceptManagedShareBodySchema = z.object({
+  provider: z.string().trim().min(1, 'Provider is required'),
+  accountId: z.string().trim().min(1, 'Provider account id is required'),
+  label: providerLabelSchema,
+  volumeId: z
+    .string()
+    .trim()
+    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .optional(),
+  localPath: z.string().trim().min(1).optional(),
+  remoteDescriptor: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const parseJoinLinkBodySchema = z.object({
+  serialized: z.string().trim().min(1).optional(),
+  link: z.unknown().optional(),
+  preferredProviders: z.array(z.string().trim().min(1)).optional(),
+});
+
+export const openJoinLinkBodySchema = parseJoinLinkBodySchema.extend({
+  volumeId: z
+    .string()
+    .trim()
+    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .optional(),
+});
+
 /**
  * Parses and validates input using a Zod schema.
  */

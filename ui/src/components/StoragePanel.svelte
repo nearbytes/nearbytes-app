@@ -1,13 +1,25 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
+    attachManagedShare,
     chooseDirectoryPath,
+    configureProviderSetup,
+    connectProviderAccount,
+    createManagedShare,
     consolidateRoot,
+    disconnectProviderAccount,
     discoverSources,
     getRootsConfig,
     hasDesktopDirectoryPicker,
+    installProviderHelper,
+    listManagedShares,
+    listProviderAccounts,
     openRootInFileManager,
     type DiscoveredNearbytesSource,
+    type ManagedShareSummary,
+    type ProviderAccount,
+    type ProviderAuthSession,
+    type ProviderCatalogEntry,
     type ReconcileSourcesResponse,
     type RootsConfig,
     type RootsRuntimeSnapshot,
@@ -80,13 +92,29 @@
   let discoveredSources = $state<DiscoveredNearbytesSource[]>([]);
   let dismissedDiscoveries = $state<string[]>(loadDismissedDiscoveries());
   let movingSourceId = $state<string | null>(null);
+  let providerAccounts = $state<ProviderAccount[]>([]);
+  let providerCatalog = $state<ProviderCatalogEntry[]>([]);
+  let managedShares = $state<ManagedShareSummary[]>([]);
+  let integrationBusyKey = $state<string | null>(null);
+  let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
+  let providerCredentialDrafts = $state<Record<string, { email: string; password: string; mfaCode: string }>>({});
+  let providerSetupDrafts = $state<Record<string, { clientId: string; clientSecret: string }>>({});
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
   let lastRefreshToken = $state(0);
   let discoveryRunId = 0;
 
+  const providerSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   onMount(() => {
     void loadPanel();
+  });
+
+  onDestroy(() => {
+    for (const timer of providerSessionTimers.values()) {
+      clearTimeout(timer);
+    }
+    providerSessionTimers.clear();
   });
 
   $effect(() => {
@@ -214,6 +242,133 @@
 
   function countLabel(count: number, singular: string, plural = `${singular}s`): string {
     return `${count} ${count === 1 ? singular : plural}`;
+  }
+
+  function connectedAccountForProvider(provider: string): ProviderAccount | null {
+    return providerAccounts.find((account) => account.provider === provider) ?? null;
+  }
+
+  function pendingSessionForProvider(provider: string): ProviderAuthSession | null {
+    return providerAuthSessions[provider] ?? null;
+  }
+
+  function providerCredentialDraft(provider: string): { email: string; password: string; mfaCode: string } {
+    return providerCredentialDrafts[provider] ?? { email: '', password: '', mfaCode: '' };
+  }
+
+  function providerSetupDraft(provider: string): { clientId: string; clientSecret: string } {
+    return providerSetupDrafts[provider] ?? { clientId: '', clientSecret: '' };
+  }
+
+  function setProviderCredential(
+    provider: string,
+    field: 'email' | 'password' | 'mfaCode',
+    value: string
+  ): void {
+    providerCredentialDrafts = {
+      ...providerCredentialDrafts,
+      [provider]: {
+        ...providerCredentialDraft(provider),
+        [field]: value,
+      },
+    };
+  }
+
+  function setProviderSetupField(
+    provider: string,
+    field: 'clientId' | 'clientSecret',
+    value: string
+  ): void {
+    providerSetupDrafts = {
+      ...providerSetupDrafts,
+      [provider]: {
+        ...providerSetupDraft(provider),
+        [field]: value,
+      },
+    };
+  }
+
+  function managedSharesForVolume(targetVolumeId: string | null): ManagedShareSummary[] {
+    if (!targetVolumeId) return [];
+    return managedShares.filter((summary) =>
+      summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId)
+    );
+  }
+
+  function availableManagedSharesForVolume(targetVolumeId: string | null): ManagedShareSummary[] {
+    if (!targetVolumeId) return managedShares;
+    return managedShares.filter(
+      (summary) => !summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId)
+    );
+  }
+
+  function shareStatusTone(summary: ManagedShareSummary): StatusTone {
+    if (summary.state.status === 'ready') return 'good';
+    if (summary.state.status === 'idle' || summary.state.status === 'syncing') return 'muted';
+    return 'warn';
+  }
+
+  function shareStatusLabel(summary: ManagedShareSummary): string {
+    if (summary.state.status === 'ready') return 'Ready';
+    if (summary.state.status === 'syncing') return 'Syncing';
+    if (summary.state.status === 'idle') return 'Planned';
+    if (summary.state.status === 'needs-auth') return 'Needs login';
+    if (summary.state.status === 'unsupported') return 'Experimental';
+    return 'Needs attention';
+  }
+
+  function shareAttachmentSummary(summary: ManagedShareSummary): string {
+    const count = summary.attachments.length;
+    if (count === 0) {
+      return 'Not attached to any saved space yet.';
+    }
+    return `${countLabel(count, 'space')} attached`;
+  }
+
+  function providerCardTone(entry: ProviderCatalogEntry): StatusTone {
+    const pending = pendingSessionForProvider(entry.provider);
+    if (pending && pending.status === 'pending') return 'muted';
+    if (pending && pending.status === 'failed') return 'warn';
+    if (entry.setup.status === 'needs-config' || entry.setup.status === 'needs-install' || entry.setup.status === 'unsupported') {
+      return entry.setup.status === 'unsupported' ? 'warn' : 'muted';
+    }
+    if (entry.setup.status === 'installing') return 'muted';
+    return entry.isConnected ? 'good' : entry.connectionState === 'setup' ? 'warn' : 'muted';
+  }
+
+  function providerCardStatus(entry: ProviderCatalogEntry): string {
+    const pending = pendingSessionForProvider(entry.provider);
+    if (pending?.status === 'pending') return 'Waiting';
+    if (pending?.status === 'failed') return 'Retry';
+    if (entry.setup.status === 'needs-config') return 'Setup';
+    if (entry.setup.status === 'needs-install') return 'Install';
+    if (entry.setup.status === 'installing') return 'Installing';
+    if (entry.setup.status === 'unsupported') return 'Unavailable';
+    if (entry.isConnected) return 'Connected';
+    if (entry.connectionState === 'setup') return 'Setup';
+    return 'Available';
+  }
+
+  function providerCardDetail(entry: ProviderCatalogEntry): string {
+    const pending = pendingSessionForProvider(entry.provider);
+    if (pending) {
+      return pending.detail;
+    }
+    return entry.setup.detail || entry.description;
+  }
+
+  function managedShareOpenLabel(summary: ManagedShareSummary): string {
+    return compactPath(summary.share.localPath);
+  }
+
+  function defaultManagedShareLabel(): string {
+    if (currentVolumePresentation?.label?.trim()) {
+      return `${currentVolumePresentation.label.trim()} mirror`;
+    }
+    if (volumeId) {
+      return `Space ${volumeId.slice(0, 8)} mirror`;
+    }
+    return 'Nearbytes mirror';
   }
 
   function sourceReservePercent(source: SourceConfigEntry): number {
@@ -810,13 +965,50 @@
     lastSavedSignature = serializeConfig(cloneConfig(response.config));
   }
 
+  function applyIntegrationsResponse(input: {
+    accounts: ProviderAccount[];
+    providers: ProviderCatalogEntry[];
+    shares: ManagedShareSummary[];
+  }): void {
+    providerAccounts = input.accounts;
+    providerCatalog = input.providers;
+    managedShares = input.shares;
+    providerSetupDrafts = {
+      ...providerSetupDrafts,
+      ...Object.fromEntries(
+        input.providers.map((provider) => [
+          provider.provider,
+          {
+            clientId:
+              provider.provider === 'gdrive' ? provider.setup.config?.clientId ?? providerSetupDraft(provider.provider).clientId : providerSetupDraft(provider.provider).clientId,
+            clientSecret: providerSetupDraft(provider.provider).clientSecret,
+          },
+        ])
+      ),
+    };
+    for (const account of input.accounts) {
+      if (account.state === 'connected') {
+        clearProviderSession(account.provider);
+      }
+    }
+  }
+
   async function loadPanel() {
     loading = true;
     errorMessage = '';
     successMessage = '';
     try {
-      const response = await getRootsConfig();
-      applyRootsResponse(response);
+      const [rootsResponse, accountsResponse, sharesResponse] = await Promise.all([
+        getRootsConfig(),
+        listProviderAccounts(),
+        listManagedShares(),
+      ]);
+      applyRootsResponse(rootsResponse);
+      applyIntegrationsResponse({
+        accounts: accountsResponse.accounts,
+        providers: accountsResponse.providers,
+        shares: sharesResponse.shares,
+      });
       autosaveStatus = 'idle';
       void refreshDiscoverySuggestions();
     } catch (error) {
@@ -986,6 +1178,220 @@
     }
   }
 
+  async function connectProvider(provider: ProviderCatalogEntry): Promise<void> {
+    integrationBusyKey = `connect:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      if (provider.setup.status === 'needs-install' && provider.setup.canInstall) {
+        await installProvider(provider);
+      }
+      if (provider.setup.status === 'needs-config') {
+        throw new Error(provider.setup.detail);
+      }
+
+      const draft = providerCredentialDraft(provider.provider);
+      if (provider.provider === 'mega' && (draft.email.trim() === '' || draft.password.trim() === '')) {
+        throw new Error('Enter the MEGA email and password first.');
+      }
+
+      const response = await connectProviderAccount({
+        provider: provider.provider,
+        label: provider.label,
+        preferred: provider.provider === 'gdrive',
+        email: provider.provider === 'mega' ? draft.email.trim() || undefined : undefined,
+        credentials:
+          provider.provider === 'mega'
+            ? {
+                email: draft.email.trim() || undefined,
+                password: draft.password,
+                mfaCode: draft.mfaCode.trim() || undefined,
+              }
+            : undefined,
+      });
+      await handleProviderConnectResponse(provider, response);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to connect ${provider.label}`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function configureProvider(provider: ProviderCatalogEntry): Promise<void> {
+    integrationBusyKey = `setup:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      const draft = providerSetupDraft(provider.provider);
+      if (provider.provider === 'gdrive' && draft.clientId.trim() === '') {
+        throw new Error('Paste the Google Desktop app client id first.');
+      }
+      await configureProviderSetup(provider.provider, {
+        clientId: draft.clientId.trim() || undefined,
+        clientSecret: draft.clientSecret.trim() || undefined,
+      });
+      successMessage =
+        provider.provider === 'gdrive'
+          ? 'Google OAuth client saved. You can connect now.'
+          : `${provider.label} setup updated.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to configure ${provider.label}`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function installProvider(provider: ProviderCatalogEntry): Promise<void> {
+    integrationBusyKey = `install:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await installProviderHelper(provider.provider);
+      successMessage = `${provider.label} helper installed.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to install ${provider.label} helper`;
+      throw error;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  function openProviderDocs(url: string | undefined): void {
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async function disconnectProvider(provider: ProviderCatalogEntry): Promise<void> {
+    if (!provider.accountId) return;
+    integrationBusyKey = `disconnect:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await disconnectProviderAccount(provider.accountId);
+      clearProviderSession(provider.provider);
+      successMessage = `${provider.label} disconnected.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to disconnect ${provider.label}`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function createManagedShareForVolume(provider: ProviderCatalogEntry): Promise<void> {
+    if (!volumeId || !provider.accountId) return;
+    integrationBusyKey = `create:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await createManagedShare({
+        provider: provider.provider,
+        accountId: provider.accountId,
+        label: defaultManagedShareLabel(),
+        volumeId,
+      });
+      successMessage = `${provider.label} share created for this space.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} share`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  function clearProviderSession(provider: string): void {
+    const timer = providerSessionTimers.get(provider);
+    if (timer) {
+      clearTimeout(timer);
+      providerSessionTimers.delete(provider);
+    }
+    if (!(provider in providerAuthSessions)) {
+      return;
+    }
+    const next = { ...providerAuthSessions };
+    delete next[provider];
+    providerAuthSessions = next;
+  }
+
+  async function handleProviderConnectResponse(
+    provider: ProviderCatalogEntry,
+    response: Awaited<ReturnType<typeof connectProviderAccount>>
+  ): Promise<void> {
+    if (response.status === 'connected' && response.account) {
+      clearProviderSession(provider.provider);
+      if (provider.provider === 'mega') {
+        setProviderCredential(provider.provider, 'password', '');
+        setProviderCredential(provider.provider, 'mfaCode', '');
+      }
+      successMessage = `${provider.label} connected.`;
+      await loadPanel();
+      return;
+    }
+
+    if (response.authSession) {
+      providerAuthSessions = {
+        ...providerAuthSessions,
+        [provider.provider]: response.authSession,
+      };
+    }
+
+    if (response.status === 'failed') {
+      throw new Error(response.authSession?.detail || `Failed to connect ${provider.label}`);
+    }
+
+    successMessage =
+      provider.provider === 'gdrive'
+        ? 'Finish Google sign-in in the browser that just opened.'
+        : response.authSession?.detail || `${provider.label} is waiting for confirmation.`;
+    if (response.authSession) {
+      scheduleProviderSessionPoll(provider, response.authSession.id);
+    }
+  }
+
+  function scheduleProviderSessionPoll(provider: ProviderCatalogEntry, authSessionId: string): void {
+    const previous = providerSessionTimers.get(provider.provider);
+    if (previous) {
+      clearTimeout(previous);
+    }
+
+    const timer = setTimeout(() => {
+      void pollProviderSession(provider, authSessionId);
+    }, 1200);
+    providerSessionTimers.set(provider.provider, timer);
+  }
+
+  async function pollProviderSession(provider: ProviderCatalogEntry, authSessionId: string): Promise<void> {
+    try {
+      const response = await connectProviderAccount({
+        provider: provider.provider,
+        authSessionId,
+        preferred: provider.provider === 'gdrive',
+      });
+      await handleProviderConnectResponse(provider, response);
+    } catch (error) {
+      clearProviderSession(provider.provider);
+      errorMessage = error instanceof Error ? error.message : `Failed to finish ${provider.label} sign-in`;
+    }
+  }
+
+  async function attachManagedShareToVolume(summary: ManagedShareSummary): Promise<void> {
+    if (!volumeId) return;
+    integrationBusyKey = `attach:${summary.share.id}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await attachManagedShare(summary.share.id, volumeId);
+      successMessage = `${summary.share.label} attached to this space.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to attach managed share';
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
   function clampReserve(value: string): number {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return DEFAULT_RESERVE_PERCENT;
@@ -1034,6 +1440,243 @@
       {#if successMessage}
         <p class="panel-success">{successMessage}</p>
       {/if}
+
+      <section class="panel-section">
+        <div class="section-head">
+          <div>
+            <p class="section-step">Providers</p>
+            <h3>Connect the providers Nearbytes can plan around</h3>
+            <p class="section-copy">Providers are account-backed routes such as Google Drive or MEGA. Nearbytes will prefer connected providers when a share recipe offers several options.</p>
+          </div>
+          <div class="section-metrics">
+            <span class="summary-pill">{countLabel(providerCatalog.length, 'provider')} ready</span>
+            <span class="summary-pill">{countLabel(providerAccounts.length, 'account')} connected</span>
+          </div>
+        </div>
+
+        <div class="card-grid">
+          {#each providerCatalog as provider (provider.provider)}
+            {@const account = connectedAccountForProvider(provider.provider)}
+            <article class="location-card provider-card" class:active={provider.isConnected}>
+              <div class="card-head">
+                <div class="card-title">
+                  <div class="card-icon">
+                    <HardDrive size={16} strokeWidth={2.1} />
+                  </div>
+                  <div>
+                    <p class="provider-label">Provider</p>
+                    <h4>{provider.label}</h4>
+                  </div>
+                </div>
+                <div class="card-status">
+                  <span class={`status-pill tone-${providerCardTone(provider)}`}>{providerCardStatus(provider)}</span>
+                  {#each provider.badges as badge}
+                    <span class="status-pill tone-muted">{badge}</span>
+                  {/each}
+                </div>
+              </div>
+
+              <p class="card-copy">{providerCardDetail(provider)}</p>
+
+              {#if !provider.isConnected && provider.provider === 'gdrive' && provider.setup.status === 'needs-config'}
+                {@const draft = providerSetupDraft(provider.provider)}
+                <div class="provider-credentials">
+                  <label class="field-block compact-field">
+                    <span>Client ID</span>
+                    <input
+                      class="panel-input"
+                      type="text"
+                      value={draft.clientId}
+                      placeholder="Google Desktop app client id"
+                      oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                  <label class="field-block compact-field">
+                    <span>Client secret (optional)</span>
+                    <input
+                      class="panel-input"
+                      type="password"
+                      value={draft.clientSecret}
+                      placeholder="Optional"
+                      oninput={(event) => setProviderSetupField(provider.provider, 'clientSecret', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                </div>
+                <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client id here. The secret is optional because desktop apps are treated as public clients and Nearbytes uses PKCE.</p>
+              {/if}
+
+              {#if !provider.isConnected && provider.provider === 'mega'}
+                {@const draft = providerCredentialDraft(provider.provider)}
+                <div class="provider-credentials">
+                  <label class="field-block compact-field">
+                    <span>Email</span>
+                    <input
+                      class="panel-input"
+                      type="email"
+                      value={draft.email}
+                      placeholder="name@example.com"
+                      oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                  <label class="field-block compact-field">
+                    <span>Password</span>
+                    <input
+                      class="panel-input"
+                      type="password"
+                      value={draft.password}
+                      placeholder="MEGA password"
+                      oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                  <label class="field-block compact-field">
+                    <span>MFA code</span>
+                    <input
+                      class="panel-input"
+                      type="text"
+                      value={draft.mfaCode}
+                      placeholder="Optional"
+                      oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                </div>
+              {/if}
+
+              <div class="fact-row">
+                <span>{account ? account.label : 'No account saved yet'}</span>
+                {#if account?.email}
+                  <span>{account.email}</span>
+                {/if}
+                {#if provider.setup.config?.helperPath}
+                  <span>{provider.setup.config.helperPath}</span>
+                {/if}
+              </div>
+
+              <div class="button-row">
+                {#if provider.setup.docsUrl}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => openProviderDocs(provider.setup.docsUrl)}
+                  >
+                    <span>{provider.provider === 'gdrive' ? 'Open Google Console' : 'Open docs'}</span>
+                  </button>
+                {/if}
+                {#if !provider.isConnected && provider.setup.status === 'needs-config'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void configureProvider(provider)}
+                    disabled={integrationBusyKey === `setup:${provider.provider}`}
+                  >
+                    <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
+                  </button>
+                {:else if !provider.isConnected && provider.setup.status === 'needs-install'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void installProvider(provider)}
+                    disabled={integrationBusyKey === `install:${provider.provider}`}
+                  >
+                    <span>{integrationBusyKey === `install:${provider.provider}` ? 'Installing...' : 'Install helper'}</span>
+                  </button>
+                {/if}
+                {#if provider.isConnected}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact danger"
+                    onclick={() => void disconnectProvider(provider)}
+                    disabled={integrationBusyKey === `disconnect:${provider.provider}`}
+                  >
+                    <span>{integrationBusyKey === `disconnect:${provider.provider}` ? 'Disconnecting...' : 'Disconnect'}</span>
+                  </button>
+                {:else}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void connectProvider(provider)}
+                    disabled={
+                      integrationBusyKey === `connect:${provider.provider}` ||
+                      provider.setup.status === 'needs-config' ||
+                      provider.setup.status === 'installing' ||
+                      provider.setup.status === 'unsupported'
+                    }
+                  >
+                    <span>{integrationBusyKey === `connect:${provider.provider}` ? 'Connecting...' : provider.provider === 'gdrive' ? 'Connect with Google' : 'Connect'}</span>
+                  </button>
+                {/if}
+              </div>
+            </article>
+          {/each}
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-head">
+          <div>
+            <p class="section-step">Managed shares</p>
+            <h3>Nearbytes-controlled provider mirrors</h3>
+            <p class="section-copy">Each managed share owns one local mirror folder and can later satisfy join-link recipes without asking you to pick a raw folder again.</p>
+          </div>
+          <div class="section-metrics">
+            <span class="summary-pill">{countLabel(managedShares.length, 'managed share')}</span>
+          </div>
+        </div>
+
+        <div class="card-grid">
+          {#if managedShares.length === 0}
+            <article class="location-card suggestion-card">
+              <div class="card-head">
+                <div class="card-title">
+                  <div>
+                    <p class="provider-label">Inventory</p>
+                    <h4>No managed shares yet</h4>
+                  </div>
+                </div>
+              </div>
+              <p class="card-copy">Connect a provider, then create provider-managed shares from a space to make future onboarding and join links much simpler.</p>
+            </article>
+          {:else}
+            {#each managedShares as summary (summary.share.id)}
+              <article class="location-card" class:active={summary.state.status === 'ready'}>
+                <div class="card-head">
+                  <div class="card-title">
+                    <div class="card-icon">
+                      <HardDrive size={16} strokeWidth={2.1} />
+                    </div>
+                    <div title={summary.share.localPath}>
+                      <p class="provider-label">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
+                      <h4>{summary.share.label}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
+                    <span class="status-pill tone-muted">{summary.share.role}</span>
+                  </div>
+                </div>
+
+                <p class="card-copy">{summary.state.detail}</p>
+
+                <div class="fact-row">
+                  <span>{managedShareOpenLabel(summary)}</span>
+                  <span>{shareAttachmentSummary(summary)}</span>
+                </div>
+
+                <div class="button-row">
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
+                    disabled={!summary.share.sourceId}
+                  >
+                    <FolderOpen size={14} strokeWidth={2} />
+                    <span>Open</span>
+                  </button>
+                </div>
+              </article>
+            {/each}
+          {/if}
+        </div>
+      </section>
 
       <section class="panel-section">
         <div class="section-head">
@@ -1284,6 +1927,238 @@
       {#if !volumeId}
         <p class="storage-message">Open this space first, then choose which locations keep a full copy.</p>
       {:else}
+        <section class="panel-section">
+          <div class="section-head">
+            <div>
+              <p class="section-step">Provider shares</p>
+              <h3>Attach or create managed routes for this space</h3>
+              <p class="section-copy">Connected providers can create managed mirrors for this space, and already-saved managed shares can be attached here in one click.</p>
+            </div>
+            <div class="section-metrics">
+              <span class="summary-pill">{countLabel(managedSharesForVolume(volumeId).length, 'managed share')} attached</span>
+              <span class="summary-pill">{countLabel(availableManagedSharesForVolume(volumeId).length, 'managed share')} available</span>
+            </div>
+          </div>
+
+          <div class="card-grid">
+            {#each providerCatalog as provider (provider.provider)}
+              <article class="rule-card provider-card" class:active={provider.isConnected}>
+                <div class="card-head">
+                  <div class="card-title">
+                    <div>
+                      <p class="provider-label">Provider</p>
+                      <h4>{provider.label}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class={`status-pill tone-${providerCardTone(provider)}`}>{providerCardStatus(provider)}</span>
+                    {#each provider.badges as badge}
+                      <span class="status-pill tone-muted">{badge}</span>
+                    {/each}
+                  </div>
+                </div>
+
+                <p class="card-copy">
+                  {#if provider.isConnected}
+                    Nearbytes can create a managed {provider.label} mirror for this space and prefer it when future join links offer several routes.
+                  {:else}
+                    {providerCardDetail(provider)}
+                  {/if}
+                </p>
+
+                {#if !provider.isConnected && provider.provider === 'gdrive' && provider.setup.status === 'needs-config'}
+                  {@const draft = providerSetupDraft(provider.provider)}
+                  <div class="provider-credentials">
+                    <label class="field-block compact-field">
+                      <span>Client ID</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={draft.clientId}
+                        placeholder="Google Desktop app client id"
+                        oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <label class="field-block compact-field">
+                      <span>Client secret (optional)</span>
+                      <input
+                        class="panel-input"
+                        type="password"
+                        value={draft.clientSecret}
+                        placeholder="Optional"
+                        oninput={(event) => setProviderSetupField(provider.provider, 'clientSecret', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                  </div>
+                  <p class="muted-copy">Create a Google OAuth Desktop app client, paste the client id here, then connect. The secret is optional because Nearbytes uses the installed-app PKCE flow.</p>
+                {/if}
+
+                {#if !provider.isConnected && provider.provider === 'mega'}
+                  {@const draft = providerCredentialDraft(provider.provider)}
+                  <div class="provider-credentials">
+                    <label class="field-block compact-field">
+                      <span>Email</span>
+                      <input
+                        class="panel-input"
+                        type="email"
+                        value={draft.email}
+                        placeholder="name@example.com"
+                        oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <label class="field-block compact-field">
+                      <span>Password</span>
+                      <input
+                        class="panel-input"
+                        type="password"
+                        value={draft.password}
+                        placeholder="MEGA password"
+                        oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <label class="field-block compact-field">
+                      <span>MFA code</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={draft.mfaCode}
+                        placeholder="Optional"
+                        oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                  </div>
+                {/if}
+
+                <div class="button-row">
+                  {#if provider.setup.docsUrl}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => openProviderDocs(provider.setup.docsUrl)}
+                    >
+                      <span>{provider.provider === 'gdrive' ? 'Open Google Console' : 'Open docs'}</span>
+                    </button>
+                  {/if}
+                  {#if !provider.isConnected && provider.setup.status === 'needs-config'}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void configureProvider(provider)}
+                      disabled={integrationBusyKey === `setup:${provider.provider}`}
+                    >
+                      <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
+                    </button>
+                  {:else if !provider.isConnected && provider.setup.status === 'needs-install'}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void installProvider(provider)}
+                      disabled={integrationBusyKey === `install:${provider.provider}`}
+                    >
+                      <span>{integrationBusyKey === `install:${provider.provider}` ? 'Installing...' : 'Install helper'}</span>
+                    </button>
+                  {/if}
+                  {#if provider.isConnected}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void createManagedShareForVolume(provider)}
+                      disabled={integrationBusyKey === `create:${provider.provider}`}
+                    >
+                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create share'}</span>
+                    </button>
+                  {:else}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void connectProvider(provider)}
+                      disabled={
+                        integrationBusyKey === `connect:${provider.provider}` ||
+                        provider.setup.status === 'needs-config' ||
+                        provider.setup.status === 'installing' ||
+                        provider.setup.status === 'unsupported'
+                      }
+                    >
+                      <span>{integrationBusyKey === `connect:${provider.provider}` ? 'Connecting...' : provider.provider === 'gdrive' ? 'Connect with Google' : 'Connect'}</span>
+                    </button>
+                  {/if}
+                </div>
+              </article>
+            {/each}
+
+            {#each managedSharesForVolume(volumeId) as summary (summary.share.id)}
+              <article class="rule-card" class:active={true}>
+                <div class="card-head">
+                  <div class="card-title">
+                    <div>
+                      <p class="provider-label">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
+                      <h4>{summary.share.label}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>Attached</span>
+                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
+                  </div>
+                </div>
+
+                <p class="card-copy">{summary.state.detail}</p>
+
+                <div class="fact-row">
+                  <span>{managedShareOpenLabel(summary)}</span>
+                  <span>{shareAttachmentSummary(summary)}</span>
+                </div>
+
+                <div class="button-row">
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
+                    disabled={!summary.share.sourceId}
+                  >
+                    <FolderOpen size={14} strokeWidth={2} />
+                    <span>Open</span>
+                  </button>
+                </div>
+              </article>
+            {/each}
+
+            {#each availableManagedSharesForVolume(volumeId) as summary (summary.share.id)}
+              <article class="rule-card suggestion-card">
+                <div class="card-head">
+                  <div class="card-title">
+                    <div>
+                      <p class="provider-label">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
+                      <h4>{summary.share.label}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
+                    <span class="status-pill tone-muted">Available</span>
+                  </div>
+                </div>
+
+                <p class="card-copy">{summary.state.detail}</p>
+
+                <div class="fact-row">
+                  <span>{managedShareOpenLabel(summary)}</span>
+                  <span>{shareAttachmentSummary(summary)}</span>
+                </div>
+
+                <div class="button-row">
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void attachManagedShareToVolume(summary)}
+                    disabled={integrationBusyKey === `attach:${summary.share.id}`}
+                  >
+                    <span>{integrationBusyKey === `attach:${summary.share.id}` ? 'Attaching...' : 'Attach to this space'}</span>
+                  </button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        </section>
+
         <div class="protection-banner" class:warning={!hasDurableDestination(volumeId)}>
           <Shield size={15} strokeWidth={2} />
           <span>{protectionHint(volumeId)}</span>
@@ -1932,6 +2807,12 @@
     display: grid;
     gap: 0.65rem;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .provider-credentials {
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
 
   .field-block {

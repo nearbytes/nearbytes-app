@@ -11,6 +11,7 @@ import { createFileService } from '../../domain/fileService.js';
 import { createSecret } from '../../types/keys.js';
 import { bytesToHex } from '../../utils/encoding.js';
 import { type RootsConfig } from '../../config/roots.js';
+import type { TransportAdapter } from '../../integrations/adapters.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import { createApp } from '../app.js';
 
@@ -80,6 +81,60 @@ interface ReconcileSourcesResponseBody extends ConfigRootsResponseBody {
   }>;
 }
 
+interface ProviderAccountsResponseBody {
+  accounts: Array<{
+    id: string;
+    provider: string;
+  }>;
+  providers: Array<{
+    provider: string;
+    isConnected: boolean;
+  }>;
+}
+
+interface ManagedShareSummaryBody {
+  share: {
+    id: string;
+    provider: string;
+    label: string;
+    sourceId?: string;
+    localPath: string;
+  };
+  attachments: Array<{
+    volumeId: string;
+    sourceId: string;
+  }>;
+  state: {
+    status: string;
+  };
+}
+
+interface ManagedShareMutationResponseBody {
+  summary: ManagedShareSummaryBody;
+}
+
+interface JoinLinkParseResponseBody {
+  plan: {
+    attachments: Array<{
+      selectedEndpoint: {
+        endpoint: {
+          provider?: string;
+        };
+      } | null;
+    }>;
+  };
+}
+
+interface JoinLinkOpenResponseBody extends JoinLinkParseResponseBody {
+  secret: string;
+  volumeId: string | null;
+  actions: Array<{
+    attachmentId: string;
+    status: string;
+    shareId?: string;
+  }>;
+}
+
 function typedBody<T>(response: Response): T {
   return response.body as unknown as T;
 }
@@ -99,6 +154,74 @@ function createWritableSource(
     opportunisticPolicy: 'drop-older-blocks',
     ...overrides,
   };
+}
+
+class FakeProviderAdapter implements TransportAdapter {
+  constructor(
+    readonly provider: string,
+    readonly label: string,
+    readonly description: string
+  ) {}
+
+  readonly supportsAccountConnection = true;
+
+  async probe(endpoint: { transport: string; provider?: string }) {
+    if (endpoint.transport === 'provider-share' && endpoint.provider === this.provider) {
+      return {
+        status: 'ready' as const,
+        detail: `${this.label} is available.`,
+        badges: ['Fake'],
+      };
+    }
+    return {
+      status: 'unsupported' as const,
+      detail: `${this.label} is not available for this endpoint.`,
+      badges: ['Fake'],
+    };
+  }
+
+  async connect(input: { accountId?: string; email?: string; label?: string; provider: string }) {
+    return {
+      status: 'connected' as const,
+      account: {
+        id: input.accountId ?? `acct-${this.provider}-test`,
+        provider: this.provider,
+        label: input.label ?? this.label,
+        email: input.email,
+        state: 'connected' as const,
+        detail: `${this.label} is connected.`,
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    };
+  }
+
+  async createManagedShare(input: { remoteDescriptor?: Record<string, unknown> }) {
+    return {
+      remoteDescriptor: {
+        ...(input.remoteDescriptor ?? {}),
+        remoteId: (input.remoteDescriptor?.remoteId as string | undefined) ?? `${this.provider}-remote-id`,
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+    };
+  }
+
+  async acceptInvite(input: { remoteDescriptor?: Record<string, unknown> }) {
+    return {
+      remoteDescriptor: {
+        ...(input.remoteDescriptor ?? {}),
+      },
+      capabilities: ['mirror', 'read', 'write', 'accept'],
+    };
+  }
+
+  async getState() {
+    return {
+      status: 'ready' as const,
+      detail: `${this.label} mirror is ready.`,
+      badges: ['Fake'],
+    };
+  }
 }
 
 describe('Nearbytes API (multi-root)', () => {
@@ -215,6 +338,12 @@ describe('Nearbytes API (multi-root)', () => {
       maxUploadBytes: 5 * 1024 * 1024,
       rootsConfigPath,
       resolvedStorageDir: mainRoot,
+      integrationOptions: {
+        adapters: [
+          new FakeProviderAdapter('gdrive', 'Google Drive', 'Managed folders backed by Google Drive.'),
+          new FakeProviderAdapter('mega', 'MEGA', 'Managed folders backed by MEGA CLI.'),
+        ],
+      },
     });
   });
 
@@ -442,6 +571,144 @@ describe('Nearbytes API (multi-root)', () => {
     } finally {
       process.env.NEARBYTES_SOURCE_SCAN_DIRS = originalScanPaths;
     }
+  });
+
+  it('manages provider accounts, shares, and join-link planning', async () => {
+    const accountsBefore = await request(app).get('/integrations/accounts').expect(200);
+    const accountsBeforeBody = typedBody<ProviderAccountsResponseBody>(accountsBefore);
+    expect(accountsBeforeBody.accounts).toEqual([]);
+    expect(accountsBeforeBody.providers.some((provider) => provider.provider === 'gdrive')).toBe(true);
+
+    const connectRes = await request(app)
+      .post('/integrations/accounts/connect')
+      .send({
+        provider: 'gdrive',
+        label: 'Primary Drive',
+        email: 'owner@example.com',
+        preferred: true,
+      })
+      .expect(200);
+    const accountId = typedBody<{ account?: { id: string } }>(connectRes).account?.id as string;
+
+    const openRes = await request(app).post('/open').send({ secret: SECRET }).expect(200);
+    const openBody = typedBody<OpenResponseBody>(openRes);
+
+    const createShareRes = await request(app)
+      .post('/integrations/shares')
+      .send({
+        provider: 'gdrive',
+        accountId,
+        label: 'Alpha Mirror',
+        volumeId: openBody.volumeId,
+        remoteDescriptor: {
+          remoteId: 'drive-room-a',
+        },
+      })
+      .expect(200);
+    const createShareBody = typedBody<ManagedShareMutationResponseBody>(createShareRes);
+
+    expect(createShareBody.summary.share.provider).toBe('gdrive');
+    expect(createShareBody.summary.share.sourceId).toBeTruthy();
+    expect(createShareBody.summary.attachments.map((attachment) => attachment.volumeId)).toContain(openBody.volumeId);
+
+    const persistedConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as ConfigRootsResponseBody['config'];
+    const managedSource = persistedConfig.sources.find((source) => source.id === createShareBody.summary.share.sourceId);
+    expect(managedSource?.integration).toEqual({
+      kind: 'provider-managed',
+      provider: 'gdrive',
+      managedShareId: createShareBody.summary.share.id,
+    });
+
+    const parseRes = await request(app)
+      .post('/links/join/parse')
+      .send({
+        link: {
+          p: 'nb.join.v1',
+          space: {
+            mode: 'seed',
+            value: SECRET,
+          },
+          attachments: [
+            {
+              id: 'att-gdrive',
+              label: 'Drive mirror',
+              recipe: {
+                p: 'nb.transport.recipe.v1',
+                id: 'recipe-gdrive',
+                label: 'Drive mirror',
+                purpose: 'mirror',
+                endpoints: [
+                  {
+                    p: 'nb.transport.endpoint.v1',
+                    transport: 'provider-share',
+                    provider: 'gdrive',
+                    priority: 100,
+                    capabilities: ['mirror', 'read', 'write'],
+                    descriptor: {
+                      remoteId: 'drive-room-a',
+                    },
+                  },
+                  {
+                    p: 'nb.transport.endpoint.v1',
+                    transport: 'provider-share',
+                    provider: 'mega',
+                    priority: 120,
+                    capabilities: ['mirror', 'read', 'write'],
+                    descriptor: {
+                      remoteId: 'mega-room-a',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      })
+      .expect(200);
+    const parseBody = typedBody<JoinLinkParseResponseBody>(parseRes);
+    expect(parseBody.plan.attachments[0]?.selectedEndpoint?.endpoint.provider).toBe('gdrive');
+
+    const openLinkRes = await request(app)
+      .post('/links/join/open')
+      .send({
+        link: {
+          p: 'nb.join.v1',
+          space: {
+            mode: 'seed',
+            value: SECRET,
+          },
+          attachments: [
+            {
+              id: 'att-gdrive',
+              label: 'Drive mirror',
+              recipe: {
+                p: 'nb.transport.recipe.v1',
+                id: 'recipe-gdrive',
+                label: 'Drive mirror',
+                purpose: 'mirror',
+                endpoints: [
+                  {
+                    p: 'nb.transport.endpoint.v1',
+                    transport: 'provider-share',
+                    provider: 'gdrive',
+                    priority: 100,
+                    capabilities: ['mirror', 'read', 'write'],
+                    descriptor: {
+                      remoteId: 'drive-room-a',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      })
+      .expect(200);
+    const openLinkBody = typedBody<JoinLinkOpenResponseBody>(openLinkRes);
+    expect(openLinkBody.secret).toBe(SECRET);
+    expect(openLinkBody.volumeId).toBe(openBody.volumeId);
+    expect(openLinkBody.actions[0]?.status).toBe('attached');
+    expect(openLinkBody.actions[0]?.shareId).toBe(createShareBody.summary.share.id);
   });
 
   it('recreates Nearbytes.html marker after deletion for configured sources', async () => {

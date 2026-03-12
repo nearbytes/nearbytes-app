@@ -26,6 +26,7 @@ Examples:
 3. Readers MUST fail closed for unsupported major versions.
 4. Non-breaking clarifications do not change major version.
 5. Breaking wire/schema/crypto changes MUST increment major version.
+6. Open-string subtypes inside a known protocol MUST follow the specific protocol spec, not this registry-level default.
 
 ## 3. Initial Registry Entries
 
@@ -35,6 +36,9 @@ Examples:
 | `nb.refs.v1` | Encrypted file reference bundle | `v1` | Draft |
 | `nb.src.ref.v1` | Source-bound encrypted file reference object | `v1` | Draft |
 | `nb.src.refs.v1` | Source-bound encrypted file reference bundle | `v1` | Draft |
+| `nb.transport.endpoint.v1` | Transport endpoint suggestion object | `v1` | Draft |
+| `nb.transport.recipe.v1` | Multi-endpoint attachment recipe | `v1` | Draft |
+| `nb.join.v1` | Space join link carrying attachment recipes | `v1` | Draft |
 | `nb.identity.record.v1` | Public signed sender identity record | `v1` | Draft |
 | `nb.identity.snapshot.v1` | Identity snapshot plus canonical-channel reference | `v1` | Draft |
 | `nb.chat.message.v1` | Identity-signed chat message payload | `v1` | Draft |
@@ -42,7 +46,13 @@ Examples:
 | `nb.content.single.v1` | Single-block encrypted file descriptor | `v1` | Draft |
 | `nb.content.manifest.v1` | Encrypted-manifest file descriptor | `v1` | Draft |
 
-## 4. Canonical Encoding Policy
+## 4. Forward Compatibility Rule For Transport Recipes
+
+1. Unknown protocol IDs still fail closed.
+2. Known composite protocols MAY define open-string subtypes that must be ignored rather than rejected.
+3. `nb.transport.recipe.v1` and `nb.join.v1` define that unknown endpoint `transport` kinds MUST be ignored by clients without rejecting the whole recipe or link.
+
+## 5. Canonical Encoding Policy
 
 Unless explicitly overridden by a specific protocol document:
 
@@ -50,7 +60,7 @@ Unless explicitly overridden by a specific protocol document:
 2. Binary values MUST be base64url without padding.
 3. Hash values MUST be lowercase hexadecimal.
 
-## 5. Change Control
+## 6. Change Control
 
 Any new `nb.*` protocol ID or major-version increment MUST include:
 

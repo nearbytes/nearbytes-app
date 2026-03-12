@@ -1,0 +1,161 @@
+import { promises as fs } from 'fs';
+import os from 'os';
+import path from 'path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { MegaHelperInstaller } from '../megaInstaller.js';
+import type { CommandExecutor, ProviderSecretStore } from '../runtime.js';
+
+function createMemorySecretStore(): ProviderSecretStore {
+  const entries = new Map<string, unknown>();
+  return {
+    async get<T>(key: string): Promise<T | null> {
+      return (entries.get(key) as T | undefined) ?? null;
+    },
+    async set<T>(key: string, value: T): Promise<void> {
+      entries.set(key, value);
+    },
+    async delete(key: string): Promise<void> {
+      entries.delete(key);
+    },
+  };
+}
+
+function fakeFetch(): typeof fetch {
+  return (async () =>
+    new Response(Buffer.from('helper-bytes'), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+      },
+    })) as typeof fetch;
+}
+
+describe('MegaHelperInstaller', () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.map((tempDir) => fs.rm(tempDir, { recursive: true, force: true })));
+    tempDirs.length = 0;
+  });
+
+  it('installs the Windows helper into the Nearbytes helper directory', async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-win-'));
+    tempDirs.push(homeDir);
+    const installRoot = path.join(homeDir, '.nearbytes', 'helpers', 'megacmd');
+
+    const executor: CommandExecutor = {
+      async run(invocation) {
+        if (invocation.command.includes('mega-version')) {
+          const error = new Error('missing');
+          (error as NodeJS.ErrnoException).code = 'ENOENT';
+          throw error;
+        }
+        if (invocation.args?.some((arg) => arg.startsWith('/D='))) {
+          await fs.mkdir(installRoot, { recursive: true });
+          await fs.writeFile(path.join(installRoot, 'mega-login.exe'), 'exe');
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    };
+
+    const installer = new MegaHelperInstaller({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: executor,
+      logger: { log() {}, warn() {} },
+      platform: 'win32',
+      arch: 'x64',
+      homeDir,
+      fetchImpl: fakeFetch(),
+    });
+
+    const before = await installer.getSetupState();
+    expect(before.status).toBe('needs-install');
+
+    const after = await installer.install();
+    expect(after.status).toBe('ready');
+    expect(after.config?.helperPath).toBe(installRoot);
+    await fs.access(path.join(installRoot, 'mega-login.exe'));
+  });
+
+  it('installs the macOS helper bundle into the Nearbytes helper directory', async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-mac-'));
+    tempDirs.push(homeDir);
+    const installRoot = path.join(homeDir, '.nearbytes', 'helpers', 'megacmd');
+
+    const executor: CommandExecutor = {
+      async run(invocation) {
+        if (invocation.command.includes('mega-version')) {
+          const error = new Error('missing');
+          (error as NodeJS.ErrnoException).code = 'ENOENT';
+          throw error;
+        }
+        if (invocation.command === 'cp') {
+          const target = invocation.args?.at(-1) ?? '';
+          const commandDir = path.join(target, 'Contents', 'MacOS');
+          await fs.mkdir(commandDir, { recursive: true });
+          await fs.writeFile(path.join(commandDir, 'mega-login'), 'exe');
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    };
+
+    const installer = new MegaHelperInstaller({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: executor,
+      logger: { log() {}, warn() {} },
+      platform: 'darwin',
+      arch: 'x64',
+      homeDir,
+      fetchImpl: fakeFetch(),
+    });
+
+    const after = await installer.install();
+    expect(after.status).toBe('ready');
+    expect(after.config?.helperPath).toBe(path.join(installRoot, 'MEGAcmd.app', 'Contents', 'MacOS'));
+    await fs.access(path.join(installRoot, 'MEGAcmd.app', 'Contents', 'MacOS', 'mega-login'));
+  });
+
+  it('extracts a Debian helper package locally on Linux', async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-linux-'));
+    tempDirs.push(homeDir);
+    const installRoot = path.join(homeDir, '.nearbytes', 'helpers', 'megacmd');
+
+    const executor: CommandExecutor = {
+      async run(invocation) {
+        if (invocation.command.includes('mega-version')) {
+          const error = new Error('missing');
+          (error as NodeJS.ErrnoException).code = 'ENOENT';
+          throw error;
+        }
+        if (invocation.command === 'ar') {
+          await fs.writeFile(path.join(invocation.cwd ?? '', 'data.tar.xz'), 'fake-archive');
+        }
+        if (invocation.command === 'tar') {
+          const commandDir = path.join(installRoot, 'usr', 'bin');
+          await fs.mkdir(commandDir, { recursive: true });
+          await fs.writeFile(path.join(commandDir, 'mega-login'), 'exe');
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    };
+
+    const installer = new MegaHelperInstaller({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: executor,
+      logger: { log() {}, warn() {} },
+      platform: 'linux',
+      arch: 'x64',
+      homeDir,
+      fetchImpl: fakeFetch(),
+      linuxRelease: {
+        id: 'ubuntu',
+        versionId: '24.04',
+      },
+    });
+
+    const after = await installer.install();
+    expect(after.status).toBe('ready');
+    expect(after.config?.helperPath).toBe(path.join(installRoot, 'usr', 'bin'));
+    await fs.access(path.join(installRoot, 'usr', 'bin', 'mega-login'));
+  });
+});

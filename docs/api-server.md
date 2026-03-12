@@ -239,6 +239,108 @@ Request body:
 }
 ```
 
+### GET /integrations/accounts (local-only)
+
+Returns connected provider accounts plus provider cards the UI can render.
+
+### POST /integrations/accounts/connect (local-only)
+
+Starts or completes one provider account connection flow. Google Drive can return a pending OAuth session; MEGA completes immediately when credentials are valid.
+
+Request:
+
+```json
+{
+  "provider": "gdrive",
+  "label": "Primary Drive",
+  "preferred": true
+}
+```
+
+MEGA request example:
+
+```json
+{
+  "provider": "mega",
+  "label": "Main MEGA",
+  "credentials": {
+    "email": "owner@example.com",
+    "password": "secret",
+    "mfaCode": "123456"
+  }
+}
+```
+
+Google OAuth polling request example:
+
+```json
+{
+  "provider": "gdrive",
+  "authSessionId": "oauth-gdrive-..."
+}
+```
+
+### POST /integrations/providers/:provider/config (local-only)
+
+Stores local provider setup needed before account connection. Nearbytes uses this for the Google Drive desktop OAuth client id and optional secret.
+
+Request:
+
+```json
+{
+  "clientId": "1234567890-abc123.apps.googleusercontent.com",
+  "clientSecret": "optional-secret"
+}
+```
+
+### POST /integrations/providers/:provider/install (local-only)
+
+Downloads and prepares provider-specific local helpers when a provider needs them. Nearbytes uses this for automatic MEGAcmd setup.
+
+### GET /integrations/shares (local-only)
+
+Returns Nearbytes-managed provider shares, their attached spaces, and current local mirror state.
+
+### POST /integrations/shares (local-only)
+
+Creates one managed provider share and optionally attaches it to a space.
+
+Request:
+
+```json
+{
+  "provider": "gdrive",
+  "accountId": "acct-gdrive-...",
+  "label": "Project mirror",
+  "volumeId": "<spaceVolumeIdHex>",
+  "remoteDescriptor": { "remoteId": "drive-folder-id" }
+}
+```
+
+### POST /integrations/shares/:shareId/invite (local-only)
+
+Adds invitee emails to the managed share record.
+
+### POST /integrations/shares/:shareId/attach (local-only)
+
+Attaches an existing managed share to one space.
+
+### POST /integrations/shares/accept (local-only)
+
+Creates a managed share record for a recipient-side route and optionally attaches it.
+
+### GET /integrations/shares/:shareId/state (local-only)
+
+Returns one managed share plus its attachment and mirror status summary.
+
+### POST /links/join/parse (local-only)
+
+Parses an `nb.join.v1` object or JSON string and returns the ranked transport plan for this device.
+
+### POST /links/join/open (local-only)
+
+Parses and plans an `nb.join.v1` payload, derives the target space volume id, and auto-attaches the best compatible managed provider routes when possible.
+
 ## Configuration
 
 Environment variables:
@@ -249,6 +351,10 @@ Environment variables:
 - `NEARBYTES_SERVER_TOKEN_KEY` (optional; enables Bearer tokens)
 - `NEARBYTES_CORS_ORIGIN` (default `http://localhost:5173`, use `*` for any origin)
 - `NEARBYTES_MAX_UPLOAD_MB` (default `50`)
+- `NEARBYTES_GOOGLE_CLIENT_ID` (required for Google Drive OAuth)
+- `NEARBYTES_GOOGLE_CLIENT_SECRET` (optional desktop-app client secret for Google OAuth)
+- `NEARBYTES_MEGACMD_DIR` (optional directory containing `mega-login`, `mega-sync`, and the rest of the MEGAcmd binaries)
+- `NEARBYTES_MEGA_REMOTE_BASE` (default `/Nearbytes`) - remote MEGA folder prefix for Nearbytes-managed shares
 
 ## Example flow (header secret)
 

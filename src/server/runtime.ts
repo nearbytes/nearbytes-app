@@ -8,6 +8,7 @@ import { createFileService } from '../domain/fileService.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../config/roots.js';
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
+import type { ManagedShareServiceOptions } from '../integrations/managedShares.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { createApp } from './app.js';
 
@@ -27,6 +28,7 @@ export interface ApiRuntimeOptions {
   readonly desktopApiToken?: string;
   readonly uiDistPath?: string;
   readonly logger?: RuntimeLogger;
+  readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
 }
 
 export interface ApiRuntimeHandle {
@@ -104,6 +106,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     rootsConfigPath: loaded.configPath,
     desktopApiToken: options.desktopApiToken,
     uiDistPath: options.uiDistPath,
+    integrationOptions: options.integrationOptions,
   });
 
   const server = await listen(app, host, port);

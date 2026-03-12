@@ -1,5 +1,5 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, type OpenDialogOptions } from 'electron';
-import { existsSync } from 'fs';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, type OpenDialogOptions } from 'electron';
+import { existsSync, promises as fs } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { clearPublishedDesktopSession, publishDesktopSession } from './session.js';
@@ -20,6 +20,16 @@ interface RuntimeModule {
     desktopApiToken: string;
     uiDistPath?: string;
     maxUploadBytes?: number;
+    integrationOptions?: {
+      runtime?: {
+        secretStore?: {
+          get<T>(key: string): Promise<T | null>;
+          set<T>(key: string, value: T): Promise<void>;
+          delete(key: string): Promise<void>;
+        };
+        openExternalUrl?: (url: string) => Promise<void>;
+      };
+    };
   }): Promise<RuntimeHandle>;
 }
 
@@ -84,6 +94,14 @@ async function startDesktop(): Promise<void> {
     desktopApiToken: desktopToken,
     uiDistPath: isDev ? undefined : resolveUiDistPath(),
     maxUploadBytes,
+    integrationOptions: {
+      runtime: {
+        secretStore: createDesktopSecretStore(),
+        openExternalUrl: async (url: string) => {
+          await shell.openExternal(url);
+        },
+      },
+    },
   });
   state.runtime = runtime;
 
@@ -105,6 +123,39 @@ async function startDesktop(): Promise<void> {
 
   registerIpc();
   await createWindow(apiBaseUrl);
+}
+
+function createDesktopSecretStore(): {
+  get<T>(key: string): Promise<T | null>;
+  set<T>(key: string, value: T): Promise<void>;
+  delete(key: string): Promise<void>;
+} {
+  const filePath = path.join(app.getPath('userData'), 'integration-secrets.json');
+  return {
+    async get<T>(key: string): Promise<T | null> {
+      const entries = await readSecretEntries(filePath);
+      const encoded = entries[key];
+      if (!encoded) {
+        return null;
+      }
+      const decrypted = decryptDesktopSecret(Buffer.from(encoded, 'base64'));
+      return JSON.parse(decrypted.toString('utf8')) as T;
+    },
+    async set<T>(key: string, value: T): Promise<void> {
+      const entries = await readSecretEntries(filePath);
+      const encrypted = encryptDesktopSecret(Buffer.from(JSON.stringify(value), 'utf8'));
+      entries[key] = encrypted.toString('base64');
+      await writeSecretEntries(filePath, entries);
+    },
+    async delete(key: string): Promise<void> {
+      const entries = await readSecretEntries(filePath);
+      if (!(key in entries)) {
+        return;
+      }
+      delete entries[key];
+      await writeSecretEntries(filePath, entries);
+    },
+  };
 }
 
 function registerIpc(): void {
@@ -317,6 +368,48 @@ function resolveExistingPath(candidates: string[]): string | undefined {
     }
   }
   return undefined;
+}
+
+async function readSecretEntries(filePath: string): Promise<Record<string, string>> {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw) as { entries?: Record<string, string> };
+    return parsed.entries && typeof parsed.entries === 'object' ? { ...parsed.entries } : {};
+  } catch (error) {
+    if (isFileNotFound(error)) {
+      return {};
+    }
+    throw error;
+  }
+}
+
+async function writeSecretEntries(filePath: string, entries: Record<string, string>): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+  await fs.writeFile(
+    tempPath,
+    `${JSON.stringify({ version: 1, entries }, null, 2)}\n`,
+    'utf8'
+  );
+  await fs.rename(tempPath, filePath);
+}
+
+function encryptDesktopSecret(value: Buffer): Buffer {
+  if (!safeStorage.isEncryptionAvailable()) {
+    return value;
+  }
+  return safeStorage.encryptString(value.toString('utf8'));
+}
+
+function decryptDesktopSecret(value: Buffer): Buffer {
+  if (!safeStorage.isEncryptionAvailable()) {
+    return value;
+  }
+  return Buffer.from(safeStorage.decryptString(value), 'utf8');
+}
+
+function isFileNotFound(error: unknown): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'ENOENT');
 }
 
 function resolvePreloadPath(): string | undefined {

@@ -214,6 +214,15 @@ export interface RenameFileResponse {
 export type SourceProvider = 'local' | 'dropbox' | 'mega' | 'gdrive' | 'icloud' | 'onedrive';
 export type RootProvider = SourceProvider;
 export type StorageFullPolicy = 'block-writes' | 'drop-older-blocks';
+export type TransportKind = 'provider-share' | 'http' | 'peer-http' | (string & {});
+
+export interface ProviderManagedSourceIntegration {
+  kind: 'provider-managed';
+  provider: string;
+  managedShareId: string;
+}
+
+export type SourceIntegrationConfig = ProviderManagedSourceIntegration;
 
 export interface SourceConfigEntry {
   id: string;
@@ -224,6 +233,7 @@ export interface SourceConfigEntry {
   reservePercent: number;
   opportunisticPolicy: StorageFullPolicy;
   moveFromSourceId?: string;
+  integration?: SourceIntegrationConfig;
 }
 
 export interface VolumeDestinationConfig {
@@ -250,6 +260,195 @@ export interface RootsConfig {
   sources: SourceConfigEntry[];
   defaultVolume: DefaultVolumePolicy;
   volumes: VolumePolicyEntry[];
+}
+
+export interface TransportEndpoint {
+  p: 'nb.transport.endpoint.v1';
+  transport: TransportKind;
+  provider?: string;
+  priority: number;
+  capabilities: string[];
+  descriptor: Record<string, unknown>;
+  label?: string;
+  badges?: string[];
+}
+
+export interface TransportRecipe {
+  p: 'nb.transport.recipe.v1';
+  id: string;
+  label: string;
+  purpose: string;
+  endpoints: TransportEndpoint[];
+}
+
+export type JoinLinkSpace =
+  | {
+      mode: 'seed';
+      value: string;
+      password?: string;
+    }
+  | {
+      mode: 'secret-file';
+      name: string;
+      mime?: string;
+      payload: string;
+    };
+
+export interface JoinLinkAttachment {
+  id: string;
+  label: string;
+  recipe: TransportRecipe;
+}
+
+export interface JoinLink {
+  p: 'nb.join.v1';
+  space: JoinLinkSpace;
+  attachments: JoinLinkAttachment[];
+}
+
+export interface ProviderAccount {
+  id: string;
+  provider: string;
+  label: string;
+  email?: string;
+  state: 'connected' | 'attention' | 'unsupported';
+  detail?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProviderAuthSession {
+  id: string;
+  provider: string;
+  accountId: string;
+  status: 'pending' | 'ready' | 'failed';
+  detail: string;
+  authUrl?: string;
+  openedAt: number;
+  expiresAt: number;
+}
+
+export interface ProviderCatalogEntry {
+  provider: string;
+  label: string;
+  description: string;
+  badges: string[];
+  isConnected: boolean;
+  connectionState: 'available' | 'connected' | 'setup';
+  accountId?: string;
+  setup: ProviderSetupState;
+}
+
+export interface ProviderSetupState {
+  status: 'ready' | 'needs-config' | 'needs-install' | 'installing' | 'unsupported';
+  detail: string;
+  docsUrl?: string;
+  canConfigure?: boolean;
+  canInstall?: boolean;
+  config?: {
+    clientId?: string;
+    hasClientSecret?: boolean;
+    helperPath?: string;
+  };
+}
+
+export interface ManagedShare {
+  id: string;
+  provider: string;
+  accountId: string;
+  label: string;
+  role: 'owner' | 'recipient' | 'link';
+  localPath: string;
+  sourceId?: string;
+  syncMode: 'mirror';
+  remoteDescriptor: Record<string, unknown>;
+  capabilities: string[];
+  invitationEmails: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ManagedShareAttachment {
+  id: string;
+  shareId: string;
+  sourceId: string;
+  volumeId: string;
+  createdAt: number;
+}
+
+export interface TransportState {
+  status: 'idle' | 'ready' | 'syncing' | 'needs-auth' | 'unsupported' | 'attention';
+  detail: string;
+  badges: string[];
+  lastSyncAt?: number;
+}
+
+export interface ManagedShareSummary {
+  share: ManagedShare;
+  attachments: ManagedShareAttachment[];
+  state: TransportState;
+}
+
+export interface PlannedTransportCandidate {
+  endpoint: TransportEndpoint;
+  score: [number, number, number, number, number, number];
+  badges: string[];
+  supported: boolean;
+  reason: string;
+  matchKey?: string;
+}
+
+export interface PlannedAttachment {
+  attachment: JoinLinkAttachment;
+  selectedEndpoint: PlannedTransportCandidate | null;
+  candidates: PlannedTransportCandidate[];
+}
+
+export interface JoinLinkPlan {
+  link: JoinLink;
+  attachments: PlannedAttachment[];
+}
+
+export interface ProviderAccountsResponse {
+  accounts: ProviderAccount[];
+  providers: ProviderCatalogEntry[];
+  preferredProviders: string[];
+}
+
+export interface ManagedSharesResponse {
+  shares: ManagedShareSummary[];
+}
+
+export interface ConnectProviderAccountResponse {
+  status: 'connected' | 'pending' | 'failed';
+  account?: ProviderAccount;
+  authSession?: ProviderAuthSession;
+}
+
+export interface ConfigureProviderResponse {
+  setup: ProviderSetupState;
+}
+
+export interface ManagedShareMutationResponse {
+  summary: ManagedShareSummary;
+}
+
+export interface JoinLinkParseResponse {
+  plan: JoinLinkPlan;
+  space: JoinLinkSpace;
+}
+
+export interface JoinLinkOpenResponse extends JoinLinkParseResponse {
+  secret: string;
+  volumeId: string | null;
+  actions: Array<{
+    attachmentId: string;
+    endpointTransport?: string;
+    provider?: string;
+    status: 'attached' | 'planned' | 'needs-account' | 'unsupported';
+    shareId?: string;
+    detail: string;
+  }>;
 }
 
 export interface RootWriteFailure {
@@ -947,6 +1146,146 @@ export async function reconcileDiscoveredSources(
   return apiRequest<ReconcileSourcesResponse>('/sources/reconcile', {
     method: 'POST',
     body: JSON.stringify({ knownVolumeIds }),
+  });
+}
+
+export async function listProviderAccounts(): Promise<ProviderAccountsResponse> {
+  return apiRequest<ProviderAccountsResponse>('/integrations/accounts', {
+    method: 'GET',
+  });
+}
+
+export async function connectProviderAccount(input: {
+  provider: string;
+  label?: string;
+  email?: string;
+  preferred?: boolean;
+  authSessionId?: string;
+  credentials?: {
+    email?: string;
+    password?: string;
+    mfaCode?: string;
+  };
+}): Promise<ConnectProviderAccountResponse> {
+  return apiRequest<ConnectProviderAccountResponse>('/integrations/accounts/connect', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function disconnectProviderAccount(accountId: string): Promise<void> {
+  const encoded = encodeURIComponent(accountId);
+  await apiRequest(`/integrations/accounts/${encoded}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function configureProviderSetup(
+  provider: string,
+  input: {
+    clientId?: string;
+    clientSecret?: string;
+  }
+): Promise<ConfigureProviderResponse> {
+  const encoded = encodeURIComponent(provider);
+  return apiRequest<ConfigureProviderResponse>(`/integrations/providers/${encoded}/config`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function installProviderHelper(provider: string): Promise<ConfigureProviderResponse> {
+  const encoded = encodeURIComponent(provider);
+  return apiRequest<ConfigureProviderResponse>(`/integrations/providers/${encoded}/install`, {
+    method: 'POST',
+  });
+}
+
+export async function listManagedShares(): Promise<ManagedSharesResponse> {
+  return apiRequest<ManagedSharesResponse>('/integrations/shares', {
+    method: 'GET',
+  });
+}
+
+export async function createManagedShare(input: {
+  provider: string;
+  accountId: string;
+  label: string;
+  localPath?: string;
+  role?: ManagedShare['role'];
+  volumeId?: string;
+  remoteDescriptor?: Record<string, unknown>;
+  capabilities?: string[];
+}): Promise<ManagedShareMutationResponse> {
+  return apiRequest<ManagedShareMutationResponse>('/integrations/shares', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function inviteManagedShare(
+  shareId: string,
+  emails: string[]
+): Promise<ManagedShareMutationResponse> {
+  const encoded = encodeURIComponent(shareId);
+  return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/invite`, {
+    method: 'POST',
+    body: JSON.stringify({ emails }),
+  });
+}
+
+export async function attachManagedShare(
+  shareId: string,
+  volumeId: string
+): Promise<ManagedShareMutationResponse> {
+  const encoded = encodeURIComponent(shareId);
+  return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/attach`, {
+    method: 'POST',
+    body: JSON.stringify({ volumeId }),
+  });
+}
+
+export async function acceptManagedShare(input: {
+  provider: string;
+  accountId: string;
+  label: string;
+  volumeId?: string;
+  localPath?: string;
+  remoteDescriptor?: Record<string, unknown>;
+}): Promise<ManagedShareMutationResponse> {
+  return apiRequest<ManagedShareMutationResponse>('/integrations/shares/accept', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getManagedShareState(shareId: string): Promise<ManagedShareMutationResponse> {
+  const encoded = encodeURIComponent(shareId);
+  return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/state`, {
+    method: 'GET',
+  });
+}
+
+export async function parseJoinLink(input: {
+  serialized?: string;
+  link?: unknown;
+  preferredProviders?: string[];
+}): Promise<JoinLinkParseResponse> {
+  return apiRequest<JoinLinkParseResponse>('/links/join/parse', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function openJoinLink(input: {
+  serialized?: string;
+  link?: unknown;
+  volumeId?: string;
+  preferredProviders?: string[];
+}): Promise<JoinLinkOpenResponse> {
+  return apiRequest<JoinLinkOpenResponse>('/links/join/open', {
+    method: 'POST',
+    body: JSON.stringify(input),
   });
 }
 

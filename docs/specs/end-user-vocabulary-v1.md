@@ -66,12 +66,28 @@ Examples:
 - `Open folder`
 
 ### Provider
-Use `provider` names only as labels for the service hosting a storage location.
+`Provider` is the user-facing word for an external service or route family Nearbytes can use to satisfy a storage or join recipe.
+
+Use `provider` in UI for:
+
+- provider cards
+- provider badges
+- connected account status
+- managed-share selection
+- route choice when several transports are possible
+
+Use provider names as labels for both:
+
+- the service hosting a storage location
+- the service behind a managed share or suggested route
 
 Examples:
 - `Dropbox`
 - `Apple/iCloud`
 - `Google Drive`
+- `Choose a provider`
+- `Connected providers`
+- `This join link recommends Google Drive first`
 
 ### Keep rule / sync rule
 Use `keep rule` or `sync rule` for user-facing policy about where a space stores encrypted history and blocks.
@@ -153,6 +169,7 @@ Bad:
 
 Good:
 - `This storage location keeps a protected copy of this space`
+- `Choose a provider, then attach the managed share to this space`
 
 ### Use folder when asking for a path
 If the action opens a picker or file manager, say `folder`, not `location`.

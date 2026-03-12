@@ -13,6 +13,12 @@ import type { ChatService } from '../domain/chatService.js';
 import type { FileService } from '../domain/fileService.js';
 import type { StorageBackend } from '../types/storage.js';
 import { openVolume } from '../domain/volume.js';
+import { joinLinkSpaceToSecretString } from '../domain/joinLinkCodec.js';
+import {
+  ManagedShareService,
+  ManagedShareServiceError,
+  type ManagedShareServiceOptions,
+} from '../integrations/managedShares.js';
 import { bytesToHex } from '../utils/encoding.js';
 import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import { ApiError } from './errors.js';
@@ -27,15 +33,26 @@ import {
 import {
   consolidateRootBodySchema,
   consolidateRootParamSchema,
+  configureProviderBodySchema,
+  connectProviderAccountBodySchema,
+  createManagedShareBodySchema,
+  inviteManagedShareBodySchema,
+  attachManagedShareBodySchema,
+  acceptManagedShareBodySchema,
   exportRecipientReferencesBodySchema,
   exportReferencesBodySchema,
   fileHashParamSchema,
   fileNameParamSchema,
   importRecipientReferencesBodySchema,
   importSourceReferencesBodySchema,
+  managedShareIdParamSchema,
   openRootInFileManagerBodySchema,
+  openJoinLinkBodySchema,
   openBodySchema,
   parseWithSchema,
+  parseJoinLinkBodySchema,
+  providerAccountIdParamSchema,
+  providerIdParamSchema,
   publishIdentityBodySchema,
   reconcileDiscoveredSourcesBodySchema,
   renameFileBodySchema,
@@ -61,6 +78,10 @@ export interface RouteDependencies {
   readonly rootsConfigPath?: string;
   /** Optional runtime token required in desktop mode. */
   readonly desktopApiToken?: string;
+  /** Optional overrides for managed provider integrations. */
+  readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
+  /** Optional pre-built service, mainly for tests. */
+  readonly managedShareService?: ManagedShareService;
 }
 
 /**
@@ -70,6 +91,15 @@ export function createRoutes(deps: RouteDependencies): Router {
   const router = Router();
   const watchHub = new VolumeWatchHub(deps.storage, deps.resolvedStorageDir);
   const sourceWatchHub = new SourceWatchHub();
+  const managedShareService =
+    deps.managedShareService ??
+    (deps.rootsConfigPath && isMultiRootStorageBackend(deps.storage)
+      ? new ManagedShareService({
+          storage: deps.storage,
+          rootsConfigPath: deps.rootsConfigPath,
+          ...deps.integrationOptions,
+        })
+      : null);
   const upload = multer({
     storage: multer.diskStorage({
       destination: (_req, _file, callback) => callback(null, os.tmpdir()),
@@ -84,6 +114,13 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
+
+  router.get('/oauth/google/callback', asyncHandler(async (req, res) => {
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const query = toUrlSearchParams(req.query);
+    const html = await service.handleProviderCallback('gdrive', query);
+    res.type('html').send(html);
+  }));
 
   if (deps.desktopApiToken) {
     router.use((req, _res, next) => {
@@ -206,6 +243,126 @@ export function createRoutes(deps: RouteDependencies): Router {
       sourceCount: sources.length,
       sources,
     });
+  }));
+
+  router.get('/integrations/accounts', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    res.json(await service.listAccounts());
+  }));
+
+  router.post('/integrations/accounts/connect', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const input = parseWithSchema(connectProviderAccountBodySchema, req.body);
+    res.json(await service.connectAccount(input, { callbackBaseUrl: getRequestOrigin(req) }));
+  }));
+
+  router.post('/integrations/providers/:provider/config', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { provider } = parseWithSchema(providerIdParamSchema, req.params);
+    const input = parseWithSchema(configureProviderBodySchema, req.body);
+    res.json({
+      setup: await service.configureProvider({
+        provider,
+        clientId: input.clientId,
+        clientSecret: input.clientSecret,
+      }),
+    });
+  }));
+
+  router.post('/integrations/providers/:provider/install', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { provider } = parseWithSchema(providerIdParamSchema, req.params);
+    res.json({
+      setup: await service.installProvider(provider),
+    });
+  }));
+
+  router.delete('/integrations/accounts/:id', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { id } = parseWithSchema(providerAccountIdParamSchema, req.params);
+    await service.disconnectAccount(id);
+    res.json({ ok: true });
+  }));
+
+  router.get('/integrations/shares', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    res.json(await service.listManagedShares());
+  }));
+
+  router.post('/integrations/shares', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const input = parseWithSchema(createManagedShareBodySchema, req.body);
+    res.json({
+      summary: await service.createManagedShare(input),
+    });
+  }));
+
+  router.post('/integrations/shares/:shareId/invite', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const input = parseWithSchema(inviteManagedShareBodySchema, req.body);
+    res.json({
+      summary: await service.inviteManagedShare(shareId, input.emails),
+    });
+  }));
+
+  router.post('/integrations/shares/:shareId/attach', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const input = parseWithSchema(attachManagedShareBodySchema, req.body);
+    res.json({
+      summary: await service.attachManagedShare(shareId, input),
+    });
+  }));
+
+  router.post('/integrations/shares/accept', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const input = parseWithSchema(acceptManagedShareBodySchema, req.body);
+    res.json({
+      summary: await service.acceptManagedShare(input),
+    });
+  }));
+
+  router.get('/integrations/shares/:shareId/state', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    res.json({
+      summary: await service.getManagedShareState(shareId),
+    });
+  }));
+
+  router.post('/links/join/parse', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const input = parseWithSchema(parseJoinLinkBodySchema, req.body);
+    res.json(await service.parseJoinLink(input));
+  }));
+
+  router.post('/links/join/open', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const input = parseWithSchema(openJoinLinkBodySchema, req.body);
+    const parsed = await service.parseJoinLink(input);
+    const volumeId =
+      input.volumeId?.trim().toLowerCase() ??
+      (await getVolumeId(joinLinkSpaceToSecretString(parsed.space), deps.crypto, deps.storage));
+    res.json(
+      await service.openJoinLink({
+        ...input,
+        volumeId,
+      })
+    );
   }));
 
   router.post('/sources/reconcile', asyncHandler(async (req, res) => {
@@ -629,7 +786,23 @@ type AsyncHandler = (req: Request, res: Response, next: NextFunction) => Promise
 
 function asyncHandler(handler: AsyncHandler): RequestHandler {
   return (req, res, next) => {
-    Promise.resolve(handler(req, res, next)).catch(next);
+    Promise.resolve(handler(req, res, next)).catch((error) => {
+      if (error instanceof ManagedShareServiceError) {
+        const apiCode =
+          error.status === 404
+            ? 'NOT_FOUND'
+            : error.status === 501
+              ? 'NOT_IMPLEMENTED'
+              : error.status === 401
+                ? 'UNAUTHORIZED'
+                : error.status === 403
+                  ? 'FORBIDDEN'
+                  : 'INVALID_REQUEST';
+        next(new ApiError(error.status, apiCode, error.message));
+        return;
+      }
+      next(error);
+    });
   };
 }
 
@@ -698,6 +871,15 @@ function getMultiRootStorageOrThrow(storage: StorageBackend): MultiRootStorageBa
   return storage;
 }
 
+function getManagedShareServiceOrThrow(
+  service: ManagedShareService | null
+): ManagedShareService {
+  if (!service) {
+    throw new ApiError(501, 'NOT_IMPLEMENTED', 'Managed provider integrations are not enabled');
+  }
+  return service;
+}
+
 function assertLocalConfigRequest(req: Request): void {
   const forwardedFor = req.get('x-forwarded-for');
   if (forwardedFor) {
@@ -730,6 +912,33 @@ function parseOptionalInt(value: unknown): number | undefined {
     return undefined;
   }
   return parsed;
+}
+
+function getRequestOrigin(req: Request): string {
+  const protocol = req.protocol || 'http';
+  const host = req.get('host');
+  if (!host) {
+    throw new ApiError(500, 'INTERNAL_ERROR', 'Request host is not available');
+  }
+  return `${protocol}://${host}`;
+}
+
+function toUrlSearchParams(query: Request['query']): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (entry !== undefined) {
+          params.append(key, String(entry));
+        }
+      }
+      continue;
+    }
+    if (value !== undefined) {
+      params.append(key, String(value));
+    }
+  }
+  return params;
 }
 
 function writeSseEvent(res: Response, eventName: string, payload: unknown): void {
@@ -769,6 +978,8 @@ const DESKTOP_PROTECTED_API_PREFIXES = [
   '/snapshot',
   '/config',
   '/sources',
+  '/integrations',
+  '/links',
   '/watch',
   '/folders',
   '/references',
