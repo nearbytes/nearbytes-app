@@ -282,14 +282,13 @@ Google OAuth polling request example:
 
 ### POST /integrations/providers/:provider/config (local-only)
 
-Stores local provider setup needed before account connection. Nearbytes uses this for the Google Drive desktop OAuth client id and optional secret.
+Stores local provider setup needed before account connection. Nearbytes already ships with a built-in Google Drive Desktop app client ID, so this endpoint is mainly for advanced local overrides. The client secret field remains available only as an advanced local-only override.
 
 Request:
 
 ```json
 {
-  "clientId": "1234567890-abc123.apps.googleusercontent.com",
-  "clientSecret": "optional-secret"
+  "clientId": "1234567890-abc123.apps.googleusercontent.com"
 }
 ```
 
@@ -351,8 +350,8 @@ Environment variables:
 - `NEARBYTES_SERVER_TOKEN_KEY` (optional; enables Bearer tokens)
 - `NEARBYTES_CORS_ORIGIN` (default `http://localhost:5173`, use `*` for any origin)
 - `NEARBYTES_MAX_UPLOAD_MB` (default `50`)
-- `NEARBYTES_GOOGLE_CLIENT_ID` (required for Google Drive OAuth)
-- `NEARBYTES_GOOGLE_CLIENT_SECRET` (optional desktop-app client secret for Google OAuth)
+- `NEARBYTES_GOOGLE_CLIENT_ID` (optional override for the built-in Google Drive Desktop app client ID)
+- `NEARBYTES_GOOGLE_CLIENT_SECRET` (advanced local-only override; not needed for the default Desktop app PKCE flow)
 - `NEARBYTES_MEGACMD_DIR` (optional directory containing `mega-login`, `mega-sync`, and the rest of the MEGAcmd binaries)
 - `NEARBYTES_MEGA_REMOTE_BASE` (default `/Nearbytes`) - remote MEGA folder prefix for Nearbytes-managed shares
 

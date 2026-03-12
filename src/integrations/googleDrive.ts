@@ -99,7 +99,7 @@ export class GoogleDriveTransportAdapter {
     if (!clientId) {
       return {
         status: 'needs-config',
-        detail: 'Google Drive needs an OAuth client id. Create a Desktop app client in Google Cloud and paste the client id here.',
+        detail: 'Google Drive needs a Desktop app OAuth client ID. Nearbytes uses PKCE, so no client secret is required.',
         docsUrl: GOOGLE_CONSOLE_CLIENTS_URL,
         canConfigure: true,
         config: {

@@ -3829,6 +3829,7 @@
       ondrop={handleSecretFileDrop}
     >
       <MountRail dragging={draggingMountId !== null}>
+        {#snippet children()}
         {#each mounts as mount (mount.id)}
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
           {@const isPending = pendingMountId === mount.id}
@@ -4031,8 +4032,9 @@
             {/if}
           </div>
         {/each}
+        {/snippet}
+        {#snippet actions()}
         <div
-          slot="actions"
           class="mounts-actions"
           class:visible={
             isHeaderHovering ||
@@ -4109,6 +4111,7 @@
             <Plus size={15} strokeWidth={2.2} />
           </button>
         </div>
+        {/snippet}
       </MountRail>
 
       {#if showChatWorkspace && showIdentityManager}

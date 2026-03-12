@@ -1,15 +1,23 @@
 <script lang="ts">
-  const { dragging = false } = $props<{
+  import type { Snippet } from 'svelte';
+
+  const {
+    dragging = false,
+    children,
+    actions,
+  } = $props<{
     dragging?: boolean;
+    children?: Snippet;
+    actions?: Snippet;
   }>();
 </script>
 
 <div class="mount-rail" class:dragging>
   <div class="mount-rail-track">
-    <slot />
+    {@render children?.()}
   </div>
   <div class="mount-rail-actions">
-    <slot name="actions" />
+    {@render actions?.()}
   </div>
 </div>
 

@@ -68,6 +68,8 @@ export interface IntegrationRuntimeOptions {
 
 const DEFAULT_GOOGLE_SCOPES = ['https://www.googleapis.com/auth/drive'] as const;
 const DEFAULT_SYNC_INTERVAL_MS = 20_000;
+export const DEFAULT_GOOGLE_DESKTOP_CLIENT_ID =
+  '381193316033-b1g7h9dovqs5j22fi7obc4jug4o77vmi.apps.googleusercontent.com';
 
 export function createIntegrationRuntime(options: IntegrationRuntimeOptions): IntegrationRuntime {
   return {
@@ -77,7 +79,10 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
     now: options.now ?? Date.now,
     logger: options.logger ?? console,
     google: {
-      clientId: options.google?.clientId?.trim() || process.env.NEARBYTES_GOOGLE_CLIENT_ID?.trim() || undefined,
+      clientId:
+        options.google?.clientId?.trim() ||
+        process.env.NEARBYTES_GOOGLE_CLIENT_ID?.trim() ||
+        DEFAULT_GOOGLE_DESKTOP_CLIENT_ID,
       clientSecret:
         options.google?.clientSecret?.trim() || process.env.NEARBYTES_GOOGLE_CLIENT_SECRET?.trim() || undefined,
       authorizationBaseUrl:

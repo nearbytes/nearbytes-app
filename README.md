@@ -151,7 +151,9 @@ nearbytes desktop api-info --json
 - `NEARBYTES_DESKTOP_SESSION_FILE` (default: `~/.nearbytes/desktop-session.json`) - desktop API session file
 - `NEARBYTES_DESKTOP_SESSION_TTL_MS` (default: `28800000`) - desktop API token/session lifetime
 - `NEARBYTES_DISABLE_AUTO_UPDATE=1` - disables auto-update checks in desktop runtime
-- `NEARBYTES_GOOGLE_CLIENT_ID` / `NEARBYTES_GOOGLE_CLIENT_SECRET` - optional fallback for Google Drive managed-share OAuth; you can now paste the Desktop app client id directly in the app
+- Nearbytes ships with a built-in Google Drive Desktop app client ID for the default OAuth flow.
+- `NEARBYTES_GOOGLE_CLIENT_ID` - optional override if you want to use your own Google OAuth client instead
+- `NEARBYTES_GOOGLE_CLIENT_SECRET` - advanced local-only fallback for Google OAuth; not needed for the default Desktop app PKCE flow and should never be committed or shipped
 - `NEARBYTES_MEGACMD_DIR` - optional override if you want to point Nearbytes at an existing MEGAcmd install; otherwise the app can fetch the helper automatically
 - `NEARBYTES_MEGA_REMOTE_BASE` (default: `/Nearbytes`) - remote MEGA folder prefix for Nearbytes-managed shares
 - `NEARBYTES_RELEASE_OWNER` / `NEARBYTES_RELEASE_REPO` - repository used by installer publishing and updater metadata
@@ -254,7 +256,8 @@ Environment variables:
 - `NEARBYTES_SERVER_TOKEN_KEY` (optional) - 32-byte key (hex or base64) to keep accepting legacy stateless Bearer tokens as a compatibility fallback
 - `NEARBYTES_CORS_ORIGIN` (default: `http://localhost:5173`) - CORS origin
 - `NEARBYTES_MAX_UPLOAD_MB` (default: `50`) - Maximum upload size in MB
-- `NEARBYTES_GOOGLE_CLIENT_ID` / `NEARBYTES_GOOGLE_CLIENT_SECRET` - optional fallback for Google Drive managed-share OAuth
+- `NEARBYTES_GOOGLE_CLIENT_ID` - optional override if you want to use your own Google OAuth client
+- `NEARBYTES_GOOGLE_CLIENT_SECRET` - advanced local-only fallback; not needed for the default Desktop app PKCE flow
 - `NEARBYTES_MEGACMD_DIR` - optional directory containing the MEGAcmd binaries for Nearbytes-managed MEGA shares
 - `NEARBYTES_MEGA_REMOTE_BASE` (default: `/Nearbytes`) - remote MEGA folder prefix for Nearbytes-managed shares
 

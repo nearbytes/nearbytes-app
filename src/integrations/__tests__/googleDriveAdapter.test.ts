@@ -3,7 +3,11 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GoogleDriveTransportAdapter } from '../googleDrive.js';
-import { createIntegrationRuntime, type ProviderSecretStore } from '../runtime.js';
+import {
+  DEFAULT_GOOGLE_DESKTOP_CLIENT_ID,
+  createIntegrationRuntime,
+  type ProviderSecretStore,
+} from '../runtime.js';
 import type { ManagedShare } from '../types.js';
 
 interface FakeDriveRecord {
@@ -178,14 +182,16 @@ describe('GoogleDriveTransportAdapter', () => {
     });
     const adapter = new GoogleDriveTransportAdapter(runtime, createFakeGoogleFetch(driveState));
     const setupBefore = await adapter.getSetupState();
-    expect(setupBefore.status).toBe('needs-config');
+    expect(setupBefore.status).toBe('ready');
+    expect(setupBefore.config?.clientId).toBe(DEFAULT_GOOGLE_DESKTOP_CLIENT_ID);
     await adapter.configure({
       provider: 'gdrive',
       clientId: 'test-client-id',
-      clientSecret: 'test-client-secret',
     });
     const setupAfter = await adapter.getSetupState();
     expect(setupAfter.status).toBe('ready');
+    expect(setupAfter.config?.clientId).toBe('test-client-id');
+    expect(setupAfter.config?.hasClientSecret).toBe(false);
 
     const pending = await adapter.connect(
       {

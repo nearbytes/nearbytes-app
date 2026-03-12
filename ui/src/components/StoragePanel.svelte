@@ -32,9 +32,7 @@
   } from '../lib/api.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
   import {
-    ArrowDownToLine,
     ArrowRightLeft,
-    ArrowUpToLine,
     FolderOpen,
     HardDrive,
     Plus,
@@ -67,6 +65,8 @@
   }>();
 
   type StatusTone = 'good' | 'warn' | 'muted';
+  type GlobalStorageView = 'providers' | 'mirrors' | 'folders';
+  type VolumeStorageView = 'copies' | 'mirrors' | 'folders';
 
   const DISMISSED_DISCOVERY_KEY = 'nearbytes-source-discovery-dismissed-v1';
   const RESERVE_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
@@ -98,7 +98,9 @@
   let integrationBusyKey = $state<string | null>(null);
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
   let providerCredentialDrafts = $state<Record<string, { email: string; password: string; mfaCode: string }>>({});
-  let providerSetupDrafts = $state<Record<string, { clientId: string; clientSecret: string }>>({});
+  let providerSetupDrafts = $state<Record<string, { clientId: string }>>({});
+  let globalView = $state<GlobalStorageView>('providers');
+  let volumeView = $state<VolumeStorageView>('copies');
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
   let lastRefreshToken = $state(0);
@@ -125,6 +127,18 @@
 
   $effect(() => {
     persistDismissedDiscoveries(dismissedDiscoveries);
+  });
+
+  $effect(() => {
+    if (mode === 'global') {
+      if (focusSection === 'discovery' || focusSection === 'defaults') {
+        globalView = 'folders';
+      }
+      return;
+    }
+    if (focusSection === 'discovery' || focusSection === 'defaults') {
+      volumeView = 'folders';
+    }
   });
 
   $effect(() => {
@@ -244,6 +258,18 @@
     return `${count} ${count === 1 ? singular : plural}`;
   }
 
+  function connectedProviderCount(): number {
+    return providerAccounts.filter((account) => account.state === 'connected').length;
+  }
+
+  function readyMirrorCount(): number {
+    return managedShares.filter((summary) => summary.state.status === 'ready').length;
+  }
+
+  function activeFolderCount(): number {
+    return configDraft?.sources.filter((source) => source.enabled).length ?? 0;
+  }
+
   function connectedAccountForProvider(provider: string): ProviderAccount | null {
     return providerAccounts.find((account) => account.provider === provider) ?? null;
   }
@@ -256,8 +282,8 @@
     return providerCredentialDrafts[provider] ?? { email: '', password: '', mfaCode: '' };
   }
 
-  function providerSetupDraft(provider: string): { clientId: string; clientSecret: string } {
-    return providerSetupDrafts[provider] ?? { clientId: '', clientSecret: '' };
+  function providerSetupDraft(provider: string): { clientId: string } {
+    return providerSetupDrafts[provider] ?? { clientId: '' };
   }
 
   function setProviderCredential(
@@ -276,7 +302,7 @@
 
   function setProviderSetupField(
     provider: string,
-    field: 'clientId' | 'clientSecret',
+    field: 'clientId',
     value: string
   ): void {
     providerSetupDrafts = {
@@ -355,6 +381,16 @@
       return pending.detail;
     }
     return entry.setup.detail || entry.description;
+  }
+
+  function shouldShowProviderDocs(entry: ProviderCatalogEntry): boolean {
+    if (entry.provider === 'gdrive') {
+      return entry.setup.status === 'needs-config' || entry.setup.status === 'unsupported';
+    }
+    return Boolean(entry.setup.docsUrl) &&
+      (entry.setup.status === 'needs-config' ||
+        entry.setup.status === 'needs-install' ||
+        entry.setup.status === 'unsupported');
   }
 
   function managedShareOpenLabel(summary: ManagedShareSummary): string {
@@ -981,7 +1017,6 @@
           {
             clientId:
               provider.provider === 'gdrive' ? provider.setup.config?.clientId ?? providerSetupDraft(provider.provider).clientId : providerSetupDraft(provider.provider).clientId,
-            clientSecret: providerSetupDraft(provider.provider).clientSecret,
           },
         ])
       ),
@@ -1228,11 +1263,10 @@
       }
       await configureProviderSetup(provider.provider, {
         clientId: draft.clientId.trim() || undefined,
-        clientSecret: draft.clientSecret.trim() || undefined,
       });
       successMessage =
         provider.provider === 'gdrive'
-          ? 'Google OAuth client saved. You can connect now.'
+          ? 'Google client ID saved. You can connect now.'
           : `${provider.label} setup updated.`;
       await loadPanel();
     } catch (error) {
@@ -1406,15 +1440,16 @@
 {:else if configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
     {#if mode === 'global'}
-      <header class="hero">
+      <header class="hero storage-hero">
         <div class="hero-copy">
-          <p class="eyebrow">Storage locations</p>
-          <h2>Choose where Nearbytes stores encrypted data</h2>
+          <p class="eyebrow">Storage</p>
+          <h2>Providers, mirrors, and folders</h2>
           <p class="hero-text">
-            Nearbytes uses the folders shown here. Existing Nearbytes folders are found automatically, and you can add one yourself with the + card.
+            Keep the common path short: connect a provider, create a mirror when you need one, and touch local folders only when you want Nearbytes to store data on this machine.
           </p>
         </div>
         <div class="hero-actions">
+          <span class="summary-pill" class:warning={autosaveStatus === 'error'}>{autosaveLabel()}</span>
           <span class="summary-pill" class:warning={Boolean(discoveryError)}>{discoverySummary()}</span>
           <button
             type="button"
@@ -1430,9 +1465,32 @@
               <span>Show hidden</span>
             </button>
           {/if}
-          <span class="summary-pill" class:warning={autosaveStatus === 'error'}>{autosaveLabel()}</span>
         </div>
       </header>
+
+      <div class="overview-grid">
+        <article class="overview-card">
+          <p class="provider-label">Providers</p>
+          <h3>{connectedProviderCount()} connected</h3>
+          <p class="card-copy">Accounts Nearbytes can use directly.</p>
+        </article>
+        <article class="overview-card">
+          <p class="provider-label">Mirrors</p>
+          <h3>{countLabel(managedShares.length, 'mirror')}</h3>
+          <p class="card-copy">{readyMirrorCount()} ready for sync.</p>
+        </article>
+        <article class="overview-card">
+          <p class="provider-label">Folders</p>
+          <h3>{countLabel(configDraft.sources.length, 'folder')}</h3>
+          <p class="card-copy">{activeFolderCount()} enabled on this device.</p>
+        </article>
+      </div>
+
+      <nav class="view-switch" aria-label="Storage views">
+        <button type="button" class:active={globalView === 'providers'} onclick={() => (globalView = 'providers')}>Providers</button>
+        <button type="button" class:active={globalView === 'mirrors'} onclick={() => (globalView = 'mirrors')}>Mirrors</button>
+        <button type="button" class:active={globalView === 'folders'} onclick={() => (globalView = 'folders')}>Folders</button>
+      </nav>
 
       {#if errorMessage}
         <p class="panel-error">{errorMessage}</p>
@@ -1441,12 +1499,13 @@
         <p class="panel-success">{successMessage}</p>
       {/if}
 
+      {#if globalView === 'providers'}
       <section class="panel-section">
         <div class="section-head">
           <div>
             <p class="section-step">Providers</p>
-            <h3>Connect the providers Nearbytes can plan around</h3>
-            <p class="section-copy">Providers are account-backed routes such as Google Drive or MEGA. Nearbytes will prefer connected providers when a share recipe offers several options.</p>
+            <h3>Connect accounts once</h3>
+            <p class="section-copy">A provider is an account-backed route such as Google Drive or MEGA. Nearbytes will prefer connected providers automatically when a share link offers several paths.</p>
           </div>
           <div class="section-metrics">
             <span class="summary-pill">{countLabel(providerCatalog.length, 'provider')} ready</span>
@@ -1491,18 +1550,8 @@
                       oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
                     />
                   </label>
-                  <label class="field-block compact-field">
-                    <span>Client secret (optional)</span>
-                    <input
-                      class="panel-input"
-                      type="password"
-                      value={draft.clientSecret}
-                      placeholder="Optional"
-                      oninput={(event) => setProviderSetupField(provider.provider, 'clientSecret', (event.currentTarget as HTMLInputElement).value)}
-                    />
-                  </label>
                 </div>
-                <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client id here. The secret is optional because desktop apps are treated as public clients and Nearbytes uses PKCE.</p>
+                <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client ID here. Nearbytes uses the installed-app PKCE flow, so you do not need a client secret.</p>
               {/if}
 
               {#if !provider.isConnected && provider.provider === 'mega'}
@@ -1552,7 +1601,7 @@
               </div>
 
               <div class="button-row">
-                {#if provider.setup.docsUrl}
+                {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
                   <button
                     type="button"
                     class="panel-btn subtle compact"
@@ -1609,16 +1658,18 @@
           {/each}
         </div>
       </section>
+      {/if}
 
+      {#if globalView === 'mirrors'}
       <section class="panel-section">
         <div class="section-head">
           <div>
-            <p class="section-step">Managed shares</p>
-            <h3>Nearbytes-controlled provider mirrors</h3>
-            <p class="section-copy">Each managed share owns one local mirror folder and can later satisfy join-link recipes without asking you to pick a raw folder again.</p>
+            <p class="section-step">Mirrors</p>
+            <h3>Nearbytes-controlled cloud mirrors</h3>
+            <p class="section-copy">Each mirror owns one local folder and one remote route. This is the clean path for onboarding and share links.</p>
           </div>
           <div class="section-metrics">
-            <span class="summary-pill">{countLabel(managedShares.length, 'managed share')}</span>
+            <span class="summary-pill">{countLabel(managedShares.length, 'mirror')}</span>
           </div>
         </div>
 
@@ -1677,16 +1728,18 @@
           {/if}
         </div>
       </section>
+      {/if}
 
+      {#if globalView === 'folders'}
       <section class="panel-section">
         <div class="section-head">
           <div>
-            <p class="section-step">Saved storage locations</p>
-            <h3>One card per folder</h3>
-            <p class="section-copy">Read incoming data, write fresh data, choose whether new spaces keep a full copy here, or move the folder.</p>
+            <p class="section-step">Folders</p>
+            <h3>Folders on this device</h3>
+            <p class="section-copy">These are local folders Nearbytes can read from or write to. Defaults here affect new spaces on this device.</p>
           </div>
           <div class="section-metrics">
-            <span class="summary-pill">{countLabel(configDraft.sources.length, 'location')} saved</span>
+            <span class="summary-pill">{countLabel(configDraft.sources.length, 'folder')} saved</span>
             <span class="summary-pill" class:warning={!hasDurableDestination(null)}>{protectionSummary(null)}</span>
           </div>
         </div>
@@ -1731,98 +1784,43 @@
 
               <p class="card-copy">{locationSummary(source)}</p>
 
-              <div class="compact-toggle-row">
-                <label class="compact-icon-toggle" class:checked={source.enabled} title="Read incoming data">
+              <div class="toggle-stack">
+                <label class="inline-toggle compact-toggle-line">
                   <input
                     type="checkbox"
                     checked={source.enabled}
-                    aria-label="Read incoming data"
+                    aria-label="Use this folder for reads"
                     onchange={(event) => updateSourceField(source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)}
                   />
-                  <ArrowDownToLine size={14} strokeWidth={2} />
+                  <div>
+                    <span class="toggle-title">Use for reads</span>
+                    <span class="toggle-copy">Read existing Nearbytes data from this folder.</span>
+                  </div>
                 </label>
-                <label class="compact-icon-toggle" class:checked={source.writable} title="Write fresh data">
+                <label class="inline-toggle compact-toggle-line">
                   <input
                     type="checkbox"
                     checked={source.writable}
-                    aria-label="Write fresh data"
+                    aria-label="Save new data here"
                     onchange={(event) => updateSourceField(source.id, 'writable', (event.currentTarget as HTMLInputElement).checked)}
                   />
-                  <ArrowUpToLine size={14} strokeWidth={2} />
+                  <div>
+                    <span class="toggle-title">Save new data here</span>
+                    <span class="toggle-copy">Allow Nearbytes to write new encrypted data here.</span>
+                  </div>
                 </label>
-                <label
-                  class="compact-icon-toggle"
-                  class:checked={keepsFullCopy(defaultDestination)}
-                  title="Keep new spaces here"
-                >
+                <label class="inline-toggle compact-toggle-line">
                   <input
                     type="checkbox"
                     checked={keepsFullCopy(defaultDestination)}
                     aria-label="Keep new spaces here"
                     onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
                   />
-                  <Shield size={14} strokeWidth={2} />
+                  <div>
+                    <span class="toggle-title">Use by default for new spaces</span>
+                    <span class="toggle-copy">{copyHelpText(null, source)}</span>
+                  </div>
                 </label>
-              </div>
-
-              <div class="card-control-row">
-                <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
-                  <span>Keep free</span>
-                  <select
-                    class="panel-input"
-                    value={String(sourceReservePercent(source))}
-                    onchange={(event) => {
-                      const nextValue = clampReserve((event.currentTarget as HTMLSelectElement).value);
-                      updateSourceField(source.id, 'reservePercent', nextValue);
-                      if (keepsFullCopy(defaultDestination)) {
-                        updateDestinationField(null, source.id, 'reservePercent', nextValue);
-                      }
-                    }}
-                  >
-                    {#each RESERVE_OPTIONS as option}
-                      <option value={option}>{formatPercent(option)}</option>
-                    {/each}
-                  </select>
-                </label>
-
-                <div class="button-row">
-                  {#if hasSourcePath(source)}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void moveSourceFolder(source.id)}
-                      disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
-                      title="Move this storage location to a different folder without interrupting service"
-                    >
-                      <ArrowRightLeft size={14} strokeWidth={2} />
-                      <span>{movingSourceId === source.id ? 'Moving...' : 'Move folder'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => openSourceFolder(source.id)}
-                      title={source.path || 'Open folder'}
-                    >
-                      <FolderOpen size={14} strokeWidth={2} />
-                      <span>Open</span>
-                    </button>
-                  {:else}
-                    <button type="button" class="panel-btn subtle compact" onclick={() => chooseSourceFolder(source.id)}>
-                      <Search size={14} strokeWidth={2} />
-                      <span>Choose folder</span>
-                    </button>
-                  {/if}
-                  {#if canRemoveAnySource()}
-                    <ArmedActionButton
-                      class="panel-btn subtle compact danger"
-                      icon={Trash2}
-                      text="Remove"
-                      armed={true}
-                      autoDisarmMs={3000}
-                      onPress={() => removeSource(source.id)}
-                    />
-                  {/if}
-                </div>
               </div>
 
               <div class="fact-row">
@@ -1830,9 +1828,72 @@
                 <span>{usageSummary(source.id)}</span>
               </div>
 
-              {#if status?.lastWriteFailure}
-                <p class="warning-copy">Last write problem: {status.lastWriteFailure.message}</p>
-              {/if}
+              <details class="details-card inline-details">
+                <summary>Advanced</summary>
+                <div class="card-control-row">
+                  <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
+                    <span>Keep free</span>
+                    <select
+                      class="panel-input"
+                      value={String(sourceReservePercent(source))}
+                      onchange={(event) => {
+                        const nextValue = clampReserve((event.currentTarget as HTMLSelectElement).value);
+                        updateSourceField(source.id, 'reservePercent', nextValue);
+                        if (keepsFullCopy(defaultDestination)) {
+                          updateDestinationField(null, source.id, 'reservePercent', nextValue);
+                        }
+                      }}
+                    >
+                      {#each RESERVE_OPTIONS as option}
+                        <option value={option}>{formatPercent(option)}</option>
+                      {/each}
+                    </select>
+                  </label>
+
+                  <div class="button-row">
+                    {#if hasSourcePath(source)}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => void moveSourceFolder(source.id)}
+                        disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
+                        title="Move this storage location to a different folder without interrupting service"
+                      >
+                        <ArrowRightLeft size={14} strokeWidth={2} />
+                        <span>{movingSourceId === source.id ? 'Moving...' : 'Move folder'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => openSourceFolder(source.id)}
+                        title={source.path || 'Open folder'}
+                      >
+                        <FolderOpen size={14} strokeWidth={2} />
+                        <span>Open</span>
+                      </button>
+                    {:else}
+                      <button type="button" class="panel-btn subtle compact" onclick={() => chooseSourceFolder(source.id)}>
+                        <Search size={14} strokeWidth={2} />
+                        <span>Choose folder</span>
+                      </button>
+                    {/if}
+                    {#if canRemoveAnySource()}
+                      <ArmedActionButton
+                        class="panel-btn subtle compact danger"
+                        icon={Trash2}
+                        text="Remove"
+                        armed={true}
+                        autoDisarmMs={3000}
+                        onPress={() => removeSource(source.id)}
+                      />
+                    {/if}
+                  </div>
+                </div>
+
+                {#if status?.lastWriteFailure}
+                  <p class="warning-copy">Last write problem: {status.lastWriteFailure.message}</p>
+                {/if}
+              </details>
             </article>
           {/each}
           {#each sourceSuggestionRows() as row (row.source.path)}
@@ -1885,13 +1946,14 @@
           <p class="mono-copy">{configPath}</p>
         </details>
       {/if}
+      {/if}
     {:else}
-      <header class="hero compact-hero">
+      <header class="hero compact-hero storage-hero">
         <div class="hero-copy">
           <p class="eyebrow">This space</p>
-          <h2>Choose which locations keep a protected copy</h2>
+          <h2>Copies, mirrors, and machine folders</h2>
           <p class="hero-text">
-            Turn on at least one writable location below. Existing Nearbytes folders are found automatically, and you can add one yourself with the + card.
+            First decide where this space keeps a protected copy. Mirrors are cloud-backed routes for sharing; folders are local storage on this machine.
           </p>
         </div>
         <div class="hero-actions">
@@ -1917,6 +1979,32 @@
         </div>
       </header>
 
+      {#if volumeId}
+        <div class="overview-grid">
+          <article class="overview-card">
+            <p class="provider-label">Copies</p>
+            <h3>{protectionSummary(volumeId)}</h3>
+            <p class="card-copy">{hasDurableDestination(volumeId) ? 'This space is protected.' : 'Choose at least one protected copy.'}</p>
+          </article>
+          <article class="overview-card">
+            <p class="provider-label">Mirrors</p>
+            <h3>{countLabel(managedSharesForVolume(volumeId).length, 'mirror')}</h3>
+            <p class="card-copy">{countLabel(availableManagedSharesForVolume(volumeId).length, 'mirror')} available to attach.</p>
+          </article>
+          <article class="overview-card">
+            <p class="provider-label">Folders</p>
+            <h3>{countLabel(configDraft.sources.length, 'folder')}</h3>
+            <p class="card-copy">Machine-level storage shared by all spaces on this device.</p>
+          </article>
+        </div>
+
+        <nav class="view-switch" aria-label="Space storage views">
+          <button type="button" class:active={volumeView === 'copies'} onclick={() => (volumeView = 'copies')}>Copies</button>
+          <button type="button" class:active={volumeView === 'mirrors'} onclick={() => (volumeView = 'mirrors')}>Mirrors</button>
+          <button type="button" class:active={volumeView === 'folders'} onclick={() => (volumeView = 'folders')}>Folders</button>
+        </nav>
+      {/if}
+
       {#if errorMessage}
         <p class="panel-error">{errorMessage}</p>
       {/if}
@@ -1927,16 +2015,17 @@
       {#if !volumeId}
         <p class="storage-message">Open this space first, then choose which locations keep a full copy.</p>
       {:else}
+        {#if volumeView === 'mirrors'}
         <section class="panel-section">
           <div class="section-head">
             <div>
-              <p class="section-step">Provider shares</p>
-              <h3>Attach or create managed routes for this space</h3>
-              <p class="section-copy">Connected providers can create managed mirrors for this space, and already-saved managed shares can be attached here in one click.</p>
+              <p class="section-step">Mirrors</p>
+              <h3>Cloud routes for this space</h3>
+              <p class="section-copy">Create a new mirror on a connected provider, or attach an existing one that Nearbytes already knows about.</p>
             </div>
             <div class="section-metrics">
-              <span class="summary-pill">{countLabel(managedSharesForVolume(volumeId).length, 'managed share')} attached</span>
-              <span class="summary-pill">{countLabel(availableManagedSharesForVolume(volumeId).length, 'managed share')} available</span>
+              <span class="summary-pill">{countLabel(managedSharesForVolume(volumeId).length, 'mirror')} attached</span>
+              <span class="summary-pill">{countLabel(availableManagedSharesForVolume(volumeId).length, 'mirror')} available</span>
             </div>
           </div>
 
@@ -1979,18 +2068,8 @@
                         oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
                       />
                     </label>
-                    <label class="field-block compact-field">
-                      <span>Client secret (optional)</span>
-                      <input
-                        class="panel-input"
-                        type="password"
-                        value={draft.clientSecret}
-                        placeholder="Optional"
-                        oninput={(event) => setProviderSetupField(provider.provider, 'clientSecret', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
                   </div>
-                  <p class="muted-copy">Create a Google OAuth Desktop app client, paste the client id here, then connect. The secret is optional because Nearbytes uses the installed-app PKCE flow.</p>
+                  <p class="muted-copy">Create a Google OAuth Desktop app client, paste the client ID here, then connect. Nearbytes uses the installed-app PKCE flow, so you do not need a client secret.</p>
                 {/if}
 
                 {#if !provider.isConnected && provider.provider === 'mega'}
@@ -2030,7 +2109,7 @@
                 {/if}
 
                 <div class="button-row">
-                  {#if provider.setup.docsUrl}
+                  {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
                     <button
                       type="button"
                       class="panel-btn subtle compact"
@@ -2158,7 +2237,9 @@
             {/each}
           </div>
         </section>
+        {/if}
 
+        {#if volumeView === 'copies'}
         <div class="protection-banner" class:warning={!hasDurableDestination(volumeId)}>
           <Shield size={15} strokeWidth={2} />
           <span>{protectionHint(volumeId)}</span>
@@ -2171,8 +2252,8 @@
         <section class="panel-section">
           <div class="section-head">
             <div>
-              <p class="section-step">Saved rule for this space</p>
-              <h3>{explicitVolumePolicy(volumeId) ? 'This space has its own rule' : 'This space is currently using the default rule'}</h3>
+              <p class="section-step">Copies</p>
+              <h3>{explicitVolumePolicy(volumeId) ? 'This space has its own copy rule' : 'This space currently inherits the default copy rule'}</h3>
               <p class="section-copy">
                 {#if explicitVolumePolicy(volumeId)}
                   Changes below are saved only for this space. Remove the custom rule to use the default rule again.
@@ -2227,62 +2308,65 @@
 
                 <p class="card-copy">{copyHelpText(volumeId, source)}</p>
 
-                {#if keepsFullCopy(destination)}
-                  <div class="field-grid">
-                    <label class="field-block">
-                      <span>Keep free</span>
-                      <select
-                        class="panel-input"
-                        value={String(destinationReservePercent(destination))}
-                        onchange={(event) =>
-                          updateDestinationField(volumeId, source.id, 'reservePercent', clampReserve((event.currentTarget as HTMLSelectElement).value))}
-                      >
-                        {#each RESERVE_OPTIONS as option}
-                          <option value={option}>{formatPercent(option)}</option>
-                        {/each}
-                      </select>
-                    </label>
-                    <label class="field-block">
-                      <span>If space runs low</span>
-                      <select
-                        class="panel-input"
-                        value={destination?.fullPolicy ?? 'block-writes'}
-                        onchange={(event) =>
-                          updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
-                      >
-                        <option value="block-writes">Never delete this protected copy</option>
-                        <option value="drop-older-blocks">Delete blocks here after another protected copy exists</option>
-                      </select>
-                    </label>
-                  </div>
-                {/if}
-
-                <div class="button-row">
-                  <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id)} disabled={!hasSourcePath(source)}>
-                    <FolderOpen size={14} strokeWidth={2} />
-                    <span>Open</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => void (hasSourcePath(source) ? moveSourceFolder(source.id) : chooseSourceFolder(source.id))}
-                    disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
-                    title={hasSourcePath(source) ? 'Move this storage location without interrupting service' : 'Choose folder'}
-                  >
-                    <ArrowRightLeft size={14} strokeWidth={2} />
-                    <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move folder' : 'Choose folder'}</span>
-                  </button>
-                  {#if canRemoveAnySource()}
-                    <ArmedActionButton
-                      class="panel-btn subtle compact danger"
-                      icon={Trash2}
-                      text="Remove"
-                      armed={true}
-                      autoDisarmMs={3000}
-                      onPress={() => removeSource(source.id)}
-                    />
+                <details class="details-card inline-details">
+                  <summary>Advanced</summary>
+                  {#if keepsFullCopy(destination)}
+                    <div class="field-grid">
+                      <label class="field-block">
+                        <span>Keep free</span>
+                        <select
+                          class="panel-input"
+                          value={String(destinationReservePercent(destination))}
+                          onchange={(event) =>
+                            updateDestinationField(volumeId, source.id, 'reservePercent', clampReserve((event.currentTarget as HTMLSelectElement).value))}
+                        >
+                          {#each RESERVE_OPTIONS as option}
+                            <option value={option}>{formatPercent(option)}</option>
+                          {/each}
+                        </select>
+                      </label>
+                      <label class="field-block">
+                        <span>If space runs low</span>
+                        <select
+                          class="panel-input"
+                          value={destination?.fullPolicy ?? 'block-writes'}
+                          onchange={(event) =>
+                            updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
+                        >
+                          <option value="block-writes">Never delete this protected copy</option>
+                          <option value="drop-older-blocks">Delete blocks here after another protected copy exists</option>
+                        </select>
+                      </label>
+                    </div>
                   {/if}
-                </div>
+
+                  <div class="button-row">
+                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id)} disabled={!hasSourcePath(source)}>
+                      <FolderOpen size={14} strokeWidth={2} />
+                      <span>Open</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void (hasSourcePath(source) ? moveSourceFolder(source.id) : chooseSourceFolder(source.id))}
+                      disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
+                      title={hasSourcePath(source) ? 'Move this storage location without interrupting service' : 'Choose folder'}
+                    >
+                      <ArrowRightLeft size={14} strokeWidth={2} />
+                      <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move folder' : 'Choose folder'}</span>
+                    </button>
+                    {#if canRemoveAnySource()}
+                      <ArmedActionButton
+                        class="panel-btn subtle compact danger"
+                        icon={Trash2}
+                        text="Remove"
+                        armed={true}
+                        autoDisarmMs={3000}
+                        onPress={() => removeSource(source.id)}
+                      />
+                    {/if}
+                  </div>
+                </details>
 
                 <div class="fact-row">
                   <span>{locationSummary(source)}</span>
@@ -2332,6 +2416,213 @@
             </article>
           </div>
         </section>
+        {/if}
+
+        {#if volumeView === 'folders'}
+        <section class="panel-section">
+          <div class="section-head">
+            <div>
+              <p class="section-step">Folders</p>
+              <h3>Machine-level folders</h3>
+              <p class="section-copy">Changes here affect every space on this device. Use this view when you want to add, move, or disable a local storage folder.</p>
+            </div>
+            <div class="section-metrics">
+              <span class="summary-pill">{countLabel(configDraft.sources.length, 'folder')} saved</span>
+              <span class="summary-pill" class:warning={!hasDurableDestination(null)}>{protectionSummary(null)}</span>
+            </div>
+          </div>
+
+          {#if discoveryError}
+            <p class="warning-copy">{discoveryError}</p>
+          {/if}
+
+          <div class="protection-banner" class:warning={!hasDurableDestination(null)}>
+            <Shield size={15} strokeWidth={2} />
+            <span>{protectionHint(null)}</span>
+          </div>
+
+          <div class="card-grid">
+            {#each configDraft.sources as source (source.id)}
+              {@const status = sourceStatus(source.id)}
+              {@const availability = locationAvailability(source)}
+              {@const writeState = locationWriteState(source)}
+              {@const defaultDestination = destinationFor(null, source.id)}
+              <article class="location-card" class:active={protectionTone(defaultDestination, source.id) === 'durable'}>
+                <div class="card-head">
+                  <div class="card-title">
+                    <div class="card-icon" title={source.path || 'No folder selected yet'}>
+                      <HardDrive size={16} strokeWidth={2.1} />
+                    </div>
+                    <div title={source.path || 'No folder selected yet'}>
+                      <p class="provider-label">{formatProvider(source.provider)}</p>
+                      <h4>{compactPath(source.path)}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class={`status-pill tone-${availability.tone}`}>{availability.label}</span>
+                    <span class={`status-pill tone-${writeState.tone}`}>{writeState.label}</span>
+                    <span class={`status-pill tone-${protectionTone(defaultDestination, source.id)}`}>{protectionLabel(defaultDestination, source.id)}</span>
+                  </div>
+                </div>
+
+                <p class="card-copy">{locationSummary(source)}</p>
+
+                <div class="toggle-stack">
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="checkbox"
+                      checked={source.enabled}
+                      aria-label="Use this folder for reads"
+                      onchange={(event) => updateSourceField(source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                    <div>
+                      <span class="toggle-title">Use for reads</span>
+                      <span class="toggle-copy">Read existing Nearbytes data from this folder.</span>
+                    </div>
+                  </label>
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="checkbox"
+                      checked={source.writable}
+                      aria-label="Save new data here"
+                      onchange={(event) => updateSourceField(source.id, 'writable', (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                    <div>
+                      <span class="toggle-title">Save new data here</span>
+                      <span class="toggle-copy">Allow Nearbytes to write new encrypted data here.</span>
+                    </div>
+                  </label>
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="checkbox"
+                      checked={keepsFullCopy(defaultDestination)}
+                      aria-label="Use by default for new spaces"
+                      onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                    <div>
+                      <span class="toggle-title">Use by default for new spaces</span>
+                      <span class="toggle-copy">{copyHelpText(null, source)}</span>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="fact-row">
+                  <span>{status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown'}</span>
+                  <span>{usageSummary(source.id)}</span>
+                </div>
+
+                <details class="details-card inline-details">
+                  <summary>Advanced</summary>
+                  <div class="card-control-row">
+                    <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
+                      <span>Keep free</span>
+                      <select
+                        class="panel-input"
+                        value={String(sourceReservePercent(source))}
+                        onchange={(event) => {
+                          const nextValue = clampReserve((event.currentTarget as HTMLSelectElement).value);
+                          updateSourceField(source.id, 'reservePercent', nextValue);
+                          if (keepsFullCopy(defaultDestination)) {
+                            updateDestinationField(null, source.id, 'reservePercent', nextValue);
+                          }
+                        }}
+                      >
+                        {#each RESERVE_OPTIONS as option}
+                          <option value={option}>{formatPercent(option)}</option>
+                        {/each}
+                      </select>
+                    </label>
+
+                    <div class="button-row">
+                      {#if hasSourcePath(source)}
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => void moveSourceFolder(source.id)}
+                          disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
+                          title="Move this storage location to a different folder without interrupting service"
+                        >
+                          <ArrowRightLeft size={14} strokeWidth={2} />
+                          <span>{movingSourceId === source.id ? 'Moving...' : 'Move folder'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => openSourceFolder(source.id)}
+                          title={source.path || 'Open folder'}
+                        >
+                          <FolderOpen size={14} strokeWidth={2} />
+                          <span>Open</span>
+                        </button>
+                      {:else}
+                        <button type="button" class="panel-btn subtle compact" onclick={() => chooseSourceFolder(source.id)}>
+                          <Search size={14} strokeWidth={2} />
+                          <span>Choose folder</span>
+                        </button>
+                      {/if}
+                      {#if canRemoveAnySource()}
+                        <ArmedActionButton
+                          class="panel-btn subtle compact danger"
+                          icon={Trash2}
+                          text="Remove"
+                          armed={true}
+                          autoDisarmMs={3000}
+                          onPress={() => removeSource(source.id)}
+                        />
+                      {/if}
+                    </div>
+                  </div>
+
+                  {#if status?.lastWriteFailure}
+                    <p class="warning-copy">Last write problem: {status.lastWriteFailure.message}</p>
+                  {/if}
+                </details>
+              </article>
+            {/each}
+            {#each sourceSuggestionRows() as row (row.source.path)}
+              <article class="location-card suggestion-card">
+                <div class="card-head">
+                  <div class="card-title">
+                    <div class="card-icon" title={row.source.path}>
+                      <Search size={16} strokeWidth={2.1} />
+                    </div>
+                    <div title={row.source.path}>
+                      <p class="provider-label">{formatProvider(row.source.provider)}</p>
+                      <h4>{compactPath(row.source.path)}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class="status-pill tone-muted">Found automatically</span>
+                  </div>
+                </div>
+
+                <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
+
+                <div class="button-row">
+                  <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
+                    <Plus size={14} strokeWidth={2} />
+                    <span>Use folder</span>
+                  </button>
+                  <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
+                    <span>Hide</span>
+                  </button>
+                </div>
+              </article>
+            {/each}
+
+            <article class="location-card add-card">
+              <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
+                <Plus size={20} strokeWidth={2.1} />
+              </button>
+              <div class="usage-main">
+                <p class="provider-label">Manual</p>
+                <h4>Add a folder</h4>
+              </div>
+              <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
+            </article>
+          </div>
+        </section>
+        {/if}
       {/if}
     {/if}
   </section>
@@ -2396,6 +2687,59 @@
     border-radius: 20px;
     border: 1px solid var(--panel-soft-border);
     background: rgba(8, 18, 34, 0.72);
+  }
+
+  .storage-hero {
+    margin-bottom: 0.1rem;
+  }
+
+  .overview-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  }
+
+  .overview-card {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.82rem;
+    border-radius: 16px;
+    border: 1px solid var(--panel-soft-border);
+    background: rgba(7, 15, 29, 0.56);
+  }
+
+  .view-switch {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    padding: 0.28rem;
+    border-radius: 999px;
+    border: 1px solid var(--panel-soft-border);
+    background: rgba(8, 18, 33, 0.7);
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  .view-switch button {
+    min-height: 32px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-soft);
+    padding: 0 0.82rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease,
+      border-color 120ms ease;
+  }
+
+  .view-switch button.active {
+    border-color: rgba(45, 212, 191, 0.26);
+    background: rgba(8, 56, 49, 0.44);
+    color: var(--text-main);
   }
 
   .hero-copy,
@@ -2709,7 +3053,11 @@
     gap: 0.68rem;
   }
 
-  .compact-toggle-row,
+  .toggle-stack {
+    display: grid;
+    gap: 0.55rem;
+  }
+
   .card-control-row {
     display: flex;
     flex-wrap: wrap;
@@ -2720,33 +3068,6 @@
   .card-control-row {
     justify-content: space-between;
     align-items: end;
-  }
-
-  .compact-icon-toggle {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    border-radius: 10px;
-    border: 1px solid rgba(96, 165, 250, 0.14);
-    background: rgba(10, 18, 31, 0.6);
-    color: rgba(191, 219, 254, 0.82);
-    cursor: pointer;
-  }
-
-  .compact-icon-toggle.checked {
-    border-color: rgba(45, 212, 191, 0.26);
-    background: rgba(8, 56, 49, 0.42);
-    color: var(--teal);
-  }
-
-  .compact-icon-toggle input {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    cursor: pointer;
   }
 
   .compact-field {
@@ -2771,6 +3092,13 @@
   .inline-toggle > div {
     display: grid;
     gap: 0.12rem;
+  }
+
+  .compact-toggle-line {
+    padding: 0.68rem 0.74rem;
+    border-radius: 12px;
+    border: 1px solid rgba(96, 165, 250, 0.12);
+    background: rgba(10, 18, 31, 0.56);
   }
 
   .toggle-title {
@@ -2946,6 +3274,11 @@
     margin-bottom: 0.1rem;
   }
 
+  .inline-details {
+    padding: 0.72rem 0.78rem;
+    background: rgba(8, 18, 33, 0.42);
+  }
+
   @media (max-width: 760px) {
     .storage-panel {
       padding: 0.85rem;
@@ -2969,7 +3302,8 @@
     }
 
     .button-row > :global(*),
-    .hero-actions > * {
+    .hero-actions > *,
+    .view-switch {
       flex: 1 1 100%;
     }
   }

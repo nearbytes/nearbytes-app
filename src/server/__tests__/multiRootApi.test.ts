@@ -89,6 +89,13 @@ interface ProviderAccountsResponseBody {
   providers: Array<{
     provider: string;
     isConnected: boolean;
+    setup?: {
+      status: string;
+      config?: {
+        clientId?: string;
+        hasClientSecret?: boolean;
+      };
+    };
   }>;
 }
 
@@ -157,6 +164,8 @@ function createWritableSource(
 }
 
 class FakeProviderAdapter implements TransportAdapter {
+  private googleClientId?: string;
+
   constructor(
     readonly provider: string,
     readonly label: string,
@@ -164,6 +173,35 @@ class FakeProviderAdapter implements TransportAdapter {
   ) {}
 
   readonly supportsAccountConnection = true;
+
+  async getSetupState() {
+    if (this.provider === 'gdrive' && !this.googleClientId) {
+      return {
+        status: 'needs-config' as const,
+        detail: 'Google Drive needs a Desktop app OAuth client ID.',
+        config: {
+          hasClientSecret: false,
+        },
+      };
+    }
+    return {
+      status: 'ready' as const,
+      detail: `${this.label} is ready.`,
+      config: this.provider === 'gdrive'
+        ? {
+            clientId: this.googleClientId,
+            hasClientSecret: false,
+          }
+        : undefined,
+    };
+  }
+
+  async configure(input: { clientId?: string }) {
+    if (this.provider === 'gdrive') {
+      this.googleClientId = input.clientId?.trim() || undefined;
+    }
+    return this.getSetupState();
+  }
 
   async probe(endpoint: { transport: string; provider?: string }) {
     if (endpoint.transport === 'provider-share' && endpoint.provider === this.provider) {
@@ -579,6 +617,13 @@ describe('Nearbytes API (multi-root)', () => {
     expect(accountsBeforeBody.accounts).toEqual([]);
     expect(accountsBeforeBody.providers.some((provider) => provider.provider === 'gdrive')).toBe(true);
 
+    await request(app)
+      .post('/integrations/providers/gdrive/config')
+      .send({
+        clientId: '1234567890-test.apps.googleusercontent.com',
+      })
+      .expect(200);
+
     const connectRes = await request(app)
       .post('/integrations/accounts/connect')
       .send({
@@ -760,5 +805,24 @@ describe('Nearbytes API (multi-root)', () => {
     expect(consolidateBody.result.targetId).toBe('src-backup-2');
     expect(consolidateBody.config.sources.some((source) => source.id === 'src-backup-1')).toBe(false);
     expect(consolidateBody.config.sources.some((source) => source.id === 'src-backup-2')).toBe(true);
+  });
+
+  it('stores Google provider setup with only a client id', async () => {
+    const setupRes = await request(app)
+      .post('/integrations/providers/gdrive/config')
+      .send({
+        clientId: '1234567890-test.apps.googleusercontent.com',
+      })
+      .expect(200);
+
+    expect((setupRes.body as { setup?: { status?: string } }).setup?.status).toBe('ready');
+
+    const accountsRes = await request(app).get('/integrations/accounts').expect(200);
+    const accountsBody = typedBody<ProviderAccountsResponseBody>(accountsRes);
+    const gdriveProvider = accountsBody.providers.find((provider) => provider.provider === 'gdrive');
+
+    expect(gdriveProvider?.setup?.status).toBe('ready');
+    expect(gdriveProvider?.setup?.config?.clientId).toBe('1234567890-test.apps.googleusercontent.com');
+    expect(gdriveProvider?.setup?.config?.hasClientSecret).toBe(false);
   });
 });
