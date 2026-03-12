@@ -89,6 +89,6 @@ export function registerFileRemoveCommand(program: Command): void {
     .requiredOption('-n, --name <name>', 'File name to remove')
     .requiredOption('-s, --secret <secret>', 'Volume secret')
     .option('-f, --force', 'Force removal (no error if file does not exist)')
-    .option('-d, --data-dir <path>', 'Storage directory (default: MEGA cloud path)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
     .action(handleFileRemove);
 }

@@ -104,7 +104,7 @@ nearbytes list --secret "backup:password"
 
 ### "Invalid secret" Error
 
-- Secret must be at least 8 characters
+- Secret must be non-empty
 - Use format: "channelname:password"
 
 ### "Event signature verification failed"
@@ -117,4 +117,3 @@ nearbytes list --secret "backup:password"
 
 - Requires Node.js 18+
 - Check Node.js version: `node --version`
-

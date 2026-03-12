@@ -1,7 +1,12 @@
 {
   "name": "nearbytes-crypto",
-  "version": "1.0.0",
+  "version": "0.6.0",
+  "private": true,
+  "packageManager": "yarn@4.10.3",
   "description": "NearBytes cryptographic storage protocol - immutable data collections with end-to-end encryption",
+  "workspaces": [
+    "ui"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -9,6 +14,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:ui": "yarn --cwd ui build",
+    "build:electron": "tsc -p tsconfig.electron.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -18,10 +25,20 @@
     "start": "node dist/cli/index.js",
     "server": "node dist/server/index.js",
     "type-check": "tsc --noEmit",
-    "dev:server": "npm run build --silent && npm run server",
-    "dev:ui": "npm --prefix ui run dev",
-    "dev": "concurrently -k \"npm run dev:server\" \"npm run dev:ui\"",
-    "mega": "bash scripts/run-mega-dev.sh"
+    "dev:server": "yarn build && yarn server",
+    "dev:ui": "yarn --cwd ui dev",
+    "dev": "concurrently -k \"yarn dev:server\" \"yarn dev:ui\"",
+    "mega": "bash scripts/run-mega-dev.sh",
+    "desktop": "electron dist-electron/electron/main.js",
+    "desktop:run": "yarn build && yarn build:electron && wait-on http-get://127.0.0.1:5173 && cross-env NODE_ENV=development NEARBYTES_ELECTRON_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist-electron/electron/main.js",
+    "dev-run:raw": "concurrently -k \"yarn --cwd ui dev --host 127.0.0.1 --port 5173 --strictPort\" \"yarn desktop:run\"",
+    "dev-run": "node scripts/run-dev.mjs",
+    "run-dev": "node scripts/run-dev.mjs",
+    "dev-test": "yarn type-check && yarn test && yarn build:electron && node scripts/desktop-smoke.mjs",
+    "dev-build": "yarn build && yarn build:ui && yarn build:electron",
+    "production-build": "yarn dev-build && node scripts/run-electron-builder.mjs --publish never",
+    "production-build:publish": "yarn dev-build && node scripts/run-electron-builder.mjs --publish always",
+    "deploy": "node scripts/release-tag.mjs"
   },
   "keywords": [
     "cryptography",
@@ -31,14 +48,16 @@
     "immutable",
     "protocol"
   ],
-  "author": "",
+  "author": "Vincenzo Ciancia <vincenzoml@gmail.com>",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "chokidar": "^4.0.3",
     "commander": "^11.1.0",
     "cors": "^2.8.6",
+    "electron-updater": "^6.6.2",
     "express": "^4.22.1",
     "multer": "^2.0.2",
     "zod": "^4.3.6"
@@ -46,17 +65,88 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.25",
-    "@types/multer": "^2.0.0",
+    "@types/multer": "2.0.0",
     "@types/node": "^20.10.0",
     "@types/supertest": "^6.0.3",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
     "@vitest/coverage-v8": "^1.0.0",
     "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
     "eslint": "^8.54.0",
     "prettier": "^3.1.0",
     "supertest": "^7.2.2",
     "typescript": "^5.3.2",
-    "vitest": "^1.0.0"
+    "vitest": "^1.0.0",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "org.nearbytes.desktop",
+    "productName": "Nearbytes",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "asarUnpack": [
+      "dist/**"
+    ],
+    "files": [
+      "dist/**",
+      "!dist/*.dmg",
+      "!dist/*.zip",
+      "!dist/*.blockmap",
+      "!dist/latest*.yml",
+      "!dist/builder-*.yml",
+      "!dist/mac*/**",
+      "!dist/win*/**",
+      "!dist/linux*/**",
+      "dist-electron/**",
+      "electron/preload.cjs",
+      "ui/dist/**",
+      "package.json",
+      "README.md"
+    ],
+    "extraMetadata": {
+      "main": "dist-electron/electron/main.js"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icons/icon.icns"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icons/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "maintainer": "Vincenzo Ciancia <vincenzoml@gmail.com>",
+      "icon": "build/icons"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "${env.NEARBYTES_RELEASE_OWNER}",
+        "repo": "${env.NEARBYTES_RELEASE_REPO}",
+        "releaseType": "release",
+        "vPrefixedTagName": true
+      }
+    ],
+    "icon": "build/icons/icon.png",
+    "nsis": {
+      "installerIcon": "build/icons/icon.ico",
+      "uninstallerIcon": "build/icons/icon.ico"
+    }
   }
 }

@@ -40,6 +40,15 @@ export function bytesToBase64(bytes: Uint8Array): string {
 }
 
 /**
+ * Converts a Uint8Array to a base64url string without padding.
+ * @param bytes - Byte array to convert
+ * @returns Base64url string
+ */
+export function bytesToBase64Url(bytes: Uint8Array): string {
+  return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+}
+
+/**
  * Converts a base64 string to a Uint8Array
  * @param base64 - Base64 string
  * @returns Byte array
@@ -72,4 +81,3 @@ export function base64UrlToBytes(base64url: string): Uint8Array {
     throw new Error(`Invalid base64url string: ${error instanceof Error ? error.message : 'unknown error'}`);
   }
 }
-

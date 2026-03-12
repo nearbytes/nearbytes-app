@@ -1,0 +1,39 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="120" x2="860" y2="912" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A2342"/>
+      <stop offset="1" stop-color="#020B18"/>
+    </linearGradient>
+    <radialGradient id="bgGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(338 274) rotate(46) scale(728 644)">
+      <stop stop-color="#0EA5E9" stop-opacity="0.24"/>
+      <stop offset="0.48" stop-color="#0EA5E9" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#0EA5E9" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="leftStroke" x1="258" y1="252" x2="586" y2="774" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A7F3FF"/>
+      <stop offset="0.48" stop-color="#3BCBFF"/>
+      <stop offset="1" stop-color="#0891B2"/>
+    </linearGradient>
+    <linearGradient id="rightStroke" x1="578" y1="274" x2="782" y2="770" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#79F2E6"/>
+      <stop offset="1" stop-color="#14B8A6"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="684" y1="212" x2="804" y2="332" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#F97316"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="220" fill="url(#bg)"/>
+  <rect x="72" y="72" width="880" height="880" rx="220" fill="url(#bgGlow)"/>
+  <rect x="92" y="92" width="840" height="840" rx="200" stroke="#B9E6FF" stroke-opacity="0.12" stroke-width="2"/>
+
+  <path d="M292 742V282" stroke="url(#leftStroke)" stroke-width="110" stroke-linecap="round"/>
+  <path d="M324 312L700 706" stroke="url(#leftStroke)" stroke-width="110" stroke-linecap="round"/>
+  <path d="M732 742V282" stroke="url(#rightStroke)" stroke-width="110" stroke-linecap="round"/>
+
+  <circle cx="766" cy="258" r="56" fill="url(#accent)"/>
+  <circle cx="766" cy="258" r="56" fill="#FFFFFF" fill-opacity="0.08"/>
+  <circle cx="766" cy="258" r="21" fill="#FFF7ED" fill-opacity="0.26"/>
+  <circle cx="766" cy="258" r="58" stroke="#FFF7ED" stroke-opacity="0.12" stroke-width="6"/>
+</svg>

@@ -1,24 +1,46 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { Router } from 'express';
+import { spawn } from 'child_process';
+import { timingSafeEqual } from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import multer from 'multer';
+import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
+import { discoverNearbytesSources, ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
+import { reconcileDiscoveredSources } from '../config/sourceReconcile.js';
 import type { CryptoOperations } from '../crypto/index.js';
+import type { ChatService } from '../domain/chatService.js';
 import type { FileService } from '../domain/fileService.js';
 import type { StorageBackend } from '../types/storage.js';
 import { openVolume } from '../domain/volume.js';
 import { bytesToHex } from '../utils/encoding.js';
+import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import { ApiError } from './errors.js';
 import { encodeSecretToken, getSecretFromRequest, validateSecret } from './auth.js';
+import type { SecretSessionStore } from './secretSessions.js';
+import { VolumeWatchHub } from './volumeWatchHub.js';
+import { SourceWatchHub } from './sourceWatchHub.js';
 import {
   getStorageDiagnostics,
   getChannelDiagnostics,
 } from './storageDiagnostics.js';
 import {
+  consolidateRootBodySchema,
+  consolidateRootParamSchema,
+  exportRecipientReferencesBodySchema,
+  exportReferencesBodySchema,
   fileHashParamSchema,
   fileNameParamSchema,
+  importRecipientReferencesBodySchema,
+  importSourceReferencesBodySchema,
+  openRootInFileManagerBodySchema,
   openBodySchema,
   parseWithSchema,
+  publishIdentityBodySchema,
+  reconcileDiscoveredSourcesBodySchema,
+  renameFileBodySchema,
+  renameFolderBodySchema,
+  sendChatMessageBodySchema,
   uploadFieldsSchema,
 } from './validation.js';
 
@@ -27,12 +49,18 @@ import {
  */
 export interface RouteDependencies {
   readonly fileService: FileService;
+  readonly chatService: ChatService;
   readonly crypto: CryptoOperations;
   readonly storage: StorageBackend;
   readonly tokenKey?: Uint8Array;
+  readonly sessionStore?: SecretSessionStore;
   readonly maxUploadBytes: number;
   /** Resolved absolute storage path; used for debug endpoints. */
   readonly resolvedStorageDir?: string;
+  /** Absolute roots config path for /config/roots endpoints. */
+  readonly rootsConfigPath?: string;
+  /** Optional runtime token required in desktop mode. */
+  readonly desktopApiToken?: string;
 }
 
 /**
@@ -40,6 +68,8 @@ export interface RouteDependencies {
  */
 export function createRoutes(deps: RouteDependencies): Router {
   const router = Router();
+  const watchHub = new VolumeWatchHub(deps.storage, deps.resolvedStorageDir);
+  const sourceWatchHub = new SourceWatchHub();
   const upload = multer({
     storage: multer.diskStorage({
       destination: (_req, _file, callback) => callback(null, os.tmpdir()),
@@ -53,6 +83,208 @@ export function createRoutes(deps: RouteDependencies): Router {
 
   router.get('/health', (_req, res) => {
     res.json({ ok: true });
+  });
+
+  if (deps.desktopApiToken) {
+    router.use((req, _res, next) => {
+      if (!isDesktopProtectedApiPath(req.path) || req.path === '/health') {
+        next();
+        return;
+      }
+      const providedToken = req.get('x-nearbytes-desktop-token');
+      if (!providedToken || !tokensEqual(providedToken, deps.desktopApiToken!)) {
+        next(new ApiError(401, 'UNAUTHORIZED', 'Missing or invalid desktop token'));
+        return;
+      }
+      next();
+    });
+  }
+
+  router.get('/config/roots', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    await ensureNearbytesMarkers(multiRootStorage.getRootsConfig().sources);
+    const runtime = await multiRootStorage.getRuntimeSnapshot();
+    res.json({
+      configPath: deps.rootsConfigPath ?? null,
+      config: multiRootStorage.getRootsConfig(),
+      runtime,
+    });
+  }));
+
+  router.put('/config/roots', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.rootsConfigPath) {
+      throw new ApiError(500, 'INTERNAL_ERROR', 'Roots config path is not configured');
+    }
+
+    const candidate = extractRootsConfigBody(req.body);
+    let nextConfig;
+    try {
+      nextConfig = parseRootsConfig(candidate);
+    } catch (error) {
+      throw new ApiError(
+        400,
+        'INVALID_REQUEST',
+        error instanceof Error ? error.message : 'Invalid roots config'
+      );
+    }
+
+    await saveRootsConfig(deps.rootsConfigPath, nextConfig);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    multiRootStorage.updateRootsConfig(nextConfig);
+    await multiRootStorage.reconcileConfiguredVolumes();
+    await ensureNearbytesMarkers(nextConfig.sources);
+    const runtime = await multiRootStorage.getRuntimeSnapshot();
+
+    res.json({
+      configPath: deps.rootsConfigPath,
+      config: nextConfig,
+      runtime,
+    });
+  }));
+
+  router.get('/config/roots/consolidate/:sourceId/plan', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const { sourceId } = parseWithSchema(consolidateRootParamSchema, req.params);
+    const plan = await multiRootStorage.getConsolidationPlan(sourceId);
+    res.json({ plan });
+  }));
+
+  router.post('/config/roots/consolidate', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.rootsConfigPath) {
+      throw new ApiError(500, 'INTERNAL_ERROR', 'Roots config path is not configured');
+    }
+
+    const { sourceId, targetId } = parseWithSchema(consolidateRootBodySchema, req.body);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const consolidated = await multiRootStorage.consolidateRoot(sourceId, targetId);
+    await saveRootsConfig(deps.rootsConfigPath, consolidated.config);
+    await ensureNearbytesMarkers(consolidated.config.sources);
+    const runtime = await multiRootStorage.getRuntimeSnapshot();
+
+    res.json({
+      result: consolidated.result,
+      configPath: deps.rootsConfigPath,
+      config: consolidated.config,
+      runtime,
+    });
+  }));
+
+  const openRootInFileManagerHandler = asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const { rootId } = parseWithSchema(openRootInFileManagerBodySchema, req.body);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const source = getSourceById(multiRootStorage.getRootsConfig(), rootId);
+    if (!source) {
+      throw new ApiError(404, 'NOT_FOUND', `Source not found: ${rootId}`);
+    }
+
+    await openInFileManager(source.path);
+    res.json({
+      ok: true,
+      rootId: source.id,
+      path: source.path,
+    });
+  });
+  router.post('/config/roots/open-file-manager', openRootInFileManagerHandler);
+  router.post('/config/open-file-manager', openRootInFileManagerHandler);
+
+  router.get('/sources/discover', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const maxDepth = parseOptionalInt(req.query.maxDepth);
+    const maxDirectories = parseOptionalInt(req.query.maxDirectories);
+    const sources = await discoverNearbytesSources({
+      maxDepth,
+      maxDirectories,
+    });
+
+    res.json({
+      scannedAt: Date.now(),
+      sourceCount: sources.length,
+      sources,
+    });
+  }));
+
+  router.post('/sources/reconcile', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.rootsConfigPath) {
+      throw new ApiError(500, 'INTERNAL_ERROR', 'Roots config path is not configured');
+    }
+
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const { knownVolumeIds } = parseWithSchema(reconcileDiscoveredSourcesBodySchema, req.body ?? {});
+    const reconciled = await reconcileDiscoveredSources({
+      currentConfig: multiRootStorage.getRootsConfig(),
+      knownVolumeIds,
+    });
+
+    let activeConfig = multiRootStorage.getRootsConfig();
+    if (reconciled.changed) {
+      await saveRootsConfig(deps.rootsConfigPath, reconciled.config);
+      multiRootStorage.updateRootsConfig(reconciled.config);
+      await multiRootStorage.reconcileConfiguredVolumes();
+      await ensureNearbytesMarkers(reconciled.config.sources);
+      activeConfig = reconciled.config;
+    }
+
+    const runtime = await multiRootStorage.getRuntimeSnapshot();
+    res.json({
+      runKey: reconciled.runKey,
+      changed: reconciled.changed,
+      knownVolumeIds: reconciled.knownVolumeIds,
+      summary: reconciled.summary,
+      items: reconciled.items,
+      configPath: deps.rootsConfigPath,
+      config: activeConfig,
+      runtime,
+    });
+  }));
+
+  router.get('/watch/sources', async (req, res, next) => {
+    try {
+      assertLocalConfigRequest(req);
+      const subscription = await sourceWatchHub.subscribe(
+        (update) => writeSseEvent(res, 'source-watch-update', update),
+        (error) =>
+          writeSseEvent(res, 'watch-error', {
+            message: error.message,
+            timestamp: Date.now(),
+          })
+      );
+
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      writeSseEvent(res, 'source-watch-ready', subscription.ready);
+
+      if (!subscription.ready.autoUpdate) {
+        writeSseEvent(res, 'watch-ended', {
+          reason: 'Auto-discovery watch is unavailable for local source roots.',
+          timestamp: Date.now(),
+        });
+        res.end();
+        subscription.unsubscribe();
+        return;
+      }
+
+      const heartbeatTimer = setInterval(() => {
+        writeSseEvent(res, 'heartbeat', { timestamp: Date.now() });
+      }, 20000);
+
+      req.on('close', () => {
+        clearInterval(heartbeatTimer);
+        subscription.unsubscribe();
+        res.end();
+      });
+    } catch (error) {
+      next(error);
+    }
   });
 
   if (deps.resolvedStorageDir) {
@@ -99,7 +331,9 @@ export function createRoutes(deps: RouteDependencies): Router {
         files: files.map(mapFile),
       };
 
-      if (deps.tokenKey) {
+      if (deps.sessionStore) {
+        response.token = deps.sessionStore.createSession(validatedSecret);
+      } else if (deps.tokenKey) {
         response.token = await encodeSecretToken(validatedSecret, deps.tokenKey);
       }
 
@@ -135,10 +369,116 @@ export function createRoutes(deps: RouteDependencies): Router {
     })
   );
 
+  router.get('/watch/volume', requireSecret(deps), async (req, res, next) => {
+    try {
+      const secret = res.locals.secret as string;
+      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+
+      const subscription = watchHub.subscribe(
+        volumeId,
+        (update) => writeSseEvent(res, 'volume-update', update),
+        (error) =>
+          writeSseEvent(res, 'watch-error', {
+            volumeId,
+            message: error.message,
+            timestamp: Date.now(),
+          })
+      );
+
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      writeSseEvent(res, 'watch-ready', subscription.ready);
+
+      if (!subscription.ready.autoUpdate) {
+        writeSseEvent(res, 'watch-ended', {
+          volumeId,
+          reason: 'Auto-update is unavailable for the active storage roots.',
+          timestamp: Date.now(),
+        });
+        res.end();
+        subscription.unsubscribe();
+        return;
+      }
+
+      const heartbeatTimer = setInterval(() => {
+        writeSseEvent(res, 'heartbeat', { timestamp: Date.now() });
+      }, 20000);
+
+      req.on('close', () => {
+        clearInterval(heartbeatTimer);
+        subscription.unsubscribe();
+        res.end();
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get(
+    '/timeline',
+    requireSecret(deps),
+    asyncHandler(async (_req, res) => {
+      const secret = res.locals.secret as string;
+      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+      const events = await deps.fileService.getTimeline(secret);
+      res.json({
+        volumeId,
+        eventCount: events.length,
+        events,
+      });
+    })
+  );
+
+  router.post(
+    '/snapshot',
+    requireSecret(deps),
+    asyncHandler(async (_req, res) => {
+      const secret = res.locals.secret as string;
+      const snapshot = await deps.fileService.computeSnapshot(secret);
+      res.json({ snapshot });
+    })
+  );
+
+  router.get(
+    '/chat',
+    requireSecret(deps),
+    asyncHandler(async (_req, res) => {
+      const secret = res.locals.secret as string;
+      const chat = await deps.chatService.listChat(secret);
+      res.json(chat);
+    })
+  );
+
+  router.post(
+    '/chat/identities',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { identitySecret, profile } = parseWithSchema(publishIdentityBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const published = await deps.chatService.publishIdentity(secret, identitySecret, profile);
+      res.json({ published });
+    })
+  );
+
+  router.post(
+    '/chat/messages',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { identitySecret, body, attachment } = parseWithSchema(sendChatMessageBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const sent = await deps.chatService.sendMessage(secret, identitySecret, { body, attachment });
+      res.json({ sent });
+    })
+  );
+
   router.post(
     '/upload',
     requireSecret(deps),
-    upload.single('file'),
+    upload.single('file') as unknown as RequestHandler,
     asyncHandler(async (req, res) => {
       if (!req.file) {
         throw new ApiError(400, 'INVALID_REQUEST', 'File is required');
@@ -167,6 +507,56 @@ export function createRoutes(deps: RouteDependencies): Router {
     })
   );
 
+  router.post(
+    '/references/source/export',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { filenames } = parseWithSchema(exportReferencesBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const exported = await deps.fileService.exportSourceReferences(secret, filenames);
+      res.json(exported);
+    })
+  );
+
+  router.post(
+    '/references/source/import',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { sourceSecret, bundle } = parseWithSchema(importSourceReferencesBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const imported = await deps.fileService.importSourceReferences(secret, bundle, sourceSecret);
+      res.json({
+        imported: imported.imported.map(mapFile),
+        importedCount: imported.imported.length,
+      });
+    })
+  );
+
+  router.post(
+    '/references/recipient/export',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { filenames, recipientVolumeId } = parseWithSchema(exportRecipientReferencesBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const exported = await deps.fileService.exportRecipientReferences(secret, filenames, recipientVolumeId);
+      res.json(exported);
+    })
+  );
+
+  router.post(
+    '/references/recipient/import',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { bundle } = parseWithSchema(importRecipientReferencesBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const imported = await deps.fileService.importRecipientReferences(secret, bundle);
+      res.json({
+        imported: imported.imported.map(mapFile),
+        importedCount: imported.imported.length,
+      });
+    })
+  );
+
   router.delete(
     '/files/:name',
     requireSecret(deps),
@@ -176,6 +566,28 @@ export function createRoutes(deps: RouteDependencies): Router {
       const secret = res.locals.secret as string;
       await deps.fileService.deleteFile(secret, filename);
       res.json({ deleted: true, filename });
+    })
+  );
+
+  router.post(
+    '/files/rename',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { from, to } = parseWithSchema(renameFileBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const renamed = await deps.fileService.renameFile(secret, from, to);
+      res.json({ renamed });
+    })
+  );
+
+  router.post(
+    '/folders/rename',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { from, to, merge } = parseWithSchema(renameFolderBodySchema, req.body);
+      const secret = res.locals.secret as string;
+      const renamed = await deps.fileService.renameFolder(secret, from, to, { merge });
+      res.json({ renamed });
     })
   );
 
@@ -203,14 +615,13 @@ export function createRoutes(deps: RouteDependencies): Router {
 }
 
 function requireSecret(deps: RouteDependencies): RequestHandler {
-  return async (req, res, next) => {
-    try {
-      const secret = await getSecretFromRequest(req, { tokenKey: deps.tokenKey });
-      res.locals.secret = secret;
-      next();
-    } catch (error) {
-      next(error);
-    }
+  return (req, res, next) => {
+    void getSecretFromRequest(req, { tokenKey: deps.tokenKey, sessionStore: deps.sessionStore })
+      .then((secret) => {
+        res.locals.secret = secret;
+        next();
+      })
+      .catch((error: unknown) => next(error));
   };
 }
 
@@ -271,4 +682,126 @@ async function safeUnlink(path: string): Promise<void> {
   } catch {
     // Ignore cleanup errors for temp files.
   }
+}
+
+function extractRootsConfigBody(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || !('config' in value)) {
+    return value;
+  }
+  return (value as { config: unknown }).config;
+}
+
+function getMultiRootStorageOrThrow(storage: StorageBackend): MultiRootStorageBackend {
+  if (!isMultiRootStorageBackend(storage)) {
+    throw new ApiError(501, 'NOT_IMPLEMENTED', 'Multi-root storage is not enabled');
+  }
+  return storage;
+}
+
+function assertLocalConfigRequest(req: Request): void {
+  const forwardedFor = req.get('x-forwarded-for');
+  if (forwardedFor) {
+    const first = forwardedFor.split(',')[0]?.trim();
+    if (first && !isLoopbackAddress(first)) {
+      throw new ApiError(403, 'FORBIDDEN', 'Config endpoints are local-only');
+    }
+  }
+
+  const candidates = [req.ip, req.socket.remoteAddress];
+  if (candidates.some((candidate) => isLoopbackAddress(candidate))) {
+    return;
+  }
+
+  throw new ApiError(403, 'FORBIDDEN', 'Config endpoints are local-only');
+}
+
+function parseOptionalInt(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function writeSseEvent(res: Response, eventName: string, payload: unknown): void {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function isLoopbackAddress(value: string | undefined): boolean {
+  if (!value) return false;
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '127.0.0.1' || normalized === '::1') {
+    return true;
+  }
+  if (normalized.startsWith('::ffff:')) {
+    return normalized.slice('::ffff:'.length) === '127.0.0.1';
+  }
+  return false;
+}
+
+function tokensEqual(actual: string, expected: string): boolean {
+  const actualBuffer = Buffer.from(actual.trim());
+  const expectedBuffer = Buffer.from(expected.trim());
+  if (actualBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+const DESKTOP_PROTECTED_API_PREFIXES = [
+  '/open',
+  '/files',
+  '/upload',
+  '/file',
+  '/health',
+  '/timeline',
+  '/snapshot',
+  '/config',
+  '/sources',
+  '/watch',
+  '/folders',
+  '/references',
+  '/__debug',
+] as const;
+
+function isDesktopProtectedApiPath(pathname: string): boolean {
+  return DESKTOP_PROTECTED_API_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+}
+
+async function openInFileManager(targetPath: string): Promise<void> {
+  const launcher =
+    process.platform === 'darwin'
+      ? { command: 'open', args: [targetPath] }
+      : process.platform === 'win32'
+        ? { command: 'explorer', args: [targetPath] }
+        : { command: 'xdg-open', args: [targetPath] };
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(launcher.command, launcher.args, {
+      stdio: 'ignore',
+      detached: true,
+    });
+
+    child.once('error', (error) => reject(error));
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ApiError(500, 'INTERNAL_ERROR', `Failed to open file manager: ${message}`);
+  });
 }

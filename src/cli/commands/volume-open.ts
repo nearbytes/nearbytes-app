@@ -65,6 +65,6 @@ export function registerVolumeOpenCommand(program: Command): void {
     .command('volume open')
     .description('Open a volume from a secret and display information')
     .requiredOption('-s, --secret <secret>', 'Volume secret')
-    .option('-d, --data-dir <path>', 'Storage directory (default: MEGA cloud path)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
     .action(handleVolumeOpen);
 }

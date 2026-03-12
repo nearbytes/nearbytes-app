@@ -74,6 +74,6 @@ export function registerFileAddCommand(program: Command): void {
     .requiredOption('-p, --path <path>', 'Path to file to add')
     .requiredOption('-s, --secret <secret>', 'Volume secret')
     .option('-n, --name <name>', 'File name in volume (defaults to basename of path)')
-    .option('-d, --data-dir <path>', 'Storage directory (default: MEGA cloud path)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
     .action(handleFileAdd);
 }

@@ -84,7 +84,7 @@ export function registerFileListCommand(program: Command): void {
     .alias('file ls')
     .description('List all files in a volume')
     .requiredOption('-s, --secret <secret>', 'Volume secret')
-    .option('-d, --data-dir <path>', 'Storage directory (default: MEGA cloud path)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
     .option('-f, --format <format>', 'Output format (table, json, plain)', 'table')
     .action(handleFileList);
 }

@@ -1,5 +1,8 @@
 node_modules/
 dist/
+dist-electron/
+release/
+electron-builder-debug.yml
 *.log
 .DS_Store
 *.swp
@@ -13,4 +16,3 @@ coverage/
 *.test.ts.snap
 .nyc_output/
 test-data/
-

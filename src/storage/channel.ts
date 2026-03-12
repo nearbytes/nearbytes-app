@@ -5,6 +5,7 @@ import { createHash } from '../types/events.js';
 import { StorageError } from '../types/errors.js';
 import { serializeEvent, deserializeEvent, serializeEventPayload } from './serialization.js';
 import { computeHash } from '../crypto/hash.js';
+import { isMultiRootStorageBackend } from './multiRoot.js';
 
 /**
  * Channel storage operations
@@ -57,7 +58,12 @@ export class ChannelStorage {
 
       // Store event file
       const eventPath = this.getEventPath(publicKey, eventHash);
-      await this.storage.writeFile(eventPath, eventBytes);
+      const channelHex = publicKeyToHex(publicKey);
+      if (isMultiRootStorageBackend(this.storage)) {
+        await this.storage.writeFileForChannel(eventPath, eventBytes, channelHex);
+      } else {
+        await this.storage.writeFile(eventPath, eventBytes);
+      }
 
       return eventHash;
     } catch (error) {
@@ -77,7 +83,10 @@ export class ChannelStorage {
   async retrieveEvent(publicKey: PublicKey, eventHash: HashType): Promise<SignedEvent> {
     try {
       const eventPath = this.getEventPath(publicKey, eventHash);
-      const eventBytes = await this.storage.readFile(eventPath);
+      const channelHex = publicKeyToHex(publicKey);
+      const eventBytes = isMultiRootStorageBackend(this.storage)
+        ? await this.storage.readFileForChannel(eventPath, channelHex)
+        : await this.storage.readFile(eventPath);
       const serialized = JSON.parse(new TextDecoder().decode(eventBytes)) as import('../types/events.js').SerializedEvent;
 
       return deserializeEvent(serialized);
@@ -100,7 +109,9 @@ export class ChannelStorage {
   async listEvents(publicKey: PublicKey): Promise<HashType[]> {
     try {
       const channelPath = this.getChannelPath(publicKey);
-      const files = await this.storage.listFiles(channelPath);
+      const files = isMultiRootStorageBackend(this.storage)
+        ? await this.storage.listFilesAcrossRoots(channelPath)
+        : await this.storage.listFiles(channelPath);
       
       // Filter for .bin files and extract hashes
       const eventHashes = files
@@ -126,17 +137,31 @@ export class ChannelStorage {
   async storeEncryptedData(
     dataHash: HashType,
     encryptedData: EncryptedData,
-    skipIfExists: boolean = false
+    skipIfExists: boolean = false,
+    publicKey?: PublicKey
   ): Promise<void> {
     try {
       const dataPath = this.getDataPath(dataHash);
+      const channelHex = publicKey ? publicKeyToHex(publicKey) : undefined;
       
       // Check if data already exists
-      if (skipIfExists && (await this.storage.exists(dataPath))) {
+      if (
+        skipIfExists &&
+        (isMultiRootStorageBackend(this.storage) && channelHex
+          ? await this.storage.existsForChannel(dataPath, channelHex)
+          : await this.storage.exists(dataPath))
+      ) {
         return; // Skip storing if it already exists
       }
-      
-      await this.storage.writeFile(dataPath, encryptedData);
+
+      if (isMultiRootStorageBackend(this.storage)) {
+        if (!channelHex) {
+          throw new StorageError('Public key is required for multi-root block writes');
+        }
+        await this.storage.writeFileForChannel(dataPath, encryptedData, channelHex);
+      } else {
+        await this.storage.writeFile(dataPath, encryptedData);
+      }
     } catch (error) {
       throw new StorageError(
         `Failed to store encrypted data: ${error instanceof Error ? error.message : 'unknown error'}`,
@@ -150,10 +175,13 @@ export class ChannelStorage {
    * @param dataHash - Hash of the encrypted data
    * @returns Encrypted data
    */
-  async retrieveEncryptedData(dataHash: HashType): Promise<EncryptedData> {
+  async retrieveEncryptedData(dataHash: HashType, publicKey?: PublicKey): Promise<EncryptedData> {
     try {
       const dataPath = this.getDataPath(dataHash);
-      const data = await this.storage.readFile(dataPath);
+      const channelHex = publicKey ? publicKeyToHex(publicKey) : undefined;
+      const data = isMultiRootStorageBackend(this.storage) && channelHex
+        ? await this.storage.readFileForChannel(dataPath, channelHex)
+        : await this.storage.readFile(dataPath);
       return data as EncryptedData;
     } catch (error) {
       if (error instanceof StorageError) {
@@ -171,9 +199,19 @@ export class ChannelStorage {
    * @param dataHash - Hash of the encrypted data
    * @returns True if the data block exists
    */
-  async hasEncryptedData(dataHash: HashType): Promise<boolean> {
+  async hasEncryptedData(dataHash: HashType, publicKey?: PublicKey): Promise<boolean> {
     const dataPath = this.getDataPath(dataHash);
+    const channelHex = publicKey ? publicKeyToHex(publicKey) : undefined;
+    if (isMultiRootStorageBackend(this.storage) && channelHex) {
+      return await this.storage.existsForChannel(dataPath, channelHex);
+    }
     return await this.storage.exists(dataPath);
   }
 }
 
+function publicKeyToHex(publicKey: PublicKey): string {
+  return Array.from(publicKey)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+    .toLowerCase();
+}

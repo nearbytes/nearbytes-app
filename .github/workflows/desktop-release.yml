@@ -1,0 +1,50 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish-installers:
+    name: Publish ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable Corepack
+        run: |
+          corepack enable
+          corepack prepare yarn@4.10.3 --activate
+
+      - name: Install root dependencies
+        run: yarn install --immutable
+
+      - name: Resolve release repository env
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY##*/}"
+          echo "NEARBYTES_RELEASE_OWNER=${OWNER}" >> "$GITHUB_ENV"
+          echo "NEARBYTES_RELEASE_REPO=${REPO}" >> "$GITHUB_ENV"
+
+      - name: Build and publish installers
+        run: yarn production-build:publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Default to unsigned CI artifacts to avoid empty-signing env failures.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"

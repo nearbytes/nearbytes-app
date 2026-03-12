@@ -193,7 +193,7 @@ export function logStorageDiagnostics(result: StorageDiagnosticsResult): void {
 
   if (looksInsideRepo && result.megaHints.found && result.megaHints.candidates.length > 0) {
     console.warn(
-      '[storage] WARNING: Storage path appears to be inside the repo. For MEGA sync, set NEARBYTES_STORAGE_DIR to your MEGA folder (e.g. $HOME/MEGA/NearbytesStorage or a path under: ' +
+      '[storage] WARNING: Storage path appears to be inside the repo. Set NEARBYTES_STORAGE_DIR to your preferred local or synced folder (for example $HOME/nearbytes or $HOME/MEGA/nearbytes), or a path under: ' +
         result.megaHints.candidates.join(', ') +
         ').'
     );

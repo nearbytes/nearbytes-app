@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explicitly set storage directory to MEGA sync folder (redundant with app default but kept for explicit override)
-export NEARBYTES_STORAGE_DIR="${NEARBYTES_STORAGE_DIR:-$HOME/MEGA/NearbytesStorage}"
+# Explicitly set storage directory to a MEGA sync folder (override-friendly).
+export NEARBYTES_STORAGE_DIR="${NEARBYTES_STORAGE_DIR:-$HOME/MEGA/nearbytes}"
 
 # Ensure directory exists
 mkdir -p "$NEARBYTES_STORAGE_DIR"
@@ -11,4 +11,4 @@ mkdir -p "$NEARBYTES_STORAGE_DIR"
 echo "Using storage dir: $NEARBYTES_STORAGE_DIR"
 
 # Run the server
-npm run server
+yarn server

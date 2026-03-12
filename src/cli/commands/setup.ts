@@ -44,7 +44,7 @@ export function registerSetupCommand(program: Command): void {
     .command('setup')
     .description('Initialize a new channel')
     .requiredOption('-s, --secret <secret>', 'Channel secret (e.g., "channelname:password")')
-    .option('-d, --data-dir <path>', 'Storage directory (default: MEGA cloud path)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
     .action(handleSetup);
 }
 

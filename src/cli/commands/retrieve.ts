@@ -57,7 +57,7 @@ export function registerRetrieveCommand(program: Command): void {
     .requiredOption('-e, --event <hash>', 'Event hash')
     .requiredOption('-s, --secret <secret>', 'Channel secret')
     .requiredOption('-o, --output <path>', 'Output file path')
-    .option('-d, --data-dir <path>', 'Storage directory (default: MEGA cloud path)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
     .action(handleRetrieve);
 }
 

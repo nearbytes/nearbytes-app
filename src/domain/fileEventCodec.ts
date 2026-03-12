@@ -60,6 +60,14 @@ export function isFileEvent(obj: unknown): obj is FileEvent {
     return typeof obj.filename === 'string' && isFiniteUint(obj.deletedAt);
   }
 
+  if (obj.type === 'RENAME_FILE') {
+    return (
+      typeof obj.filename === 'string' &&
+      typeof obj.toFilename === 'string' &&
+      isFiniteUint(obj.renamedAt)
+    );
+  }
+
   return false;
 }
 

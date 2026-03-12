@@ -47,6 +47,8 @@ The UI implements a two-tier auth system:
 - `uploadFiles(auth, files)`: Uploads files via multipart/form-data
 - `deleteFile(auth, filename)`: Deletes a file by name
 - `downloadFile(auth, blobHash)`: Downloads file as Blob
+- `getRootsConfig()`: Reads local multi-root configuration/runtime status
+- `updateRootsConfig(config)`: Persists local multi-root configuration
 
 ### Error Handling
 
@@ -163,7 +165,11 @@ proxy: {
   '/files': { target: 'http://localhost:3000' },
   '/upload': { target: 'http://localhost:3000' },
   '/file': { target: 'http://localhost:3000' },
-  '/health': { target: 'http://localhost:3000' }
+  '/health': { target: 'http://localhost:3000' },
+  '/timeline': { target: 'http://localhost:3000' },
+  '/snapshot': { target: 'http://localhost:3000' },
+  '/config': { target: 'http://localhost:3000' },
+  '/__debug': { target: 'http://localhost:3000' }
 }
 ```
 
@@ -202,4 +208,4 @@ The header includes a simple SVG icon and "Nearbytes" title with gradient text.
 - Batch operations
 - Search/filter files
 - File metadata editing
-- `/events` endpoint integration (if added to backend)
+- Richer root-management UX for multi-root policies

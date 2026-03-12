@@ -57,14 +57,18 @@ and event log will compute the same file list.
 
 File contents are encrypted and stored as blobs. Each event references a blob
 by its hash (the hash of the encrypted blob). Events are stored in the channel
-log and signed by the channel key.
+log as signed event files. Event payloads may include cleartext logical metadata
+such as filename and timestamps; blob content remains encrypted.
 
-Conceptual layout (not hard-coded paths):
+Filesystem layout (relative to storage root):
 
 ```
-/storage
-  /blobs/<hash>
-  /logs/<channel-id>.log
+blocks/
+  <blob-hash>.bin
+channels/
+  <channel-public-key-hex>/
+    <event-hash>.bin
+    snapshot.latest.json   # On-demand snapshot (if computed)
 ```
 
 ## Filenames Are Logical Pointers

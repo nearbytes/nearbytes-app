@@ -130,6 +130,17 @@ export function replayEvents(entries: EventLogEntry[]): FileSystemState {
     } else if (type === EventType.DELETE_FILE) {
       // Remove file (idempotent: no-op if file doesn't exist)
       files.delete(fileName);
+    } else if (type === EventType.RENAME_FILE) {
+      const existing = files.get(fileName);
+      if (!existing) {
+        continue;
+      }
+      files.delete(fileName);
+      files.set(signedEvent.payload.toFileName ?? fileName, {
+        ...existing,
+        name: signedEvent.payload.toFileName ?? fileName,
+        eventHash: entry.eventHash,
+      });
     }
   }
 

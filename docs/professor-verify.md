@@ -9,8 +9,8 @@ Before starting, ensure:
 - [ ] Node.js 18+ is installed (`node --version`)
 - [ ] npm is installed (`npm --version`)
 - [ ] MEGA desktop app is installed and running
-- [ ] MEGA shared folder is synced at `$HOME/MEGA/NearbytesStorage`
-- [ ] The folder exists: `ls -la "$HOME/MEGA/NearbytesStorage"`
+- [ ] MEGA shared folder is synced at `$HOME/MEGA/NearbytesStorage/NearbytesStorage`
+- [ ] The folder exists: `ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage"`
 
 ## Step 1: Clone and Install
 
@@ -50,7 +50,7 @@ NearbytesStorage
 - MEGA is syncing your entire home directory (WRONG!)
 - Go to MEGA Settings → Syncs
 - Remove the sync that maps your whole home directory
-- Add a new sync for ONLY: `/Users/yourname/MEGA/NearbytesStorage` → `/MEGA/NearbytesStorage`
+- Add a new sync for ONLY: `/Users/yourname/MEGA/NearbytesStorage/NearbytesStorage` → `/MEGA/NearbytesStorage`
 - This does NOT delete local files, only removes the sync configuration
 
 **Why this matters:**
@@ -64,18 +64,18 @@ NearbytesStorage
 
 ```bash
 # Check if folder exists
-ls -la "$HOME/MEGA/NearbytesStorage" | head
+ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage" | head
 
 # Check for blocks directory (should exist if files are synced)
-ls -la "$HOME/MEGA/NearbytesStorage/blocks" 2>/dev/null | head || echo "Blocks directory not found (expected if no files synced yet)"
+ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage/blocks" 2>/dev/null | head || echo "Blocks directory not found (expected if no files synced yet)"
 
 # Check for channels directory (should exist if volumes are synced)
-ls -la "$HOME/MEGA/NearbytesStorage/channels" 2>/dev/null | head || echo "Channels directory not found (expected if no volumes created yet)"
+ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage/channels" 2>/dev/null | head || echo "Channels directory not found (expected if no volumes created yet)"
 ```
 
 **What to look for:**
 - ✅ `~/MEGA` contains ONLY `NearbytesStorage` (not Desktop/Documents/etc.)
-- ✅ Folder exists at `$HOME/MEGA/NearbytesStorage`
+- ✅ Folder exists at `$HOME/MEGA/NearbytesStorage/NearbytesStorage`
 - ✅ MEGA desktop app shows the folder is synced (check MEGA app status)
 - ✅ If files should exist: `blocks/` and `channels/` directories contain `.bin` files
 - ⚠️ If folder is empty: Ensure you **accepted the MEGA share** and **waited for sync to complete**
@@ -88,7 +88,7 @@ ls -la "$HOME/MEGA/NearbytesStorage/channels" 2>/dev/null | head || echo "Channe
 
 ## Step 3: Storage Directory (default is MEGA path only)
 
-The app uses only the MEGA cloud synced path by default: when `NEARBYTES_STORAGE_DIR` is not set, it uses `$HOME/MEGA/NearbytesStorage` (or the Windows equivalent).
+The app uses only the MEGA cloud synced path by default: when `NEARBYTES_STORAGE_DIR` is not set, it uses `$HOME/MEGA/NearbytesStorage/NearbytesStorage` (or the Windows equivalent).
 
 **If your MEGA folder is at the standard path:** You do not need to set anything; just run the app.
 
@@ -99,7 +99,7 @@ export NEARBYTES_STORAGE_DIR="/path/to/your/actual/mega/sync/folder"
 
 **Verify:**
 - Environment variable is set: `echo $NEARBYTES_STORAGE_DIR`
-- Should output: `/Users/yourname/MEGA/NearbytesStorage` (or your custom path)
+- Should output: `/Users/yourname/MEGA/NearbytesStorage/NearbytesStorage` (or your custom path)
 
 ## Step 4: Start Development Servers
 
@@ -109,7 +109,7 @@ npm run dev
 
 **Verify:**
 - Both servers start without errors
-- Backend logs: `Using storage dir: /Users/.../MEGA/NearbytesStorage`
+- Backend logs: `Using storage dir: /Users/.../MEGA/NearbytesStorage/NearbytesStorage`
 - Backend logs: `Nearbytes API server running at http://localhost:3000`
 - UI logs: `Local: http://localhost:5173`
 
@@ -168,14 +168,14 @@ curl http://localhost:3000/health
 **Verify:**
 - File appears immediately after upload
 - File shows correct name, size, and timestamp
-- Check MEGA folder: `ls -la "$HOME/MEGA/NearbytesStorage/blocks"`
+- Check MEGA folder: `ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage/blocks"`
 - New encrypted blob files should appear
 
 ## Common Issues
 
 ### MEGA Folder Not Synced / Empty Folder
 
-**Symptom:** `ls -la "$HOME/MEGA/NearbytesStorage"` shows empty folder or folder doesn't exist, but files should be there.
+**Symptom:** `ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage"` shows empty folder or folder doesn't exist, but files should be there.
 
 **Causes:**
 1. **MEGA share not accepted yet** - Most common issue
@@ -207,8 +207,8 @@ curl http://localhost:3000/health
 5. **Verify local files:**
    ```bash
    # Should show files if synced
-   ls -la "$HOME/MEGA/NearbytesStorage/blocks"
-   ls -la "$HOME/MEGA/NearbytesStorage/channels"
+   ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage/blocks"
+   ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage/channels"
    ```
 
 ### MEGA Desktop App Not Running
@@ -229,7 +229,7 @@ curl http://localhost:3000/health
 1. Find your actual MEGA sync folder location:
    ```bash
    # Check common locations
-   ls -la ~/MEGA/NearbytesStorage
+   ls -la ~/MEGA/NearbytesStorage/NearbytesStorage
    ls -la ~/Documents/MEGA/NearbytesStorage
    ls -la ~/Downloads/MEGA/NearbytesStorage
    ```
@@ -252,7 +252,7 @@ curl http://localhost:3000/health
 2. Find the sync that maps your entire home directory (e.g., `/Users/yourname` → `/MEGA`)
 3. **Remove/Delete that sync** (this does NOT delete local files, only removes sync config)
 4. Add a new sync:
-   - **Local folder:** `/Users/yourname/MEGA/NearbytesStorage`
+   - **Local folder:** `/Users/yourname/MEGA/NearbytesStorage/NearbytesStorage`
    - **MEGA folder:** `/MEGA/NearbytesStorage` (or the shared folder path)
 5. Verify: `ls ~/MEGA` should now show ONLY `NearbytesStorage`
 
@@ -273,7 +273,7 @@ curl http://localhost:3000/health
 echo $NEARBYTES_STORAGE_DIR
 
 # Set correctly
-export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
 
 # Restart server
 # (Stop with Ctrl+C, then run npm run dev again)
@@ -288,7 +288,7 @@ export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
 2. Verify sync folder is configured in MEGA settings
 3. Check MEGA web UI to see if files are in cloud
 4. Wait for sync to complete (check MEGA desktop app status)
-5. Verify files exist locally: `ls -la "$HOME/MEGA/NearbytesStorage/blocks"`
+5. Verify files exist locally: `ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage/blocks"`
 
 ### Backend Not Running
 
@@ -334,7 +334,7 @@ PORT=3001 npm run dev
 1. Click "Refresh" button
 2. Check browser console for errors
 3. Verify backend is running: `curl http://localhost:3000/health`
-4. Check storage directory: `ls -la "$HOME/MEGA/NearbytesStorage/blocks"`
+4. Check storage directory: `ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage/blocks"`
 
 ### Wrong Files Showing
 
@@ -362,7 +362,7 @@ All of the following should be true:
 After verification:
 
 1. Review [MEGA Integration Guide](mega.md) for detailed information
-2. Review [UI Documentation](../ui/README.md) for UI-specific details
+2. Review [UI Documentation](ui.md) for UI-specific details
 3. Review [API Server Documentation](api-server.md) for backend details
 
 ## Getting Help

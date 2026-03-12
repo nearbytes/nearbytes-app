@@ -14,17 +14,17 @@ This document provides a step-by-step acceptance test to verify that MEGA-backed
 ### Step 1: Create MEGA Sync Folder
 
 ```bash
-mkdir -p "$HOME/MEGA/NearbytesStorage"
+mkdir -p "$HOME/MEGA/NearbytesStorage/NearbytesStorage"
 ```
 
 **Verify:**
-- Directory exists: `ls -la "$HOME/MEGA/NearbytesStorage"`
+- Directory exists: `ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage"`
 
 ### Step 2: Configure MEGA Desktop App
 
 1. Open MEGA desktop application
 2. Go to Settings → Sync
-3. Add `$HOME/MEGA/NearbytesStorage` as a sync folder
+3. Add `$HOME/MEGA/NearbytesStorage/NearbytesStorage` as a sync folder
 4. Wait for initial sync to complete
 
 **Verify:**
@@ -33,18 +33,18 @@ mkdir -p "$HOME/MEGA/NearbytesStorage"
 
 ### Step 3: Start Backend with MEGA Storage
 
-Storage defaults to `$HOME/MEGA/NearbytesStorage`; set `NEARBYTES_STORAGE_DIR` only if your MEGA folder is elsewhere.
+Storage defaults to `$HOME/MEGA/NearbytesStorage/NearbytesStorage`; set `NEARBYTES_STORAGE_DIR` only if your MEGA folder is elsewhere.
 
 ```bash
-# Optional: only if MEGA folder is not at $HOME/MEGA/NearbytesStorage
-# export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+# Optional: only if MEGA folder is not at $HOME/MEGA/NearbytesStorage/NearbytesStorage
+# export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
 npm run build
 npm run server
 ```
 
 **Verify:**
 - Server starts without errors
-- Console shows: `Using storage dir: /Users/yourname/MEGA/NearbytesStorage` (or your custom path)
+- Console shows: `Using storage dir: /Users/yourname/MEGA/NearbytesStorage/NearbytesStorage` (or your custom path)
 - Console shows: `Nearbytes API server running at http://localhost:3000`
 
 ### Step 4: Start UI
@@ -84,7 +84,7 @@ npm run dev
 ### Step 7: Verify Files in Local Directory
 
 ```bash
-ls -la "$HOME/MEGA/NearbytesStorage"
+ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage"
 ```
 
 **Verify:**
@@ -119,7 +119,7 @@ channels/
 1. Stop the backend (Ctrl+C)
 2. Restart backend:
    ```bash
-   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
    npm run server
    ```
 3. In UI, re-enter the same secret
@@ -134,11 +134,11 @@ channels/
 If you have access to a second machine:
 
 1. Install MEGA desktop app on second machine
-2. Configure same sync folder: `$HOME/MEGA/NearbytesStorage`
+2. Configure same sync folder: `$HOME/MEGA/NearbytesStorage/NearbytesStorage`
 3. Wait for MEGA to sync files
 4. Start Nearbytes server on second machine:
    ```bash
-   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
    npm run build
    npm run server
    ```
@@ -176,7 +176,7 @@ If you have access to a second machine:
 ### Server Won't Start
 
 - Check `NEARBYTES_STORAGE_DIR` is set
-- Verify directory exists: `mkdir -p "$HOME/MEGA/NearbytesStorage"`
+- Verify directory exists: `mkdir -p "$HOME/MEGA/NearbytesStorage/NearbytesStorage"`
 - Check directory permissions
 - Review server error logs
 
@@ -186,7 +186,7 @@ All of the following must be true:
 
 - ✅ Server starts and logs correct storage directory
 - ✅ Files upload successfully via UI
-- ✅ Files appear in local `$HOME/MEGA/NearbytesStorage` directory
+- ✅ Files appear in local `$HOME/MEGA/NearbytesStorage/NearbytesStorage` directory
 - ✅ Files appear in MEGA web UI
 - ✅ Files persist after server restart
 - ✅ Same secret reopens same volume with same files
@@ -200,7 +200,7 @@ Run this script to quickly verify storage setup:
 #!/bin/bash
 set -euo pipefail
 
-STORAGE_DIR="${NEARBYTES_STORAGE_DIR:-$HOME/MEGA/NearbytesStorage}"
+STORAGE_DIR="${NEARBYTES_STORAGE_DIR:-$HOME/MEGA/NearbytesStorage/NearbytesStorage}"
 
 echo "Checking storage directory: $STORAGE_DIR"
 if [ ! -d "$STORAGE_DIR" ]; then

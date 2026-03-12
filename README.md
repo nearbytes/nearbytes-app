@@ -26,17 +26,17 @@ npm run dev
 **Prerequisites:**
 - Node.js 18+ and npm
 - MEGA desktop app installed and running
-- MEGA shared folder synced locally at `$HOME/MEGA/NearbytesStorage`
+- MEGA shared folder synced locally at `$HOME/MEGA/NearbytesStorage/NearbytesStorage`
 
 **⚠️ Important MEGA Setup:**
 - **Accept the MEGA share** when you receive it (check MEGA desktop app or web interface)
 - **Wait for sync to complete** - the MEGA desktop app will show sync status. Files must be fully synced before Nearbytes can access them.
-- **Verify sync location:** The folder should be at `$HOME/MEGA/NearbytesStorage` (or set `NEARBYTES_STORAGE_DIR` to your actual sync path)
+- **Verify sync location:** The folder should be at `$HOME/MEGA/NearbytesStorage/NearbytesStorage` (or set `NEARBYTES_STORAGE_DIR` to your actual sync path)
 
 **🚨 Critical: MEGA Sync Configuration**
-- **ONLY sync `$HOME/MEGA/NearbytesStorage`** - NOT your entire home directory
+- **ONLY sync `$HOME/MEGA/NearbytesStorage/NearbytesStorage`** - NOT your entire home directory
 - In MEGA Settings → Syncs, ensure you have a sync for:
-  - **Local folder:** `/Users/yourname/MEGA/NearbytesStorage`
+  - **Local folder:** `/Users/yourname/MEGA/NearbytesStorage/NearbytesStorage`
   - **MEGA folder:** `/MEGA/NearbytesStorage` (or the shared folder path)
 - **DO NOT** sync `/Users/yourname` or your entire home directory
 - **Verify:** Run `ls ~/MEGA` - should only show `NearbytesStorage`, not Desktop/Documents/Downloads/etc.
@@ -55,7 +55,7 @@ npm run dev
 2. **Verify MEGA folder is synced:**
    ```bash
    # Quick check - should show files if synced
-   ls -la "$HOME/MEGA/NearbytesStorage" | head
+   ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage" | head
    ```
    
    If the folder doesn't exist or is empty:
@@ -72,13 +72,13 @@ npm run dev
    **Note:** On Windows (without WSL/Git Bash), use the manual approach instead:
    ```bash
    # Windows (PowerShell/CMD)
-   $env:NEARBYTES_STORAGE_DIR="$env:USERPROFILE\MEGA\NearbytesStorage"
+   $env:NEARBYTES_STORAGE_DIR="$env:USERPROFILE\MEGA\NearbytesStorage\NearbytesStorage"
    npm run dev
    ```
    
    Or manually on macOS/Linux:
    ```bash
-   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
    npm run dev
    ```
 
@@ -99,7 +99,7 @@ npm run dev
   npm run dev
   ```
 
-- **Empty folder:** If `ls -la "$HOME/MEGA/NearbytesStorage"` shows an empty folder:
+- **Empty folder:** If `ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage"` shows an empty folder:
   - Ensure MEGA desktop app is running
   - Check that you accepted the MEGA share invitation
   - Wait for MEGA sync to complete (check MEGA app for sync status)
@@ -115,6 +115,43 @@ For verification steps, see [docs/professor-verify.md](docs/professor-verify.md)
 npm install
 npm run build
 ```
+
+## Electron Desktop (Shared API/UI)
+
+Nearbytes now supports a desktop runtime via Electron while preserving the existing
+server-side and browser workflows.
+
+### Dev / Build Targets
+
+You can run these with `yarn <script>` or `npm run <script>`:
+
+- `dev-run`: run Electron desktop in dev mode (Vite UI + shared API runtime)
+- `dev-test`: run shared tests + desktop smoke validation
+- `dev-build`: build server + UI + Electron runtime artifacts
+- `production-build`: build desktop installers (publish disabled)
+- `production-build:publish`: build and publish desktop installers (CI/tag use)
+- `deploy`: interactive tag helper that asks for version and pushes `v*` release tag
+
+### Desktop Security Model
+
+- Desktop runtime binds API to `127.0.0.1` on a random port.
+- API requires a runtime desktop token via `x-nearbytes-desktop-token`.
+- Session `{port, token, expiresAt, pid}` is written locally with `0600` permissions.
+- Local trusted tools can discover current API runtime with:
+
+```bash
+nearbytes desktop api-info --json
+```
+
+### Desktop Environment Variables
+
+- `NEARBYTES_ELECTRON_DEV_SERVER_URL` (default: empty) - when set, Electron loads this dev UI URL
+- `NEARBYTES_DESKTOP_SESSION_FILE` (default: `~/.nearbytes/desktop-session.json`) - desktop API session file
+- `NEARBYTES_DESKTOP_SESSION_TTL_MS` (default: `28800000`) - desktop API token/session lifetime
+- `NEARBYTES_DISABLE_AUTO_UPDATE=1` - disables auto-update checks in desktop runtime
+- `NEARBYTES_RELEASE_OWNER` / `NEARBYTES_RELEASE_REPO` - repository used by installer publishing and updater metadata
+
+More details: [docs/electron.md](docs/electron.md), [docs/releasing-desktop.md](docs/releasing-desktop.md)
 
 ## Quick Start (CLI)
 
@@ -185,17 +222,18 @@ const data = await getFile(secret, files[0].blobHash);
 
 ## Phase 2: Local File Server API
 
-Nearbytes includes a stateless local API server that exposes the Phase 1 file
-service over HTTP. Every request supplies either a secret header or a stateless
-Bearer token derived from the secret.
+Nearbytes includes a local API server that exposes the Phase 1 file service over
+HTTP. `POST /open` accepts the full secret in the request body and returns a
+compact Bearer token backed by the running server process. Subsequent requests
+normally use that short token instead of resending the secret.
 
 ### Run the server
 
 ```bash
 npm install
 npm run build
-# Optional: set only if your MEGA folder is elsewhere (default is $HOME/MEGA/NearbytesStorage)
-# export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+# Optional: set only if your MEGA folder is elsewhere (default is $HOME/MEGA/NearbytesStorage/NearbytesStorage)
+# export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
 npm run server
 ```
 
@@ -206,18 +244,19 @@ The server runs on `http://localhost:3000` by default.
 Environment variables:
 
 - `PORT` (default: `3000`) - Server port
-- `NEARBYTES_STORAGE_DIR` (default: `$HOME/MEGA/NearbytesStorage` on macOS/Linux, `%USERPROFILE%\MEGA\NearbytesStorage` on Windows) - Storage directory. **Single source of truth** for where the server reads/writes `channels/` and `blocks/`. At this time the app uses only the MEGA cloud synced path by default. Set this only if your MEGA folder is in a different location (see below).
-- `NEARBYTES_SERVER_TOKEN_KEY` (optional) - 32-byte key (hex or base64) to enable Bearer tokens
+- `NEARBYTES_STORAGE_DIR` (default: `$HOME/MEGA/NearbytesStorage/NearbytesStorage` on macOS/Linux, `%USERPROFILE%\MEGA\NearbytesStorage\NearbytesStorage` on Windows) - Storage directory. **Single source of truth** for where the server reads/writes `channels/` and `blocks/`. At this time the app uses only the MEGA cloud synced path by default. Set this only if your MEGA folder is in a different location (see below).
+- `NEARBYTES_ROOTS_CONFIG` (default: `~/.nearbytes/roots.json`) - Local multi-root manifest path
+- `NEARBYTES_SERVER_TOKEN_KEY` (optional) - 32-byte key (hex or base64) to keep accepting legacy stateless Bearer tokens as a compatibility fallback
 - `NEARBYTES_CORS_ORIGIN` (default: `http://localhost:5173`) - CORS origin
 - `NEARBYTES_MAX_UPLOAD_MB` (default: `50`) - Maximum upload size in MB
 
-**Shared cloud structure:** The team uses a shared MEGA folder with structure **MEGA** (top level) → **NearbytesStorage** → **blocks**, **channels**. Anyone who clones the repo and is a shared member of that MEGA folder should sync it locally to the standard path (or set `NEARBYTES_STORAGE_DIR`); with the shared secrets they can run the app and see the same photos; new channels and uploads sync via MEGA.
+**Shared cloud structure:** The team uses a shared MEGA folder with structure **MEGA** (top level) → **NearbytesStorage** → **NearbytesStorage** → **blocks**, **channels**. Anyone who clones the repo and is a shared member of that MEGA folder should sync it locally to the standard path (or set `NEARBYTES_STORAGE_DIR`); with the shared secrets they can run the app and see the same photos; new channels and uploads sync via MEGA.
 
 **Setting storage when MEGA is elsewhere (macOS / Linux / WSL):**
 ```bash
-export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
 ```
-**Example MEGA paths:** macOS `~/MEGA/NearbytesStorage`, Windows `%USERPROFILE%\MEGA\NearbytesStorage`, Linux `$HOME/MEGA/NearbytesStorage`, MEGA Cloud Drive on macOS `~/Library/CloudStorage/MEGA/...`.
+**Example MEGA paths:** macOS `~/MEGA/NearbytesStorage/NearbytesStorage`, Windows `%USERPROFILE%\MEGA\NearbytesStorage\NearbytesStorage`, Linux `$HOME/MEGA/NearbytesStorage/NearbytesStorage`, MEGA Cloud Drive on macOS `~/Library/CloudStorage/MEGA/...`.
 
 **Quick verification (after starting the server):**
 ```bash
@@ -232,6 +271,8 @@ ls "$NEARBYTES_STORAGE_DIR/blocks" | wc -l
 **Debug endpoints (storage only; no secrets):**
 - `GET /__debug/storage` - Resolved storage path, channel/block counts, MEGA path hints
 - `GET /__debug/channel/:id` - Channel dir path, existence, event file list (name, size, mtime) for channel id (public key hex)
+- `GET /config/roots` - Local-only multi-root configuration + runtime status
+- `PUT /config/roots` - Local-only multi-root configuration update
 
 ### API Endpoints
 
@@ -240,6 +281,8 @@ ls "$NEARBYTES_STORAGE_DIR/blocks" | wc -l
 - `POST /upload` - Upload a file (multipart/form-data)
 - `GET /file/:hash` - Download a file by blob hash
 - `DELETE /files/:name` - Delete a file by name
+- `GET /timeline` - Deterministic timeline of file events
+- `POST /snapshot` - Compute/persist on-demand snapshot
 - `GET /health` - Health check
 
 ### Try the API (secret header mode)
@@ -261,6 +304,12 @@ curl -L http://localhost:3000/file/<hash> \
   -o out.bin
 
 curl -X DELETE http://localhost:3000/files/photo.jpg \
+  -H "x-nearbytes-secret: my volume"
+
+curl http://localhost:3000/timeline \
+  -H "x-nearbytes-secret: my volume"
+
+curl -X POST http://localhost:3000/snapshot \
   -H "x-nearbytes-secret: my volume"
 ```
 
@@ -285,7 +334,7 @@ Nearbytes includes a modern web UI built with Svelte 5 that provides a beautiful
 
 **Option 1: Run both server and UI together (recommended):**
 ```bash
-# Storage defaults to $HOME/MEGA/NearbytesStorage; set NEARBYTES_STORAGE_DIR only if your MEGA folder is elsewhere
+# Storage defaults to $HOME/MEGA/NearbytesStorage/NearbytesStorage; set NEARBYTES_STORAGE_DIR only if your MEGA folder is elsewhere
 npm run dev
 ```
 
@@ -316,7 +365,7 @@ Open `http://localhost:5173` in your browser.
 - **Offline support**: Cached file listings work offline
 - **PWA**: Installable as a web app with service worker caching
 
-The UI proxies API calls to the backend running on port 3000. See [ui/README.md](ui/README.md) for detailed setup instructions and [docs/ui.md](docs/ui.md) for architecture details.
+The UI proxies API calls to the backend running on port 3000. See [docs/ui.md](docs/ui.md) for UI architecture and endpoint details.
 
 More details: [docs/ui.md](docs/ui.md)
 
@@ -328,27 +377,27 @@ Nearbytes can use MEGA desktop sync folder as the storage backend. This enables 
 
 1. **Create MEGA sync folder:**
    ```bash
-   mkdir -p "$HOME/MEGA/NearbytesStorage"
+   mkdir -p "$HOME/MEGA/NearbytesStorage/NearbytesStorage"
    ```
 
 2. **Configure MEGA desktop app:**
    - Open MEGA desktop app
-   - Add `$HOME/MEGA/NearbytesStorage` as a sync folder
+   - Add `$HOME/MEGA/NearbytesStorage/NearbytesStorage` as a sync folder
    - Wait for initial sync to complete
 
 3. **Run backend and UI together:**
    ```bash
-   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
    npm run dev
    ```
 
    This starts both the backend server (port 3000) and UI dev server (port 5173).
-   The server will log: `Using storage dir: /Users/yourname/MEGA/NearbytesStorage`
+   The server will log: `Using storage dir: /Users/yourname/MEGA/NearbytesStorage/NearbytesStorage`
 
    **Or run separately:**
    ```bash
    # Terminal 1 - Backend
-   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
    npm run build
    npm run server
 
@@ -360,7 +409,7 @@ Nearbytes can use MEGA desktop sync folder as the storage backend. This enables 
 ### How It Works
 
 - **Local encryption**: Nearbytes encrypts all files locally before writing to storage
-- **MEGA stores ciphertext**: Only encrypted blobs and event logs are stored in MEGA
+- **MEGA stores ciphertext + signed metadata**: Encrypted blobs are opaque ciphertext; event files are signed records and can include cleartext metadata like logical filename and timestamps
 - **Secret controls access**: The secret is never stored in MEGA; it's only used locally to derive encryption keys
 - **Cross-machine sync**: Share the MEGA folder across machines to enable shared storage
 
@@ -368,7 +417,7 @@ Nearbytes can use MEGA desktop sync folder as the storage backend. This enables 
 
 **Start server and UI together:**
 ```bash
-export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage"
+export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
 npm run dev
 ```
 

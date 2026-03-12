@@ -96,12 +96,13 @@ Command-line interface:
 ## File Structure
 
 ```
-data/
-├── [channel-public-key-hex]/
-│   ├── [event-hash].bin    # Signed events
-│   └── ...
-└── data/
-    └── [data-hash].bin     # Encrypted data blocks
+<storage-root>/
+├── channels/
+│   └── [channel-public-key-hex]/
+│       ├── [event-hash].bin       # Signed event files
+│       └── snapshot.latest.json   # Optional on-demand snapshot
+└── blocks/
+    └── [data-hash].bin            # Encrypted data blocks
 ```
 
 ## Design Decisions
@@ -111,4 +112,3 @@ data/
 3. **Error Handling**: Custom error types with proper chaining
 4. **Immutability**: Use `readonly` and immutable data structures
 5. **Web Crypto Only**: No external crypto libraries for security
-

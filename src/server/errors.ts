@@ -10,7 +10,9 @@ import { DecryptionError } from '../crypto/errors.js';
 export type ApiErrorCode =
   | 'INVALID_REQUEST'
   | 'UNAUTHORIZED'
+  | 'FORBIDDEN'
   | 'NOT_FOUND'
+  | 'NOT_IMPLEMENTED'
   | 'PAYLOAD_TOO_LARGE'
   | 'INTERNAL_ERROR';
 

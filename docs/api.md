@@ -91,7 +91,7 @@ Channel-specific storage operations.
 - `SymmetricKey`: 32-byte array
 - `PrivateKey`: Private key bytes
 - `PublicKey`: Public key bytes
-- `Secret`: Secret string (min 8 chars)
+- `Secret`: Non-empty secret string
 - `Hash`: 64-character hex string
 - `EncryptedData`: Encrypted bytes
 - `Signature`: Signature bytes
@@ -101,4 +101,3 @@ Channel-specific storage operations.
 - `KeyPair`: `{ publicKey: PublicKey; privateKey: PrivateKey }`
 - `EventPayload`: `{ hash: Hash; encryptedKey: EncryptedData }`
 - `SignedEvent`: `{ payload: EventPayload; signature: Signature }`
-

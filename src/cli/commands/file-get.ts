@@ -79,6 +79,6 @@ export function registerFileGetCommand(program: Command): void {
     .requiredOption('-n, --name <name>', 'File name to retrieve')
     .requiredOption('-s, --secret <secret>', 'Volume secret')
     .requiredOption('-o, --output <path>', 'Output file path')
-    .option('-d, --data-dir <path>', 'Storage directory (default: MEGA cloud path)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
     .action(handleFileGet);
 }

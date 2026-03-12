@@ -7,6 +7,7 @@ import {
   getSecretFromRequest,
   parseTokenKey,
 } from '../auth.js';
+import { InMemorySecretSessionStore } from '../secretSessions.js';
 
 const SECRET_A = 'volume-secret-a';
 const SECRET_B = 'volume-secret-b';
@@ -20,14 +21,25 @@ describe('auth helpers', () => {
   });
 
   it('prioritizes bearer tokens over header secrets', async () => {
-    const tokenKey = randomBytes(32);
-    const token = await encodeSecretToken(SECRET_A, tokenKey);
+    const sessionStore = new InMemorySecretSessionStore();
+    const token = sessionStore.createSession(SECRET_A);
     const req = createRequest({
       authorization: `Bearer ${token}`,
       'x-nearbytes-secret': SECRET_B,
     });
 
-    const secret = await getSecretFromRequest(req, { tokenKey });
+    const secret = await getSecretFromRequest(req, { sessionStore });
+    expect(secret).toBe(SECRET_A);
+  });
+
+  it('falls back to stateless token decoding when session token is missing', async () => {
+    const tokenKey = randomBytes(32);
+    const token = await encodeSecretToken(SECRET_A, tokenKey);
+    const req = createRequest({
+      authorization: `Bearer ${token}`,
+    });
+
+    const secret = await getSecretFromRequest(req, { tokenKey, sessionStore: new InMemorySecretSessionStore() });
     expect(secret).toBe(SECRET_A);
   });
 

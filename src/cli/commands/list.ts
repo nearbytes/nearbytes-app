@@ -73,7 +73,7 @@ export function registerListCommand(program: Command): void {
     .command('list')
     .description('List events in a channel')
     .requiredOption('-s, --secret <secret>', 'Channel secret')
-    .option('-d, --data-dir <path>', 'Storage directory (default: MEGA cloud path)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
     .option('-f, --format <format>', 'Output format (json, table, plain)', 'table')
     .action(handleList);
 }

@@ -86,6 +86,17 @@ describe('CryptoOperations', () => {
       expect(keyPair1.privateKey).toEqual(keyPair2.privateKey);
       expect(keyPair1.publicKey).toEqual(keyPair2.publicKey);
     });
+
+    it('should derive keys from file-backed secret bytes', async () => {
+      const fileBytes = Uint8Array.from([0, 255, 1, 2, 3, 16, 32, 64, 128, 254]);
+      const encoded = Buffer.from(fileBytes).toString('base64url');
+      const secret = createSecret(`nb-file-secret:v1:${encoded}`);
+      const keyPair1 = await crypto.deriveKeys(secret);
+      const keyPair2 = await crypto.deriveKeys(secret);
+
+      expect(keyPair1.privateKey).toEqual(keyPair2.privateKey);
+      expect(keyPair1.publicKey).toEqual(keyPair2.publicKey);
+    });
   });
 
   describe('signPR and verifyPU', () => {
@@ -113,4 +124,3 @@ describe('CryptoOperations', () => {
     });
   });
 });
-

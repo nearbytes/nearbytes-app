@@ -45,11 +45,11 @@ export function createSymmetricKey(bytes: Uint8Array): SymmetricKey {
  * Creates a secret from a string with validation
  * @param input - Secret string (e.g., "channelname:password")
  * @returns Branded Secret
- * @throws InvalidSecretError if secret is too short
+ * @throws InvalidSecretError if secret is empty
  */
 export function createSecret(input: string): Secret {
-  if (input.length < 8) {
-    throw new InvalidSecretError('Secret must be at least 8 characters long');
+  if (input.length < 1) {
+    throw new InvalidSecretError('Secret is required');
   }
   return input as Secret;
 }
@@ -91,4 +91,3 @@ export class InvalidSecretError extends ValidationError {
     this.name = 'InvalidSecretError';
   }
 }
-

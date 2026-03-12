@@ -1,52 +1,32 @@
 #!/usr/bin/env node
 
-import path from 'path';
-import { createCryptoOperations } from '../crypto/index.js';
-import { createFileService } from '../domain/fileService.js';
-import { getDefaultStorageDir } from '../storagePath.js';
-import { FilesystemStorageBackend } from '../storage/filesystem.js';
-import { createApp } from './app.js';
 import { parseTokenKey } from './auth.js';
+import { startApiRuntime } from './runtime.js';
 import {
   getStorageDiagnostics,
   logStorageDiagnostics,
 } from './storageDiagnostics.js';
 
 const port = parsePort(process.env.PORT);
-const storageDirRaw = getDefaultStorageDir();
-const storageDir = path.resolve(storageDirRaw);
 const corsOrigin = parseCorsOrigin(process.env.NEARBYTES_CORS_ORIGIN ?? 'http://localhost:5173');
 const maxUploadBytes = parseMaxUploadBytes(process.env.NEARBYTES_MAX_UPLOAD_MB);
 const tokenKey = process.env.NEARBYTES_SERVER_TOKEN_KEY
   ? parseTokenKey(process.env.NEARBYTES_SERVER_TOKEN_KEY)
   : undefined;
 
-const crypto = createCryptoOperations();
-const storage = new FilesystemStorageBackend(storageDir);
-const fileService = createFileService({ crypto, storage });
-
 async function main(): Promise<void> {
-  console.log(`Using storage dir: ${storageDir}`);
-  const diagnostics = await getStorageDiagnostics(storageDir);
-  logStorageDiagnostics(diagnostics);
-
-  // Ensure channels/ and blocks/ exist and are writable (fail fast if path wrong or read-only)
-  await storage.createDirectory('channels');
-  await storage.createDirectory('blocks');
-
-  const app = createApp({
-    fileService,
-    crypto,
-    storage,
-    tokenKey,
+  const runtime = await startApiRuntime({
+    port,
     corsOrigin,
     maxUploadBytes,
-    resolvedStorageDir: storageDir,
+    tokenKey,
   });
 
-  app.listen(port, () => {
-    console.log(`Nearbytes API server running at http://localhost:${port}`);
-  });
+  console.log(`Using roots config: ${runtime.rootsConfigPath}`);
+  console.log(`Using default storage bootstrap path: ${runtime.defaultStorageDir}`);
+  const diagnostics = await getStorageDiagnostics(runtime.primaryMainRoot);
+  logStorageDiagnostics(diagnostics);
+  console.log(`Nearbytes API server running at http://localhost:${runtime.port}`);
 }
 
 main().catch((err) => {

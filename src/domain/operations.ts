@@ -66,7 +66,7 @@ export async function storeData(
   const dataHash = await computeHash(encryptedData);
 
   // 5. Store encrypted data
-  await channelStorage.storeEncryptedData(dataHash, encryptedData);
+  await channelStorage.storeEncryptedData(dataHash, encryptedData, false, keyPair.publicKey);
 
   // 6. Derive symmetric key for encrypting the data encryption key
   const keyEncryptionKey = await crypto.deriveSymKey(keyPair.privateKey);
@@ -137,7 +137,10 @@ export async function retrieveData(
   const symmetricKey = createSymmetricKey(symmetricKeyBytes);
 
   // 6. Retrieve encrypted data
-  const encryptedData = await channelStorage.retrieveEncryptedData(signedEvent.payload.hash);
+  const encryptedData = await channelStorage.retrieveEncryptedData(
+    signedEvent.payload.hash,
+    keyPair.publicKey
+  );
 
   // 7. Decrypt data
   const plaintext = await crypto.decryptSym(encryptedData, symmetricKey);
@@ -175,10 +178,10 @@ export async function storeDataDeduplicated(
   const dataHash = await computeHash(encryptedData);
 
   // 5. Check if data already exists
-  const dataExists = await channelStorage.hasEncryptedData(dataHash);
+  const dataExists = await channelStorage.hasEncryptedData(dataHash, keyPair.publicKey);
 
   // 6. Store encrypted data (skip if already exists)
-  await channelStorage.storeEncryptedData(dataHash, encryptedData, true);
+  await channelStorage.storeEncryptedData(dataHash, encryptedData, true, keyPair.publicKey);
 
   // 7. Derive symmetric key for encrypting the data encryption key
   const keyEncryptionKey = await crypto.deriveSymKey(keyPair.privateKey);
