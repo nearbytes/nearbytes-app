@@ -2,6 +2,8 @@
 
 A cryptographic protocol for storing and sharing immutable data collections with end-to-end encryption. See https://github.com/nearbytes/community for a quick introduction and more pointers to the initiative.
 
+Repository note: the first version of this repo was created as [GabeGiancarlo/Nearbytes](https://github.com/GabeGiancarlo/Nearbytes) and copied on March 12, 2026.
+
 ## Overview
 
 NearBytes is a content-addressed storage system that provides:
@@ -535,4 +537,4 @@ npm run dev:ui
 
 ## License
 
-MIT
+GNU GPL v3.0 - see [LICENSE](LICENSE)
