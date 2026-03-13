@@ -1219,6 +1219,7 @@
   let draggingMountId = $state<string | null>(null);
   let dragPreparedMountId = $state<string | null>(null);
   let dragOverMountId = $state<string | null>(null);
+  let dragOriginIndex = $state<number | null>(null);
   let dragPointerId = $state<number | null>(null);
   let dragStartX = $state(0);
   let dragStartY = $state(0);
@@ -2799,6 +2800,7 @@
     dragPreparedMountId = null;
     draggingMountId = null;
     dragOverMountId = null;
+    dragOriginIndex = null;
     dragPointerId = null;
     dragTranslateX = 0;
     dragMoved = false;
@@ -2863,6 +2865,7 @@
     event.preventDefault();
     pressedMountId = mountId;
     dragPreparedMountId = mountId;
+    dragOriginIndex = mounts.findIndex((mount) => mount.id === mountId);
     dragPointerId = event.pointerId;
     draggingMountId = mountId;
     dragOverMountId = null;
@@ -2911,6 +2914,12 @@
       applyDragUpdate(dragClientX);
     }
     clearMountDragState();
+  }
+
+  function shouldRenderMountHoleBefore(index: number): boolean {
+    if (!dragMoved || dragOriginIndex === null || !draggingMountId) return false;
+    const currentIndex = mounts.findIndex((mount) => mount.id === draggingMountId);
+    return dragOriginIndex === index && currentIndex !== dragOriginIndex;
   }
 
   function handleMountPointerCancel(event: PointerEvent) {
@@ -4110,15 +4119,31 @@
     >
       <MountRail dragging={draggingMountId !== null}>
         {#snippet children()}
-        {#each mounts as mount (mount.id)}
+        {#each mounts as mount, index (mount.id)}
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
           {@const isPending = pendingMountId === mount.id}
           <div
-            class="mount-item"
-            class:dragging={draggingMountId === mount.id}
-            use:trackMountNode={mount.id}
+            class="mount-stack"
             animate:flip={{ duration: 160 }}
           >
+            {#if shouldRenderMountHoleBefore(index)}
+              <div class="mount-item drag-hole" aria-hidden="true">
+                <div class="volume-chip collapsed-shell parked hole-shell">
+                  <div class="header-dock">
+                    <div class="header-dock-main">
+                      <div class="header-dock-badge">
+                        <div class="header-dock-badge-top"></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            {/if}
+            <div
+              class="mount-item"
+              class:dragging={draggingMountId === mount.id}
+              use:trackMountNode={mount.id}
+            >
             {#if expanded}
               <div
                 class="volume-chip expanded"
@@ -4269,11 +4294,7 @@
                   class="volume-chip-select"
                   aria-label={mountLabel(mount) || 'Space entry'}
                   onclick={() => handleMountClick(mount.id)}
-                  onpointerdown={(event) => beginMountReorder(event, mount.id, mount.collapsed)}
-                  onpointermove={handleMountPointerMove}
-                  onpointerup={handleMountPointerUp}
-                  onpointercancel={handleMountPointerCancel}
-                  title="Drag to reorder"
+                  title={mountLabel(mount) || 'Open space'}
                 >
                   <div class="header-dock">
                     <div class="header-dock-main">
@@ -4299,7 +4320,22 @@
                 </button>
                 <button
                   type="button"
-                  class="volume-chip-config-btn"
+                  class="volume-chip-action-btn volume-chip-drag-btn"
+                  aria-label={`Reorder ${mountLabel(mount) || 'space'}`}
+                  title="Drag to reorder"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onpointerdown={(event) => beginMountReorder(event, mount.id, mount.collapsed)}
+                  onpointermove={handleMountPointerMove}
+                  onpointerup={handleMountPointerUp}
+                  onpointercancel={handleMountPointerCancel}
+                >
+                  <GripVertical size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="volume-chip-action-btn volume-chip-config-btn"
                   aria-label={`Edit ${mountLabel(mount) || 'space'}`}
                   title="Edit space"
                   onclick={(event) => {
@@ -4311,6 +4347,7 @@
                 </button>
               </div>
             {/if}
+            </div>
           </div>
         {/each}
         {/snippet}
@@ -5295,16 +5332,29 @@
     filter: drop-shadow(0 14px 28px rgba(34, 211, 238, 0.12));
   }
 
+  .mount-stack,
   .mount-item {
     display: flex;
     flex: 0 0 auto;
     align-items: stretch;
+  }
+
+  .mount-stack {
     position: relative;
     will-change: transform;
   }
 
   .mount-item.dragging {
     z-index: 80;
+  }
+
+  .mount-item.drag-hole {
+    pointer-events: none;
+  }
+
+  .hole-shell {
+    visibility: hidden;
+    box-shadow: none;
   }
 
   .identity-row {
@@ -5793,7 +5843,7 @@
     box-shadow: none;
   }
 
-  .volume-chip-config-btn {
+  .volume-chip-action-btn {
     appearance: none;
     border: 0;
     border-left: 1px solid transparent;
@@ -5819,8 +5869,12 @@
       transform 0.2s ease;
   }
 
-  .volume-chip.collapsed-shell:hover .volume-chip-config-btn,
-  .volume-chip.collapsed-shell:focus-within .volume-chip-config-btn {
+  .volume-chip-drag-btn {
+    touch-action: none;
+  }
+
+  .volume-chip.collapsed-shell:hover .volume-chip-action-btn,
+  .volume-chip.collapsed-shell:focus-within .volume-chip-action-btn {
     width: 31px;
     min-width: 31px;
     border-left-color: rgba(56, 189, 248, 0.14);
@@ -5828,10 +5882,10 @@
     pointer-events: auto;
   }
 
-  .volume-chip.drag-armed:hover .volume-chip-config-btn,
-  .volume-chip.drag-armed:focus-within .volume-chip-config-btn,
-  .volume-chip.dragging:hover .volume-chip-config-btn,
-  .volume-chip.dragging:focus-within .volume-chip-config-btn {
+  .volume-chip.drag-armed:hover .volume-chip-action-btn,
+  .volume-chip.drag-armed:focus-within .volume-chip-action-btn,
+  .volume-chip.dragging:hover .volume-chip-action-btn,
+  .volume-chip.dragging:focus-within .volume-chip-action-btn {
     width: 0;
     min-width: 0;
     border-left-color: transparent;
@@ -5840,14 +5894,14 @@
     transform: none;
   }
 
-  .volume-chip-config-btn:hover {
+  .volume-chip-action-btn:hover {
     background: linear-gradient(180deg, rgba(18, 35, 60, 0.9), rgba(11, 22, 40, 0.84));
     border-left-color: rgba(96, 165, 250, 0.3);
     color: rgba(240, 249, 255, 0.96);
     transform: translateX(1px);
   }
 
-  .volume-chip-config-btn:focus-visible {
+  .volume-chip-action-btn:focus-visible {
     outline: none;
     background: linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9));
     border-left-color: rgba(125, 211, 252, 0.36);
@@ -5888,7 +5942,7 @@
     transform: translateY(-6px);
     pointer-events: none;
     transition: max-height 0.28s ease, opacity 0.24s ease, transform 0.24s ease, padding 0.24s ease;
-    padding: 0 0.35rem;
+    padding: 0;
   }
 
   .volume-chip-expanded.expanded {
@@ -5896,7 +5950,7 @@
     opacity: 1;
     transform: translateY(0);
     pointer-events: auto;
-    padding: 0.5rem 0.35rem 0.35rem;
+    padding: 0.5rem 0 0.35rem;
   }
 
   .secret-file-card {
@@ -5905,7 +5959,7 @@
     gap: 0.8rem;
     align-items: center;
     padding: 0.78rem 0.82rem;
-    margin: 0 0.35rem 0.6rem;
+    margin: 0 0 0.6rem;
     border-radius: 14px;
     border: 1px solid rgba(56, 189, 248, 0.16);
     background:

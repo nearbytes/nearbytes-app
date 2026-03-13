@@ -535,24 +535,12 @@
     return summary.share.capabilities.includes('write') ? 'Read and write' : 'Read only';
   }
 
-  function sourceAccessLabel(source: SourceConfigEntry): string {
-    return source.enabled && source.writable ? 'Read and write' : source.enabled ? 'Read only' : 'Off';
-  }
-
-  function shareCardBadgesForSource(source: SourceConfigEntry): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
-    const destination = destinationFor(null, source.id);
+  function shareCardBadgeForSource(source: SourceConfigEntry): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
+    const availability = locationAvailability(source);
     return [
       {
-        label: source.enabled ? 'Readable' : 'Hidden',
-        tone: source.enabled ? 'good' : 'off',
-      },
-      {
-        label: source.writable ? 'Writable' : 'Read only',
-        tone: source.writable ? 'durable' : 'muted',
-      },
-      {
-        label: keepsFullCopy(destination) ? 'Default share' : 'Optional',
-        tone: keepsFullCopy(destination) ? 'replica' : 'muted',
+        label: availability.label,
+        tone: availability.tone,
       },
     ];
   }
@@ -562,10 +550,6 @@
       {
         label: shareStatusLabel(summary),
         tone: shareStatusTone(summary),
-      },
-      {
-        label: managedShareAccessLabel(summary),
-        tone: summary.share.capabilities.includes('write') ? 'durable' : 'muted',
       },
     ];
   }
@@ -1738,9 +1722,8 @@
               title={compactPath(source.path)}
               copy={locationSummary(source)}
               active={protectionTone(defaultDestination, source.id) === 'durable'}
-              statusBadges={shareCardBadgesForSource(source)}
+              statusBadges={shareCardBadgeForSource(source)}
               meta={[
-                sourceAccessLabel(source),
                 status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown',
                 usageSummary(source.id),
               ]}
@@ -2199,15 +2182,14 @@
                   <ShareCard
                     provider={provider.label}
                     title={summary.share.label}
-                    copy={summary.state.detail}
-                    active={summary.state.status === 'ready'}
-                    statusBadges={shareCardBadgesForManaged(summary)}
-                    meta={[
-                      managedShareAccessLabel(summary),
-                      shareAttachmentSummary(summary),
-                      managedShareOpenLabel(summary),
-                    ]}
-                  >
+                  copy={summary.state.detail}
+                  active={summary.state.status === 'ready'}
+                  statusBadges={shareCardBadgesForManaged(summary)}
+                  meta={[
+                    managedShareAccessLabel(summary),
+                    managedShareOpenLabel(summary),
+                  ]}
+                >
                     {#snippet footer()}
                       {#if shareAttachmentLabels(summary).length > 0}
                         <div class="fact-row share-volume-row">
