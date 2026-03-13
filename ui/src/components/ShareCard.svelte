@@ -2,7 +2,7 @@
   import type { Snippet } from 'svelte';
   import { HardDrive } from 'lucide-svelte';
 
-  export type ShareEditorBadgeTone = 'good' | 'warn' | 'muted' | 'durable' | 'replica' | 'off';
+  export type ShareCardBadgeTone = 'good' | 'warn' | 'muted' | 'durable' | 'replica' | 'off';
 
   const {
     eyebrow = 'Share',
@@ -12,18 +12,24 @@
     active = false,
     statusBadges = [],
     meta = [],
-    children,
+    body,
+    controls,
+    details,
     actions,
+    footer,
   } = $props<{
     eyebrow?: string;
     provider?: string;
     title: string;
     copy?: string;
     active?: boolean;
-    statusBadges?: Array<{ label: string; tone?: ShareEditorBadgeTone }>;
+    statusBadges?: Array<{ label: string; tone?: ShareCardBadgeTone }>;
     meta?: string[];
-    children?: Snippet;
+    body?: Snippet;
+    controls?: Snippet;
+    details?: Snippet;
     actions?: Snippet;
+    footer?: Snippet;
   }>();
 </script>
 
@@ -51,7 +57,17 @@
     <p class="card-copy">{copy}</p>
   {/if}
 
-  {@render children?.()}
+  {#if body}
+    <div class="card-body">
+      {@render body()}
+    </div>
+  {/if}
+
+  {#if controls}
+    <div class="card-controls">
+      {@render controls()}
+    </div>
+  {/if}
 
   {#if meta.length > 0}
     <div class="fact-row">
@@ -61,9 +77,21 @@
     </div>
   {/if}
 
+  {#if details}
+    <div class="card-details">
+      {@render details()}
+    </div>
+  {/if}
+
   {#if actions}
     <div class="button-row">
       {@render actions()}
+    </div>
+  {/if}
+
+  {#if footer}
+    <div class="card-footer">
+      {@render footer()}
     </div>
   {/if}
 </article>
@@ -71,7 +99,7 @@
 <style>
   .share-card {
     display: grid;
-    gap: 0.68rem;
+    gap: 0.72rem;
     padding: 0.82rem;
     border-radius: 16px;
     border: 1px solid rgba(96, 165, 250, 0.12);
@@ -110,7 +138,11 @@
 
   .card-title > div,
   .fact-row,
-  .card-copy {
+  .card-copy,
+  .card-body,
+  .card-controls,
+  .card-details,
+  .card-footer {
     min-width: 0;
   }
 
@@ -168,6 +200,10 @@
     line-height: 1.38;
   }
 
+  .card-copy {
+    overflow-wrap: anywhere;
+  }
+
   .fact-row span {
     min-width: 0;
     overflow-wrap: anywhere;
@@ -223,6 +259,7 @@
 
     .card-status {
       justify-content: flex-start;
+      max-width: 100%;
     }
   }
 </style>

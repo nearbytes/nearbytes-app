@@ -31,9 +31,10 @@
     updateRootsConfig,
   } from '../lib/api.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
-  import ShareEditorCard from './ShareEditorCard.svelte';
+  import ShareCard from './ShareCard.svelte';
   import {
     ArrowRightLeft,
+    Check,
     FolderOpen,
     HardDrive,
     Plus,
@@ -1629,7 +1630,7 @@
           {#each localShares() as source (source.id)}
             {@const status = sourceStatus(source.id)}
             {@const defaultDestination = destinationFor(null, source.id)}
-            <ShareEditorCard
+            <ShareCard
               provider={formatProvider(source.provider)}
               title={compactPath(source.path)}
               copy={locationSummary(source)}
@@ -1641,42 +1642,53 @@
                 usageSummary(source.id),
               ]}
             >
-              {#snippet children()}
-                <div class="toggle-stack compact-share-toggle-stack">
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={source.enabled}
-                      aria-label="Use this share for reads"
-                      onchange={(event) => updateSourceField(source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Readable</span>
-                    </div>
-                  </label>
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={source.writable}
-                      aria-label="Use this share for writes"
-                      onchange={(event) => updateSourceField(source.id, 'writable', (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Writable</span>
-                    </div>
-                  </label>
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={keepsFullCopy(defaultDestination)}
-                      aria-label="Use this share by default"
-                      onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Default share</span>
-                    </div>
-                  </label>
+              {#snippet controls()}
+                <div class="share-toggle-row">
+                  <button
+                    type="button"
+                    class="share-toggle-pill"
+                    class:active={source.enabled}
+                    aria-pressed={source.enabled}
+                    onclick={() => updateSourceField(source.id, 'enabled', !source.enabled)}
+                  >
+                    <span class="share-toggle-icon" aria-hidden="true">
+                      {#if source.enabled}
+                        <Check size={13} strokeWidth={2.6} />
+                      {/if}
+                    </span>
+                    <span>Readable</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="share-toggle-pill"
+                    class:active={source.writable}
+                    aria-pressed={source.writable}
+                    onclick={() => updateSourceField(source.id, 'writable', !source.writable)}
+                  >
+                    <span class="share-toggle-icon" aria-hidden="true">
+                      {#if source.writable}
+                        <Check size={13} strokeWidth={2.6} />
+                      {/if}
+                    </span>
+                    <span>Writable</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="share-toggle-pill"
+                    class:active={keepsFullCopy(defaultDestination)}
+                    aria-pressed={keepsFullCopy(defaultDestination)}
+                    onclick={() => setKeepFullCopy(null, source.id, !keepsFullCopy(defaultDestination))}
+                  >
+                    <span class="share-toggle-icon" aria-hidden="true">
+                      {#if keepsFullCopy(defaultDestination)}
+                        <Check size={13} strokeWidth={2.6} />
+                      {/if}
+                    </span>
+                    <span>Default</span>
+                  </button>
                 </div>
+              {/snippet}
+              {#snippet details()}
                 <details class="details-card inline-details compact-share-advanced">
                   <summary>Advanced</summary>
                   <div class="card-control-row">
@@ -1742,7 +1754,7 @@
                   {/if}
                 </details>
               {/snippet}
-            </ShareEditorCard>
+            </ShareCard>
           {/each}
           {#each sourceSuggestionRows() as row (row.source.path)}
             <article class="location-card suggestion-card">
@@ -1999,7 +2011,7 @@
 
             <div class="compact-share-grid">
               {#if shares.length === 0}
-                <ShareEditorCard
+                <ShareCard
                   provider={provider.label}
                   title="No shares yet"
                   copy={provider.isConnected ? `Nearbytes should create or adopt the default nearbytes share automatically.` : `Connect ${provider.label} first, then Nearbytes will manage its shares here.`}
@@ -2008,7 +2020,7 @@
                 />
               {:else}
                 {#each shares as summary (summary.share.id)}
-                  <ShareEditorCard
+                  <ShareCard
                     provider={provider.label}
                     title={summary.share.label}
                     copy={summary.state.detail}
@@ -2020,7 +2032,7 @@
                       managedShareOpenLabel(summary),
                     ]}
                   >
-                    {#snippet children()}
+                    {#snippet footer()}
                       {#if shareAttachmentLabels(summary).length > 0}
                         <div class="fact-row share-volume-row">
                           {#each shareAttachmentLabels(summary) as attachment}
@@ -2050,7 +2062,7 @@
                         <span>Open</span>
                       </button>
                     {/snippet}
-                  </ShareEditorCard>
+                  </ShareCard>
                 {/each}
               {/if}
             </div>
@@ -3245,8 +3257,61 @@
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 
-  .compact-share-toggle-stack {
-    margin-top: 0.1rem;
+  .share-toggle-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.46rem;
+  }
+
+  .share-toggle-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-height: 32px;
+    padding: 0.28rem 0.78rem 0.28rem 0.62rem;
+    border-radius: 999px;
+    border: 1px solid rgba(96, 165, 250, 0.14);
+    background: rgba(9, 18, 34, 0.7);
+    color: rgba(191, 219, 254, 0.88);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1.1;
+    cursor: pointer;
+    transition:
+      border-color 140ms ease,
+      background 140ms ease,
+      color 140ms ease,
+      transform 140ms ease;
+  }
+
+  .share-toggle-pill:hover {
+    transform: translateY(-1px);
+    border-color: rgba(125, 211, 252, 0.26);
+  }
+
+  .share-toggle-pill.active {
+    border-color: rgba(45, 212, 191, 0.28);
+    background: rgba(9, 58, 58, 0.34);
+    color: #5eead4;
+  }
+
+  .share-toggle-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(96, 165, 250, 0.18);
+    background: rgba(12, 23, 41, 0.9);
+    color: inherit;
+    flex: 0 0 auto;
+  }
+
+  .share-toggle-pill.active .share-toggle-icon {
+    border-color: rgba(45, 212, 191, 0.22);
+    background: rgba(9, 58, 58, 0.58);
   }
 
   .compact-share-advanced {
