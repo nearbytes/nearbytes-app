@@ -6,117 +6,13 @@ Repository note: the first version of this repo was created as [GabeGiancarlo/Ne
 
 ## Overview
 
-NearBytes is a content-addressed storage system that provides:
+Nearbytes is a content-addressed storage system that provides:
 
 - **Content-addressed storage**: Data identified by SHA-256 hash
 - **End-to-end encryption**: AES-256-GCM for data, ECDSA P-256 for signatures
 - **Immutable event logs**: Signed events that cannot be modified
 - **Channel-based organization**: Each channel identified by a public key
 - **Deterministic key derivation**: Channels recreated from secrets
-
-## Quick Start (MEGA Storage)
-
-Summary (second line may need to be adapted):
-```
-source setup.sh
-export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
-npm run dev
-```
-
-
-
-**Prerequisites:**
-- Node.js 18+ and npm
-- MEGA desktop app installed and running
-- MEGA shared folder synced locally at `$HOME/MEGA/NearbytesStorage/NearbytesStorage`
-
-**⚠️ Important MEGA Setup:**
-- **Accept the MEGA share** when you receive it (check MEGA desktop app or web interface)
-- **Wait for sync to complete** - the MEGA desktop app will show sync status. Files must be fully synced before Nearbytes can access them.
-- **Verify sync location:** The folder should be at `$HOME/MEGA/NearbytesStorage/NearbytesStorage` (or set `NEARBYTES_STORAGE_DIR` to your actual sync path)
-
-**🚨 Critical: MEGA Sync Configuration**
-- **ONLY sync `$HOME/MEGA/NearbytesStorage/NearbytesStorage`** - NOT your entire home directory
-- In MEGA Settings → Syncs, ensure you have a sync for:
-  - **Local folder:** `/Users/yourname/MEGA/NearbytesStorage/NearbytesStorage`
-  - **MEGA folder:** `/MEGA/NearbytesStorage` (or the shared folder path)
-- **DO NOT** sync `/Users/yourname` or your entire home directory
-- **Verify:** Run `ls ~/MEGA` - should only show `NearbytesStorage`, not Desktop/Documents/Downloads/etc.
-- If you see your entire home directory syncing, remove that sync and create a new one for only `NearbytesStorage`
-
-**Steps:**
-
-1. **Clone and install:**
-   ```bash
-   git clone <github-url-provided-to-you>
-   cd Nearbytes
-   npm install
-   cd ui && npm install && cd ..
-   ```
-
-2. **Verify MEGA folder is synced:**
-   ```bash
-   # Quick check - should show files if synced
-   ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage" | head
-   ```
-   
-   If the folder doesn't exist or is empty:
-   - Check MEGA desktop app is running
-   - Verify you accepted the MEGA share
-   - Wait for sync to complete (check MEGA app status)
-   - If your MEGA folder is in a different location, set `NEARBYTES_STORAGE_DIR` to that path
-
-3. **Start server and UI:**
-   ```bash
-   npm run mega
-   ```
-   
-   **Note:** On Windows (without WSL/Git Bash), use the manual approach instead:
-   ```bash
-   # Windows (PowerShell/CMD)
-   $env:NEARBYTES_STORAGE_DIR="$env:USERPROFILE\MEGA\NearbytesStorage\NearbytesStorage"
-   npm run dev
-   ```
-   
-   Or manually on macOS/Linux:
-   ```bash
-   export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
-   npm run dev
-   ```
-
-   This starts both:
-   - Backend server on `http://localhost:3000`
-   - UI dev server on `http://localhost:5173`
-
-4. **Open browser:**
-   - Navigate to `http://localhost:5173`
-   - Type `LeedsUnited` in the secret field
-   - Files should appear if the MEGA folder is synced and contains data
-
-**Troubleshooting:**
-
-- **MEGA folder not at default location:** If your MEGA folder is synced elsewhere, set the environment variable:
-  ```bash
-  export NEARBYTES_STORAGE_DIR="/path/to/your/mega/sync/folder"
-  npm run dev
-  ```
-
-- **Empty folder:** If `ls -la "$HOME/MEGA/NearbytesStorage/NearbytesStorage"` shows an empty folder:
-  - Ensure MEGA desktop app is running
-  - Check that you accepted the MEGA share invitation
-  - Wait for MEGA sync to complete (check MEGA app for sync status)
-  - Verify files exist in MEGA web interface
-
-- **Files not appearing:** See [docs/professor-verify.md](docs/professor-verify.md) for detailed troubleshooting.
-
-For verification steps, see [docs/professor-verify.md](docs/professor-verify.md).
-
-## Installation
-
-```bash
-npm install
-npm run build
-```
 
 ## Electron Desktop (Shared API/UI)
 
@@ -157,6 +53,8 @@ nearbytes desktop api-info --json
 - `NEARBYTES_RELEASE_OWNER` / `NEARBYTES_RELEASE_REPO` - repository used by installer publishing and updater metadata
 
 More details: [docs/electron.md](docs/electron.md), [docs/releasing-desktop.md](docs/releasing-desktop.md)
+
+# Stacked information to be verified after recent updates
 
 ## Quick Start (CLI)
 
