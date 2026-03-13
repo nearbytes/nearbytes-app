@@ -60,8 +60,8 @@ type StagedUpdate =
     };
 
 const DESKTOP_UPDATER_EVENT = 'nearbytes-desktop:update-state';
-const DEFAULT_RELEASE_OWNER = 'GabeGiancarlo';
-const DEFAULT_RELEASE_REPO = 'Nearbytes';
+const DEFAULT_RELEASE_OWNER = 'nearbytes';
+const DEFAULT_RELEASE_REPO = 'nearbytes-app';
 const UPDATE_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 const UPDATE_FOCUS_RECHECK_DEBOUNCE_MS = UPDATE_RECHECK_INTERVAL_MS;
 
