@@ -54,17 +54,23 @@
   }
 
   function disarm() {
+    const changed = isArmedState || confirmReady;
     isArmedState = false;
     confirmReady = false;
     clearTimers();
-    onArmStateChange?.(false);
+    if (changed) {
+      onArmStateChange?.(false);
+    }
   }
 
   function arm() {
+    const changed = !isArmedState;
     isArmedState = true;
     confirmReady = armDelayMs <= 0;
     clearTimers();
-    onArmStateChange?.(true);
+    if (changed) {
+      onArmStateChange?.(true);
+    }
     if (armDelayMs > 0) {
       readyTimer = setTimeout(() => {
         if (isArmedState) {

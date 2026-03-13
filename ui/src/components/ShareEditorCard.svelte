@@ -128,6 +128,8 @@
   .card-status {
     justify-content: flex-end;
     align-self: start;
+    min-width: 0;
+    max-width: min(48%, 100%);
   }
 
   .card-icon {
@@ -175,16 +177,20 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-height: 26px;
+    min-height: 28px;
     max-width: 100%;
-    padding: 0 0.68rem;
+    padding: 0.22rem 1rem;
     border-radius: 999px;
     border: 1px solid rgba(96, 165, 250, 0.18);
     background: rgba(12, 23, 41, 0.84);
     color: rgba(219, 234, 254, 0.92);
     font-size: 0.7rem;
     font-weight: 600;
+    line-height: 1.2;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
   }
 
   .tone-good,

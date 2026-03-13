@@ -273,8 +273,12 @@
     return managedShares.filter((summary) => summary.state.status === 'ready').length;
   }
 
+  function isLocalMachineShare(source: SourceConfigEntry): boolean {
+    return !source.integration || source.integration.kind !== 'provider-managed';
+  }
+
   function activeFolderCount(): number {
-    return configDraft?.sources.filter((source) => source.enabled).length ?? 0;
+    return localShares().filter((source) => source.enabled).length;
   }
 
   function connectedAccountForProvider(provider: string): ProviderAccount | null {
@@ -358,15 +362,17 @@
     return `${countLabel(count, 'space')} attached`;
   }
 
-  function shareAttachmentLabels(summary: ManagedShareSummary): string[] {
+  function shareAttachmentLabels(summary: ManagedShareSummary): Array<{ volumeId: string; label: string; known: boolean }> {
     if (summary.attachments.length === 0) {
       return [];
     }
     return summary.attachments.map((attachment) => {
-      if (currentVolumePresentation && attachment.volumeId === currentVolumePresentation.volumeId) {
-        return currentVolumePresentation.label.trim() || 'Current space';
-      }
-      return `Space ${attachment.volumeId.slice(0, 8)}`;
+      const knownLabel = knownVolumeLabel(attachment.volumeId);
+      return {
+        volumeId: attachment.volumeId,
+        label: knownLabel ?? `Space ${attachment.volumeId.slice(0, 8)}`,
+        known: Boolean(knownLabel),
+      };
     });
   }
 
@@ -403,6 +409,16 @@
     return knownVolumes.find((entry) => entry.volumeId === targetVolumeId)?.label ?? null;
   }
 
+  function setProviderDisconnectArmed(provider: string, armed: boolean): void {
+    if ((providerDisconnectArmed[provider] ?? false) === armed) {
+      return;
+    }
+    providerDisconnectArmed = {
+      ...providerDisconnectArmed,
+      [provider]: armed,
+    };
+  }
+
   function providerCardTone(entry: ProviderCatalogEntry): StatusTone {
     const pending = pendingSessionForProvider(entry.provider);
     if (pending && pending.status === 'pending') return 'muted';
@@ -429,8 +445,8 @@
 
   function providerCardHeadline(entry: ProviderCatalogEntry): string {
     if (entry.provider === 'github') return 'Browse transport options';
-    if (entry.provider === 'mega') return 'Connect your MEGA account';
-    if (entry.provider === 'gdrive') return 'Connect your Google Drive account';
+    if (entry.provider === 'mega') return entry.isConnected ? 'Choose how Nearbytes uses MEGA' : 'Connect your MEGA account';
+    if (entry.provider === 'gdrive') return entry.isConnected ? 'Choose how Nearbytes uses Google Drive' : 'Connect your Google Drive account';
     return `Use ${entry.label}`;
   }
 
@@ -460,7 +476,7 @@
   }
 
   function localMachineShareCount(): number {
-    return configDraft?.sources.length ?? 0;
+    return localShares().length;
   }
 
   function shouldShowProviderDocs(entry: ProviderCatalogEntry): boolean {
@@ -478,7 +494,7 @@
   }
 
   function localShares(): SourceConfigEntry[] {
-    return configDraft?.sources ?? [];
+    return (configDraft?.sources ?? []).filter((source) => isLocalMachineShare(source));
   }
 
   function managedShareAccessLabel(summary: ManagedShareSummary): string {
@@ -1636,7 +1652,6 @@
                     />
                     <div>
                       <span class="toggle-title">Readable</span>
-                      <span class="toggle-copy">Use this share to read existing Nearbytes data.</span>
                     </div>
                   </label>
                   <label class="inline-toggle compact-toggle-line">
@@ -1648,7 +1663,6 @@
                     />
                     <div>
                       <span class="toggle-title">Writable</span>
-                      <span class="toggle-copy">Allow Nearbytes to save new encrypted data here.</span>
                     </div>
                   </label>
                   <label class="inline-toggle compact-toggle-line">
@@ -1660,7 +1674,6 @@
                     />
                     <div>
                       <span class="toggle-title">Default share</span>
-                      <span class="toggle-copy">{copyHelpText(null, source)}</span>
                     </div>
                   </label>
                 </div>
@@ -1929,12 +1942,7 @@
                     autoDisarmMs={4000}
                     disabled={integrationBusyKey === `disconnect:${provider.provider}`}
                     resetKey={`${provider.provider}:${integrationBusyKey ?? 'idle'}`}
-                    onArmStateChange={(armed) => {
-                      providerDisconnectArmed = {
-                        ...providerDisconnectArmed,
-                        [provider.provider]: armed,
-                      };
-                    }}
+                    onArmStateChange={(armed) => setProviderDisconnectArmed(provider.provider, armed)}
                     onPress={() => void disconnectProvider(provider)}
                   />
                 {:else}
@@ -2015,8 +2023,18 @@
                     {#snippet children()}
                       {#if shareAttachmentLabels(summary).length > 0}
                         <div class="fact-row share-volume-row">
-                          {#each shareAttachmentLabels(summary) as attachmentLabel}
-                            <span class="mini-pill">{attachmentLabel}</span>
+                          {#each shareAttachmentLabels(summary) as attachment}
+                            {#if attachment.known}
+                              <button
+                                type="button"
+                                class="mini-pill mini-pill-button"
+                                onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
+                              >
+                                {attachment.label}
+                              </button>
+                            {:else}
+                              <span class="mini-pill">{attachment.label}</span>
+                            {/if}
                           {/each}
                         </div>
                       {/if}
@@ -2971,16 +2989,18 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-height: 26px;
+    min-height: 28px;
     max-width: 100%;
-    padding: 0 0.68rem;
+    padding: 0.22rem 1rem;
     border-radius: 999px;
     border: 1px solid rgba(96, 165, 250, 0.18);
     background: rgba(12, 23, 41, 0.84);
     color: rgba(219, 234, 254, 0.92);
     font-size: 0.7rem;
     font-weight: 600;
+    line-height: 1.2;
     white-space: nowrap;
+    box-sizing: border-box;
   }
 
   .mini-pill-button {

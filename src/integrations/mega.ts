@@ -431,14 +431,25 @@ function parseMegaSyncTable(stdout: string): MegaSyncRecord[] {
     .map((line) => {
       const [id, localPath, remotePath, runState, status, error] = line.split('\t');
       return {
-        id: id?.trim() || undefined,
-        localPath: localPath?.trim() || undefined,
-        remotePath: remotePath?.trim() || undefined,
-        runState: runState?.trim() || undefined,
-        status: status?.trim() || undefined,
-        error: error?.trim() || undefined,
+        id: normalizeMegaCell(id),
+        localPath: normalizeMegaCell(localPath),
+        remotePath: normalizeMegaCell(remotePath),
+        runState: normalizeMegaCell(runState),
+        status: normalizeMegaCell(status),
+        error: normalizeMegaCell(error),
       } satisfies MegaSyncRecord;
     });
+}
+
+function normalizeMegaCell(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (/^(no|none|n\/a)$/i.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 function normalizeComparablePath(value: string): string {
