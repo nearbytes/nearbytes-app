@@ -147,8 +147,8 @@ describe('MegaTransportAdapter', () => {
       },
       account
     );
-    expect(String(created.remoteDescriptor?.remotePath)).toMatch(/^\/Nearbytes\/alpha-mirror-/);
-    expect(megaState.createdFolders[0]).toMatch(/^\/Nearbytes\/alpha-mirror-/);
+    expect(String(created.remoteDescriptor?.remotePath)).toMatch(/^\/Nearbytes\/Alpha Mirror [a-f0-9]{6}$/);
+    expect(megaState.createdFolders[0]).toMatch(/^\/Nearbytes\/Alpha Mirror [a-f0-9]{6}$/);
 
     const share: ManagedShare = {
       id: 'share-mega-1',

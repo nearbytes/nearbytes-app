@@ -1,3 +1,4 @@
+import { isProviderEnabled } from '../config/appConfig.js';
 import { GoogleDriveTransportAdapter } from './googleDrive.js';
 import { MegaTransportAdapter } from './mega.js';
 import type { IntegrationRuntime } from './runtime.js';
@@ -89,7 +90,17 @@ export class GitHubTransportAdapter extends StubTransportAdapter {
 }
 
 export function createDefaultTransportAdapters(runtime: IntegrationRuntime): TransportAdapter[] {
-  return [new GoogleDriveTransportAdapter(runtime), new MegaTransportAdapter(runtime), new GitHubTransportAdapter()];
+  const adapters: TransportAdapter[] = [];
+  if (isProviderEnabled('gdrive')) {
+    adapters.push(new GoogleDriveTransportAdapter(runtime));
+  }
+  if (isProviderEnabled('mega')) {
+    adapters.push(new MegaTransportAdapter(runtime));
+  }
+  if (isProviderEnabled('github')) {
+    adapters.push(new GitHubTransportAdapter());
+  }
+  return adapters;
 }
 
 export function createProviderCatalog(

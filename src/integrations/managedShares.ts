@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import { isProviderEnabled } from '../config/appConfig.js';
 import {
   getExplicitVolumePolicy,
   saveRootsConfig,
@@ -102,10 +103,11 @@ export class ManagedShareService {
     const state = await this.loadState();
     await this.ensureManagedShareSyncs(state);
     const setupStates = await this.getProviderSetupStates();
+    const accounts = state.accounts.filter((account) => isProviderEnabled(account.provider));
     return {
-      accounts: state.accounts,
+      accounts,
       providers: createProviderCatalog(Array.from(this.adapters.values()), state.accounts, setupStates),
-      preferredProviders: state.preferredProviders,
+      preferredProviders: state.preferredProviders.filter((provider) => isProviderEnabled(provider)),
     };
   }
 
@@ -247,9 +249,10 @@ export class ManagedShareService {
   async listManagedShares(): Promise<{ shares: ManagedShareSummary[] }> {
     const state = await this.loadState();
     await this.ensureManagedShareSyncs(state);
+    const visibleShares = state.managedShares.filter((share) => isProviderEnabled(share.provider));
     return {
       shares: await Promise.all(
-        state.managedShares.map(async (share) => ({
+        visibleShares.map(async (share) => ({
           share,
           attachments: computeManagedShareAttachments(this.options.storage.getRootsConfig(), share),
           state: await this.resolveTransportState(share),
@@ -262,6 +265,9 @@ export class ManagedShareService {
     const state = await this.loadState();
     const provider = normalizeProvider(input.provider);
     const adapter = this.adapters.get(provider);
+    if (!adapter) {
+      throw new ManagedShareServiceError(400, 'UNKNOWN_PROVIDER', `Unsupported provider: ${input.provider}`);
+    }
     const account = state.accounts.find((entry) => entry.id === input.accountId);
     if (!account) {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${input.accountId}`);
@@ -340,11 +346,15 @@ export class ManagedShareService {
     if (!share) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter) {
+      throw new ManagedShareServiceError(400, 'UNKNOWN_PROVIDER', `Unsupported provider: ${share.provider}`);
+    }
     const account = state.accounts.find((entry) => entry.id === share.accountId);
     if (!account) {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${share.accountId}`);
     }
-    await this.adapters.get(normalizeProvider(share.provider))?.invite?.(share, { emails: [...emails] }, account);
+    await adapter.invite?.(share, { emails: [...emails] }, account);
     const nextShare: ManagedShare = {
       ...share,
       invitationEmails: uniqueStrings([...share.invitationEmails, ...emails]),
@@ -386,6 +396,9 @@ export class ManagedShareService {
     const state = await this.loadState();
     const provider = normalizeProvider(input.provider);
     const adapter = this.adapters.get(provider);
+    if (!adapter) {
+      throw new ManagedShareServiceError(400, 'UNKNOWN_PROVIDER', `Unsupported provider: ${input.provider}`);
+    }
     const account = state.accounts.find((entry) => entry.id === input.accountId);
     if (!account) {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${input.accountId}`);
@@ -411,6 +424,9 @@ export class ManagedShareService {
     await this.ensureManagedShareSyncs(state);
     const share = state.managedShares.find((entry) => entry.id === shareId);
     if (!share) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+    if (!isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
     return {
@@ -618,14 +634,14 @@ export class ManagedShareService {
     if (!status) {
       return {
         status: 'attention',
-        detail: 'The local mirror folder is not attached to roots yet.',
+        detail: 'The local share folder is not attached yet.',
         badges: ['Repair'],
       };
     }
     if (!status.exists || !status.isDirectory) {
       return {
         status: 'attention',
-        detail: 'The local mirror folder is missing or invalid.',
+        detail: 'The local share folder is missing or invalid.',
         badges: ['Repair'],
       };
     }
@@ -634,8 +650,8 @@ export class ManagedShareService {
     }
     return {
       status: 'ready',
-      detail: 'Local mirror is attached and ready.',
-      badges: ['Mirror'],
+      detail: 'Local share folder is attached and ready.',
+      badges: ['Share'],
     };
   }
 
@@ -697,16 +713,17 @@ function createId(prefix: string, provider: string, serial: number): string {
 }
 
 function createMirrorFolderName(provider: string, label: string, shareId: string): string {
-  return `${slugify(provider)}-${slugify(label)}-${shareId.slice(-6)}`;
+  const base = sanitizeManagedFolderLabel(label) || `${defaultProviderLabel(provider)} share`;
+  return `${base} ${shareId.slice(-6)}`.trim();
 }
 
-function slugify(value: string): string {
+function sanitizeManagedFolderLabel(value: string): string {
   return value
     .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || 'share';
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .slice(0, 56)
+    .trim();
 }
 
 async function ensureMirrorFolder(localPath: string): Promise<void> {

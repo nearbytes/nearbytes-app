@@ -34,7 +34,7 @@ interface MegaSyncRecord {
 export class MegaTransportAdapter {
   readonly provider = 'mega';
   readonly label = 'MEGA';
-  readonly description = 'Managed folders and shared mirrors backed by MEGA CLI sync.';
+  readonly description = 'Managed folders and provider shares backed by MEGA CLI sync.';
   readonly supportsAccountConnection = true;
 
   private readonly syncStates = new Map<string, TransportState>();
@@ -116,7 +116,7 @@ export class MegaTransportAdapter {
     account: ProviderAccount
   ): Promise<Partial<ManagedShare>> {
     await this.ensureLoggedIn(account.id);
-    const shareName = `${slugify(input.label)}-${randomBytes(3).toString('hex')}`;
+    const shareName = createManagedFolderLabel(input.label, randomBytes(3).toString('hex'));
     const remoteBasePath = this.runtime.mega.remoteBasePath;
     const remotePath = path.posix.join(remoteBasePath, shareName);
     await this.runMega('mkdir', ['-p', remotePath]);
@@ -180,7 +180,7 @@ export class MegaTransportAdapter {
     if (!account) {
       return {
         status: 'needs-auth',
-        detail: 'Reconnect MEGA to resume this mirror.',
+        detail: 'Reconnect MEGA to resume this share.',
         badges: ['Reconnect'],
       };
     }
@@ -261,7 +261,7 @@ export class MegaTransportAdapter {
     if (!syncRecord) {
       return {
         status: 'attention',
-        detail: 'MEGA sync is not running for this mirror.',
+        detail: 'MEGA sync is not running for this share.',
         badges: ['Repair'],
       };
     }
@@ -278,7 +278,7 @@ export class MegaTransportAdapter {
     if (runState.includes('run') || status.includes('up to date') || status.includes('synced')) {
       return {
         status: 'ready',
-        detail: 'MEGA sync is running for this mirror.',
+        detail: 'MEGA sync is running for this share.',
         badges: ['Connected'],
         lastSyncAt: this.runtime.now(),
       };
@@ -312,7 +312,7 @@ export class MegaTransportAdapter {
 
   private async ensureSyncTarget(localPath: string, remotePath: string): Promise<void> {
     if (!localPath.trim()) {
-      throw new Error('Nearbytes mirror folder is missing.');
+      throw new Error('Nearbytes share folder is missing.');
     }
     await this.runMega('sync', [localPath, remotePath], {
       timeoutMs: 60_000,
@@ -388,15 +388,14 @@ function createOpaqueId(prefix: string): string {
   return `${prefix}-${randomBytes(8).toString('hex')}`;
 }
 
-function slugify(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 42) || 'nearbytes'
-  );
+function createManagedFolderLabel(label: string, suffix: string): string {
+  const cleaned = label
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .slice(0, 56)
+    .trim();
+  return `${cleaned || 'Nearbytes share'} ${suffix}`.trim();
 }
 
 function firstMeaningfulLine(value: string): string | null {
