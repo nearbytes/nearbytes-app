@@ -12,6 +12,7 @@ import {
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
+import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
 import { createDefaultTransportAdapters, createProviderCatalog, type TransportAdapter } from './adapters.js';
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
 import { JsonFileSecretStore } from './secretStore.js';
@@ -38,6 +39,7 @@ import type {
   ProviderAccount,
   ProviderCatalogEntry,
   ProviderSetupState,
+  ShareStorageMetrics,
   TransportState,
 } from './types.js';
 
@@ -257,13 +259,7 @@ export class ManagedShareService {
     const refreshedState = await this.loadState();
     const visibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     return {
-      shares: await Promise.all(
-        visibleShares.map(async (share) => ({
-          share,
-          attachments: computeManagedShareAttachments(this.options.storage.getRootsConfig(), share),
-          state: await this.resolveTransportState(share),
-        }))
-      ),
+      shares: await Promise.all(visibleShares.map((share) => this.buildManagedShareSummary(share))),
     };
   }
 
@@ -339,11 +335,7 @@ export class ManagedShareService {
     });
     await adapter?.ensureSync?.(nextShare, account);
 
-    return {
-      share: nextShare,
-      attachments: computeManagedShareAttachments(this.options.storage.getRootsConfig(), nextShare),
-      state: await this.resolveTransportState(nextShare),
-    };
+    return this.buildManagedShareSummary(nextShare);
   }
 
   async inviteManagedShare(shareId: string, emails: readonly string[]): Promise<ManagedShareSummary> {
@@ -370,11 +362,7 @@ export class ManagedShareService {
       ...state,
       managedShares: state.managedShares.map((entry) => (entry.id === shareId ? nextShare : entry)),
     });
-    return {
-      share: nextShare,
-      attachments: computeManagedShareAttachments(this.options.storage.getRootsConfig(), nextShare),
-      state: await this.resolveTransportState(nextShare),
-    };
+    return this.buildManagedShareSummary(nextShare);
   }
 
   async attachManagedShare(shareId: string, input: AttachManagedShareInput): Promise<ManagedShareSummary> {
@@ -391,11 +379,7 @@ export class ManagedShareService {
     );
     await this.persistRootsConfig(config);
 
-    return {
-      share,
-      attachments: computeManagedShareAttachments(this.options.storage.getRootsConfig(), share),
-      state: await this.resolveTransportState(share),
-    };
+    return this.buildManagedShareSummary(share);
   }
 
   async acceptManagedShare(input: AcceptManagedShareInput): Promise<ManagedShareSummary> {
@@ -435,11 +419,7 @@ export class ManagedShareService {
     if (!isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
-    return {
-      share,
-      attachments: computeManagedShareAttachments(this.options.storage.getRootsConfig(), share),
-      state: await this.resolveTransportState(share),
-    };
+    return this.buildManagedShareSummary(share);
   }
 
   async handleProviderCallback(provider: string, query: URLSearchParams): Promise<string> {
@@ -640,9 +620,21 @@ export class ManagedShareService {
     throw new ManagedShareServiceError(400, 'INVALID_JOIN_LINK', 'Join link payload is required');
   }
 
-  private async resolveTransportState(share: ManagedShare): Promise<TransportState> {
+  private async buildManagedShareSummary(share: ManagedShare): Promise<ManagedShareSummary> {
+    const config = this.options.storage.getRootsConfig();
     const runtime = await this.options.storage.getRuntimeSnapshot();
-    const status = share.sourceId ? runtime.sources.find((entry) => entry.id === share.sourceId) : undefined;
+    const remoteMetrics = await this.resolveShareStorageMetrics(share);
+    return {
+      share,
+      attachments: computeManagedShareAttachments(config, share),
+      state: await this.resolveTransportState(share, runtime),
+      storage: summarizeManagedShareStorage(config, runtime, share, remoteMetrics),
+    };
+  }
+
+  private async resolveTransportState(share: ManagedShare, runtime?: MultiRootRuntimeSnapshot): Promise<TransportState> {
+    const snapshot = runtime ?? (await this.options.storage.getRuntimeSnapshot());
+    const status = share.sourceId ? snapshot.sources.find((entry) => entry.id === share.sourceId) : undefined;
     const adapter = this.adapters.get(normalizeProvider(share.provider));
     const state = await this.loadState();
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
@@ -677,6 +669,22 @@ export class ManagedShareService {
       detail: 'Local share folder is attached and ready.',
       badges: ['Share'],
     };
+  }
+
+  private async resolveShareStorageMetrics(share: ManagedShare): Promise<ShareStorageMetrics | undefined> {
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.getShareStorageMetrics) {
+      return undefined;
+    }
+    const state = await this.loadState();
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    try {
+      return await adapter.getShareStorageMetrics(share, account);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share metrics failed for ${share.id}: ${message}`);
+      return undefined;
+    }
   }
 
   private async loadState(): Promise<IntegrationStateSnapshot> {
@@ -866,6 +874,40 @@ function ensureManagedShareSource(
       sources: [...config.sources, nextSource],
     },
     sourceId,
+  };
+}
+
+function summarizeManagedShareStorage(
+  config: RootsConfig,
+  runtime: MultiRootRuntimeSnapshot,
+  share: ManagedShare,
+  remoteMetrics?: ShareStorageMetrics
+): ManagedShareSummary['storage'] {
+  if (!share.sourceId) {
+    return undefined;
+  }
+  const source = config.sources.find((entry) => entry.id === share.sourceId);
+  const status = runtime.sources.find((entry) => entry.id === share.sourceId);
+  const destination = config.defaultVolume.destinations.find((entry) => entry.sourceId === share.sourceId);
+  return {
+    sourcePath: source?.path,
+    enabled: source?.enabled,
+    writable: source?.writable,
+    keepFullCopy: Boolean(
+      destination?.enabled &&
+      destination.storeEvents &&
+      destination.storeBlocks &&
+      destination.copySourceBlocks
+    ),
+    reservePercent:
+      destination?.reservePercent ??
+      source?.reservePercent,
+    availableBytes: status?.availableBytes,
+    usageTotalBytes: status?.usage.totalBytes,
+    lastWriteFailureMessage: status?.lastWriteFailure?.message,
+    remoteAvailableBytes: remoteMetrics?.remoteAvailableBytes,
+    remoteTotalBytes: remoteMetrics?.remoteTotalBytes,
+    remoteUsedBytes: remoteMetrics?.remoteUsedBytes,
   };
 }
 

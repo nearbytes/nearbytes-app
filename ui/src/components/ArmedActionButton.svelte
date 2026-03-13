@@ -39,6 +39,7 @@
 
   let isArmedState = $state(false);
   let confirmReady = $state(false);
+  let lastResetKey = $state<string | number | null | undefined>(undefined);
   let readyTimer: ReturnType<typeof setTimeout> | null = null;
   let disarmTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -117,7 +118,14 @@
   const computedDisabled = $derived.by(() => disabled);
 
   $effect(() => {
-    resetKey;
+    if (lastResetKey === undefined) {
+      lastResetKey = resetKey;
+      return;
+    }
+    if (lastResetKey === resetKey) {
+      return;
+    }
+    lastResetKey = resetKey;
     disarm();
   });
 

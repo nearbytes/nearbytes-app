@@ -14,6 +14,7 @@ import type {
   ProviderAccount,
   ProviderCatalogEntry,
   ProviderSetupState,
+  ShareStorageMetrics,
   TransportEndpoint,
   TransportState,
 } from './types.js';
@@ -48,6 +49,7 @@ export interface TransportAdapter {
   invite?(share: ManagedShare, input: InviteManagedShareInput, account: ProviderAccount): Promise<void>;
   acceptInvite?(input: AcceptManagedShareInput, account: ProviderAccount): Promise<Partial<ManagedShare>>;
   getState?(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState>;
+  getShareStorageMetrics?(share: ManagedShare, account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined>;
   ensureSync?(share: ManagedShare, account: ProviderAccount): Promise<void>;
   detachManagedShare?(share: ManagedShare, account: ProviderAccount | null): Promise<void>;
 }

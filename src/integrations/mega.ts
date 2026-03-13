@@ -11,6 +11,7 @@ import type {
   ManagedShare,
   ProviderAccount,
   ProviderSetupState,
+  ShareStorageMetrics,
   TransportState,
 } from './types.js';
 import { resolveMegaCommand, type IntegrationRuntime } from './runtime.js';
@@ -29,6 +30,12 @@ interface MegaSyncRecord {
   readonly runState?: string;
   readonly status?: string;
   readonly error?: string;
+}
+
+interface MegaStorageQuota {
+  readonly usedBytes: number;
+  readonly totalBytes: number;
+  readonly availableBytes: number;
 }
 
 export class MegaTransportAdapter {
@@ -188,6 +195,22 @@ export class MegaTransportAdapter {
       };
     }
     return this.readSyncState(share, account.id);
+  }
+
+  async getShareStorageMetrics(_share: ManagedShare, account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined> {
+    if (!account) {
+      return undefined;
+    }
+    await this.ensureLoggedIn(account.id);
+    const quota = await this.readStorageQuota();
+    if (!quota) {
+      return undefined;
+    }
+    return {
+      remoteAvailableBytes: quota.availableBytes,
+      remoteTotalBytes: quota.totalBytes,
+      remoteUsedBytes: quota.usedBytes,
+    };
   }
 
   async ensureSync(share: ManagedShare, account: ProviderAccount): Promise<void> {
@@ -360,6 +383,13 @@ export class MegaTransportAdapter {
     return match.trim();
   }
 
+  private async readStorageQuota(): Promise<MegaStorageQuota | null> {
+    const result = await this.runMega('df', [], {
+      timeoutMs: 30_000,
+    });
+    return parseMegaDf(result.stdout);
+  }
+
   private async runMega(
     subcommand: string,
     args: readonly string[],
@@ -463,6 +493,26 @@ function extractMegaError(value: string): string {
 function getStringDescriptor(descriptor: Record<string, unknown>, key: string): string | undefined {
   const value = descriptor[key];
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+function parseMegaDf(stdout: string): MegaStorageQuota | null {
+  for (const line of stdout.split(/\r?\n/u)) {
+    const match = line.match(/USED STORAGE:\s*(\d+).*?of\s+(\d+)/i);
+    if (!match) {
+      continue;
+    }
+    const usedBytes = Number.parseInt(match[1] ?? '', 10);
+    const totalBytes = Number.parseInt(match[2] ?? '', 10);
+    if (!Number.isFinite(usedBytes) || !Number.isFinite(totalBytes) || totalBytes < usedBytes) {
+      return null;
+    }
+    return {
+      usedBytes,
+      totalBytes,
+      availableBytes: totalBytes - usedBytes,
+    };
+  }
+  return null;
 }
 
 function isCommandNotFound(error: unknown): boolean {

@@ -113,6 +113,36 @@
   let lastRefreshToken = $state(0);
   let discoveryRunId = 0;
 
+  type ShareBadge = { label: string; tone?: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' };
+  type ShareAttachmentChip = { volumeId: string; label: string; known: boolean };
+  type UnifiedShareView = {
+    provider: string;
+    title: string;
+    copy: string;
+    active: boolean;
+    statusBadges: ShareBadge[];
+    meta: string[];
+    readable: boolean;
+    writable: boolean;
+    defaultEnabled: boolean;
+    reservePercent: number;
+    warning?: string;
+    attachments: ShareAttachmentChip[];
+    onToggleReadable: () => void;
+    onToggleWritable: () => void;
+    onToggleDefault: () => void;
+    onReserveChange: (nextValue: number) => void;
+    onOpen?: () => void;
+    openDisabled?: boolean;
+    openTitle?: string;
+    onMove?: () => void;
+    moveDisabled?: boolean;
+    moveLabel?: string;
+    onRemove?: () => void;
+    canRemove?: boolean;
+    removeResetKey?: string;
+  };
+
   const providerSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   onMount(() => {
@@ -535,6 +565,11 @@
     return summary.share.capabilities.includes('write') ? 'Read and write' : 'Read only';
   }
 
+  function sourceById(sourceId: string | undefined): SourceConfigEntry | null {
+    if (!sourceId) return null;
+    return configDraft?.sources.find((source) => source.id === sourceId) ?? null;
+  }
+
   function shareCardBadgeForSource(source: SourceConfigEntry): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
     const availability = locationAvailability(source);
     return [
@@ -579,8 +614,109 @@
     return Number.isFinite(source.reservePercent) ? source.reservePercent : DEFAULT_RESERVE_PERCENT;
   }
 
+  function managedShareReservePercent(summary: ManagedShareSummary, source: SourceConfigEntry | null): number {
+    return Number.isFinite(summary.storage?.reservePercent)
+      ? summary.storage!.reservePercent!
+      : source
+        ? sourceReservePercent(source)
+        : DEFAULT_RESERVE_PERCENT;
+  }
+
   function destinationReservePercent(destination: VolumeDestinationConfig | null): number {
     return Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT;
+  }
+
+  function localShareView(source: SourceConfigEntry): UnifiedShareView {
+    const status = sourceStatus(source.id);
+    const defaultDestination = destinationFor(null, source.id);
+    return {
+      provider: formatProvider(source.provider),
+      title: compactPath(source.path),
+      copy: locationSummary(source),
+      active: protectionTone(defaultDestination, source.id) === 'durable',
+      statusBadges: shareCardBadgeForSource(source),
+      meta: [
+        status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown',
+        usageSummary(source.id),
+      ],
+      readable: source.enabled,
+      writable: source.writable,
+      defaultEnabled: keepsFullCopy(defaultDestination),
+      reservePercent: sourceReservePercent(source),
+      warning: status?.lastWriteFailure?.message,
+      attachments: [],
+      onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
+      onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
+      onToggleDefault: () => setKeepFullCopy(null, source.id, !keepsFullCopy(defaultDestination)),
+      onReserveChange: (nextValue) => {
+        updateSourceField(source.id, 'reservePercent', nextValue);
+        if (keepsFullCopy(defaultDestination)) {
+          updateDestinationField(null, source.id, 'reservePercent', nextValue);
+        }
+      },
+      onOpen: hasSourcePath(source) ? () => openSourceFolder(source.id) : undefined,
+      openDisabled: !hasSourcePath(source),
+      openTitle: source.path || 'Open folder',
+      onMove: () => void (hasSourcePath(source) ? moveSourceFolder(source.id) : chooseSourceFolder(source.id)),
+      moveDisabled: movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id),
+      moveLabel: movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move' : 'Choose folder',
+      onRemove: canRemoveAnySource() ? () => removeSource(source.id) : undefined,
+      canRemove: canRemoveAnySource(),
+      removeResetKey: `local:${source.id}:${source.path}:${source.enabled}:${source.writable}:${keepsFullCopy(defaultDestination)}`,
+    };
+  }
+
+  function managedShareView(summary: ManagedShareSummary): UnifiedShareView | null {
+    const source = sourceById(summary.share.sourceId);
+    if (!source) {
+      return null;
+    }
+    const defaultDestination = destinationFor(null, source.id);
+    const keepFullCopy = keepsFullCopy(defaultDestination);
+    const reservePercent = managedShareReservePercent(summary, source);
+    return {
+      provider: summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider === 'github' ? 'GitHub' : summary.share.provider,
+      title: summary.share.label,
+      copy: summary.state.detail,
+      active: summary.state.status === 'ready',
+      statusBadges: shareCardBadgesForManaged(summary),
+      meta: [
+        managedShareAccessLabel(summary),
+        summary.storage?.availableBytes !== undefined ? `${formatSize(summary.storage.availableBytes)} free` : 'Free space unknown',
+        summary.storage?.remoteAvailableBytes !== undefined
+          ? `${formatSize(summary.storage.remoteAvailableBytes)} free in ${providerLabelForManagedShare(summary)}`
+          : null,
+        typeof summary.storage?.usageTotalBytes === 'number'
+          ? `Nearbytes is using ${formatSize(summary.storage.usageTotalBytes)} in this location.`
+          : 'Local usage unavailable',
+        managedShareOpenLabel(summary),
+      ].filter((value): value is string => Boolean(value)),
+      readable: source.enabled,
+      writable: source.writable,
+      defaultEnabled: keepFullCopy,
+      reservePercent,
+      warning: summary.storage?.lastWriteFailureMessage,
+      attachments: shareAttachmentLabels(summary),
+      onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
+      onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
+      onToggleDefault: () => setKeepFullCopy(null, source.id, !keepFullCopy),
+      onReserveChange: (nextValue) => {
+        updateSourceField(source.id, 'reservePercent', nextValue);
+        if (keepFullCopy) {
+          updateDestinationField(null, source.id, 'reservePercent', nextValue);
+        }
+      },
+      onOpen: summary.share.sourceId ? () => openSourceFolder(summary.share.sourceId!) : undefined,
+      openDisabled: !summary.share.sourceId,
+      openTitle: source.path || summary.share.localPath,
+    };
+  }
+
+  function providerLabelForManagedShare(summary: ManagedShareSummary): string {
+    if (summary.share.provider === 'gdrive') return 'Google Drive';
+    if (summary.share.provider === 'mega') return 'MEGA cloud';
+    if (summary.share.provider === 'github') return 'GitHub';
+    return summary.share.provider;
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -1639,6 +1775,142 @@
   </section>
 {:else if configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
+    {#snippet unifiedShareCard(view: UnifiedShareView)}
+      <ShareCard
+        provider={view.provider}
+        title={view.title}
+        copy={view.copy}
+        active={view.active}
+        statusBadges={view.statusBadges}
+        meta={view.meta}
+      >
+        {#snippet controls()}
+          <div class="share-toggle-row">
+            <button
+              type="button"
+              class="share-toggle-pill"
+              class:active={view.readable}
+              aria-pressed={view.readable}
+              onclick={view.onToggleReadable}
+            >
+              <span class="share-toggle-icon" aria-hidden="true">
+                {#if view.readable}
+                  <Check size={13} strokeWidth={2.6} />
+                {/if}
+              </span>
+              <span>Readable</span>
+            </button>
+            <button
+              type="button"
+              class="share-toggle-pill"
+              class:active={view.writable}
+              aria-pressed={view.writable}
+              onclick={view.onToggleWritable}
+            >
+              <span class="share-toggle-icon" aria-hidden="true">
+                {#if view.writable}
+                  <Check size={13} strokeWidth={2.6} />
+                {/if}
+              </span>
+              <span>Writable</span>
+            </button>
+            <button
+              type="button"
+              class="share-toggle-pill"
+              class:active={view.defaultEnabled}
+              aria-pressed={view.defaultEnabled}
+              onclick={view.onToggleDefault}
+            >
+              <span class="share-toggle-icon" aria-hidden="true">
+                {#if view.defaultEnabled}
+                  <Check size={13} strokeWidth={2.6} />
+                {/if}
+              </span>
+              <span>Default</span>
+            </button>
+          </div>
+        {/snippet}
+        {#snippet details()}
+          <details class="details-card inline-details compact-share-advanced">
+            <summary>Advanced</summary>
+            <div class="card-control-row">
+              <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
+                <span>Keep free</span>
+                <select
+                  class="panel-input"
+                  value={String(view.reservePercent)}
+                  onchange={(event) => view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value))}
+                >
+                  {#each RESERVE_OPTIONS as option}
+                    <option value={option}>{formatPercent(option)}</option>
+                  {/each}
+                </select>
+              </label>
+              <div class="button-row">
+                {#if view.onMove}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={view.onMove}
+                    disabled={view.moveDisabled}
+                  >
+                    <ArrowRightLeft size={14} strokeWidth={2} />
+                    <span>{view.moveLabel ?? 'Move'}</span>
+                  </button>
+                {/if}
+                {#if view.onRemove && view.canRemove}
+                  <ArmedActionButton
+                    class="panel-btn subtle compact danger"
+                    icon={Trash2}
+                    text="Remove"
+                    armed={true}
+                    autoDisarmMs={3000}
+                    resetKey={view.removeResetKey}
+                    onPress={view.onRemove}
+                  />
+                {/if}
+              </div>
+            </div>
+            {#if view.warning}
+              <p class="warning-copy">Last write problem: {view.warning}</p>
+            {/if}
+          </details>
+        {/snippet}
+        {#snippet actions()}
+          {#if view.onOpen}
+            <button
+              type="button"
+              class="panel-btn subtle compact"
+              onclick={view.onOpen}
+              disabled={view.openDisabled}
+              title={view.openTitle}
+            >
+              <FolderOpen size={14} strokeWidth={2} />
+              <span>Open</span>
+            </button>
+          {/if}
+        {/snippet}
+        {#snippet footer()}
+          {#if view.attachments.length > 0}
+            <div class="fact-row share-volume-row">
+              {#each view.attachments as attachment}
+                {#if attachment.known}
+                  <button
+                    type="button"
+                    class="mini-pill mini-pill-button"
+                    onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
+                  >
+                    {attachment.label}
+                  </button>
+                {:else}
+                  <span class="mini-pill">{attachment.label}</span>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        {/snippet}
+      </ShareCard>
+    {/snippet}
     {#if mode === 'global'}
       <div class="overview-grid">
         <button type="button" class="overview-card tab-card" class:active={selectedGlobalProvider === 'local'} onclick={() => (selectedGlobalProvider = 'local')}>
@@ -1715,132 +1987,7 @@
 
         <div class="compact-share-grid">
           {#each localShares() as source (source.id)}
-            {@const status = sourceStatus(source.id)}
-            {@const defaultDestination = destinationFor(null, source.id)}
-            <ShareCard
-              provider={formatProvider(source.provider)}
-              title={compactPath(source.path)}
-              copy={locationSummary(source)}
-              active={protectionTone(defaultDestination, source.id) === 'durable'}
-              statusBadges={shareCardBadgeForSource(source)}
-              meta={[
-                status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown',
-                usageSummary(source.id),
-              ]}
-            >
-              {#snippet controls()}
-                <div class="share-toggle-row">
-                  <button
-                    type="button"
-                    class="share-toggle-pill"
-                    class:active={source.enabled}
-                    aria-pressed={source.enabled}
-                    onclick={() => updateSourceField(source.id, 'enabled', !source.enabled)}
-                  >
-                    <span class="share-toggle-icon" aria-hidden="true">
-                      {#if source.enabled}
-                        <Check size={13} strokeWidth={2.6} />
-                      {/if}
-                    </span>
-                    <span>Readable</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="share-toggle-pill"
-                    class:active={source.writable}
-                    aria-pressed={source.writable}
-                    onclick={() => updateSourceField(source.id, 'writable', !source.writable)}
-                  >
-                    <span class="share-toggle-icon" aria-hidden="true">
-                      {#if source.writable}
-                        <Check size={13} strokeWidth={2.6} />
-                      {/if}
-                    </span>
-                    <span>Writable</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="share-toggle-pill"
-                    class:active={keepsFullCopy(defaultDestination)}
-                    aria-pressed={keepsFullCopy(defaultDestination)}
-                    onclick={() => setKeepFullCopy(null, source.id, !keepsFullCopy(defaultDestination))}
-                  >
-                    <span class="share-toggle-icon" aria-hidden="true">
-                      {#if keepsFullCopy(defaultDestination)}
-                        <Check size={13} strokeWidth={2.6} />
-                      {/if}
-                    </span>
-                    <span>Default</span>
-                  </button>
-                </div>
-              {/snippet}
-              {#snippet details()}
-                <details class="details-card inline-details compact-share-advanced">
-                  <summary>Advanced</summary>
-                  <div class="card-control-row">
-                    <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
-                      <span>Keep free</span>
-                      <select
-                        class="panel-input"
-                        value={String(sourceReservePercent(source))}
-                        onchange={(event) => {
-                          const nextValue = clampReserve((event.currentTarget as HTMLSelectElement).value);
-                          updateSourceField(source.id, 'reservePercent', nextValue);
-                          if (keepsFullCopy(defaultDestination)) {
-                            updateDestinationField(null, source.id, 'reservePercent', nextValue);
-                          }
-                        }}
-                      >
-                        {#each RESERVE_OPTIONS as option}
-                          <option value={option}>{formatPercent(option)}</option>
-                        {/each}
-                      </select>
-                    </label>
-                    <div class="button-row">
-                      {#if hasSourcePath(source)}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => openSourceFolder(source.id)}
-                          title={source.path || 'Open folder'}
-                        >
-                          <FolderOpen size={14} strokeWidth={2} />
-                          <span>Open</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => void moveSourceFolder(source.id)}
-                          disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
-                          title="Move this share to a different folder"
-                        >
-                          <ArrowRightLeft size={14} strokeWidth={2} />
-                          <span>{movingSourceId === source.id ? 'Moving...' : 'Move'}</span>
-                        </button>
-                      {:else}
-                        <button type="button" class="panel-btn subtle compact" onclick={() => chooseSourceFolder(source.id)}>
-                          <Search size={14} strokeWidth={2} />
-                          <span>Choose folder</span>
-                        </button>
-                      {/if}
-                      {#if canRemoveAnySource()}
-                        <ArmedActionButton
-                          class="panel-btn subtle compact danger"
-                          icon={Trash2}
-                          text="Remove"
-                          armed={true}
-                          autoDisarmMs={3000}
-                          onPress={() => removeSource(source.id)}
-                        />
-                      {/if}
-                    </div>
-                  </div>
-                  {#if status?.lastWriteFailure}
-                    <p class="warning-copy">Last write problem: {status.lastWriteFailure.message}</p>
-                  {/if}
-                </details>
-              {/snippet}
-            </ShareCard>
+            {@render unifiedShareCard(localShareView(source))}
           {/each}
           {#each sourceSuggestionRows() as row (row.source.path)}
             <article class="location-card suggestion-card">
@@ -1903,12 +2050,6 @@
               <div>
                 <p class="section-step">Data provider</p>
                 <h3>{providerCardHeadline(provider)}</h3>
-              </div>
-              <div class="section-metrics">
-                <span class="summary-pill">{countLabel(shares.length, 'share')}</span>
-                {#if account}
-                  <span class="summary-pill">{account.label}</span>
-                {/if}
               </div>
             </div>
 
@@ -2179,48 +2320,10 @@
                 />
               {:else}
                 {#each shares as summary (summary.share.id)}
-                  <ShareCard
-                    provider={provider.label}
-                    title={summary.share.label}
-                  copy={summary.state.detail}
-                  active={summary.state.status === 'ready'}
-                  statusBadges={shareCardBadgesForManaged(summary)}
-                  meta={[
-                    managedShareAccessLabel(summary),
-                    managedShareOpenLabel(summary),
-                  ]}
-                >
-                    {#snippet footer()}
-                      {#if shareAttachmentLabels(summary).length > 0}
-                        <div class="fact-row share-volume-row">
-                          {#each shareAttachmentLabels(summary) as attachment}
-                            {#if attachment.known}
-                              <button
-                                type="button"
-                                class="mini-pill mini-pill-button"
-                                onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
-                              >
-                                {attachment.label}
-                              </button>
-                            {:else}
-                              <span class="mini-pill">{attachment.label}</span>
-                            {/if}
-                          {/each}
-                        </div>
-                      {/if}
-                    {/snippet}
-                    {#snippet actions()}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
-                        disabled={!summary.share.sourceId}
-                      >
-                        <FolderOpen size={14} strokeWidth={2} />
-                        <span>Open</span>
-                      </button>
-                    {/snippet}
-                  </ShareCard>
+                  {@const view = managedShareView(summary)}
+                  {#if view}
+                    {@render unifiedShareCard(view)}
+                  {/if}
                 {/each}
               {/if}
             </div>

@@ -387,6 +387,19 @@ export interface ManagedShareSummary {
   share: ManagedShare;
   attachments: ManagedShareAttachment[];
   state: TransportState;
+  storage?: {
+    sourcePath?: string;
+    enabled?: boolean;
+    writable?: boolean;
+    keepFullCopy?: boolean;
+    reservePercent?: number;
+    availableBytes?: number;
+    usageTotalBytes?: number;
+    lastWriteFailureMessage?: string;
+    remoteAvailableBytes?: number;
+    remoteTotalBytes?: number;
+    remoteUsedBytes?: number;
+  };
 }
 
 export interface PlannedTransportCandidate {

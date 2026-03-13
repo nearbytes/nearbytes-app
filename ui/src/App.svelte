@@ -4258,7 +4258,7 @@
                     armed={true}
                     armDelayMs={0}
                     autoDisarmMs={3000}
-                    resetKey={`${mount.id}:${mount.address}:${mount.password}:${expanded}`}
+                    resetKey={mount.id}
                     onPress={() => removeMount(mount.id)}
                     title="Remove space"
                     ariaLabel="Remove space"
