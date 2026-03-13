@@ -19,6 +19,7 @@ import {
   ManagedShareServiceError,
   type ManagedShareServiceOptions,
 } from '../integrations/managedShares.js';
+import { isProviderEnabled } from '../config/appConfig.js';
 import { bytesToHex } from '../utils/encoding.js';
 import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import { ApiError } from './errors.js';
@@ -115,12 +116,14 @@ export function createRoutes(deps: RouteDependencies): Router {
     res.json({ ok: true });
   });
 
-  router.get('/oauth/google/callback', asyncHandler(async (req, res) => {
-    const service = getManagedShareServiceOrThrow(managedShareService);
-    const query = toUrlSearchParams(req.query);
-    const html = await service.handleProviderCallback('gdrive', query);
-    res.type('html').send(html);
-  }));
+  if (isProviderEnabled('gdrive')) {
+    router.get('/oauth/google/callback', asyncHandler(async (req, res) => {
+      const service = getManagedShareServiceOrThrow(managedShareService);
+      const query = toUrlSearchParams(req.query);
+      const html = await service.handleProviderCallback('gdrive', query);
+      res.type('html').send(html);
+    }));
+  }
 
   if (deps.desktopApiToken) {
     router.use((req, _res, next) => {

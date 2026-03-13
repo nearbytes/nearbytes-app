@@ -387,6 +387,19 @@ export interface ManagedShareSummary {
   share: ManagedShare;
   attachments: ManagedShareAttachment[];
   state: TransportState;
+  storage?: {
+    sourcePath?: string;
+    enabled?: boolean;
+    writable?: boolean;
+    keepFullCopy?: boolean;
+    reservePercent?: number;
+    availableBytes?: number;
+    usageTotalBytes?: number;
+    lastWriteFailureMessage?: string;
+    remoteAvailableBytes?: number;
+    remoteTotalBytes?: number;
+    remoteUsedBytes?: number;
+  };
 }
 
 export interface PlannedTransportCandidate {
@@ -1157,14 +1170,17 @@ export async function listProviderAccounts(): Promise<ProviderAccountsResponse> 
 
 export async function connectProviderAccount(input: {
   provider: string;
+  mode?: 'login' | 'signup' | 'confirm-signup';
   label?: string;
   email?: string;
   preferred?: boolean;
   authSessionId?: string;
   credentials?: {
+    name?: string;
     email?: string;
     password?: string;
     mfaCode?: string;
+    confirmationLink?: string;
   };
 }): Promise<ConnectProviderAccountResponse> {
   return apiRequest<ConnectProviderAccountResponse>('/integrations/accounts/connect', {

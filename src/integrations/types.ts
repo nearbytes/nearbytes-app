@@ -121,19 +121,41 @@ export interface ManagedShareSummary {
   readonly share: ManagedShare;
   readonly attachments: ManagedShareAttachment[];
   readonly state: TransportState;
+  readonly storage?: {
+    readonly sourcePath?: string;
+    readonly enabled?: boolean;
+    readonly writable?: boolean;
+    readonly keepFullCopy?: boolean;
+    readonly reservePercent?: number;
+    readonly availableBytes?: number;
+    readonly usageTotalBytes?: number;
+    readonly lastWriteFailureMessage?: string;
+    readonly remoteAvailableBytes?: number;
+    readonly remoteTotalBytes?: number;
+    readonly remoteUsedBytes?: number;
+  };
+}
+
+export interface ShareStorageMetrics {
+  readonly remoteAvailableBytes?: number;
+  readonly remoteTotalBytes?: number;
+  readonly remoteUsedBytes?: number;
 }
 
 export interface ConnectProviderAccountInput {
   readonly provider: string;
+  readonly mode?: 'login' | 'signup' | 'confirm-signup';
   readonly label?: string;
   readonly email?: string;
   readonly preferred?: boolean;
   readonly authSessionId?: string;
   readonly accountId?: string;
   readonly credentials?: {
+    readonly name?: string;
     readonly email?: string;
     readonly password?: string;
     readonly mfaCode?: string;
+    readonly confirmationLink?: string;
   };
 }
 

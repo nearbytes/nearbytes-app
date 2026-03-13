@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import { flip } from 'svelte/animate';
   import {
     openVolume,
@@ -150,6 +150,20 @@
     showChatPane: boolean;
     workspaceSplit: number;
     createdAt: number;
+  };
+
+  type MountRuntimeState = {
+    mountId: string;
+    secret: string;
+    label: string;
+    auth: Auth;
+    volumeId: string;
+    files: FileMetadata[];
+    timelineEvents: TimelineEvent[];
+    timelinePosition: number;
+    lastRefresh: number | null;
+    isOffline: boolean;
+    errorMessage: string;
   };
 
   function normalizeWorkspaceSplit(value: number | undefined): number {
@@ -1151,6 +1165,7 @@
   const initialMounts = loadVolumeMounts();
   let mounts = $state<VolumeMount[]>(initialMounts);
   let activeMountId = $state(initialMounts[0]?.id ?? '');
+  let mountRuntimeById = $state<Record<string, MountRuntimeState>>({});
   let pendingMountId = $state<string | null>(null);
   let secretPasteTargetMountId = $state<string | null>(null);
   let secretFileHashes = $state<Record<string, SecretFileHashEntry>>({});
@@ -1167,6 +1182,7 @@
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
   let isRefreshing = $state(false);
+  let pressedMountId = $state<string | null>(null);
   let configuredIdentities = $state<ConfiguredIdentity[]>([]);
   let activeChatIdentityId = $state('');
   let volumeChatIdentityAssignments = $state<Record<string, string>>({});
@@ -1186,7 +1202,7 @@
   let watchConnectionSerial = 0;
   let watchDisconnect: (() => void) | null = null;
   let autoRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  let volumeOpenSerial = 0;
+  let mountPressReleaseTimer: ReturnType<typeof setTimeout> | null = null;
   let latestSourceDiscovery = $state<ReconcileSourcesResponse | null>(null);
   let latestSourceDiscoveryRunKey = $state('');
   let lastAcknowledgedSourceDiscoveryRunKey = $state('');
@@ -1203,6 +1219,7 @@
   let draggingMountId = $state<string | null>(null);
   let dragPreparedMountId = $state<string | null>(null);
   let dragOverMountId = $state<string | null>(null);
+  let dragOriginIndex = $state<number | null>(null);
   let dragPointerId = $state<number | null>(null);
   let dragStartX = $state(0);
   let dragStartY = $state(0);
@@ -1215,6 +1232,9 @@
   let dragCaptureElement: HTMLElement | null = null;
   const mountNodes = new Map<string, HTMLElement>();
   let mountDragListenersActive = false;
+  const mountWarmPromises = new Map<string, Promise<void>>();
+  const mountRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const MOUNT_RUNTIME_REFRESH_MS = 15000;
 
   function preferredActiveMountId(nextMounts: VolumeMount[]): string {
     return nextMounts.find((mount) => !mount.collapsed)?.id ?? nextMounts[0]?.id ?? '';
@@ -1305,6 +1325,17 @@
     return () => {
       cancelUpdaterSubscription?.();
     };
+  });
+
+  onDestroy(() => {
+    if (mountPressReleaseTimer) {
+      clearTimeout(mountPressReleaseTimer);
+      mountPressReleaseTimer = null;
+    }
+    for (const timer of mountRefreshTimers.values()) {
+      clearTimeout(timer);
+    }
+    mountRefreshTimers.clear();
   });
 
   $effect(() => {
@@ -1882,6 +1913,184 @@
     };
   });
 
+  const knownMountedVolumes = $derived.by<Array<{ volumeId: string; label: string }>>(() => {
+    const known = new Map<string, string>();
+    for (const mount of mounts) {
+      const normalizedVolumeId = mount.volumeId?.trim().toLowerCase();
+      if (normalizedVolumeId) {
+        known.set(normalizedVolumeId, mountLabel(mount));
+      }
+    }
+    for (const runtime of Object.values(mountRuntimeById)) {
+      const normalizedVolumeId = runtime.volumeId.trim().toLowerCase();
+      if (!known.has(normalizedVolumeId)) {
+        known.set(normalizedVolumeId, runtime.label);
+      }
+    }
+    return Array.from(known, ([volumeId, label]) => ({ volumeId, label }));
+  });
+
+  function matchingMountRuntime(mount: VolumeMount | null): MountRuntimeState | null {
+    if (!mount) return null;
+    const runtime = mountRuntimeById[mount.id];
+    if (!runtime) return null;
+    const secret = buildMountSecret(mount);
+    const label = mountLabel(mount);
+    if (runtime.secret !== secret || runtime.label !== label) {
+      return null;
+    }
+    return runtime;
+  }
+
+  function writeMountRuntime(mountId: string, runtime: MountRuntimeState): void {
+    const current = mountRuntimeById[mountId];
+    if (
+      current &&
+      current.secret === runtime.secret &&
+      current.label === runtime.label &&
+      current.auth === runtime.auth &&
+      current.volumeId === runtime.volumeId &&
+      current.files === runtime.files &&
+      current.timelineEvents === runtime.timelineEvents &&
+      current.timelinePosition === runtime.timelinePosition &&
+      current.lastRefresh === runtime.lastRefresh &&
+      current.isOffline === runtime.isOffline &&
+      current.errorMessage === runtime.errorMessage
+    ) {
+      return;
+    }
+    mountRuntimeById = {
+      ...mountRuntimeById,
+      [mountId]: runtime,
+    };
+  }
+
+  function clearMountRuntime(mountId: string): void {
+    clearMountRuntimeRefresh(mountId);
+    if (!(mountId in mountRuntimeById)) {
+      return;
+    }
+    const next = { ...mountRuntimeById };
+    delete next[mountId];
+    mountRuntimeById = next;
+  }
+
+  function applyMountRuntime(runtime: MountRuntimeState): void {
+    effectiveSecret = runtime.secret;
+    unlockedAddress = runtime.label;
+    auth = runtime.auth;
+    volumeId = runtime.volumeId;
+    fileList = runtime.files;
+    timelineEvents = runtime.timelineEvents;
+    timelinePosition = runtime.timelinePosition;
+    lastRefresh = runtime.lastRefresh;
+    isOffline = runtime.isOffline;
+    errorMessage = runtime.errorMessage;
+    isVolumeTransitioning = false;
+    if (pendingMountId === runtime.mountId) {
+      pendingMountId = null;
+    }
+  }
+
+  function authEquals(left: Auth | null, right: Auth | null): boolean {
+    if (!left || !right || left.type !== right.type) {
+      return false;
+    }
+    return left.type === 'token' ? left.token === right.token : left.secret === right.secret;
+  }
+
+  function clearMountRuntimeRefresh(mountId: string): void {
+    const timer = mountRefreshTimers.get(mountId);
+    if (timer) {
+      clearTimeout(timer);
+      mountRefreshTimers.delete(mountId);
+    }
+  }
+
+  function scheduleMountRuntimeRefresh(mountId: string, delayMs = MOUNT_RUNTIME_REFRESH_MS): void {
+    clearMountRuntimeRefresh(mountId);
+    if (!(mountId in mountRuntimeById)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      mountRefreshTimers.delete(mountId);
+      void refreshMountRuntime(mountId);
+    }, delayMs);
+    mountRefreshTimers.set(mountId, timer);
+  }
+
+  async function refreshMountRuntime(mountId: string): Promise<void> {
+    const mount = mounts.find((entry) => entry.id === mountId) ?? null;
+    const runtime = mountRuntimeById[mountId];
+    if (!mount || !runtime || matchingMountRuntime(mount) !== runtime) {
+      clearMountRuntimeRefresh(mountId);
+      return;
+    }
+
+    try {
+      const [filesResponse, timelineResponse] = await Promise.all([
+        listFiles(runtime.auth),
+        getTimeline(runtime.auth),
+      ]);
+      const nextRuntime: MountRuntimeState = {
+        ...runtime,
+        files: filesResponse.files,
+        timelineEvents: timelineResponse.events,
+        timelinePosition:
+          runtime.timelinePosition >= runtime.timelineEvents.length
+            ? timelineResponse.events.length
+            : Math.min(runtime.timelinePosition, timelineResponse.events.length),
+        lastRefresh: Date.now(),
+        isOffline: false,
+        errorMessage: '',
+      };
+      writeMountRuntime(mountId, nextRuntime);
+      if (activeMountId === mountId && authEquals(auth, runtime.auth)) {
+        applyMountRuntime(nextRuntime);
+        chatRefreshVersion += 1;
+      }
+      await setCachedFiles(runtime.volumeId, filesResponse.files);
+    } catch (error) {
+      const nextRuntime: MountRuntimeState = {
+        ...runtime,
+        isOffline: true,
+        errorMessage: error instanceof Error ? error.message : 'Failed to refresh space',
+      };
+      writeMountRuntime(mountId, nextRuntime);
+      if (activeMountId === mountId && authEquals(auth, runtime.auth)) {
+        applyMountRuntime(nextRuntime);
+      }
+    } finally {
+      scheduleMountRuntimeRefresh(mountId);
+    }
+  }
+
+  function clearActiveVolumeState(): void {
+    stopTimelinePlayback();
+    isVolumeTransitioning = false;
+    effectiveSecret = '';
+    unlockedAddress = '';
+    fileList = [];
+    volumeId = null;
+    auth = null;
+    lastRefresh = null;
+    isOffline = false;
+    isLoading = false;
+    isTimelineLoading = false;
+    timelineEvents = [];
+    timelinePosition = 0;
+    searchQuery = '';
+    selectedFileName = null;
+    previewKind = 'none';
+    previewText = '';
+    previewError = '';
+    previewLoading = false;
+    previewFileOverride = null;
+    previewBlobCache.clear();
+    revokePreviewUrl();
+    pendingMountId = null;
+  }
+
   function stopTimelinePlayback() {
     if (timelinePlayTimer) {
       clearInterval(timelinePlayTimer);
@@ -2089,6 +2298,95 @@
     }
   }
 
+  async function ensureMountRuntimeLoaded(
+    mount: VolumeMount,
+    options: { activateIfCurrent?: boolean } = {}
+  ): Promise<void> {
+    const secret = buildMountSecret(mount);
+    const label = mountLabel(mount);
+    if (!secret) {
+      clearMountRuntime(mount.id);
+      return;
+    }
+
+    const existing = matchingMountRuntime(mount);
+    if (existing) {
+      if (options.activateIfCurrent && activeMountId === mount.id) {
+        applyMountRuntime(existing);
+      }
+      return;
+    }
+
+    const pending = mountWarmPromises.get(mount.id);
+    if (pending) {
+      await pending;
+      const warmed = matchingMountRuntime(mount);
+      if (warmed && options.activateIfCurrent && activeMountId === mount.id) {
+        applyMountRuntime(warmed);
+      }
+      return;
+    }
+
+    const run = (async () => {
+      const response = await withTimeout(
+        openVolume(secret),
+        12000,
+        'Opening this space timed out. Check the storage locations and try again.'
+      );
+      const nextAuth =
+        response.token
+          ? ({ type: 'token', token: response.token } as const)
+          : ({ type: 'secret', secret } as const);
+      let nextTimelineEvents: TimelineEvent[] = [];
+      let nextTimelinePosition = 0;
+      let nextErrorMessage = response.storageHint ?? '';
+      try {
+        const timeline = await getTimeline(nextAuth);
+        nextTimelineEvents = timeline.events;
+        nextTimelinePosition = timeline.events.length;
+      } catch (error) {
+        nextErrorMessage = nextErrorMessage || (error instanceof Error ? error.message : 'Failed to load timeline');
+      }
+
+      mounts = mounts.map((entry) =>
+        entry.id === mount.id ? { ...entry, volumeId: response.volumeId } : entry
+      );
+      writeMountRuntime(mount.id, {
+        mountId: mount.id,
+        secret,
+        label,
+        auth: nextAuth,
+        volumeId: response.volumeId,
+        files: response.files,
+        timelineEvents: nextTimelineEvents,
+        timelinePosition: nextTimelinePosition,
+        lastRefresh: Date.now(),
+        isOffline: false,
+        errorMessage: nextErrorMessage,
+      });
+
+      const warmed = matchingMountRuntime(mounts.find((entry) => entry.id === mount.id) ?? mount);
+      if (warmed && options.activateIfCurrent && activeMountId === mount.id) {
+        if (nextAuth.type === 'token') {
+          sessionStorage.setItem('nearbytes-token', nextAuth.token);
+        } else {
+          sessionStorage.removeItem('nearbytes-token');
+        }
+        applyMountRuntime(warmed);
+      }
+
+      void setCachedFiles(response.volumeId, response.files).catch((error) => {
+        console.warn('Failed to cache volume file list:', error);
+      });
+      scheduleMountRuntimeRefresh(mount.id);
+    })().finally(() => {
+      mountWarmPromises.delete(mount.id);
+    });
+
+    mountWarmPromises.set(mount.id, run);
+    await run;
+  }
+
   $effect(() => {
     return () => {
       stopTimelinePlayback();
@@ -2137,6 +2435,43 @@
       void refreshFiles();
     }, 260);
   }
+
+  $effect(() => {
+    const nextKnownIds = new Set(mounts.map((mount) => mount.id));
+    let changed = false;
+    for (const [mountId, runtime] of Object.entries(mountRuntimeById)) {
+      const mount = mounts.find((entry) => entry.id === mountId) ?? null;
+      if (!mount || matchingMountRuntime(mount) !== runtime) {
+        clearMountRuntime(mountId);
+        changed = true;
+      }
+    }
+    if (changed) {
+      return;
+    }
+    for (const mount of mounts) {
+      const secret = buildMountSecret(mount);
+      if (!secret) {
+        if (mount.volumeId) {
+          mounts = mounts.map((entry) => (entry.id === mount.id ? { ...entry, volumeId: undefined } : entry));
+          return;
+        }
+        continue;
+      }
+      if (!matchingMountRuntime(mount) && !mountWarmPromises.has(mount.id)) {
+        void ensureMountRuntimeLoaded(mount, { activateIfCurrent: mount.id === activeMountId });
+      }
+    }
+    if (Object.keys(mountRuntimeById).some((mountId) => !nextKnownIds.has(mountId))) {
+      const next: Record<string, MountRuntimeState> = {};
+      for (const [mountId, runtime] of Object.entries(mountRuntimeById)) {
+        if (nextKnownIds.has(mountId)) {
+          next[mountId] = runtime;
+        }
+      }
+      mountRuntimeById = next;
+    }
+  });
 
   $effect(() => {
     const currentAuth = auth;
@@ -2193,163 +2528,67 @@
     };
   });
 
+  $effect(() => {
+    const currentMount = mounts.find((mount) => mount.id === activeMountId) ?? null;
+    if (!currentMount || !auth || !volumeId || !effectiveSecret) {
+      return;
+    }
+    const currentLabel = mountLabel(currentMount);
+    if (buildMountSecret(currentMount) !== effectiveSecret || currentLabel !== unlockedAddress) {
+      return;
+    }
+    writeMountRuntime(currentMount.id, {
+      mountId: currentMount.id,
+      secret: effectiveSecret,
+      label: unlockedAddress,
+      auth,
+      volumeId,
+      files: fileList,
+      timelineEvents,
+      timelinePosition,
+      lastRefresh,
+      isOffline,
+      errorMessage,
+    });
+  });
+
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     const currentMount = mounts.find((mount) => mount.id === activeMountId);
     const openSecret = currentMount ? buildMountSecret(currentMount) : '';
-    const openLabel = currentMount ? mountLabel(currentMount) : '';
+    const cachedRuntime = matchingMountRuntime(currentMount ?? null);
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
     if (!currentMount || openSecret === '') {
-      stopTimelinePlayback();
-      isVolumeTransitioning = false;
-      effectiveSecret = '';
-      unlockedAddress = '';
-      fileList = [];
-      volumeId = null;
-      auth = null;
-      lastRefresh = null;
-      isOffline = false;
-      isLoading = false;
-      isTimelineLoading = false;
-      timelineEvents = [];
-      timelinePosition = 0;
-      searchQuery = '';
-      selectedFileName = null;
-      previewKind = 'none';
-      previewText = '';
-      previewError = '';
-      previewLoading = false;
-      previewFileOverride = null;
-      previewBlobCache.clear();
-      revokePreviewUrl();
-      pendingMountId = null;
+      clearActiveVolumeState();
       return;
     }
-    if (
-      auth &&
-      effectiveSecret !== '' &&
-      openSecret === effectiveSecret &&
-      openLabel === unlockedAddress
-    ) {
-      isVolumeTransitioning = false;
+    if (cachedRuntime) {
+      if (cachedRuntime.auth.type === 'token') {
+        sessionStorage.setItem('nearbytes-token', cachedRuntime.auth.token);
+      } else {
+        sessionStorage.removeItem('nearbytes-token');
+      }
+      applyMountRuntime(cachedRuntime);
       return;
     }
     isVolumeTransitioning = true;
     debounceTimer = setTimeout(() => {
-      tryOpenSecret(openSecret, openLabel, currentMount.id);
+      void ensureMountRuntimeLoaded(currentMount, { activateIfCurrent: true }).catch((error) => {
+        if (activeMountId !== currentMount.id) {
+          return;
+        }
+        errorMessage = error instanceof Error ? error.message : 'Failed to load space';
+        isVolumeTransitioning = false;
+        isLoading = false;
+      });
       debounceTimer = null;
     }, 500);
     return () => {
       if (debounceTimer) clearTimeout(debounceTimer);
     };
-  });
-
-  async function tryOpenSecret(openSecret: string, label: string, requestedMountId: string) {
-    if (!openSecret) return;
-    const serial = ++volumeOpenSerial;
-    isLoading = true;
-    errorMessage = '';
-    isOffline = false;
-    try {
-      const response = await withTimeout(
-        openVolume(openSecret),
-        12000,
-        'Opening this space timed out. Check the storage locations and try again.'
-      );
-      const authResult = response.token
-        ? { type: 'token' as const, token: response.token }
-        : { type: 'secret' as const, secret: openSecret };
-      if (serial !== volumeOpenSerial || activeMountId !== requestedMountId) {
-        return;
-      }
-      if (response.token) {
-        sessionStorage.setItem('nearbytes-token', response.token);
-      } else {
-        sessionStorage.removeItem('nearbytes-token');
-      }
-      auth = authResult;
-      volumeId = response.volumeId;
-      mounts = mounts.map((mount) =>
-        mount.id === requestedMountId ? { ...mount, volumeId: response.volumeId } : mount
-      );
-      lastRefresh = Date.now();
-      errorMessage = response.storageHint ?? '';
-      effectiveSecret = openSecret;
-      unlockedAddress = label;
-      fileList = response.files;
-      previewFileOverride = null;
-      previewBlobCache.clear();
-      isVolumeTransitioning = false;
-      pendingMountId = null;
-      void setCachedFiles(response.volumeId, response.files).catch((error) => {
-        console.warn('Failed to cache volume file list:', error);
-      });
-      void refreshTimeline(false).catch((error) => {
-        if (serial !== volumeOpenSerial || activeMountId !== requestedMountId) {
-          return;
-        }
-        const message = error instanceof Error ? error.message : 'Failed to load timeline';
-        if (!errorMessage) {
-          errorMessage = message;
-        }
-      });
-    } catch (error) {
-      if (serial !== volumeOpenSerial || activeMountId !== requestedMountId) {
-        return;
-      }
-      if (volumeId) {
-        const cached = await getCachedFiles(volumeId);
-        if (cached) {
-          fileList = cached;
-          isOffline = true;
-          errorMessage = 'Using cached data. Backend unavailable.';
-        } else {
-          errorMessage = error instanceof Error ? error.message : 'Failed to load space';
-          fileList = [];
-        }
-      } else {
-        errorMessage = error instanceof Error ? error.message : 'Failed to load space';
-        fileList = [];
-      }
-      timelineEvents = [];
-      timelinePosition = 0;
-    } finally {
-      if (serial === volumeOpenSerial) {
-        isLoading = false;
-      }
-      if (serial === volumeOpenSerial && activeMountId === requestedMountId) {
-        isVolumeTransitioning = false;
-      }
-      if (serial === volumeOpenSerial && pendingMountId === requestedMountId) {
-        pendingMountId = null;
-      }
-    }
-  }
-
-  $effect(() => {
-    const currentMount = mounts.find((mount) => mount.id === activeMountId);
-    const currentSecret = currentMount ? buildMountSecret(currentMount) : '';
-    const currentLabel = currentMount ? mountLabel(currentMount) : '';
-    if (currentSecret !== '' && (currentSecret !== effectiveSecret || currentLabel !== unlockedAddress) && effectiveSecret !== '') {
-      stopTimelinePlayback();
-      isVolumeTransitioning = true;
-      effectiveSecret = '';
-      unlockedAddress = '';
-      auth = null;
-      volumeId = null;
-      lastRefresh = null;
-      selectedFileName = null;
-      previewKind = 'none';
-      previewText = '';
-      previewError = '';
-      previewLoading = false;
-      previewFileOverride = null;
-      previewBlobCache.clear();
-      revokePreviewUrl();
-    }
   });
 
   function mountLabel(mount: VolumeMount): string {
@@ -2384,7 +2623,18 @@
     }
     pendingMountId = mountId;
     secretPasteTargetMountId = null;
-    mounts = mounts.map((mount) => ({ ...mount, collapsed: true }));
+    activeMountId = mountId;
+  }
+
+  function selectMountPreservingLayout(mountId: string) {
+    const target = mounts.find((mount) => mount.id === mountId);
+    if (!target) return;
+    if (isMountEmpty(target)) {
+      removeMount(mountId);
+      return;
+    }
+    pendingMountId = mountId;
+    secretPasteTargetMountId = null;
     activeMountId = mountId;
   }
 
@@ -2416,6 +2666,7 @@
   }
 
   function removeMount(mountId: string) {
+    clearMountRuntime(mountId);
     if (pendingMountId === mountId) {
       pendingMountId = null;
     }
@@ -2440,7 +2691,7 @@
     if (!target || !target.collapsed) {
       return;
     }
-    selectMount(mountId);
+    selectMountPreservingLayout(mountId);
   }
 
   function collapseExpandedMountFromOutside(target: EventTarget | null) {
@@ -2464,6 +2715,7 @@
   }
 
   function updateMountAddress(mountId: string, value: string) {
+    clearMountRuntime(mountId);
     const trimmedValue = trimSecretPart(value);
     const next = mounts.map((mount) =>
       mount.id === mountId
@@ -2484,6 +2736,7 @@
   }
 
   function updateMountPassword(mountId: string, value: string) {
+    clearMountRuntime(mountId);
     const trimmedValue = trimSecretPart(value);
     const next = mounts.map((mount) =>
       mount.id === mountId
@@ -2504,6 +2757,7 @@
   }
 
   async function applySecretFileToMount(file: File, mountId: string) {
+    clearMountRuntime(mountId);
     const fileBytes = new Uint8Array(await file.arrayBuffer());
     const payload = buildFileSecretPayload(fileBytes);
     const label = trimSecretPart(file.name) || 'secret-file';
@@ -2546,6 +2800,7 @@
     dragPreparedMountId = null;
     draggingMountId = null;
     dragOverMountId = null;
+    dragOriginIndex = null;
     dragPointerId = null;
     dragTranslateX = 0;
     dragMoved = false;
@@ -2608,7 +2863,9 @@
     const node = mountNodes.get(mountId);
     if (!node) return;
     event.preventDefault();
+    pressedMountId = mountId;
     dragPreparedMountId = mountId;
+    dragOriginIndex = mounts.findIndex((mount) => mount.id === mountId);
     dragPointerId = event.pointerId;
     draggingMountId = mountId;
     dragOverMountId = null;
@@ -2659,17 +2916,37 @@
     clearMountDragState();
   }
 
+  function shouldRenderMountHoleBefore(index: number): boolean {
+    if (!dragMoved || dragOriginIndex === null || !draggingMountId) return false;
+    const currentIndex = mounts.findIndex((mount) => mount.id === draggingMountId);
+    return dragOriginIndex === index && currentIndex !== dragOriginIndex;
+  }
+
   function handleMountPointerCancel(event: PointerEvent) {
     if (dragPointerId !== event.pointerId) return;
     clearMountDragState();
+    if (pressedMountId) {
+      pressedMountId = null;
+    }
   }
 
   function handleMountClick(mountId: string) {
     if (suppressMountClick) {
       suppressMountClick = false;
+      pressedMountId = null;
       return;
     }
+    pressedMountId = mountId;
     handleChipClick(mountId);
+    if (mountPressReleaseTimer) {
+      clearTimeout(mountPressReleaseTimer);
+    }
+    mountPressReleaseTimer = setTimeout(() => {
+      if (pressedMountId === mountId) {
+        pressedMountId = null;
+      }
+      mountPressReleaseTimer = null;
+    }, 180);
   }
 
   function mountIdFromDropTarget(target: EventTarget | null): string | null {
@@ -2759,6 +3036,18 @@
     if (showSourcesPanel) {
       showVolumeStoragePanel = false;
     }
+  }
+
+  function openMountedVolumeRouting(targetVolumeId: string) {
+    const normalized = targetVolumeId.trim().toLowerCase();
+    const targetMount = mounts.find((mount) => mount.volumeId?.trim().toLowerCase() === normalized);
+    if (!targetMount) {
+      return;
+    }
+    selectMountPreservingLayout(targetMount.id);
+    showVolumeStoragePanel = true;
+    showSourcesPanel = false;
+    sourceDiscoveryPanelFocus = null;
   }
 
   $effect(() => {
@@ -3830,15 +4119,31 @@
     >
       <MountRail dragging={draggingMountId !== null}>
         {#snippet children()}
-        {#each mounts as mount (mount.id)}
+        {#each mounts as mount, index (mount.id)}
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
           {@const isPending = pendingMountId === mount.id}
           <div
-            class="mount-item"
-            class:dragging={draggingMountId === mount.id}
-            use:trackMountNode={mount.id}
+            class="mount-stack"
             animate:flip={{ duration: 160 }}
           >
+            {#if shouldRenderMountHoleBefore(index)}
+              <div class="mount-item drag-hole" aria-hidden="true">
+                <div class="volume-chip collapsed-shell parked hole-shell">
+                  <div class="header-dock">
+                    <div class="header-dock-main">
+                      <div class="header-dock-badge">
+                        <div class="header-dock-badge-top"></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            {/if}
+            <div
+              class="mount-item"
+              class:dragging={draggingMountId === mount.id}
+              use:trackMountNode={mount.id}
+            >
             {#if expanded}
               <div
                 class="volume-chip expanded"
@@ -3953,7 +4258,7 @@
                     armed={true}
                     armDelayMs={0}
                     autoDisarmMs={3000}
-                    resetKey={`${mount.id}:${mount.address}:${mount.password}:${expanded}`}
+                    resetKey={mount.id}
                     onPress={() => removeMount(mount.id)}
                     title="Remove space"
                     ariaLabel="Remove space"
@@ -3976,7 +4281,8 @@
             {:else}
               <div
                 class="volume-chip collapsed-shell parked"
-                class:selected={mount.id === activeMountId && mount.collapsed}
+                class:selected={mount.id === activeMountId}
+                class:pressed={pressedMountId === mount.id}
                 class:drag-armed={isMountReorderActive(mount.id)}
                 class:dragging={draggingMountId === mount.id && dragMoved}
                 class:drag-over={dragOverMountId === mount.id && dragMoved}
@@ -3988,11 +4294,7 @@
                   class="volume-chip-select"
                   aria-label={mountLabel(mount) || 'Space entry'}
                   onclick={() => handleMountClick(mount.id)}
-                  onpointerdown={(event) => beginMountReorder(event, mount.id, mount.collapsed)}
-                  onpointermove={handleMountPointerMove}
-                  onpointerup={handleMountPointerUp}
-                  onpointercancel={handleMountPointerCancel}
-                  title="Drag to reorder"
+                  title={mountLabel(mount) || 'Open space'}
                 >
                   <div class="header-dock">
                     <div class="header-dock-main">
@@ -4018,7 +4320,22 @@
                 </button>
                 <button
                   type="button"
-                  class="volume-chip-config-btn"
+                  class="volume-chip-action-btn volume-chip-drag-btn"
+                  aria-label={`Reorder ${mountLabel(mount) || 'space'}`}
+                  title="Drag to reorder"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onpointerdown={(event) => beginMountReorder(event, mount.id, mount.collapsed)}
+                  onpointermove={handleMountPointerMove}
+                  onpointerup={handleMountPointerUp}
+                  onpointercancel={handleMountPointerCancel}
+                >
+                  <GripVertical size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="volume-chip-action-btn volume-chip-config-btn"
                   aria-label={`Edit ${mountLabel(mount) || 'space'}`}
                   title="Edit space"
                   onclick={(event) => {
@@ -4030,6 +4347,7 @@
                 </button>
               </div>
             {/if}
+            </div>
           </div>
         {/each}
         {/snippet}
@@ -4379,6 +4697,8 @@
           mode="global"
           {volumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
+          knownVolumes={knownMountedVolumes}
+          onOpenVolumeRouting={openMountedVolumeRouting}
           discoveryDetails={latestSourceDiscovery}
           refreshToken={sourceDiscoveryRefreshToken}
           focusSection={sourceDiscoveryPanelFocus}
@@ -4390,6 +4710,8 @@
           mode="volume"
           {volumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
+          knownVolumes={knownMountedVolumes}
+          onOpenVolumeRouting={openMountedVolumeRouting}
           refreshToken={sourceDiscoveryRefreshToken}
         />
       </div>
@@ -5010,16 +5332,29 @@
     filter: drop-shadow(0 14px 28px rgba(34, 211, 238, 0.12));
   }
 
+  .mount-stack,
   .mount-item {
     display: flex;
     flex: 0 0 auto;
     align-items: stretch;
+  }
+
+  .mount-stack {
     position: relative;
     will-change: transform;
   }
 
   .mount-item.dragging {
     z-index: 80;
+  }
+
+  .mount-item.drag-hole {
+    pointer-events: none;
+  }
+
+  .hole-shell {
+    visibility: hidden;
+    box-shadow: none;
   }
 
   .identity-row {
@@ -5276,26 +5611,34 @@
   }
 
   :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) {
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging),
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.pressed:not(.drag-armed):not(.dragging),
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:active:not(.drag-armed):not(.dragging) {
     min-width: 132px;
     max-width: min(72vw, 420px);
   }
 
   :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) .header-dock,
   :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) .header-dock,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) .header-dock {
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) .header-dock,
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.pressed:not(.drag-armed):not(.dragging) .header-dock,
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:active:not(.drag-armed):not(.dragging) .header-dock {
     padding: 0.26rem 0.36rem 0.26rem 0.62rem;
   }
 
   :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) .header-dock-badge-top,
   :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) .header-dock-badge-top,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) .header-dock-badge-top {
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) .header-dock-badge-top,
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.pressed:not(.drag-armed):not(.dragging) .header-dock-badge-top,
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:active:not(.drag-armed):not(.dragging) .header-dock-badge-top {
     gap: 0.5rem;
   }
 
   :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
   :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) :global(.volume-identity-copy) {
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.pressed:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
+  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:active:not(.drag-armed):not(.dragging) :global(.volume-identity-copy) {
     max-width: 220px;
     opacity: 1;
     transform: translateX(0);
@@ -5500,7 +5843,7 @@
     box-shadow: none;
   }
 
-  .volume-chip-config-btn {
+  .volume-chip-action-btn {
     appearance: none;
     border: 0;
     border-left: 1px solid transparent;
@@ -5526,8 +5869,12 @@
       transform 0.2s ease;
   }
 
-  .volume-chip.collapsed-shell:hover .volume-chip-config-btn,
-  .volume-chip.collapsed-shell:focus-within .volume-chip-config-btn {
+  .volume-chip-drag-btn {
+    touch-action: none;
+  }
+
+  .volume-chip.collapsed-shell:hover .volume-chip-action-btn,
+  .volume-chip.collapsed-shell:focus-within .volume-chip-action-btn {
     width: 31px;
     min-width: 31px;
     border-left-color: rgba(56, 189, 248, 0.14);
@@ -5535,10 +5882,10 @@
     pointer-events: auto;
   }
 
-  .volume-chip.drag-armed:hover .volume-chip-config-btn,
-  .volume-chip.drag-armed:focus-within .volume-chip-config-btn,
-  .volume-chip.dragging:hover .volume-chip-config-btn,
-  .volume-chip.dragging:focus-within .volume-chip-config-btn {
+  .volume-chip.drag-armed:hover .volume-chip-action-btn,
+  .volume-chip.drag-armed:focus-within .volume-chip-action-btn,
+  .volume-chip.dragging:hover .volume-chip-action-btn,
+  .volume-chip.dragging:focus-within .volume-chip-action-btn {
     width: 0;
     min-width: 0;
     border-left-color: transparent;
@@ -5547,14 +5894,14 @@
     transform: none;
   }
 
-  .volume-chip-config-btn:hover {
+  .volume-chip-action-btn:hover {
     background: linear-gradient(180deg, rgba(18, 35, 60, 0.9), rgba(11, 22, 40, 0.84));
     border-left-color: rgba(96, 165, 250, 0.3);
     color: rgba(240, 249, 255, 0.96);
     transform: translateX(1px);
   }
 
-  .volume-chip-config-btn:focus-visible {
+  .volume-chip-action-btn:focus-visible {
     outline: none;
     background: linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9));
     border-left-color: rgba(125, 211, 252, 0.36);
@@ -5595,7 +5942,7 @@
     transform: translateY(-6px);
     pointer-events: none;
     transition: max-height 0.28s ease, opacity 0.24s ease, transform 0.24s ease, padding 0.24s ease;
-    padding: 0 0.35rem;
+    padding: 0;
   }
 
   .volume-chip-expanded.expanded {
@@ -5603,7 +5950,7 @@
     opacity: 1;
     transform: translateY(0);
     pointer-events: auto;
-    padding: 0.5rem 0.35rem 0.35rem;
+    padding: 0.5rem 0 0.35rem;
   }
 
   .secret-file-card {
@@ -5612,7 +5959,7 @@
     gap: 0.8rem;
     align-items: center;
     padding: 0.78rem 0.82rem;
-    margin: 0 0.35rem 0.6rem;
+    margin: 0 0 0.6rem;
     border-radius: 14px;
     border: 1px solid rgba(56, 189, 248, 0.16);
     background:

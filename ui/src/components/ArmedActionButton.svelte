@@ -16,6 +16,7 @@
     iconStrokeWidth = 2,
     class: className = '',
     onPress,
+    onArmStateChange,
   }: {
     text: string;
     armed?: boolean;
@@ -33,10 +34,12 @@
     iconStrokeWidth?: number;
     class?: string;
     onPress?: () => void;
+    onArmStateChange?: (armed: boolean) => void;
   } = $props();
 
   let isArmedState = $state(false);
   let confirmReady = $state(false);
+  let lastResetKey = $state<string | number | null | undefined>(undefined);
   let readyTimer: ReturnType<typeof setTimeout> | null = null;
   let disarmTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -52,15 +55,23 @@
   }
 
   function disarm() {
+    const changed = isArmedState || confirmReady;
     isArmedState = false;
     confirmReady = false;
     clearTimers();
+    if (changed) {
+      onArmStateChange?.(false);
+    }
   }
 
   function arm() {
+    const changed = !isArmedState;
     isArmedState = true;
     confirmReady = armDelayMs <= 0;
     clearTimers();
+    if (changed) {
+      onArmStateChange?.(true);
+    }
     if (armDelayMs > 0) {
       readyTimer = setTimeout(() => {
         if (isArmedState) {
@@ -107,7 +118,14 @@
   const computedDisabled = $derived.by(() => disabled);
 
   $effect(() => {
-    resetKey;
+    if (lastResetKey === undefined) {
+      lastResetKey = resetKey;
+      return;
+    }
+    if (lastResetKey === resetKey) {
+      return;
+    }
+    lastResetKey = resetKey;
     disarm();
   });
 

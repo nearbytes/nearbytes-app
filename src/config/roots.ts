@@ -212,14 +212,6 @@ export function parseRootsConfig(value: unknown): RootsConfig {
   const normalizedDefault: DefaultVolumePolicy = {
     destinations: normalizeDestinationList(parsed.defaultVolume.destinations, sourceIds),
   };
-  if (
-    !normalizedDefault.destinations.some((destination) => {
-      const source = normalizedSources.find((entry) => entry.id === destination.sourceId);
-      return Boolean(source?.enabled && source.writable && isDurableDestination(destination));
-    })
-  ) {
-    throw new Error('At least one durable default storage location is required');
-  }
   const seenVolumeIds = new Set<string>();
   const normalizedVolumes = parsed.volumes.map((volume) => {
     const volumeId = volume.volumeId.trim().toLowerCase();
@@ -235,27 +227,6 @@ export function parseRootsConfig(value: unknown): RootsConfig {
       destinations: normalizeDestinationList(volume.destinations, sourceIds),
     } satisfies VolumePolicyEntry;
   });
-
-  for (const volume of normalizedVolumes) {
-    const resolved = resolveVolumeDestinations(
-      {
-        version: ROOTS_CONFIG_VERSION,
-        sources: normalizedSources,
-        defaultVolume: normalizedDefault,
-        volumes: normalizedVolumes,
-      },
-      volume.volumeId
-    );
-    if (
-      !resolved.some((destination) => {
-        const source = normalizedSources.find((entry) => entry.id === destination.sourceId);
-        return Boolean(source?.enabled && source.writable && isDurableDestination(destination));
-      })
-    ) {
-      throw new Error(`Volume ${volume.volumeId} must have at least one durable destination`);
-    }
-  }
-
   return {
     version: ROOTS_CONFIG_VERSION,
     sources: normalizedSources,

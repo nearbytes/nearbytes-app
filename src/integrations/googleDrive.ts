@@ -64,7 +64,7 @@ interface GoogleClientConfig {
 export class GoogleDriveTransportAdapter {
   readonly provider = 'gdrive';
   readonly label = 'Google Drive';
-  readonly description = 'Managed folders and shared mirrors backed by Google Drive.';
+  readonly description = 'Managed folders and provider shares backed by Google Drive.';
   readonly supportsAccountConnection = true;
 
   private readonly authSessions = new Map<string, GoogleAuthSession>();
@@ -245,7 +245,7 @@ export class GoogleDriveTransportAdapter {
     input: CreateManagedShareInput,
     account: ProviderAccount
   ): Promise<Partial<ManagedShare>> {
-    const folderLabel = `${slugify(input.label)}-${createOpaqueId('nb').slice(-6)}`;
+    const folderLabel = createManagedFolderLabel(input.label, createOpaqueId('nb').slice(-6));
     const rootFolderId = await this.ensureFolder(account.id, undefined, 'Nearbytes');
     const folderId = await this.ensureFolder(account.id, rootFolderId, folderLabel);
     const folder = await this.getFile(account.id, folderId, 'id,name,webViewLink');
@@ -308,14 +308,14 @@ export class GoogleDriveTransportAdapter {
     if (!account) {
       return {
         status: 'needs-auth',
-        detail: 'Reconnect Google Drive to resume this mirror.',
+        detail: 'Reconnect Google Drive to resume this share.',
         badges: ['Reconnect'],
       };
     }
     return {
       status: 'idle',
-      detail: 'Google Drive mirror is ready to sync.',
-      badges: ['Mirror'],
+      detail: 'Google Drive share is ready to sync.',
+      badges: ['Share'],
     };
   }
 
@@ -397,7 +397,7 @@ export class GoogleDriveTransportAdapter {
     this.syncingShares.add(share.id);
     this.syncStates.set(share.id, {
       status: 'syncing',
-      detail: 'Syncing the local mirror with Google Drive.',
+      detail: 'Syncing the local folder with Google Drive.',
       badges: ['Syncing'],
       lastSyncAt: this.runtime.now(),
     });
@@ -407,7 +407,7 @@ export class GoogleDriveTransportAdapter {
       const result = await this.mirrorWorker.sync(share.localPath, remoteAdapter);
       this.syncStates.set(share.id, {
         status: 'ready',
-        detail: summarizeMirrorResult('Google Drive mirror is up to date.', result),
+        detail: summarizeMirrorResult('Google Drive share is up to date.', result),
         badges: ['Connected'],
         lastSyncAt: this.runtime.now(),
       });
@@ -882,15 +882,14 @@ function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\/+/u, '');
 }
 
-function slugify(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 42) || 'nearbytes'
-  );
+function createManagedFolderLabel(label: string, suffix: string): string {
+  const cleaned = label
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .slice(0, 56)
+    .trim();
+  return `${cleaned || 'Nearbytes share'} ${suffix}`.trim();
 }
 
 function getStringDescriptor(descriptor: Record<string, unknown>, key: string): string | undefined {

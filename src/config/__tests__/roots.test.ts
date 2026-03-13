@@ -208,27 +208,27 @@ describe('roots config', () => {
     expect(parsed.sources[0].provider).toBe('local');
   });
 
-  it('rejects configs without any durable default storage location', () => {
-    expect(() =>
-      parseRootsConfig({
-        version: 2,
-        sources: [
-          {
-            id: 'src-local',
-            provider: 'local',
-            path: '/tmp/nearbytes-no-default',
-            enabled: true,
-            writable: true,
-            reservePercent: 5,
-            opportunisticPolicy: 'drop-older-blocks',
-          },
-        ],
-        defaultVolume: {
-          destinations: [],
+  it('allows configs without any protected default destination and leaves that to runtime warnings', () => {
+    const parsed = parseRootsConfig({
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: '/tmp/nearbytes-no-default',
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
         },
-        volumes: [],
-      })
-    ).toThrow(/durable default storage location/i);
+      ],
+      defaultVolume: {
+        destinations: [],
+      },
+      volumes: [],
+    });
+
+    expect(parsed.defaultVolume.destinations).toEqual([]);
   });
 
   it('preserves a valid pending move marker', () => {

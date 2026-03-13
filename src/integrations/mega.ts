@@ -10,7 +10,9 @@ import type {
   InviteManagedShareInput,
   ManagedShare,
   ProviderAccount,
+  ProviderAuthSession,
   ProviderSetupState,
+  ShareStorageMetrics,
   TransportState,
 } from './types.js';
 import { resolveMegaCommand, type IntegrationRuntime } from './runtime.js';
@@ -31,12 +33,28 @@ interface MegaSyncRecord {
   readonly error?: string;
 }
 
+interface MegaStorageQuota {
+  readonly usedBytes: number;
+  readonly totalBytes: number;
+  readonly availableBytes: number;
+}
+
+interface MegaAuthSession extends ProviderAuthSession {
+  readonly email: string;
+  readonly password: string;
+  readonly mfaCode?: string;
+  readonly requestedLabel?: string;
+}
+
+const MEGA_AUTH_SESSION_TTL_MS = 1000 * 60 * 30;
+
 export class MegaTransportAdapter {
   readonly provider = 'mega';
   readonly label = 'MEGA';
-  readonly description = 'Managed folders and shared mirrors backed by MEGA CLI sync.';
+  readonly description = 'Managed folders and provider shares backed by MEGA CLI sync.';
   readonly supportsAccountConnection = true;
 
+  private readonly authSessions = new Map<string, MegaAuthSession>();
   private readonly syncStates = new Map<string, TransportState>();
   private readonly syncTimers = new Map<string, NodeJS.Timeout>();
   private readonly installer: MegaHelperInstaller;
@@ -78,6 +96,12 @@ export class MegaTransportAdapter {
   }
 
   async connect(input: ConnectProviderAccountInput): Promise<ConnectProviderAccountResult> {
+    if (input.authSessionId) {
+      return this.pollAuthSession(input);
+    }
+    if (input.mode === 'signup') {
+      return this.startSignup(input);
+    }
     const credentials = input.credentials;
     const email = credentials?.email?.trim() || input.email?.trim();
     const password = credentials?.password ?? '';
@@ -87,28 +111,13 @@ export class MegaTransportAdapter {
     }
 
     const accountId = input.accountId?.trim() || createOpaqueId('acct-mega');
-    await this.runMega('login', [email, password, ...(mfaCode ? [mfaCode] : [])], {
-      timeoutMs: 60_000,
-    });
-    const sessionToken = await this.readSessionToken();
-    await this.runtime.secretStore.set(megaSessionSecretKey(accountId), {
+    return this.loginWithCredentials({
+      accountId,
       email,
-      sessionToken,
-    } satisfies MegaSessionSecret);
-
-    return {
-      status: 'connected',
-      account: {
-        id: accountId,
-        provider: this.provider,
-        label: input.label?.trim() || 'MEGA',
-        email,
-        state: 'connected',
-        detail: 'MEGA CLI is connected.',
-        createdAt: 0,
-        updatedAt: 0,
-      },
-    };
+      password,
+      mfaCode: mfaCode || undefined,
+      label: input.label?.trim() || 'MEGA',
+    });
   }
 
   async createManagedShare(
@@ -116,9 +125,12 @@ export class MegaTransportAdapter {
     account: ProviderAccount
   ): Promise<Partial<ManagedShare>> {
     await this.ensureLoggedIn(account.id);
-    const shareName = `${slugify(input.label)}-${randomBytes(3).toString('hex')}`;
     const remoteBasePath = this.runtime.mega.remoteBasePath;
-    const remotePath = path.posix.join(remoteBasePath, shareName);
+    const explicitRemotePath = getStringDescriptor(input.remoteDescriptor ?? {}, 'remotePath');
+    const shareName =
+      getStringDescriptor(input.remoteDescriptor ?? {}, 'shareName') ??
+      createManagedFolderLabel(input.label, randomBytes(3).toString('hex'));
+    const remotePath = explicitRemotePath ?? path.posix.join(remoteBasePath, shareName);
     await this.runMega('mkdir', ['-p', remotePath]);
     await this.ensureSyncTarget(input.localPath ?? '', remotePath);
 
@@ -180,11 +192,27 @@ export class MegaTransportAdapter {
     if (!account) {
       return {
         status: 'needs-auth',
-        detail: 'Reconnect MEGA to resume this mirror.',
+        detail: 'Reconnect MEGA to resume this share.',
         badges: ['Reconnect'],
       };
     }
     return this.readSyncState(share, account.id);
+  }
+
+  async getShareStorageMetrics(_share: ManagedShare, account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined> {
+    if (!account) {
+      return undefined;
+    }
+    await this.ensureLoggedIn(account.id);
+    const quota = await this.readStorageQuota();
+    if (!quota) {
+      return undefined;
+    }
+    return {
+      remoteAvailableBytes: quota.availableBytes,
+      remoteTotalBytes: quota.totalBytes,
+      remoteUsedBytes: quota.usedBytes,
+    };
   }
 
   async ensureSync(share: ManagedShare, account: ProviderAccount): Promise<void> {
@@ -240,6 +268,135 @@ export class MegaTransportAdapter {
     await this.runtime.secretStore.delete(megaSessionSecretKey(account.id));
   }
 
+  private async startSignup(input: ConnectProviderAccountInput): Promise<ConnectProviderAccountResult> {
+    const accountId = input.accountId?.trim() || createOpaqueId('acct-mega');
+    const name = input.credentials?.name?.trim();
+    const email = input.credentials?.email?.trim() || input.email?.trim();
+    const password = input.credentials?.password ?? '';
+    if (!name) {
+      throw new Error('Enter your name first.');
+    }
+    if (!email || !password) {
+      throw new Error('MEGA signup needs your name, email, and password.');
+    }
+
+    await this.runMega('signup', [email, password, `--name=${name}`], {
+      timeoutMs: 60_000,
+    });
+    const now = this.runtime.now();
+    const session: MegaAuthSession = {
+      id: createOpaqueId('signup-mega'),
+      provider: this.provider,
+      accountId,
+      status: 'pending',
+      detail: 'Check your email, then paste the MEGA confirmation link here.',
+      openedAt: now,
+      expiresAt: now + MEGA_AUTH_SESSION_TTL_MS,
+      email,
+      password,
+      requestedLabel: input.label?.trim() || 'MEGA',
+    };
+    this.authSessions.set(session.id, session);
+    return {
+      status: 'pending',
+      authSession: toPublicAuthSession(session),
+    };
+  }
+
+  private async pollAuthSession(input: ConnectProviderAccountInput): Promise<ConnectProviderAccountResult> {
+    const authSessionId = input.authSessionId?.trim();
+    if (!authSessionId) {
+      throw new Error('MEGA sign-up session was not found.');
+    }
+    const session = this.authSessions.get(authSessionId);
+    if (!session) {
+      throw new Error('MEGA sign-up session was not found.');
+    }
+
+    const now = this.runtime.now();
+    if (now > session.expiresAt) {
+      const expired: MegaAuthSession = {
+        ...session,
+        status: 'failed',
+        detail: 'MEGA sign-up expired. Start it again from Nearbytes.',
+      };
+      this.authSessions.set(authSessionId, expired);
+      return {
+        status: 'failed',
+        authSession: toPublicAuthSession(expired),
+      };
+    }
+
+    const confirmationLink = input.credentials?.confirmationLink?.trim();
+    if (!confirmationLink) {
+      return {
+        status: session.status === 'failed' ? 'failed' : 'pending',
+        authSession: toPublicAuthSession(session),
+      };
+    }
+
+    try {
+      await this.runMega('confirm', [confirmationLink, session.email, session.password], {
+        timeoutMs: 60_000,
+      });
+      const connected = await this.loginWithCredentials({
+        accountId: session.accountId,
+        email: session.email,
+        password: session.password,
+        mfaCode: session.mfaCode,
+        label: session.requestedLabel || 'MEGA',
+      });
+      this.authSessions.delete(authSessionId);
+      return connected;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failed: MegaAuthSession = {
+        ...session,
+        status: 'failed',
+        detail: message,
+      };
+      this.authSessions.set(authSessionId, failed);
+      return {
+        status: 'failed',
+        authSession: toPublicAuthSession(failed),
+      };
+    }
+  }
+
+  private async loginWithCredentials(input: {
+    accountId: string;
+    email: string;
+    password: string;
+    mfaCode?: string;
+    label: string;
+  }): Promise<ConnectProviderAccountResult> {
+    const loginArgs = input.mfaCode
+      ? [`--auth-code=${input.mfaCode}`, input.email, input.password]
+      : [input.email, input.password];
+    await this.runMega('login', loginArgs, {
+      timeoutMs: 60_000,
+    });
+    const sessionToken = await this.readSessionToken();
+    await this.runtime.secretStore.set(megaSessionSecretKey(input.accountId), {
+      email: input.email,
+      sessionToken,
+    } satisfies MegaSessionSecret);
+
+    return {
+      status: 'connected',
+      account: {
+        id: input.accountId,
+        provider: this.provider,
+        label: input.label,
+        email: input.email,
+        state: 'connected',
+        detail: 'MEGA CLI is connected.',
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    };
+  }
+
   private async refreshSyncState(share: ManagedShare, accountId: string): Promise<void> {
     try {
       const state = await this.readSyncState(share, accountId);
@@ -261,7 +418,7 @@ export class MegaTransportAdapter {
     if (!syncRecord) {
       return {
         status: 'attention',
-        detail: 'MEGA sync is not running for this mirror.',
+        detail: 'MEGA sync is not running for this share.',
         badges: ['Repair'],
       };
     }
@@ -278,7 +435,7 @@ export class MegaTransportAdapter {
     if (runState.includes('run') || status.includes('up to date') || status.includes('synced')) {
       return {
         status: 'ready',
-        detail: 'MEGA sync is running for this mirror.',
+        detail: 'MEGA sync is running for this share.',
         badges: ['Connected'],
         lastSyncAt: this.runtime.now(),
       };
@@ -298,6 +455,12 @@ export class MegaTransportAdapter {
     }
     await this.runMega('login', [secret.sessionToken], {
       timeoutMs: 60_000,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already logged in|command not valid while login in: login/i.test(message)) {
+        return;
+      }
+      throw error;
     });
   }
 
@@ -312,7 +475,7 @@ export class MegaTransportAdapter {
 
   private async ensureSyncTarget(localPath: string, remotePath: string): Promise<void> {
     if (!localPath.trim()) {
-      throw new Error('Nearbytes mirror folder is missing.');
+      throw new Error('Nearbytes share folder is missing.');
     }
     await this.runMega('sync', [localPath, remotePath], {
       timeoutMs: 60_000,
@@ -351,6 +514,13 @@ export class MegaTransportAdapter {
     return match.trim();
   }
 
+  private async readStorageQuota(): Promise<MegaStorageQuota | null> {
+    const result = await this.runMega('df', [], {
+      timeoutMs: 30_000,
+    });
+    return parseMegaDf(result.stdout);
+  }
+
   private async runMega(
     subcommand: string,
     args: readonly string[],
@@ -362,6 +532,12 @@ export class MegaTransportAdapter {
       const result = await this.runtime.commandExecutor.run({
         command,
         args,
+        cwd: commandDirectory || undefined,
+        env: commandDirectory
+          ? {
+              PATH: `${commandDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
+            }
+          : undefined,
         timeoutMs: options.timeoutMs ?? 30_000,
       });
       if (result.exitCode !== 0) {
@@ -388,15 +564,14 @@ function createOpaqueId(prefix: string): string {
   return `${prefix}-${randomBytes(8).toString('hex')}`;
 }
 
-function slugify(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 42) || 'nearbytes'
-  );
+function createManagedFolderLabel(label: string, suffix: string): string {
+  const cleaned = label
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .slice(0, 56)
+    .trim();
+  return `${cleaned || 'Nearbytes share'} ${suffix}`.trim();
 }
 
 function firstMeaningfulLine(value: string): string | null {
@@ -417,14 +592,25 @@ function parseMegaSyncTable(stdout: string): MegaSyncRecord[] {
     .map((line) => {
       const [id, localPath, remotePath, runState, status, error] = line.split('\t');
       return {
-        id: id?.trim() || undefined,
-        localPath: localPath?.trim() || undefined,
-        remotePath: remotePath?.trim() || undefined,
-        runState: runState?.trim() || undefined,
-        status: status?.trim() || undefined,
-        error: error?.trim() || undefined,
+        id: normalizeMegaCell(id),
+        localPath: normalizeMegaCell(localPath),
+        remotePath: normalizeMegaCell(remotePath),
+        runState: normalizeMegaCell(runState),
+        status: normalizeMegaCell(status),
+        error: normalizeMegaCell(error),
       } satisfies MegaSyncRecord;
     });
+}
+
+function normalizeMegaCell(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (/^(no|none|n\/a)$/i.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 function normalizeComparablePath(value: string): string {
@@ -440,6 +626,26 @@ function getStringDescriptor(descriptor: Record<string, unknown>, key: string): 
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 }
 
+function parseMegaDf(stdout: string): MegaStorageQuota | null {
+  for (const line of stdout.split(/\r?\n/u)) {
+    const match = line.match(/USED STORAGE:\s*(\d+).*?of\s+(\d+)/i);
+    if (!match) {
+      continue;
+    }
+    const usedBytes = Number.parseInt(match[1] ?? '', 10);
+    const totalBytes = Number.parseInt(match[2] ?? '', 10);
+    if (!Number.isFinite(usedBytes) || !Number.isFinite(totalBytes) || totalBytes < usedBytes) {
+      return null;
+    }
+    return {
+      usedBytes,
+      totalBytes,
+      availableBytes: totalBytes - usedBytes,
+    };
+  }
+  return null;
+}
+
 function isCommandNotFound(error: unknown): boolean {
   return Boolean(
     error &&
@@ -447,4 +653,17 @@ function isCommandNotFound(error: unknown): boolean {
       'code' in error &&
       ((error as { code?: string }).code === 'ENOENT' || (error as { message?: string }).message?.includes('ENOENT'))
   );
+}
+
+function toPublicAuthSession(session: MegaAuthSession): ProviderAuthSession {
+  return {
+    id: session.id,
+    provider: session.provider,
+    accountId: session.accountId,
+    status: session.status,
+    detail: session.detail,
+    authUrl: session.authUrl,
+    openedAt: session.openedAt,
+    expiresAt: session.expiresAt,
+  };
 }
