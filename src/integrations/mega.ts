@@ -10,6 +10,7 @@ import type {
   InviteManagedShareInput,
   ManagedShare,
   ProviderAccount,
+  ProviderAuthSession,
   ProviderSetupState,
   ShareStorageMetrics,
   TransportState,
@@ -38,12 +39,22 @@ interface MegaStorageQuota {
   readonly availableBytes: number;
 }
 
+interface MegaAuthSession extends ProviderAuthSession {
+  readonly email: string;
+  readonly password: string;
+  readonly mfaCode?: string;
+  readonly requestedLabel?: string;
+}
+
+const MEGA_AUTH_SESSION_TTL_MS = 1000 * 60 * 30;
+
 export class MegaTransportAdapter {
   readonly provider = 'mega';
   readonly label = 'MEGA';
   readonly description = 'Managed folders and provider shares backed by MEGA CLI sync.';
   readonly supportsAccountConnection = true;
 
+  private readonly authSessions = new Map<string, MegaAuthSession>();
   private readonly syncStates = new Map<string, TransportState>();
   private readonly syncTimers = new Map<string, NodeJS.Timeout>();
   private readonly installer: MegaHelperInstaller;
@@ -85,6 +96,12 @@ export class MegaTransportAdapter {
   }
 
   async connect(input: ConnectProviderAccountInput): Promise<ConnectProviderAccountResult> {
+    if (input.authSessionId) {
+      return this.pollAuthSession(input);
+    }
+    if (input.mode === 'signup') {
+      return this.startSignup(input);
+    }
     const credentials = input.credentials;
     const email = credentials?.email?.trim() || input.email?.trim();
     const password = credentials?.password ?? '';
@@ -94,28 +111,13 @@ export class MegaTransportAdapter {
     }
 
     const accountId = input.accountId?.trim() || createOpaqueId('acct-mega');
-    await this.runMega('login', [email, password, ...(mfaCode ? [mfaCode] : [])], {
-      timeoutMs: 60_000,
-    });
-    const sessionToken = await this.readSessionToken();
-    await this.runtime.secretStore.set(megaSessionSecretKey(accountId), {
+    return this.loginWithCredentials({
+      accountId,
       email,
-      sessionToken,
-    } satisfies MegaSessionSecret);
-
-    return {
-      status: 'connected',
-      account: {
-        id: accountId,
-        provider: this.provider,
-        label: input.label?.trim() || 'MEGA',
-        email,
-        state: 'connected',
-        detail: 'MEGA CLI is connected.',
-        createdAt: 0,
-        updatedAt: 0,
-      },
-    };
+      password,
+      mfaCode: mfaCode || undefined,
+      label: input.label?.trim() || 'MEGA',
+    });
   }
 
   async createManagedShare(
@@ -264,6 +266,135 @@ export class MegaTransportAdapter {
       // Ignore logout failures; local account metadata is still removed.
     });
     await this.runtime.secretStore.delete(megaSessionSecretKey(account.id));
+  }
+
+  private async startSignup(input: ConnectProviderAccountInput): Promise<ConnectProviderAccountResult> {
+    const accountId = input.accountId?.trim() || createOpaqueId('acct-mega');
+    const name = input.credentials?.name?.trim();
+    const email = input.credentials?.email?.trim() || input.email?.trim();
+    const password = input.credentials?.password ?? '';
+    if (!name) {
+      throw new Error('Enter your name first.');
+    }
+    if (!email || !password) {
+      throw new Error('MEGA signup needs your name, email, and password.');
+    }
+
+    await this.runMega('signup', [email, password, `--name=${name}`], {
+      timeoutMs: 60_000,
+    });
+    const now = this.runtime.now();
+    const session: MegaAuthSession = {
+      id: createOpaqueId('signup-mega'),
+      provider: this.provider,
+      accountId,
+      status: 'pending',
+      detail: 'Check your email, then paste the MEGA confirmation link here.',
+      openedAt: now,
+      expiresAt: now + MEGA_AUTH_SESSION_TTL_MS,
+      email,
+      password,
+      requestedLabel: input.label?.trim() || 'MEGA',
+    };
+    this.authSessions.set(session.id, session);
+    return {
+      status: 'pending',
+      authSession: toPublicAuthSession(session),
+    };
+  }
+
+  private async pollAuthSession(input: ConnectProviderAccountInput): Promise<ConnectProviderAccountResult> {
+    const authSessionId = input.authSessionId?.trim();
+    if (!authSessionId) {
+      throw new Error('MEGA sign-up session was not found.');
+    }
+    const session = this.authSessions.get(authSessionId);
+    if (!session) {
+      throw new Error('MEGA sign-up session was not found.');
+    }
+
+    const now = this.runtime.now();
+    if (now > session.expiresAt) {
+      const expired: MegaAuthSession = {
+        ...session,
+        status: 'failed',
+        detail: 'MEGA sign-up expired. Start it again from Nearbytes.',
+      };
+      this.authSessions.set(authSessionId, expired);
+      return {
+        status: 'failed',
+        authSession: toPublicAuthSession(expired),
+      };
+    }
+
+    const confirmationLink = input.credentials?.confirmationLink?.trim();
+    if (!confirmationLink) {
+      return {
+        status: session.status === 'failed' ? 'failed' : 'pending',
+        authSession: toPublicAuthSession(session),
+      };
+    }
+
+    try {
+      await this.runMega('confirm', [confirmationLink, session.email, session.password], {
+        timeoutMs: 60_000,
+      });
+      const connected = await this.loginWithCredentials({
+        accountId: session.accountId,
+        email: session.email,
+        password: session.password,
+        mfaCode: session.mfaCode,
+        label: session.requestedLabel || 'MEGA',
+      });
+      this.authSessions.delete(authSessionId);
+      return connected;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failed: MegaAuthSession = {
+        ...session,
+        status: 'failed',
+        detail: message,
+      };
+      this.authSessions.set(authSessionId, failed);
+      return {
+        status: 'failed',
+        authSession: toPublicAuthSession(failed),
+      };
+    }
+  }
+
+  private async loginWithCredentials(input: {
+    accountId: string;
+    email: string;
+    password: string;
+    mfaCode?: string;
+    label: string;
+  }): Promise<ConnectProviderAccountResult> {
+    const loginArgs = input.mfaCode
+      ? [`--auth-code=${input.mfaCode}`, input.email, input.password]
+      : [input.email, input.password];
+    await this.runMega('login', loginArgs, {
+      timeoutMs: 60_000,
+    });
+    const sessionToken = await this.readSessionToken();
+    await this.runtime.secretStore.set(megaSessionSecretKey(input.accountId), {
+      email: input.email,
+      sessionToken,
+    } satisfies MegaSessionSecret);
+
+    return {
+      status: 'connected',
+      account: {
+        id: input.accountId,
+        provider: this.provider,
+        label: input.label,
+        email: input.email,
+        state: 'connected',
+        detail: 'MEGA CLI is connected.',
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    };
   }
 
   private async refreshSyncState(share: ManagedShare, accountId: string): Promise<void> {
@@ -522,4 +653,17 @@ function isCommandNotFound(error: unknown): boolean {
       'code' in error &&
       ((error as { code?: string }).code === 'ENOENT' || (error as { message?: string }).message?.includes('ENOENT'))
   );
+}
+
+function toPublicAuthSession(session: MegaAuthSession): ProviderAuthSession {
+  return {
+    id: session.id,
+    provider: session.provider,
+    accountId: session.accountId,
+    status: session.status,
+    detail: session.detail,
+    authUrl: session.authUrl,
+    openedAt: session.openedAt,
+    expiresAt: session.expiresAt,
+  };
 }

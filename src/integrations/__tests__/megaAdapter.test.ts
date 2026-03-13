@@ -31,6 +31,9 @@ function createFakeMegaExecutor(state: {
   deletedSyncIds: string[];
   findResults: Map<string, string>;
   observedPaths: string[];
+  signupCommands?: string[][];
+  confirmCommands?: string[][];
+  dfStdout?: string;
   loginMode?: 'ok' | 'already-logged-in';
 }): CommandExecutor {
   return {
@@ -49,6 +52,16 @@ function createFakeMegaExecutor(state: {
       }
       if (command === 'mega-session') {
         return { stdout: `${state.sessionToken}\n`, stderr: '', exitCode: 0 };
+      }
+      if (command === 'mega-signup') {
+        state.signupCommands ??= [];
+        state.signupCommands.push(args);
+        return { stdout: 'Signup started\n', stderr: '', exitCode: 0 };
+      }
+      if (command === 'mega-confirm') {
+        state.confirmCommands ??= [];
+        state.confirmCommands.push(args);
+        return { stdout: 'Account confirmed\n', stderr: '', exitCode: 0 };
       }
       if (command === 'mega-mkdir') {
         state.createdFolders.push(args.at(-1) ?? '');
@@ -101,6 +114,13 @@ function createFakeMegaExecutor(state: {
       if (command === 'mega-logout') {
         return { stdout: '', stderr: '', exitCode: 0 };
       }
+      if (command === 'mega-df') {
+        return {
+          stdout: state.dfStdout ?? 'USED STORAGE: 1048576 bytes of 1073741824 bytes\n',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
 
       throw new Error(`Unhandled MEGA command in test: ${command}`);
     },
@@ -126,6 +146,8 @@ describe('MegaTransportAdapter', () => {
       deletedSyncIds: [] as string[],
       findResults: new Map<string, string>([['shared-alpha', '/nearbytes/shared-alpha']]),
       observedPaths: [] as string[],
+      signupCommands: [] as string[][],
+      confirmCommands: [] as string[][],
     };
 
     const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
@@ -240,6 +262,8 @@ describe('MegaTransportAdapter', () => {
       deletedSyncIds: [] as string[],
       findResults: new Map<string, string>(),
       observedPaths: [] as string[],
+      signupCommands: [] as string[][],
+      confirmCommands: [] as string[][],
       loginMode: 'already-logged-in' as const,
     };
 
@@ -291,5 +315,59 @@ describe('MegaTransportAdapter', () => {
 
     const state = await adapter.getState(share, account);
     expect(state.status).toBe('ready');
+  });
+
+  it('creates a MEGA account and confirms it through the pending session flow', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      signupCommands: [] as string[][],
+      confirmCommands: [] as string[][],
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+
+    const pending = await adapter.connect({
+      provider: 'mega',
+      mode: 'signup',
+      accountId: 'acct-mega-2',
+      credentials: {
+        name: 'Vincenzo',
+        email: 'new@mega.example',
+        password: 'signup-secret',
+      },
+    });
+    expect(pending.status).toBe('pending');
+    expect(megaState.signupCommands).toEqual([['new@mega.example', 'signup-secret', '--name=Vincenzo']]);
+
+    const connected = await adapter.connect({
+      provider: 'mega',
+      authSessionId: pending.authSession!.id,
+      credentials: {
+        confirmationLink: 'https://mega.nz/confirm#token',
+      },
+    });
+    expect(connected.status).toBe('connected');
+    expect(megaState.confirmCommands).toEqual([['https://mega.nz/confirm#token', 'new@mega.example', 'signup-secret']]);
+    expect(connected.account?.email).toBe('new@mega.example');
   });
 });

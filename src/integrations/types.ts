@@ -144,15 +144,18 @@ export interface ShareStorageMetrics {
 
 export interface ConnectProviderAccountInput {
   readonly provider: string;
+  readonly mode?: 'login' | 'signup' | 'confirm-signup';
   readonly label?: string;
   readonly email?: string;
   readonly preferred?: boolean;
   readonly authSessionId?: string;
   readonly accountId?: string;
   readonly credentials?: {
+    readonly name?: string;
     readonly email?: string;
     readonly password?: string;
     readonly mfaCode?: string;
+    readonly confirmationLink?: string;
   };
 }
 

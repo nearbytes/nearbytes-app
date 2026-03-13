@@ -102,7 +102,15 @@
   let managedShares = $state<ManagedShareSummary[]>([]);
   let integrationBusyKey = $state<string | null>(null);
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
-  let providerCredentialDrafts = $state<Record<string, { email: string; password: string; mfaCode: string; useMfa: boolean }>>({});
+  let providerCredentialDrafts = $state<Record<string, {
+    mode: 'login' | 'signup';
+    name: string;
+    email: string;
+    password: string;
+    mfaCode: string;
+    useMfa: boolean;
+    confirmationLink: string;
+  }>>({});
   let providerSetupDrafts = $state<Record<string, { clientId: string }>>({});
   let providerShareDrafts = $state<Record<string, { repoOwner: string; repoName: string; branch: string; basePath: string }>>({});
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
@@ -321,8 +329,24 @@
     return providerAuthSessions[provider] ?? null;
   }
 
-  function providerCredentialDraft(provider: string): { email: string; password: string; mfaCode: string; useMfa: boolean } {
-    return providerCredentialDrafts[provider] ?? { email: '', password: '', mfaCode: '', useMfa: false };
+  function providerCredentialDraft(provider: string): {
+    mode: 'login' | 'signup';
+    name: string;
+    email: string;
+    password: string;
+    mfaCode: string;
+    useMfa: boolean;
+    confirmationLink: string;
+  } {
+    return providerCredentialDrafts[provider] ?? {
+      mode: 'login',
+      name: '',
+      email: '',
+      password: '',
+      mfaCode: '',
+      useMfa: false,
+      confirmationLink: '',
+    };
   }
 
   function providerSetupDraft(provider: string): { clientId: string } {
@@ -340,7 +364,7 @@
 
   function setProviderCredential(
     provider: string,
-    field: 'email' | 'password' | 'mfaCode' | 'useMfa',
+    field: 'mode' | 'name' | 'email' | 'password' | 'mfaCode' | 'useMfa' | 'confirmationLink',
     value: string | boolean
   ): void {
     providerCredentialDrafts = {
@@ -1504,21 +1528,29 @@
       }
 
       const draft = providerCredentialDraft(provider.provider);
-      if (provider.provider === 'mega' && (draft.email.trim() === '' || draft.password.trim() === '')) {
-        throw new Error('Enter the MEGA email and password first.');
+      if (provider.provider === 'mega') {
+        if (draft.mode === 'signup') {
+          if (draft.name.trim() === '' || draft.email.trim() === '' || draft.password.trim() === '') {
+            throw new Error('Enter your name, email, and password first.');
+          }
+        } else if (draft.email.trim() === '' || draft.password.trim() === '') {
+          throw new Error('Enter the MEGA email and password first.');
+        }
       }
 
       const response = await connectProviderAccount({
         provider: provider.provider,
+        mode: provider.provider === 'mega' ? draft.mode : undefined,
         label: provider.label,
         preferred: provider.provider === 'gdrive',
         email: provider.provider === 'mega' ? draft.email.trim() || undefined : undefined,
         credentials:
           provider.provider === 'mega'
             ? {
+                name: draft.mode === 'signup' ? draft.name.trim() || undefined : undefined,
                 email: draft.email.trim() || undefined,
                 password: draft.password,
-                mfaCode: draft.useMfa ? draft.mfaCode.trim() || undefined : undefined,
+                mfaCode: draft.mode === 'login' && draft.useMfa ? draft.mfaCode.trim() || undefined : undefined,
               }
             : undefined,
       });
@@ -1694,6 +1726,7 @@
         setProviderCredential(provider.provider, 'password', '');
         setProviderCredential(provider.provider, 'mfaCode', '');
         setProviderCredential(provider.provider, 'useMfa', false);
+        setProviderCredential(provider.provider, 'confirmationLink', '');
       }
       successMessage = `${provider.label} connected.`;
       await loadPanel();
@@ -1715,8 +1748,39 @@
       provider.provider === 'gdrive'
         ? 'Finish Google sign-in in the browser that just opened.'
         : response.authSession?.detail || `${provider.label} is waiting for confirmation.`;
-    if (response.authSession) {
+    if (response.authSession && provider.provider !== 'mega') {
       scheduleProviderSessionPoll(provider, response.authSession.id);
+    }
+  }
+
+  async function confirmMegaSignup(provider: ProviderCatalogEntry): Promise<void> {
+    const session = pendingSessionForProvider(provider.provider);
+    if (!session) {
+      errorMessage = 'Start the MEGA account creation flow first.';
+      return;
+    }
+    const draft = providerCredentialDraft(provider.provider);
+    if (draft.confirmationLink.trim() === '') {
+      errorMessage = 'Paste the MEGA confirmation link first.';
+      return;
+    }
+    integrationBusyKey = `confirm:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      const response = await connectProviderAccount({
+        provider: provider.provider,
+        mode: 'confirm-signup',
+        authSessionId: session.id,
+        credentials: {
+          confirmationLink: draft.confirmationLink.trim(),
+        },
+      });
+      await handleProviderConnectResponse(provider, response);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to confirm ${provider.label} account`;
+    } finally {
+      integrationBusyKey = null;
     }
   }
 
@@ -2116,50 +2180,99 @@
 
               {#if !provider.isConnected && provider.provider === 'mega'}
                 {@const draft = providerCredentialDraft(provider.provider)}
+                {@const pendingSession = pendingSessionForProvider(provider.provider)}
                 <div class="provider-credentials">
-                  <label class="field-block compact-field">
-                    <span>Email</span>
-                    <input
-                      class="panel-input"
-                      type="email"
-                      value={draft.email}
-                      placeholder="name@example.com"
-                      oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
-                    />
-                  </label>
-                  <label class="field-block compact-field">
-                    <span>Password</span>
-                    <input
-                      class="panel-input"
-                      type="password"
-                      value={draft.password}
-                      placeholder="MEGA password"
-                      oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
-                    />
-                  </label>
-                  <label class="field-block compact-field">
-                    <span class="toggle-only-label">
-                      <input
-                        type="checkbox"
-                        checked={draft.useMfa}
-                        onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
-                      />
-                      <span>I enabled 2-factor authentication on MEGA</span>
-                    </span>
-                  </label>
-                  {#if draft.useMfa}
+                  {#if pendingSession}
                     <label class="field-block compact-field">
-                      <span>2FA code</span>
+                      <span>Confirmation link</span>
                       <input
                         class="panel-input"
-                        type="text"
-                        value={draft.mfaCode}
-                        placeholder="6-digit code"
-                        oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                        type="url"
+                        value={draft.confirmationLink}
+                        placeholder="https://mega.nz/confirm#..."
+                        oninput={(event) => setProviderCredential(provider.provider, 'confirmationLink', (event.currentTarget as HTMLInputElement).value)}
                       />
                     </label>
+                  {:else}
+                    <div class="segmented-toggle">
+                      <button
+                        type="button"
+                        class="segmented-toggle-btn"
+                        class:active={draft.mode === 'login'}
+                        onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
+                      >
+                        Sign in
+                      </button>
+                      <button
+                        type="button"
+                        class="segmented-toggle-btn"
+                        class:active={draft.mode === 'signup'}
+                        onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
+                      >
+                        Create account
+                      </button>
+                    </div>
+                    {#if draft.mode === 'signup'}
+                      <label class="field-block compact-field">
+                        <span>Name</span>
+                        <input
+                          class="panel-input"
+                          type="text"
+                          value={draft.name}
+                          placeholder="Your name"
+                          oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
+                        />
+                      </label>
+                    {/if}
+                    <label class="field-block compact-field">
+                      <span>Email</span>
+                      <input
+                        class="panel-input"
+                        type="email"
+                        value={draft.email}
+                        placeholder="name@example.com"
+                        oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <label class="field-block compact-field">
+                      <span>Password</span>
+                      <input
+                        class="panel-input"
+                        type="password"
+                        value={draft.password}
+                        placeholder="MEGA password"
+                        oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    {#if draft.mode === 'login'}
+                      <label class="field-block compact-field">
+                        <span class="toggle-only-label">
+                          <input
+                            type="checkbox"
+                            checked={draft.useMfa}
+                            onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
+                          />
+                          <span>I enabled 2-factor authentication on MEGA</span>
+                        </span>
+                      </label>
+                    {/if}
+                    {#if draft.mode === 'login' && draft.useMfa}
+                      <label class="field-block compact-field">
+                        <span>2FA code</span>
+                        <input
+                          class="panel-input"
+                          type="text"
+                          value={draft.mfaCode}
+                          placeholder="6-digit code"
+                          oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                        />
+                      </label>
+                    {/if}
                   {/if}
                 </div>
+                {#if pendingSession}
+                  <p class="muted-copy">{pendingSession.detail}</p>
+                {/if}
               {/if}
 
               {#if provider.isConnected && provider.provider === 'github'}
@@ -2258,26 +2371,49 @@
                     onPress={() => void disconnectProvider(provider)}
                   />
                 {:else}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => void connectProvider(provider)}
-                    disabled={
-                      integrationBusyKey === `connect:${provider.provider}` ||
-                      provider.setup.status === 'needs-config' ||
-                      provider.setup.status === 'unsupported'
-                    }
-                  >
-                    <span>
-                      {integrationBusyKey === `connect:${provider.provider}`
-                        ? provider.setup.status === 'needs-install'
-                          ? 'Installing...'
-                          : 'Connecting...'
-                        : provider.provider === 'gdrive'
-                          ? 'Connect with Google'
-                          : 'Connect'}
-                    </span>
-                  </button>
+                  {#if provider.provider === 'mega' && pendingSessionForProvider(provider.provider)}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => clearProviderSession(provider.provider)}
+                      disabled={integrationBusyKey === `confirm:${provider.provider}`}
+                    >
+                      <span>Start again</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void confirmMegaSignup(provider)}
+                      disabled={integrationBusyKey === `confirm:${provider.provider}`}
+                    >
+                      <span>{integrationBusyKey === `confirm:${provider.provider}` ? 'Confirming...' : 'Confirm account'}</span>
+                    </button>
+                  {:else}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void connectProvider(provider)}
+                      disabled={
+                        integrationBusyKey === `connect:${provider.provider}` ||
+                        provider.setup.status === 'needs-config' ||
+                        provider.setup.status === 'unsupported'
+                      }
+                    >
+                      <span>
+                        {integrationBusyKey === `connect:${provider.provider}`
+                          ? provider.setup.status === 'needs-install'
+                            ? 'Installing...'
+                            : provider.provider === 'mega' && providerCredentialDraft(provider.provider).mode === 'signup'
+                              ? 'Creating...'
+                              : 'Connecting...'
+                          : provider.provider === 'gdrive'
+                            ? 'Connect with Google'
+                            : provider.provider === 'mega' && providerCredentialDraft(provider.provider).mode === 'signup'
+                              ? 'Create account'
+                              : 'Connect'}
+                      </span>
+                    </button>
+                  {/if}
                 {/if}
               </div>
             </article>
@@ -2463,50 +2599,99 @@
 
                 {#if !provider.isConnected && provider.provider === 'mega'}
                   {@const draft = providerCredentialDraft(provider.provider)}
+                  {@const pendingSession = pendingSessionForProvider(provider.provider)}
                   <div class="provider-credentials">
-                    <label class="field-block compact-field">
-                      <span>Email</span>
-                      <input
-                        class="panel-input"
-                        type="email"
-                        value={draft.email}
-                        placeholder="name@example.com"
-                        oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block compact-field">
-                      <span>Password</span>
-                      <input
-                        class="panel-input"
-                        type="password"
-                        value={draft.password}
-                        placeholder="MEGA password"
-                        oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block compact-field">
-                      <span class="toggle-only-label">
-                        <input
-                          type="checkbox"
-                          checked={draft.useMfa}
-                          onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
-                        />
-                        <span>I enabled 2-factor authentication on MEGA</span>
-                      </span>
-                    </label>
-                    {#if draft.useMfa}
+                    {#if pendingSession}
                       <label class="field-block compact-field">
-                        <span>2FA code</span>
+                        <span>Confirmation link</span>
                         <input
                           class="panel-input"
-                          type="text"
-                          value={draft.mfaCode}
-                          placeholder="6-digit code"
-                          oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                          type="url"
+                          value={draft.confirmationLink}
+                          placeholder="https://mega.nz/confirm#..."
+                          oninput={(event) => setProviderCredential(provider.provider, 'confirmationLink', (event.currentTarget as HTMLInputElement).value)}
                         />
                       </label>
+                    {:else}
+                      <div class="segmented-toggle">
+                        <button
+                          type="button"
+                          class="segmented-toggle-btn"
+                          class:active={draft.mode === 'login'}
+                          onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
+                        >
+                          Sign in
+                        </button>
+                        <button
+                          type="button"
+                          class="segmented-toggle-btn"
+                          class:active={draft.mode === 'signup'}
+                          onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
+                        >
+                          Create account
+                        </button>
+                      </div>
+                      {#if draft.mode === 'signup'}
+                        <label class="field-block compact-field">
+                          <span>Name</span>
+                          <input
+                            class="panel-input"
+                            type="text"
+                            value={draft.name}
+                            placeholder="Your name"
+                            oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
+                          />
+                        </label>
+                      {/if}
+                      <label class="field-block compact-field">
+                        <span>Email</span>
+                        <input
+                          class="panel-input"
+                          type="email"
+                          value={draft.email}
+                          placeholder="name@example.com"
+                          oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
+                        />
+                      </label>
+                      <label class="field-block compact-field">
+                        <span>Password</span>
+                        <input
+                          class="panel-input"
+                          type="password"
+                          value={draft.password}
+                          placeholder="MEGA password"
+                          oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
+                        />
+                      </label>
+                      {#if draft.mode === 'login'}
+                        <label class="field-block compact-field">
+                          <span class="toggle-only-label">
+                            <input
+                              type="checkbox"
+                              checked={draft.useMfa}
+                              onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
+                            />
+                            <span>I enabled 2-factor authentication on MEGA</span>
+                          </span>
+                        </label>
+                      {/if}
+                      {#if draft.mode === 'login' && draft.useMfa}
+                        <label class="field-block compact-field">
+                          <span>2FA code</span>
+                          <input
+                            class="panel-input"
+                            type="text"
+                            value={draft.mfaCode}
+                            placeholder="6-digit code"
+                            oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                          />
+                        </label>
+                      {/if}
                     {/if}
                   </div>
+                  {#if pendingSession}
+                    <p class="muted-copy">{pendingSession.detail}</p>
+                  {/if}
                 {/if}
 
                 {#if provider.isConnected && provider.provider === 'github'}
@@ -2585,26 +2770,49 @@
                       <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create share'}</span>
                     </button>
                   {:else}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void connectProvider(provider)}
-                      disabled={
-                        integrationBusyKey === `connect:${provider.provider}` ||
-                        provider.setup.status === 'needs-config' ||
-                        provider.setup.status === 'unsupported'
-                      }
-                    >
-                      <span>
-                        {integrationBusyKey === `connect:${provider.provider}`
-                          ? provider.setup.status === 'needs-install'
-                            ? 'Installing...'
-                            : 'Connecting...'
-                          : provider.provider === 'gdrive'
-                            ? 'Connect with Google'
-                            : 'Connect'}
-                      </span>
-                    </button>
+                    {#if provider.provider === 'mega' && pendingSessionForProvider(provider.provider)}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => clearProviderSession(provider.provider)}
+                        disabled={integrationBusyKey === `confirm:${provider.provider}`}
+                      >
+                        <span>Start again</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => void confirmMegaSignup(provider)}
+                        disabled={integrationBusyKey === `confirm:${provider.provider}`}
+                      >
+                        <span>{integrationBusyKey === `confirm:${provider.provider}` ? 'Confirming...' : 'Confirm account'}</span>
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => void connectProvider(provider)}
+                        disabled={
+                          integrationBusyKey === `connect:${provider.provider}` ||
+                          provider.setup.status === 'needs-config' ||
+                          provider.setup.status === 'unsupported'
+                        }
+                      >
+                        <span>
+                          {integrationBusyKey === `connect:${provider.provider}`
+                            ? provider.setup.status === 'needs-install'
+                              ? 'Installing...'
+                              : provider.provider === 'mega' && providerCredentialDraft(provider.provider).mode === 'signup'
+                                ? 'Creating...'
+                                : 'Connecting...'
+                            : provider.provider === 'gdrive'
+                              ? 'Connect with Google'
+                              : provider.provider === 'mega' && providerCredentialDraft(provider.provider).mode === 'signup'
+                                ? 'Create account'
+                                : 'Connect'}
+                        </span>
+                      </button>
+                    {/if}
                   {/if}
                 </div>
               </article>

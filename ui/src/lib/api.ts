@@ -1170,14 +1170,17 @@ export async function listProviderAccounts(): Promise<ProviderAccountsResponse> 
 
 export async function connectProviderAccount(input: {
   provider: string;
+  mode?: 'login' | 'signup' | 'confirm-signup';
   label?: string;
   email?: string;
   preferred?: boolean;
   authSessionId?: string;
   credentials?: {
+    name?: string;
     email?: string;
     password?: string;
     mfaCode?: string;
+    confirmationLink?: string;
   };
 }): Promise<ConnectProviderAccountResponse> {
   return apiRequest<ConnectProviderAccountResponse>('/integrations/accounts/connect', {
