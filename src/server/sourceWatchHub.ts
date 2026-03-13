@@ -1,8 +1,8 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'path';
 import {
-  discoverNearbytesScanRoots,
-  type NearbytesScanRoot,
+  discoverNearbytesSources,
+  type DiscoveredNearbytesSource,
 } from '../config/sourceDiscovery.js';
 import type { RootProvider } from '../config/roots.js';
 
@@ -30,6 +30,7 @@ interface WatchPlan {
 }
 
 interface WatchEntry {
+  readonly id: number;
   readonly watcher: FSWatcher;
   readonly ready: SourceWatchReady;
   readonly subscribers: Set<(update: SourceWatchUpdate) => void>;
@@ -38,19 +39,21 @@ interface WatchEntry {
   debounceTimer: ReturnType<typeof setTimeout> | null;
 }
 
+let nextSourceWatchEntryId = 1;
+
 export class SourceWatchHub {
-  private readonly rootsResolver: () => Promise<NearbytesScanRoot[]>;
+  private readonly sourcesResolver: () => Promise<DiscoveredNearbytesSource[]>;
   private readonly debounceMs: number;
   private readonly watchDepth: number;
   private entry: WatchEntry | null = null;
   private readonly quietWindowMs: number;
 
   constructor(options?: {
-    readonly rootsResolver?: () => Promise<NearbytesScanRoot[]>;
+    readonly sourcesResolver?: () => Promise<DiscoveredNearbytesSource[]>;
     readonly debounceMs?: number;
     readonly watchDepth?: number;
   }) {
-    this.rootsResolver = options?.rootsResolver ?? (() => discoverNearbytesScanRoots());
+    this.sourcesResolver = options?.sourcesResolver ?? (() => discoverNearbytesSources());
     this.debounceMs = options?.debounceMs ?? 300;
     this.watchDepth = options?.watchDepth ?? 3;
     this.quietWindowMs = Math.max(this.debounceMs, 200);
@@ -71,6 +74,9 @@ export class SourceWatchHub {
     }
 
     if (this.entry) {
+      console.log(
+        `[source-watch] reusing watcher #${this.entry.id} for subscriber; subscribers=${this.entry.subscribers.size + 1}`
+      );
       this.entry.subscribers.add(onUpdate);
       this.entry.errorSubscribers.add(onError);
       return {
@@ -90,6 +96,7 @@ export class SourceWatchHub {
     });
 
     const entry: WatchEntry = {
+      id: nextSourceWatchEntryId++,
       watcher,
       ready: plan.ready,
       subscribers: new Set([onUpdate]),
@@ -97,6 +104,10 @@ export class SourceWatchHub {
       pendingPaths: new Set(),
       debounceTimer: null,
     };
+
+    console.log(
+      `[source-watch] created watcher #${entry.id}; targets=${JSON.stringify(plan.targets)} depth=${this.watchDepth}`
+    );
 
     watcher.on('all', (change, changedPath) => {
       if (!isSupportedChange(change)) {
@@ -126,9 +137,14 @@ export class SourceWatchHub {
 
     watcher.on('error', (error) => {
       const asError = error instanceof Error ? error : new Error(String(error));
+      console.warn(`[source-watch] watcher #${entry.id} error: ${asError.message}`);
       for (const subscriber of entry.errorSubscribers) {
         subscriber(asError);
       }
+    });
+
+    watcher.on('ready', () => {
+      console.log(`[source-watch] watcher #${entry.id} ready`);
     });
 
     this.entry = entry;
@@ -149,6 +165,9 @@ export class SourceWatchHub {
 
     entry.subscribers.delete(onUpdate);
     entry.errorSubscribers.delete(onError);
+    console.log(
+      `[source-watch] unsubscribe watcher #${entry.id}; remaining-subscribers=${entry.subscribers.size}`
+    );
     if (entry.subscribers.size > 0) {
       return;
     }
@@ -158,13 +177,19 @@ export class SourceWatchHub {
       entry.debounceTimer = null;
     }
     this.entry = null;
-    void entry.watcher.close();
+    const closeStartedAt = Date.now();
+    console.log(`[source-watch] closing watcher #${entry.id}`);
+    void entry.watcher.close().then(() => {
+      console.log(
+        `[source-watch] closed watcher #${entry.id} in ${Date.now() - closeStartedAt}ms`
+      );
+    });
   }
 
   private async buildWatchPlan(): Promise<WatchPlan> {
-    const roots = await this.rootsResolver();
-    const targets = uniquePaths(roots.map((root) => root.path));
-    const providers = uniqueProviders(roots.map((root) => root.provider));
+    const sources = await this.sourcesResolver();
+    const targets = uniquePaths(sources.map((source) => source.path));
+    const providers = uniqueProviders(sources.map((source) => source.provider));
     return {
       ready: {
         autoUpdate: targets.length > 0,

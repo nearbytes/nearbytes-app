@@ -18,7 +18,7 @@ describe('SourceWatchHub', () => {
     const hub = new SourceWatchHub({
       debounceMs: 120,
       watchDepth: 4,
-      rootsResolver: async () => [{ provider: 'dropbox', path: root }],
+      sourcesResolver: async () => [{ provider: 'dropbox', path: root, markerFile: path.join(root, 'Nearbytes.html'), autoUpdate: true, sourceType: 'marker' }],
     });
 
     const updates: Array<{ changedPaths: string[] }> = [];
@@ -47,7 +47,7 @@ describe('SourceWatchHub', () => {
 
   it('reports unsupported mode when no local scan roots are available', async () => {
     const hub = new SourceWatchHub({
-      rootsResolver: async () => [],
+      sourcesResolver: async () => [],
     });
 
     const subscription = await hub.subscribe(() => {

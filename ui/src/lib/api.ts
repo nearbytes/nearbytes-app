@@ -1307,9 +1307,11 @@ export async function openJoinLink(input: {
 
 export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnection {
   const abortController = new AbortController();
+  const connectionId = Math.random().toString(36).slice(2, 8);
 
   void (async () => {
     try {
+      console.log(`[watch-sources:${connectionId}] opening`);
       const runtimeConfig = await getRuntimeConfig();
       const headers = new Headers();
       if (runtimeConfig.desktopToken.trim().length > 0) {
@@ -1331,6 +1333,8 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
         throw new Error('Source watch stream is not available');
       }
 
+      console.log(`[watch-sources:${connectionId}] opened`);
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -1350,12 +1354,18 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
         }
       }
 
+      console.log(`[watch-sources:${connectionId}] stream ended`);
       handlers.onClose?.();
     } catch (error) {
       if (abortController.signal.aborted) {
+        console.log(`[watch-sources:${connectionId}] aborted`);
         handlers.onClose?.();
         return;
       }
+      console.warn(
+        `[watch-sources:${connectionId}] error`,
+        error instanceof Error ? error.message : String(error)
+      );
       handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
       handlers.onClose?.();
     }
@@ -1363,6 +1373,7 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
 
   return {
     close() {
+      console.log(`[watch-sources:${connectionId}] close requested`);
       abortController.abort();
     },
   };
@@ -1373,9 +1384,11 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
  */
 export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWatchConnection {
   const abortController = new AbortController();
+  const connectionId = Math.random().toString(36).slice(2, 8);
 
   void (async () => {
     try {
+      console.log(`[watch-volume:${connectionId}] opening`);
       const runtimeConfig = await getRuntimeConfig();
       const headers = new Headers(createAuthHeaders(auth));
       if (runtimeConfig.desktopToken.trim().length > 0) {
@@ -1397,6 +1410,8 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
         throw new Error('Watch stream is not available');
       }
 
+      console.log(`[watch-volume:${connectionId}] opened`);
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -1416,12 +1431,18 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
         }
       }
 
+      console.log(`[watch-volume:${connectionId}] stream ended`);
       handlers.onClose?.();
     } catch (error) {
       if (abortController.signal.aborted) {
+        console.log(`[watch-volume:${connectionId}] aborted`);
         handlers.onClose?.();
         return;
       }
+      console.warn(
+        `[watch-volume:${connectionId}] error`,
+        error instanceof Error ? error.message : String(error)
+      );
       handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
       handlers.onClose?.();
     }
@@ -1429,6 +1450,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
 
   return {
     close() {
+      console.log(`[watch-volume:${connectionId}] close requested`);
       abortController.abort();
     },
   };

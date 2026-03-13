@@ -39,21 +39,42 @@ interface DesktopRuntimeConfig {
   readonly isDesktop: true;
 }
 
+interface RendererProfileState {
+  reason: string | null;
+  stopTimer: ReturnType<typeof setTimeout> | null;
+}
+
+interface DiagnosticsState {
+  metricsTimer: ReturnType<typeof setInterval> | null;
+  isShuttingDown: boolean;
+}
+
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
 const state: {
   window: BrowserWindow | null;
   runtime: RuntimeHandle | null;
   config: DesktopRuntimeConfig | null;
+  rendererProfile: RendererProfileState;
+  diagnostics: DiagnosticsState;
 } = {
   window: null,
   runtime: null,
   config: null,
+  rendererProfile: {
+    reason: null,
+    stopTimer: null,
+  },
+  diagnostics: {
+    metricsTimer: null,
+    isShuttingDown: false,
+  },
 };
 
 const desktopToken = generateDesktopApiToken();
 const devUiUrl = process.env.NEARBYTES_ELECTRON_DEV_SERVER_URL?.trim() ?? '';
 const isDev = devUiUrl.length > 0;
+const enableRendererCpuProfile = process.env.NEARBYTES_RENDERER_PROFILE === '1';
 const enableAutoUpdater = !isDev && process.env.NEARBYTES_DISABLE_AUTO_UPDATE !== '1';
 const maxUploadBytes = parseMaxUploadBytes(process.env.NEARBYTES_MAX_UPLOAD_MB);
 const sessionTtlMs = parsePositiveInt(
@@ -67,7 +88,12 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  void prepareDiagnosticsShutdown('before-quit');
   void shutdown();
+});
+
+app.on('activate', () => {
+  void ensureDesktopWindow();
 });
 
 app.whenReady().then(async () => {
@@ -79,6 +105,14 @@ app.whenReady().then(async () => {
     await shutdown();
     app.quit();
   }
+});
+
+process.once('SIGINT', () => {
+  void handleTerminationSignal('SIGINT', 130);
+});
+
+process.once('SIGTERM', () => {
+  void handleTerminationSignal('SIGTERM', 143);
 });
 
 async function startDesktop(): Promise<void> {
@@ -122,6 +156,7 @@ async function startDesktop(): Promise<void> {
   });
 
   registerIpc();
+  startMetricsSampling();
   await createWindow(apiBaseUrl);
 }
 
@@ -254,6 +289,7 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     throw new Error('Could not locate Electron preload script (preload.cjs).');
   }
   const window = new BrowserWindow({
+    show: false,
     width: 1400,
     height: 900,
     minWidth: 980,
@@ -267,6 +303,19 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     },
   });
   state.window = window;
+  window.on('closed', () => {
+    if (state.window === window) {
+      state.window = null;
+    }
+  });
+  window.on('unresponsive', () => {
+    console.error('[desktop] window became unresponsive');
+    void stopRendererCpuProfile(window, 'unresponsive');
+  });
+  window.once('ready-to-show', () => {
+    console.log('[desktop] window ready-to-show');
+    presentWindow(window);
+  });
 
   if (isDev) {
     await window.webContents.session.clearStorageData({
@@ -284,6 +333,22 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     void shell.openExternal(url);
     return { action: 'deny' };
   });
+  window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    console.log(`[renderer:${level}] ${sourceId}:${line} ${message}`);
+  });
+  window.webContents.on('dom-ready', () => {
+    console.log('[desktop] renderer dom-ready');
+  });
+  window.webContents.on('did-finish-load', () => {
+    console.log('[desktop] renderer did-finish-load');
+  });
+  window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error(`[desktop] renderer did-fail-load ${errorCode} ${errorDescription} ${validatedURL}`);
+  });
+  window.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[desktop] renderer process gone', details);
+    void stopRendererCpuProfile(window, `render-process-gone:${details.reason}`);
+  });
 
   window.webContents.on('will-navigate', (event, url) => {
     if (!isAllowedOrigin(url, allowedOrigins)) {
@@ -297,12 +362,41 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     dialog.showErrorBox('Nearbytes desktop UI failed to load', message);
   });
   window.webContents.once('did-finish-load', () => {
+    presentWindow(window);
+    void installRendererDiagnostics(window);
+    if (enableRendererCpuProfile) {
+      void startRendererCpuProfile(window);
+    }
     void assertRuntimeBridge(window);
   });
 
   if (enableAutoUpdater) {
     setupAutoUpdater(window, true);
   }
+}
+
+async function ensureDesktopWindow(): Promise<void> {
+  if (state.window && !state.window.isDestroyed()) {
+    presentWindow(state.window);
+    return;
+  }
+  if (!state.config) {
+    return;
+  }
+  await createWindow(state.config.apiBaseUrl);
+}
+
+function presentWindow(window: BrowserWindow): void {
+  if (window.isDestroyed()) {
+    return;
+  }
+  if (window.isMinimized()) {
+    window.restore();
+  }
+  if (!window.isVisible()) {
+    window.show();
+  }
+  window.focus();
 }
 
 function applyDesktopIcon(): void {
@@ -328,6 +422,7 @@ function resolveDesktopIconPath(): string | null {
 }
 
 async function shutdown(): Promise<void> {
+  stopMetricsSampling();
   if (state.runtime) {
     await state.runtime.stop();
     state.runtime = null;
@@ -479,5 +574,358 @@ async function assertRuntimeBridge(window: BrowserWindow): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox('Nearbytes desktop runtime error', message);
     app.quit();
+  }
+}
+
+async function installRendererDiagnostics(window: BrowserWindow): Promise<void> {
+  try {
+    await window.webContents.executeJavaScript(
+      `(() => {
+        if (window.__nearbytesRendererDiagnosticsInstalled) {
+          return;
+        }
+        window.__nearbytesRendererDiagnosticsInstalled = true;
+
+        const slowHandlerThresholdMs = 32;
+        const stallThresholdMs = 150;
+        const frameGapThresholdMs = 250;
+        const trackedEvents = new Set([
+          'mousemove',
+          'mouseover',
+          'mouseout',
+          'mouseenter',
+          'mouseleave',
+          'pointermove',
+          'pointerover',
+          'pointerout',
+          'pointerenter',
+          'pointerleave',
+          'wheel',
+        ]);
+        const listenerWrappers = new WeakMap();
+        let lastInputSummary = 'none';
+        let lastInputAt = performance.now();
+        let lastFrameAt = performance.now();
+
+        const describeTarget = (target) => {
+          try {
+            if (target === window) {
+              return 'window';
+            }
+            if (target === document) {
+              return 'document';
+            }
+            if (target instanceof Element) {
+              const tag = target.tagName.toLowerCase();
+              const id = target.id ? '#' + target.id : '';
+              const classes =
+                typeof target.className === 'string' && target.className.trim()
+                  ? '.' + target.className.trim().split(/\\s+/).slice(0, 3).join('.')
+                  : '';
+              return tag + id + classes;
+            }
+            if (target && typeof target === 'object' && 'constructor' in target && target.constructor) {
+              return target.constructor.name || 'object';
+            }
+          } catch {}
+          return 'unknown';
+        };
+
+        const serializeReason = (value) => {
+          if (value instanceof Error) {
+            return {
+              name: value.name,
+              message: value.message,
+              stack: value.stack || '',
+            };
+          }
+          if (typeof value === 'string') {
+            return value;
+          }
+          try {
+            return JSON.parse(JSON.stringify(value));
+          } catch {
+            return String(value);
+          }
+        };
+
+        const inputCapture = (event) => {
+          lastInputAt = performance.now();
+          lastInputSummary = event.type + ' on ' + describeTarget(event.target);
+        };
+        trackedEvents.forEach((type) => {
+          window.addEventListener(type, inputCapture, { capture: true, passive: true });
+        });
+
+        const originalAddEventListener = EventTarget.prototype.addEventListener;
+        const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
+        const optionsKey = (options) =>
+          typeof options === 'boolean' ? String(options) : String(Boolean(options && options.capture));
+
+        EventTarget.prototype.addEventListener = function patchedAddEventListener(type, listener, options) {
+          if (!listener || !trackedEvents.has(type)) {
+            return originalAddEventListener.call(this, type, listener, options);
+          }
+
+          let wrappersByKey = listenerWrappers.get(listener);
+          if (!wrappersByKey) {
+            wrappersByKey = new Map();
+            listenerWrappers.set(listener, wrappersByKey);
+          }
+
+          const wrapperKey = type + ':' + optionsKey(options);
+          if (!wrappersByKey.has(wrapperKey)) {
+            const targetLabel = describeTarget(this);
+            const wrapFunction = (fn, thisArg) =>
+              function wrappedEventListener(...args) {
+                const startedAt = performance.now();
+                try {
+                  return fn.apply(thisArg, args);
+                } finally {
+                  const elapsedMs = performance.now() - startedAt;
+                  if (elapsedMs >= slowHandlerThresholdMs) {
+                    console.warn(
+                      '[diag] slow-event-handler',
+                      JSON.stringify({
+                        type,
+                        elapsedMs: Number(elapsedMs.toFixed(1)),
+                        target: targetLabel,
+                        listener:
+                          typeof fn === 'function' && fn.name
+                            ? fn.name
+                            : typeof thisArg?.handleEvent === 'function' && thisArg.handleEvent.name
+                              ? thisArg.handleEvent.name
+                              : 'anonymous',
+                      })
+                    );
+                  }
+                }
+              };
+
+            const wrapped =
+              typeof listener === 'function'
+                ? wrapFunction(listener, this)
+                : typeof listener.handleEvent === 'function'
+                  ? { handleEvent: wrapFunction(listener.handleEvent, listener) }
+                  : listener;
+
+            wrappersByKey.set(wrapperKey, wrapped);
+          }
+
+          return originalAddEventListener.call(this, type, wrappersByKey.get(wrapperKey), options);
+        };
+
+        EventTarget.prototype.removeEventListener = function patchedRemoveEventListener(type, listener, options) {
+          if (!listener || !trackedEvents.has(type)) {
+            return originalRemoveEventListener.call(this, type, listener, options);
+          }
+          const wrappersByKey = listenerWrappers.get(listener);
+          const wrapped = wrappersByKey?.get(type + ':' + optionsKey(options)) ?? listener;
+          return originalRemoveEventListener.call(this, type, wrapped, options);
+        };
+
+        window.addEventListener('error', (event) => {
+          console.error(
+            '[diag] window-error',
+            JSON.stringify({
+              message: event.message,
+              filename: event.filename,
+              lineno: event.lineno,
+              colno: event.colno,
+              error: serializeReason(event.error),
+            })
+          );
+        });
+
+        window.addEventListener('unhandledrejection', (event) => {
+          console.error(
+            '[diag] unhandled-rejection',
+            JSON.stringify({
+              reason: serializeReason(event.reason),
+            })
+          );
+        });
+
+        if (typeof PerformanceObserver === 'function') {
+          try {
+            const observer = new PerformanceObserver((list) => {
+              for (const entry of list.getEntries()) {
+                console.warn(
+                  '[diag] long-task',
+                  JSON.stringify({
+                    name: entry.name,
+                    durationMs: Number(entry.duration.toFixed(1)),
+                    startMs: Number(entry.startTime.toFixed(1)),
+                    lastInputSummary,
+                    sinceLastInputMs: Number((performance.now() - lastInputAt).toFixed(1)),
+                  })
+                );
+              }
+            });
+            observer.observe({ entryTypes: ['longtask'] });
+          } catch (error) {
+            console.warn('[diag] failed-to-install-longtask-observer', String(error));
+          }
+        }
+
+        let lastTickAt = performance.now();
+        setInterval(() => {
+          const now = performance.now();
+          const driftMs = now - lastTickAt - 1000;
+          if (driftMs >= stallThresholdMs) {
+            console.warn(
+              '[diag] main-thread-stall',
+              JSON.stringify({
+                driftMs: Number(driftMs.toFixed(1)),
+                lastInputSummary,
+                sinceLastInputMs: Number((now - lastInputAt).toFixed(1)),
+              })
+            );
+          }
+          lastTickAt = now;
+        }, 1000);
+
+        const monitorFrames = (timestamp) => {
+          const gapMs = timestamp - lastFrameAt;
+          if (gapMs >= frameGapThresholdMs) {
+            console.warn(
+              '[diag] frame-gap',
+              JSON.stringify({
+                gapMs: Number(gapMs.toFixed(1)),
+                lastInputSummary,
+                sinceLastInputMs: Number((performance.now() - lastInputAt).toFixed(1)),
+              })
+            );
+          }
+          lastFrameAt = timestamp;
+          window.requestAnimationFrame(monitorFrames);
+        };
+        window.requestAnimationFrame(monitorFrames);
+
+        console.log('[diag] renderer diagnostics installed');
+      })();`,
+      true
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    console.error(`[desktop] failed to install renderer diagnostics: ${message}`);
+  }
+}
+
+async function startRendererCpuProfile(window: BrowserWindow): Promise<void> {
+  if (!isDev) {
+    return;
+  }
+  if (window.webContents.isDestroyed() || state.rendererProfile.reason !== null) {
+    return;
+  }
+  try {
+    if (!window.webContents.debugger.isAttached()) {
+      window.webContents.debugger.attach();
+    }
+    await window.webContents.debugger.sendCommand('Profiler.enable');
+    await window.webContents.debugger.sendCommand('Profiler.start');
+    state.rendererProfile.reason = 'running';
+    if (state.rendererProfile.stopTimer) {
+      clearTimeout(state.rendererProfile.stopTimer);
+    }
+    state.rendererProfile.stopTimer = setTimeout(() => {
+      void stopRendererCpuProfile(window, 'startup-sample');
+    }, 60000);
+    console.log('[desktop] renderer CPU profile started');
+  } catch (error) {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    console.error(`[desktop] failed to start renderer CPU profile: ${message}`);
+  }
+}
+
+async function stopRendererCpuProfile(window: BrowserWindow, reason: string): Promise<void> {
+  if (state.rendererProfile.reason === null || state.rendererProfile.reason === reason) {
+    return;
+  }
+  state.rendererProfile.reason = reason;
+  if (state.rendererProfile.stopTimer) {
+    clearTimeout(state.rendererProfile.stopTimer);
+    state.rendererProfile.stopTimer = null;
+  }
+  if (window.webContents.isDestroyed() || !window.webContents.debugger.isAttached()) {
+    return;
+  }
+  try {
+    const profileResult = (await window.webContents.debugger.sendCommand('Profiler.stop')) as {
+      profile: unknown;
+    };
+    await window.webContents.debugger.sendCommand('Profiler.disable');
+    window.webContents.debugger.detach();
+    const diagnosticsDir = path.join(app.getPath('userData'), 'diagnostics');
+    await fs.mkdir(diagnosticsDir, { recursive: true });
+    const outputPath = path.join(
+      diagnosticsDir,
+      `renderer-profile-${Date.now()}-${sanitizeFilenameSegment(reason)}.cpuprofile`
+    );
+    await fs.writeFile(outputPath, `${JSON.stringify(profileResult.profile, null, 2)}\n`, 'utf8');
+    console.log(`[desktop] renderer CPU profile saved to ${outputPath}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    console.error(`[desktop] failed to stop renderer CPU profile: ${message}`);
+  }
+}
+
+function sanitizeFilenameSegment(value: string): string {
+  return value.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'profile';
+}
+
+function startMetricsSampling(): void {
+  if (!isDev || state.diagnostics.metricsTimer) {
+    return;
+  }
+  state.diagnostics.metricsTimer = setInterval(() => {
+    try {
+      const metrics = app.getAppMetrics().map((entry) => ({
+        pid: entry.pid,
+        type: entry.type,
+        cpuPercent: Number(entry.cpu.percentCPUUsage.toFixed(1)),
+        idleWakeupsPerSecond:
+          typeof entry.cpu.idleWakeupsPerSecond === 'number'
+            ? Number(entry.cpu.idleWakeupsPerSecond.toFixed(1))
+            : null,
+        memoryMb:
+          typeof entry.memory?.workingSetSize === 'number'
+            ? Number((entry.memory.workingSetSize / (1024 * 1024)).toFixed(1))
+            : null,
+      }));
+      console.log(`[desktop] app-metrics ${JSON.stringify(metrics)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[desktop] failed to sample app metrics: ${message}`);
+    }
+  }, 1000);
+}
+
+function stopMetricsSampling(): void {
+  if (state.diagnostics.metricsTimer) {
+    clearInterval(state.diagnostics.metricsTimer);
+    state.diagnostics.metricsTimer = null;
+  }
+}
+
+async function prepareDiagnosticsShutdown(reason: string): Promise<void> {
+  if (state.diagnostics.isShuttingDown) {
+    return;
+  }
+  state.diagnostics.isShuttingDown = true;
+  stopMetricsSampling();
+  const window = state.window;
+  if (window && !window.isDestroyed()) {
+    await stopRendererCpuProfile(window, reason);
+  }
+}
+
+async function handleTerminationSignal(signal: 'SIGINT' | 'SIGTERM', exitCode: number): Promise<void> {
+  console.log(`[desktop] received ${signal}, flushing diagnostics`);
+  try {
+    await prepareDiagnosticsShutdown(signal.toLowerCase());
+  } finally {
+    process.exit(exitCode);
   }
 }

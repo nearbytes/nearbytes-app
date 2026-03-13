@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { app } from 'electron';
 import { mkdir, readFile, rename, writeFile } from 'fs/promises';
 import path from 'path';
@@ -42,7 +43,7 @@ export async function writeDesktopUiState(nextState: DesktopUiState): Promise<vo
     ...nextState,
   };
   const filePath = uiStatePath();
-  const tempPath = `${filePath}.tmp`;
+  const tempPath = `${filePath}.${randomUUID()}.tmp`;
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(tempPath, JSON.stringify(mergedState, null, 2), 'utf8');
   await rename(tempPath, filePath);

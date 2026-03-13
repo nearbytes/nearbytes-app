@@ -32,11 +32,14 @@ interface WatchPlan {
 }
 
 interface WatchEntry {
+  readonly id: number;
   readonly watcher: FSWatcher;
   readonly includePrefixes: string[];
   readonly subscribers: Set<(update: VolumeWatchUpdate) => void>;
   readonly errorSubscribers: Set<(error: Error) => void>;
 }
+
+let nextVolumeWatchEntryId = 1;
 
 /**
  * Shared hub that broadcasts per-volume filesystem updates to active subscribers.
@@ -66,6 +69,9 @@ export class VolumeWatchHub {
 
     const existing = this.entries.get(volumeId);
     if (existing) {
+      console.log(
+        `[volume-watch] reusing watcher #${existing.id} for volume=${volumeId}; subscribers=${existing.subscribers.size + 1}`
+      );
       existing.subscribers.add(onUpdate);
       existing.errorSubscribers.add(onError);
       return {
@@ -84,11 +90,16 @@ export class VolumeWatchHub {
     });
 
     const entry: WatchEntry = {
+      id: nextVolumeWatchEntryId++,
       watcher,
       includePrefixes: plan.includePrefixes,
       subscribers: new Set([onUpdate]),
       errorSubscribers: new Set([onError]),
     };
+
+    console.log(
+      `[volume-watch] created watcher #${entry.id} for volume=${volumeId}; targets=${JSON.stringify(plan.targets)} includePrefixes=${JSON.stringify(plan.includePrefixes)}`
+    );
 
     watcher.on('all', (change, changedPath) => {
       if (!isSupportedChange(change)) {
@@ -111,9 +122,14 @@ export class VolumeWatchHub {
 
     watcher.on('error', (error) => {
       const asError = error instanceof Error ? error : new Error(String(error));
+      console.warn(`[volume-watch] watcher #${entry.id} error for volume=${volumeId}: ${asError.message}`);
       for (const subscriber of entry.errorSubscribers) {
         subscriber(asError);
       }
+    });
+
+    watcher.on('ready', () => {
+      console.log(`[volume-watch] watcher #${entry.id} ready for volume=${volumeId}`);
     });
 
     this.entries.set(volumeId, entry);
@@ -136,12 +152,21 @@ export class VolumeWatchHub {
 
     entry.subscribers.delete(onUpdate);
     entry.errorSubscribers.delete(onError);
+    console.log(
+      `[volume-watch] unsubscribe watcher #${entry.id} for volume=${volumeId}; remaining-subscribers=${entry.subscribers.size}`
+    );
     if (entry.subscribers.size > 0) {
       return;
     }
 
     this.entries.delete(volumeId);
-    void entry.watcher.close();
+    const closeStartedAt = Date.now();
+    console.log(`[volume-watch] closing watcher #${entry.id} for volume=${volumeId}`);
+    void entry.watcher.close().then(() => {
+      console.log(
+        `[volume-watch] closed watcher #${entry.id} for volume=${volumeId} in ${Date.now() - closeStartedAt}ms`
+      );
+    });
   }
 
   private buildWatchPlan(volumeId: string): WatchPlan {
