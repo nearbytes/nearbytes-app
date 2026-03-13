@@ -10,7 +10,7 @@ Nearbytes is a content-addressed storage system that provides:
 
 - **Content-addressed storage**: Data identified by SHA-256 hash
 - **End-to-end encryption**: AES-256-GCM for data, ECDSA P-256 for signatures
-- **Immutable event logs**: Signed events that cannot be modified
+- **Immutable event logs**: Signed events streams that give rise to log-based immutability 
 - **Channel-based organization**: Each channel identified by a public key
 - **Deterministic key derivation**: Channels recreated from secrets
 
