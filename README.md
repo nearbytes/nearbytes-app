@@ -1,6 +1,6 @@
-# NearBytes v1.0
+# The Nearbytes app
 
-A cryptographic protocol for storing and sharing immutable data collections with end-to-end encryption. See https://github.com/nearbytes/community for a quick introduction and more pointers to the initiative.
+Nearbytes is a cryptographic protocol for storing and sharing mutable data collections with end-to-end encryption. See https://github.com/nearbytes/community for a quick introduction and more pointers to the initiative.
 
 Repository note: the first version of this repo was created as [GabeGiancarlo/Nearbytes](https://github.com/GabeGiancarlo/Nearbytes) and copied on March 12, 2026.
 
