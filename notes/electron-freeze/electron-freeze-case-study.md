@@ -1,14 +1,12 @@
 # Case Study: Hunting an Electron Freeze
 
-(written by GPT-5.4)
-
 ## Summary
 
 This note documents a real debugging session in the Nearbytes desktop app. The visible symptom looked like a classic GUI/rendering problem: the Electron app opened, the browser version worked, but the desktop app beachballed and the pointer turned into a spinner when the mouse moved over the app.
 
 The actual root cause was not a renderer mouse handler at all. The Electron **browser/main process** was being overloaded by recursive filesystem watchers created for huge cloud-storage roots such as Dropbox, iCloud Drive, and MEGA. This led to repeated `EMFILE: too many open files, watch` errors and AppKit/FSEvents pressure severe enough to make the desktop app appear frozen.
 
-If you want a more narrative version for students, see: [A Short Story: The Electron Freeze](./electron-freeze-story.md)
+If you want a more narrative version, see: [A Short Story: The Electron Freeze](./electron-freeze-story.md)
 
 ## Lab Starting Point
 

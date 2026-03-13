@@ -1,8 +1,12 @@
 # A Short Story: The Electron Freeze
 
+If you want the same material in a scene-based format, see: [A Short Screenplay: The Electron Freeze](./electron-freeze-story-screenplay.md)
+
 It started like the kind of bug that makes everyone slightly overconfident.
 
 The browser version of the app worked. The Electron app did not. The icon appeared in the dock, the local web server was clearly running, and yet the desktop app would beachball, freeze, or act as if it had slipped into some half-real half-broken state. On the surface, it looked like a frontend bug. A mouse bug, maybe. A window bug. Something in the renderer. Something visual.
+
+The repo already carried the fingerprints of the people who had built it: Gabe had implemented the Nearbytes primitives, Vincenzo had built the Electron app around them, and Alexander was now testing the system in a different environment.
 
 Alexander watched the app and described what seemed obvious: the problem showed up when interacting with the Electron window. That made the first theory almost irresistible. Somewhere in the UI, something had to be choking.
 

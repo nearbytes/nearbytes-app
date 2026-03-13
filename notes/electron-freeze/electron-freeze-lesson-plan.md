@@ -52,14 +52,14 @@ Use this exact commit:
 
 ## Files You May Want Open
 
-- `notes/electron-freeze-case-study.md`
-- `notes/electron-freeze-step-1-startup-deterministic.md`
-- `notes/electron-freeze-step-2-window-lifecycle.md`
-- `notes/electron-freeze-step-3-renderer-console-and-diagnostics.md`
-- `notes/electron-freeze-step-4-process-metrics.md`
-- `notes/electron-freeze-step-5-native-sampling.md`
-- `notes/electron-freeze-step-6-codebase-search-watchers.md`
-- `notes/electron-freeze-step-7-watch-lifecycle-and-fix.md`
+- `./electron-freeze-case-study.md`
+- `./electron-freeze-step-1-startup-deterministic.md`
+- `./electron-freeze-step-2-window-lifecycle.md`
+- `./electron-freeze-step-3-renderer-console-and-diagnostics.md`
+- `./electron-freeze-step-4-process-metrics.md`
+- `./electron-freeze-step-5-native-sampling.md`
+- `./electron-freeze-step-6-codebase-search-watchers.md`
+- `./electron-freeze-step-7-watch-lifecycle-and-fix.md`
 
 ## Instructor Preparation
 
@@ -116,7 +116,7 @@ Most of these are reasonable first guesses. The whole lesson is about how to avo
 
 Reference:
 
-- `notes/electron-freeze-step-1-startup-deterministic.md`
+- `./electron-freeze-step-1-startup-deterministic.md`
 
 ### Run
 
@@ -141,7 +141,7 @@ Reproducibility comes before explanation.
 
 Reference:
 
-- `notes/electron-freeze-step-2-window-lifecycle.md`
+- `./electron-freeze-step-2-window-lifecycle.md`
 
 ### Show
 
@@ -170,7 +170,7 @@ Lifecycle instrumentation eliminates whole families of bugs quickly.
 
 Reference:
 
-- `notes/electron-freeze-step-3-renderer-console-and-diagnostics.md`
+- `./electron-freeze-step-3-renderer-console-and-diagnostics.md`
 
 ### Show
 
@@ -203,7 +203,7 @@ Negative evidence is evidence.
 
 Reference:
 
-- `notes/electron-freeze-step-4-process-metrics.md`
+- `./electron-freeze-step-4-process-metrics.md`
 
 ### Show
 
@@ -233,7 +233,7 @@ A symptom in the UI does not imply causation in the renderer.
 
 Reference:
 
-- `notes/electron-freeze-step-5-native-sampling.md`
+- `./electron-freeze-step-5-native-sampling.md`
 
 ### Show
 
@@ -273,7 +273,7 @@ When one layer goes quiet, drop down a layer.
 
 Reference:
 
-- `notes/electron-freeze-step-6-codebase-search-watchers.md`
+- `./electron-freeze-step-6-codebase-search-watchers.md`
 
 ### Run
 
@@ -304,7 +304,7 @@ Search should be driven by runtime evidence, not by random curiosity.
 
 Reference:
 
-- `notes/electron-freeze-step-7-watch-lifecycle-and-fix.md`
+- `./electron-freeze-step-7-watch-lifecycle-and-fix.md`
 
 ### Show
 
@@ -365,16 +365,16 @@ The best fix explains the evidence and preserves the feature.
 
 If you want a simple instructor workflow:
 
-1. `notes/electron-freeze-case-study.md`
-2. `notes/electron-freeze-step-1-startup-deterministic.md`
-3. `notes/electron-freeze-step-2-window-lifecycle.md`
-4. `notes/electron-freeze-step-3-renderer-console-and-diagnostics.md`
-5. `notes/electron-freeze-step-4-process-metrics.md`
-6. `notes/electron-freeze-step-5-native-sampling.md`
-7. `notes/electron-freeze-step-6-codebase-search-watchers.md`
-8. `notes/electron-freeze-step-7-watch-lifecycle-and-fix.md`
-9. `notes/electron-freeze-session-timeline.md`
-10. `notes/electron-freeze-edit-sequence.md`
+1. `./electron-freeze-case-study.md`
+2. `./electron-freeze-step-1-startup-deterministic.md`
+3. `./electron-freeze-step-2-window-lifecycle.md`
+4. `./electron-freeze-step-3-renderer-console-and-diagnostics.md`
+5. `./electron-freeze-step-4-process-metrics.md`
+6. `./electron-freeze-step-5-native-sampling.md`
+7. `./electron-freeze-step-6-codebase-search-watchers.md`
+8. `./electron-freeze-step-7-watch-lifecycle-and-fix.md`
+9. `./electron-freeze-session-timeline.md`
+10. `./electron-freeze-edit-sequence.md`
 
 ## If You Need a Shorter Version
 
@@ -398,9 +398,9 @@ Skip most of:
 
 For a seminar-style class, spend more time on:
 
-- `notes/electron-freeze-session-timeline.md`
-- `notes/electron-freeze-conversation-reconstruction.md`
-- `notes/electron-freeze-edit-sequence.md`
+- `./electron-freeze-session-timeline.md`
+- `./electron-freeze-conversation-reconstruction.md`
+- `./electron-freeze-edit-sequence.md`
 
 This version is good for discussing:
 
@@ -412,11 +412,11 @@ This version is good for discussing:
 
 For students who want to go further:
 
-- `notes/electron-freeze-case-study.md`
-- `notes/electron-freeze-session-timeline.md`
-- `notes/electron-freeze-restarts-and-runs.md`
-- `notes/electron-freeze-edit-sequence.md`
-- `notes/electron-freeze-conversation-reconstruction.md`
+- `./electron-freeze-case-study.md`
+- `./electron-freeze-session-timeline.md`
+- `./electron-freeze-restarts-and-runs.md`
+- `./electron-freeze-edit-sequence.md`
+- `./electron-freeze-conversation-reconstruction.md`
 
 Topics worth reading about afterward:
 
