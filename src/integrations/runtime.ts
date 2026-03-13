@@ -46,6 +46,16 @@ export interface MegaRuntimeConfig {
   readonly syncIntervalMs: number;
 }
 
+export interface GitHubRuntimeConfig {
+  readonly clientId?: string;
+  readonly deviceCodeUrl: string;
+  readonly tokenUrl: string;
+  readonly apiBaseUrl: string;
+  readonly docsUrl: string;
+  readonly scopes: readonly string[];
+  readonly syncIntervalMs: number;
+}
+
 export interface IntegrationRuntime {
   readonly secretStore: ProviderSecretStore;
   readonly commandExecutor: CommandExecutor;
@@ -54,6 +64,7 @@ export interface IntegrationRuntime {
   readonly logger: IntegrationLogger;
   readonly google: GoogleDriveRuntimeConfig;
   readonly mega: MegaRuntimeConfig;
+  readonly github: GitHubRuntimeConfig;
 }
 
 export interface IntegrationRuntimeOptions {
@@ -64,9 +75,11 @@ export interface IntegrationRuntimeOptions {
   readonly logger?: IntegrationLogger;
   readonly google?: Partial<GoogleDriveRuntimeConfig>;
   readonly mega?: Partial<MegaRuntimeConfig>;
+  readonly github?: Partial<GitHubRuntimeConfig>;
 }
 
 const DEFAULT_GOOGLE_SCOPES = ['https://www.googleapis.com/auth/drive.file'] as const;
+const DEFAULT_GITHUB_SCOPES = ['repo', 'read:user', 'user:email'] as const;
 const DEFAULT_SYNC_INTERVAL_MS = 20_000;
 export const DEFAULT_GOOGLE_DESKTOP_CLIENT_ID =
   '381193316033-b1g7h9dovqs5j22fi7obc4jug4o77vmi.apps.googleusercontent.com';
@@ -99,6 +112,22 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
         options.mega?.remoteBasePath?.trim() || process.env.NEARBYTES_MEGA_REMOTE_BASE?.trim() || '/nearbytes'
       ),
       syncIntervalMs: positiveInt(options.mega?.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS),
+    },
+    github: {
+      clientId:
+        options.github?.clientId?.trim() ||
+        process.env.NEARBYTES_GITHUB_CLIENT_ID?.trim() ||
+        undefined,
+      deviceCodeUrl:
+        options.github?.deviceCodeUrl?.trim() || 'https://github.com/login/device/code',
+      tokenUrl:
+        options.github?.tokenUrl?.trim() || 'https://github.com/login/oauth/access_token',
+      apiBaseUrl:
+        options.github?.apiBaseUrl?.trim() || 'https://api.github.com',
+      docsUrl:
+        options.github?.docsUrl?.trim() || 'https://github.com/settings/applications/new',
+      scopes: options.github?.scopes?.length ? [...options.github.scopes] : [...DEFAULT_GITHUB_SCOPES],
+      syncIntervalMs: positiveInt(options.github?.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS),
     },
   };
 }

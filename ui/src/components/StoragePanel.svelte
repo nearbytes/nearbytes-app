@@ -104,6 +104,7 @@
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
   let providerCredentialDrafts = $state<Record<string, { email: string; password: string; mfaCode: string; useMfa: boolean }>>({});
   let providerSetupDrafts = $state<Record<string, { clientId: string }>>({});
+  let providerShareDrafts = $state<Record<string, { repoOwner: string; repoName: string; branch: string; basePath: string }>>({});
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let selectedGlobalProvider = $state('local');
   let volumeView = $state<VolumeStorageView>('copies');
@@ -298,6 +299,15 @@
     return providerSetupDrafts[provider] ?? { clientId: '' };
   }
 
+  function providerShareDraft(provider: string): { repoOwner: string; repoName: string; branch: string; basePath: string } {
+    return providerShareDrafts[provider] ?? {
+      repoOwner: '',
+      repoName: '',
+      branch: 'main',
+      basePath: '',
+    };
+  }
+
   function setProviderCredential(
     provider: string,
     field: 'email' | 'password' | 'mfaCode' | 'useMfa',
@@ -321,6 +331,20 @@
       ...providerSetupDrafts,
       [provider]: {
         ...providerSetupDraft(provider),
+        [field]: value,
+      },
+    };
+  }
+
+  function setProviderShareField(
+    provider: string,
+    field: 'repoOwner' | 'repoName' | 'branch' | 'basePath',
+    value: string
+  ): void {
+    providerShareDrafts = {
+      ...providerShareDrafts,
+      [provider]: {
+        ...providerShareDraft(provider),
         [field]: value,
       },
     };
@@ -445,7 +469,7 @@
   }
 
   function providerCardHeadline(entry: ProviderCatalogEntry): string {
-    if (entry.provider === 'github') return 'Browse transport options';
+    if (entry.provider === 'github') return entry.isConnected ? 'Choose how Nearbytes uses GitHub' : 'Connect your GitHub account';
     if (entry.provider === 'mega') return entry.isConnected ? 'Choose how Nearbytes uses MEGA' : 'Connect your MEGA account';
     if (entry.provider === 'gdrive') return entry.isConnected ? 'Choose how Nearbytes uses Google Drive' : 'Connect your Google Drive account';
     return `Use ${entry.label}`;
@@ -463,7 +487,11 @@
       return 'Nearbytes will download and install the latest MEGA helper when you connect.';
     }
     if (entry.provider === 'github') {
-      return 'GitHub is planning-only for now. Nearbytes can include GitHub routes in links, but this build does not sync through GitHub yet.';
+      return entry.isConnected
+        ? 'Choose a repository and a nearbytes subdirectory for each share.'
+        : entry.setup.status === 'needs-config'
+          ? 'Add the GitHub OAuth app client ID with device flow enabled, then connect.'
+          : 'GitHub shares sync blocks and channels through a configurable subdirectory in your repository.';
     }
     return entry.setup.detail || entry.description;
   }
@@ -491,6 +519,11 @@
   }
 
   function managedShareOpenLabel(summary: ManagedShareSummary): string {
+    if (summary.share.provider === 'github') {
+      const repoFullName = typeof summary.share.remoteDescriptor.repoFullName === 'string' ? summary.share.remoteDescriptor.repoFullName : null;
+      const basePath = typeof summary.share.remoteDescriptor.basePath === 'string' ? summary.share.remoteDescriptor.basePath : null;
+      return repoFullName && basePath ? `${repoFullName} → ${basePath}` : 'GitHub repository share';
+    }
     return summary.share.sourceId ? 'Local folder managed by Nearbytes' : 'Waiting for local folder';
   }
 
@@ -545,6 +578,17 @@
       return `Space ${volumeId.slice(0, 8)} share`;
     }
     return 'Nearbytes share';
+  }
+
+  function defaultGithubBasePath(label: string): string {
+    const slug =
+      label
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/gu, '-')
+        .replace(/^-+|-+$/gu, '')
+        .slice(0, 40) || 'share';
+    return `nearbytes/${slug}`;
   }
 
   function sourceReservePercent(source: SourceConfigEntry): number {
@@ -1128,7 +1172,9 @@
           provider.provider,
           {
             clientId:
-              provider.provider === 'gdrive' ? provider.setup.config?.clientId ?? providerSetupDraft(provider.provider).clientId : providerSetupDraft(provider.provider).clientId,
+              provider.provider === 'gdrive' || provider.provider === 'github'
+                ? provider.setup.config?.clientId ?? providerSetupDraft(provider.provider).clientId
+                : providerSetupDraft(provider.provider).clientId,
           },
         ])
       ),
@@ -1432,11 +1478,13 @@
     errorMessage = '';
     successMessage = '';
     try {
+      const remoteDescriptor = provider.provider === 'github' ? githubShareDescriptor(defaultManagedShareLabel()) : undefined;
       await createManagedShare({
         provider: provider.provider,
         accountId: provider.accountId,
         label: defaultManagedShareLabel(),
         volumeId,
+        remoteDescriptor,
       });
       successMessage = `${provider.label} share created for this space.`;
       await loadPanel();
@@ -1445,6 +1493,61 @@
     } finally {
       integrationBusyKey = null;
     }
+  }
+
+  async function createManagedShareForProvider(provider: ProviderCatalogEntry): Promise<void> {
+    if (!provider.accountId) return;
+    integrationBusyKey = `create:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      const label = provider.provider === 'github' ? githubShareLabel() : defaultManagedShareLabel();
+      await createManagedShare({
+        provider: provider.provider,
+        accountId: provider.accountId,
+        label,
+        remoteDescriptor: provider.provider === 'github' ? githubShareDescriptor(label) : undefined,
+      });
+      successMessage = `${provider.label} share created.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} share`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  function githubShareLabel(): string {
+    const draft = providerShareDraft('github');
+    const repoName = draft.repoName.trim();
+    const basePath = normalizeGithubDraftPath(draft.basePath);
+    if (repoName && basePath) {
+      const leaf = basePath.split('/').filter(Boolean).at(-1);
+      return leaf ? `${repoName}/${leaf}` : repoName;
+    }
+    if (repoName) {
+      return repoName;
+    }
+    return defaultManagedShareLabel();
+  }
+
+  function githubShareDescriptor(label: string): Record<string, unknown> {
+    const draft = providerShareDraft('github');
+    const repoOwner = draft.repoOwner.trim();
+    const repoName = draft.repoName.trim();
+    if (!repoOwner || !repoName) {
+      throw new Error('Enter the GitHub repo owner and repo name first.');
+    }
+    return {
+      repoOwner,
+      repoName,
+      branch: draft.branch.trim() || 'main',
+      basePath: normalizeGithubDraftPath(draft.basePath) || defaultGithubBasePath(label),
+    };
+  }
+
+  function normalizeGithubDraftPath(value: string): string {
+    return value.trim().replace(/^\/+/u, '').replace(/\/+/gu, '/').replace(/\/+$/u, '');
   }
 
   function clearProviderSession(provider: string): void {
@@ -1870,6 +1973,23 @@
                 <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client ID here.</p>
               {/if}
 
+              {#if !provider.isConnected && provider.provider === 'github' && provider.setup.status === 'needs-config'}
+                {@const draft = providerSetupDraft(provider.provider)}
+                <div class="provider-credentials">
+                  <label class="field-block compact-field">
+                    <span>Client ID</span>
+                    <input
+                      class="panel-input"
+                      type="text"
+                      value={draft.clientId}
+                      placeholder="GitHub OAuth app client id"
+                      oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                </div>
+                <p class="muted-copy">Create a GitHub OAuth app, enable device flow, then paste the client ID here.</p>
+              {/if}
+
               {#if !provider.isConnected && provider.provider === 'mega'}
                 {@const draft = providerCredentialDraft(provider.provider)}
                 <div class="provider-credentials">
@@ -1918,6 +2038,52 @@
                 </div>
               {/if}
 
+              {#if provider.isConnected && provider.provider === 'github'}
+                {@const draft = providerShareDraft(provider.provider)}
+                <div class="provider-credentials">
+                  <label class="field-block compact-field">
+                    <span>Owner</span>
+                    <input
+                      class="panel-input"
+                      type="text"
+                      value={draft.repoOwner}
+                      placeholder="nearbytes"
+                      oninput={(event) => setProviderShareField(provider.provider, 'repoOwner', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                  <label class="field-block compact-field">
+                    <span>Repo</span>
+                    <input
+                      class="panel-input"
+                      type="text"
+                      value={draft.repoName}
+                      placeholder="nearbytes-sync"
+                      oninput={(event) => setProviderShareField(provider.provider, 'repoName', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                  <label class="field-block compact-field">
+                    <span>Branch</span>
+                    <input
+                      class="panel-input"
+                      type="text"
+                      value={draft.branch}
+                      placeholder="main"
+                      oninput={(event) => setProviderShareField(provider.provider, 'branch', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                  <label class="field-block">
+                    <span>nearbytes path</span>
+                    <input
+                      class="panel-input"
+                      type="text"
+                      value={draft.basePath}
+                      placeholder={defaultGithubBasePath(githubShareLabel())}
+                      oninput={(event) => setProviderShareField(provider.provider, 'basePath', (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                </div>
+              {/if}
+
               <div class="fact-row">
                 <span>{account ? account.label : 'No account saved yet'}</span>
                 {#if account?.email}
@@ -1946,6 +2112,16 @@
                   </button>
                 {/if}
                 {#if provider.isConnected}
+                  {#if provider.provider === 'github'}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void createManagedShareForProvider(provider)}
+                      disabled={integrationBusyKey === `create:${provider.provider}`}
+                    >
+                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create share'}</span>
+                    </button>
+                  {/if}
                   <ArmedActionButton
                     class="panel-btn subtle compact danger"
                     icon={Trash2}
@@ -2183,6 +2359,23 @@
                   <p class="muted-copy">Create a Google OAuth Desktop app client, paste the client ID here, then connect. Nearbytes uses the installed-app PKCE flow, so you do not need a client secret.</p>
                 {/if}
 
+                {#if !provider.isConnected && provider.provider === 'github' && provider.setup.status === 'needs-config'}
+                  {@const draft = providerSetupDraft(provider.provider)}
+                  <div class="provider-credentials">
+                    <label class="field-block compact-field">
+                      <span>Client ID</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={draft.clientId}
+                        placeholder="GitHub OAuth app client id"
+                        oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                  </div>
+                  <p class="muted-copy">Create a GitHub OAuth app, enable device flow, then paste the client ID here.</p>
+                {/if}
+
                 {#if !provider.isConnected && provider.provider === 'mega'}
                   {@const draft = providerCredentialDraft(provider.provider)}
                   <div class="provider-credentials">
@@ -2228,6 +2421,52 @@
                         />
                       </label>
                     {/if}
+                  </div>
+                {/if}
+
+                {#if provider.isConnected && provider.provider === 'github'}
+                  {@const draft = providerShareDraft(provider.provider)}
+                  <div class="provider-credentials">
+                    <label class="field-block compact-field">
+                      <span>Owner</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={draft.repoOwner}
+                        placeholder="nearbytes"
+                        oninput={(event) => setProviderShareField(provider.provider, 'repoOwner', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <label class="field-block compact-field">
+                      <span>Repo</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={draft.repoName}
+                        placeholder="nearbytes-sync"
+                        oninput={(event) => setProviderShareField(provider.provider, 'repoName', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <label class="field-block compact-field">
+                      <span>Branch</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={draft.branch}
+                        placeholder="main"
+                        oninput={(event) => setProviderShareField(provider.provider, 'branch', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <label class="field-block">
+                      <span>nearbytes path</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={draft.basePath}
+                        placeholder={defaultGithubBasePath(defaultManagedShareLabel())}
+                        oninput={(event) => setProviderShareField(provider.provider, 'basePath', (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
                   </div>
                 {/if}
 

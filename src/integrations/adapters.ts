@@ -1,5 +1,6 @@
 import { isProviderEnabled } from '../config/appConfig.js';
 import { GoogleDriveTransportAdapter } from './googleDrive.js';
+import { GitHubTransportAdapter } from './github.js';
 import { MegaTransportAdapter } from './mega.js';
 import type { IntegrationRuntime } from './runtime.js';
 import type {
@@ -51,44 +52,6 @@ export interface TransportAdapter {
   detachManagedShare?(share: ManagedShare, account: ProviderAccount | null): Promise<void>;
 }
 
-class StubTransportAdapter implements TransportAdapter {
-  constructor(
-    readonly provider: string,
-    readonly label: string,
-    readonly description: string,
-    readonly supportsAccountConnection = true
-  ) {}
-
-  async probe(endpoint: TransportEndpoint): Promise<TransportState> {
-    if (endpoint.transport === 'provider-share' && endpoint.provider?.trim().toLowerCase() === this.provider) {
-      return {
-        status: 'idle',
-        detail: `${this.label} routes are modeled but not yet authenticated by this build.`,
-        badges: ['Foundation'],
-      };
-    }
-    return {
-      status: 'unsupported',
-      detail: `${this.label} does not handle this endpoint.`,
-      badges: ['Experimental'],
-    };
-  }
-
-  async getState(): Promise<TransportState> {
-    return {
-      status: 'idle',
-      detail: `${this.label} is available for planning.`,
-      badges: ['Foundation'],
-    };
-  }
-}
-
-export class GitHubTransportAdapter extends StubTransportAdapter {
-  constructor() {
-    super('github', 'GitHub', 'Immutable read-oriented mirrors distributed through GitHub.', false);
-  }
-}
-
 export function createDefaultTransportAdapters(runtime: IntegrationRuntime): TransportAdapter[] {
   const adapters: TransportAdapter[] = [];
   if (isProviderEnabled('gdrive')) {
@@ -98,7 +61,7 @@ export function createDefaultTransportAdapters(runtime: IntegrationRuntime): Tra
     adapters.push(new MegaTransportAdapter(runtime));
   }
   if (isProviderEnabled('github')) {
-    adapters.push(new GitHubTransportAdapter());
+    adapters.push(new GitHubTransportAdapter(runtime));
   }
   return adapters;
 }
@@ -122,7 +85,15 @@ export function createProviderCatalog(
       provider: adapter.provider,
       label: adapter.label,
       description: adapter.description,
-      badges: account ? [] : adapter.provider === 'gdrive' ? ['OAuth'] : adapter.provider === 'mega' ? ['CLI'] : ['Available'],
+      badges: account
+        ? []
+        : adapter.provider === 'gdrive'
+          ? ['OAuth']
+          : adapter.provider === 'mega'
+            ? ['CLI']
+            : adapter.provider === 'github'
+              ? ['Device flow']
+              : ['Available'],
       isConnected: account?.state === 'connected',
       connectionState:
         account?.state === 'connected' ? 'connected' : adapter.supportsAccountConnection ? 'available' : 'setup',
