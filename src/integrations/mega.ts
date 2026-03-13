@@ -116,9 +116,12 @@ export class MegaTransportAdapter {
     account: ProviderAccount
   ): Promise<Partial<ManagedShare>> {
     await this.ensureLoggedIn(account.id);
-    const shareName = createManagedFolderLabel(input.label, randomBytes(3).toString('hex'));
     const remoteBasePath = this.runtime.mega.remoteBasePath;
-    const remotePath = path.posix.join(remoteBasePath, shareName);
+    const explicitRemotePath = getStringDescriptor(input.remoteDescriptor ?? {}, 'remotePath');
+    const shareName =
+      getStringDescriptor(input.remoteDescriptor ?? {}, 'shareName') ??
+      createManagedFolderLabel(input.label, randomBytes(3).toString('hex'));
+    const remotePath = explicitRemotePath ?? path.posix.join(remoteBasePath, shareName);
     await this.runMega('mkdir', ['-p', remotePath]);
     await this.ensureSyncTarget(input.localPath ?? '', remotePath);
 
@@ -298,6 +301,12 @@ export class MegaTransportAdapter {
     }
     await this.runMega('login', [secret.sessionToken], {
       timeoutMs: 60_000,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already logged in|command not valid while login in: login/i.test(message)) {
+        return;
+      }
+      throw error;
     });
   }
 
@@ -362,6 +371,12 @@ export class MegaTransportAdapter {
       const result = await this.runtime.commandExecutor.run({
         command,
         args,
+        cwd: commandDirectory || undefined,
+        env: commandDirectory
+          ? {
+              PATH: `${commandDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
+            }
+          : undefined,
         timeoutMs: options.timeoutMs ?? 30_000,
       });
       if (result.exitCode !== 0) {

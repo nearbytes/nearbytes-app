@@ -31,6 +31,7 @@
     updateRootsConfig,
   } from '../lib/api.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
+  import ShareEditorCard from './ShareEditorCard.svelte';
   import {
     ArrowRightLeft,
     FolderOpen,
@@ -46,6 +47,8 @@
     mode = 'volume',
     volumeId = null,
     currentVolumePresentation = null,
+    knownVolumes = [],
+    onOpenVolumeRouting = undefined,
     discoveryDetails = null,
     refreshToken = 0,
     focusSection = null,
@@ -59,13 +62,14 @@
       fileMimeType: string;
       fileName: string;
     } | null;
+    knownVolumes?: Array<{ volumeId: string; label: string }>;
+    onOpenVolumeRouting?: ((volumeId: string) => void) | undefined;
     discoveryDetails?: ReconcileSourcesResponse | null;
     refreshToken?: number;
     focusSection?: 'discovery' | 'defaults' | null;
   }>();
 
   type StatusTone = 'good' | 'warn' | 'muted';
-  type GlobalStorageView = 'providers' | 'folders';
   type VolumeStorageView = 'copies' | 'shares' | 'folders';
 
   const DISMISSED_DISCOVERY_KEY = 'nearbytes-source-discovery-dismissed-v1';
@@ -99,8 +103,8 @@
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
   let providerCredentialDrafts = $state<Record<string, { email: string; password: string; mfaCode: string; useMfa: boolean }>>({});
   let providerSetupDrafts = $state<Record<string, { clientId: string }>>({});
-  let expandedProviderShares = $state<Record<string, boolean>>({});
-  let globalView = $state<GlobalStorageView>('providers');
+  let providerDisconnectArmed = $state<Record<string, boolean>>({});
+  let selectedGlobalProvider = $state('local');
   let volumeView = $state<VolumeStorageView>('copies');
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
@@ -131,14 +135,16 @@
   });
 
   $effect(() => {
-    if (mode === 'global') {
-      if (focusSection === 'discovery' || focusSection === 'defaults') {
-        globalView = 'folders';
-      }
-      return;
-    }
+    if (mode === 'global') return;
     if (focusSection === 'discovery' || focusSection === 'defaults') {
       volumeView = 'folders';
+    }
+  });
+
+  $effect(() => {
+    const availableProviders = new Set(['local', ...providerCatalog.map((provider) => provider.provider)]);
+    if (!availableProviders.has(selectedGlobalProvider)) {
+      selectedGlobalProvider = 'local';
     }
   });
 
@@ -352,6 +358,51 @@
     return `${countLabel(count, 'space')} attached`;
   }
 
+  function shareAttachmentLabels(summary: ManagedShareSummary): string[] {
+    if (summary.attachments.length === 0) {
+      return [];
+    }
+    return summary.attachments.map((attachment) => {
+      if (currentVolumePresentation && attachment.volumeId === currentVolumePresentation.volumeId) {
+        return currentVolumePresentation.label.trim() || 'Current space';
+      }
+      return `Space ${attachment.volumeId.slice(0, 8)}`;
+    });
+  }
+
+  function providerDisconnectImpact(provider: string): {
+    shares: number;
+    spaces: number;
+    inaccessibleSpaces: string[];
+  } {
+    const shares = providerShares(provider);
+    const sourceIds = new Set(shares.map((summary) => summary.share.sourceId).filter((value): value is string => Boolean(value)));
+    const attachedVolumeIds = Array.from(
+      new Set(shares.flatMap((summary) => summary.attachments.map((attachment) => attachment.volumeId)))
+    );
+    const inaccessibleSpaces = attachedVolumeIds.filter((attachedVolumeId) => {
+      const remainingDestinations = effectiveDestinations(attachedVolumeId).filter(
+        (destination) => !sourceIds.has(destination.sourceId)
+      );
+      return !remainingDestinations.some((destination) => {
+        const source = configDraft?.sources.find((entry) => entry.id === destination.sourceId);
+        return Boolean(source?.enabled);
+      });
+    });
+    return {
+      shares: shares.length,
+      spaces: attachedVolumeIds.length,
+      inaccessibleSpaces,
+    };
+  }
+
+  function knownVolumeLabel(targetVolumeId: string): string | null {
+    if (currentVolumePresentation && currentVolumePresentation.volumeId === targetVolumeId) {
+      return currentVolumePresentation.label.trim() || 'Current space';
+    }
+    return knownVolumes.find((entry) => entry.volumeId === targetVolumeId)?.label ?? null;
+  }
+
   function providerCardTone(entry: ProviderCatalogEntry): StatusTone {
     const pending = pendingSessionForProvider(entry.provider);
     if (pending && pending.status === 'pending') return 'muted';
@@ -388,6 +439,12 @@
     if (pending) {
       return pending.detail;
     }
+    if (entry.setup.status === 'installing') {
+      return 'Nearbytes is downloading and preparing the latest helper.';
+    }
+    if (entry.setup.status === 'needs-install' && entry.provider === 'mega') {
+      return 'Nearbytes will download and install the latest MEGA helper when you connect.';
+    }
     if (entry.provider === 'github') {
       return 'GitHub is planning-only for now. Nearbytes can include GitHub routes in links, but this build does not sync through GitHub yet.';
     }
@@ -398,15 +455,12 @@
     return managedShares.filter((summary) => summary.share.provider === provider);
   }
 
-  function localMachineShareCount(): number {
-    return configDraft?.sources.filter((source) => source.provider === 'local').length ?? 0;
+  function selectedProviderEntry(): ProviderCatalogEntry | null {
+    return providerCatalog.find((provider) => provider.provider === selectedGlobalProvider) ?? null;
   }
 
-  function toggleProviderShares(provider: string): void {
-    expandedProviderShares = {
-      ...expandedProviderShares,
-      [provider]: !expandedProviderShares[provider],
-    };
+  function localMachineShareCount(): number {
+    return configDraft?.sources.length ?? 0;
   }
 
   function shouldShowProviderDocs(entry: ProviderCatalogEntry): boolean {
@@ -421,6 +475,49 @@
 
   function managedShareOpenLabel(summary: ManagedShareSummary): string {
     return summary.share.sourceId ? 'Local folder managed by Nearbytes' : 'Waiting for local folder';
+  }
+
+  function localShares(): SourceConfigEntry[] {
+    return configDraft?.sources ?? [];
+  }
+
+  function managedShareAccessLabel(summary: ManagedShareSummary): string {
+    return summary.share.capabilities.includes('write') ? 'Read and write' : 'Read only';
+  }
+
+  function sourceAccessLabel(source: SourceConfigEntry): string {
+    return source.enabled && source.writable ? 'Read and write' : source.enabled ? 'Read only' : 'Off';
+  }
+
+  function shareCardBadgesForSource(source: SourceConfigEntry): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
+    const destination = destinationFor(null, source.id);
+    return [
+      {
+        label: source.enabled ? 'Readable' : 'Hidden',
+        tone: source.enabled ? 'good' : 'off',
+      },
+      {
+        label: source.writable ? 'Writable' : 'Read only',
+        tone: source.writable ? 'durable' : 'muted',
+      },
+      {
+        label: keepsFullCopy(destination) ? 'Default share' : 'Optional',
+        tone: keepsFullCopy(destination) ? 'replica' : 'muted',
+      },
+    ];
+  }
+
+  function shareCardBadgesForManaged(summary: ManagedShareSummary): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
+    return [
+      {
+        label: shareStatusLabel(summary),
+        tone: shareStatusTone(summary),
+      },
+      {
+        label: managedShareAccessLabel(summary),
+        tone: summary.share.capabilities.includes('write') ? 'durable' : 'muted',
+      },
+    ];
   }
 
   function defaultManagedShareLabel(): string {
@@ -1439,34 +1536,19 @@
 {:else if configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
     {#if mode === 'global'}
-      <div class="toolbar-row">
-        <button
-          type="button"
-          class="panel-btn subtle compact icon-btn"
-          onclick={() => void refreshDiscoverySuggestions()}
-          disabled={discoveryLoading}
-          title="Scan again"
-        >
-          <RefreshCw size={14} strokeWidth={2} />
-        </button>
-        {#if dismissedSuggestionCount() > 0}
-          <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
-            <span>Show hidden</span>
-          </button>
-        {/if}
-      </div>
-
-        <div class="overview-grid">
-          <button type="button" class="overview-card tab-card" class:active={globalView === 'providers'} onclick={() => (globalView = 'providers')}>
-            <p class="provider-label">Providers</p>
-            <h3>{connectedProviderCount()} connected</h3>
-            <p class="card-copy">Accounts Nearbytes can use directly.</p>
-          </button>
-          <button type="button" class="overview-card tab-card" class:active={globalView === 'folders'} onclick={() => (globalView = 'folders')}>
+      <div class="overview-grid">
+        <button type="button" class="overview-card tab-card" class:active={selectedGlobalProvider === 'local'} onclick={() => (selectedGlobalProvider = 'local')}>
           <p class="provider-label">Local machine</p>
-          <h3>{countLabel(configDraft.sources.length, 'folder')}</h3>
+          <h3>{countLabel(localMachineShareCount(), 'share')}</h3>
           <p class="card-copy">{activeFolderCount()} enabled on this device.</p>
+        </button>
+        {#each providerCatalog as provider (provider.provider)}
+          <button type="button" class="overview-card tab-card" class:active={selectedGlobalProvider === provider.provider} onclick={() => (selectedGlobalProvider = provider.provider)}>
+            <p class="provider-label">{provider.label}</p>
+            <h3>{provider.isConnected ? provider.label : providerCardStatus(provider)}</h3>
+            <p class="card-copy">{providerShares(provider.provider).length} shares</p>
           </button>
+        {/each}
       </div>
 
       {#if errorMessage}
@@ -1476,45 +1558,249 @@
         <p class="panel-success">{successMessage}</p>
       {/if}
 
-      {#if globalView === 'providers'}
+      {#if selectedGlobalProvider === 'local'}
       <section class="panel-section">
         <div class="section-head">
           <div>
-            <p class="section-step">Data providers</p>
-            <h3>Choose how Nearbytes sends and receives data</h3>
+            <p class="section-step">Local machine</p>
+            <h3>Choose how Nearbytes sends and receives data on this device</h3>
           </div>
           <div class="section-metrics">
-            <span class="summary-pill">{countLabel(providerCatalog.length, 'provider')} ready</span>
-            <span class="summary-pill">{countLabel(providerAccounts.length, 'account')} connected</span>
+            <button
+              type="button"
+              class="panel-btn subtle compact icon-btn"
+              onclick={() => void refreshDiscoverySuggestions()}
+              disabled={discoveryLoading}
+              title="Scan again"
+            >
+              <RefreshCw size={14} strokeWidth={2} />
+            </button>
+            {#if dismissedSuggestionCount() > 0}
+              <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
+                <span>Show hidden</span>
+              </button>
+            {/if}
           </div>
         </div>
+        {#if discoveryError}
+          <p class="warning-copy">{discoveryError}</p>
+        {/if}
 
-        <div class="card-grid">
-          <article class="location-card provider-card active">
-            <div class="card-head">
-              <div class="card-title">
-                <div class="card-icon">
-                  <HardDrive size={16} strokeWidth={2.1} />
-                </div>
-                <div>
-                  <p class="provider-label">Provider</p>
-                  <h4>Local machine</h4>
-                </div>
+        <article class="location-card provider-card" class:active={hasDurableDestination(null)}>
+          <div class="card-head">
+            <div class="card-title">
+              <div class="card-icon">
+                <HardDrive size={16} strokeWidth={2.1} />
               </div>
-              <div class="card-status">
-                <span class="status-pill tone-good">Available</span>
-                <span class="status-pill tone-muted">Default</span>
+              <div>
+                <p class="provider-label">Provider</p>
+                <h4>Local machine</h4>
               </div>
             </div>
-            <p class="card-copy">Nearbytes can always read and write encrypted data on this device using your local folders.</p>
-            <div class="fact-row">
-              <span>{countLabel(localMachineShareCount(), 'local folder')}</span>
-              <span>{activeFolderCount()} enabled</span>
+            <div class="card-status">
+              <span class="status-pill tone-good">Available</span>
+              <span class="status-pill tone-muted">{countLabel(localShares().length, 'share')}</span>
             </div>
+          </div>
+          <p class="card-copy">{protectionHint(null)}</p>
+          <div class="fact-row">
+            <span>{countLabel(activeFolderCount(), 'share')} enabled</span>
+            <span>{hasDurableDestination(null) ? 'A protected default copy exists.' : 'Choose one default protected share.'}</span>
+          </div>
+        </article>
+
+        <div class="compact-share-grid">
+          {#each localShares() as source (source.id)}
+            {@const status = sourceStatus(source.id)}
+            {@const defaultDestination = destinationFor(null, source.id)}
+            <ShareEditorCard
+              provider={formatProvider(source.provider)}
+              title={compactPath(source.path)}
+              copy={locationSummary(source)}
+              active={protectionTone(defaultDestination, source.id) === 'durable'}
+              statusBadges={shareCardBadgesForSource(source)}
+              meta={[
+                sourceAccessLabel(source),
+                status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown',
+                usageSummary(source.id),
+              ]}
+            >
+              {#snippet children()}
+                <div class="toggle-stack compact-share-toggle-stack">
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="checkbox"
+                      checked={source.enabled}
+                      aria-label="Use this share for reads"
+                      onchange={(event) => updateSourceField(source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                    <div>
+                      <span class="toggle-title">Readable</span>
+                      <span class="toggle-copy">Use this share to read existing Nearbytes data.</span>
+                    </div>
+                  </label>
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="checkbox"
+                      checked={source.writable}
+                      aria-label="Use this share for writes"
+                      onchange={(event) => updateSourceField(source.id, 'writable', (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                    <div>
+                      <span class="toggle-title">Writable</span>
+                      <span class="toggle-copy">Allow Nearbytes to save new encrypted data here.</span>
+                    </div>
+                  </label>
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="checkbox"
+                      checked={keepsFullCopy(defaultDestination)}
+                      aria-label="Use this share by default"
+                      onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                    <div>
+                      <span class="toggle-title">Default share</span>
+                      <span class="toggle-copy">{copyHelpText(null, source)}</span>
+                    </div>
+                  </label>
+                </div>
+                <details class="details-card inline-details compact-share-advanced">
+                  <summary>Advanced</summary>
+                  <div class="card-control-row">
+                    <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
+                      <span>Keep free</span>
+                      <select
+                        class="panel-input"
+                        value={String(sourceReservePercent(source))}
+                        onchange={(event) => {
+                          const nextValue = clampReserve((event.currentTarget as HTMLSelectElement).value);
+                          updateSourceField(source.id, 'reservePercent', nextValue);
+                          if (keepsFullCopy(defaultDestination)) {
+                            updateDestinationField(null, source.id, 'reservePercent', nextValue);
+                          }
+                        }}
+                      >
+                        {#each RESERVE_OPTIONS as option}
+                          <option value={option}>{formatPercent(option)}</option>
+                        {/each}
+                      </select>
+                    </label>
+                    <div class="button-row">
+                      {#if hasSourcePath(source)}
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => openSourceFolder(source.id)}
+                          title={source.path || 'Open folder'}
+                        >
+                          <FolderOpen size={14} strokeWidth={2} />
+                          <span>Open</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => void moveSourceFolder(source.id)}
+                          disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
+                          title="Move this share to a different folder"
+                        >
+                          <ArrowRightLeft size={14} strokeWidth={2} />
+                          <span>{movingSourceId === source.id ? 'Moving...' : 'Move'}</span>
+                        </button>
+                      {:else}
+                        <button type="button" class="panel-btn subtle compact" onclick={() => chooseSourceFolder(source.id)}>
+                          <Search size={14} strokeWidth={2} />
+                          <span>Choose folder</span>
+                        </button>
+                      {/if}
+                      {#if canRemoveAnySource()}
+                        <ArmedActionButton
+                          class="panel-btn subtle compact danger"
+                          icon={Trash2}
+                          text="Remove"
+                          armed={true}
+                          autoDisarmMs={3000}
+                          onPress={() => removeSource(source.id)}
+                        />
+                      {/if}
+                    </div>
+                  </div>
+                  {#if status?.lastWriteFailure}
+                    <p class="warning-copy">Last write problem: {status.lastWriteFailure.message}</p>
+                  {/if}
+                </details>
+              {/snippet}
+            </ShareEditorCard>
+          {/each}
+          {#each sourceSuggestionRows() as row (row.source.path)}
+            <article class="location-card suggestion-card">
+              <div class="card-head">
+                <div class="card-title">
+                  <div class="card-icon" title={row.source.path}>
+                    <Search size={16} strokeWidth={2.1} />
+                  </div>
+                  <div title={row.source.path}>
+                    <p class="provider-label">{formatProvider(row.source.provider)}</p>
+                    <h4>{compactPath(row.source.path)}</h4>
+                  </div>
+                </div>
+                <div class="card-status">
+                  <span class="status-pill tone-muted">Found automatically</span>
+                </div>
+              </div>
+
+              <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
+
+              <div class="button-row">
+                <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
+                  <Plus size={14} strokeWidth={2} />
+                  <span>Use folder</span>
+                </button>
+                <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
+                  <span>Hide</span>
+                </button>
+              </div>
+            </article>
+          {/each}
+
+          <article class="location-card add-card">
+            <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
+              <Plus size={20} strokeWidth={2.1} />
+            </button>
+            <div class="usage-main">
+              <p class="provider-label">Manual</p>
+              <h4>Add a folder</h4>
+            </div>
+            <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
           </article>
-          {#each providerCatalog as provider (provider.provider)}
-            {@const account = connectedAccountForProvider(provider.provider)}
-            {@const shares = providerShares(provider.provider)}
+        </div>
+      </section>
+
+      {#if configPath}
+        <details class="details-card minor-details">
+          <summary>Configuration file</summary>
+          <p class="mono-copy">{configPath}</p>
+        </details>
+      {/if}
+      {:else}
+        {@const provider = selectedProviderEntry()}
+        {@const account = provider ? connectedAccountForProvider(provider.provider) : null}
+        {@const shares = provider ? providerShares(provider.provider) : []}
+        {@const disconnectImpact = provider ? providerDisconnectImpact(provider.provider) : { shares: 0, spaces: 0, inaccessibleSpaces: [] }}
+        {#if provider}
+          <section class="panel-section">
+            <div class="section-head">
+              <div>
+                <p class="section-step">Data provider</p>
+                <h3>{providerCardHeadline(provider)}</h3>
+              </div>
+              <div class="section-metrics">
+                <span class="summary-pill">{countLabel(shares.length, 'share')}</span>
+                {#if account}
+                  <span class="summary-pill">{account.label}</span>
+                {/if}
+              </div>
+            </div>
+
             <article class="location-card provider-card" class:active={provider.isConnected}>
               <div class="card-head">
                 <div class="card-title">
@@ -1534,12 +1820,13 @@
                 </div>
               </div>
 
-              <div class="usage-main">
-                <p class="provider-label">Data provider</p>
-                <h4>{providerCardHeadline(provider)}</h4>
-              </div>
-
               <p class="card-copy">{providerCardDetail(provider)}</p>
+
+              {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
+                <div class="inline-progress" aria-label="Installing provider helper">
+                  <div class="inline-progress-bar"></div>
+                </div>
+              {/if}
 
               {#if !provider.isConnected && provider.provider === 'gdrive' && provider.setup.status === 'needs-config'}
                 {@const draft = providerSetupDraft(provider.provider)}
@@ -1555,7 +1842,7 @@
                     />
                   </label>
                 </div>
-                <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client ID here. Nearbytes uses the installed-app PKCE flow, so you do not need a client secret.</p>
+                <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client ID here.</p>
               {/if}
 
               {#if !provider.isConnected && provider.provider === 'mega'}
@@ -1611,7 +1898,6 @@
                 {#if account?.email}
                   <span>{account.email}</span>
                 {/if}
-                <span>{countLabel(shares.length, 'share')}</span>
               </div>
 
               <div class="button-row">
@@ -1633,25 +1919,24 @@
                   >
                     <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
                   </button>
-                {:else if !provider.isConnected && provider.setup.status === 'needs-install'}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => void installProvider(provider)}
-                    disabled={integrationBusyKey === `install:${provider.provider}`}
-                  >
-                    <span>{integrationBusyKey === `install:${provider.provider}` ? 'Installing...' : 'Install helper'}</span>
-                  </button>
                 {/if}
                 {#if provider.isConnected}
-                  <button
-                    type="button"
+                  <ArmedActionButton
                     class="panel-btn subtle compact danger"
-                    onclick={() => void disconnectProvider(provider)}
+                    icon={Trash2}
+                    text={integrationBusyKey === `disconnect:${provider.provider}` ? 'Disconnecting...' : 'Disconnect'}
+                    armed={true}
+                    autoDisarmMs={4000}
                     disabled={integrationBusyKey === `disconnect:${provider.provider}`}
-                  >
-                    <span>{integrationBusyKey === `disconnect:${provider.provider}` ? 'Disconnecting...' : 'Disconnect'}</span>
-                  </button>
+                    resetKey={`${provider.provider}:${integrationBusyKey ?? 'idle'}`}
+                    onArmStateChange={(armed) => {
+                      providerDisconnectArmed = {
+                        ...providerDisconnectArmed,
+                        [provider.provider]: armed,
+                      };
+                    }}
+                    onPress={() => void disconnectProvider(provider)}
+                  />
                 {:else}
                   <button
                     type="button"
@@ -1660,283 +1945,99 @@
                     disabled={
                       integrationBusyKey === `connect:${provider.provider}` ||
                       provider.setup.status === 'needs-config' ||
-                      provider.setup.status === 'installing' ||
                       provider.setup.status === 'unsupported'
                     }
                   >
-                    <span>{integrationBusyKey === `connect:${provider.provider}` ? 'Connecting...' : provider.provider === 'gdrive' ? 'Connect with Google' : 'Connect'}</span>
-                  </button>
-                {/if}
-                {#if provider.isConnected || shares.length > 0}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact advanced-btn"
-                    onclick={() => toggleProviderShares(provider.provider)}
-                  >
-                    <span>{expandedProviderShares[provider.provider] ? 'Hide shares' : 'Edit shares'}</span>
+                    <span>
+                      {integrationBusyKey === `connect:${provider.provider}`
+                        ? provider.setup.status === 'needs-install'
+                          ? 'Installing...'
+                          : 'Connecting...'
+                        : provider.provider === 'gdrive'
+                          ? 'Connect with Google'
+                          : 'Connect'}
+                    </span>
                   </button>
                 {/if}
               </div>
-
-              {#if expandedProviderShares[provider.provider]}
-                <div class="provider-share-stack">
-                  {#if shares.length === 0}
-                    <div class="inline-share-card">
-                      <p class="provider-label">Advanced</p>
-                      <p class="card-copy">No Nearbytes-managed shares for {provider.label} yet.</p>
-                    </div>
-                  {:else}
-                    {#each shares as summary (summary.share.id)}
-                      <article class="inline-share-card">
-                        <div class="card-head">
-                          <div class="card-title">
-                            <div>
-                              <p class="provider-label">Share</p>
-                              <h4>{summary.share.label}</h4>
-                            </div>
-                          </div>
-                          <div class="card-status">
-                            <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
-                            <span class="status-pill tone-muted">{summary.share.role}</span>
-                          </div>
-                        </div>
-                        <p class="card-copy">{summary.state.detail}</p>
-                        <div class="fact-row">
-                          <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
-                          <span>{shareAttachmentSummary(summary)}</span>
-                        </div>
-                        <div class="button-row">
-                          <button
-                            type="button"
-                            class="panel-btn subtle compact"
-                            onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
-                            disabled={!summary.share.sourceId}
-                          >
-                            <FolderOpen size={14} strokeWidth={2} />
-                            <span>Open</span>
-                          </button>
-                        </div>
-                      </article>
-                    {/each}
-                  {/if}
-                </div>
-              {/if}
             </article>
-          {/each}
-        </div>
-      </section>
-      {/if}
 
-      {#if globalView === 'folders'}
-      <section class="panel-section">
-        <div class="section-head">
-          <div>
-            <p class="section-step">Folders</p>
-            <h3>Folders on this device</h3>
-            <p class="section-copy">These are local folders Nearbytes can read from or write to. Defaults here affect new spaces on this device.</p>
-          </div>
-          <div class="section-metrics">
-            <span class="summary-pill">{countLabel(configDraft.sources.length, 'folder')} saved</span>
-            <span class="summary-pill" class:warning={!hasDurableDestination(null)}>{protectionSummary(null)}</span>
-          </div>
-        </div>
+            {#if provider.isConnected && providerDisconnectArmed[provider.provider] && disconnectImpact.spaces > 0}
+              <p class="panel-error">
+                {#if disconnectImpact.inaccessibleSpaces.length > 0}
+                  Disconnecting {provider.label} will make {countLabel(disconnectImpact.inaccessibleSpaces.length, 'space')} not accessible until you reconnect it.
+                {:else}
+                  Disconnecting {provider.label} will remove {countLabel(disconnectImpact.shares, 'share')} from {countLabel(disconnectImpact.spaces, 'space')}, but those spaces will stay accessible.
+                {/if}
+              </p>
+            {/if}
 
-        {#if discoveryError}
-          <p class="warning-copy">{discoveryError}</p>
-        {/if}
-
-        <div class="protection-banner" class:warning={!hasDurableDestination(null)}>
-          <Shield size={15} strokeWidth={2} />
-          <span>{protectionHint(null)}</span>
-        </div>
-
-        <div class="card-grid">
-          {#each configDraft.sources as source (source.id)}
-            {@const status = sourceStatus(source.id)}
-            {@const availability = locationAvailability(source)}
-            {@const writeState = locationWriteState(source)}
-            {@const defaultDestination = destinationFor(null, source.id)}
-            <article class="location-card" class:active={protectionTone(defaultDestination, source.id) === 'durable'}>
-              <div class="card-head">
-                <div class="card-title">
-                  <div class="card-icon" title={source.path || 'No folder selected yet'}>
-                    <HardDrive size={16} strokeWidth={2.1} />
-                  </div>
-                  <div title={source.path || 'No folder selected yet'}>
-                    <p class="provider-label">{formatProvider(source.provider)}</p>
-                    <h4>{compactPath(source.path)}</h4>
-                  </div>
-                </div>
-                <div class="card-status">
-                  <span class={`status-pill tone-${availability.tone}`}>{availability.label}</span>
-                  <span class={`status-pill tone-${writeState.tone}`}>{writeState.label}</span>
-                </div>
-              </div>
-
-              <p class="card-copy">{locationSummary(source)}</p>
-
-              <div class="toggle-stack">
-                <label class="inline-toggle compact-toggle-line">
-                  <input
-                    type="checkbox"
-                    checked={source.enabled}
-                    aria-label="Use this folder for reads"
-                    onchange={(event) => updateSourceField(source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)}
-                  />
-                  <div>
-                    <span class="toggle-title">Use for reads</span>
-                    <span class="toggle-copy">Read existing Nearbytes data from this folder.</span>
-                  </div>
-                </label>
-                <label class="inline-toggle compact-toggle-line">
-                  <input
-                    type="checkbox"
-                    checked={source.writable}
-                    aria-label="Save new data here"
-                    onchange={(event) => updateSourceField(source.id, 'writable', (event.currentTarget as HTMLInputElement).checked)}
-                  />
-                  <div>
-                    <span class="toggle-title">Save new data here</span>
-                    <span class="toggle-copy">Allow Nearbytes to write new encrypted data here.</span>
-                  </div>
-                </label>
-                <label class="inline-toggle compact-toggle-line">
-                  <input
-                    type="checkbox"
-                    checked={keepsFullCopy(defaultDestination)}
-                    aria-label="Keep new spaces here"
-                    onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
-                  />
-                  <div>
-                    <span class="toggle-title">Use by default for new spaces</span>
-                    <span class="toggle-copy">{copyHelpText(null, source)}</span>
-                  </div>
-                </label>
-              </div>
-
-              <div class="fact-row">
-                <span>{status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown'}</span>
-                <span>{usageSummary(source.id)}</span>
-              </div>
-
-              <details class="details-card inline-details">
-                <summary>Advanced</summary>
-                <div class="card-control-row">
-                  <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
-                    <span>Keep free</span>
-                    <select
-                      class="panel-input"
-                      value={String(sourceReservePercent(source))}
-                      onchange={(event) => {
-                        const nextValue = clampReserve((event.currentTarget as HTMLSelectElement).value);
-                        updateSourceField(source.id, 'reservePercent', nextValue);
-                        if (keepsFullCopy(defaultDestination)) {
-                          updateDestinationField(null, source.id, 'reservePercent', nextValue);
-                        }
-                      }}
+            {#if provider.isConnected && providerDisconnectArmed[provider.provider] && disconnectImpact.inaccessibleSpaces.some((targetVolumeId) => knownVolumeLabel(targetVolumeId))}
+              <div class="fact-row share-volume-row">
+                {#each disconnectImpact.inaccessibleSpaces as targetVolumeId}
+                  {@const label = knownVolumeLabel(targetVolumeId)}
+                  {#if label}
+                    <button
+                      type="button"
+                      class="mini-pill mini-pill-button"
+                      onclick={() => onOpenVolumeRouting?.(targetVolumeId)}
                     >
-                      {#each RESERVE_OPTIONS as option}
-                        <option value={option}>{formatPercent(option)}</option>
-                      {/each}
-                    </select>
-                  </label>
+                      {label}
+                    </button>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
 
-                  <div class="button-row">
-                    {#if hasSourcePath(source)}
+            <div class="compact-share-grid">
+              {#if shares.length === 0}
+                <ShareEditorCard
+                  provider={provider.label}
+                  title="No shares yet"
+                  copy={provider.isConnected ? `Nearbytes should create or adopt the default nearbytes share automatically.` : `Connect ${provider.label} first, then Nearbytes will manage its shares here.`}
+                  statusBadges={[{ label: provider.isConnected ? 'Connected' : providerCardStatus(provider), tone: providerCardTone(provider) }]}
+                  meta={[provider.label]}
+                />
+              {:else}
+                {#each shares as summary (summary.share.id)}
+                  <ShareEditorCard
+                    provider={provider.label}
+                    title={summary.share.label}
+                    copy={summary.state.detail}
+                    active={summary.state.status === 'ready'}
+                    statusBadges={shareCardBadgesForManaged(summary)}
+                    meta={[
+                      managedShareAccessLabel(summary),
+                      shareAttachmentSummary(summary),
+                      managedShareOpenLabel(summary),
+                    ]}
+                  >
+                    {#snippet children()}
+                      {#if shareAttachmentLabels(summary).length > 0}
+                        <div class="fact-row share-volume-row">
+                          {#each shareAttachmentLabels(summary) as attachmentLabel}
+                            <span class="mini-pill">{attachmentLabel}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                    {/snippet}
+                    {#snippet actions()}
                       <button
                         type="button"
                         class="panel-btn subtle compact"
-                        onclick={() => void moveSourceFolder(source.id)}
-                        disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
-                        title="Move this storage location to a different folder without interrupting service"
-                      >
-                        <ArrowRightLeft size={14} strokeWidth={2} />
-                        <span>{movingSourceId === source.id ? 'Moving...' : 'Move folder'}</span>
-                      </button>
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => openSourceFolder(source.id)}
-                        title={source.path || 'Open folder'}
+                        onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
+                        disabled={!summary.share.sourceId}
                       >
                         <FolderOpen size={14} strokeWidth={2} />
                         <span>Open</span>
                       </button>
-                    {:else}
-                      <button type="button" class="panel-btn subtle compact" onclick={() => chooseSourceFolder(source.id)}>
-                        <Search size={14} strokeWidth={2} />
-                        <span>Choose folder</span>
-                      </button>
-                    {/if}
-                    {#if canRemoveAnySource()}
-                      <ArmedActionButton
-                        class="panel-btn subtle compact danger"
-                        icon={Trash2}
-                        text="Remove"
-                        armed={true}
-                        autoDisarmMs={3000}
-                        onPress={() => removeSource(source.id)}
-                      />
-                    {/if}
-                  </div>
-                </div>
-
-                {#if status?.lastWriteFailure}
-                  <p class="warning-copy">Last write problem: {status.lastWriteFailure.message}</p>
-                {/if}
-              </details>
-            </article>
-          {/each}
-          {#each sourceSuggestionRows() as row (row.source.path)}
-            <article class="location-card suggestion-card">
-              <div class="card-head">
-                <div class="card-title">
-                  <div class="card-icon" title={row.source.path}>
-                    <Search size={16} strokeWidth={2.1} />
-                  </div>
-                  <div title={row.source.path}>
-                    <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                    <h4>{compactPath(row.source.path)}</h4>
-                  </div>
-                </div>
-                <div class="card-status">
-                  <span class="status-pill tone-muted">Found automatically</span>
-                </div>
-              </div>
-
-              <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
-
-              <div class="button-row">
-                <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                  <Plus size={14} strokeWidth={2} />
-                  <span>Use folder</span>
-                </button>
-                <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
-                  <span>Hide</span>
-                </button>
-              </div>
-            </article>
-          {/each}
-
-          <article class="location-card add-card">
-            <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
-              <Plus size={20} strokeWidth={2.1} />
-            </button>
-            <div class="usage-main">
-              <p class="provider-label">Manual</p>
-              <h4>Add a folder</h4>
+                    {/snippet}
+                  </ShareEditorCard>
+                {/each}
+              {/if}
             </div>
-            <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
-          </article>
-        </div>
-      </section>
-
-      {#if configPath}
-        <details class="details-card minor-details">
-          <summary>Configuration file</summary>
-          <p class="mono-copy">{configPath}</p>
-        </details>
-      {/if}
+          </section>
+        {/if}
       {/if}
     {:else}
       <div class="toolbar-row">
@@ -2029,6 +2130,12 @@
                   {/if}
                 </p>
 
+                {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
+                  <div class="inline-progress" aria-label="Installing provider helper">
+                    <div class="inline-progress-bar"></div>
+                  </div>
+                {/if}
+
                 {#if !provider.isConnected && provider.provider === 'gdrive' && provider.setup.status === 'needs-config'}
                   {@const draft = providerSetupDraft(provider.provider)}
                   <div class="provider-credentials">
@@ -2113,15 +2220,6 @@
                     >
                       <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
                     </button>
-                  {:else if !provider.isConnected && provider.setup.status === 'needs-install'}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void installProvider(provider)}
-                      disabled={integrationBusyKey === `install:${provider.provider}`}
-                    >
-                      <span>{integrationBusyKey === `install:${provider.provider}` ? 'Installing...' : 'Install helper'}</span>
-                    </button>
                   {/if}
                   {#if provider.isConnected}
                     <button
@@ -2140,11 +2238,18 @@
                       disabled={
                         integrationBusyKey === `connect:${provider.provider}` ||
                         provider.setup.status === 'needs-config' ||
-                        provider.setup.status === 'installing' ||
                         provider.setup.status === 'unsupported'
                       }
                     >
-                      <span>{integrationBusyKey === `connect:${provider.provider}` ? 'Connecting...' : provider.provider === 'gdrive' ? 'Connect with Google' : 'Connect'}</span>
+                      <span>
+                        {integrationBusyKey === `connect:${provider.provider}`
+                          ? provider.setup.status === 'needs-install'
+                            ? 'Installing...'
+                            : 'Connecting...'
+                          : provider.provider === 'gdrive'
+                            ? 'Connect with Google'
+                            : 'Connect'}
+                      </span>
                     </button>
                   {/if}
                 </div>
@@ -2878,6 +2983,21 @@
     white-space: nowrap;
   }
 
+  .mini-pill-button {
+    cursor: pointer;
+    transition:
+      border-color 120ms ease,
+      transform 120ms ease,
+      background 120ms ease;
+  }
+
+  .mini-pill-button:hover {
+    transform: translateY(-1px);
+    border-color: rgba(250, 204, 21, 0.34);
+    background: rgba(46, 35, 8, 0.78);
+    color: rgba(254, 240, 138, 0.96);
+  }
+
   .summary-pill.warning,
   .status-pill.tone-warn {
     border-color: rgba(251, 191, 36, 0.28);
@@ -3099,6 +3219,21 @@
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
 
+  .compact-share-grid {
+    display: grid;
+    gap: 0.72rem;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+
+  .compact-share-toggle-stack {
+    margin-top: 0.1rem;
+  }
+
+  .compact-share-advanced {
+    padding: 0.72rem;
+    background: rgba(7, 15, 29, 0.42);
+  }
+
   .field-block {
     display: grid;
     gap: 0.3rem;
@@ -3126,24 +3261,22 @@
     accent-color: #14b8a6;
   }
 
-  .advanced-btn {
-    border-style: dashed;
-    color: rgba(191, 219, 254, 0.9);
+  .inline-progress {
+    position: relative;
+    overflow: hidden;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(12, 24, 43, 0.82);
+    border: 1px solid rgba(96, 165, 250, 0.14);
   }
 
-  .provider-share-stack {
-    display: grid;
-    gap: 0.65rem;
-    padding-top: 0.2rem;
-  }
-
-  .inline-share-card {
-    display: grid;
-    gap: 0.55rem;
-    padding: 0.78rem;
-    border-radius: 14px;
-    border: 1px solid rgba(96, 165, 250, 0.12);
-    background: rgba(8, 18, 33, 0.44);
+  .inline-progress-bar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 34%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, rgba(250, 204, 21, 0.18), rgba(245, 158, 11, 0.95), rgba(250, 204, 21, 0.18));
+    animation: provider-progress-slide 1.1s ease-in-out infinite;
   }
 
   .panel-input {
@@ -3265,6 +3398,15 @@
   .inline-details {
     padding: 0.72rem 0.78rem;
     background: rgba(8, 18, 33, 0.42);
+  }
+
+  @keyframes provider-progress-slide {
+    0% {
+      transform: translateX(-110%);
+    }
+    100% {
+      transform: translateX(320%);
+    }
   }
 
   @media (max-width: 760px) {

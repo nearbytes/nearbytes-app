@@ -1882,6 +1882,15 @@
     };
   });
 
+  const knownMountedVolumes = $derived.by<Array<{ volumeId: string; label: string }>>(() =>
+    mounts
+      .filter((mount) => typeof mount.volumeId === 'string' && mount.volumeId.trim() !== '')
+      .map((mount) => ({
+        volumeId: mount.volumeId!.trim().toLowerCase(),
+        label: mountLabel(mount),
+      }))
+  );
+
   function stopTimelinePlayback() {
     if (timelinePlayTimer) {
       clearInterval(timelinePlayTimer);
@@ -2759,6 +2768,18 @@
     if (showSourcesPanel) {
       showVolumeStoragePanel = false;
     }
+  }
+
+  function openMountedVolumeRouting(targetVolumeId: string) {
+    const normalized = targetVolumeId.trim().toLowerCase();
+    const targetMount = mounts.find((mount) => mount.volumeId?.trim().toLowerCase() === normalized);
+    if (!targetMount) {
+      return;
+    }
+    reopenMount(targetMount.id);
+    showVolumeStoragePanel = true;
+    showSourcesPanel = false;
+    sourceDiscoveryPanelFocus = null;
   }
 
   $effect(() => {
@@ -4379,6 +4400,8 @@
           mode="global"
           {volumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
+          knownVolumes={knownMountedVolumes}
+          onOpenVolumeRouting={openMountedVolumeRouting}
           discoveryDetails={latestSourceDiscovery}
           refreshToken={sourceDiscoveryRefreshToken}
           focusSection={sourceDiscoveryPanelFocus}
@@ -4390,6 +4413,8 @@
           mode="volume"
           {volumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
+          knownVolumes={knownMountedVolumes}
+          onOpenVolumeRouting={openMountedVolumeRouting}
           refreshToken={sourceDiscoveryRefreshToken}
         />
       </div>

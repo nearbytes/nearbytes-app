@@ -122,7 +122,7 @@ export function createProviderCatalog(
       provider: adapter.provider,
       label: adapter.label,
       description: adapter.description,
-      badges: account ? ['Connected'] : adapter.provider === 'gdrive' ? ['OAuth'] : adapter.provider === 'mega' ? ['CLI'] : ['Available'],
+      badges: account ? [] : adapter.provider === 'gdrive' ? ['OAuth'] : adapter.provider === 'mega' ? ['CLI'] : ['Available'],
       isConnected: account?.state === 'connected',
       connectionState:
         account?.state === 'connected' ? 'connected' : adapter.supportsAccountConnection ? 'available' : 'setup',

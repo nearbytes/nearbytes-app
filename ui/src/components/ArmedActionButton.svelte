@@ -16,6 +16,7 @@
     iconStrokeWidth = 2,
     class: className = '',
     onPress,
+    onArmStateChange,
   }: {
     text: string;
     armed?: boolean;
@@ -33,6 +34,7 @@
     iconStrokeWidth?: number;
     class?: string;
     onPress?: () => void;
+    onArmStateChange?: (armed: boolean) => void;
   } = $props();
 
   let isArmedState = $state(false);
@@ -55,12 +57,14 @@
     isArmedState = false;
     confirmReady = false;
     clearTimers();
+    onArmStateChange?.(false);
   }
 
   function arm() {
     isArmedState = true;
     confirmReady = armDelayMs <= 0;
     clearTimers();
+    onArmStateChange?.(true);
     if (armDelayMs > 0) {
       readyTimer = setTimeout(() => {
         if (isArmedState) {

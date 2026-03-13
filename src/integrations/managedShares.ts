@@ -101,13 +101,15 @@ export class ManagedShareService {
     preferredProviders: string[];
   }> {
     const state = await this.loadState();
+    await this.ensureDefaultManagedShares(state);
     await this.ensureManagedShareSyncs(state);
     const setupStates = await this.getProviderSetupStates();
-    const accounts = state.accounts.filter((account) => isProviderEnabled(account.provider));
+    const refreshedState = await this.loadState();
+    const accounts = refreshedState.accounts.filter((account) => isProviderEnabled(account.provider));
     return {
       accounts,
-      providers: createProviderCatalog(Array.from(this.adapters.values()), state.accounts, setupStates),
-      preferredProviders: state.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+      providers: createProviderCatalog(Array.from(this.adapters.values()), refreshedState.accounts, setupStates),
+      preferredProviders: refreshedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
     };
   }
 
@@ -203,6 +205,8 @@ export class ManagedShareService {
       accounts: merged.accounts,
       preferredProviders,
     });
+
+    await this.ensureDefaultManagedShare(provider, merged.account.id);
     return {
       status: 'connected',
       account: merged.account,
@@ -248,8 +252,10 @@ export class ManagedShareService {
 
   async listManagedShares(): Promise<{ shares: ManagedShareSummary[] }> {
     const state = await this.loadState();
+    await this.ensureDefaultManagedShares(state);
     await this.ensureManagedShareSyncs(state);
-    const visibleShares = state.managedShares.filter((share) => isProviderEnabled(share.provider));
+    const refreshedState = await this.loadState();
+    const visibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     return {
       shares: await Promise.all(
         visibleShares.map(async (share) => ({
@@ -459,6 +465,15 @@ export class ManagedShareService {
     );
   }
 
+  private async ensureDefaultManagedShares(state: IntegrationStateSnapshot): Promise<void> {
+    for (const account of state.accounts) {
+      if (account.state !== 'connected') {
+        continue;
+      }
+      await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account.id);
+    }
+  }
+
   private async getProviderSetupStates(): Promise<Map<string, ProviderSetupState>> {
     const entries = await Promise.all(
       Array.from(this.adapters.values()).map(async (adapter) => [
@@ -646,7 +661,16 @@ export class ManagedShareService {
       };
     }
     if (adapter?.getState) {
-      return adapter.getState(share, account);
+      try {
+        return await adapter.getState(share, account);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          status: /login|session|auth|connected/i.test(message) ? 'needs-auth' : 'attention',
+          detail: message,
+          badges: [/login|session|auth|connected/i.test(message) ? 'Reconnect' : 'Repair'],
+        };
+      }
     }
     return {
       status: 'ready',
@@ -668,6 +692,74 @@ export class ManagedShareService {
     this.options.storage.updateRootsConfig(config);
     await this.options.storage.reconcileConfiguredVolumes();
     await ensureNearbytesMarkers(config.sources);
+  }
+
+  private async ensureDefaultManagedShare(provider: string, accountId: string): Promise<void> {
+    if (provider !== 'mega') {
+      return;
+    }
+
+    const state = await this.loadState();
+    if (state.managedShares.some((share) => normalizeProvider(share.provider) === provider && share.accountId === accountId)) {
+      return;
+    }
+
+    const localPath = this.findDefaultProviderSharePath(provider);
+    if (localPath) {
+      const config = cloneConfig(this.options.storage.getRootsConfig());
+      const existingSource = config.sources.find((source) => path.resolve(source.path) === path.resolve(localPath));
+      if (existingSource) {
+        const shareId = createId('share', provider, state.managedShares.length + 1);
+        const adoptedShare: ManagedShare = {
+          id: shareId,
+          provider,
+          accountId,
+          label: 'nearbytes',
+          role: 'owner',
+          localPath: path.resolve(localPath),
+          sourceId: existingSource.id,
+          syncMode: 'mirror',
+          remoteDescriptor: {
+            remotePath: this.runtime.mega.remoteBasePath,
+            shareName: 'nearbytes',
+            managedShareId: shareId,
+          },
+          capabilities: ['mirror', 'read', 'write', 'invite'],
+          invitationEmails: [],
+          createdAt: this.runtime.now(),
+          updatedAt: this.runtime.now(),
+        };
+        const { config: nextConfig } = ensureManagedShareSource(config, adoptedShare, adoptedShare.localPath);
+        await this.persistRootsConfig(nextConfig);
+        await this.saveState({
+          ...state,
+          managedShares: [...state.managedShares, adoptedShare],
+        });
+        return;
+      }
+    }
+
+    await this.createManagedShare({
+      provider,
+      accountId,
+      label: 'nearbytes',
+      localPath,
+      remoteDescriptor: {
+        remotePath: this.runtime.mega.remoteBasePath,
+        shareName: 'nearbytes',
+      },
+    });
+  }
+
+  private findDefaultProviderSharePath(provider: string): string | undefined {
+    const config = this.options.storage.getRootsConfig();
+    const providerSources = config.sources.filter(
+      (source) => normalizeProvider(source.provider) === provider && !source.integration
+    );
+    const preferred =
+      providerSources.find((source) => path.basename(source.path).trim().toLowerCase() === 'nearbytes') ??
+      providerSources[0];
+    return preferred ? path.resolve(preferred.path) : undefined;
   }
 
   private upsertConnectedAccount(

@@ -96,7 +96,7 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
       commandDirectory:
         options.mega?.commandDirectory?.trim() || process.env.NEARBYTES_MEGACMD_DIR?.trim() || undefined,
       remoteBasePath: normalizeMegaRemotePath(
-        options.mega?.remoteBasePath?.trim() || process.env.NEARBYTES_MEGA_REMOTE_BASE?.trim() || '/Nearbytes'
+        options.mega?.remoteBasePath?.trim() || process.env.NEARBYTES_MEGA_REMOTE_BASE?.trim() || '/nearbytes'
       ),
       syncIntervalMs: positiveInt(options.mega?.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS),
     },
@@ -199,7 +199,7 @@ function positiveInt(value: number | undefined, fallback: number): number {
 function normalizeMegaRemotePath(value: string): string {
   const trimmed = value.trim();
   if (trimmed === '') {
-    return '/Nearbytes';
+    return '/nearbytes';
   }
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }

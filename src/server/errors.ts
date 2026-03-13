@@ -96,5 +96,10 @@ function toApiError(error: unknown): ApiError {
     return new ApiError(400, 'INVALID_REQUEST', 'Invalid JSON body');
   }
 
+  if (error instanceof Error) {
+    const message = error.message?.trim();
+    return new ApiError(500, 'INTERNAL_ERROR', message || 'Unexpected server error');
+  }
+
   return new ApiError(500, 'INTERNAL_ERROR', 'Unexpected server error');
 }
