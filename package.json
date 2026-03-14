@@ -1,8 +1,8 @@
 {
   "name": "nearbytes-crypto",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "private": true,
-  "author": "Nearbytes <support@nearbytes.com>",
+  "author": "Nearbytes <vincenzoml@gmail.com>",
   "packageManager": "yarn@4.10.3",
   "description": "NearBytes cryptographic storage protocol - immutable data collections with end-to-end encryption",
   "workspaces": [
