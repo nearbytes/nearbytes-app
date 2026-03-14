@@ -32,7 +32,7 @@
     "mega": "bash scripts/run-mega-dev.sh",
     "desktop": "electron dist-electron/electron/main.js",
     "desktop:run": "yarn build && yarn build:electron && wait-on http-get://127.0.0.1:5173 && cross-env NODE_ENV=development NEARBYTES_ELECTRON_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist-electron/electron/main.js",
-    "dev-run:raw": "concurrently -k \"yarn --cwd ui dev --host 127.0.0.1 --port 5173 --strictPort\" \"yarn desktop:run\"",
+    "dev-run:raw": "concurrently --kill-others-on-fail \"yarn --cwd ui dev --host 127.0.0.1 --port 5173 --strictPort\" \"yarn desktop:run\"",
     "dev-run": "node scripts/run-dev.mjs",
     "run-dev": "node scripts/run-dev.mjs",
     "dev-test": "yarn type-check && yarn test && yarn build:electron && node scripts/desktop-smoke.mjs",
