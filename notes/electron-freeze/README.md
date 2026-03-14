@@ -32,6 +32,7 @@
 - [Restarts and Runs](./electron-freeze-restarts-and-runs.md)
 - [Edit Sequence](./electron-freeze-edit-sequence.md)
 - [Conversation Reconstruction](./electron-freeze-conversation-reconstruction.md)
+- [Saved Chat](./electron-freeze-chat.md) 
 
 ## Lab starting point
 

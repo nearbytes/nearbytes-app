@@ -169,3 +169,28 @@ Architectural choices that seem harmless at the code level can have large operat
 Ask students:
 
 > Why is "search for the subsystem named in the native trace" such an effective debugging strategy?
+
+## Appendix: What `chokidar` Is and Why It Mattered
+
+`chokidar` is a popular Node.js library for watching files and directories for changes. It provides a higher-level, more consistent interface than using low-level watcher APIs directly.
+
+In practice, that means application code can say "watch this path recursively" and `chokidar` handles the platform-specific watcher machinery underneath.
+
+That matters here for two reasons:
+
+1. `chokidar` was the concrete code-level bridge between our app logic and the filesystem-watching activity seen in the native samples.
+2. Once we found `chokidar` in `SourceWatchHub`, we had a concrete explanation: the app was creating recursive filesystem watchers, and that matched the evidence that the Electron browser/main process was busy dealing with watcher activity.
+
+`chokidar` itself was not "the bug" in the sense of being broken software. The bug was how it was being used:
+
+- watching very large cloud-provider roots
+- doing so recursively
+- doing so on a real machine where those roots contained huge synced trees
+
+That is why searching for `chokidar` was so important in this step. It let us connect:
+
+- low-level evidence: `FSEventStream`, `uv_fs_event`, `EMFILE`
+- architectural code search: "where do we create watchers?"
+- source-level suspicion: `SourceWatchHub` is watching paths that are far too broad
+
+So `chokidar` was important not because students need to memorize the library, but because it was the visible source-code handle for the filesystem-watching subsystem implicated by the runtime evidence, especially the FSEvents/libuv watcher activity seen in the native samples.
