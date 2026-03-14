@@ -391,6 +391,7 @@ function debugInstallerScript(kind: StagedUpdate['kind']): string {
 setlocal
 
 set "PID=%~1"
+set "APP_PATH=%~2"
 set "TARGET_EXE=%~3"
 set "RELAUNCH=%~4"
 set "LOG_PATH=%~6"
@@ -404,7 +405,11 @@ if not errorlevel 1 (
 
 echo Debug relaunch>>"%LOG_PATH%"
 if "%RELAUNCH%"=="1" (
-  start "" "%TARGET_EXE%"
+  if not "%APP_PATH%"=="" (
+    start "" "%TARGET_EXE%" "%APP_PATH%"
+  ) else (
+    start "" "%TARGET_EXE%"
+  )
 )
 `;
   }
@@ -414,6 +419,7 @@ set -eu
 
 PID="$1"
 TARGET_APP="$2"
+APP_PATH="$3"
 RELAUNCH="$4"
 LOG_PATH="$6"
 
@@ -432,7 +438,11 @@ if [ "$RELAUNCH" = "1" ]; then
     if [ -d "$TARGET_APP" ]; then
       open "$TARGET_APP"
     else
-      "$TARGET_APP" >/dev/null 2>&1 &
+      if [ -n "$APP_PATH" ]; then
+        "$TARGET_APP" "$APP_PATH" >/dev/null 2>&1 &
+      else
+        "$TARGET_APP" >/dev/null 2>&1 &
+      fi
     fi
   fi
 fi
@@ -613,15 +623,31 @@ async function stageLinuxRelease(release: GithubLatestRelease, asset: GithubRele
 async function stageDebugRelaunch(): Promise<boolean> {
   let kind: StagedUpdate['kind'];
   let targetPath: string | null = null;
+  let relaunchAppPath: string | null = null;
   if (process.platform === 'darwin') {
     kind = 'mac-app';
-    targetPath = resolveCurrentMacAppPath();
+    if (app.isPackaged) {
+      targetPath = resolveCurrentMacAppPath();
+    } else {
+      targetPath = process.execPath;
+      relaunchAppPath = app.getAppPath();
+    }
   } else if (process.platform === 'win32') {
     kind = 'windows-installer';
-    targetPath = resolveCurrentWindowsExecutablePath();
+    if (app.isPackaged) {
+      targetPath = resolveCurrentWindowsExecutablePath();
+    } else {
+      targetPath = process.execPath;
+      relaunchAppPath = app.getAppPath();
+    }
   } else {
     kind = 'linux-appimage';
-    targetPath = resolveCurrentLinuxAppImagePath();
+    if (app.isPackaged) {
+      targetPath = resolveCurrentLinuxAppImagePath();
+    } else {
+      targetPath = process.execPath;
+      relaunchAppPath = app.getAppPath();
+    }
   }
   if (!targetPath) {
     return false;
@@ -644,7 +670,7 @@ async function stageDebugRelaunch(): Promise<boolean> {
     stageDir,
     helperScriptPath,
     targetPath,
-    stagedPath: targetPath,
+    stagedPath: relaunchAppPath ?? targetPath,
   };
   relaunchAfterInstall = false;
   installerLaunchStarted = false;
