@@ -16,3 +16,4 @@ coverage/
 *.test.ts.snap
 .nyc_output/
 test-data/
+.nearbytes-dev-run.json
