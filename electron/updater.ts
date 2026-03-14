@@ -37,6 +37,8 @@ type StagedUpdate =
       readonly helperScriptPath: string;
       readonly targetPath: string;
       readonly stagedPath: string;
+      readonly relaunchExecPath?: string;
+      readonly relaunchArgs?: string[];
     }
   | {
       readonly kind: 'windows-installer';
@@ -47,6 +49,8 @@ type StagedUpdate =
       readonly helperScriptPath: string;
       readonly targetPath: string;
       readonly stagedPath: string;
+      readonly relaunchExecPath?: string;
+      readonly relaunchArgs?: string[];
     }
   | {
       readonly kind: 'linux-appimage';
@@ -57,6 +61,8 @@ type StagedUpdate =
       readonly helperScriptPath: string;
       readonly targetPath: string;
       readonly stagedPath: string;
+      readonly relaunchExecPath?: string;
+      readonly relaunchArgs?: string[];
     };
 
 const DESKTOP_UPDATER_EVENT = 'nearbytes-desktop:update-state';
@@ -316,6 +322,7 @@ STAGED_APP="$3"
 RELAUNCH="$4"
 STAGE_DIR="$5"
 LOG_PATH="$6"
+RELAUNCH_EXEC="${7-}"
 
 log() {
   printf '%s %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$LOG_PATH"
@@ -344,7 +351,16 @@ rm -rf "$OLD_APP" "$STAGE_DIR"
 
 if [ "$RELAUNCH" = "1" ]; then
   log "relaunching installed app"
-  open "$TARGET_APP"
+  if [ -n "$RELAUNCH_EXEC" ]; then
+    if [ "$#" -ge 7 ]; then
+      shift 7
+      "$RELAUNCH_EXEC" "$@" >/dev/null 2>&1 &
+    else
+      "$RELAUNCH_EXEC" >/dev/null 2>&1 &
+    fi
+  else
+    open "$TARGET_APP"
+  fi
 fi
 `;
 }
@@ -359,6 +375,7 @@ STAGED_APPIMAGE="$3"
 RELAUNCH="$4"
 STAGE_DIR="$5"
 LOG_PATH="$6"
+RELAUNCH_EXEC="${7-}"
 
 log() {
   printf '%s %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$LOG_PATH"
@@ -380,7 +397,16 @@ rm -rf "$STAGE_DIR"
 
 if [ "$RELAUNCH" = "1" ]; then
   log "relaunching installed appimage"
-  "$TARGET_APPIMAGE" >/dev/null 2>&1 &
+  if [ -n "$RELAUNCH_EXEC" ]; then
+    if [ "$#" -ge 7 ]; then
+      shift 7
+      "$RELAUNCH_EXEC" "$@" >/dev/null 2>&1 &
+    else
+      "$RELAUNCH_EXEC" >/dev/null 2>&1 &
+    fi
+  else
+    "$TARGET_APPIMAGE" >/dev/null 2>&1 &
+  fi
 fi
 `;
 }
@@ -391,10 +417,10 @@ function debugInstallerScript(kind: StagedUpdate['kind']): string {
 setlocal
 
 set "PID=%~1"
-set "APP_PATH=%~2"
 set "TARGET_EXE=%~3"
 set "RELAUNCH=%~4"
 set "LOG_PATH=%~6"
+set "RELAUNCH_EXE=%~7"
 
 :wait_for_exit
 tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
@@ -405,8 +431,15 @@ if not errorlevel 1 (
 
 echo Debug relaunch>>"%LOG_PATH%"
 if "%RELAUNCH%"=="1" (
-  if not "%APP_PATH%"=="" (
-    start "" "%TARGET_EXE%" "%APP_PATH%"
+  if not "%RELAUNCH_EXE%"=="" (
+    shift
+    shift
+    shift
+    shift
+    shift
+    shift
+    shift
+    start "" "%RELAUNCH_EXE%" %*
   ) else (
     start "" "%TARGET_EXE%"
   )
@@ -419,9 +452,9 @@ set -eu
 
 PID="$1"
 TARGET_APP="$2"
-APP_PATH="$3"
 RELAUNCH="$4"
 LOG_PATH="$6"
+RELAUNCH_EXEC="${7-}"
 
 log() {
   printf '%s %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$LOG_PATH"
@@ -434,15 +467,18 @@ done
 
 if [ "$RELAUNCH" = "1" ]; then
   log "debug relaunch"
-  if [ -n "$TARGET_APP" ]; then
+  if [ -n "$RELAUNCH_EXEC" ]; then
+    if [ "$#" -ge 7 ]; then
+      shift 7
+      "$RELAUNCH_EXEC" "$@" >/dev/null 2>&1 &
+    else
+      "$RELAUNCH_EXEC" >/dev/null 2>&1 &
+    fi
+  elif [ -n "$TARGET_APP" ]; then
     if [ -d "$TARGET_APP" ]; then
       open "$TARGET_APP"
     else
-      if [ -n "$APP_PATH" ]; then
-        "$TARGET_APP" "$APP_PATH" >/dev/null 2>&1 &
-      else
-        "$TARGET_APP" >/dev/null 2>&1 &
-      fi
+      "$TARGET_APP" >/dev/null 2>&1 &
     fi
   fi
 fi
@@ -459,6 +495,7 @@ set "TARGET_EXE=%~3"
 set "RELAUNCH=%~4"
 set "STAGE_DIR=%~5"
 set "LOG_PATH=%~6"
+set "RELAUNCH_EXE=%~7"
 
 :wait_for_exit
 tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
@@ -471,7 +508,18 @@ echo Running installer>>"%LOG_PATH%"
 start "" /wait "%INSTALLER%" /S
 
 if "%RELAUNCH%"=="1" (
-  start "" "%TARGET_EXE%"
+  if not "%RELAUNCH_EXE%"=="" (
+    shift
+    shift
+    shift
+    shift
+    shift
+    shift
+    shift
+    start "" "%RELAUNCH_EXE%" %*
+  ) else (
+    start "" "%TARGET_EXE%"
+  )
 )
 `;
 }
@@ -522,6 +570,9 @@ async function stageMacRelease(release: GithubLatestRelease, asset: GithubReleas
   await clearMacQuarantine(extractedAppPath);
   const helperScriptPath = await writeInstallerScript(stageDir, 'install-update.sh', macInstallerScript());
 
+  const relaunchExecPath = process.execPath;
+  const relaunchArgs = app.isPackaged ? [] : process.argv.slice(1);
+
   stagedUpdate = {
     kind: 'mac-app',
     version: release.version,
@@ -531,6 +582,8 @@ async function stageMacRelease(release: GithubLatestRelease, asset: GithubReleas
     helperScriptPath,
     targetPath: targetAppPath,
     stagedPath: extractedAppPath,
+    relaunchExecPath,
+    relaunchArgs,
   };
   relaunchAfterInstall = false;
   installerLaunchStarted = false;
@@ -559,6 +612,9 @@ async function stageWindowsRelease(release: GithubLatestRelease, asset: GithubRe
   await downloadReleaseAsset(release, asset, installerPath);
   const helperScriptPath = await writeInstallerScript(stageDir, 'install-update.cmd', windowsInstallerScript());
 
+  const relaunchExecPath = process.execPath;
+  const relaunchArgs = app.isPackaged ? [] : process.argv.slice(1);
+
   stagedUpdate = {
     kind: 'windows-installer',
     version: release.version,
@@ -568,6 +624,8 @@ async function stageWindowsRelease(release: GithubLatestRelease, asset: GithubRe
     helperScriptPath,
     targetPath: targetExecutablePath,
     stagedPath: installerPath,
+    relaunchExecPath,
+    relaunchArgs,
   };
   relaunchAfterInstall = false;
   installerLaunchStarted = false;
@@ -597,6 +655,9 @@ async function stageLinuxRelease(release: GithubLatestRelease, asset: GithubRele
   await chmod(appImagePath, 0o755);
   const helperScriptPath = await writeInstallerScript(stageDir, 'install-update.sh', linuxInstallerScript());
 
+  const relaunchExecPath = process.execPath;
+  const relaunchArgs = app.isPackaged ? [] : process.argv.slice(1);
+
   stagedUpdate = {
     kind: 'linux-appimage',
     version: release.version,
@@ -606,6 +667,8 @@ async function stageLinuxRelease(release: GithubLatestRelease, asset: GithubRele
     helperScriptPath,
     targetPath: targetAppImagePath,
     stagedPath: appImagePath,
+    relaunchExecPath,
+    relaunchArgs,
   };
   relaunchAfterInstall = false;
   installerLaunchStarted = false;
@@ -623,31 +686,15 @@ async function stageLinuxRelease(release: GithubLatestRelease, asset: GithubRele
 async function stageDebugRelaunch(): Promise<boolean> {
   let kind: StagedUpdate['kind'];
   let targetPath: string | null = null;
-  let relaunchAppPath: string | null = null;
   if (process.platform === 'darwin') {
     kind = 'mac-app';
-    if (app.isPackaged) {
-      targetPath = resolveCurrentMacAppPath();
-    } else {
-      targetPath = process.execPath;
-      relaunchAppPath = app.getAppPath();
-    }
+    targetPath = app.isPackaged ? resolveCurrentMacAppPath() : process.execPath;
   } else if (process.platform === 'win32') {
     kind = 'windows-installer';
-    if (app.isPackaged) {
-      targetPath = resolveCurrentWindowsExecutablePath();
-    } else {
-      targetPath = process.execPath;
-      relaunchAppPath = app.getAppPath();
-    }
+    targetPath = app.isPackaged ? resolveCurrentWindowsExecutablePath() : process.execPath;
   } else {
     kind = 'linux-appimage';
-    if (app.isPackaged) {
-      targetPath = resolveCurrentLinuxAppImagePath();
-    } else {
-      targetPath = process.execPath;
-      relaunchAppPath = app.getAppPath();
-    }
+    targetPath = app.isPackaged ? resolveCurrentLinuxAppImagePath() : process.execPath;
   }
   if (!targetPath) {
     return false;
@@ -662,6 +709,9 @@ async function stageDebugRelaunch(): Promise<boolean> {
     debugInstallerScript(kind)
   );
 
+  const relaunchExecPath = process.execPath;
+  const relaunchArgs = app.isPackaged ? [] : process.argv.slice(1);
+
   stagedUpdate = {
     kind,
     version: `debug-${app.getVersion()}`,
@@ -670,7 +720,9 @@ async function stageDebugRelaunch(): Promise<boolean> {
     stageDir,
     helperScriptPath,
     targetPath,
-    stagedPath: relaunchAppPath ?? targetPath,
+    stagedPath: targetPath,
+    relaunchExecPath,
+    relaunchArgs,
   };
   relaunchAfterInstall = false;
   installerLaunchStarted = false;
@@ -795,6 +847,9 @@ function maybeCheckForUpdates(reason: 'startup' | 'focus' | 'interval'): void {
 
 function spawnInstallerHelper(update: StagedUpdate, relaunch: boolean): void {
   const logPath = path.join(update.stageDir, 'install.log');
+  const relaunchArgs = update.relaunchExecPath
+    ? [update.relaunchExecPath, ...(update.relaunchArgs ?? [])]
+    : [];
   const launcher =
     update.kind === 'windows-installer'
       ? 'cmd.exe'
@@ -803,8 +858,8 @@ function spawnInstallerHelper(update: StagedUpdate, relaunch: boolean): void {
         : '/bin/sh';
   const args =
     update.kind === 'windows-installer'
-      ? ['/c', update.helperScriptPath, String(process.pid), update.stagedPath, update.targetPath, relaunch ? '1' : '0', update.stageDir, logPath]
-      : [update.helperScriptPath, String(process.pid), update.targetPath, update.stagedPath, relaunch ? '1' : '0', update.stageDir, logPath];
+      ? ['/c', update.helperScriptPath, String(process.pid), update.stagedPath, update.targetPath, relaunch ? '1' : '0', update.stageDir, logPath, ...relaunchArgs]
+      : [update.helperScriptPath, String(process.pid), update.targetPath, update.stagedPath, relaunch ? '1' : '0', update.stageDir, logPath, ...relaunchArgs];
 
   const child = spawn(launcher, args, {
     detached: true,
