@@ -5643,90 +5643,164 @@
             </div>
             {#if timelineDetailHash}
               <p class="tm-details-hash">{timelineDetailHash}</p>
+              <p class="tm-details-hint">
+                Event hash = SHA-256 of the serialized payload bytes (signature not included).
+              </p>
             {/if}
 
             <div class="tm-details-section">
+              <p class="tm-details-section-title">Signed envelope</p>
+              <p class="tm-details-section-note">
+                The signature covers the serialized payload fields below and is verified with the volume public key
+                derived from this space secret.
+              </p>
+              <div class="tm-details-grid">
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">signature</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">{timelineDetailPayload.signature}</span>
+                    <span class="tm-details-help">Base64 signature bytes stored alongside the payload.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="tm-details-section">
               <p class="tm-details-section-title">Encoded event</p>
+              <p class="tm-details-section-note">Raw JSON stored for this event (payload + signature).</p>
               <pre class="tm-details-pre">{timelineDetailEncoded}</pre>
             </div>
 
             <div class="tm-details-section">
-              <p class="tm-details-section-title">Payload fields</p>
+              <p class="tm-details-section-title">Payload fields (signed)</p>
+              <p class="tm-details-section-note">
+                Payload fields are cleartext metadata. File bytes are encrypted separately; record/message fields are
+                stored as canonical JSON strings.
+              </p>
               <div class="tm-details-grid">
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">type</span>
-                  <span class="tm-details-value">{payload.type}</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value">{payload.type}</span>
+                    <span class="tm-details-help">Event kind; controls which fields are used.</span>
+                  </div>
                 </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">fileName</span>
-                  <span class="tm-details-value">{payload.fileName}</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value">{payload.fileName}</span>
+                    <span class="tm-details-help">Logical file name in the volume (empty for app/chat events).</span>
+                  </div>
                 </div>
                 {#if payload.toFileName}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">toFileName</span>
-                    <span class="tm-details-value">{payload.toFileName}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{payload.toFileName}</span>
+                      <span class="tm-details-help">Destination name for rename events.</span>
+                    </div>
                   </div>
                 {/if}
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">hash</span>
-                  <span class="tm-details-value mono">{payload.hash}</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">{payload.hash}</span>
+                    <span class="tm-details-help">
+                      SHA-256 of the encrypted data block. Empty (all zeros) for delete/rename/app events.
+                    </span>
+                  </div>
                 </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">encryptedKey</span>
-                  <span class="tm-details-value mono">{payload.encryptedKey}</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">{payload.encryptedKey}</span>
+                    <span class="tm-details-help">
+                      Wrapped file key (encrypted with a key derived from the volume private key). Empty for
+                      delete/rename/app events and legacy blocks.
+                    </span>
+                  </div>
                 </div>
                 {#if payload.contentType}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">contentType</span>
-                    <span class="tm-details-value">{payload.contentType}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{payload.contentType}</span>
+                      <span class="tm-details-help">Ciphertext kind: b = block, m = manifest.</span>
+                    </div>
                   </div>
                 {/if}
                 {#if payload.size !== undefined}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">size</span>
-                    <span class="tm-details-value">{payload.size}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{payload.size}</span>
+                      <span class="tm-details-help">Original plaintext size in bytes.</span>
+                    </div>
                   </div>
                 {/if}
                 {#if payload.mimeType}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">mimeType</span>
-                    <span class="tm-details-value">{payload.mimeType}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{payload.mimeType}</span>
+                      <span class="tm-details-help">MIME type hint from the uploader.</span>
+                    </div>
                   </div>
                 {/if}
                 {#if payload.createdAt !== undefined}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">createdAt</span>
-                    <span class="tm-details-value">{formatDate(payload.createdAt)}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{formatDate(payload.createdAt)}</span>
+                      <span class="tm-details-help">Client timestamp when the file was created.</span>
+                    </div>
                   </div>
                 {/if}
                 {#if payload.deletedAt !== undefined}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">deletedAt</span>
-                    <span class="tm-details-value">{formatDate(payload.deletedAt)}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{formatDate(payload.deletedAt)}</span>
+                      <span class="tm-details-help">Client timestamp when the delete was authored.</span>
+                    </div>
                   </div>
                 {/if}
                 {#if payload.renamedAt !== undefined}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">renamedAt</span>
-                    <span class="tm-details-value">{formatDate(payload.renamedAt)}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{formatDate(payload.renamedAt)}</span>
+                      <span class="tm-details-help">Client timestamp when the rename was authored.</span>
+                    </div>
                   </div>
                 {/if}
                 {#if payload.authorPublicKey}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">authorPublicKey</span>
-                    <span class="tm-details-value mono">{payload.authorPublicKey}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value mono">{payload.authorPublicKey}</span>
+                      <span class="tm-details-help">
+                        Author identity key for app/identity/chat payloads (not the volume key).
+                      </span>
+                    </div>
                   </div>
                 {/if}
                 {#if payload.protocol}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">protocol</span>
-                    <span class="tm-details-value">{payload.protocol}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{payload.protocol}</span>
+                      <span class="tm-details-help">Protocol id for APP_RECORD (should match the record p field).</span>
+                    </div>
                   </div>
                 {/if}
                 {#if payload.publishedAt !== undefined}
                   <div class="tm-details-grid-row">
                     <span class="tm-details-label">publishedAt</span>
-                    <span class="tm-details-value">{formatDate(payload.publishedAt)}</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">{formatDate(payload.publishedAt)}</span>
+                      <span class="tm-details-help">Client timestamp when the app record/message was published.</span>
+                    </div>
                   </div>
                 {/if}
               </div>
@@ -5735,6 +5809,10 @@
             {#if timelineDetailRecord || timelineDetailRecordError}
               <div class="tm-details-section">
                 <p class="tm-details-section-title">App record</p>
+                <p class="tm-details-section-note">
+                  Cleartext canonical JSON string embedded in the signed payload. Not encrypted; any app-level
+                  signature lives inside the record (for example a sig field).
+                </p>
                 {#if timelineDetailRecordError}
                   <p class="tm-details-error">Record parse error: {timelineDetailRecordError}</p>
                 {/if}
@@ -5747,6 +5825,10 @@
             {#if timelineDetailMessage || timelineDetailMessageError}
               <div class="tm-details-section">
                 <p class="tm-details-section-title">App message</p>
+                <p class="tm-details-section-note">
+                  Cleartext canonical JSON string embedded in the signed payload. Not encrypted; chat protocols often
+                  include their own sig field.
+                </p>
                 {#if timelineDetailMessageError}
                   <p class="tm-details-error">Message parse error: {timelineDetailMessageError}</p>
                 {/if}
@@ -7631,6 +7713,12 @@
     word-break: break-all;
   }
 
+  .tm-details-hint {
+    margin: 0;
+    font-size: 0.66rem;
+    color: rgba(148, 163, 184, 0.8);
+  }
+
   .tm-details-loading {
     display: flex;
     align-items: center;
@@ -7681,6 +7769,13 @@
     color: rgba(125, 211, 252, 0.7);
   }
 
+  .tm-details-section-note {
+    margin: 0;
+    font-size: 0.66rem;
+    color: rgba(148, 163, 184, 0.8);
+    line-height: 1.4;
+  }
+
   .tm-details-grid {
     display: grid;
     gap: 0.4rem;
@@ -7690,7 +7785,7 @@
     display: grid;
     grid-template-columns: minmax(0, 140px) minmax(0, 1fr);
     gap: 0.6rem;
-    align-items: baseline;
+    align-items: start;
   }
 
   .tm-details-label {
@@ -7705,9 +7800,21 @@
     word-break: break-word;
   }
 
+  .tm-details-value-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
   .tm-details-value.mono {
     font-family: 'Monaco', 'Menlo', monospace;
     font-size: 0.72rem;
+  }
+
+  .tm-details-help {
+    font-size: 0.66rem;
+    color: rgba(148, 163, 184, 0.75);
+    line-height: 1.35;
   }
 
   .tm-details-ref-list {
