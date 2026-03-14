@@ -746,6 +746,28 @@ export async function installDownloadedUpdate(): Promise<boolean> {
       detail: 'Nearbytes will relaunch after applying the downloaded update.',
       canInstall: false,
     });
+    try {
+      installerLaunchStarted = true;
+      spawnInstallerHelper(stagedUpdate, relaunchAfterInstall);
+    } catch (error) {
+      installerLaunchStarted = false;
+      relaunchAfterInstall = false;
+      const message = error instanceof Error ? error.message : String(error);
+      emitState({
+        phase: 'error',
+        version: stagedUpdate.version,
+        message: 'Nearbytes update install failed',
+        detail: message,
+        progressPercent: null,
+        transferredBytes: 0,
+        totalBytes: 0,
+        bytesPerSecond: 0,
+        canInstall: false,
+        releaseUrl: currentState.releaseUrl,
+        assetName: currentState.assetName,
+      });
+      return false;
+    }
     app.quit();
     return true;
   }
