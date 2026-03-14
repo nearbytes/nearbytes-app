@@ -322,7 +322,7 @@ STAGED_APP="$3"
 RELAUNCH="$4"
 STAGE_DIR="$5"
 LOG_PATH="$6"
-RELAUNCH_EXEC="${7-}"
+RELAUNCH_EXEC="\${7-}"
 
 log() {
   printf '%s %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$LOG_PATH"
@@ -375,7 +375,7 @@ STAGED_APPIMAGE="$3"
 RELAUNCH="$4"
 STAGE_DIR="$5"
 LOG_PATH="$6"
-RELAUNCH_EXEC="${7-}"
+RELAUNCH_EXEC="\${7-}"
 
 log() {
   printf '%s %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$LOG_PATH"
@@ -454,7 +454,7 @@ PID="$1"
 TARGET_APP="$2"
 RELAUNCH="$4"
 LOG_PATH="$6"
-RELAUNCH_EXEC="${7-}"
+RELAUNCH_EXEC="\${7-}"
 
 log() {
   printf '%s %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$LOG_PATH"
