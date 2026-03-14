@@ -593,6 +593,17 @@ export function createRoutes(deps: RouteDependencies): Router {
     })
   );
 
+  router.get(
+    '/events/:hash',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { hash } = parseWithSchema(fileHashParamSchema, req.params);
+      const secret = res.locals.secret as string;
+      const detail = await deps.fileService.getEvent(secret, hash);
+      res.json(detail);
+    })
+  );
+
   router.post(
     '/snapshot',
     requireSecret(deps),

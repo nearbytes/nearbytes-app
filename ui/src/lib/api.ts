@@ -169,6 +169,7 @@ export interface TimelineEvent {
   filename: string;
   timestamp: number;
   blobHash?: string;
+  contentType?: 'b' | 'm';
   toFilename?: string;
   size?: number;
   mimeType?: string;
@@ -189,6 +190,33 @@ export interface TimelineResponse {
   volumeId: string;
   eventCount: number;
   events: TimelineEvent[];
+}
+
+export interface SerializedEvent {
+  payload: {
+    type: string;
+    fileName: string;
+    toFileName?: string;
+    hash: string;
+    encryptedKey: string;
+    contentType?: 'b' | 'm';
+    size?: number;
+    mimeType?: string;
+    createdAt?: number;
+    deletedAt?: number;
+    renamedAt?: number;
+    authorPublicKey?: string;
+    protocol?: string;
+    record?: string;
+    message?: string;
+    publishedAt?: number;
+  };
+  signature: string;
+}
+
+export interface EventDetailResponse {
+  eventHash: string;
+  event: SerializedEvent;
 }
 
 export interface RenameFolderSummary {
@@ -906,6 +934,16 @@ export async function listFiles(auth: Auth): Promise<ListFilesResponse> {
  */
 export async function getTimeline(auth: Auth): Promise<TimelineResponse> {
   return apiRequest<TimelineResponse>('/timeline', {
+    method: 'GET',
+    auth,
+  });
+}
+
+/**
+ * Returns the encoded on-disk event payload + signature for a specific event hash.
+ */
+export async function getEventDetail(auth: Auth, eventHash: string): Promise<EventDetailResponse> {
+  return apiRequest<EventDetailResponse>(`/events/${eventHash}`, {
     method: 'GET',
     auth,
   });

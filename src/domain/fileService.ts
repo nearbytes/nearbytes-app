@@ -2,15 +2,15 @@ import type { KeyPair, Secret } from '../types/keys.js';
 import { createSecret } from '../types/keys.js';
 import type { CryptoOperations } from '../crypto/index.js';
 import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
-import type { EventPayload, Hash, EncryptedData } from '../types/events.js';
-import { createEncryptedData, EMPTY_HASH, EventType } from '../types/events.js';
+import type { EventPayload, Hash, EncryptedData, SerializedEvent } from '../types/events.js';
+import { createEncryptedData, EMPTY_HASH, EventType, createHash } from '../types/events.js';
 import { createCryptoOperations } from '../crypto/index.js';
 import { DecryptionError } from '../crypto/errors.js';
 import { FilesystemStorageBackend } from '../storage/filesystem.js';
 import { ChannelStorage } from '../storage/channel.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { defaultPathMapper } from '../types/storage.js';
-import { serializeEventPayload } from '../storage/serialization.js';
+import { serializeEvent, serializeEventPayload } from '../storage/serialization.js';
 import { openVolume, loadEventLog, verifyEventLog } from './volume.js';
 import type { FileMetadata } from './fileEvents.js';
 import type { EventLogEntry } from '../types/volume.js';
@@ -99,6 +99,11 @@ export interface TimelineEvent {
   message?: ChatMessage;
 }
 
+export interface EventDetail {
+  eventHash: string;
+  event: SerializedEvent;
+}
+
 export interface RenameFolderSummary {
   fromFolder: string;
   toFolder: string;
@@ -137,6 +142,7 @@ export interface FileService {
   ): Promise<RenameFolderSummary>;
   computeSnapshot(secret: string): Promise<SnapshotSummary>;
   getTimeline(secret: string): Promise<TimelineEvent[]>;
+  getEvent(secret: string, eventHash: string): Promise<EventDetail>;
   exportSourceReferences(
     secret: string,
     filenames: string[]
@@ -266,6 +272,15 @@ export function createFileService(dependencies: FileServiceDependencies): FileSe
       ),
     getTimeline: async (secret) =>
       getTimelineWithDeps(secret, dependencies.crypto, dependencies.storage, channelStorage, pathMapper),
+    getEvent: async (secret, eventHash) =>
+      getEventWithDeps(
+        secret,
+        eventHash,
+        dependencies.crypto,
+        dependencies.storage,
+        channelStorage,
+        pathMapper
+      ),
     exportSourceReferences: async (secret, filenames) =>
       exportSourceReferencesWithDeps(
         secret,
@@ -397,6 +412,11 @@ export async function computeSnapshot(secret: string): Promise<SnapshotSummary> 
 export async function getTimeline(secret: string): Promise<TimelineEvent[]> {
   const service = getDefaultFileService();
   return service.getTimeline(secret);
+}
+
+export async function getEvent(secret: string, eventHash: string): Promise<EventDetail> {
+  const service = getDefaultFileService();
+  return service.getEvent(secret, eventHash);
 }
 
 export async function exportSourceReferences(
@@ -723,6 +743,28 @@ async function getTimelineWithDeps(
   const entries = await loadEventLog(volume, channelStorage);
   await verifyEventLog(entries, volume, crypto);
   return mapEntriesToTimeline(entries);
+}
+
+async function getEventWithDeps(
+  secret: string,
+  eventHash: string,
+  crypto: CryptoOperations,
+  storage: StorageBackend,
+  channelStorage: ChannelStorage,
+  pathMapper: ChannelPathMapper
+): Promise<EventDetail> {
+  const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
+  const hash = createHash(eventHash);
+  const signedEvent = await channelStorage.retrieveEvent(volume.publicKey, hash);
+  const payloadBytes = serializeEventPayload(signedEvent.payload);
+  const isValid = await crypto.verifyPU(payloadBytes, signedEvent.signature, volume.publicKey);
+  if (!isValid) {
+    throw new Error(`Event signature verification failed for event ${hash}`);
+  }
+  return {
+    eventHash: hash,
+    event: serializeEvent(signedEvent),
+  };
 }
 
 async function exportSourceReferencesWithDeps(

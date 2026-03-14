@@ -55,6 +55,28 @@ Sources answer the question:
 
 `In which directories can Nearbytes find blocks and event logs?`
 
+### 4.1 Filesystem Layout
+
+Within each source path, Nearbytes uses a conventional on-disk layout:
+
+```
+<source>/
+  blocks/
+    <block-hash>.bin
+  channels/
+    <volumeId>/
+      <eventHash>.bin
+      snapshot.latest.json   # optional on-demand snapshot
+```
+
+Normative rules:
+
+1. `blocks/` stores encrypted blocks addressed by hash.
+2. `<block-hash>` MUST be lowercase 64-hex (SHA-256 of the ciphertext block).
+3. `channels/` MUST contain one directory per volume, named by `volumeId`.
+4. `<eventHash>` MUST be lowercase 64-hex (event hash).
+5. Readers MUST ignore non-`.bin` files when enumerating event logs; `snapshot.latest.json` is optional and not part of the log.
+
 Each source has:
 
 1. stable `id`

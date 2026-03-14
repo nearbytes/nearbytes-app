@@ -5,6 +5,7 @@
     openVolume,
     listFiles,
     getTimeline,
+    getEventDetail,
     uploadFiles,
     deleteFile,
     downloadFile,
@@ -17,6 +18,9 @@
     type Auth,
     type ChatAttachment,
     type FileMetadata,
+    type SerializedEvent,
+    type SourceFileReference,
+    type RecipientFileReference,
     type ReconcileSourcesResponse,
     type SourceReferenceBundle,
     type SourceProvider,
@@ -85,6 +89,13 @@
   const PARKED_MOUNT_WIDTH = 46;
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
+  type EventReference = {
+    kind: 'source' | 'recipient';
+    name?: string;
+    mime?: string;
+    createdAt?: number;
+    ref: SourceFileReference | RecipientFileReference;
+  };
   type DesktopRemoteFile = {
     filename: string;
     mimeType: string;
@@ -1160,6 +1171,20 @@
   let previewError = $state('');
   let showPreviewPane = $state(false);
   let previewFileOverride = $state<FileMetadata | null>(null);
+  let timelineDetailEvent = $state<TimelineEvent | null>(null);
+  let timelineDetailOpen = $state(false);
+  let timelineDetailLoading = $state(false);
+  let timelineDetailError = $state('');
+  let timelineDetailPayload = $state<SerializedEvent | null>(null);
+  let timelineDetailHash = $state('');
+  let timelineDetailEncoded = $state('');
+  let timelineDetailRecord = $state('');
+  let timelineDetailRecordError = $state('');
+  let timelineDetailMessage = $state('');
+  let timelineDetailMessageError = $state('');
+  let timelineDetailReferences = $state<EventReference[]>([]);
+  let timelineDetailEventRefs = $state<string[]>([]);
+  let timelineDetailRequestId = 0;
   let currentPreviewObjectUrl: string | null = null;
   const previewBlobCache = new Map<string, Blob>();
   const initialMounts = loadVolumeMounts();
@@ -1631,6 +1656,18 @@
   });
 
   const isHistoryMode = $derived.by(() => timelinePosition < timelineEvents.length);
+  const timelineDetailTimestamp = $derived.by(() => {
+    if (timelineDetailEvent) return timelineDetailEvent.timestamp;
+    if (!timelineDetailPayload) return null;
+    const payload = timelineDetailPayload.payload;
+    return (
+      payload.createdAt ??
+      payload.deletedAt ??
+      payload.renamedAt ??
+      payload.publishedAt ??
+      null
+    );
+  });
 
   function timelineKindLabel(event: TimelineEvent): string {
     switch (event.type) {
@@ -3118,6 +3155,275 @@
     return 'unsupported';
   }
 
+  function asRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  }
+
+  function isHexHash(value: unknown): value is string {
+    return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+  }
+
+  function isDescriptor(value: unknown): value is { t: 'b' | 'm'; h: string; z: number } {
+    const obj = asRecord(value);
+    if (!obj) return false;
+    if (obj.t !== 'b' && obj.t !== 'm') return false;
+    if (!isHexHash(obj.h)) return false;
+    return typeof obj.z === 'number' && Number.isFinite(obj.z) && obj.z >= 0;
+  }
+
+  function isSourceFileReference(value: unknown): value is SourceFileReference {
+    const obj = asRecord(value);
+    if (!obj || obj.p !== 'nb.src.ref.v1') return false;
+    return typeof obj.s === 'string' && isDescriptor(obj.c) && typeof obj.x === 'string';
+  }
+
+  function isRecipientFileReference(value: unknown): value is RecipientFileReference {
+    const obj = asRecord(value);
+    if (!obj || obj.p !== 'nb.ref.v1') return false;
+    const capsule = asRecord(obj.k);
+    return Boolean(capsule && typeof capsule.r === 'string' && isDescriptor(obj.c));
+  }
+
+  function tryParseJson(text?: string): { value?: unknown; error?: string } {
+    if (!text) {
+      return {};
+    }
+    try {
+      return { value: JSON.parse(text) };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : 'Invalid JSON',
+      };
+    }
+  }
+
+  function extractReferences(value: unknown): EventReference[] {
+    if (!value) return [];
+    const references: EventReference[] = [];
+    const seen = new Set<string>();
+    const queue: unknown[] = [value];
+
+    const pushReference = (ref: EventReference) => {
+      const refValue = ref.ref;
+      const refHash = refValue.c.h;
+      const refScope =
+        ref.kind === 'source'
+          ? (refValue as SourceFileReference).s
+          : (refValue as RecipientFileReference).k.r;
+      const key = `${ref.kind}|${ref.name ?? ''}|${refHash}|${refScope}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      references.push(ref);
+    };
+
+    while (queue.length > 0) {
+      const current = queue.pop();
+      if (Array.isArray(current)) {
+        for (const item of current) {
+          queue.push(item);
+        }
+        continue;
+      }
+      const obj = asRecord(current);
+      if (!obj) {
+        continue;
+      }
+
+      if (isSourceFileReference(obj)) {
+        pushReference({ kind: 'source', ref: obj });
+      } else if (isRecipientFileReference(obj)) {
+        pushReference({ kind: 'recipient', ref: obj });
+      }
+
+      if (obj.p === 'nb.src.refs.v1' && Array.isArray(obj.items)) {
+        for (const item of obj.items) {
+          const itemObj = asRecord(item);
+          if (!itemObj) continue;
+          const refObj = itemObj.ref;
+          if (isSourceFileReference(refObj)) {
+            pushReference({
+              kind: 'source',
+              name: typeof itemObj.name === 'string' ? itemObj.name : undefined,
+              mime: typeof itemObj.mime === 'string' ? itemObj.mime : undefined,
+              createdAt: typeof itemObj.createdAt === 'number' ? itemObj.createdAt : undefined,
+              ref: refObj,
+            });
+          }
+        }
+      }
+
+      if (obj.p === 'nb.refs.v1' && Array.isArray(obj.items)) {
+        for (const item of obj.items) {
+          const itemObj = asRecord(item);
+          if (!itemObj) continue;
+          const refObj = itemObj.ref;
+          if (isRecipientFileReference(refObj)) {
+            pushReference({
+              kind: 'recipient',
+              name: typeof itemObj.name === 'string' ? itemObj.name : undefined,
+              mime: typeof itemObj.mime === 'string' ? itemObj.mime : undefined,
+              createdAt: typeof itemObj.createdAt === 'number' ? itemObj.createdAt : undefined,
+              ref: refObj,
+            });
+          }
+        }
+      }
+
+      if (obj.attachment) {
+        const attachment = asRecord(obj.attachment);
+        const attachmentRef = attachment?.ref;
+        if (isSourceFileReference(attachmentRef)) {
+          pushReference({
+            kind: 'source',
+            name: typeof attachment?.name === 'string' ? attachment.name : undefined,
+            mime: typeof attachment?.mime === 'string' ? attachment.mime : undefined,
+            createdAt: typeof attachment?.createdAt === 'number' ? attachment.createdAt : undefined,
+            ref: attachmentRef,
+          });
+        }
+      }
+
+      for (const value of Object.values(obj)) {
+        queue.push(value);
+      }
+    }
+
+    return references;
+  }
+
+  function extractEventHashes(value: unknown): string[] {
+    if (!value) return [];
+    const hashes = new Set<string>();
+    const queue: unknown[] = [value];
+    while (queue.length > 0) {
+      const current = queue.pop();
+      if (Array.isArray(current)) {
+        for (const item of current) {
+          queue.push(item);
+        }
+        continue;
+      }
+      const obj = asRecord(current);
+      if (!obj) {
+        continue;
+      }
+      if (isHexHash(obj.eventHash)) {
+        hashes.add(obj.eventHash);
+      }
+      for (const value of Object.values(obj)) {
+        queue.push(value);
+      }
+    }
+    return Array.from(hashes);
+  }
+
+  function previewSourceReference(reference: EventReference) {
+    if (reference.kind !== 'source') return;
+    const attachment: ChatAttachment = {
+      kind: 'nb.src.ref.v1',
+      name: reference.name ?? 'Reference',
+      mime: reference.mime,
+      createdAt: reference.createdAt,
+      ref: reference.ref as SourceFileReference,
+    };
+    previewChatAttachment(attachment);
+  }
+
+  function closeTimelineDetails() {
+    timelineDetailOpen = false;
+    timelineDetailEvent = null;
+    timelineDetailPayload = null;
+    timelineDetailHash = '';
+    timelineDetailEncoded = '';
+    timelineDetailRecord = '';
+    timelineDetailRecordError = '';
+    timelineDetailMessage = '';
+    timelineDetailMessageError = '';
+    timelineDetailReferences = [];
+    timelineDetailEventRefs = [];
+    timelineDetailError = '';
+    timelineDetailLoading = false;
+    timelineDetailRequestId += 1;
+  }
+
+  async function openTimelineDetailsByHash(eventHash: string, seedEvent?: TimelineEvent) {
+    if (!auth) {
+      errorMessage = 'Open a space to view event details.';
+      return;
+    }
+    timelineDetailOpen = true;
+    timelineDetailLoading = true;
+    timelineDetailError = '';
+    timelineDetailPayload = null;
+    timelineDetailHash = eventHash;
+    timelineDetailEncoded = '';
+    timelineDetailRecord = '';
+    timelineDetailRecordError = '';
+    timelineDetailMessage = '';
+    timelineDetailMessageError = '';
+    timelineDetailReferences = [];
+    timelineDetailEventRefs = [];
+    timelineDetailEvent = seedEvent ?? timelineEvents.find((entry) => entry.eventHash === eventHash) ?? null;
+
+    const requestId = (timelineDetailRequestId += 1);
+    try {
+      const detail = await getEventDetail(auth, eventHash);
+      if (requestId !== timelineDetailRequestId) return;
+      timelineDetailPayload = detail.event;
+      timelineDetailHash = detail.eventHash;
+      timelineDetailEncoded = JSON.stringify(detail.event, null, 2);
+
+      const recordParse = tryParseJson(detail.event.payload.record);
+      if (recordParse.value !== undefined) {
+        timelineDetailRecord = JSON.stringify(recordParse.value, null, 2);
+      } else if (detail.event.payload.record) {
+        timelineDetailRecord = detail.event.payload.record;
+      }
+      if (recordParse.error) {
+        timelineDetailRecordError = recordParse.error;
+      }
+
+      const messageParse = tryParseJson(detail.event.payload.message);
+      if (messageParse.value !== undefined) {
+        timelineDetailMessage = JSON.stringify(messageParse.value, null, 2);
+      } else if (detail.event.payload.message) {
+        timelineDetailMessage = detail.event.payload.message;
+      }
+      if (messageParse.error) {
+        timelineDetailMessageError = messageParse.error;
+      }
+
+      const references = [
+        ...extractReferences(recordParse.value),
+        ...extractReferences(messageParse.value),
+      ];
+      timelineDetailReferences = references;
+
+      const eventRefs = new Set<string>();
+      for (const hash of extractEventHashes(recordParse.value)) {
+        if (hash !== eventHash) eventRefs.add(hash);
+      }
+      for (const hash of extractEventHashes(messageParse.value)) {
+        if (hash !== eventHash) eventRefs.add(hash);
+      }
+      timelineDetailEventRefs = Array.from(eventRefs);
+    } catch (error) {
+      if (requestId !== timelineDetailRequestId) return;
+      timelineDetailError = error instanceof Error ? error.message : 'Unable to load event';
+    } finally {
+      if (requestId === timelineDetailRequestId) {
+        timelineDetailLoading = false;
+      }
+    }
+  }
+
+  async function openTimelineDetails(event: TimelineEvent) {
+    await openTimelineDetailsByHash(event.eventHash, event);
+  }
+
   $effect(() => {
     let cancelled = false;
     const file = currentPreviewFile;
@@ -4038,6 +4344,11 @@
 
 <svelte:window onkeydown={(e) => {
   if (e.key === 'Escape') {
+    if (timelineDetailOpen) {
+      e.preventDefault();
+      closeTimelineDetails();
+      return;
+    }
     handleManagerKeydown(e);
     collapseMount(activeMountId);
   }
@@ -4788,23 +5099,36 @@
         {#if timelineEvents.length > 0}
           <div class="tm-events" bind:this={timelineEventsElement} onscroll={handleTimelineScroll}>
             {#each timelineEvents as event, index (event.eventHash)}
-              <button
-                type="button"
-                class="tm-event"
-                class:applied={index < timelinePosition}
-                class:current={index === timelinePosition - 1}
-                class:create={event.type === 'CREATE_FILE'}
-                class:delete={event.type === 'DELETE_FILE'}
-                class:rename={event.type === 'RENAME_FILE'}
-                class:identity={event.type === 'DECLARE_IDENTITY'}
-                class:chat={event.type === 'CHAT_MESSAGE'}
-                onclick={() => jumpToEvent(index)}
-                title={timelineTitle(event)}
-              >
-                <span class="tm-event-kind">{timelineKindLabel(event)}</span>
-                <span class="tm-event-name">{timelineHeadline(event)}</span>
-                <span class="tm-event-time">{formatShortDate(event.timestamp)}</span>
-              </button>
+              <div class="tm-event-row">
+                <button
+                  type="button"
+                  class="tm-event"
+                  class:applied={index < timelinePosition}
+                  class:current={index === timelinePosition - 1}
+                  class:create={event.type === 'CREATE_FILE'}
+                  class:delete={event.type === 'DELETE_FILE'}
+                  class:rename={event.type === 'RENAME_FILE'}
+                  class:identity={event.type === 'DECLARE_IDENTITY'}
+                  class:chat={event.type === 'CHAT_MESSAGE'}
+                  onclick={() => jumpToEvent(index)}
+                  title={timelineTitle(event)}
+                >
+                  <span class="tm-event-kind">{timelineKindLabel(event)}</span>
+                  <span class="tm-event-name">{timelineHeadline(event)}</span>
+                  <span class="tm-event-time">{formatShortDate(event.timestamp)}</span>
+                </button>
+                <button
+                  type="button"
+                  class="tm-event-details"
+                  onclick={(clickEvent) => {
+                    clickEvent.stopPropagation();
+                    void openTimelineDetails(event);
+                  }}
+                  aria-label={`View details for ${event.filename || 'event'}`}
+                >
+                  Details
+                </button>
+              </div>
             {/each}
           </div>
         {:else}
@@ -5266,6 +5590,236 @@
           </button>
         </aside>
       {/if}
+    </div>
+  {/if}
+
+  {#if timelineDetailOpen}
+    <div
+      class="tm-details-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Timeline event details"
+      onclick={closeTimelineDetails}
+    >
+      <div class="tm-details-modal panel-surface" onclick={(event) => event.stopPropagation()}>
+        <div class="tm-details-header">
+          <div class="tm-details-head-meta">
+            <p class="tm-details-eyebrow">Timeline details</p>
+            <p class="tm-details-title">
+              {#if timelineDetailEvent}
+                {timelineKindLabel(timelineDetailEvent)} {timelineHeadline(timelineDetailEvent)}
+              {:else if timelineDetailPayload}
+                {timelineDetailPayload.payload.type} {timelineDetailPayload.payload.fileName}
+              {:else}
+                Event details
+              {/if}
+            </p>
+            {#if timelineDetailTimestamp !== null}
+              <p class="tm-details-subtitle">{formatDate(timelineDetailTimestamp)}</p>
+            {/if}
+          </div>
+          <button
+            type="button"
+            class="tm-details-close"
+            aria-label="Close details"
+            onclick={closeTimelineDetails}
+          >
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+        <div class="tm-details-body">
+          {#if timelineDetailLoading}
+            <div class="tm-details-loading">
+              <span class="loading-spinner"></span>
+              <span>Loading event…</span>
+            </div>
+          {:else if timelineDetailError}
+            <p class="tm-details-error">{timelineDetailError}</p>
+          {:else if timelineDetailPayload}
+            {@const payload = timelineDetailPayload.payload}
+            <div class="tm-details-meta">
+              <span>{payload.type}</span>
+              <span>{payload.fileName || '—'}</span>
+            </div>
+            {#if timelineDetailHash}
+              <p class="tm-details-hash">{timelineDetailHash}</p>
+            {/if}
+
+            <div class="tm-details-section">
+              <p class="tm-details-section-title">Encoded event</p>
+              <pre class="tm-details-pre">{timelineDetailEncoded}</pre>
+            </div>
+
+            <div class="tm-details-section">
+              <p class="tm-details-section-title">Payload fields</p>
+              <div class="tm-details-grid">
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">type</span>
+                  <span class="tm-details-value">{payload.type}</span>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">fileName</span>
+                  <span class="tm-details-value">{payload.fileName}</span>
+                </div>
+                {#if payload.toFileName}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">toFileName</span>
+                    <span class="tm-details-value">{payload.toFileName}</span>
+                  </div>
+                {/if}
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">hash</span>
+                  <span class="tm-details-value mono">{payload.hash}</span>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">encryptedKey</span>
+                  <span class="tm-details-value mono">{payload.encryptedKey}</span>
+                </div>
+                {#if payload.contentType}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">contentType</span>
+                    <span class="tm-details-value">{payload.contentType}</span>
+                  </div>
+                {/if}
+                {#if payload.size !== undefined}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">size</span>
+                    <span class="tm-details-value">{payload.size}</span>
+                  </div>
+                {/if}
+                {#if payload.mimeType}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">mimeType</span>
+                    <span class="tm-details-value">{payload.mimeType}</span>
+                  </div>
+                {/if}
+                {#if payload.createdAt !== undefined}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">createdAt</span>
+                    <span class="tm-details-value">{formatDate(payload.createdAt)}</span>
+                  </div>
+                {/if}
+                {#if payload.deletedAt !== undefined}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">deletedAt</span>
+                    <span class="tm-details-value">{formatDate(payload.deletedAt)}</span>
+                  </div>
+                {/if}
+                {#if payload.renamedAt !== undefined}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">renamedAt</span>
+                    <span class="tm-details-value">{formatDate(payload.renamedAt)}</span>
+                  </div>
+                {/if}
+                {#if payload.authorPublicKey}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">authorPublicKey</span>
+                    <span class="tm-details-value mono">{payload.authorPublicKey}</span>
+                  </div>
+                {/if}
+                {#if payload.protocol}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">protocol</span>
+                    <span class="tm-details-value">{payload.protocol}</span>
+                  </div>
+                {/if}
+                {#if payload.publishedAt !== undefined}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">publishedAt</span>
+                    <span class="tm-details-value">{formatDate(payload.publishedAt)}</span>
+                  </div>
+                {/if}
+              </div>
+            </div>
+
+            {#if timelineDetailRecord || timelineDetailRecordError}
+              <div class="tm-details-section">
+                <p class="tm-details-section-title">App record</p>
+                {#if timelineDetailRecordError}
+                  <p class="tm-details-error">Record parse error: {timelineDetailRecordError}</p>
+                {/if}
+                {#if timelineDetailRecord}
+                  <pre class="tm-details-pre">{timelineDetailRecord}</pre>
+                {/if}
+              </div>
+            {/if}
+
+            {#if timelineDetailMessage || timelineDetailMessageError}
+              <div class="tm-details-section">
+                <p class="tm-details-section-title">App message</p>
+                {#if timelineDetailMessageError}
+                  <p class="tm-details-error">Message parse error: {timelineDetailMessageError}</p>
+                {/if}
+                {#if timelineDetailMessage}
+                  <pre class="tm-details-pre">{timelineDetailMessage}</pre>
+                {/if}
+              </div>
+            {/if}
+
+            {#if timelineDetailReferences.length > 0}
+              <div class="tm-details-section">
+                <p class="tm-details-section-title">References</p>
+                <div class="tm-details-ref-list">
+                  {#each timelineDetailReferences as reference}
+                    <div class="tm-details-ref-row">
+                      <div class="tm-details-ref-copy">
+                        <p class="tm-details-ref-name">
+                          {reference.name ?? (reference.kind === 'source' ? 'Source reference' : 'Recipient reference')}
+                        </p>
+                        {#if reference.kind === 'source'}
+                          <p class="tm-details-ref-meta mono">{(reference.ref as SourceFileReference).s}</p>
+                        {:else}
+                          <p class="tm-details-ref-meta mono">
+                            {(reference.ref as RecipientFileReference).k.r}
+                          </p>
+                        {/if}
+                        <p class="tm-details-ref-hash mono">{reference.ref.c.h}</p>
+                        <p class="tm-details-ref-meta">
+                          {reference.ref.c.t} • {reference.ref.c.z} bytes
+                        </p>
+                      </div>
+                      <div class="tm-details-ref-actions">
+                        {#if reference.kind === 'source'}
+                          <button
+                            type="button"
+                            class="tm-details-ref-btn"
+                            onclick={() => previewSourceReference(reference)}
+                          >
+                            Preview
+                          </button>
+                        {:else}
+                          <button type="button" class="tm-details-ref-btn" disabled>
+                            Recipient
+                          </button>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            {#if timelineDetailEventRefs.length > 0}
+              <div class="tm-details-section">
+                <p class="tm-details-section-title">Event references</p>
+                <div class="tm-details-ref-list">
+                  {#each timelineDetailEventRefs as eventHash}
+                    <button
+                      type="button"
+                      class="tm-details-ref-btn link"
+                      onclick={() => openTimelineDetailsByHash(eventHash)}
+                    >
+                      {eventHash}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          {:else}
+            <p class="tm-details-empty">No event payload available.</p>
+          {/if}
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -6852,6 +7406,7 @@
     grid-auto-flow: column;
     grid-auto-columns: minmax(132px, 162px);
     gap: 0.42rem;
+    align-items: start;
     overflow-x: auto;
     overflow-y: hidden;
     padding: 0.15rem 0.35rem 0.2rem 0;
@@ -6879,6 +7434,37 @@
     max-width: 100%;
     overflow: hidden;
     outline: none;
+  }
+
+  .tm-event-row {
+    display: grid;
+    gap: 0.32rem;
+    min-width: 0;
+  }
+
+  .tm-event-details {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    background: rgba(12, 22, 41, 0.6);
+    color: rgba(226, 232, 240, 0.85);
+    font-size: 0.64rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.3rem 0.4rem;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+  }
+
+  .tm-event-details:hover {
+    border-color: rgba(56, 189, 248, 0.4);
+    background: rgba(14, 116, 144, 0.22);
+    color: #e0f2fe;
+  }
+
+  .tm-event-details:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.7);
   }
 
   .tm-event:focus-visible {
@@ -6942,6 +7528,281 @@
     margin: 0;
     font-size: 0.8125rem;
     color: rgba(186, 230, 253, 0.7);
+  }
+
+  .tm-details-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(2, 6, 23, 0.72);
+    backdrop-filter: blur(8px);
+    z-index: 200;
+  }
+
+  .tm-details-modal {
+    width: min(860px, 95vw);
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: linear-gradient(180deg, rgba(9, 18, 34, 0.98), rgba(6, 12, 24, 0.96));
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 16px;
+    box-shadow: 0 30px 80px rgba(2, 6, 23, 0.5);
+  }
+
+  .tm-details-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.1rem 1.3rem 0.8rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  }
+
+  .tm-details-head-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 0;
+  }
+
+  .tm-details-eyebrow {
+    margin: 0;
+    font-size: 0.65rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(125, 211, 252, 0.7);
+  }
+
+  .tm-details-title {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #e2e8f0;
+    word-break: break-word;
+  }
+
+  .tm-details-subtitle {
+    margin: 0;
+    font-size: 0.72rem;
+    color: rgba(191, 219, 254, 0.7);
+  }
+
+  .tm-details-close {
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.6);
+    color: rgba(226, 232, 240, 0.9);
+    padding: 0.35rem;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background 0.16s ease;
+  }
+
+  .tm-details-close:hover {
+    border-color: rgba(96, 165, 250, 0.5);
+    background: rgba(30, 64, 175, 0.3);
+  }
+
+  .tm-details-body {
+    padding: 1rem 1.3rem 1.2rem;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .tm-details-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.7rem;
+    color: rgba(148, 163, 184, 0.9);
+  }
+
+  .tm-details-hash {
+    margin: 0;
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 0.7rem;
+    color: rgba(226, 232, 240, 0.85);
+    word-break: break-all;
+  }
+
+  .tm-details-loading {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.82rem;
+    color: rgba(191, 219, 254, 0.8);
+  }
+
+  .tm-details-error {
+    margin: 0;
+    font-size: 0.82rem;
+    color: rgba(252, 165, 165, 0.9);
+  }
+
+  .tm-details-empty {
+    margin: 0;
+    font-size: 0.82rem;
+    color: rgba(191, 219, 254, 0.8);
+  }
+
+  .tm-details-pre {
+    margin: 0;
+    background: rgba(8, 14, 28, 0.7);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 12px;
+    padding: 0.85rem 0.95rem;
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: rgba(226, 232, 240, 0.95);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 56vh;
+    overflow: auto;
+  }
+
+  .tm-details-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .tm-details-section-title {
+    margin: 0;
+    font-size: 0.65rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(125, 211, 252, 0.7);
+  }
+
+  .tm-details-grid {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .tm-details-grid-row {
+    display: grid;
+    grid-template-columns: minmax(0, 140px) minmax(0, 1fr);
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+
+  .tm-details-label {
+    font-size: 0.7rem;
+    color: rgba(148, 163, 184, 0.85);
+    text-transform: lowercase;
+  }
+
+  .tm-details-value {
+    font-size: 0.78rem;
+    color: rgba(226, 232, 240, 0.92);
+    word-break: break-word;
+  }
+
+  .tm-details-value.mono {
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 0.72rem;
+  }
+
+  .tm-details-ref-list {
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .tm-details-ref-row {
+    display: grid;
+    gap: 0.6rem;
+    padding: 0.7rem 0.8rem;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    background: rgba(9, 16, 30, 0.7);
+  }
+
+  .tm-details-ref-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+  }
+
+  .tm-details-ref-name {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: rgba(226, 232, 240, 0.95);
+  }
+
+  .tm-details-ref-meta {
+    margin: 0;
+    font-size: 0.7rem;
+    color: rgba(148, 163, 184, 0.85);
+    word-break: break-all;
+  }
+
+  .tm-details-ref-hash {
+    margin: 0;
+    font-size: 0.72rem;
+    color: rgba(226, 232, 240, 0.9);
+    word-break: break-all;
+  }
+
+  .tm-details-ref-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .tm-details-ref-btn {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    background: rgba(12, 22, 41, 0.6);
+    color: rgba(226, 232, 240, 0.85);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.35rem 0.5rem;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+  }
+
+  .tm-details-ref-btn:hover:not(:disabled) {
+    border-color: rgba(56, 189, 248, 0.4);
+    background: rgba(14, 116, 144, 0.22);
+    color: #e0f2fe;
+  }
+
+  .tm-details-ref-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .tm-details-ref-btn.link {
+    width: 100%;
+    text-align: left;
+  }
+
+  .mono {
+    font-family: 'Monaco', 'Menlo', monospace;
+  }
+
+  .tm-details-media {
+    width: 100%;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    background: rgba(8, 14, 28, 0.7);
+  }
+
+  .tm-details-embed {
+    width: 100%;
+    min-height: 360px;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    background: rgba(8, 14, 28, 0.7);
   }
 
   .file-area.dragging {
