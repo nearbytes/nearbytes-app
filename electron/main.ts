@@ -5,7 +5,7 @@ import { pathToFileURL } from 'url';
 import { clearPublishedDesktopSession, publishDesktopSession } from './session.js';
 import { generateDesktopApiToken } from './security.js';
 import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
-import { getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
+import { debugTriggerUpdateInstall, getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
 
 interface RuntimeHandle {
   readonly port: number;
@@ -254,6 +254,9 @@ function registerIpc(): void {
   });
   ipcMain.handle('nearbytes-desktop:open-update-release-page', async () => {
     return openUpdateReleasePage();
+  });
+  ipcMain.handle('nearbytes-desktop:debug-trigger-update-install', async () => {
+    return debugTriggerUpdateInstall();
   });
   ipcMain.handle('nearbytes-desktop:save-ui-state', async (_event, rawState: unknown) => {
     if (!rawState || typeof rawState !== 'object' || Array.isArray(rawState)) {
