@@ -385,6 +385,56 @@ fi
 `;
 }
 
+function debugInstallerScript(kind: StagedUpdate['kind']): string {
+  if (kind === 'windows-installer') {
+    return `@echo off
+setlocal
+
+set "PID=%~1"
+set "TARGET_EXE=%~3"
+set "RELAUNCH=%~4"
+set "LOG_PATH=%~6"
+
+:wait_for_exit
+tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
+if not errorlevel 1 (
+  ping -n 2 127.0.0.1 >NUL
+  goto wait_for_exit
+)
+
+echo Debug relaunch>>"%LOG_PATH%"
+if "%RELAUNCH%"=="1" (
+  start "" "%TARGET_EXE%"
+)
+`;
+  }
+
+  return `#!/bin/sh
+set -eu
+
+PID="$1"
+TARGET_APP="$2"
+RELAUNCH="$4"
+LOG_PATH="$6"
+
+log() {
+  printf '%s %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$LOG_PATH"
+}
+
+log "waiting for process $PID"
+while kill -0 "$PID" 2>/dev/null; do
+  sleep 0.25
+done
+
+if [ "$RELAUNCH" = "1" ]; then
+  log "debug relaunch"
+  if [ -n "$TARGET_APP" ]; then
+    "$TARGET_APP" >/dev/null 2>&1 &
+  fi
+fi
+`;
+}
+
 function windowsInstallerScript(): string {
   return `@echo off
 setlocal
@@ -551,6 +601,55 @@ async function stageLinuxRelease(release: GithubLatestRelease, asset: GithubRele
     asset.name,
     asset.size,
     'Restart Nearbytes to replace the current AppImage.',
+    true
+  );
+  return true;
+}
+
+async function stageDebugRelaunch(): Promise<boolean> {
+  let kind: StagedUpdate['kind'];
+  let targetPath: string | null = null;
+  if (process.platform === 'darwin') {
+    kind = 'mac-app';
+    targetPath = resolveCurrentMacAppPath();
+  } else if (process.platform === 'win32') {
+    kind = 'windows-installer';
+    targetPath = resolveCurrentWindowsExecutablePath();
+  } else {
+    kind = 'linux-appimage';
+    targetPath = resolveCurrentLinuxAppImagePath();
+  }
+  if (!targetPath) {
+    return false;
+  }
+
+  const stageDir = path.join(app.getPath('userData'), 'updates', `debug-${Date.now()}`);
+  await rm(stageDir, { recursive: true, force: true });
+  await mkdir(stageDir, { recursive: true });
+  const helperScriptPath = await writeInstallerScript(
+    stageDir,
+    kind === 'windows-installer' ? 'install-debug.cmd' : 'install-debug.sh',
+    debugInstallerScript(kind)
+  );
+
+  stagedUpdate = {
+    kind,
+    version: `debug-${app.getVersion()}`,
+    releaseUrl: latestReleasePageUrl(),
+    assetName: 'debug-relaunch',
+    stageDir,
+    helperScriptPath,
+    targetPath,
+    stagedPath: targetPath,
+  };
+  relaunchAfterInstall = false;
+  installerLaunchStarted = false;
+  updateReadyState(
+    app.getVersion(),
+    latestReleasePageUrl(),
+    'debug-relaunch',
+    0,
+    'Debug restart ready.',
     true
   );
   return true;
@@ -777,6 +876,14 @@ export async function installDownloadedUpdate(): Promise<boolean> {
     return false;
   }
   return false;
+}
+
+export async function debugTriggerUpdateInstall(): Promise<boolean> {
+  const staged = await stageDebugRelaunch();
+  if (!staged) {
+    return false;
+  }
+  return installDownloadedUpdate();
 }
 
 export async function openUpdateReleasePage(): Promise<boolean> {

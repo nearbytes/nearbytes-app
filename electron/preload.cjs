@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('nearbytesDesktop', {
   loadUiState: () => ipcRenderer.invoke('nearbytes-desktop:load-ui-state'),
   getUpdaterState: () => ipcRenderer.invoke('nearbytes-desktop:get-updater-state'),
   installDownloadedUpdate: () => ipcRenderer.invoke('nearbytes-desktop:install-downloaded-update'),
+  debugTriggerUpdateInstall: () => ipcRenderer.invoke('nearbytes-desktop:debug-trigger-update-install'),
   openUpdateReleasePage: () => ipcRenderer.invoke('nearbytes-desktop:open-update-release-page'),
   onUpdaterState: (listener) => {
     if (typeof listener !== 'function') {
