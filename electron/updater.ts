@@ -429,7 +429,11 @@ done
 if [ "$RELAUNCH" = "1" ]; then
   log "debug relaunch"
   if [ -n "$TARGET_APP" ]; then
-    "$TARGET_APP" >/dev/null 2>&1 &
+    if [ -d "$TARGET_APP" ]; then
+      open "$TARGET_APP"
+    else
+      "$TARGET_APP" >/dev/null 2>&1 &
+    fi
   fi
 fi
 `;
