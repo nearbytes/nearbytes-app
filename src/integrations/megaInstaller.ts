@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { resolveMegaCommand, type CommandExecutor } from './runtime.js';
+import { resolveMegaInvocation, type CommandExecutor } from './runtime.js';
 import type { ProviderSecretStore, IntegrationLogger } from './runtime.js';
 import type { ProviderSetupState } from './types.js';
 
@@ -241,9 +241,10 @@ export class MegaHelperInstaller {
 
   private async isMegaAvailableOnPath(): Promise<boolean> {
     try {
+      const invocation = resolveMegaInvocation(undefined, 'version', [], this.options.platform ?? process.platform);
       const result = await this.options.commandExecutor.run({
-        command: resolveMegaCommand(undefined, 'version'),
-        args: [],
+        command: invocation.command,
+        args: invocation.args,
         timeoutMs: 15_000,
       });
       return result.exitCode === 0;
@@ -265,7 +266,7 @@ export class MegaHelperInstaller {
 }
 
 async function isMegaCommandDirectory(commandDirectory: string): Promise<boolean> {
-  for (const commandName of ['mega-login', 'mega-login.exe']) {
+  for (const commandName of ['MegaClient.exe', 'MEGAclient.exe', 'mega-login.bat', 'mega-login.exe', 'mega-login']) {
     try {
       await fs.access(path.join(commandDirectory, commandName));
       return true;

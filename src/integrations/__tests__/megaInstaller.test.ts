@@ -45,14 +45,15 @@ describe('MegaHelperInstaller', () => {
 
     const executor: CommandExecutor = {
       async run(invocation) {
-        if (invocation.command.includes('mega-version')) {
+        if (invocation.command.includes('MegaClient.exe') && invocation.args?.[0] === 'version') {
           const error = new Error('missing');
           (error as NodeJS.ErrnoException).code = 'ENOENT';
           throw error;
         }
         if (invocation.args?.some((arg) => arg.startsWith('/D='))) {
           await fs.mkdir(installRoot, { recursive: true });
-          await fs.writeFile(path.join(installRoot, 'mega-login.exe'), 'exe');
+          await fs.writeFile(path.join(installRoot, 'MegaClient.exe'), 'exe');
+          await fs.writeFile(path.join(installRoot, 'mega-login.bat'), 'bat');
         }
         return { stdout: '', stderr: '', exitCode: 0 };
       },
@@ -74,7 +75,7 @@ describe('MegaHelperInstaller', () => {
     const after = await installer.install();
     expect(after.status).toBe('ready');
     expect(after.config?.helperPath).toBe(installRoot);
-    await fs.access(path.join(installRoot, 'mega-login.exe'));
+    await fs.access(path.join(installRoot, 'MegaClient.exe'));
   });
 
   it('installs the macOS helper bundle into the Nearbytes helper directory', async () => {

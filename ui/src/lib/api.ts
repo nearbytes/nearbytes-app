@@ -1220,10 +1220,11 @@ export async function connectProviderAccount(input: {
     mfaCode?: string;
     confirmationLink?: string;
   };
-}): Promise<ConnectProviderAccountResponse> {
+}, options: { signal?: AbortSignal } = {}): Promise<ConnectProviderAccountResponse> {
   return apiRequest<ConnectProviderAccountResponse>('/integrations/accounts/connect', {
     method: 'POST',
     body: JSON.stringify(input),
+    signal: options.signal,
   });
 }
 
@@ -1248,10 +1249,14 @@ export async function configureProviderSetup(
   });
 }
 
-export async function installProviderHelper(provider: string): Promise<ConfigureProviderResponse> {
+export async function installProviderHelper(
+  provider: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<ConfigureProviderResponse> {
   const encoded = encodeURIComponent(provider);
   return apiRequest<ConfigureProviderResponse>(`/integrations/providers/${encoded}/install`, {
     method: 'POST',
+    signal: options.signal,
   });
 }
 
