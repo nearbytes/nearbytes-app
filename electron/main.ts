@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, type OpenDialogOptions } from 'electron';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, promises as fs } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -56,12 +57,14 @@ const state: {
   window: BrowserWindow | null;
   runtime: RuntimeHandle | null;
   config: DesktopRuntimeConfig | null;
+  devUiProcess: ChildProcess | null;
   rendererProfile: RendererProfileState;
   diagnostics: DiagnosticsState;
 } = {
   window: null,
   runtime: null,
   config: null,
+  devUiProcess: null,
   rendererProfile: {
     reason: null,
     stopTimer: null,
@@ -158,6 +161,9 @@ async function startDesktop(): Promise<void> {
 
   registerIpc();
   startMetricsSampling();
+  if (isDev) {
+    await ensureDevUiServer();
+  }
   await createWindow(apiBaseUrl);
 }
 
@@ -431,6 +437,7 @@ async function shutdown(): Promise<void> {
     await state.runtime.stop();
     state.runtime = null;
   }
+  await stopDevUiServer();
   await clearPublishedDesktopSession();
 }
 
@@ -467,6 +474,95 @@ function resolveExistingPath(candidates: string[]): string | undefined {
     }
   }
   return undefined;
+}
+
+type DevUiServerInfo = {
+  url: URL;
+  host: string;
+  port: number;
+};
+
+function parseDevUiInfo(): DevUiServerInfo | null {
+  if (!isDev) {
+    return null;
+  }
+  try {
+    const url = new URL(devUiUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
+    if (!Number.isFinite(port)) {
+      return null;
+    }
+    return {
+      url,
+      host: url.hostname || '127.0.0.1',
+      port,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function isDevUiReachable(url: URL): Promise<boolean> {
+  try {
+    const response = await fetch(url.toString(), { method: 'GET' });
+    return response.ok || response.status >= 200;
+  } catch {
+    return false;
+  }
+}
+
+function startDevUiServer(info: DevUiServerInfo): void {
+  if (state.devUiProcess && !state.devUiProcess.killed) {
+    return;
+  }
+  const child = spawn('yarn', ['--cwd', 'ui', 'dev', '--host', info.host, '--port', String(info.port), '--strictPort'], {
+    cwd: process.cwd(),
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
+  state.devUiProcess = child;
+  child.on('exit', () => {
+    if (state.devUiProcess === child) {
+      state.devUiProcess = null;
+    }
+  });
+}
+
+async function waitForDevUiServer(info: DevUiServerInfo, timeoutMs = 20000): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await isDevUiReachable(info.url)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+async function ensureDevUiServer(): Promise<void> {
+  const info = parseDevUiInfo();
+  if (!info) {
+    return;
+  }
+  if (await isDevUiReachable(info.url)) {
+    return;
+  }
+  startDevUiServer(info);
+  await waitForDevUiServer(info);
+}
+
+async function stopDevUiServer(): Promise<void> {
+  const child = state.devUiProcess;
+  if (!child) {
+    return;
+  }
+  state.devUiProcess = null;
+  if (!child.killed) {
+    child.kill('SIGTERM');
+  }
 }
 
 async function readSecretEntries(filePath: string): Promise<Record<string, string>> {
