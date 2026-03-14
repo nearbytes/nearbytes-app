@@ -48,7 +48,6 @@
     "immutable",
     "protocol"
   ],
-  "author": "Vincenzo Ciancia <vincenzoml@gmail.com>",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
@@ -131,7 +130,6 @@
         "deb"
       ],
       "category": "Utility",
-      "maintainer": "Vincenzo Ciancia <vincenzoml@gmail.com>",
       "icon": "build/icons"
     },
     "publish": [
