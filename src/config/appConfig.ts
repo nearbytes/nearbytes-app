@@ -5,6 +5,9 @@ export const APP_CONFIG = {
       mega: true,
       github: true,
     },
+    performance: {
+      appMetrics: false,
+    },
   },
 } as const;
 

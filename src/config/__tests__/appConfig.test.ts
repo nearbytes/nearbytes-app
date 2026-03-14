@@ -12,4 +12,8 @@ describe('appConfig', () => {
     expect(isProviderEnabled('mega')).toBe(true);
     expect(isProviderEnabled('github')).toBe(true);
   });
+
+  it('keeps performance diagnostics disabled by default', () => {
+    expect(APP_CONFIG.features.performance.appMetrics).toBe(false);
+  });
 });

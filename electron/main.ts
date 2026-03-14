@@ -6,6 +6,7 @@ import { clearPublishedDesktopSession, publishDesktopSession } from './session.j
 import { generateDesktopApiToken } from './security.js';
 import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
 import { debugTriggerUpdateInstall, getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
+import { APP_CONFIG } from '../src/config/appConfig.js';
 
 interface RuntimeHandle {
   readonly port: number;
@@ -879,7 +880,7 @@ function sanitizeFilenameSegment(value: string): string {
 }
 
 function startMetricsSampling(): void {
-  if (!isDev || state.diagnostics.metricsTimer) {
+  if (!isDev || !APP_CONFIG.features.performance.appMetrics || state.diagnostics.metricsTimer) {
     return;
   }
   state.diagnostics.metricsTimer = setInterval(() => {
