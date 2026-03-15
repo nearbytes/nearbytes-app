@@ -1352,10 +1352,12 @@
   let desktopUpdaterState = $state<DesktopUpdaterState | null>(null);
   let joinLinkCopyBusy = $state(false);
   let joinLinkCopyFeedback = $state<JoinLinkCopyFeedbackState | null>(null);
-  let showJoinLinkOverlay = $state(false);
-  let joinLinkOverlaySerialized = $state('');
-  let joinLinkOverlayNonce = $state(0);
-  let joinLinkOverlaySourceUrl = $state('');
+  let clipboardJoinLinkSerialized = $state('');
+  let clipboardJoinLinkBusy = $state(false);
+  let joinLinkInlineMountId = $state<string | null>(null);
+  let joinLinkInlineSerialized = $state('');
+  let joinLinkInlineNonce = $state(0);
+  let joinLinkInlineSourceLabel = $state('');
   let sourceDiscoveryRefreshToken = $state(0);
   let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | null>(null);
   let sourceDiscoveryInFlight = false;
@@ -1402,21 +1404,95 @@
     return dragPreparedMountId === mountId || draggingMountId === mountId;
   }
 
-  function openJoinLinkOverlayFromSerialized(serialized: string, sourceUrl = ''): void {
-    joinLinkOverlaySerialized = serialized;
-    joinLinkOverlaySourceUrl = sourceUrl;
-    joinLinkOverlayNonce += 1;
-    showJoinLinkOverlay = true;
+  function closeInlineJoinLinkEditor(mountId?: string): void {
+    if (mountId && joinLinkInlineMountId !== mountId) {
+      return;
+    }
+    joinLinkInlineMountId = null;
+    joinLinkInlineSerialized = '';
+    joinLinkInlineSourceLabel = '';
   }
 
-  function closeJoinLinkOverlay(): void {
-    showJoinLinkOverlay = false;
+  function openInlineJoinLinkEditor(serialized = '', sourceLabel = ''): void {
+    const expandedActiveMount = mounts.find(
+      (mount) => mount.id === activeMountId && !mount.collapsed
+    );
+    const targetMountId = expandedActiveMount?.id ?? createCollapsedMount();
+    mounts = mounts.map((mount) =>
+      mount.id === targetMountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
+    );
+    activeMountId = targetMountId;
+    pendingMountId = null;
+    secretPasteTargetMountId = targetMountId;
+    joinLinkInlineMountId = targetMountId;
+    joinLinkInlineSerialized = serialized;
+    joinLinkInlineSourceLabel = sourceLabel;
+    joinLinkInlineNonce += 1;
+    void tick().then(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(
+        `.volume-chip.expanded[data-mount-id="${targetMountId}"] .join-link-input`
+      );
+      textarea?.focus();
+      textarea?.select();
+    });
+  }
+
+  function extractSerializedJoinLinkPayload(text: string): string | null {
+    const trimmed = text.trim();
+    if (trimmed === '') {
+      return null;
+    }
+    if (trimmed.toLowerCase().startsWith('nearbytes://')) {
+      try {
+        return decodeNearbytesJoinDeepLink(trimmed);
+      } catch {
+        return null;
+      }
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as { p?: unknown };
+      return parsed?.p === 'nb.join.v1' ? trimmed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function refreshClipboardJoinLinkAvailability(): Promise<void> {
+    if (typeof navigator === 'undefined' || !navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+      return;
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      clipboardJoinLinkSerialized = extractSerializedJoinLinkPayload(text) ?? '';
+    } catch {
+      // Clipboard read is permission-gated in some environments.
+    }
+  }
+
+  async function openJoinLinkFromClipboard(): Promise<void> {
+    clipboardJoinLinkBusy = true;
+    try {
+      let serialized = clipboardJoinLinkSerialized;
+      if (!serialized) {
+        await refreshClipboardJoinLinkAvailability();
+        serialized = clipboardJoinLinkSerialized;
+      }
+      if (!serialized) {
+        throw new Error('Clipboard does not currently contain a Nearbytes join/share link.');
+      }
+      errorMessage = '';
+      openInlineJoinLinkEditor(serialized, 'clipboard');
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to open Nearbytes link from clipboard';
+    } finally {
+      clipboardJoinLinkBusy = false;
+    }
   }
 
   async function handleDesktopDeepLink(url: string): Promise<void> {
     try {
       errorMessage = '';
-      openJoinLinkOverlayFromSerialized(decodeNearbytesJoinDeepLink(url), url);
+      openInlineJoinLinkEditor(decodeNearbytesJoinDeepLink(url), url);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to open Nearbytes link';
     }
@@ -1439,6 +1515,7 @@
     const bridge = getDesktopBridge();
     let cancelUpdaterSubscription: (() => void) | null = null;
     let cancelDeepLinkSubscription: (() => void) | null = null;
+    void refreshClipboardJoinLinkAvailability();
     if (bridge) {
       if (typeof bridge.getUpdaterState === 'function') {
         void bridge
@@ -1516,6 +1593,24 @@
     return () => {
       cancelUpdaterSubscription?.();
       cancelDeepLinkSubscription?.();
+    };
+  });
+
+  onMount(() => {
+    const handleWindowFocus = () => {
+      void refreshClipboardJoinLinkAvailability();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshClipboardJoinLinkAvailability();
+      }
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   });
 
@@ -2814,6 +2909,7 @@
     activeMountId = nextMount.id;
     pendingMountId = null;
     secretPasteTargetMountId = nextMount.id;
+    closeInlineJoinLinkEditor();
     void tick().then(() => {
       const input = document.querySelector<HTMLInputElement>(
         `.volume-chip.expanded[data-mount-id="${nextMount.id}"] .secret-seed-fields input`
@@ -2853,6 +2949,9 @@
       mount.id === mountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
     );
     activeMountId = mountId;
+    if (joinLinkInlineMountId && joinLinkInlineMountId !== mountId) {
+      closeInlineJoinLinkEditor();
+    }
   }
 
   function collapseMount(mountId: string) {
@@ -2868,6 +2967,7 @@
     if (secretPasteTargetMountId === mountId) {
       secretPasteTargetMountId = null;
     }
+    closeInlineJoinLinkEditor(mountId);
     mounts = mounts.map((mount) =>
       mount.id === mountId ? { ...mount, collapsed: true } : mount
     );
@@ -2881,6 +2981,7 @@
     if (secretPasteTargetMountId === mountId) {
       secretPasteTargetMountId = null;
     }
+    closeInlineJoinLinkEditor(mountId);
     const next = mounts.filter((mount) => mount.id !== mountId);
     mounts = next;
     if (activeMountId !== mountId) return;
@@ -3259,7 +3360,7 @@
   }
 
   async function handleJoinLinkOpened(response: JoinLinkOpenResponse): Promise<void> {
-    showJoinLinkOverlay = false;
+    closeInlineJoinLinkEditor();
     if (response.space.mode === 'volume-id') {
       showVolumeStoragePanel = true;
       showSourcesPanel = false;
@@ -4817,6 +4918,7 @@
         feedbackMessage = 'Secret payload was too large for nearbytes://. Copied canonical JSON instead.';
       }
       await navigator.clipboard.writeText(clipboardText);
+      clipboardJoinLinkSerialized = serialized;
       setJoinLinkCopyFeedback(feedbackTone, feedbackMessage);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to copy Nearbytes link';
@@ -4987,6 +5089,32 @@
                     <p class="secret-input-hint">
                       Drop an image/file here, or press <kbd>Cmd/Ctrl</kbd> + <kbd>V</kbd>.
                     </p>
+                    <div class="secret-input-actions">
+                      <button
+                        type="button"
+                        class="workspace-toggle secret-link-btn"
+                        onclick={() => {
+                          if (joinLinkInlineMountId === mount.id) {
+                            closeInlineJoinLinkEditor(mount.id);
+                          } else {
+                            openInlineJoinLinkEditor('', '');
+                          }
+                        }}
+                      >
+                        <Link2 class="button-icon" size={15} strokeWidth={2} />
+                        <span>{joinLinkInlineMountId === mount.id ? 'Hide Link' : 'Open Link'}</span>
+                      </button>
+                      {#if clipboardJoinLinkSerialized}
+                        <button
+                          type="button"
+                          class="workspace-toggle secret-link-btn"
+                          onclick={() => void openJoinLinkFromClipboard()}
+                          disabled={clipboardJoinLinkBusy}
+                        >
+                          <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                          <span>{clipboardJoinLinkBusy ? 'Reading…' : 'Use Clipboard'}</span>
+                        </button>
+                      {/if}
                     {#if clipboardImageAvailable || clipboardImageLoading}
                       <button
                         type="button"
@@ -4998,7 +5126,26 @@
                         <span>{clipboardImageLoading ? 'Reading…' : 'Paste Image'}</span>
                       </button>
                     {/if}
+                    </div>
                   </div>
+                  {#if joinLinkInlineMountId === mount.id}
+                    <div class="inline-join-link-panel">
+                      <JoinLinkImportCard
+                        compact={true}
+                        variant="dock"
+                        importedSerialized={joinLinkInlineSerialized}
+                        importedNonce={joinLinkInlineNonce}
+                        title="Open shared space link"
+                        subtitle={
+                          joinLinkInlineSourceLabel
+                            ? `Received from ${joinLinkInlineSourceLabel}`
+                            : 'Paste an nb.join.v1 payload or nearbytes:// link to preview and open it here.'
+                        }
+                        onOpened={handleJoinLinkOpened}
+                        onClose={() => closeInlineJoinLinkEditor(mount.id)}
+                      />
+                    </div>
+                  {/if}
                 </div>
                 <button
                   type="button"
@@ -5231,6 +5378,17 @@
               <UserRound class="button-icon" size={14} strokeWidth={2} />
             </button>
           {/if}
+          <button
+            type="button"
+            class="mount-add-btn"
+            class:visible={isHeaderHovering || isSecretDropTarget || clipboardJoinLinkSerialized !== ''}
+            onclick={() => void openJoinLinkFromClipboard()}
+            aria-label="Open space link from clipboard"
+            title="Open Nearbytes link from clipboard"
+            disabled={clipboardJoinLinkBusy || !clipboardJoinLinkSerialized}
+          >
+            <ClipboardPaste size={15} strokeWidth={2.2} />
+          </button>
           <button
             type="button"
             class="mount-add-btn"
@@ -5569,7 +5727,6 @@
           </svg>
           <p class="empty-hint">Enter an address to access your files</p>
           <p class="empty-subhint">Or drag and drop files here to create a new space</p>
-          <JoinLinkImportCard onOpened={handleJoinLinkOpened} />
         </div>
       </div>
     {:else}
@@ -6123,37 +6280,6 @@
           </button>
         </aside>
       {/if}
-    </div>
-  {/if}
-
-  {#if showJoinLinkOverlay}
-    <div
-      class="join-link-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Open Nearbytes link"
-      tabindex="-1"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) {
-          closeJoinLinkOverlay();
-        }
-      }}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') {
-          closeJoinLinkOverlay();
-        }
-      }}
-    >
-      <div class="join-link-modal panel-surface">
-        <JoinLinkImportCard
-          importedSerialized={joinLinkOverlaySerialized}
-          importedNonce={joinLinkOverlayNonce}
-          title="Open Nearbytes Link"
-          subtitle={joinLinkOverlaySourceUrl ? `Received from ${joinLinkOverlaySourceUrl}` : 'Review this Nearbytes link before opening it.'}
-          onOpened={handleJoinLinkOpened}
-          onClose={closeJoinLinkOverlay}
-        />
-      </div>
     </div>
   {/if}
 
@@ -7465,6 +7591,23 @@
     min-width: 126px;
   }
 
+  .secret-input-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+  }
+
+  .secret-link-btn {
+    min-width: 118px;
+  }
+
+  .inline-join-link-panel {
+    margin-top: 0.7rem;
+    padding-top: 0.1rem;
+  }
+
   :global(.secret-seed-fields input) {
     width: 100%;
     min-height: 44px;
@@ -8345,25 +8488,6 @@
     background: rgba(2, 6, 23, 0.72);
     backdrop-filter: blur(8px);
     z-index: 200;
-  }
-
-  .join-link-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.72);
-    backdrop-filter: blur(8px);
-    z-index: 210;
-  }
-
-  .join-link-modal {
-    width: min(620px, 94vw);
-    max-height: calc(100vh - 3rem);
-    overflow: auto;
-    border-radius: 18px;
   }
 
   .tm-details-modal {

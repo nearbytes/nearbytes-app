@@ -13,6 +13,8 @@
     title?: string;
     subtitle?: string;
     onClose?: () => void;
+    compact?: boolean;
+    variant?: 'light' | 'dock';
   };
 
   const {
@@ -22,6 +24,8 @@
     title = 'Open a Join or Share Link',
     subtitle = 'Paste an nb.join.v1 payload to preview provider routes, then open the space or attach the suggested share paths.',
     onClose,
+    compact = false,
+    variant = 'light',
   }: Props = $props();
 
   let serialized = $state('');
@@ -111,7 +115,7 @@
   }
 </script>
 
-<section class="join-link-card">
+<section class="join-link-card" class:compact class:variant-dock={variant === 'dock'}>
   <div class="join-link-card-head">
     <div>
       <h2>{title}</h2>
@@ -137,7 +141,7 @@
     <input type="checkbox" bind:checked={allowCredentialBootstrap} />
     <span>Use embedded provider sign-in details when present</span>
   </label>
-  <p class="join-link-toggle-note">Off by default. Enable this only when you trust the sender and want Nearbytes to use link-carried provider credentials during setup.</p>
+  <p class="join-link-toggle-note">Off by default. Enable this only when you trust the sender and want Nearbytes to use link-carried provider credentials during setup. Links copied by this app do not embed provider passwords.</p>
 
   <div class="join-link-actions">
     <button type="button" class="join-link-button secondary" onclick={() => void handlePreview()} disabled={previewBusy || openBusy}>
@@ -228,11 +232,36 @@
     gap: 0.9rem;
   }
 
+  .join-link-card.compact {
+    width: 100%;
+    padding: 0.9rem;
+    border-radius: 16px;
+    gap: 0.7rem;
+  }
+
+  .join-link-card.variant-dock {
+    background:
+      linear-gradient(180deg, rgba(12, 24, 43, 0.92), rgba(9, 18, 34, 0.9)),
+      rgba(9, 18, 34, 0.9);
+    border: 1px solid rgba(56, 189, 248, 0.16);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
   .join-link-card-head h2,
   .join-link-open-result h3,
   .join-link-attachment-head h3 {
     margin: 0;
     color: #2f2412;
+  }
+
+  .join-link-card.compact .join-link-card-head h2 {
+    font-size: 0.98rem;
+  }
+
+  .join-link-card.variant-dock .join-link-card-head h2,
+  .join-link-card.variant-dock .join-link-open-result h3,
+  .join-link-card.variant-dock .join-link-attachment-head h3 {
+    color: rgba(226, 232, 240, 0.96);
   }
 
   .join-link-card-head p,
@@ -245,10 +274,33 @@
     color: #66563d;
   }
 
+  .join-link-card.compact .join-link-card-head p,
+  .join-link-card.compact .join-link-toggle-note,
+  .join-link-card.compact .join-link-attachment-detail,
+  .join-link-card.compact .join-link-result-row p,
+  .join-link-card.compact .join-link-message,
+  .join-link-card.compact .join-link-path {
+    font-size: 0.8rem;
+  }
+
+  .join-link-card.variant-dock .join-link-card-head p,
+  .join-link-card.variant-dock .join-link-toggle-note,
+  .join-link-card.variant-dock .join-link-attachment-detail,
+  .join-link-card.variant-dock .join-link-result-row p,
+  .join-link-card.variant-dock .join-link-message,
+  .join-link-card.variant-dock .join-link-path {
+    color: rgba(191, 219, 254, 0.78);
+  }
+
   .join-link-input-label {
     font-size: 0.9rem;
     font-weight: 600;
     color: #4f4128;
+  }
+
+  .join-link-card.variant-dock .join-link-input-label,
+  .join-link-card.variant-dock .join-link-toggle {
+    color: rgba(226, 232, 240, 0.9);
   }
 
   .join-link-input {
@@ -262,12 +314,30 @@
     resize: vertical;
   }
 
+  .join-link-card.compact .join-link-input {
+    min-height: 5.25rem;
+    padding: 0.78rem 0.85rem;
+    border-radius: 12px;
+    font-size: 0.82rem;
+  }
+
+  .join-link-card.variant-dock .join-link-input {
+    border-color: rgba(56, 189, 248, 0.18);
+    background: rgba(8, 14, 28, 0.72);
+    color: rgba(226, 232, 240, 0.95);
+  }
+
   .join-link-toggle {
     display: flex;
     align-items: center;
     gap: 0.7rem;
     color: #3e321d;
     font-weight: 600;
+  }
+
+  .join-link-card.compact .join-link-toggle {
+    gap: 0.55rem;
+    font-size: 0.82rem;
   }
 
   .join-link-actions,
@@ -297,6 +367,11 @@
     cursor: pointer;
   }
 
+  .join-link-card.variant-dock .join-link-close {
+    background: rgba(56, 189, 248, 0.12);
+    color: rgba(226, 232, 240, 0.9);
+  }
+
   .join-link-button {
     border: 0;
     border-radius: 999px;
@@ -304,6 +379,11 @@
     font: inherit;
     font-weight: 700;
     cursor: pointer;
+  }
+
+  .join-link-card.compact .join-link-button {
+    padding: 0.58rem 0.92rem;
+    font-size: 0.82rem;
   }
 
   .join-link-button.primary {
@@ -333,14 +413,35 @@
     font-weight: 700;
   }
 
+  .join-link-card.compact .join-link-chip,
+  .join-link-card.compact .join-link-badge {
+    font-size: 0.72rem;
+  }
+
+  .join-link-card.variant-dock .join-link-chip,
+  .join-link-card.variant-dock .join-link-badge {
+    background: rgba(56, 189, 248, 0.12);
+    color: rgba(191, 219, 254, 0.92);
+  }
+
   .join-link-chip.strong {
     background: rgba(47, 107, 97, 0.12);
     color: #24554d;
   }
 
+  .join-link-card.variant-dock .join-link-chip.strong {
+    background: rgba(34, 197, 94, 0.16);
+    color: rgba(187, 247, 208, 0.96);
+  }
+
   .join-link-chip.warning {
     background: rgba(164, 91, 56, 0.14);
     color: #8a4722;
+  }
+
+  .join-link-card.variant-dock .join-link-chip.warning {
+    background: rgba(251, 191, 36, 0.14);
+    color: rgba(253, 224, 71, 0.96);
   }
 
   .join-link-attachment-list,
@@ -355,6 +456,18 @@
     border-radius: 16px;
     background: rgba(255, 255, 255, 0.8);
     border: 1px solid rgba(107, 88, 57, 0.14);
+  }
+
+  .join-link-card.compact .join-link-attachment-card,
+  .join-link-card.compact .join-link-result-row {
+    padding: 0.72rem 0.8rem;
+    border-radius: 12px;
+  }
+
+  .join-link-card.variant-dock .join-link-attachment-card,
+  .join-link-card.variant-dock .join-link-result-row {
+    background: rgba(8, 14, 28, 0.62);
+    border-color: rgba(56, 189, 248, 0.14);
   }
 
   .join-link-result-row {
@@ -374,6 +487,10 @@
 
   .join-link-message.error {
     color: #9a3f34;
+  }
+
+  .join-link-card.variant-dock .join-link-message.error {
+    color: rgba(252, 165, 165, 0.98);
   }
 
   @media (max-width: 720px) {

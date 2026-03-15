@@ -12,6 +12,7 @@
     getRootsConfig,
     hasDesktopDirectoryPicker,
     installProviderHelper,
+    inviteManagedShare,
     listManagedShares,
     listProviderAccounts,
     openRootInFileManager,
@@ -114,6 +115,7 @@
   }>>({});
   let providerSetupDrafts = $state<Record<string, { clientId: string }>>({});
   let providerShareDrafts = $state<Record<string, { repoOwner: string; repoName: string; branch: string; basePath: string }>>({});
+  let managedShareInviteDrafts = $state<Record<string, string>>({});
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let selectedGlobalProvider = $state('local');
   let volumeView = $state<VolumeStorageView>('copies');
@@ -704,6 +706,28 @@
 
   function managedShareAccessLabel(summary: ManagedShareSummary): string {
     return summary.share.capabilities.includes('write') ? 'Read and write' : 'Read only';
+  }
+
+  function canInviteManagedShare(summary: ManagedShareSummary): boolean {
+    return summary.share.capabilities.includes('invite');
+  }
+
+  function managedShareInviteDraft(shareId: string): string {
+    return managedShareInviteDrafts[shareId] ?? '';
+  }
+
+  function setManagedShareInviteDraft(shareId: string, value: string): void {
+    managedShareInviteDrafts = {
+      ...managedShareInviteDrafts,
+      [shareId]: value,
+    };
+  }
+
+  function parseInviteEmails(value: string): string[] {
+    return value
+      .split(/[\s,;]+/u)
+      .map((entry) => entry.trim())
+      .filter((entry, index, entries) => entry !== '' && entries.indexOf(entry) === index);
   }
 
   function sourceById(sourceId: string | undefined): SourceConfigEntry | null {
@@ -2091,6 +2115,27 @@
     }
   }
 
+  async function inviteManagedSharePeers(summary: ManagedShareSummary): Promise<void> {
+    const emails = parseInviteEmails(managedShareInviteDraft(summary.share.id));
+    if (emails.length === 0) {
+      errorMessage = 'Enter at least one email address to invite.';
+      return;
+    }
+    integrationBusyKey = `invite:${summary.share.id}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await inviteManagedShare(summary.share.id, emails);
+      setManagedShareInviteDraft(summary.share.id, '');
+      successMessage = `${summary.share.label} shared with ${emails.join(', ')}.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to share managed location';
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
   function clampReserve(value: string): number {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return DEFAULT_RESERVE_PERCENT;
@@ -3172,8 +3217,34 @@
 
                 <div class="fact-row">
                   <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
+                  <span>{managedShareAccessLabel(summary)}</span>
                   <span>{shareAttachmentSummary(summary)}</span>
                 </div>
+
+                {#if canInviteManagedShare(summary)}
+                  <div class="managed-share-invite-row">
+                    <label class="field-block managed-share-invite-field">
+                      <span>Share with</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={managedShareInviteDraft(summary.share.id)}
+                        placeholder="name@example.com"
+                        oninput={(event) =>
+                          setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void inviteManagedSharePeers(summary)}
+                      disabled={integrationBusyKey === `invite:${summary.share.id}`}
+                    >
+                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sharing...' : 'Share'}</span>
+                    </button>
+                  </div>
+                  <p class="managed-share-invite-copy">Invites use the provider account behind this location so recipients can sync live updates.</p>
+                {/if}
 
                 <div class="button-row">
                   <button
@@ -3208,8 +3279,34 @@
 
                 <div class="fact-row">
                   <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
+                  <span>{managedShareAccessLabel(summary)}</span>
                   <span>{shareAttachmentSummary(summary)}</span>
                 </div>
+
+                {#if canInviteManagedShare(summary)}
+                  <div class="managed-share-invite-row">
+                    <label class="field-block managed-share-invite-field">
+                      <span>Share with</span>
+                      <input
+                        class="panel-input"
+                        type="text"
+                        value={managedShareInviteDraft(summary.share.id)}
+                        placeholder="name@example.com"
+                        oninput={(event) =>
+                          setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void inviteManagedSharePeers(summary)}
+                      disabled={integrationBusyKey === `invite:${summary.share.id}`}
+                    >
+                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sharing...' : 'Share'}</span>
+                    </button>
+                  </div>
+                  <p class="managed-share-invite-copy">Share this managed location now, then attach it to this space when you want Nearbytes to use it here.</p>
+                {/if}
 
                 <div class="button-row">
                   <button
@@ -4110,6 +4207,24 @@
     display: grid;
     gap: 0.65rem;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .managed-share-invite-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.65rem;
+    align-items: end;
+  }
+
+  .managed-share-invite-field {
+    min-width: 0;
+  }
+
+  .managed-share-invite-copy {
+    margin: -0.15rem 0 0;
+    color: var(--text-soft);
+    font-size: 0.75rem;
+    line-height: 1.35;
   }
 
   .provider-credentials {
