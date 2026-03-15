@@ -118,3 +118,20 @@ Readers MUST fail closed if:
 ## 6. Canonical Encoding
 
 1. Wire encoding MUST be RFC 8785 canonical JSON, UTF-8 bytes.
+
+## 7. Deep-Link Wrapper
+
+Nearbytes desktop MAY wrap the same canonical `nb.join.v1` JSON payload in a custom-scheme deep link for OS handoff.
+
+Recommended form:
+
+```text
+nearbytes://join?data=<base64url(utf8(canonical-json))>
+```
+
+Rules:
+
+1. `data` MUST contain the exact same canonical JSON payload a producer would otherwise copy directly.
+2. Readers MUST decode the wrapper back to the same `nb.join.v1` object and then apply the normal validation and planning rules from this specification.
+3. Producers SHOULD keep `nearbytes://` links secretless by default by using `space.mode = "volume-id"` unless the user explicitly asks to include the secret.
+4. If the secret-bearing payload is too large for a practical deep link, producers MAY fall back to copying the canonical JSON directly instead of the wrapper.

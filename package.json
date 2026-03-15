@@ -111,6 +111,14 @@
     "extraMetadata": {
       "main": "dist-electron/electron/main.js"
     },
+    "protocols": [
+      {
+        "name": "Nearbytes Join Link",
+        "schemes": [
+          "nearbytes"
+        ]
+      }
+    ],
     "mac": {
       "target": [
         "dmg",

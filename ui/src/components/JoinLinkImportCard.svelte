@@ -8,9 +8,21 @@
 
   type Props = {
     onOpened?: (response: JoinLinkOpenResponse) => Promise<void> | void;
+    importedSerialized?: string;
+    importedNonce?: number;
+    title?: string;
+    subtitle?: string;
+    onClose?: () => void;
   };
 
-  const { onOpened }: Props = $props();
+  const {
+    onOpened,
+    importedSerialized = '',
+    importedNonce = 0,
+    title = 'Open a Join or Share Link',
+    subtitle = 'Paste an nb.join.v1 payload to preview provider routes, then open the space or attach the suggested share paths.',
+    onClose,
+  }: Props = $props();
 
   let serialized = $state('');
   let allowCredentialBootstrap = $state(false);
@@ -19,6 +31,16 @@
   let errorMessage = $state('');
   let previewBusy = $state(false);
   let openBusy = $state(false);
+  let lastImportedNonce = $state(0);
+
+  $effect(() => {
+    if (!importedSerialized.trim() || importedNonce === 0 || importedNonce === lastImportedNonce) {
+      return;
+    }
+    lastImportedNonce = importedNonce;
+    serialized = importedSerialized;
+    void handlePreview();
+  });
 
   function endpointLabel(candidate: NonNullable<JoinLinkParseResponse['plan']['attachments'][number]['selectedEndpoint']>): string {
     const endpoint = candidate.endpoint;
@@ -92,9 +114,14 @@
 <section class="join-link-card">
   <div class="join-link-card-head">
     <div>
-      <h2>Open a Join or Share Link</h2>
-      <p>Paste an nb.join.v1 payload to preview provider routes, then open the space or attach the suggested share paths.</p>
+      <h2>{title}</h2>
+      <p>{subtitle}</p>
     </div>
+    {#if onClose}
+      <button type="button" class="join-link-close" aria-label="Close join link panel" onclick={() => onClose()}>
+        Close
+      </button>
+    {/if}
   </div>
 
   <label class="join-link-input-label" for="join-link-import-textarea">Join/share link</label>
@@ -244,6 +271,7 @@
   }
 
   .join-link-actions,
+  .join-link-card-head,
   .join-link-preview-head,
   .join-link-badge-row,
   .join-link-attachment-head {
@@ -251,6 +279,22 @@
     flex-wrap: wrap;
     gap: 0.65rem;
     align-items: center;
+  }
+
+  .join-link-card-head {
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+
+  .join-link-close {
+    border: 0;
+    background: rgba(107, 88, 57, 0.1);
+    color: #5b4927;
+    border-radius: 999px;
+    padding: 0.45rem 0.8rem;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
   }
 
   .join-link-button {

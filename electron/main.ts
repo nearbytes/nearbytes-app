@@ -52,6 +52,10 @@ interface DiagnosticsState {
 }
 
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const DEEP_LINK_PROTOCOL = 'nearbytes';
+
+const initialDeepLinkUrls = extractDeepLinkUrls(process.argv);
+const singleInstanceLock = app.requestSingleInstanceLock();
 
 const state: {
   window: BrowserWindow | null;
@@ -60,6 +64,10 @@ const state: {
   devUiProcess: ChildProcess | null;
   rendererProfile: RendererProfileState;
   diagnostics: DiagnosticsState;
+  deepLinks: {
+    pendingUrls: string[];
+    rendererReady: boolean;
+  };
 } = {
   window: null,
   runtime: null,
@@ -73,7 +81,15 @@ const state: {
     metricsTimer: null,
     isShuttingDown: false,
   },
+  deepLinks: {
+    pendingUrls: [],
+    rendererReady: false,
+  },
 };
+
+if (!singleInstanceLock) {
+  app.quit();
+}
 
 const desktopToken = generateDesktopApiToken();
 const devUiUrl = process.env.NEARBYTES_ELECTRON_DEV_SERVER_URL?.trim() ?? '';
@@ -89,6 +105,16 @@ const desktopIconPath = resolveDesktopIconPath();
 
 app.on('window-all-closed', () => {
   app.quit();
+});
+
+app.on('second-instance', (_event, argv) => {
+  void ensureDesktopWindow();
+  void enqueueDeepLinkUrls(extractDeepLinkUrls(argv));
+});
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  void enqueueDeepLinkUrls([url]);
 });
 
 app.on('before-quit', () => {
@@ -122,6 +148,7 @@ process.once('SIGTERM', () => {
 async function startDesktop(): Promise<void> {
   app.setName('Nearbytes');
   applyDesktopIcon();
+  registerDeepLinkProtocol();
   const runtimeModule = await loadRuntimeModule();
   const runtime = await runtimeModule.startApiRuntime({
     host: '127.0.0.1',
@@ -165,6 +192,7 @@ async function startDesktop(): Promise<void> {
     await ensureDevUiServer();
   }
   await createWindow(apiBaseUrl);
+  await enqueueDeepLinkUrls(initialDeepLinkUrls);
 }
 
 function createDesktopSecretStore(): {
@@ -210,6 +238,12 @@ function registerIpc(): void {
       };
     }
     return state.config;
+  });
+  ipcMain.handle('nearbytes-desktop:connect-deep-links', () => {
+    state.deepLinks.rendererReady = true;
+    const pending = [...state.deepLinks.pendingUrls];
+    state.deepLinks.pendingUrls = [];
+    return pending;
   });
   ipcMain.handle('nearbytes-desktop:fetch-remote-file', async (_event, rawUrl: unknown) => {
     if (typeof rawUrl !== 'string' || rawUrl.trim().length === 0) {
@@ -313,10 +347,12 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     },
   });
   state.window = window;
+  state.deepLinks.rendererReady = false;
   window.on('closed', () => {
     if (state.window === window) {
       state.window = null;
     }
+    state.deepLinks.rendererReady = false;
   });
   window.on('unresponsive', () => {
     console.error('[desktop] window became unresponsive');
@@ -382,6 +418,56 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
 
   if (enableAutoUpdater) {
     setupAutoUpdater(window, true);
+  }
+}
+
+function registerDeepLinkProtocol(): void {
+  const success = app.isPackaged
+    ? app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL)
+    : process.argv[1]
+      ? app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+      : app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL);
+  if (!success) {
+    console.warn(`[desktop] failed to register ${DEEP_LINK_PROTOCOL}:// as the default protocol client`);
+  }
+}
+
+async function enqueueDeepLinkUrls(urls: readonly string[]): Promise<void> {
+  const normalized = urls
+    .map((url) => normalizeDeepLinkUrl(url))
+    .filter((value): value is string => value !== null);
+  if (normalized.length === 0) {
+    return;
+  }
+
+  await ensureDesktopWindow();
+  if (state.deepLinks.rendererReady && state.window && !state.window.isDestroyed()) {
+    for (const url of normalized) {
+      state.window.webContents.send('nearbytes-desktop:deep-link', url);
+    }
+    presentWindow(state.window);
+    return;
+  }
+
+  state.deepLinks.pendingUrls.push(...normalized);
+  if (state.window && !state.window.isDestroyed()) {
+    presentWindow(state.window);
+  }
+}
+
+function extractDeepLinkUrls(argv: readonly string[]): string[] {
+  return argv.filter((value) => typeof value === 'string' && value.trim().toLowerCase().startsWith(`${DEEP_LINK_PROTOCOL}://`));
+}
+
+function normalizeDeepLinkUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== `${DEEP_LINK_PROTOCOL}:`) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
   }
 }
 

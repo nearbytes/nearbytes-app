@@ -4,6 +4,8 @@
   import {
     openVolume,
     type JoinLinkOpenResponse,
+    listManagedShares,
+    listProviderAccounts,
     listFiles,
     getTimeline,
     getEventDetail,
@@ -19,6 +21,9 @@
     type Auth,
     type ChatAttachment,
     type FileMetadata,
+    type JoinLink,
+    type ManagedShareSummary,
+    type ProviderAccount,
     type SerializedEvent,
     type SourceFileReference,
     type RecipientFileReference,
@@ -70,6 +75,7 @@
     History,
     Image as ImageIcon,
     LayoutGrid,
+    Link2,
     MessageSquareText,
     Plus,
     RefreshCw,
@@ -89,6 +95,7 @@
   const WORKSPACE_FILE_PANE_MIN_WIDTH = 360;
   const WORKSPACE_CHAT_PANE_MIN_WIDTH = 180;
   const PARKED_MOUNT_WIDTH = 46;
+  const NEARBYTES_JOIN_DEEP_LINK_MAX_LENGTH = 16_384;
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
   type EventReference = {
@@ -133,6 +140,7 @@
   };
 
   type NearbytesDesktopBridge = {
+    connectDeepLinks?: () => Promise<string[]>;
     fetchRemoteFile?: (url: string) => Promise<DesktopRemoteFile>;
     getClipboardImageStatus?: () => Promise<{ hasImage: boolean }>;
     readClipboardImage?: () => Promise<DesktopRemoteFile | null>;
@@ -140,6 +148,7 @@
     getUpdaterState?: () => Promise<DesktopUpdaterState | null>;
     installDownloadedUpdate?: () => Promise<boolean>;
     openUpdateReleasePage?: () => Promise<boolean>;
+    onDeepLink?: (listener: (url: string) => void) => (() => void) | void;
     onUpdaterState?: (listener: (state: DesktopUpdaterState) => void) => (() => void) | void;
     saveUiState?: (state: PersistedUiState) => Promise<unknown>;
   };
@@ -203,6 +212,11 @@
 
   type DiscoveryToastState = {
     runKey: string;
+    message: string;
+  };
+
+  type JoinLinkCopyFeedbackState = {
+    tone: 'success' | 'warning';
     message: string;
   };
 
@@ -691,6 +705,22 @@
     const remainder = normalized.length % 4;
     if (remainder === 0) return normalized;
     return `${normalized}${'='.repeat(4 - remainder)}`;
+  }
+
+  function decodeNearbytesJoinDeepLink(urlString: string): string {
+    const parsed = new URL(urlString);
+    if (parsed.protocol !== 'nearbytes:') {
+      throw new Error('Unsupported Nearbytes link protocol.');
+    }
+    const route = (parsed.hostname || parsed.pathname.replace(/^\/+/, '').split('/')[0] || '').trim().toLowerCase();
+    if (route !== 'join') {
+      throw new Error('Only nearbytes://join links are supported right now.');
+    }
+    const encoded = parsed.searchParams.get('data')?.trim() || parsed.hash.replace(/^#/, '').trim();
+    if (!encoded) {
+      throw new Error('This Nearbytes link is missing its join payload.');
+    }
+    return new TextDecoder().decode(base64ToBytes(base64UrlToBase64(encoded)));
   }
 
   function secretFilePayloadDataUrl(mount: VolumeMount): string | null {
@@ -1235,6 +1265,12 @@
   let lastAcknowledgedSourceDiscoveryRunKey = $state('');
   let sourceDiscoveryToast = $state<DiscoveryToastState | null>(null);
   let desktopUpdaterState = $state<DesktopUpdaterState | null>(null);
+  let joinLinkCopyBusy = $state(false);
+  let joinLinkCopyFeedback = $state<JoinLinkCopyFeedbackState | null>(null);
+  let showJoinLinkOverlay = $state(false);
+  let joinLinkOverlaySerialized = $state('');
+  let joinLinkOverlayNonce = $state(0);
+  let joinLinkOverlaySourceUrl = $state('');
   let sourceDiscoveryRefreshToken = $state(0);
   let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | null>(null);
   let sourceDiscoveryInFlight = false;
@@ -1257,6 +1293,7 @@
   let dragRaf = 0;
   let dragClientX = 0;
   let dragCaptureElement: HTMLElement | null = null;
+  let joinLinkCopyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   const mountNodes = new Map<string, HTMLElement>();
   let mountDragListenersActive = false;
   const mountWarmPromises = new Map<string, Promise<void>>();
@@ -1280,6 +1317,26 @@
     return dragPreparedMountId === mountId || draggingMountId === mountId;
   }
 
+  function openJoinLinkOverlayFromSerialized(serialized: string, sourceUrl = ''): void {
+    joinLinkOverlaySerialized = serialized;
+    joinLinkOverlaySourceUrl = sourceUrl;
+    joinLinkOverlayNonce += 1;
+    showJoinLinkOverlay = true;
+  }
+
+  function closeJoinLinkOverlay(): void {
+    showJoinLinkOverlay = false;
+  }
+
+  async function handleDesktopDeepLink(url: string): Promise<void> {
+    try {
+      errorMessage = '';
+      openJoinLinkOverlayFromSerialized(decodeNearbytesJoinDeepLink(url), url);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to open Nearbytes link';
+    }
+  }
+
   onMount(() => {
     configuredIdentities = loadConfiguredIdentities();
     activeChatIdentityId = loadActiveIdentityId();
@@ -1296,6 +1353,7 @@
 
     const bridge = getDesktopBridge();
     let cancelUpdaterSubscription: (() => void) | null = null;
+    let cancelDeepLinkSubscription: (() => void) | null = null;
     if (bridge) {
       if (typeof bridge.getUpdaterState === 'function') {
         void bridge
@@ -1321,11 +1379,32 @@
           cancelUpdaterSubscription = unsubscribe;
         }
       }
+      if (typeof bridge.onDeepLink === 'function') {
+        const unsubscribe = bridge.onDeepLink((url) => {
+          void handleDesktopDeepLink(url);
+        });
+        if (typeof unsubscribe === 'function') {
+          cancelDeepLinkSubscription = unsubscribe;
+        }
+      }
+      if (typeof bridge.connectDeepLinks === 'function') {
+        void bridge
+          .connectDeepLinks()
+          .then((urls) => {
+            for (const url of urls) {
+              void handleDesktopDeepLink(url);
+            }
+          })
+          .catch((error) => {
+            console.warn('Failed to connect desktop deep link stream:', error);
+          });
+      }
     }
     if (!bridge || typeof bridge.loadUiState !== 'function') {
       persistedUiStateReady = true;
       return () => {
         cancelUpdaterSubscription?.();
+        cancelDeepLinkSubscription?.();
       };
     }
 
@@ -1351,6 +1430,7 @@
 
     return () => {
       cancelUpdaterSubscription?.();
+      cancelDeepLinkSubscription?.();
     };
   });
 
@@ -1358,6 +1438,10 @@
     if (mountPressReleaseTimer) {
       clearTimeout(mountPressReleaseTimer);
       mountPressReleaseTimer = null;
+    }
+    if (joinLinkCopyFeedbackTimer) {
+      clearTimeout(joinLinkCopyFeedbackTimer);
+      joinLinkCopyFeedbackTimer = null;
     }
     for (const timer of mountRefreshTimers.values()) {
       clearTimeout(timer);
@@ -3090,7 +3174,11 @@
   }
 
   async function handleJoinLinkOpened(response: JoinLinkOpenResponse): Promise<void> {
+    showJoinLinkOverlay = false;
     if (response.space.mode === 'volume-id') {
+      showVolumeStoragePanel = true;
+      showSourcesPanel = false;
+      sourceDiscoveryPanelFocus = null;
       return;
     }
 
@@ -4375,6 +4463,193 @@
     }
   }
 
+  function normalizeJoinLinkJsonValue(value: unknown): unknown {
+    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.map((entry) => normalizeJoinLinkJsonValue(entry));
+    }
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, normalizeJoinLinkJsonValue(entry)])
+    );
+  }
+
+  function serializeCanonicalJoinLink(link: JoinLink): string {
+    return JSON.stringify(normalizeJoinLinkJsonValue(link));
+  }
+
+  function buildNearbytesJoinDeepLink(serialized: string): string {
+    return `nearbytes://join?data=${bytesToBase64Url(new TextEncoder().encode(serialized))}`;
+  }
+
+  function lastPathSegment(value: string): string {
+    const normalized = value.replace(/\\/g, '/').split('/').filter(Boolean);
+    return normalized[normalized.length - 1] ?? value.trim();
+  }
+
+  function setJoinLinkCopyFeedback(tone: JoinLinkCopyFeedbackState['tone'], message: string): void {
+    joinLinkCopyFeedback = { tone, message };
+    if (joinLinkCopyFeedbackTimer) {
+      clearTimeout(joinLinkCopyFeedbackTimer);
+    }
+    joinLinkCopyFeedbackTimer = setTimeout(() => {
+      joinLinkCopyFeedback = null;
+      joinLinkCopyFeedbackTimer = null;
+    }, 3200);
+  }
+
+  function buildCurrentJoinLinkSpace(includeSecret: boolean): JoinLink['space'] | null {
+    if (!includeSecret) {
+      return volumeId ? { mode: 'volume-id', value: volumeId } : null;
+    }
+    if (!activeMount) {
+      return null;
+    }
+    const secretPayload = trimSecretPart(activeMount.secretFilePayload);
+    if (secretPayload.startsWith(FILE_SECRET_PREFIX)) {
+      const payload = secretPayload.slice(FILE_SECRET_PREFIX.length);
+      if (payload !== '') {
+        return {
+          mode: 'secret-file',
+          name: trimSecretPart(activeMount.secretFileName) || mountLabel(activeMount),
+          mime: trimSecretPart(activeMount.secretFileMimeType) || undefined,
+          payload,
+        };
+      }
+    }
+    const seedValue = trimSecretPart(activeMount.address);
+    if (seedValue === '') {
+      return null;
+    }
+    const password = trimSecretPart(activeMount.password);
+    return password === '' ? { mode: 'seed', value: seedValue } : { mode: 'seed', value: seedValue, password };
+  }
+
+  function hasCopyableCurrentSecret(): boolean {
+    return buildCurrentJoinLinkSpace(true) !== null;
+  }
+
+  function buildJoinLinkAttachmentFromManagedShare(
+    summary: ManagedShareSummary,
+    accountsById: Map<string, ProviderAccount>,
+    index: number
+  ): JoinLink['attachments'][number] | null {
+    const descriptor = normalizeJoinLinkJsonValue(summary.share.remoteDescriptor);
+    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor) || Object.keys(descriptor).length === 0) {
+      return null;
+    }
+    const provider = summary.share.provider.trim().toLowerCase();
+    const label = summary.share.label.trim() || `${provider} share`;
+    const account = accountsById.get(summary.share.accountId);
+    const localPathHint =
+      lastPathSegment(summary.storage?.sourcePath || '') ||
+      lastPathSegment(summary.share.localPath) ||
+      label;
+
+    return {
+      id: `attachment-${provider}-${index + 1}`,
+      label,
+      recipe: {
+        p: 'nb.transport.recipe.v1',
+        id: `recipe-${provider}-${index + 1}`,
+        label,
+        purpose: 'mirror',
+        endpoints: [
+          {
+            p: 'nb.transport.endpoint.v1',
+            transport: 'provider-share',
+            provider,
+            priority: Math.max(1, 100 - index),
+            capabilities: summary.share.capabilities.filter((value) => value.trim() !== ''),
+            descriptor: descriptor as Record<string, unknown>,
+            label,
+            badges: ['Attached share'],
+            bootstrap: {
+              account:
+                account && (account.label.trim() !== '' || (account.email ?? '').trim() !== '')
+                  ? {
+                      mode: 'login',
+                      label: account.label.trim() || undefined,
+                      email: account.email?.trim() || undefined,
+                      preferred: true,
+                    }
+                  : undefined,
+              storage: localPathHint
+                ? {
+                    localPathHint,
+                  }
+                : undefined,
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  async function buildCurrentJoinLink(includeSecret: boolean): Promise<JoinLink> {
+    const space = buildCurrentJoinLinkSpace(includeSecret);
+    if (!space) {
+      throw new Error(includeSecret ? 'Open a space with its secret before copying that link.' : 'Open a space first.');
+    }
+    if (!volumeId) {
+      return {
+        p: 'nb.join.v1',
+        space,
+        attachments: [],
+      };
+    }
+    const [sharesResponse, accountsResponse] = await Promise.all([listManagedShares(), listProviderAccounts()]);
+    const accountsById = new Map(accountsResponse.accounts.map((account) => [account.id, account]));
+    const attachments = sharesResponse.shares
+      .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === volumeId))
+      .sort((left, right) => {
+        const providerOrder = left.share.provider.localeCompare(right.share.provider);
+        if (providerOrder !== 0) {
+          return providerOrder;
+        }
+        return left.share.label.localeCompare(right.share.label);
+      })
+      .map((summary, index) => buildJoinLinkAttachmentFromManagedShare(summary, accountsById, index))
+      .filter((attachment): attachment is JoinLink['attachments'][number] => attachment !== null);
+    return {
+      p: 'nb.join.v1',
+      space,
+      attachments,
+    };
+  }
+
+  async function copyCurrentJoinLink(includeSecret: boolean): Promise<void> {
+    joinLinkCopyBusy = true;
+    try {
+      const link = await buildCurrentJoinLink(includeSecret);
+      const serialized = serializeCanonicalJoinLink(link);
+      let clipboardText = buildNearbytesJoinDeepLink(serialized);
+      let feedbackTone: JoinLinkCopyFeedbackState['tone'] = 'success';
+      let feedbackMessage = includeSecret ? 'Copied secret Nearbytes link.' : 'Copied Nearbytes link.';
+      if (clipboardText.length > NEARBYTES_JOIN_DEEP_LINK_MAX_LENGTH) {
+        if (!includeSecret) {
+          throw new Error('This Nearbytes link is too large for a practical deep link. Reduce the exported routes or use a smaller share link.');
+        }
+        clipboardText = serialized;
+        feedbackTone = 'warning';
+        feedbackMessage = 'Secret payload was too large for nearbytes://. Copied canonical JSON instead.';
+      }
+      await navigator.clipboard.writeText(clipboardText);
+      setJoinLinkCopyFeedback(feedbackTone, feedbackMessage);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to copy Nearbytes link';
+    } finally {
+      joinLinkCopyBusy = false;
+    }
+  }
+
   // Format file size
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -5020,6 +5295,36 @@
             {/if}
           </span>
         </div>
+        <div class="status-item status-link-item">
+          <span class="status-label">Share:</span>
+          <div class="status-link-actions">
+            <button
+              type="button"
+              class="status-link-btn"
+              onclick={() => void copyCurrentJoinLink(false)}
+              disabled={joinLinkCopyBusy}
+              title="Copy a secretless nearbytes:// link for this space"
+            >
+              <Link2 class="button-icon" size={15} strokeWidth={2} />
+              <span>{joinLinkCopyBusy ? 'Preparing…' : 'Copy link'}</span>
+            </button>
+            <button
+              type="button"
+              class="status-link-btn"
+              onclick={() => void copyCurrentJoinLink(true)}
+              disabled={joinLinkCopyBusy || !hasCopyableCurrentSecret()}
+              title="Copy a nearbytes:// link that includes the current secret when practical"
+            >
+              <Link2 class="button-icon" size={15} strokeWidth={2} />
+              <span>Copy secret link</span>
+            </button>
+          </div>
+          {#if joinLinkCopyFeedback}
+            <span class:warning={joinLinkCopyFeedback.tone === 'warning'} class="status-link-feedback">
+              {joinLinkCopyFeedback.message}
+            </span>
+          {/if}
+        </div>
       {/if}
       {#if isHistoryMode}
         <div class="status-item history-indicator">
@@ -5643,6 +5948,37 @@
           </button>
         </aside>
       {/if}
+    </div>
+  {/if}
+
+  {#if showJoinLinkOverlay}
+    <div
+      class="join-link-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Open Nearbytes link"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeJoinLinkOverlay();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          closeJoinLinkOverlay();
+        }
+      }}
+    >
+      <div class="join-link-modal panel-surface">
+        <JoinLinkImportCard
+          importedSerialized={joinLinkOverlaySerialized}
+          importedNonce={joinLinkOverlayNonce}
+          title="Open Nearbytes Link"
+          subtitle={joinLinkOverlaySourceUrl ? `Received from ${joinLinkOverlaySourceUrl}` : 'Review this Nearbytes link before opening it.'}
+          onOpened={handleJoinLinkOpened}
+          onClose={closeJoinLinkOverlay}
+        />
+      </div>
     </div>
   {/if}
 
@@ -7082,6 +7418,10 @@
     color: rgba(224, 224, 224, 0.7);
   }
 
+  .status-link-item {
+    flex-wrap: wrap;
+  }
+
   .status-label {
     font-weight: 500;
     color: rgba(224, 224, 224, 0.5);
@@ -7114,6 +7454,50 @@
     margin-left: 0.5rem;
     color: #4ade80;
     font-size: 0.75rem;
+  }
+
+  .status-link-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .status-link-btn {
+    appearance: none;
+    border: 1px solid rgba(56, 189, 248, 0.24);
+    border-radius: 11px;
+    background: rgba(12, 24, 43, 0.82);
+    color: rgba(226, 232, 240, 0.92);
+    min-height: 32px;
+    padding: 0 0.8rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+  }
+
+  .status-link-btn:hover:not(:disabled) {
+    background: rgba(16, 32, 56, 0.96);
+    border-color: rgba(96, 165, 250, 0.34);
+    transform: translateY(-1px);
+  }
+
+  .status-link-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .status-link-feedback {
+    font-size: 0.75rem;
+    color: #86efac;
+  }
+
+  .status-link-feedback.warning {
+    color: #facc15;
   }
 
   .offline-indicator {
@@ -7675,6 +8059,25 @@
     background: rgba(2, 6, 23, 0.72);
     backdrop-filter: blur(8px);
     z-index: 200;
+  }
+
+  .join-link-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(2, 6, 23, 0.72);
+    backdrop-filter: blur(8px);
+    z-index: 210;
+  }
+
+  .join-link-modal {
+    width: min(620px, 94vw);
+    max-height: calc(100vh - 3rem);
+    overflow: auto;
+    border-radius: 18px;
   }
 
   .tm-details-modal {
