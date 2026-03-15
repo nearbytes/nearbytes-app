@@ -8,6 +8,7 @@
     listProviderAccounts,
     listFiles,
     getTimeline,
+    inviteManagedShare,
     getEventDetail,
     uploadFiles,
     deleteFile,
@@ -1352,14 +1353,18 @@
   let desktopUpdaterState = $state<DesktopUpdaterState | null>(null);
   let joinLinkCopyBusy = $state(false);
   let joinLinkCopyFeedback = $state<JoinLinkCopyFeedbackState | null>(null);
+  let volumeSharingFeedback = $state<{ tone: 'success' | 'warning'; message: string } | null>(null);
   let clipboardJoinLinkSerialized = $state('');
   let clipboardJoinLinkBusy = $state(false);
   let joinLinkInlineMountId = $state<string | null>(null);
   let joinLinkInlineSerialized = $state('');
   let joinLinkInlineNonce = $state(0);
   let joinLinkInlineSourceLabel = $state('');
+  let currentVolumeManagedShares = $state<ManagedShareSummary[]>([]);
+  let currentVolumeSharingLoading = $state(false);
+  let currentVolumeShareInviteDrafts = $state<Record<string, string>>({});
   let sourceDiscoveryRefreshToken = $state(0);
-  let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | null>(null);
+  let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | 'shares' | null>(null);
   let sourceDiscoveryInFlight = false;
   let sourceDiscoveryQueued = false;
   let sourceDiscoveryScheduleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3359,6 +3364,12 @@
     sourceDiscoveryPanelFocus = null;
   }
 
+  function openVolumeShareStoragePanel(): void {
+    showVolumeStoragePanel = true;
+    showSourcesPanel = false;
+    sourceDiscoveryPanelFocus = 'shares';
+  }
+
   async function handleJoinLinkOpened(response: JoinLinkOpenResponse): Promise<void> {
     closeInlineJoinLinkEditor();
     if (response.space.mode === 'volume-id') {
@@ -4920,12 +4931,85 @@
       await navigator.clipboard.writeText(clipboardText);
       clipboardJoinLinkSerialized = serialized;
       setJoinLinkCopyFeedback(feedbackTone, feedbackMessage);
+      volumeSharingFeedback = { tone: feedbackTone, message: feedbackMessage };
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to copy Nearbytes link';
     } finally {
       joinLinkCopyBusy = false;
     }
   }
+
+  function currentVolumeShareInviteDraft(shareId: string): string {
+    return currentVolumeShareInviteDrafts[shareId] ?? '';
+  }
+
+  function setCurrentVolumeShareInviteDraft(shareId: string, value: string): void {
+    currentVolumeShareInviteDrafts = {
+      ...currentVolumeShareInviteDrafts,
+      [shareId]: value,
+    };
+  }
+
+  function parseInviteEmails(value: string): string[] {
+    return value
+      .split(/[\s,;]+/u)
+      .map((entry) => entry.trim())
+      .filter((entry, index, entries) => entry !== '' && entries.indexOf(entry) === index);
+  }
+
+  function currentVolumeStorageCollaborators(summary: ManagedShareSummary): string[] {
+    return summary.collaborators.map((collaborator) => collaborator.email ?? collaborator.label);
+  }
+
+  async function refreshCurrentVolumeManagedShares(): Promise<void> {
+    if (!volumeId) {
+      currentVolumeManagedShares = [];
+      return;
+    }
+    currentVolumeSharingLoading = true;
+    try {
+      const sharesResponse = await listManagedShares();
+      currentVolumeManagedShares = sharesResponse.shares
+        .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === volumeId))
+        .sort((left, right) => left.share.label.localeCompare(right.share.label));
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to load shared storage for this volume';
+    } finally {
+      currentVolumeSharingLoading = false;
+    }
+  }
+
+  async function inviteCurrentVolumeStorage(summary: ManagedShareSummary): Promise<void> {
+    const emails = parseInviteEmails(currentVolumeShareInviteDraft(summary.share.id));
+    if (emails.length === 0) {
+      errorMessage = 'Enter at least one collaborator email first.';
+      return;
+    }
+    currentVolumeSharingLoading = true;
+    volumeSharingFeedback = null;
+    errorMessage = '';
+    try {
+      await inviteManagedShare(summary.share.id, emails);
+      setCurrentVolumeShareInviteDraft(summary.share.id, '');
+      volumeSharingFeedback = {
+        tone: 'success',
+        message: `${summary.share.label} storage shared with ${emails.join(', ')}.`,
+      };
+      await refreshCurrentVolumeManagedShares();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to share storage for this volume';
+    } finally {
+      currentVolumeSharingLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (!showStatusPanel || !volumeId) {
+      currentVolumeManagedShares = [];
+      return;
+    }
+    void refreshCurrentVolumeManagedShares();
+  });
 
   // Format file size
   function formatSize(bytes: number): string {
@@ -5628,35 +5712,100 @@
             {/if}
           </span>
         </div>
-        <div class="status-item status-link-item">
-          <span class="status-label">Share:</span>
-          <div class="status-link-actions">
-            <button
-              type="button"
-              class="status-link-btn"
-              onclick={() => void copyCurrentJoinLink(false)}
-              disabled={joinLinkCopyBusy}
-              title="Copy a secretless nearbytes:// link for this space"
-            >
-              <Link2 class="button-icon" size={15} strokeWidth={2} />
-              <span>{joinLinkCopyBusy ? 'Preparing…' : 'Copy link'}</span>
-            </button>
-            <button
-              type="button"
-              class="status-link-btn"
-              onclick={() => void copyCurrentJoinLink(true)}
-              disabled={joinLinkCopyBusy || !hasCopyableCurrentSecret()}
-              title="Copy a nearbytes:// link that includes the current secret when practical"
-            >
-              <Link2 class="button-icon" size={15} strokeWidth={2} />
-              <span>Copy secret link</span>
-            </button>
+        <div class="status-item status-share-item">
+          <div class="status-share-group">
+            <div class="status-share-head">
+              <span class="status-label">Share volume</span>
+              <div class="status-link-actions">
+                <button
+                  type="button"
+                  class="status-link-btn"
+                  onclick={() => void copyCurrentJoinLink(false)}
+                  disabled={joinLinkCopyBusy}
+                  title="Copy a secretless nearbytes:// link for this volume"
+                >
+                  <Link2 class="button-icon" size={15} strokeWidth={2} />
+                  <span>{joinLinkCopyBusy ? 'Preparing…' : 'Share volume'}</span>
+                </button>
+                <button
+                  type="button"
+                  class="status-link-btn"
+                  onclick={() => void copyCurrentJoinLink(true)}
+                  disabled={joinLinkCopyBusy || !hasCopyableCurrentSecret()}
+                  title="Copy a nearbytes:// link that includes the current secret when practical"
+                >
+                  <Link2 class="button-icon" size={15} strokeWidth={2} />
+                  <span>Share secret volume</span>
+                </button>
+              </div>
+            </div>
+            <p class="status-share-note">Use a Nearbytes volume link to open this volume elsewhere. Add live storage only when this volume actually needs synced collaboration.</p>
+            {#if volumeSharingFeedback}
+              <span class:warning={volumeSharingFeedback.tone === 'warning'} class="status-link-feedback">
+                {volumeSharingFeedback.message}
+              </span>
+            {/if}
           </div>
-          {#if joinLinkCopyFeedback}
-            <span class:warning={joinLinkCopyFeedback.tone === 'warning'} class="status-link-feedback">
-              {joinLinkCopyFeedback.message}
-            </span>
-          {/if}
+
+          <div class="status-share-group">
+            <div class="status-share-head">
+              <span class="status-label">Share storage with…</span>
+              <button
+                type="button"
+                class="status-link-btn secondary"
+                onclick={openVolumeShareStoragePanel}
+              >
+                <HardDrive class="button-icon" size={15} strokeWidth={2} />
+                <span>Choose storage</span>
+              </button>
+            </div>
+            <p class="status-share-note">Choose MEGA or another provider on a by-need basis, then invite collaborators to that live storage.</p>
+
+            {#if currentVolumeSharingLoading && currentVolumeManagedShares.length === 0}
+              <p class="status-share-note">Loading attached live storage…</p>
+            {:else if currentVolumeManagedShares.length === 0}
+              <p class="status-share-note">No live storage attached to this volume yet.</p>
+            {:else}
+              <div class="status-storage-list">
+                {#each currentVolumeManagedShares as summary (summary.share.id)}
+                  <div class="status-storage-card">
+                    <div class="status-storage-head">
+                      <div>
+                        <p class="status-storage-provider">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
+                        <p class="status-storage-title">{summary.share.label}</p>
+                      </div>
+                      <span class="status-storage-state">{summary.state.status === 'ready' ? 'Live' : summary.state.detail}</span>
+                    </div>
+                    <div class="status-storage-invite-row">
+                      <input
+                        class="status-storage-input"
+                        type="text"
+                        value={currentVolumeShareInviteDraft(summary.share.id)}
+                        placeholder="name@example.com"
+                        oninput={(event) =>
+                          setCurrentVolumeShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
+                      />
+                      <button
+                        type="button"
+                        class="status-link-btn secondary"
+                        onclick={() => void inviteCurrentVolumeStorage(summary)}
+                        disabled={currentVolumeSharingLoading}
+                      >
+                        <span>{currentVolumeSharingLoading ? 'Sending…' : 'Share storage'}</span>
+                      </button>
+                    </div>
+                    {#if currentVolumeStorageCollaborators(summary).length > 0}
+                      <div class="status-storage-members">
+                        {#each currentVolumeStorageCollaborators(summary) as email (email)}
+                          <span class="status-storage-chip">{email}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
         </div>
       {/if}
       {#if isHistoryMode}
@@ -5713,6 +5862,10 @@
           currentVolumePresentation={currentMountedVolumePresentation}
           knownVolumes={knownMountedVolumes}
           onOpenVolumeRouting={openMountedVolumeRouting}
+          onCopyShareLink={copyCurrentJoinLink}
+          canCopySecretLink={hasCopyableCurrentSecret()}
+          shareLinkBusy={joinLinkCopyBusy}
+          shareLinkFeedback={joinLinkCopyFeedback}
           refreshToken={sourceDiscoveryRefreshToken}
         />
       </div>
@@ -7851,6 +8004,37 @@
     flex-wrap: wrap;
   }
 
+  .status-share-item {
+    flex: 1 1 720px;
+    display: grid;
+    gap: 0.8rem;
+    align-items: stretch;
+  }
+
+  .status-share-group {
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.78rem 0.9rem;
+    border-radius: 14px;
+    border: 1px solid rgba(56, 189, 248, 0.12);
+    background: rgba(10, 18, 31, 0.56);
+  }
+
+  .status-share-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+  }
+
+  .status-share-note {
+    margin: 0;
+    color: rgba(191, 219, 254, 0.74);
+    font-size: 0.76rem;
+    line-height: 1.4;
+  }
+
   .status-label {
     font-weight: 500;
     color: rgba(224, 224, 224, 0.5);
@@ -7909,6 +8093,10 @@
     transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
   }
 
+  .status-link-btn.secondary {
+    background: rgba(8, 17, 31, 0.8);
+  }
+
   .status-link-btn:hover:not(:disabled) {
     background: rgba(16, 32, 56, 0.96);
     border-color: rgba(96, 165, 250, 0.34);
@@ -7927,6 +8115,88 @@
 
   .status-link-feedback.warning {
     color: #facc15;
+  }
+
+  .status-storage-list {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .status-storage-card {
+    display: grid;
+    gap: 0.55rem;
+    padding: 0.72rem 0.78rem;
+    border-radius: 12px;
+    border: 1px solid rgba(96, 165, 250, 0.12);
+    background: rgba(8, 15, 27, 0.64);
+  }
+
+  .status-storage-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.55rem;
+  }
+
+  .status-storage-provider,
+  .status-storage-title {
+    margin: 0;
+  }
+
+  .status-storage-provider {
+    color: rgba(125, 211, 252, 0.8);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .status-storage-title {
+    color: rgba(226, 232, 240, 0.96);
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+
+  .status-storage-state {
+    color: rgba(191, 219, 254, 0.72);
+    font-size: 0.74rem;
+  }
+
+  .status-storage-invite-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.55rem;
+    align-items: center;
+  }
+
+  .status-storage-input {
+    min-height: 32px;
+    border-radius: 10px;
+    border: 1px solid rgba(56, 189, 248, 0.2);
+    background: rgba(10, 18, 31, 0.9);
+    color: rgba(226, 232, 240, 0.96);
+    padding: 0 0.7rem;
+    font: inherit;
+    font-size: 0.77rem;
+  }
+
+  .status-storage-members {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .status-storage-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 0.16rem 0.62rem;
+    border-radius: 999px;
+    border: 1px solid rgba(96, 165, 250, 0.16);
+    background: rgba(12, 23, 41, 0.82);
+    color: rgba(191, 219, 254, 0.88);
+    font-size: 0.72rem;
+    line-height: 1.2;
   }
 
   .offline-indicator {

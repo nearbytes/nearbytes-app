@@ -118,6 +118,14 @@ export interface ManagedShareAttachment {
   readonly createdAt: number;
 }
 
+export interface ManagedShareCollaborator {
+  readonly label: string;
+  readonly email?: string;
+  readonly role?: string;
+  readonly status: 'active' | 'invited';
+  readonly source: 'provider' | 'nearbytes';
+}
+
 export interface TransportState {
   readonly status: 'idle' | 'ready' | 'syncing' | 'needs-auth' | 'unsupported' | 'attention';
   readonly detail: string;
@@ -153,6 +161,7 @@ export interface ManagedShareSummary {
   readonly share: ManagedShare;
   readonly attachments: ManagedShareAttachment[];
   readonly state: TransportState;
+  readonly collaborators: ManagedShareCollaborator[];
   readonly storage?: {
     readonly sourcePath?: string;
     readonly enabled?: boolean;

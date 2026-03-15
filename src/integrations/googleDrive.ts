@@ -9,6 +9,7 @@ import type {
   ConfigureProviderInput,
   CreateManagedShareInput,
   InviteManagedShareInput,
+  ManagedShareCollaborator,
   ManagedShare,
   ProviderAccount,
   ProviderAuthSession,
@@ -53,6 +54,20 @@ interface GoogleDriveFileRecord {
 
 interface GoogleDriveListResponse {
   readonly files?: GoogleDriveFileRecord[];
+  readonly nextPageToken?: string;
+}
+
+interface GoogleDrivePermissionRecord {
+  readonly id?: string;
+  readonly displayName?: string;
+  readonly emailAddress?: string;
+  readonly role?: string;
+  readonly type?: string;
+  readonly deleted?: boolean;
+}
+
+interface GoogleDrivePermissionsResponse {
+  readonly permissions?: GoogleDrivePermissionRecord[];
   readonly nextPageToken?: string;
 }
 
@@ -317,6 +332,52 @@ export class GoogleDriveTransportAdapter {
       detail: 'Google Drive share is ready to sync.',
       badges: ['Share'],
     };
+  }
+
+  async getCollaborators(share: ManagedShare, account: ProviderAccount | null): Promise<ManagedShareCollaborator[]> {
+    if (!account) {
+      return [];
+    }
+    const folderId = getStringDescriptor(share.remoteDescriptor, 'folderId');
+    if (!folderId) {
+      return [];
+    }
+
+    const collaborators: ManagedShareCollaborator[] = [];
+    let pageToken: string | undefined;
+    do {
+      const query = new URLSearchParams({
+        fields: 'permissions(id,displayName,emailAddress,role,type,deleted),nextPageToken',
+        supportsAllDrives: 'true',
+      });
+      if (pageToken) {
+        query.set('pageToken', pageToken);
+      }
+      const response = await this.api<GoogleDrivePermissionsResponse>(
+        account.id,
+        `/files/${encodeURIComponent(folderId)}/permissions?${query.toString()}`
+      );
+      for (const permission of response.permissions ?? []) {
+        if (permission.deleted) {
+          continue;
+        }
+        const email = permission.emailAddress?.trim();
+        const label = permission.displayName?.trim() || email || permission.type?.trim();
+        if (!label) {
+          continue;
+        }
+        collaborators.push({
+          label,
+          email,
+          role: permission.role?.trim() || undefined,
+          status: 'active',
+          source: 'provider',
+        });
+      }
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+
+    return dedupeCollaborators(collaborators);
   }
 
   async ensureSync(share: ManagedShare, account: ProviderAccount): Promise<void> {
@@ -670,6 +731,18 @@ export class GoogleDriveTransportAdapter {
     }
     return null;
   }
+}
+
+function dedupeCollaborators(collaborators: readonly ManagedShareCollaborator[]): ManagedShareCollaborator[] {
+  const byKey = new Map<string, ManagedShareCollaborator>();
+  for (const collaborator of collaborators) {
+    const key = collaborator.email?.trim().toLowerCase() || collaborator.label.trim().toLowerCase();
+    if (!key || byKey.has(key)) {
+      continue;
+    }
+    byKey.set(key, collaborator);
+  }
+  return Array.from(byKey.values());
 }
 
 class GoogleDriveMirrorRemoteAdapter implements MirrorRemoteAdapter {

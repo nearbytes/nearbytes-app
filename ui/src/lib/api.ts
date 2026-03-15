@@ -435,6 +435,14 @@ export interface ManagedShareAttachment {
   createdAt: number;
 }
 
+export interface ManagedShareCollaborator {
+  label: string;
+  email?: string;
+  role?: string;
+  status: 'active' | 'invited';
+  source: 'provider' | 'nearbytes';
+}
+
 export interface TransportState {
   status: 'idle' | 'ready' | 'syncing' | 'needs-auth' | 'unsupported' | 'attention';
   detail: string;
@@ -446,6 +454,7 @@ export interface ManagedShareSummary {
   share: ManagedShare;
   attachments: ManagedShareAttachment[];
   state: TransportState;
+  collaborators: ManagedShareCollaborator[];
   storage?: {
     sourcePath?: string;
     enabled?: boolean;

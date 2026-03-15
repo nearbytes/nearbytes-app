@@ -35,6 +35,7 @@ import type {
   JoinLinkSpace,
   ManagedShare,
   ManagedShareAttachment,
+  ManagedShareCollaborator,
   ManagedShareSummary,
   ProviderAccount,
   ProviderCatalogEntry,
@@ -699,6 +700,7 @@ export class ManagedShareService {
       share,
       attachments: computeManagedShareAttachments(config, share),
       state: await this.resolveTransportState(share, runtime),
+      collaborators: await this.resolveShareCollaborators(share),
       storage: summarizeManagedShareStorage(config, runtime, share, remoteMetrics),
     };
   }
@@ -756,6 +758,47 @@ export class ManagedShareService {
       this.runtime.logger.warn(`Managed share metrics failed for ${share.id}: ${message}`);
       return undefined;
     }
+  }
+
+  private async resolveShareCollaborators(share: ManagedShare): Promise<ManagedShareCollaborator[]> {
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    const state = await this.loadState();
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    const byKey = new Map<string, ManagedShareCollaborator>();
+
+    if (adapter?.getCollaborators) {
+      try {
+        for (const collaborator of await adapter.getCollaborators(share, account)) {
+          const key = collaborator.email?.trim().toLowerCase() || collaborator.label.trim().toLowerCase();
+          if (key) {
+            byKey.set(key, collaborator);
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share collaborator lookup failed for ${share.id}: ${message}`);
+      }
+    }
+
+    for (const email of share.invitationEmails) {
+      const normalizedEmail = email.trim().toLowerCase();
+      if (!normalizedEmail || byKey.has(normalizedEmail)) {
+        continue;
+      }
+      byKey.set(normalizedEmail, {
+        label: email.trim(),
+        email: email.trim(),
+        status: 'invited',
+        source: 'nearbytes',
+      });
+    }
+
+    return Array.from(byKey.values()).sort((left, right) => {
+      if (left.status !== right.status) {
+        return left.status === 'active' ? -1 : 1;
+      }
+      return (left.email ?? left.label).localeCompare(right.email ?? right.label);
+    });
   }
 
   private async loadState(): Promise<IntegrationStateSnapshot> {
