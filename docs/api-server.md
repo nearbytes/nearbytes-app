@@ -340,6 +340,8 @@ Parses an `nb.join.v1` object or JSON string and returns the ranked transport pl
 
 Parses and plans an `nb.join.v1` payload, derives the target space volume id, and auto-attaches the best compatible managed provider routes when possible.
 
+`allowCredentialBootstrap` MAY be set to `true` to let the server use endpoint-carried provider login material during open. Clients should default this to `false` and require an explicit user action before enabling it.
+
 ## Configuration
 
 Environment variables:

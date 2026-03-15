@@ -3,6 +3,7 @@
   import { flip } from 'svelte/animate';
   import {
     openVolume,
+    type JoinLinkOpenResponse,
     listFiles,
     getTimeline,
     getEventDetail,
@@ -47,6 +48,7 @@
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
+  import JoinLinkImportCard from './components/JoinLinkImportCard.svelte';
   import MountRail from './components/MountRail.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import SecretSeedFields from './components/SecretSeedFields.svelte';
@@ -3087,6 +3089,56 @@
     sourceDiscoveryPanelFocus = null;
   }
 
+  async function handleJoinLinkOpened(response: JoinLinkOpenResponse): Promise<void> {
+    if (response.space.mode === 'volume-id') {
+      return;
+    }
+
+    const targetMountId = activeMountId || createCollapsedMount();
+    mounts = mounts.map((mount) => {
+      if (mount.id !== targetMountId) {
+        return { ...mount, collapsed: true };
+      }
+      if (response.space.mode === 'secret-file') {
+        return {
+          ...mount,
+          address: response.space.name,
+          password: '',
+          secretFilePayload: `${FILE_SECRET_PREFIX}${response.space.payload}`,
+          secretFileName: response.space.name,
+          secretFileMimeType: response.space.mime ?? '',
+          volumeId: response.volumeId ?? undefined,
+          collapsed: false,
+        };
+      }
+      if (response.space.mode !== 'seed') {
+        return mount;
+      }
+      return {
+        ...mount,
+        address: response.space.value,
+        password: response.space.password ?? '',
+        secretFilePayload: '',
+        secretFileName: '',
+        secretFileMimeType: '',
+        volumeId: response.volumeId ?? undefined,
+        collapsed: false,
+      };
+    });
+    activeMountId = targetMountId;
+    pendingMountId = targetMountId;
+    secretPasteTargetMountId = null;
+    showSourcesPanel = false;
+    showVolumeStoragePanel = false;
+    sourceDiscoveryPanelFocus = null;
+
+    await tick();
+    const targetMount = mounts.find((mount) => mount.id === targetMountId);
+    if (targetMount) {
+      await ensureMountRuntimeLoaded(targetMount, { activateIfCurrent: true });
+    }
+  }
+
   $effect(() => {
     if (visibleFiles.length === 0) {
       selectedFileName = null;
@@ -5037,6 +5089,7 @@
           </svg>
           <p class="empty-hint">Enter an address to access your files</p>
           <p class="empty-subhint">Or drag and drop files here to create a new space</p>
+          <JoinLinkImportCard onOpened={handleJoinLinkOpened} />
         </div>
       </div>
     {:else}

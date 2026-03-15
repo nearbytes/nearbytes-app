@@ -4,6 +4,8 @@ Status: draft normative specification.
 
 This document defines one space join link that can carry both the space-open material and zero or more attachment recipes.
 
+It also supports share-link usage where the exact volume id is known but the space secret is intentionally omitted.
+
 ## 1. Goal
 
 `nb.join.v1` is the format Nearbytes should use when one action is meant to:
@@ -80,12 +82,29 @@ Rules:
 1. `payload` MUST be raw bytes encoded as base64url without padding.
 2. Readers MUST treat the decoded bytes as the same secret-file payload the current app already supports.
 
+### 3.3 Volume-id form
+
+```json
+{
+  "mode": "volume-id",
+  "value": "<hex volume id>"
+}
+```
+
+Rules:
+
+1. `value` MUST be the lowercase or uppercase hex volume id of the target space.
+2. This form does not reveal the space secret.
+3. Readers MAY use this form to attach provider routes to the correct space policy, but they MUST NOT claim that the space contents can be opened from this form alone.
+4. Producers SHOULD default to `volume-id` when generating a share link unless the user explicitly asks to include the secret.
+
 ## 4. Attachment Semantics
 
 1. Each `attachments[i].recipe` MUST be a valid `nb.transport.recipe.v1` object.
 2. Readers MUST open/join the space first.
-3. Readers MAY then plan or attach any compatible recipe endpoints.
-4. Unknown endpoint kinds inside a recipe MUST be ignored without failing the whole link.
+3. For `space.mode = "volume-id"`, readers MAY skip immediate space opening and instead attach or plan compatible recipe endpoints against the declared volume id.
+4. Readers MAY then plan or attach any compatible recipe endpoints.
+5. Unknown endpoint kinds inside a recipe MUST be ignored without failing the whole link.
 
 ## 5. Failure Conditions
 

@@ -65,8 +65,18 @@ export function endpointMatchKey(endpoint: TransportEndpoint): string | undefine
   if (typeof descriptor.remoteId === 'string' && descriptor.remoteId.trim() !== '') {
     return `${provider || 'provider'}:remote:${normalizeKey(descriptor.remoteId)}`;
   }
+  if (typeof descriptor.folderId === 'string' && descriptor.folderId.trim() !== '') {
+    return `${provider || 'provider'}:remote:${normalizeKey(descriptor.folderId)}`;
+  }
+  if (typeof descriptor.remotePath === 'string' && descriptor.remotePath.trim() !== '') {
+    return `${provider || 'provider'}:path:${normalizeKey(descriptor.remotePath)}`;
+  }
   if (typeof descriptor.remotePathHint === 'string' && descriptor.remotePathHint.trim() !== '') {
     return `${provider || 'provider'}:path:${normalizeKey(descriptor.remotePathHint)}`;
+  }
+  const repoMatchKey = repositoryMatchKey(provider, descriptor);
+  if (repoMatchKey) {
+    return repoMatchKey;
   }
   if (typeof descriptor.url === 'string' && descriptor.url.trim() !== '') {
     return `${endpoint.transport}:${normalizeKey(descriptor.url)}`;
@@ -97,12 +107,16 @@ function createCandidate(
   const connected = provider !== '' && context.connectedProviders.has(provider);
   const preferred = provider !== '' && context.preferredProviders.has(provider);
   const availableWithoutNewAuth = attached || endpoint.transport === 'http' || endpoint.transport === 'peer-http';
+  const bootstrapIncluded = Boolean(endpoint.bootstrap?.account?.credentials);
+  const storageHintIncluded = Boolean(endpoint.bootstrap?.storage?.localPathHint || endpoint.bootstrap?.storage?.localPath);
   const badges = collectBadges(endpoint, {
     attached,
     connected,
     preferred,
     availableWithoutNewAuth,
     supported,
+    bootstrapIncluded,
+    storageHintIncluded,
   });
 
   return {
@@ -116,6 +130,7 @@ function createCandidate(
       supported,
       availableWithoutNewAuth,
       provider,
+      bootstrapIncluded,
     }),
     score: [
       attached ? 1 : 0,
@@ -149,6 +164,8 @@ function collectBadges(
     preferred: boolean;
     availableWithoutNewAuth: boolean;
     supported: boolean;
+    bootstrapIncluded: boolean;
+    storageHintIncluded: boolean;
   }
 ): string[] {
   const badges = new Set<string>(endpoint.badges ?? []);
@@ -162,6 +179,12 @@ function collectBadges(
   }
   if (flags.preferred) {
     badges.add('Recommended');
+  }
+  if (flags.bootstrapIncluded) {
+    badges.add('Sign-in included');
+  }
+  if (flags.storageHintIncluded) {
+    badges.add('Suggested folder');
   }
   if (endpoint.transport === 'peer-http') {
     badges.add('LAN');
@@ -183,6 +206,7 @@ function describeCandidate(
     supported: boolean;
     availableWithoutNewAuth: boolean;
     provider: string;
+    bootstrapIncluded: boolean;
   }
 ): string {
   if (!flags.supported) {
@@ -200,9 +224,25 @@ function describeCandidate(
     return 'A connected provider account is already available for this route.';
   }
   if (endpoint.transport === 'provider-share') {
+    if (flags.bootstrapIncluded) {
+      return `This link includes sign-in details for ${formatProviderName(flags.provider || endpoint.provider || 'this provider')}.`;
+    }
     return `Connect ${formatProviderName(flags.provider || endpoint.provider || 'this provider')} to use this route.`;
   }
   return 'This route is available.';
+}
+
+function repositoryMatchKey(provider: string, descriptor: Record<string, unknown>): string | undefined {
+  const repoFullName = typeof descriptor.repoFullName === 'string' ? normalizeKey(descriptor.repoFullName) : '';
+  const repoOwner = typeof descriptor.repoOwner === 'string' ? normalizeKey(descriptor.repoOwner) : '';
+  const repoName = typeof descriptor.repoName === 'string' ? normalizeKey(descriptor.repoName) : '';
+  const branch = typeof descriptor.branch === 'string' ? normalizeKey(descriptor.branch) : '';
+  const basePath = typeof descriptor.basePath === 'string' ? normalizeKey(descriptor.basePath) : '';
+  const repository = repoFullName || (repoOwner && repoName ? `${repoOwner}/${repoName}` : '');
+  if (!repository) {
+    return undefined;
+  }
+  return `${provider || 'provider'}:repo:${repository}:${branch}:${basePath}`;
 }
 
 function formatProviderName(value: string): string {

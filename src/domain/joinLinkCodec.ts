@@ -37,6 +37,10 @@ export function parseTransportEndpoint(value: unknown): TransportEndpoint {
   const descriptor = parseDescriptorObject(object.descriptor, 'Transport endpoint descriptor is invalid');
   const label = parseOptionalNonEmptyString(object.label, 'Transport endpoint label is invalid');
   const badges = parseOptionalStringList(object.badges, 'Transport endpoint badges are invalid');
+  const bootstrap = parseOptionalTransportEndpointBootstrap(
+    object.bootstrap,
+    'Transport endpoint bootstrap is invalid'
+  );
 
   return {
     p: 'nb.transport.endpoint.v1',
@@ -47,6 +51,7 @@ export function parseTransportEndpoint(value: unknown): TransportEndpoint {
     descriptor,
     label,
     badges,
+    bootstrap,
   };
 }
 
@@ -132,11 +137,18 @@ export function parseJoinLinkJson(text: string): JoinLink | null {
 
 export function joinLinkSpaceToOpenSecret(space: JoinLinkSpace):
   | { mode: 'seed'; secret: string }
-  | { mode: 'secret-file'; name: string; mime?: string; payload: Uint8Array } {
+  | { mode: 'secret-file'; name: string; mime?: string; payload: Uint8Array }
+  | { mode: 'volume-id'; volumeId: string } {
   if (space.mode === 'seed') {
     return {
       mode: 'seed',
       secret: space.password ? `${space.value}:${space.password}` : space.value,
+    };
+  }
+  if (space.mode === 'volume-id') {
+    return {
+      mode: 'volume-id',
+      volumeId: space.value,
     };
   }
   return {
@@ -147,9 +159,12 @@ export function joinLinkSpaceToOpenSecret(space: JoinLinkSpace):
   };
 }
 
-export function joinLinkSpaceToSecretString(space: JoinLinkSpace): string {
+export function joinLinkSpaceToSecretString(space: JoinLinkSpace): string | null {
   if (space.mode === 'seed') {
     return space.password ? `${space.value}:${space.password}` : space.value;
+  }
+  if (space.mode === 'volume-id') {
+    return null;
   }
   return `${FILE_SECRET_PREFIX}${space.payload}`;
 }
@@ -183,7 +198,90 @@ function parseJoinLinkSpace(value: unknown): JoinLinkSpace {
       payload,
     };
   }
+  if (mode === 'volume-id') {
+    const value = parseNonEmptyString(object.value, 'Join link volume id is invalid');
+    if (!/^[a-f0-9]{64,200}$/iu.test(value)) {
+      throw new Error('Join link volume id is invalid');
+    }
+    return {
+      mode: 'volume-id',
+      value: value.toLowerCase(),
+    };
+  }
   throw new Error(`Unsupported join link space mode: ${mode}`);
+}
+
+function parseOptionalTransportEndpointBootstrap(
+  value: unknown,
+  label: string
+): TransportEndpoint['bootstrap'] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const object = asObject(value, label);
+  const account = object.account === undefined ? undefined : parseTransportEndpointAccountBootstrap(object.account, label);
+  const storage = object.storage === undefined ? undefined : parseTransportEndpointStorageBootstrap(object.storage, label);
+  if (!account && !storage) {
+    return undefined;
+  }
+  return {
+    account,
+    storage,
+  };
+}
+
+function parseTransportEndpointAccountBootstrap(
+  value: unknown,
+  label: string
+): NonNullable<TransportEndpoint['bootstrap']>['account'] {
+  const object = asObject(value, label);
+  const modeValue = object.mode;
+  let mode: 'login' | 'signup' | 'confirm-signup' | undefined;
+  if (modeValue !== undefined) {
+    if (modeValue !== 'login' && modeValue !== 'signup' && modeValue !== 'confirm-signup') {
+      throw new Error(label);
+    }
+    mode = modeValue;
+  }
+  return {
+    mode,
+    label: parseOptionalNonEmptyString(object.label, label),
+    email: parseOptionalNonEmptyString(object.email, label),
+    preferred: parseOptionalBoolean(object.preferred, label),
+    credentials: object.credentials === undefined ? undefined : parseProviderCredentialMaterial(object.credentials, label),
+  };
+}
+
+function parseTransportEndpointStorageBootstrap(
+  value: unknown,
+  label: string
+): NonNullable<TransportEndpoint['bootstrap']>['storage'] {
+  const object = asObject(value, label);
+  return {
+    localPath: parseOptionalNonEmptyString(object.localPath, label),
+    localPathHint: parseOptionalNonEmptyString(object.localPathHint, label),
+  };
+}
+
+function parseProviderCredentialMaterial(value: unknown, label: string) {
+  const object = asObject(value, label);
+  return {
+    name: parseOptionalNonEmptyString(object.name, label),
+    email: parseOptionalNonEmptyString(object.email, label),
+    password: parseOptionalNonEmptyString(object.password, label),
+    mfaCode: parseOptionalNonEmptyString(object.mfaCode, label),
+    confirmationLink: parseOptionalNonEmptyString(object.confirmationLink, label),
+  };
+}
+
+function parseOptionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'boolean') {
+    throw new Error(label);
+  }
+  return value;
 }
 
 function parsePriority(value: unknown): number {

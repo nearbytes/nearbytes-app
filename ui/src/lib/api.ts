@@ -244,6 +244,32 @@ export type RootProvider = SourceProvider;
 export type StorageFullPolicy = 'block-writes' | 'drop-older-blocks';
 export type TransportKind = 'provider-share' | 'http' | 'peer-http' | (string & {});
 
+export interface ProviderCredentialMaterial {
+  name?: string;
+  email?: string;
+  password?: string;
+  mfaCode?: string;
+  confirmationLink?: string;
+}
+
+export interface TransportEndpointAccountBootstrap {
+  mode?: 'login' | 'signup' | 'confirm-signup';
+  label?: string;
+  email?: string;
+  preferred?: boolean;
+  credentials?: ProviderCredentialMaterial;
+}
+
+export interface TransportEndpointStorageBootstrap {
+  localPath?: string;
+  localPathHint?: string;
+}
+
+export interface TransportEndpointBootstrap {
+  account?: TransportEndpointAccountBootstrap;
+  storage?: TransportEndpointStorageBootstrap;
+}
+
 export interface ProviderManagedSourceIntegration {
   kind: 'provider-managed';
   provider: string;
@@ -299,6 +325,7 @@ export interface TransportEndpoint {
   descriptor: Record<string, unknown>;
   label?: string;
   badges?: string[];
+  bootstrap?: TransportEndpointBootstrap;
 }
 
 export interface TransportRecipe {
@@ -320,6 +347,10 @@ export type JoinLinkSpace =
       name: string;
       mime?: string;
       payload: string;
+    }
+  | {
+      mode: 'volume-id';
+      value: string;
     };
 
 export interface JoinLinkAttachment {
@@ -480,14 +511,17 @@ export interface JoinLinkParseResponse {
 }
 
 export interface JoinLinkOpenResponse extends JoinLinkParseResponse {
-  secret: string;
+  secret: string | null;
   volumeId: string | null;
   actions: Array<{
     attachmentId: string;
     endpointTransport?: string;
     provider?: string;
-    status: 'attached' | 'planned' | 'needs-account' | 'unsupported';
+    status: 'attached' | 'planned' | 'needs-account' | 'pending-auth' | 'unsupported';
+    accountId?: string;
     shareId?: string;
+    suggestedLocalPath?: string;
+    usedCredentialBootstrap?: boolean;
     detail: string;
   }>;
 }
@@ -1340,6 +1374,7 @@ export async function openJoinLink(input: {
   serialized?: string;
   link?: unknown;
   volumeId?: string;
+  allowCredentialBootstrap?: boolean;
   preferredProviders?: string[];
 }): Promise<JoinLinkOpenResponse> {
   return apiRequest<JoinLinkOpenResponse>('/links/join/open', {

@@ -380,4 +380,155 @@ describe('ManagedShareService', () => {
     expect(nextConfig.defaultVolume.destinations).toEqual([]);
     expect(nextConfig.volumes).toEqual([]);
   });
+
+  it('bootstraps a provider account from a join link when explicitly allowed', async () => {
+    const { service } = await createHarness();
+
+    const opened = await service.openJoinLink(
+      {
+        allowCredentialBootstrap: true,
+        volumeId: 'b'.repeat(130),
+        link: {
+          p: 'nb.join.v1',
+          space: {
+            mode: 'seed',
+            value: 'demo-space',
+          },
+          attachments: [
+            {
+              id: 'att-mega',
+              label: 'Shared MEGA mirror',
+              recipe: {
+                p: 'nb.transport.recipe.v1',
+                id: 'recipe-mega',
+                label: 'Shared MEGA mirror',
+                purpose: 'mirror',
+                endpoints: [
+                  {
+                    p: 'nb.transport.endpoint.v1',
+                    transport: 'provider-share',
+                    provider: 'mega',
+                    priority: 100,
+                    capabilities: ['mirror', 'read', 'write'],
+                    descriptor: {
+                      remotePath: '/nearbytes/shared-demo',
+                    },
+                    bootstrap: {
+                      account: {
+                        mode: 'login',
+                        email: 'invitee@example.com',
+                        credentials: {
+                          email: 'invitee@example.com',
+                          password: 'secret',
+                        },
+                      },
+                      storage: {
+                        localPathHint: path.join(os.tmpdir(), 'nearbytes-shared-demo'),
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      {
+        callbackBaseUrl: 'http://localhost:5173',
+      }
+    );
+
+    expect(opened.secret).toBe('demo-space');
+    expect(opened.actions[0]?.status).toBe('attached');
+    expect(opened.actions[0]?.usedCredentialBootstrap).toBe(true);
+    expect(opened.actions[0]?.accountId).toBeTruthy();
+
+    const accounts = await service.listAccounts();
+    expect(accounts.accounts[0]?.provider).toBe('mega');
+    const shares = await service.listManagedShares();
+    expect(shares.shares.some((summary) => summary.share.remoteDescriptor.remotePath === '/nearbytes/shared-demo')).toBe(true);
+  });
+
+  it('matches an existing share by concrete remote path without creating a duplicate', async () => {
+    const { integrationStatePath, service } = await createHarness();
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'owner@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'Shared demo',
+            role: 'recipient',
+            localPath: path.join(path.dirname(integrationStatePath), 'shared-demo'),
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: {
+              remotePath: '/nearbytes/shared-demo',
+            },
+            capabilities: ['mirror', 'read', 'write'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const opened = await service.openJoinLink({
+      volumeId: 'c'.repeat(130),
+      link: {
+        p: 'nb.join.v1',
+        space: {
+          mode: 'seed',
+          value: 'demo-space',
+        },
+        attachments: [
+          {
+            id: 'att-mega',
+            label: 'Shared MEGA mirror',
+            recipe: {
+              p: 'nb.transport.recipe.v1',
+              id: 'recipe-mega',
+              label: 'Shared MEGA mirror',
+              purpose: 'mirror',
+              endpoints: [
+                {
+                  p: 'nb.transport.endpoint.v1',
+                  transport: 'provider-share',
+                  provider: 'mega',
+                  priority: 100,
+                  capabilities: ['mirror', 'read', 'write'],
+                  descriptor: {
+                    remotePath: '/nearbytes/shared-demo',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(opened.actions[0]?.status).toBe('attached');
+    expect(opened.actions[0]?.shareId).toBe('share-mega-1');
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(1);
+  });
 });
