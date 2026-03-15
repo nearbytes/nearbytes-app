@@ -87,6 +87,77 @@
   const WORKSPACE_FILE_PANE_MIN_WIDTH = 360;
   const WORKSPACE_CHAT_PANE_MIN_WIDTH = 180;
   const PARKED_MOUNT_WIDTH = 46;
+  const SPEC_DOC_CONTENTS = import.meta.glob('../../docs/specs/*.md', {
+    as: 'raw',
+    eager: true,
+  }) as Record<string, string>;
+  const SPEC_CONTENT_BY_FILE = new Map<string, string>();
+  for (const [specPath, content] of Object.entries(SPEC_DOC_CONTENTS)) {
+    const filename = specPath.split('/').pop();
+    if (filename) {
+      SPEC_CONTENT_BY_FILE.set(filename, content);
+    }
+  }
+  const SPEC_DOCS: SpecDoc[] = [
+    {
+      id: 'app-records-v1',
+      title: 'App records v1',
+      filename: 'app-records-v1.md',
+      summary: 'APP_RECORD envelope + replay rules.',
+      eventTypes: ['APP_RECORD'],
+    },
+    {
+      id: 'file-events-v2',
+      title: 'File events v2',
+      filename: 'file-events-v2.md',
+      summary: 'CREATE/DELETE/RENAME semantics for file events.',
+      eventTypes: ['CREATE_FILE', 'DELETE_FILE', 'RENAME_FILE'],
+    },
+    {
+      id: 'chat-events-v1',
+      title: 'Chat events v1',
+      filename: 'chat-events-v1.md',
+      summary: 'Chat events + nb.chat.message.v1 payload rules.',
+      protocols: ['nb.chat.message.v1'],
+      eventTypes: ['CHAT_MESSAGE', 'DECLARE_IDENTITY'],
+    },
+    {
+      id: 'identity-record-v1',
+      title: 'Identity record v1',
+      filename: 'identity-record-v1.md',
+      summary: 'Schema + signature for nb.identity.record.v1.',
+      protocols: ['nb.identity.record.v1'],
+      eventTypes: ['DECLARE_IDENTITY'],
+    },
+    {
+      id: 'identity-snapshot-v1',
+      title: 'Identity snapshot v1',
+      filename: 'identity-snapshot-v1.md',
+      summary: 'Identity snapshot schema + channel reference.',
+      protocols: ['nb.identity.snapshot.v1'],
+    },
+    {
+      id: 'identity-channel-v1',
+      title: 'Identity channel v1',
+      filename: 'identity-channel-v1.md',
+      summary: 'How identity records are emitted in channels.',
+      protocols: ['nb.identity.record.v1'],
+    },
+    {
+      id: 'log-command-map-v1',
+      title: 'Log command map v1',
+      filename: 'log-command-map-v1.md',
+      summary: 'Lookup from event/protocol to governing spec.',
+      always: true,
+    },
+    {
+      id: 'protocol-registry',
+      title: 'Protocol registry',
+      filename: 'protocol-registry.md',
+      summary: 'Known protocol IDs + versioning rules.',
+      always: true,
+    },
+  ];
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
   type EventReference = {
@@ -95,6 +166,15 @@
     mime?: string;
     createdAt?: number;
     ref: SourceFileReference | RecipientFileReference;
+  };
+  type SpecDoc = {
+    id: string;
+    title: string;
+    filename: string;
+    summary: string;
+    protocols?: string[];
+    eventTypes?: string[];
+    always?: boolean;
   };
   type DesktopRemoteFile = {
     filename: string;
@@ -1182,9 +1262,14 @@
   let timelineDetailRecordError = $state('');
   let timelineDetailMessage = $state('');
   let timelineDetailMessageError = $state('');
+  let timelineDetailAppSignature = $state<'yes' | 'no' | 'unknown'>('unknown');
+  let timelineDetailAppSignatureSource = $state('');
   let timelineDetailReferences = $state<EventReference[]>([]);
   let timelineDetailEventRefs = $state<string[]>([]);
   let timelineDetailRequestId = 0;
+  let specModalOpen = $state(false);
+  let specModalDoc = $state<SpecDoc | null>(null);
+  let specModalContent = $state('');
   let currentPreviewObjectUrl: string | null = null;
   const previewBlobCache = new Map<string, Blob>();
   const initialMounts = loadVolumeMounts();
@@ -3162,6 +3247,13 @@
     return value as Record<string, unknown>;
   }
 
+  function hasSignatureField(value: unknown): boolean {
+    const obj = asRecord(value);
+    if (!obj) return false;
+    const sig = obj.sig;
+    return typeof sig === 'string' && sig.trim().length > 0;
+  }
+
   function isHexHash(value: unknown): value is string {
     return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
   }
@@ -3320,6 +3412,36 @@
     return Array.from(hashes);
   }
 
+  function specDocsForPayload(payload: SerializedEvent['payload']): SpecDoc[] {
+    const docs: SpecDoc[] = [];
+    for (const doc of SPEC_DOCS) {
+      if (doc.always) {
+        docs.push(doc);
+        continue;
+      }
+      if (doc.eventTypes?.includes(payload.type)) {
+        docs.push(doc);
+        continue;
+      }
+      if (payload.protocol && doc.protocols?.includes(payload.protocol)) {
+        docs.push(doc);
+      }
+    }
+    return docs;
+  }
+
+  function openSpecDoc(doc: SpecDoc): void {
+    specModalDoc = doc;
+    specModalContent = SPEC_CONTENT_BY_FILE.get(doc.filename) ?? 'Spec not bundled.';
+    specModalOpen = true;
+  }
+
+  function closeSpecDoc(): void {
+    specModalOpen = false;
+    specModalDoc = null;
+    specModalContent = '';
+  }
+
   function previewSourceReference(reference: EventReference) {
     if (reference.kind !== 'source') return;
     const attachment: ChatAttachment = {
@@ -3342,11 +3464,14 @@
     timelineDetailRecordError = '';
     timelineDetailMessage = '';
     timelineDetailMessageError = '';
+    timelineDetailAppSignature = 'unknown';
+    timelineDetailAppSignatureSource = '';
     timelineDetailReferences = [];
     timelineDetailEventRefs = [];
     timelineDetailError = '';
     timelineDetailLoading = false;
     timelineDetailRequestId += 1;
+    closeSpecDoc();
   }
 
   async function openTimelineDetailsByHash(eventHash: string, seedEvent?: TimelineEvent) {
@@ -3364,6 +3489,8 @@
     timelineDetailRecordError = '';
     timelineDetailMessage = '';
     timelineDetailMessageError = '';
+    timelineDetailAppSignature = 'unknown';
+    timelineDetailAppSignatureSource = '';
     timelineDetailReferences = [];
     timelineDetailEventRefs = [];
     timelineDetailEvent = seedEvent ?? timelineEvents.find((entry) => entry.eventHash === eventHash) ?? null;
@@ -3396,6 +3523,19 @@
         timelineDetailMessageError = messageParse.error;
       }
 
+      const recordSig = hasSignatureField(recordParse.value);
+      const messageSig = hasSignatureField(messageParse.value);
+      if (recordSig || messageSig) {
+        timelineDetailAppSignature = 'yes';
+        timelineDetailAppSignatureSource = recordSig ? 'record.sig' : 'message.sig';
+      } else if (recordParse.value !== undefined || messageParse.value !== undefined) {
+        timelineDetailAppSignature = 'no';
+        timelineDetailAppSignatureSource = '';
+      } else {
+        timelineDetailAppSignature = 'unknown';
+        timelineDetailAppSignatureSource = '';
+      }
+
       const references = [
         ...extractReferences(recordParse.value),
         ...extractReferences(messageParse.value),
@@ -3422,6 +3562,41 @@
 
   async function openTimelineDetails(event: TimelineEvent) {
     await openTimelineDetailsByHash(event.eventHash, event);
+  }
+
+  function findPreviewFileForPayload(payload: SerializedEvent['payload']): FileMetadata | null {
+    const byHash = visibleFiles.find((file) => file.blobHash === payload.hash) ?? null;
+    if (byHash) return byHash;
+    if (!payload.fileName) return null;
+    return visibleFiles.find((file) => file.filename === payload.fileName) ?? null;
+  }
+
+  function openEventPayloadPreview(payload: SerializedEvent['payload']): void {
+    if (!auth || payload.type !== 'CREATE_FILE' || !payload.hash) {
+      return;
+    }
+
+    const existingFile = findPreviewFileForPayload(payload);
+    if (existingFile) {
+      openPreviewPane(existingFile);
+      return;
+    }
+
+    if (activeMount && !activeMount.showFilesPane) {
+      updateActiveMountWorkspace({
+        showFilesPane: true,
+        showChatPane: activeMount.showChatPane,
+      });
+    }
+
+    previewFileOverride = {
+      filename: payload.fileName || `${payload.hash}.bin`,
+      blobHash: payload.hash,
+      size: payload.size ?? 0,
+      mimeType: payload.mimeType ?? '',
+      createdAt: payload.createdAt ?? payload.publishedAt ?? Date.now(),
+    };
+    showPreviewPane = true;
   }
 
   $effect(() => {
@@ -5637,6 +5812,8 @@
             <p class="tm-details-error">{timelineDetailError}</p>
           {:else if timelineDetailPayload}
             {@const payload = timelineDetailPayload.payload}
+            {@const hasEncryptedPayload = payload.type === 'CREATE_FILE'}
+            {@const relevantSpecs = specDocsForPayload(payload)}
             <div class="tm-details-meta">
               <span>{payload.type}</span>
               <span>{payload.fileName || '—'}</span>
@@ -5647,6 +5824,47 @@
                 Event hash = SHA-256 of the serialized payload bytes (signature not included).
               </p>
             {/if}
+
+            <div class="tm-details-section">
+              <p class="tm-details-section-title">Summary</p>
+              <div class="tm-details-grid">
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">signedBy</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value">volume key (space secret)</span>
+                    <span class="tm-details-help">Outer signature proves this event belongs to the space.</span>
+                  </div>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">visibility</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value">
+                      {hasEncryptedPayload ? 'payload cleartext, file bytes encrypted' : 'payload cleartext, no encrypted file bytes'}
+                    </span>
+                    <span class="tm-details-help">
+                      {hasEncryptedPayload
+                        ? 'Decrypt file bytes with encryptedKey + volume key.'
+                        : 'App record/message fields are cleartext JSON.'}
+                    </span>
+                  </div>
+                </div>
+                {#if timelineDetailAppSignature !== 'unknown'}
+                  <div class="tm-details-grid-row">
+                    <span class="tm-details-label">appSignature</span>
+                    <div class="tm-details-value-group">
+                      <span class="tm-details-value">
+                        {timelineDetailAppSignature === 'yes' ? 'present' : 'not detected'}
+                      </span>
+                      <span class="tm-details-help">
+                        {timelineDetailAppSignature === 'yes' && timelineDetailAppSignatureSource
+                          ? `Detected ${timelineDetailAppSignatureSource}.`
+                          : 'Nested app records may include their own signature fields.'}
+                      </span>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            </div>
 
             <div class="tm-details-section">
               <p class="tm-details-section-title">Signed envelope</p>
@@ -5806,6 +6024,26 @@
               </div>
             </div>
 
+            {#if hasEncryptedPayload}
+              <div class="tm-details-section">
+                <p class="tm-details-section-title">Encrypted file payload</p>
+                <p class="tm-details-section-note">
+                  Ciphertext is stored as a block addressed by the hash above. Use the space secret to decrypt; this
+                  panel can open a decrypted preview when available.
+                </p>
+                <div class="tm-details-action-row">
+                  <button
+                    type="button"
+                    class="tm-details-ref-btn"
+                    onclick={() => openEventPayloadPreview(payload)}
+                    disabled={!auth}
+                  >
+                    Open decrypted preview
+                  </button>
+                </div>
+              </div>
+            {/if}
+
             {#if timelineDetailRecord || timelineDetailRecordError}
               <div class="tm-details-section">
                 <p class="tm-details-section-title">App record</p>
@@ -5835,6 +6073,29 @@
                 {#if timelineDetailMessage}
                   <pre class="tm-details-pre">{timelineDetailMessage}</pre>
                 {/if}
+              </div>
+            {/if}
+
+            {#if relevantSpecs.length > 0}
+              <div class="tm-details-section">
+                <p class="tm-details-section-title">Specs</p>
+                <p class="tm-details-section-note">Bundled protocol specs relevant to this event.</p>
+                <div class="tm-details-spec-list">
+                  {#each relevantSpecs as spec}
+                    <div class="tm-details-spec-card">
+                      <div class="tm-details-spec-copy">
+                        <p class="tm-details-spec-title">{spec.title}</p>
+                        <p class="tm-details-spec-meta">{spec.summary}</p>
+                        <p class="tm-details-spec-file mono">{spec.filename}</p>
+                      </div>
+                      <div class="tm-details-spec-actions">
+                        <button type="button" class="tm-details-ref-btn" onclick={() => openSpecDoc(spec)}>
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
               </div>
             {/if}
 
@@ -5900,6 +6161,31 @@
           {:else}
             <p class="tm-details-empty">No event payload available.</p>
           {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if specModalOpen && specModalDoc}
+    <div
+      class="tm-details-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Spec details"
+      onclick={closeSpecDoc}
+    >
+      <div class="tm-spec-modal panel-surface" onclick={(event) => event.stopPropagation()}>
+        <div class="tm-spec-header">
+          <div class="tm-spec-head-meta">
+            <p class="tm-spec-title">{specModalDoc.title}</p>
+            <p class="tm-spec-subtitle mono">{specModalDoc.filename}</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close spec" onclick={closeSpecDoc}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+        <div class="tm-spec-body">
+          <pre class="tm-details-pre">{specModalContent}</pre>
         </div>
       </div>
     </div>
@@ -7815,6 +8101,103 @@
     font-size: 0.66rem;
     color: rgba(148, 163, 184, 0.75);
     line-height: 1.35;
+  }
+
+  .tm-details-action-row {
+    display: flex;
+    justify-content: flex-start;
+  }
+
+  .tm-details-spec-list {
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .tm-details-spec-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.8rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    background: rgba(9, 16, 30, 0.7);
+  }
+
+  .tm-details-spec-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+  }
+
+  .tm-details-spec-title {
+    margin: 0;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: rgba(226, 232, 240, 0.96);
+  }
+
+  .tm-details-spec-meta {
+    margin: 0;
+    font-size: 0.7rem;
+    color: rgba(148, 163, 184, 0.85);
+  }
+
+  .tm-details-spec-file {
+    margin: 0;
+    font-size: 0.66rem;
+    color: rgba(148, 163, 184, 0.7);
+    word-break: break-all;
+  }
+
+  .tm-details-spec-actions {
+    display: flex;
+    align-items: center;
+  }
+
+  .tm-spec-modal {
+    width: min(920px, 96vw);
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: linear-gradient(180deg, rgba(9, 18, 34, 0.98), rgba(6, 12, 24, 0.96));
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 16px;
+    box-shadow: 0 30px 80px rgba(2, 6, 23, 0.5);
+  }
+
+  .tm-spec-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.1rem 1.3rem 0.8rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  }
+
+  .tm-spec-head-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
+  .tm-spec-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #e2e8f0;
+  }
+
+  .tm-spec-subtitle {
+    margin: 0;
+    font-size: 0.7rem;
+    color: rgba(148, 163, 184, 0.8);
+  }
+
+  .tm-spec-body {
+    padding: 1rem 1.3rem 1.2rem;
+    overflow: auto;
   }
 
   .tm-details-ref-list {

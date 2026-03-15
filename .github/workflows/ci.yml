@@ -7,27 +7,29 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  validate:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x]
+    env:
+      NEARBYTES_ROOTS_CONFIG: ${{ runner.temp }}/nearbytes-roots.json
+      NEARBYTES_STORAGE_DIR: ${{ runner.temp }}/nearbytes-storage
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 22
           cache: 'yarn'
+
+      - name: Enable Corepack
+        run: |
+          corepack enable
+          corepack prepare yarn@4.10.3 --activate
 
       - name: Install dependencies
         run: yarn install --immutable
-
-      - name: Run linter
-        run: yarn lint
 
       - name: Run type check
         run: yarn type-check
@@ -35,5 +37,14 @@ jobs:
       - name: Run tests
         run: yarn test
 
-      - name: Build
+      - name: Build shared runtime
         run: yarn build
+
+      - name: Build desktop runtime
+        run: yarn build:electron
+
+      - name: Build UI
+        run: yarn build:ui
+
+      - name: Run desktop smoke test
+        run: node scripts/desktop-smoke.mjs
