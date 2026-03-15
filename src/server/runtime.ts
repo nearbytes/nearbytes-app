@@ -10,6 +10,7 @@ import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../c
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import type { ManagedShareServiceOptions } from '../integrations/managedShares.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
+import { StorageError } from '../types/errors.js';
 import { createApp } from './app.js';
 
 export interface RuntimeLogger {
@@ -90,8 +91,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
       .map((destination) => storage.getRootsConfig().sources.find((source) => source.id === destination.sourceId))
       .find((source) => source?.enabled)?.path ?? defaultStorageDir;
 
-  await storage.createDirectory('channels');
-  await storage.createDirectory('blocks');
+  await ensureBootstrapDirectories(storage, logger);
   await storage.reconcileConfiguredVolumes();
 
   const app = createApp({
@@ -125,6 +125,25 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     primaryMainRoot,
     stop,
   };
+}
+
+async function ensureBootstrapDirectories(storage: MultiRootStorageBackend, logger: RuntimeLogger): Promise<void> {
+  try {
+    await storage.createDirectory('channels');
+    await storage.createDirectory('blocks');
+  } catch (error) {
+    if (isNoWritableSourcesError(error)) {
+      logger.warn(
+        'Warning: startup continued without writable sources. Configure a writable storage source to enable local writes.'
+      );
+      return;
+    }
+    throw error;
+  }
+}
+
+function isNoWritableSourcesError(error: unknown): boolean {
+  return error instanceof StorageError && error.message === 'No writable sources configured';
 }
 
 async function resumePendingSourceMoves(

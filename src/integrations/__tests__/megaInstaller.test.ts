@@ -42,40 +42,100 @@ describe('MegaHelperInstaller', () => {
     const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-win-'));
     tempDirs.push(homeDir);
     const installRoot = path.join(homeDir, '.nearbytes', 'helpers', 'megacmd');
+    const isolatedLocalAppData = path.join(homeDir, 'AppData', 'Local');
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = isolatedLocalAppData;
 
-    const executor: CommandExecutor = {
-      async run(invocation) {
-        if (invocation.command.includes('MegaClient.exe') && invocation.args?.[0] === 'version') {
-          const error = new Error('missing');
-          (error as NodeJS.ErrnoException).code = 'ENOENT';
-          throw error;
-        }
-        if (invocation.args?.some((arg) => arg.startsWith('/D='))) {
-          await fs.mkdir(installRoot, { recursive: true });
-          await fs.writeFile(path.join(installRoot, 'MegaClient.exe'), 'exe');
-          await fs.writeFile(path.join(installRoot, 'mega-login.bat'), 'bat');
-        }
-        return { stdout: '', stderr: '', exitCode: 0 };
-      },
-    };
+    try {
+      const executor: CommandExecutor = {
+        async run(invocation) {
+          if (invocation.command.includes('MegaClient.exe') && invocation.args?.[0] === 'version') {
+            const error = new Error('missing');
+            (error as NodeJS.ErrnoException).code = 'ENOENT';
+            throw error;
+          }
+          if (invocation.args?.some((arg) => arg.startsWith('/D='))) {
+            await fs.mkdir(installRoot, { recursive: true });
+            await fs.writeFile(path.join(installRoot, 'MegaClient.exe'), 'exe');
+            await fs.writeFile(path.join(installRoot, 'mega-login.bat'), 'bat');
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
 
-    const installer = new MegaHelperInstaller({
-      secretStore: createMemorySecretStore(),
-      commandExecutor: executor,
-      logger: { log() {}, warn() {} },
-      platform: 'win32',
-      arch: 'x64',
-      homeDir,
-      fetchImpl: fakeFetch(),
-    });
+      const installer = new MegaHelperInstaller({
+        secretStore: createMemorySecretStore(),
+        commandExecutor: executor,
+        logger: { log() {}, warn() {} },
+        platform: 'win32',
+        arch: 'x64',
+        homeDir,
+        fetchImpl: fakeFetch(),
+      });
 
-    const before = await installer.getSetupState();
-    expect(before.status).toBe('needs-install');
+      const before = await installer.getSetupState();
+      expect(before.status).toBe('needs-install');
 
-    const after = await installer.install();
-    expect(after.status).toBe('ready');
-    expect(after.config?.helperPath).toBe(installRoot);
-    await fs.access(path.join(installRoot, 'MegaClient.exe'));
+      const after = await installer.install();
+      expect(after.status).toBe('ready');
+      expect(after.config?.helperPath).toBe(installRoot);
+      await fs.access(path.join(installRoot, 'MegaClient.exe'));
+    } finally {
+      if (previousLocalAppData === undefined) {
+        delete process.env.LOCALAPPDATA;
+      } else {
+        process.env.LOCALAPPDATA = previousLocalAppData;
+      }
+    }
+  });
+
+  it('detects the default Windows MEGAcmd install directory after silent install', async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-win-default-'));
+    tempDirs.push(homeDir);
+    const localAppDataDir = path.join(homeDir, 'AppData', 'Local');
+    const defaultInstallRoot = path.join(localAppDataDir, 'MEGAcmd');
+
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = localAppDataDir;
+
+    try {
+      const executor: CommandExecutor = {
+        async run(invocation) {
+          if (invocation.command.includes('MegaClient.exe') && invocation.args?.[0] === 'version') {
+            const error = new Error('missing');
+            (error as NodeJS.ErrnoException).code = 'ENOENT';
+            throw error;
+          }
+          if (invocation.args?.some((arg) => arg.startsWith('/D='))) {
+            await fs.mkdir(defaultInstallRoot, { recursive: true });
+            await fs.writeFile(path.join(defaultInstallRoot, 'MEGAclient.exe'), 'exe');
+            await fs.writeFile(path.join(defaultInstallRoot, 'mega-login.bat'), 'bat');
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
+
+      const installer = new MegaHelperInstaller({
+        secretStore: createMemorySecretStore(),
+        commandExecutor: executor,
+        logger: { log() {}, warn() {} },
+        platform: 'win32',
+        arch: 'x64',
+        homeDir,
+        fetchImpl: fakeFetch(),
+      });
+
+      const after = await installer.install();
+      expect(after.status).toBe('ready');
+      expect(after.config?.helperPath).toBe(defaultInstallRoot);
+      await fs.access(path.join(defaultInstallRoot, 'MEGAclient.exe'));
+    } finally {
+      if (previousLocalAppData === undefined) {
+        delete process.env.LOCALAPPDATA;
+      } else {
+        process.env.LOCALAPPDATA = previousLocalAppData;
+      }
+    }
   });
 
   it('installs the macOS helper bundle into the Nearbytes helper directory', async () => {
