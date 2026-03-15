@@ -493,17 +493,23 @@ export class ManagedShareService {
     link?: unknown;
     volumeId?: string;
     preferredProviders?: readonly string[];
-  }): Promise<{
+    allowCredentialBootstrap?: boolean;
+  }, context: {
+    callbackBaseUrl?: string;
+  } = {}): Promise<{
     plan: JoinLinkPlan;
     space: JoinLinkSpace;
-    secret: string;
+    secret: string | null;
     volumeId: string | null;
     actions: Array<{
       attachmentId: string;
       endpointTransport?: string;
       provider?: string;
-      status: 'attached' | 'planned' | 'needs-account' | 'unsupported';
+      status: 'attached' | 'planned' | 'needs-account' | 'pending-auth' | 'unsupported';
+      accountId?: string;
       shareId?: string;
+      suggestedLocalPath?: string;
+      usedCredentialBootstrap?: boolean;
       detail: string;
     }>;
   }> {
@@ -515,8 +521,11 @@ export class ManagedShareService {
       attachmentId: string;
       endpointTransport?: string;
       provider?: string;
-      status: 'attached' | 'planned' | 'needs-account' | 'unsupported';
+      status: 'attached' | 'planned' | 'needs-account' | 'pending-auth' | 'unsupported';
+      accountId?: string;
       shareId?: string;
+      suggestedLocalPath?: string;
+      usedCredentialBootstrap?: boolean;
       detail: string;
     }> = [];
 
@@ -544,13 +553,69 @@ export class ManagedShareService {
       }
 
       const provider = normalizeProvider(endpoint.provider ?? '');
-      const account = workingAccounts.find((entry) => normalizeProvider(entry.provider) === provider);
+      const suggestedLocalPath = resolveJoinLinkSuggestedLocalPath(endpoint);
+      let account = workingAccounts.find(
+        (entry) => normalizeProvider(entry.provider) === provider && entry.state === 'connected'
+      );
+      let usedCredentialBootstrap = false;
+
+      if (!account && input.allowCredentialBootstrap && endpoint.bootstrap?.account) {
+        try {
+          const connected = await this.connectAccount(
+            {
+              provider,
+              mode: endpoint.bootstrap.account.mode,
+              label: endpoint.bootstrap.account.label,
+              email: endpoint.bootstrap.account.email,
+              preferred: endpoint.bootstrap.account.preferred,
+              credentials: endpoint.bootstrap.account.credentials,
+            },
+            context
+          );
+          usedCredentialBootstrap = true;
+          if (connected.status === 'connected' && connected.account) {
+            const nextAccounts = workingAccounts.filter(
+              (entry) => normalizeProvider(entry.provider) !== provider
+            );
+            nextAccounts.push(connected.account);
+            workingAccounts.splice(0, workingAccounts.length, ...nextAccounts);
+            account = connected.account;
+          } else {
+            actions.push({
+              attachmentId: planned.attachment.id,
+              endpointTransport: endpoint.transport,
+              provider,
+              status: 'pending-auth',
+              accountId: connected.account?.id ?? connected.authSession?.accountId,
+              suggestedLocalPath,
+              usedCredentialBootstrap,
+              detail:
+                connected.authSession?.detail ||
+                `Finish ${provider || 'provider'} sign-in to continue attaching this route.`,
+            });
+            continue;
+          }
+        } catch (error) {
+          actions.push({
+            attachmentId: planned.attachment.id,
+            endpointTransport: endpoint.transport,
+            provider,
+            status: 'needs-account',
+            suggestedLocalPath,
+            usedCredentialBootstrap: true,
+            detail: error instanceof Error ? error.message : selected.reason,
+          });
+          continue;
+        }
+      }
+
       if (!account) {
         actions.push({
           attachmentId: planned.attachment.id,
           endpointTransport: endpoint.transport,
           provider,
           status: 'needs-account',
+          suggestedLocalPath,
           detail: selected.reason,
         });
         continue;
@@ -567,6 +632,7 @@ export class ManagedShareService {
           accountId: account.id,
           label: planned.attachment.label,
           volumeId: input.volumeId,
+          localPath: suggestedLocalPath,
           remoteDescriptor: endpoint.descriptor,
         });
         share = created.share;
@@ -579,11 +645,16 @@ export class ManagedShareService {
         attachmentId: planned.attachment.id,
         endpointTransport: endpoint.transport,
         provider,
+        accountId: account.id,
         status: share && input.volumeId ? 'attached' : 'planned',
         shareId: share?.id,
+        suggestedLocalPath,
+        usedCredentialBootstrap,
         detail: share
           ? input.volumeId
-            ? 'Attached the managed share to this space.'
+            ? usedCredentialBootstrap
+              ? 'Connected the provider from this link and attached the managed share to this space.'
+              : 'Attached the managed share to this space.'
             : 'Matched an existing managed share.'
           : 'A connected provider is available for this route.',
       });
@@ -1056,13 +1127,45 @@ function buildManagedShareMatchKeys(share: ManagedShare): Set<string> {
   if (typeof share.remoteDescriptor.remoteId === 'string' && share.remoteDescriptor.remoteId.trim() !== '') {
     keys.add(`${share.provider}:remote:${share.remoteDescriptor.remoteId.trim().toLowerCase()}`);
   }
+  if (typeof share.remoteDescriptor.folderId === 'string' && share.remoteDescriptor.folderId.trim() !== '') {
+    keys.add(`${share.provider}:remote:${share.remoteDescriptor.folderId.trim().toLowerCase()}`);
+  }
+  if (typeof share.remoteDescriptor.remotePath === 'string' && share.remoteDescriptor.remotePath.trim() !== '') {
+    keys.add(`${share.provider}:path:${share.remoteDescriptor.remotePath.trim().toLowerCase()}`);
+  }
   if (
     typeof share.remoteDescriptor.remotePathHint === 'string' &&
     share.remoteDescriptor.remotePathHint.trim() !== ''
   ) {
     keys.add(`${share.provider}:path:${share.remoteDescriptor.remotePathHint.trim().toLowerCase()}`);
   }
+  const repositoryKey = buildRepositoryMatchKey(share.provider, share.remoteDescriptor);
+  if (repositoryKey) {
+    keys.add(repositoryKey);
+  }
   return keys;
+}
+
+function resolveJoinLinkSuggestedLocalPath(endpoint: import('./types.js').TransportEndpoint): string | undefined {
+  const explicit = endpoint.bootstrap?.storage?.localPath?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  const hint = endpoint.bootstrap?.storage?.localPathHint?.trim();
+  return hint || undefined;
+}
+
+function buildRepositoryMatchKey(provider: string, descriptor: Record<string, unknown>): string | undefined {
+  const repoFullName = typeof descriptor.repoFullName === 'string' ? descriptor.repoFullName.trim().toLowerCase() : '';
+  const repoOwner = typeof descriptor.repoOwner === 'string' ? descriptor.repoOwner.trim().toLowerCase() : '';
+  const repoName = typeof descriptor.repoName === 'string' ? descriptor.repoName.trim().toLowerCase() : '';
+  const branch = typeof descriptor.branch === 'string' ? descriptor.branch.trim().toLowerCase() : '';
+  const basePath = typeof descriptor.basePath === 'string' ? descriptor.basePath.trim().toLowerCase() : '';
+  const repository = repoFullName || (repoOwner && repoName ? `${repoOwner}/${repoName}` : '');
+  if (!repository) {
+    return undefined;
+  }
+  return `${provider}:repo:${repository}:${branch}:${basePath}`;
 }
 
 function mergePreferredProviders(existing: readonly string[], provider: string, preferred: boolean): string[] {

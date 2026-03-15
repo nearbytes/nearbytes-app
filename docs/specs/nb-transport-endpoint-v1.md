@@ -37,6 +37,7 @@ Optional fields:
 
 1. `label`
 2. `badges`
+3. `bootstrap`
 
 Field requirements:
 
@@ -46,6 +47,39 @@ Field requirements:
 4. `priority` MUST be an integer. Lower values are preferred over higher values.
 5. `capabilities` MUST be an array of unique non-empty strings.
 6. `descriptor` MUST be an object.
+7. `bootstrap`, when present, MUST be an object.
+
+## 2.1 Optional Bootstrap Hints
+
+Provider-share endpoints MAY carry optional bootstrap hints that improve first-run onboarding.
+
+Example:
+
+```json
+{
+  "bootstrap": {
+    "account": {
+      "mode": "login",
+      "email": "invitee@example.com",
+      "preferred": true,
+      "credentials": {
+        "email": "invitee@example.com",
+        "password": "temporary-password"
+      }
+    },
+    "storage": {
+      "localPathHint": "D:/Nearbytes Shared/Alpha"
+    }
+  }
+}
+```
+
+Rules:
+
+1. `bootstrap.account` is advisory and provider-specific. Clients MAY ignore it.
+2. `bootstrap.account.credentials` MAY contain sensitive material. Clients SHOULD require explicit user consent before using it.
+3. `bootstrap.storage.localPathHint` is advisory only.
+4. `bootstrap.storage.localPath`, when present, MAY be used as the initial local mirror location if the client accepts the route.
 
 ## 3. Known Transport Kinds
 

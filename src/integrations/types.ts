@@ -5,6 +5,32 @@ export type TransportKind = KnownTransportKind | (string & {});
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
+export interface ProviderCredentialMaterial {
+  readonly name?: string;
+  readonly email?: string;
+  readonly password?: string;
+  readonly mfaCode?: string;
+  readonly confirmationLink?: string;
+}
+
+export interface TransportEndpointAccountBootstrap {
+  readonly mode?: 'login' | 'signup' | 'confirm-signup';
+  readonly label?: string;
+  readonly email?: string;
+  readonly preferred?: boolean;
+  readonly credentials?: ProviderCredentialMaterial;
+}
+
+export interface TransportEndpointStorageBootstrap {
+  readonly localPath?: string;
+  readonly localPathHint?: string;
+}
+
+export interface TransportEndpointBootstrap {
+  readonly account?: TransportEndpointAccountBootstrap;
+  readonly storage?: TransportEndpointStorageBootstrap;
+}
+
 export interface TransportEndpoint {
   readonly p: 'nb.transport.endpoint.v1';
   readonly transport: TransportKind;
@@ -14,6 +40,7 @@ export interface TransportEndpoint {
   readonly descriptor: Record<string, JsonValue>;
   readonly label?: string;
   readonly badges?: string[];
+  readonly bootstrap?: TransportEndpointBootstrap;
 }
 
 export interface TransportRecipe {
@@ -37,7 +64,12 @@ export interface JoinLinkSpaceSecretFile {
   readonly payload: string;
 }
 
-export type JoinLinkSpace = JoinLinkSpaceSeed | JoinLinkSpaceSecretFile;
+export interface JoinLinkSpaceVolumeId {
+  readonly mode: 'volume-id';
+  readonly value: string;
+}
+
+export type JoinLinkSpace = JoinLinkSpaceSeed | JoinLinkSpaceSecretFile | JoinLinkSpaceVolumeId;
 
 export interface JoinLinkAttachment {
   readonly id: string;
@@ -150,13 +182,7 @@ export interface ConnectProviderAccountInput {
   readonly preferred?: boolean;
   readonly authSessionId?: string;
   readonly accountId?: string;
-  readonly credentials?: {
-    readonly name?: string;
-    readonly email?: string;
-    readonly password?: string;
-    readonly mfaCode?: string;
-    readonly confirmationLink?: string;
-  };
+  readonly credentials?: ProviderCredentialMaterial;
 }
 
 export interface ConfigureProviderInput {

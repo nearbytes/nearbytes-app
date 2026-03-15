@@ -133,7 +133,7 @@ interface JoinLinkParseResponseBody {
 }
 
 interface JoinLinkOpenResponseBody extends JoinLinkParseResponseBody {
-  secret: string;
+  secret: string | null;
   volumeId: string | null;
   actions: Array<{
     attachmentId: string;

@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { resolveMegaCommand, type CommandExecutor } from './runtime.js';
+import { resolveMegaInvocation, type CommandExecutor } from './runtime.js';
 import type { ProviderSecretStore, IntegrationLogger } from './runtime.js';
 import type { ProviderSetupState } from './types.js';
 
@@ -109,7 +109,7 @@ export class MegaHelperInstaller {
         throw new Error(`Automatic MEGAcmd setup is not supported on ${platform}.`);
       }
 
-      const commandDirectory = await locateMegaCommandDirectory(installRoot);
+      const commandDirectory = await this.findInstalledCommandDirectory(installRoot);
       if (!commandDirectory) {
         throw new Error('Nearbytes could not find the installed MEGAcmd commands.');
       }
@@ -135,6 +135,11 @@ export class MegaHelperInstaller {
     if (configured && (await isMegaCommandDirectory(configured))) {
       return configured;
     }
+    for (const candidate of this.getPlatformCommandDirectoryCandidates()) {
+      if (await isMegaCommandDirectory(candidate)) {
+        return candidate;
+      }
+    }
     if (await this.isMegaAvailableOnPath()) {
       return '';
     }
@@ -149,6 +154,42 @@ export class MegaHelperInstaller {
   private async resolveInstallRoot(): Promise<string> {
     const homeDir = this.options.homeDir ?? os.homedir();
     return path.join(homeDir, '.nearbytes', 'helpers', 'megacmd');
+  }
+
+  private async findInstalledCommandDirectory(installRoot: string): Promise<string | null> {
+    const candidates = [installRoot, ...this.getPlatformCommandDirectoryCandidates()];
+    const attempted = new Set<string>();
+    for (const candidate of candidates) {
+      const normalized = path.resolve(candidate);
+      if (attempted.has(normalized)) {
+        continue;
+      }
+      attempted.add(normalized);
+      if (await isMegaCommandDirectory(normalized)) {
+        return normalized;
+      }
+      const nested = await locateMegaCommandDirectory(normalized);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
+
+  private getPlatformCommandDirectoryCandidates(): string[] {
+    const platform = this.options.platform ?? process.platform;
+    if (platform !== 'win32') {
+      return [];
+    }
+
+    const homeDir = this.options.homeDir ?? os.homedir();
+    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(homeDir, 'AppData', 'Local');
+    const candidates = [
+      path.join(localAppData, 'MEGAcmd'),
+      path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'MEGAcmd'),
+      path.join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'MEGAcmd'),
+    ];
+    return Array.from(new Set(candidates.map((candidate) => path.resolve(candidate))));
   }
 
   private async installWindows(tempDir: string, installRoot: string): Promise<void> {
@@ -241,9 +282,10 @@ export class MegaHelperInstaller {
 
   private async isMegaAvailableOnPath(): Promise<boolean> {
     try {
+      const invocation = resolveMegaInvocation(undefined, 'version', [], this.options.platform ?? process.platform);
       const result = await this.options.commandExecutor.run({
-        command: resolveMegaCommand(undefined, 'version'),
-        args: [],
+        command: invocation.command,
+        args: invocation.args,
         timeoutMs: 15_000,
       });
       return result.exitCode === 0;
@@ -265,7 +307,7 @@ export class MegaHelperInstaller {
 }
 
 async function isMegaCommandDirectory(commandDirectory: string): Promise<boolean> {
-  for (const commandName of ['mega-login', 'mega-login.exe']) {
+  for (const commandName of ['MegaClient.exe', 'MEGAclient.exe', 'mega-login.bat', 'mega-login.exe', 'mega-login']) {
     try {
       await fs.access(path.join(commandDirectory, commandName));
       return true;

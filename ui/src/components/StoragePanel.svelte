@@ -102,6 +102,7 @@
   let managedShares = $state<ManagedShareSummary[]>([]);
   let integrationBusyKey = $state<string | null>(null);
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
+  let providerFlowStates = $state<Record<string, ProviderFlowState>>({});
   let providerCredentialDrafts = $state<Record<string, {
     mode: 'login' | 'signup';
     name: string;
@@ -123,6 +124,19 @@
 
   type ShareBadge = { label: string; tone?: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' };
   type ShareAttachmentChip = { volumeId: string; label: string; known: boolean };
+  type ProviderFlowState = {
+    phase:
+      | 'installing'
+      | 'connecting'
+      | 'waiting-confirmation'
+      | 'confirming'
+      | 'polling'
+      | 'cancelled';
+    title: string;
+    detail: string;
+    canCancel: boolean;
+    canReset: boolean;
+  };
   type UnifiedShareView = {
     provider: string;
     title: string;
@@ -152,6 +166,7 @@
   };
 
   const providerSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const providerAbortControllers = new Map<string, AbortController>();
 
   onMount(() => {
     void loadPanel();
@@ -162,6 +177,10 @@
       clearTimeout(timer);
     }
     providerSessionTimers.clear();
+    for (const controller of providerAbortControllers.values()) {
+      controller.abort();
+    }
+    providerAbortControllers.clear();
   });
 
   $effect(() => {
@@ -353,6 +372,10 @@
     return providerSetupDrafts[provider] ?? { clientId: '' };
   }
 
+  function providerFlowState(provider: string): ProviderFlowState | null {
+    return providerFlowStates[provider] ?? null;
+  }
+
   function providerShareDraft(provider: string): { repoOwner: string; repoName: string; branch: string; basePath: string } {
     return providerShareDrafts[provider] ?? {
       repoOwner: '',
@@ -402,6 +425,100 @@
         [field]: value,
       },
     };
+  }
+
+  function setProviderFlowState(provider: string, state: ProviderFlowState | null): void {
+    if (state === null) {
+      if (!(provider in providerFlowStates)) return;
+      const next = { ...providerFlowStates };
+      delete next[provider];
+      providerFlowStates = next;
+      return;
+    }
+    providerFlowStates = {
+      ...providerFlowStates,
+      [provider]: state,
+    };
+  }
+
+  function beginProviderRequest(provider: string, state: ProviderFlowState): AbortController {
+    const existing = providerAbortControllers.get(provider);
+    existing?.abort();
+    const controller = new AbortController();
+    providerAbortControllers.set(provider, controller);
+    setProviderFlowState(provider, state);
+    return controller;
+  }
+
+  function finishProviderRequest(provider: string, controller: AbortController, clearFlow = true): void {
+    if (providerAbortControllers.get(provider) === controller) {
+      providerAbortControllers.delete(provider);
+    }
+    if (clearFlow && providerAbortControllers.get(provider) === undefined) {
+      setProviderFlowState(provider, null);
+    }
+  }
+
+  function isAbortError(error: unknown): boolean {
+    return error instanceof DOMException
+      ? error.name === 'AbortError'
+      : error instanceof Error && error.name === 'AbortError';
+  }
+
+  function hasProviderDraft(provider: string): boolean {
+    const draft = providerCredentialDraft(provider);
+    return Boolean(
+      draft.name.trim() ||
+        draft.email.trim() ||
+        draft.password ||
+        draft.mfaCode.trim() ||
+        draft.confirmationLink.trim() ||
+        draft.mode !== 'login' ||
+        draft.useMfa
+    );
+  }
+
+  function canResetProviderFlow(provider: string): boolean {
+    return pendingSessionForProvider(provider) !== null || providerFlowState(provider) !== null || hasProviderDraft(provider);
+  }
+
+  function resetProviderDraft(provider: string): void {
+    if (!(provider in providerCredentialDrafts)) return;
+    const next = { ...providerCredentialDrafts };
+    delete next[provider];
+    providerCredentialDrafts = next;
+  }
+
+  function cancelProviderFlow(provider: string): void {
+    const controller = providerAbortControllers.get(provider);
+    if (controller) {
+      controller.abort();
+      providerAbortControllers.delete(provider);
+    }
+    const timer = providerSessionTimers.get(provider);
+    if (timer) {
+      clearTimeout(timer);
+      providerSessionTimers.delete(provider);
+    }
+    setProviderFlowState(provider, {
+      phase: 'cancelled',
+      title: 'Cancelled',
+      detail: 'Stopped waiting for this connection step. If the helper was already installing, it may still finish in the background.',
+      canCancel: false,
+      canReset: true,
+    });
+    integrationBusyKey = null;
+    successMessage = '';
+    errorMessage = '';
+  }
+
+  function resetProviderFlow(provider: string): void {
+    cancelProviderFlow(provider);
+    clearProviderSession(provider);
+    resetProviderDraft(provider);
+    setProviderFlowState(provider, null);
+    errorMessage = '';
+    successMessage = '';
   }
 
   function managedSharesForVolume(targetVolumeId: string | null): ManagedShareSummary[] {
@@ -1519,15 +1636,53 @@
     integrationBusyKey = `connect:${provider.provider}`;
     errorMessage = '';
     successMessage = '';
+    const controller = beginProviderRequest(provider.provider, {
+      phase: 'connecting',
+      title: provider.provider === 'mega' ? 'Preparing MEGA connection' : `Connecting ${provider.label}`,
+      detail:
+        provider.provider === 'mega'
+          ? 'Checking whether the local helper is ready before sending your credentials.'
+          : `Starting the ${provider.label} sign-in flow.`,
+      canCancel: true,
+      canReset: true,
+    });
     try {
       if (provider.setup.status === 'needs-install' && provider.setup.canInstall) {
-        await installProvider(provider);
+        setProviderFlowState(provider.provider, {
+          phase: 'installing',
+          title: `Installing ${provider.label} helper`,
+          detail:
+            provider.provider === 'mega'
+              ? 'Downloading and installing the local MEGAcmd helper. This can take a few seconds.'
+              : `Installing the ${provider.label} helper.`,
+          canCancel: true,
+          canReset: true,
+        });
+        await installProvider(provider, controller.signal, false);
+        if (controller.signal.aborted) {
+          return;
+        }
       }
       if (provider.setup.status === 'needs-config') {
         throw new Error(provider.setup.detail);
       }
 
       const draft = providerCredentialDraft(provider.provider);
+      setProviderFlowState(provider.provider, {
+        phase: 'connecting',
+        title:
+          provider.provider === 'mega' && draft.mode === 'signup'
+            ? 'Creating MEGA account'
+            : `Connecting ${provider.label}`,
+        detail:
+          provider.provider === 'mega' && draft.mode === 'signup'
+            ? 'Submitting your account details to MEGA and waiting for the confirmation step.'
+            : provider.provider === 'mega'
+              ? 'Submitting your MEGA credentials and opening a local session.'
+              : `Handing off to ${provider.label} to continue sign-in.`,
+        canCancel: true,
+        canReset: true,
+      });
       if (provider.provider === 'mega') {
         if (draft.mode === 'signup') {
           if (draft.name.trim() === '' || draft.email.trim() === '' || draft.password.trim() === '') {
@@ -1553,11 +1708,23 @@
                 mfaCode: draft.mode === 'login' && draft.useMfa ? draft.mfaCode.trim() || undefined : undefined,
               }
             : undefined,
-      });
+      }, { signal: controller.signal });
       await handleProviderConnectResponse(provider, response);
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : `Failed to connect ${provider.label}`;
+      if (isAbortError(error)) {
+        setProviderFlowState(provider.provider, {
+          phase: 'cancelled',
+          title: 'Cancelled',
+          detail: 'Connection request cancelled.',
+          canCancel: false,
+          canReset: true,
+        });
+      } else {
+        setProviderFlowState(provider.provider, null);
+        errorMessage = error instanceof Error ? error.message : `Failed to connect ${provider.label}`;
+      }
     } finally {
+      finishProviderRequest(provider.provider, controller, pendingSessionForProvider(provider.provider) === null);
       integrationBusyKey = null;
     }
   }
@@ -1586,19 +1753,55 @@
     }
   }
 
-  async function installProvider(provider: ProviderCatalogEntry): Promise<void> {
-    integrationBusyKey = `install:${provider.provider}`;
+  async function installProvider(
+    provider: ProviderCatalogEntry,
+    signal?: AbortSignal,
+    ownBusyKey = true
+  ): Promise<void> {
+    const controller = signal ? null : beginProviderRequest(provider.provider, {
+      phase: 'installing',
+      title: `Installing ${provider.label} helper`,
+      detail: `Downloading and installing the ${provider.label} helper locally.`,
+      canCancel: true,
+      canReset: true,
+    });
+    if (ownBusyKey) {
+      integrationBusyKey = `install:${provider.provider}`;
+    }
     errorMessage = '';
     successMessage = '';
     try {
-      await installProviderHelper(provider.provider);
+      await installProviderHelper(provider.provider, { signal: signal ?? controller?.signal });
       successMessage = `${provider.label} helper installed.`;
+      setProviderFlowState(provider.provider, {
+        phase: 'connecting',
+        title: `${provider.label} helper ready`,
+        detail: 'The local helper is installed. You can continue connecting now.',
+        canCancel: false,
+        canReset: true,
+      });
       await loadPanel();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : `Failed to install ${provider.label} helper`;
-      throw error;
+      if (isAbortError(error)) {
+        setProviderFlowState(provider.provider, {
+          phase: 'cancelled',
+          title: 'Cancelled',
+          detail: 'Stopped waiting for the helper installation.',
+          canCancel: false,
+          canReset: true,
+        });
+      } else {
+        setProviderFlowState(provider.provider, null);
+        errorMessage = error instanceof Error ? error.message : `Failed to install ${provider.label} helper`;
+        throw error;
+      }
     } finally {
-      integrationBusyKey = null;
+      if (controller) {
+        finishProviderRequest(provider.provider, controller, false);
+      }
+      if (ownBusyKey) {
+        integrationBusyKey = null;
+      }
     }
   }
 
@@ -1714,6 +1917,9 @@
     const next = { ...providerAuthSessions };
     delete next[provider];
     providerAuthSessions = next;
+    if (providerFlowState(provider)?.phase === 'waiting-confirmation') {
+      setProviderFlowState(provider, null);
+    }
   }
 
   async function handleProviderConnectResponse(
@@ -1722,6 +1928,7 @@
   ): Promise<void> {
     if (response.status === 'connected' && response.account) {
       clearProviderSession(provider.provider);
+      setProviderFlowState(provider.provider, null);
       if (provider.provider === 'mega') {
         setProviderCredential(provider.provider, 'password', '');
         setProviderCredential(provider.provider, 'mfaCode', '');
@@ -1741,7 +1948,26 @@
     }
 
     if (response.status === 'failed') {
+      setProviderFlowState(provider.provider, null);
       throw new Error(response.authSession?.detail || `Failed to connect ${provider.label}`);
+    }
+
+    if (provider.provider === 'mega') {
+      setProviderFlowState(provider.provider, {
+        phase: 'waiting-confirmation',
+        title: 'Waiting for MEGA confirmation',
+        detail: response.authSession?.detail || 'Check your inbox, then paste the MEGA confirmation link here.',
+        canCancel: false,
+        canReset: true,
+      });
+    } else {
+      setProviderFlowState(provider.provider, {
+        phase: 'polling',
+        title: `Waiting for ${provider.label}`,
+        detail: response.authSession?.detail || `Finish the ${provider.label} sign-in flow in the browser.`,
+        canCancel: true,
+        canReset: true,
+      });
     }
 
     successMessage =
@@ -1767,6 +1993,13 @@
     integrationBusyKey = `confirm:${provider.provider}`;
     errorMessage = '';
     successMessage = '';
+    const controller = beginProviderRequest(provider.provider, {
+      phase: 'confirming',
+      title: 'Confirming MEGA account',
+      detail: 'Sending the confirmation link back to MEGA to finish account creation.',
+      canCancel: true,
+      canReset: true,
+    });
     try {
       const response = await connectProviderAccount({
         provider: provider.provider,
@@ -1775,11 +2008,23 @@
         credentials: {
           confirmationLink: draft.confirmationLink.trim(),
         },
-      });
+      }, { signal: controller.signal });
       await handleProviderConnectResponse(provider, response);
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : `Failed to confirm ${provider.label} account`;
+      if (isAbortError(error)) {
+        setProviderFlowState(provider.provider, {
+          phase: 'cancelled',
+          title: 'Cancelled',
+          detail: 'Confirmation request cancelled.',
+          canCancel: false,
+          canReset: true,
+        });
+      } else {
+        setProviderFlowState(provider.provider, null);
+        errorMessage = error instanceof Error ? error.message : `Failed to confirm ${provider.label} account`;
+      }
     } finally {
+      finishProviderRequest(provider.provider, controller, pendingSessionForProvider(provider.provider) === null);
       integrationBusyKey = null;
     }
   }
@@ -1797,16 +2042,36 @@
   }
 
   async function pollProviderSession(provider: ProviderCatalogEntry, authSessionId: string): Promise<void> {
+    const controller = beginProviderRequest(provider.provider, {
+      phase: 'polling',
+      title: `Waiting for ${provider.label}`,
+      detail: `Checking whether ${provider.label} finished the sign-in flow.`,
+      canCancel: true,
+      canReset: true,
+    });
     try {
       const response = await connectProviderAccount({
         provider: provider.provider,
         authSessionId,
         preferred: provider.provider === 'gdrive',
-      });
+      }, { signal: controller.signal });
       await handleProviderConnectResponse(provider, response);
     } catch (error) {
-      clearProviderSession(provider.provider);
-      errorMessage = error instanceof Error ? error.message : `Failed to finish ${provider.label} sign-in`;
+      if (isAbortError(error)) {
+        setProviderFlowState(provider.provider, {
+          phase: 'cancelled',
+          title: 'Cancelled',
+          detail: 'Stopped waiting for the browser sign-in to finish.',
+          canCancel: false,
+          canReset: true,
+        });
+      } else {
+        clearProviderSession(provider.provider);
+        setProviderFlowState(provider.provider, null);
+        errorMessage = error instanceof Error ? error.message : `Failed to finish ${provider.label} sign-in`;
+      }
+    } finally {
+      finishProviderRequest(provider.provider, controller, pendingSessionForProvider(provider.provider) === null);
     }
   }
 
@@ -2328,6 +2593,13 @@
                 {/if}
               </div>
 
+              {#if providerFlowState(provider.provider)}
+                <div class="provider-flow-status" data-phase={providerFlowState(provider.provider)?.phase}>
+                  <p class="provider-flow-title">{providerFlowState(provider.provider)?.title}</p>
+                  <p class="muted-copy">{providerFlowState(provider.provider)?.detail}</p>
+                </div>
+              {/if}
+
               <div class="button-row">
                 {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
                   <button
@@ -2372,6 +2644,15 @@
                   />
                 {:else}
                   {#if provider.provider === 'mega' && pendingSessionForProvider(provider.provider)}
+                    {#if providerFlowState(provider.provider)?.canReset}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => resetProviderFlow(provider.provider)}
+                      >
+                        <span>Reset</span>
+                      </button>
+                    {/if}
                     <button
                       type="button"
                       class="panel-btn subtle compact"
@@ -2389,6 +2670,25 @@
                       <span>{integrationBusyKey === `confirm:${provider.provider}` ? 'Confirming...' : 'Confirm account'}</span>
                     </button>
                   {:else}
+                    {#if providerFlowState(provider.provider)?.canCancel}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => cancelProviderFlow(provider.provider)}
+                      >
+                        <span>Cancel</span>
+                      </button>
+                    {/if}
+                    {#if canResetProviderFlow(provider.provider)}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => resetProviderFlow(provider.provider)}
+                        disabled={providerFlowState(provider.provider)?.canCancel === true}
+                      >
+                        <span>Reset</span>
+                      </button>
+                    {/if}
                     <button
                       type="button"
                       class="panel-btn subtle compact"
@@ -2740,6 +3040,13 @@
                   </div>
                 {/if}
 
+                {#if providerFlowState(provider.provider)}
+                  <div class="provider-flow-status" data-phase={providerFlowState(provider.provider)?.phase}>
+                    <p class="provider-flow-title">{providerFlowState(provider.provider)?.title}</p>
+                    <p class="muted-copy">{providerFlowState(provider.provider)?.detail}</p>
+                  </div>
+                {/if}
+
                 <div class="button-row">
                   {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
                     <button
@@ -2771,6 +3078,15 @@
                     </button>
                   {:else}
                     {#if provider.provider === 'mega' && pendingSessionForProvider(provider.provider)}
+                      {#if providerFlowState(provider.provider)?.canReset}
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => resetProviderFlow(provider.provider)}
+                        >
+                          <span>Reset</span>
+                        </button>
+                      {/if}
                       <button
                         type="button"
                         class="panel-btn subtle compact"
@@ -2788,6 +3104,25 @@
                         <span>{integrationBusyKey === `confirm:${provider.provider}` ? 'Confirming...' : 'Confirm account'}</span>
                       </button>
                     {:else}
+                      {#if providerFlowState(provider.provider)?.canCancel}
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => cancelProviderFlow(provider.provider)}
+                        >
+                          <span>Cancel</span>
+                        </button>
+                      {/if}
+                      {#if canResetProviderFlow(provider.provider)}
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => resetProviderFlow(provider.provider)}
+                          disabled={providerFlowState(provider.provider)?.canCancel === true}
+                        >
+                          <span>Reset</span>
+                        </button>
+                      {/if}
                       <button
                         type="button"
                         class="panel-btn subtle compact"
@@ -3781,6 +4116,27 @@
     display: grid;
     gap: 0.55rem;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .provider-flow-status {
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 0.8rem;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    background: rgba(15, 23, 42, 0.05);
+  }
+
+  .provider-flow-status[data-phase='cancelled'] {
+    border-color: rgba(245, 158, 11, 0.35);
+    background: rgba(245, 158, 11, 0.08);
+  }
+
+  .provider-flow-title {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #0f172a;
   }
 
   .compact-share-grid {

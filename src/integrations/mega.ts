@@ -15,7 +15,7 @@ import type {
   ShareStorageMetrics,
   TransportState,
 } from './types.js';
-import { resolveMegaCommand, type IntegrationRuntime } from './runtime.js';
+import { resolveMegaInvocation, type IntegrationRuntime } from './runtime.js';
 
 const MEGA_SESSION_SECRET_PREFIX = 'provider-account:mega:';
 
@@ -527,11 +527,11 @@ export class MegaTransportAdapter {
     options: { timeoutMs?: number } = {}
   ): Promise<{ stdout: string; stderr: string }> {
     const commandDirectory = await this.installer.getCommandDirectory();
-    const command = resolveMegaCommand(commandDirectory, subcommand);
+    const invocation = resolveMegaInvocation(commandDirectory, subcommand, args);
     try {
       const result = await this.runtime.commandExecutor.run({
-        command,
-        args,
+        command: invocation.command,
+        args: invocation.args,
         cwd: commandDirectory || undefined,
         env: commandDirectory
           ? {

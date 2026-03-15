@@ -161,4 +161,50 @@ describe('transport planner', () => {
     expect(planned.attachments[0]?.selectedEndpoint).toBeNull();
     expect(planned.attachments[0]?.candidates[0]?.badges).toContain('Experimental');
   });
+
+  it('surfaces bootstrap and storage hints in candidate badges', () => {
+    const planned = planJoinLink(
+      {
+        ...link,
+        attachments: [
+          {
+            ...link.attachments[0]!,
+            recipe: {
+              ...link.attachments[0]!.recipe,
+              endpoints: [
+                {
+                  p: 'nb.transport.endpoint.v1',
+                  transport: 'provider-share',
+                  provider: 'mega',
+                  priority: 100,
+                  capabilities: ['mirror', 'read', 'write'],
+                  descriptor: {
+                    remotePath: '/nearbytes/shared-alpha',
+                  },
+                  bootstrap: {
+                    account: {
+                      mode: 'login',
+                      credentials: {
+                        email: 'invitee@example.com',
+                        password: 'secret',
+                      },
+                    },
+                    storage: {
+                      localPathHint: 'D:/Nearbytes Shared/Alpha',
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      createPlannerContext({
+        supportedProviders: ['mega'],
+      })
+    );
+
+    expect(planned.attachments[0]?.selectedEndpoint?.badges).toContain('Sign-in included');
+    expect(planned.attachments[0]?.selectedEndpoint?.badges).toContain('Suggested folder');
+  });
 });

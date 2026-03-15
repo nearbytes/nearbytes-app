@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   joinLinkSpaceToOpenSecret,
+  joinLinkSpaceToSecretString,
   parseJoinLink,
   parseJoinLinkJson,
   serializeJoinLink,
@@ -34,6 +35,20 @@ describe('joinLinkCodec', () => {
               descriptor: {
                 remoteId: 'drive-folder-1',
                 ownerHint: 'owner@example.com',
+              },
+              bootstrap: {
+                account: {
+                  mode: 'login',
+                  email: 'recipient@example.com',
+                  preferred: true,
+                  credentials: {
+                    email: 'recipient@example.com',
+                    password: 'super-secret',
+                  },
+                },
+                storage: {
+                  localPathHint: 'D:/Nearbytes Shared/Primary cloud mirror',
+                },
               },
               badges: ['Primary'],
             },
@@ -105,6 +120,24 @@ describe('joinLinkCodec', () => {
       throw new Error('Expected secret-file mode');
     }
     expect(new TextDecoder().decode(resolved.payload)).toBe('hello');
+  });
+
+  it('supports volume-id links without an embedded secret', () => {
+    const parsed = parseJoinLink({
+      p: 'nb.join.v1',
+      space: {
+        mode: 'volume-id',
+        value: 'a'.repeat(130),
+      },
+      attachments: [],
+    });
+
+    expect(joinLinkSpaceToSecretString(parsed.space)).toBeNull();
+    const resolved = joinLinkSpaceToOpenSecret(parsed.space);
+    expect(resolved).toEqual({
+      mode: 'volume-id',
+      volumeId: 'a'.repeat(130),
+    });
   });
 
   it('rejects duplicate attachment ids', () => {

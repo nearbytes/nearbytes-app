@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('nearbytesDesktop', {
   getRuntimeConfig: () => ipcRenderer.invoke('nearbytes-desktop:get-runtime-config'),
+  connectDeepLinks: () => ipcRenderer.invoke('nearbytes-desktop:connect-deep-links'),
   fetchRemoteFile: (url) => ipcRenderer.invoke('nearbytes-desktop:fetch-remote-file', url),
   getClipboardImageStatus: () => ipcRenderer.invoke('nearbytes-desktop:get-clipboard-image-status'),
   readClipboardImage: () => ipcRenderer.invoke('nearbytes-desktop:read-clipboard-image'),
@@ -18,6 +19,16 @@ contextBridge.exposeInMainWorld('nearbytesDesktop', {
     ipcRenderer.on('nearbytes-desktop:update-state', wrapped);
     return () => {
       ipcRenderer.removeListener('nearbytes-desktop:update-state', wrapped);
+    };
+  },
+  onDeepLink: (listener) => {
+    if (typeof listener !== 'function') {
+      return () => {};
+    }
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('nearbytes-desktop:deep-link', wrapped);
+    return () => {
+      ipcRenderer.removeListener('nearbytes-desktop:deep-link', wrapped);
     };
   },
   saveUiState: (state) => ipcRenderer.invoke('nearbytes-desktop:save-ui-state', state),

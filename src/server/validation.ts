@@ -168,6 +168,7 @@ export const parseJoinLinkBodySchema = z.object({
 });
 
 export const openJoinLinkBodySchema = parseJoinLinkBodySchema.extend({
+  allowCredentialBootstrap: z.boolean().optional().default(false),
   volumeId: z
     .string()
     .trim()

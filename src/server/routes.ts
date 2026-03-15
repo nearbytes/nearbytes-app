@@ -357,14 +357,22 @@ export function createRoutes(deps: RouteDependencies): Router {
     const service = getManagedShareServiceOrThrow(managedShareService);
     const input = parseWithSchema(openJoinLinkBodySchema, req.body);
     const parsed = await service.parseJoinLink(input);
+    const secret = joinLinkSpaceToSecretString(parsed.space);
     const volumeId =
       input.volumeId?.trim().toLowerCase() ??
-      (await getVolumeId(joinLinkSpaceToSecretString(parsed.space), deps.crypto, deps.storage));
+      (parsed.space.mode === 'volume-id'
+        ? parsed.space.value.trim().toLowerCase()
+        : await getVolumeId(secret ?? '', deps.crypto, deps.storage));
     res.json(
-      await service.openJoinLink({
-        ...input,
-        volumeId,
-      })
+      await service.openJoinLink(
+        {
+          ...input,
+          volumeId,
+        },
+        {
+          callbackBaseUrl: getRequestOrigin(req),
+        }
+      )
     );
   }));
 

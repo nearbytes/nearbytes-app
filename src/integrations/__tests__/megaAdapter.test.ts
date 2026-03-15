@@ -38,8 +38,9 @@ function createFakeMegaExecutor(state: {
 }): CommandExecutor {
   return {
     async run(invocation) {
-      const command = basename(invocation.command);
+      const rawCommand = basename(invocation.command);
       const args = [...(invocation.args ?? [])];
+      const command = rawCommand === 'MegaClient.exe' ? `mega-${args.shift() ?? ''}` : rawCommand;
       if (typeof invocation.env?.PATH === 'string') {
         state.observedPaths.push(invocation.env.PATH);
       }
@@ -152,7 +153,7 @@ describe('MegaTransportAdapter', () => {
 
     const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
     tempDirs.push(commandDirectory);
-    await fs.writeFile(path.join(commandDirectory, 'mega-login'), '');
+  await fs.writeFile(path.join(commandDirectory, 'MegaClient.exe'), '');
 
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
