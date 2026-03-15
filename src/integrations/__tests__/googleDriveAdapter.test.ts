@@ -76,6 +76,18 @@ function createFakeGoogleFetch(state: {
 
     if (parsed.pathname.startsWith('/drive/v3/files/') && parsed.pathname.endsWith('/permissions')) {
       const fileId = parsed.pathname.split('/')[4] ?? '';
+      if ((init?.method ?? 'GET').toUpperCase() === 'GET') {
+        return jsonResponse({
+          permissions: state.permissions
+            .filter((permission) => permission.fileId === fileId)
+            .map((permission, index) => ({
+              id: `perm-${index + 1}`,
+              emailAddress: permission.email,
+              role: permission.role,
+              type: 'user',
+            })),
+        });
+      }
       const body = JSON.parse(String(init?.body ?? '{}')) as { emailAddress?: string; role?: string };
       state.permissions.push({
         fileId,
@@ -262,6 +274,17 @@ describe('GoogleDriveTransportAdapter', () => {
         fileId: String(share.remoteDescriptor.folderId),
         email: 'peer@example.com',
         role: 'writer',
+      },
+    ]);
+
+    const collaborators = await adapter.getCollaborators(share, account);
+    expect(collaborators).toEqual([
+      {
+        label: 'peer@example.com',
+        email: 'peer@example.com',
+        role: 'writer',
+        status: 'active',
+        source: 'provider',
       },
     ]);
 

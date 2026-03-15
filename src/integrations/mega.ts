@@ -8,6 +8,7 @@ import type {
   ConfigureProviderInput,
   CreateManagedShareInput,
   InviteManagedShareInput,
+  ManagedShareCollaborator,
   ManagedShare,
   ProviderAccount,
   ProviderAuthSession,
@@ -37,6 +38,11 @@ interface MegaStorageQuota {
   readonly usedBytes: number;
   readonly totalBytes: number;
   readonly availableBytes: number;
+}
+
+interface MegaShareCollaboratorRecord {
+  readonly email: string;
+  readonly accessLevel?: string;
 }
 
 interface MegaAuthSession extends ProviderAuthSession {
@@ -213,6 +219,27 @@ export class MegaTransportAdapter {
       remoteTotalBytes: quota.totalBytes,
       remoteUsedBytes: quota.usedBytes,
     };
+  }
+
+  async getCollaborators(share: ManagedShare, account: ProviderAccount | null): Promise<ManagedShareCollaborator[]> {
+    if (!account) {
+      return [];
+    }
+    await this.ensureLoggedIn(account.id);
+    const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath');
+    if (!remotePath) {
+      return [];
+    }
+    const result = await this.runMega('share', [remotePath], {
+      timeoutMs: 30_000,
+    });
+    return parseMegaShareCollaborators(result.stdout).map((entry) => ({
+      label: entry.email,
+      email: entry.email,
+      role: mapMegaAccessLevel(entry.accessLevel),
+      status: 'active',
+      source: 'provider',
+    }));
   }
 
   async ensureSync(share: ManagedShare, account: ProviderAccount): Promise<void> {
@@ -644,6 +671,54 @@ function parseMegaDf(stdout: string): MegaStorageQuota | null {
     };
   }
   return null;
+}
+
+function parseMegaShareCollaborators(stdout: string): MegaShareCollaboratorRecord[] {
+  const collaborators: MegaShareCollaboratorRecord[] = [];
+  const seen = new Set<string>();
+  for (const line of stdout.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const emailMatch = trimmed.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu);
+    if (!emailMatch) {
+      continue;
+    }
+    const email = emailMatch[0].toLowerCase();
+    if (seen.has(email)) {
+      continue;
+    }
+    seen.add(email);
+    const accessLevelMatch = trimmed.match(/accessLevel\s*=\s*([^\s]+)/iu);
+    collaborators.push({
+      email,
+      accessLevel: accessLevelMatch?.[1]?.trim(),
+    });
+  }
+  return collaborators;
+}
+
+function mapMegaAccessLevel(accessLevel: string | undefined): string | undefined {
+  switch ((accessLevel ?? '').trim().toLowerCase()) {
+    case '0':
+    case 'read':
+    case 'ro':
+      return 'reader';
+    case '1':
+    case 'readwrite':
+    case 'rw':
+    case 'full':
+      return 'writer';
+    case '2':
+    case 'fullaccess':
+      return 'full';
+    case '3':
+    case 'owner':
+      return 'owner';
+    default:
+      return accessLevel?.trim() || undefined;
+  }
 }
 
 function isCommandNotFound(error: unknown): boolean {

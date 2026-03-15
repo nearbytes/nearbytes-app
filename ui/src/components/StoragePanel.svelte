@@ -51,6 +51,10 @@
     currentVolumePresentation = null,
     knownVolumes = [],
     onOpenVolumeRouting = undefined,
+    onCopyShareLink = undefined,
+    canCopySecretLink = false,
+    shareLinkBusy = false,
+    shareLinkFeedback = null,
     discoveryDetails = null,
     refreshToken = 0,
     focusSection = null,
@@ -66,9 +70,13 @@
     } | null;
     knownVolumes?: Array<{ volumeId: string; label: string }>;
     onOpenVolumeRouting?: ((volumeId: string) => void) | undefined;
+    onCopyShareLink?: ((includeSecret: boolean) => Promise<void> | void) | undefined;
+    canCopySecretLink?: boolean;
+    shareLinkBusy?: boolean;
+    shareLinkFeedback?: { tone: 'success' | 'warning'; message: string } | null;
     discoveryDetails?: ReconcileSourcesResponse | null;
     refreshToken?: number;
-    focusSection?: 'discovery' | 'defaults' | null;
+    focusSection?: 'discovery' | 'defaults' | 'shares' | null;
   }>();
 
   type StatusTone = 'good' | 'warn' | 'muted';
@@ -197,7 +205,11 @@
 
   $effect(() => {
     if (mode === 'global') return;
-    if (focusSection === 'discovery' || focusSection === 'defaults') {
+    if (focusSection === 'discovery' || focusSection === 'defaults' || focusSection === 'shares') {
+      if (focusSection === 'shares') {
+        volumeView = 'shares';
+        return;
+      }
       volumeView = 'folders';
     }
   });
@@ -728,6 +740,10 @@
       .split(/[\s,;]+/u)
       .map((entry) => entry.trim())
       .filter((entry, index, entries) => entry !== '' && entries.indexOf(entry) === index);
+  }
+
+  function invitedCollaborators(summary: ManagedShareSummary): string[] {
+    return summary.collaborators.map((collaborator) => collaborator.email ?? collaborator.label);
   }
 
   function sourceById(sourceId: string | undefined): SourceConfigEntry | null {
@@ -2866,14 +2882,58 @@
         <section class="panel-section">
           <div class="section-head">
             <div>
-              <p class="section-step">Shares</p>
-              <h3>Provider shares for this space</h3>
-              <p class="section-copy">Create a new provider share for this space, or attach one that Nearbytes already knows about.</p>
+              <p class="section-step">Sharing</p>
+              <h3>Share this space and choose its live sync locations</h3>
+              <p class="section-copy">A Nearbytes link opens the volume. A provider-backed location such as MEGA or Google Drive is what carries live updates and can be invited to collaborators.</p>
             </div>
             <div class="section-metrics">
-              <span class="summary-pill">{countLabel(managedSharesForVolume(volumeId).length, 'share')} attached</span>
-              <span class="summary-pill">{countLabel(availableManagedSharesForVolume(volumeId).length, 'share')} available</span>
+              <span class="summary-pill">{countLabel(managedSharesForVolume(volumeId).length, 'live location')} attached</span>
+              <span class="summary-pill">{countLabel(availableManagedSharesForVolume(volumeId).length, 'live location')} available</span>
             </div>
+          </div>
+
+          <div class="flow-note-card">
+            <p class="subheading">How this works</p>
+            <p class="card-copy">1. Copy a Nearbytes link for the volume. 2. Create or attach a live provider location below. 3. Invite people to that provider location if you want them to receive ongoing updates.</p>
+          </div>
+
+          <div class="rule-card active volume-share-link-card">
+            <div class="card-head">
+              <div class="card-title">
+                <div>
+                  <p class="provider-label">Volume link</p>
+                  <h4>Open this volume from another device</h4>
+                </div>
+              </div>
+              <div class="card-status">
+                <span class="status-pill tone-muted">nearbytes://</span>
+              </div>
+            </div>
+
+            <p class="card-copy">This link tells another Nearbytes app how to open the volume. It does not by itself create a live MEGA or Google Drive collaboration path.</p>
+
+            <div class="button-row">
+              <button
+                type="button"
+                class="panel-btn subtle compact"
+                onclick={() => void onCopyShareLink?.(false)}
+                disabled={shareLinkBusy}
+              >
+                <span>{shareLinkBusy ? 'Preparing...' : 'Copy link'}</span>
+              </button>
+              <button
+                type="button"
+                class="panel-btn subtle compact"
+                onclick={() => void onCopyShareLink?.(true)}
+                disabled={shareLinkBusy || !canCopySecretLink}
+              >
+                <span>Copy secret link</span>
+              </button>
+            </div>
+
+            {#if shareLinkFeedback}
+              <p class="managed-share-invite-copy" class:warning-copy={shareLinkFeedback.tone === 'warning'}>{shareLinkFeedback.message}</p>
+            {/if}
           </div>
 
           <div class="card-grid">
@@ -2896,7 +2956,7 @@
 
                 <p class="card-copy">
                   {#if provider.isConnected}
-                    Nearbytes can create a managed {provider.label} share for this space and prefer it when future join links offer several routes.
+                    Nearbytes can create a managed {provider.label} live location for this space and prefer it when future join links offer several routes.
                   {:else}
                     {providerCardDetail(provider)}
                   {/if}
@@ -3119,7 +3179,7 @@
                       onclick={() => void createManagedShareForVolume(provider)}
                       disabled={integrationBusyKey === `create:${provider.provider}`}
                     >
-                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create share'}</span>
+                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : `Create ${provider.label} live location`}</span>
                     </button>
                   {:else}
                     {#if provider.provider === 'mega' && pendingSessionForProvider(provider.provider)}
@@ -3208,7 +3268,7 @@
                     </div>
                   </div>
                   <div class="card-status">
-                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>Attached</span>
+                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>Live location attached</span>
                     <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
                   </div>
                 </div>
@@ -3224,7 +3284,7 @@
                 {#if canInviteManagedShare(summary)}
                   <div class="managed-share-invite-row">
                     <label class="field-block managed-share-invite-field">
-                      <span>Share with</span>
+                      <span>Invite collaborator</span>
                       <input
                         class="panel-input"
                         type="text"
@@ -3240,11 +3300,24 @@
                       onclick={() => void inviteManagedSharePeers(summary)}
                       disabled={integrationBusyKey === `invite:${summary.share.id}`}
                     >
-                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sharing...' : 'Share'}</span>
+                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
                     </button>
                   </div>
-                  <p class="managed-share-invite-copy">Invites use the provider account behind this location so recipients can sync live updates.</p>
+                  <p class="managed-share-invite-copy">This sends a provider-side invite from the live location behind this volume so recipients can sync updates.</p>
                 {/if}
+
+                <div class="managed-share-members">
+                  <p class="subheading">Already shared with</p>
+                  {#if invitedCollaborators(summary).length > 0}
+                    <div class="managed-share-members-list">
+                      {#each invitedCollaborators(summary) as email (email)}
+                        <span class="mini-pill">{email}</span>
+                      {/each}
+                    </div>
+                  {:else}
+                    <p class="managed-share-invite-copy">Nobody invited yet from Nearbytes.</p>
+                  {/if}
+                </div>
 
                 <div class="button-row">
                   <button
@@ -3271,7 +3344,7 @@
                   </div>
                   <div class="card-status">
                     <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
-                    <span class="status-pill tone-muted">Available</span>
+                    <span class="status-pill tone-muted">Available to attach</span>
                   </div>
                 </div>
 
@@ -3286,7 +3359,7 @@
                 {#if canInviteManagedShare(summary)}
                   <div class="managed-share-invite-row">
                     <label class="field-block managed-share-invite-field">
-                      <span>Share with</span>
+                      <span>Invite collaborator</span>
                       <input
                         class="panel-input"
                         type="text"
@@ -3302,10 +3375,10 @@
                       onclick={() => void inviteManagedSharePeers(summary)}
                       disabled={integrationBusyKey === `invite:${summary.share.id}`}
                     >
-                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sharing...' : 'Share'}</span>
+                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
                     </button>
                   </div>
-                  <p class="managed-share-invite-copy">Share this managed location now, then attach it to this space when you want Nearbytes to use it here.</p>
+                  <p class="managed-share-invite-copy">Invite people to this provider location now, then attach it to this volume when you want Nearbytes to use it here.</p>
                 {/if}
 
                 <div class="button-row">
@@ -4225,6 +4298,30 @@
     color: var(--text-soft);
     font-size: 0.75rem;
     line-height: 1.35;
+  }
+
+  .flow-note-card {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.76rem 0.82rem;
+    border-radius: 14px;
+    border: 1px solid rgba(96, 165, 250, 0.12);
+    background: rgba(10, 18, 31, 0.5);
+  }
+
+  .volume-share-link-card {
+    margin-bottom: 0.8rem;
+  }
+
+  .managed-share-members {
+    display: grid;
+    gap: 0.42rem;
+  }
+
+  .managed-share-members-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
   }
 
   .provider-credentials {

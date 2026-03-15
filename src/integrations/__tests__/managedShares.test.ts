@@ -7,7 +7,15 @@ import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import type { TransportAdapter } from '../adapters.js';
 import { ManagedShareService } from '../managedShares.js';
 import { saveIntegrationState } from '../store.js';
-import type { ConnectProviderAccountInput, ConnectProviderAccountResult, ProviderAccount, TransportEndpoint, TransportState } from '../types.js';
+import type {
+  ConnectProviderAccountInput,
+  ConnectProviderAccountResult,
+  ManagedShare,
+  ManagedShareCollaborator,
+  ProviderAccount,
+  TransportEndpoint,
+  TransportState,
+} from '../types.js';
 
 class FakeTransportAdapter implements TransportAdapter {
   readonly supportsAccountConnection = true;
@@ -32,6 +40,20 @@ class FakeTransportAdapter implements TransportAdapter {
       detail: `${this.label} is ready.`,
       badges: ['Fake'],
     };
+  }
+
+  async getCollaborators(share: ManagedShare): Promise<ManagedShareCollaborator[]> {
+    return share.invitationEmails.includes('active@example.com')
+      ? [
+          {
+            label: 'active@example.com',
+            email: 'active@example.com',
+            role: 'writer',
+            status: 'active',
+            source: 'provider',
+          },
+        ]
+      : [];
   }
 
   async connect(input: ConnectProviderAccountInput): Promise<ConnectProviderAccountResult> {
@@ -188,6 +210,61 @@ describe('ManagedShareService', () => {
 
     const shares = await service.listManagedShares();
     expect(shares.shares.map((summary) => summary.share.provider)).toEqual(['mega']);
+  });
+
+  it('merges provider collaborators with pending Nearbytes invites', async () => {
+    const { integrationStatePath, service } = await createHarness();
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'MEGA share',
+            role: 'owner',
+            localPath: path.join(path.dirname(integrationStatePath), 'mega-share'),
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes/MEGA share' },
+            capabilities: ['mirror'],
+            invitationEmails: ['active@example.com', 'pending@example.com'],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares[0]?.collaborators).toEqual([
+      {
+        label: 'active@example.com',
+        email: 'active@example.com',
+        role: 'writer',
+        status: 'active',
+        source: 'provider',
+      },
+      {
+        label: 'pending@example.com',
+        email: 'pending@example.com',
+        status: 'invited',
+        source: 'nearbytes',
+      },
+    ]);
   });
 
   it('creates the default MEGA managed share on connect and reuses an existing nearbytes folder', async () => {

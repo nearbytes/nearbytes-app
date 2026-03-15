@@ -26,6 +26,7 @@ function createFakeMegaExecutor(state: {
   syncs: Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>;
   invitedEmails: string[];
   shareCommands: string[][];
+  shareListings?: Map<string, string[]>;
   acceptedOwners: string[];
   createdFolders: string[];
   deletedSyncIds: string[];
@@ -74,6 +75,14 @@ function createFakeMegaExecutor(state: {
       }
       if (command === 'mega-share') {
         state.shareCommands.push(args);
+        if (!args.includes('-a')) {
+          const remotePath = args.at(-1) ?? '';
+          return {
+            stdout: `${(state.shareListings?.get(remotePath) ?? []).join('\n')}${state.shareListings?.get(remotePath)?.length ? '\n' : ''}`,
+            stderr: '',
+            exitCode: 0,
+          };
+        }
         return { stdout: '', stderr: '', exitCode: 0 };
       }
       if (command === 'mega-ipc') {
@@ -142,6 +151,9 @@ describe('MegaTransportAdapter', () => {
       syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
       invitedEmails: [] as string[],
       shareCommands: [] as string[][],
+      shareListings: new Map<string, string[]>([
+        ['/nearbytes/shared-alpha', ['Shared /nearbytes/shared-alpha : peer@example.com accessLevel=1']],
+      ]),
       acceptedOwners: [] as string[],
       createdFolders: [] as string[],
       deletedSyncIds: [] as string[],
@@ -216,6 +228,26 @@ describe('MegaTransportAdapter', () => {
     await adapter.invite(share, { emails: ['peer@example.com'] }, account);
     expect(megaState.invitedEmails).toEqual(['peer@example.com']);
     expect(megaState.shareCommands[0]).toContain('--level=rw');
+
+    const collaborators = await adapter.getCollaborators(
+      {
+        ...share,
+        remoteDescriptor: {
+          ...share.remoteDescriptor,
+          remotePath: '/nearbytes/shared-alpha',
+        },
+      },
+      account
+    );
+    expect(collaborators).toEqual([
+      {
+        label: 'peer@example.com',
+        email: 'peer@example.com',
+        role: 'writer',
+        status: 'active',
+        source: 'provider',
+      },
+    ]);
 
     await adapter.ensureSync(share, account);
     const state = await adapter.getState(share, account);
