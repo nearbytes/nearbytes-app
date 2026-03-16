@@ -23,6 +23,14 @@
   let lastFrameTime = 0;
   let playing = $state(false);
 
+  function resolveThemeColor(propertyName: string, fallback: string): string {
+    if (typeof window === 'undefined') {
+      return fallback;
+    }
+    const value = getComputedStyle(document.documentElement).getPropertyValue(propertyName).trim();
+    return value || fallback;
+  }
+
   function clamp(value: number, min: number, max: number): number {
     return Math.min(max, Math.max(min, value));
   }
@@ -118,14 +126,17 @@
     const releaseBlend = 1 - Math.exp(-elapsedSeconds * 2.15);
     const gap = 4;
     const barWidth = Math.max(4, (width - gap * (barCount - 1)) / barCount);
+    const accentSoft = resolveThemeColor('--nb-accent-soft', 'rgba(34, 211, 238, 0.28)');
+    const accent = resolveThemeColor('--nb-accent', 'rgba(56, 189, 248, 0.72)');
+    const textSoft = resolveThemeColor('--nb-text-soft', 'rgba(191, 219, 254, 0.96)');
     const gradient = context.createLinearGradient(0, height, 0, 0);
-    gradient.addColorStop(0, 'var(--nb-accent-soft, rgba(34, 211, 238, 0.28))');
-    gradient.addColorStop(0.55, 'var(--nb-accent, rgba(56, 189, 248, 0.72))');
-    gradient.addColorStop(1, 'var(--nb-text-soft, rgba(191, 219, 254, 0.96))');
+    gradient.addColorStop(0, accentSoft);
+    gradient.addColorStop(0.55, accent);
+    gradient.addColorStop(1, textSoft);
 
     const glow = context.createLinearGradient(0, 0, width, height);
-    glow.addColorStop(0, 'var(--nb-accent-soft, rgba(34, 211, 238, 0.12))');
-    glow.addColorStop(1, 'color-mix(in srgb, var(--nb-accent, rgba(59, 130, 246, 0.04)) 16%, transparent)');
+    glow.addColorStop(0, accentSoft);
+    glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
     context.fillStyle = glow;
     context.fillRect(0, 0, width, height);
 

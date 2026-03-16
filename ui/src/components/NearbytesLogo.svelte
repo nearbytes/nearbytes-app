@@ -268,6 +268,10 @@
     stopAnimation = nearbytesCogo(canvas, options);
   }
 
+  export async function exportPngDataUrl(): Promise<string | null> {
+    return canvas?.toDataURL('image/png') ?? null;
+  }
+
   $effect(() => {
     options;
     size;

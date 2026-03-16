@@ -7,6 +7,7 @@ export interface DesktopUiState {
   readonly volumeMounts?: unknown;
   readonly sourceDiscovery?: unknown;
   readonly dismissedRootSuggestions?: unknown;
+  readonly theme?: unknown;
 }
 
 const UI_STATE_FILENAME = 'ui-state.json';
@@ -26,6 +27,7 @@ export async function readDesktopUiState(): Promise<DesktopUiState> {
       volumeMounts: (parsed as DesktopUiState).volumeMounts,
       sourceDiscovery: (parsed as DesktopUiState).sourceDiscovery,
       dismissedRootSuggestions: (parsed as DesktopUiState).dismissedRootSuggestions,
+      theme: (parsed as DesktopUiState).theme,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {

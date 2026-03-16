@@ -65,12 +65,15 @@
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
   import {
-    NEARBYTES_THEME_PRESET_LIST,
     cloneThemeSettings,
+    defaultThemeRegistry,
     defaultThemeSettings,
+    normalizeThemeRegistry,
     normalizeThemeSettings,
+    replaceThemePresetInRegistry,
     themeCssVariables,
     type NearbytesArcStyle,
+    type NearbytesThemeRegistry,
     type NearbytesThemePresetId,
     type NearbytesThemeSettings,
   } from './lib/branding.js';
@@ -104,11 +107,13 @@
   const VOLUME_MOUNTS_KEY = 'nearbytes-volume-mounts-v1';
   const SOURCE_DISCOVERY_UI_KEY = 'nearbytes-source-discovery-ui-v1';
   const UI_STATE_SHADOW_KEY = 'nearbytes-ui-state-shadow-v1';
+  const THEME_REGISTRY_ASSET_PATH = '/branding/theme-presets.json';
   const FILE_SECRET_PREFIX = 'nb-file-secret:v1:';
   const WORKSPACE_DIVIDER_WIDTH = 14;
   const WORKSPACE_FILE_PANE_MIN_WIDTH = 360;
   const WORKSPACE_CHAT_PANE_MIN_WIDTH = 180;
   const PARKED_MOUNT_WIDTH = 46;
+  const isDevThemeStudio = import.meta.env.DEV;
   const SPEC_DOC_CONTENTS = import.meta.glob('../../docs/specs/*.md', {
     as: 'raw',
     eager: true,
@@ -236,6 +241,7 @@
 
   type NearbytesDesktopBridge = {
     connectDeepLinks?: () => Promise<string[]>;
+    exportLogoPng?: (dataUrl: string) => Promise<{ path?: string } | null>;
     fetchRemoteFile?: (url: string) => Promise<DesktopRemoteFile>;
     getClipboardImageStatus?: () => Promise<{ hasImage: boolean }>;
     readClipboardImage?: () => Promise<DesktopRemoteFile | null>;
@@ -246,6 +252,7 @@
     onDeepLink?: (listener: (url: string) => void) => (() => void) | void;
     onUpdaterState?: (listener: (state: DesktopUpdaterState) => void) => (() => void) | void;
     saveUiState?: (state: PersistedUiState) => Promise<unknown>;
+    saveThemeRegistry?: (registry: NearbytesThemeRegistry) => Promise<{ path?: string } | null>;
   };
 
   type ThemeDialogSection = 'preset' | 'palette' | 'logo';
@@ -1343,9 +1350,15 @@
   let clipboardImageAvailable = $state(false);
   let clipboardImageLoading = $state(false);
   let persistedUiStateReady = $state(false);
+  let themeRegistry = $state<NearbytesThemeRegistry>(defaultThemeRegistry());
   let themeSettings = $state<NearbytesThemeSettings>(defaultThemeSettings());
   let showThemeDialog = $state(false);
   let themeDialogSection = $state<ThemeDialogSection>('preset');
+  let themeDialogBusy = $state(false);
+  let themeDialogFeedback = $state<{ tone: 'success' | 'warning'; message: string } | null>(null);
+  let themeDialogError = $state('');
+  let themeDialogLogoPreview = $state<{ exportPngDataUrl: () => Promise<string | null> } | null>(null);
+  let hydratedThemeState = $state<unknown>(null);
   let isHeaderHovering = $state(false);
   let isSecretDropTarget = $state(false);
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
@@ -1428,6 +1441,123 @@
   const mountRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const MOUNT_RUNTIME_REFRESH_MS = 15000;
 
+  async function loadThemeRegistryAsset(): Promise<void> {
+    try {
+      const response = await fetch(THEME_REGISTRY_ASSET_PATH, {
+        cache: isDevThemeStudio ? 'no-store' : 'default',
+      });
+      if (!response.ok) {
+        throw new Error(`Theme registry request failed (${response.status})`);
+      }
+      const nextRegistry = normalizeThemeRegistry(await response.json());
+      themeRegistry = nextRegistry;
+      themeSettings = normalizeThemeSettings(hydratedThemeState ?? themeSettings, nextRegistry);
+    } catch (error) {
+      console.warn('Failed to load theme registry asset:', error);
+      const fallbackRegistry = defaultThemeRegistry();
+      themeRegistry = fallbackRegistry;
+      themeSettings = normalizeThemeSettings(hydratedThemeState ?? themeSettings, fallbackRegistry);
+    }
+  }
+
+  function applyHydratedThemeState(value: unknown): void {
+    hydratedThemeState = value;
+    themeSettings = normalizeThemeSettings(value, themeRegistry);
+  }
+
+  function openThemeStudio(section: ThemeDialogSection = 'preset'): void {
+    if (!isDevThemeStudio) {
+      return;
+    }
+    themeDialogSection = section;
+    themeDialogFeedback = null;
+    themeDialogError = '';
+    showThemeDialog = true;
+  }
+
+  async function persistThemeRegistry(
+    nextRegistry: NearbytesThemeRegistry,
+    successMessage: string
+  ): Promise<void> {
+    const bridge = getDesktopBridge();
+    if (!bridge || typeof bridge.saveThemeRegistry !== 'function') {
+      throw new Error('Desktop theme registry save is unavailable.');
+    }
+    const result = await bridge.saveThemeRegistry(nextRegistry);
+    themeDialogFeedback = {
+      tone: 'success',
+      message: result?.path ? `${successMessage} ${result.path}` : successMessage,
+    };
+  }
+
+  async function saveThemePresetEdits(): Promise<void> {
+    if (!isDevThemeStudio) {
+      return;
+    }
+    themeDialogBusy = true;
+    themeDialogError = '';
+    themeDialogFeedback = null;
+    const nextRegistry = replaceThemePresetInRegistry(themeRegistry, themeSettings);
+    themeRegistry = nextRegistry;
+    try {
+      await persistThemeRegistry(nextRegistry, 'Saved preset registry to');
+    } catch (error) {
+      themeDialogError = error instanceof Error ? error.message : 'Failed to save theme presets';
+    } finally {
+      themeDialogBusy = false;
+    }
+  }
+
+  async function setThemePresetAsDefault(): Promise<void> {
+    if (!isDevThemeStudio) {
+      return;
+    }
+    themeDialogBusy = true;
+    themeDialogError = '';
+    themeDialogFeedback = null;
+    const nextRegistry = {
+      ...replaceThemePresetInRegistry(themeRegistry, themeSettings),
+      defaultPresetId: themeSettings.presetId,
+    };
+    themeRegistry = nextRegistry;
+    try {
+      await persistThemeRegistry(nextRegistry, 'Saved default preset to');
+    } catch (error) {
+      themeDialogError = error instanceof Error ? error.message : 'Failed to save default theme preset';
+    } finally {
+      themeDialogBusy = false;
+    }
+  }
+
+  async function exportThemeLogoPng(): Promise<void> {
+    if (!isDevThemeStudio) {
+      return;
+    }
+    const bridge = getDesktopBridge();
+    if (!bridge || typeof bridge.exportLogoPng !== 'function') {
+      themeDialogError = 'Desktop logo export is unavailable.';
+      return;
+    }
+    themeDialogBusy = true;
+    themeDialogError = '';
+    themeDialogFeedback = null;
+    try {
+      const dataUrl = await themeDialogLogoPreview?.exportPngDataUrl();
+      if (!dataUrl) {
+        throw new Error('Logo preview is not ready yet.');
+      }
+      const result = await bridge.exportLogoPng(dataUrl);
+      themeDialogFeedback = {
+        tone: 'success',
+        message: result?.path ? `Exported logo PNG to ${result.path}` : 'Exported logo PNG.',
+      };
+    } catch (error) {
+      themeDialogError = error instanceof Error ? error.message : 'Failed to export logo PNG';
+    } finally {
+      themeDialogBusy = false;
+    }
+  }
+
   function preferredActiveMountId(nextMounts: VolumeMount[]): string {
     return nextMounts.find((mount) => !mount.collapsed)?.id ?? nextMounts[0]?.id ?? '';
   }
@@ -1458,12 +1588,13 @@
   }
 
   onMount(() => {
+    void loadThemeRegistryAsset();
     configuredIdentities = loadConfiguredIdentities();
     activeChatIdentityId = loadActiveIdentityId();
     volumeChatIdentityAssignments = loadVolumeIdentityAssignments();
     identityHydrated = true;
     const localUiState = loadPersistedUiStateLocally();
-    themeSettings = normalizeThemeSettings(localUiState.theme);
+    applyHydratedThemeState(localUiState.theme);
     const localDiscoveryState =
       localUiState.sourceDiscovery !== undefined
         ? normalizePersistedSourceDiscovery(localUiState.sourceDiscovery)
@@ -1542,7 +1673,7 @@
         latestSourceDiscovery = discoveryState.latestResult;
         latestSourceDiscoveryRunKey = discoveryState.latestRunKey;
         lastAcknowledgedSourceDiscoveryRunKey = discoveryState.lastAcknowledgedRunKey;
-        themeSettings = normalizeThemeSettings(nextState.theme);
+        applyHydratedThemeState(nextState.theme);
       } catch (error) {
         console.warn('Failed to hydrate desktop UI state:', error);
       } finally {
@@ -5045,15 +5176,20 @@
   }
 
   function activeThemePreset() {
-    return NEARBYTES_THEME_PRESET_LIST.find((preset) => preset.presetId === themeSettings.presetId) ?? NEARBYTES_THEME_PRESET_LIST[0];
+    return (
+      themeRegistry.presets.find((preset) => preset.presetId === themeSettings.presetId) ??
+      themeRegistry.presets[0]
+    );
   }
 
   function applyThemePreset(presetId: NearbytesThemePresetId): void {
-    const preset = NEARBYTES_THEME_PRESET_LIST.find((entry) => entry.presetId === presetId);
+    const preset = themeRegistry.presets.find((entry) => entry.presetId === presetId);
     if (!preset) {
       return;
     }
     themeSettings = cloneThemeSettings(preset);
+    themeDialogFeedback = null;
+    themeDialogError = '';
   }
 
   function updateThemePaletteColor(key: keyof NearbytesThemeSettings['palette'], value: string): void {
@@ -5083,7 +5219,7 @@
         ...themeSettings.logo,
         [key]: value,
       },
-    });
+    }, themeRegistry);
   }
 
   function updateThemeArcStyle(value: NearbytesArcStyle): void {
@@ -5271,35 +5407,34 @@
       ondrop={handleSecretFileDrop}
     >
       <div class="brand-rail panel-surface">
-        <button
-          type="button"
-          class="brand-badge"
-          onclick={() => {
-            themeDialogSection = 'preset';
-            showThemeDialog = true;
-          }}
-          aria-label="Open appearance settings"
-        >
-          <span class="brand-logo-frame">
-            <NearbytesLogo size={52} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
-          </span>
+        <div class="brand-badge static" aria-label="Nearbytes branding">
+          {#if isDevThemeStudio}
+            <button
+              type="button"
+              class="brand-logo-trigger"
+              onclick={() => openThemeStudio('preset')}
+              aria-label="Open theme studio"
+              title="Open theme studio"
+            >
+              <span class="brand-logo-frame interactive">
+                <NearbytesLogo size={52} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+              </span>
+            </button>
+          {:else}
+            <span class="brand-logo-frame">
+              <NearbytesLogo size={52} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+            </span>
+          {/if}
           <span class="brand-copy">
-            <span class="brand-kicker">Nearbytes</span>
-            <span class="brand-title">{activeThemePreset().palette.label}</span>
-            <span class="brand-note">Animated boot mark and palette are live and persistent.</span>
+            <span class="brand-title">Nearbytes</span>
+            <span class="brand-note">
+              {activeThemePreset().palette.label}
+              {#if isDevThemeStudio}
+                {' · click the logo to edit the theme studio'}
+              {/if}
+            </span>
           </span>
-        </button>
-        <button
-          type="button"
-          class="brand-config-btn"
-          onclick={() => {
-            themeDialogSection = 'preset';
-            showThemeDialog = true;
-          }}
-        >
-          <Settings2 class="button-icon" size={15} strokeWidth={2} />
-          <span>Appearance</span>
-        </button>
+        </div>
       </div>
 
       <MountRail dragging={draggingMountId !== null}>
@@ -5539,32 +5674,7 @@
         {/each}
         {/snippet}
         {#snippet actions()}
-        <div
-          class="mounts-actions"
-          class:visible={
-            isHeaderHovering ||
-            isSecretDropTarget ||
-            showStatusPanel ||
-            showTimeMachinePanel ||
-            showSourcesPanel ||
-            showVolumeStoragePanel ||
-            showIdentityManager
-          }
-        >
-          <button
-            type="button"
-            class="header-tool-btn"
-            class:active={showThemeDialog}
-            aria-label="Appearance"
-            title="Appearance"
-            onclick={(event) => {
-              event.stopPropagation();
-              themeDialogSection = 'preset';
-              showThemeDialog = true;
-            }}
-          >
-            <Settings2 class="button-icon" size={14} strokeWidth={2} />
-          </button>
+        <div class="mounts-actions">
           <button
             type="button"
             class="header-tool-btn"
@@ -5973,7 +6083,7 @@
           </div>
           <p class="empty-eyebrow">{activeThemePreset().palette.label}</p>
           <p class="empty-hint">Enter an address to access your files</p>
-          <p class="empty-subhint">Or drag and drop files here to create a new space. Open Appearance to switch between the current blue system and the classic amber system, or tune the logo directly.</p>
+          <p class="empty-subhint">Or drag and drop files here to create a new space.{#if isDevThemeStudio} Click the brand mark to edit presets and export the checked-in logo asset.{:else} The active preset stays consistent across launches.{/if}</p>
         </div>
       </div>
     {:else}
@@ -6075,26 +6185,88 @@
       {/if}
 
       <div class="workspace-mode-bar panel-surface" role="group" aria-label="Space workspace">
-        <button
-          type="button"
-          class="workspace-mode-btn"
-          class:active={showFilesWorkspace}
-          aria-pressed={showFilesWorkspace}
-          onclick={() => toggleWorkspacePane('files')}
-        >
-          <File size={15} strokeWidth={2} />
-          <span>Files</span>
-        </button>
-        <button
-          type="button"
-          class="workspace-mode-btn"
-          class:active={showChatWorkspace}
-          aria-pressed={showChatWorkspace}
-          onclick={() => toggleWorkspacePane('chat')}
-        >
-          <MessageSquareText size={15} strokeWidth={2} />
-          <span>Chat</span>
-        </button>
+        <div class="workspace-mode-primary">
+          <button
+            type="button"
+            class="workspace-mode-btn"
+            class:active={showFilesWorkspace}
+            aria-pressed={showFilesWorkspace}
+            onclick={() => toggleWorkspacePane('files')}
+          >
+            <File size={15} strokeWidth={2} />
+            <span>Files</span>
+          </button>
+          <button
+            type="button"
+            class="workspace-mode-btn"
+            class:active={showChatWorkspace}
+            aria-pressed={showChatWorkspace}
+            onclick={() => toggleWorkspacePane('chat')}
+          >
+            <MessageSquareText size={15} strokeWidth={2} />
+            <span>Chat</span>
+          </button>
+        </div>
+        {#if showFilesWorkspace}
+          <div class="workspace-mode-secondary">
+            <span class="workspace-selection-summary">
+              {selectedFileNames.length === 0
+                ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
+                : selectedFileNames.length === 1 && selectedFile
+                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
+                  : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
+            </span>
+            <input
+              type="text"
+              class="manager-search workspace-compact-control"
+              placeholder="Search files"
+              bind:value={searchQuery}
+              aria-label="Search files"
+            />
+            <select class="manager-sort workspace-compact-control" bind:value={sortBy} aria-label="Sort files">
+              <option value="newest">Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="name">Name</option>
+              <option value="name-desc">Name (Z-A)</option>
+              <option value="size">Size</option>
+              <option value="size-asc">Size (Smallest)</option>
+            </select>
+            <div class="manager-view-switch" role="tablist" aria-label="File browser view">
+              <button
+                type="button"
+                class="view-toggle"
+                class:active={fileManagerViewMode === 'icons'}
+                onclick={() => (fileManagerViewMode = 'icons')}
+                aria-pressed={fileManagerViewMode === 'icons'}
+                title="Icon view"
+              >
+                <LayoutGrid size={15} strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                class="view-toggle"
+                class:active={fileManagerViewMode === 'details'}
+                onclick={() => (fileManagerViewMode = 'details')}
+                aria-pressed={fileManagerViewMode === 'details'}
+                title="Details view"
+              >
+                <Rows3 size={15} strokeWidth={2} />
+              </button>
+            </div>
+            {#if appReferenceClipboard}
+              <button
+                type="button"
+                class="manager-btn workspace-toolbar-btn"
+                onclick={() => void pasteCopiedFiles()}
+                disabled={!auth || isHistoryMode}
+                title={!auth ? 'Open a destination space before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
+              >
+                <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
+              </button>
+            {/if}
+          </div>
+        {/if}
       </div>
 
       <div
@@ -6135,73 +6307,6 @@
                 }}
               >
                 <section class="file-list-pane" class:with-preview={showPreviewPane}>
-                  <div class="manager-toolbar">
-                    <div class="manager-toolbar-top">
-                      <input
-                        type="text"
-                        class="manager-search"
-                        placeholder="Search files"
-                        bind:value={searchQuery}
-                        aria-label="Search files"
-                      />
-                      <div class="manager-view-switch" role="tablist" aria-label="File browser view">
-                        <button
-                          type="button"
-                          class="view-toggle"
-                          class:active={fileManagerViewMode === 'icons'}
-                          onclick={() => (fileManagerViewMode = 'icons')}
-                          aria-pressed={fileManagerViewMode === 'icons'}
-                          title="Icon view"
-                        >
-                          <LayoutGrid size={15} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          class="view-toggle"
-                          class:active={fileManagerViewMode === 'details'}
-                          onclick={() => (fileManagerViewMode = 'details')}
-                          aria-pressed={fileManagerViewMode === 'details'}
-                          title="Details view"
-                        >
-                          <Rows3 size={15} strokeWidth={2} />
-                        </button>
-                      </div>
-                    </div>
-                    <div class="manager-toolbar-bottom">
-                      <div class="manager-filters">
-                        <select class="manager-sort" bind:value={sortBy} aria-label="Sort files">
-                          <option value="newest">Newest</option>
-                          <option value="oldest">Oldest</option>
-                          <option value="name">Name</option>
-                          <option value="name-desc">Name (Z-A)</option>
-                          <option value="size">Size</option>
-                          <option value="size-asc">Size (Smallest)</option>
-                        </select>
-                      </div>
-                      {#if appReferenceClipboard}
-                        <button
-                          type="button"
-                          class="manager-btn toolbar-btn"
-                          onclick={() => void pasteCopiedFiles()}
-                          disabled={!auth || isHistoryMode}
-                          title={!auth ? 'Open a destination space before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
-                        >
-                          <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                          Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
-                        </button>
-                      {/if}
-                    </div>
-                    <div class="manager-summary">
-                      <span>{visibleFiles.length} file{visibleFiles.length === 1 ? '' : 's'}</span>
-                      <span>
-                        {selectedFileNames.length === 0
-                          ? 'No selection'
-                          : selectedFileNames.length === 1 && selectedFile
-                            ? displayFileName(selectedFile)
-                            : `${selectedFileNames.length} selected`}
-                      </span>
-                    </div>
-                  </div>
                   {#if visibleFiles.length === 0}
                     <div class="list-empty">No files match your search.</div>
                   {:else}
@@ -6385,7 +6490,7 @@
                           <img class="preview-image" src={previewUrl} alt={"Preview of " + currentPreviewFile.filename} />
                         {:else if previewKind === 'video' && previewUrl}
                           <!-- svelte-ignore a11y_media_has_caption -->
-                          <video class="preview-media" controls src={previewUrl}></video>
+                          <video class="preview-media" autoplay muted loop playsinline src={previewUrl}></video>
                         {:else if previewKind === 'audio' && previewUrl}
                           <AudioPreview
                             src={previewUrl}
@@ -7243,7 +7348,7 @@
     </div>
   {/if}
 
-  {#if showThemeDialog}
+  {#if isDevThemeStudio && showThemeDialog}
     <div
       class="theme-dialog-backdrop"
       role="dialog"
@@ -7277,15 +7382,15 @@
         <div class="theme-dialog-body">
           <section class="theme-dialog-section theme-dialog-hero">
             <div class="theme-dialog-preview-mark">
-              <NearbytesLogo size={132} options={themeSettings.logo} ariaLabel="Current Nearbytes logo preview" />
+              <NearbytesLogo bind:this={themeDialogLogoPreview} size={132} options={themeSettings.logo} ariaLabel="Current Nearbytes logo preview" />
             </div>
             <div class="theme-dialog-preview-copy">
               <p class="theme-dialog-section-title">{activeThemePreset().palette.label}</p>
               <p class="theme-dialog-note">{activeThemePreset().palette.description}</p>
               <div class="theme-dialog-chip-row">
-                <span class="join-dialog-chip strong">Accent {themeSettings.palette.accent}</span>
-                <span class="join-dialog-chip">{themeSettings.logo.arcStyle}</span>
-                <span class="join-dialog-chip">{themeSettings.logo.peers} peers</span>
+                <span class="theme-studio-chip strong">Accent {themeSettings.palette.accent}</span>
+                <span class="theme-studio-chip">{themeSettings.logo.arcStyle}</span>
+                <span class="theme-studio-chip">{themeSettings.logo.peers} peers</span>
               </div>
             </div>
           </section>
@@ -7299,7 +7404,7 @@
 
             {#if themeDialogSection === 'preset'}
               <div class="theme-preset-grid">
-                {#each NEARBYTES_THEME_PRESET_LIST as preset (preset.presetId)}
+                {#each themeRegistry.presets as preset (preset.presetId)}
                   <button
                     type="button"
                     class="theme-preset-card"
@@ -7356,7 +7461,17 @@
               </div>
             {/if}
 
+            {#if themeDialogFeedback}
+              <p class={`theme-dialog-status ${themeDialogFeedback.tone}`}>{themeDialogFeedback.message}</p>
+            {/if}
+            {#if themeDialogError}
+              <p class="theme-dialog-status error">{themeDialogError}</p>
+            {/if}
+
             <div class="theme-dialog-actions">
+              <button type="button" class="status-link-btn secondary" disabled={themeDialogBusy} onclick={saveThemePresetEdits}>Save preset JSON</button>
+              <button type="button" class="status-link-btn secondary" disabled={themeDialogBusy} onclick={setThemePresetAsDefault}>Set as default</button>
+              <button type="button" class="status-link-btn secondary" disabled={themeDialogBusy} onclick={exportThemeLogoPng}>Export logo PNG</button>
               <button type="button" class="status-link-btn secondary" onclick={resetThemeToPreset}>Reset to preset</button>
               <button type="button" class="status-link-btn" onclick={() => (showThemeDialog = false)}>Done</button>
             </div>
@@ -7444,6 +7559,22 @@
     cursor: pointer;
   }
 
+  .brand-badge.static {
+    cursor: default;
+  }
+
+  .brand-logo-trigger {
+    appearance: none;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
   .brand-logo-frame {
     flex: 0 0 auto;
     display: inline-flex;
@@ -7456,48 +7587,41 @@
     box-shadow: 0 16px 32px rgba(2, 6, 23, 0.28);
   }
 
+  .brand-logo-frame.interactive {
+    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  }
+
+  .brand-logo-trigger:hover .brand-logo-frame.interactive,
+  .brand-logo-trigger:focus-visible .brand-logo-frame.interactive {
+    transform: translateY(-1px);
+    border-color: var(--nb-border-strong, rgba(56, 189, 248, 0.32));
+    box-shadow: 0 20px 38px rgba(2, 6, 23, 0.34);
+  }
+
   .brand-copy {
     min-width: 0;
     display: grid;
-    gap: 0.2rem;
-  }
-
-  .brand-kicker {
-    font-size: 0.7rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--nb-accent-strong, rgba(125, 211, 252, 0.74));
+    gap: 0.08rem;
   }
 
   .brand-title {
-    font-size: 1rem;
-    font-weight: 650;
+    font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
+    font-size: 1.44rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
     color: var(--nb-accent-text, rgba(240, 249, 255, 0.98));
   }
 
   .brand-note {
-    font-size: 0.8rem;
+    font-size: 0.76rem;
     line-height: 1.4;
     color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
-  }
-
-  .brand-config-btn {
-    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.24));
-    background: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 24, 43, 0.82)) 96%, transparent);
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.92));
-    border-radius: 12px;
-    min-height: 38px;
-    padding: 0 0.92rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.48rem;
-    cursor: pointer;
   }
 
   .header-shell {
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
+    gap: 0.35rem;
     align-items: flex-start;
     position: relative;
     transition: transform 0.24s ease, filter 0.24s ease;
@@ -7701,16 +7825,9 @@
     display: inline-flex;
     align-items: center;
     gap: 0.38rem;
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-3px);
-    transition: opacity 0.18s ease, transform 0.22s ease;
-  }
-
-  .mounts-actions.visible {
     opacity: 1;
     pointer-events: auto;
-    transform: translateY(0);
+    transform: none;
   }
 
   .volume-chip {
@@ -8993,16 +9110,57 @@
   }
 
   .workspace-mode-bar {
-    display: inline-flex;
+    width: 100%;
+    display: flex;
     align-items: center;
-    gap: 0.4rem;
-    align-self: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    align-self: stretch;
     margin: 0;
-    padding: 0.22rem;
+    padding: 0.32rem;
     border-radius: 14px;
     border: 1px solid rgba(56, 189, 248, 0.14);
     background: rgba(7, 16, 30, 0.76);
     backdrop-filter: blur(18px);
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+  }
+
+  .workspace-mode-primary,
+  .workspace-mode-secondary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .workspace-mode-secondary {
+    margin-left: auto;
+    justify-content: flex-end;
+    flex: 1 1 420px;
+  }
+
+  .workspace-selection-summary {
+    font-size: 0.74rem;
+    letter-spacing: 0.02em;
+    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
+    white-space: nowrap;
+  }
+
+  .workspace-compact-control {
+    min-width: 0;
+  }
+
+  .workspace-mode-secondary .manager-search {
+    width: min(28vw, 240px);
+  }
+
+  .workspace-mode-secondary .manager-sort {
+    width: min(24vw, 180px);
+  }
+
+  .workspace-toolbar-btn {
     flex: 0 0 auto;
   }
 
@@ -9620,6 +9778,51 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.65rem;
+  }
+
+  .theme-dialog-status {
+    margin: 0;
+    padding: 0.85rem 1rem;
+    border-radius: 12px;
+    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.18));
+    background: var(--nb-accent-soft, rgba(34, 211, 238, 0.12));
+    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
+    font-size: 0.88rem;
+  }
+
+  .theme-dialog-status.success {
+    border-color: color-mix(in srgb, var(--nb-success, #86efac) 40%, transparent);
+    background: var(--nb-success-surface, rgba(134, 239, 172, 0.12));
+  }
+
+  .theme-dialog-status.warning {
+    border-color: color-mix(in srgb, var(--nb-warning, #fde68a) 40%, transparent);
+    background: var(--nb-warning-surface, rgba(253, 230, 138, 0.12));
+  }
+
+  .theme-dialog-status.error {
+    border-color: color-mix(in srgb, var(--nb-danger, #fecaca) 42%, transparent);
+    background: var(--nb-danger-surface, rgba(254, 202, 202, 0.12));
+  }
+
+  .theme-studio-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.38rem 0.72rem;
+    border-radius: 999px;
+    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.18));
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.92)) 92%, transparent);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    font-size: 0.76rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .theme-studio-chip.strong {
+    border-color: var(--nb-border-strong, rgba(34, 211, 238, 0.42));
+    background: var(--nb-accent-surface, rgba(34, 211, 238, 0.14));
+    color: var(--nb-accent-text, #ecfeff);
   }
 
   .theme-dialog-tab {
@@ -10378,31 +10581,6 @@
     border-bottom-right-radius: 0;
   }
 
-  .manager-toolbar {
-    display: grid;
-    gap: 0.75rem;
-    padding: 0.9rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.18)) 84%, transparent);
-    background:
-      radial-gradient(120% 120% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.08)), transparent 46%),
-      color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 35, 0.72)) 88%, transparent);
-  }
-
-  .manager-toolbar-top,
-  .manager-toolbar-bottom {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.6rem;
-    align-items: center;
-  }
-
-  .manager-filters {
-    display: flex;
-    gap: 0.55rem;
-    min-width: 0;
-    flex-wrap: wrap;
-  }
-
   .manager-search,
   .manager-sort,
   .manager-folder {
@@ -10425,10 +10603,6 @@
 
   .manager-folder {
     min-width: 0;
-  }
-
-  .toolbar-btn {
-    justify-self: end;
   }
 
   .manager-view-switch {
@@ -10464,15 +10638,6 @@
     color: var(--nb-accent-text, #ecfeff);
     background: linear-gradient(180deg, var(--nb-accent-surface-strong, rgba(16, 66, 91, 0.96)), var(--nb-accent-surface, rgba(10, 44, 66, 0.96)));
     box-shadow: 0 10px 24px rgba(6, 182, 212, 0.16);
-  }
-
-  .manager-summary {
-    display: flex;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-    font-size: 0.74rem;
-    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
-    letter-spacing: 0.02em;
   }
 
   .file-list-head {
@@ -11010,15 +11175,6 @@
       justify-content: flex-start;
     }
 
-    .manager-toolbar-top,
-    .manager-toolbar-bottom {
-      grid-template-columns: 1fr;
-    }
-
-    .toolbar-btn {
-      justify-self: stretch;
-    }
-
     .toast-stack {
       right: 1rem;
       bottom: 1rem;
@@ -11101,8 +11257,25 @@
       justify-content: space-between;
     }
 
-    .manager-toolbar {
-      grid-template-columns: 1fr;
+    .workspace-mode-bar {
+      align-items: stretch;
+    }
+
+    .workspace-mode-secondary {
+      margin-left: 0;
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    .workspace-selection-summary {
+      width: 100%;
+      white-space: normal;
+    }
+
+    .workspace-mode-secondary .manager-search,
+    .workspace-mode-secondary .manager-sort,
+    .workspace-toolbar-btn {
+      width: 100%;
     }
 
     .file-list-head {
