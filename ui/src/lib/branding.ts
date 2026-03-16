@@ -825,8 +825,8 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     ? `color-mix(in srgb, ${palette.panelBg} 92%, white 8%)`
     : `color-mix(in srgb, ${palette.panelBg} 88%, ${palette.accentSoft})`;
   const btnActiveBg = isFlat
-    ? `color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom})`
-    : `color-mix(in srgb, ${palette.panelBg} 82%, ${palette.accentSoft})`;
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.accentStrong} 82%, ${palette.accent}) 0%, color-mix(in srgb, ${palette.accentStrong} 94%, ${palette.shellBottom}) 100%)`
+    : `linear-gradient(180deg, color-mix(in srgb, ${palette.accentStrong} 78%, ${palette.accent}) 0%, color-mix(in srgb, ${palette.accentStrong} 92%, ${palette.shellBottom}) 100%)`;
   const btnBorder = isFlat
     ? `color-mix(in srgb, ${palette.border} 80%, transparent)`
     : `color-mix(in srgb, ${palette.border} 82%, transparent)`;
@@ -834,8 +834,8 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     ? `${palette.border}`
     : `color-mix(in srgb, ${palette.border} 94%, ${palette.accent} 8%)`;
   const btnActiveBorder = isFlat
-    ? `color-mix(in srgb, ${palette.accent} 16%, ${palette.border})`
-    : `color-mix(in srgb, ${palette.accent} 30%, ${palette.border})`;
+    ? `color-mix(in srgb, ${palette.accent} 42%, ${palette.accentStrong})`
+    : `color-mix(in srgb, ${palette.accent} 54%, ${palette.accentStrong})`;
   const btnColor = isFlat
     ? `${palette.textSoft}`
     : `${palette.textSoft}`;
@@ -843,11 +843,11 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     ? `${palette.textMain}`
     : `${palette.textMain}`;
   const btnActiveColor = isFlat
-    ? `${palette.textMain}`
-    : `${palette.textMain}`;
+    ? `${palette.accentText}`
+    : `${palette.accentText}`;
   const btnActiveShadow = isFlat
-    ? `0 1px 2px rgba(82, 53, 33, 0.05)`
-    : `0 1px 2px color-mix(in srgb, ${palette.accent} 10%, transparent)`;
+    ? `0 10px 24px color-mix(in srgb, ${palette.accentStrong} 18%, transparent)`
+    : `0 12px 28px color-mix(in srgb, ${palette.accentStrong} 20%, transparent)`;
   const btnDangerBg = isFlat
     ? `color-mix(in srgb, ${palette.danger} 8%, ${palette.panelBg})`
     : `color-mix(in srgb, ${palette.danger} 8%, ${palette.panelBg})`;

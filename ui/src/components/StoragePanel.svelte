@@ -4229,7 +4229,7 @@
     margin-top: 0.22rem;
     width: 17px;
     height: 17px;
-    accent-color: var(--nb-accent, #d27a54);
+    accent-color: var(--nb-accent-strong, #8f6a3b);
   }
 
   .inline-toggle > div {
@@ -4444,7 +4444,7 @@
   .toggle-only-label input {
     width: 16px;
     height: 16px;
-    accent-color: var(--nb-accent, #d27a54);
+    accent-color: var(--nb-accent-strong, #8f6a3b);
   }
 
   .inline-progress {
