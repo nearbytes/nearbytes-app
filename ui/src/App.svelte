@@ -56,7 +56,6 @@
   } from './lib/nearbytesReferenceTransfer.js';
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
-  import AppBrandMark from './components/AppBrandMark.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
@@ -1443,7 +1442,6 @@
   let dragClientX = 0;
   let dragCaptureElement: HTMLElement | null = null;
   let joinLinkCopyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
-  let brandAssetVersion = $state(Date.now());
   const mountNodes = new Map<string, HTMLElement>();
   let mountDragListenersActive = false;
   const mountWarmPromises = new Map<string, Promise<void>>();
@@ -1556,7 +1554,6 @@
         throw new Error('Logo preview is not ready yet.');
       }
       const result = await bridge.exportLogoPng(dataUrl);
-      brandAssetVersion = Date.now();
       themeDialogFeedback = {
         tone: 'success',
         message:
@@ -5449,22 +5446,12 @@
               title="Open theme studio"
             >
               <span class="brand-logo-frame interactive">
-                <AppBrandMark
-                  size={64}
-                  options={themeSettings.logo}
-                  ariaLabel="Nearbytes brand mark"
-                  assetVersion={brandAssetVersion}
-                />
+                <NearbytesLogo size={64} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
               </span>
             </button>
           {:else}
             <span class="brand-logo-frame">
-              <AppBrandMark
-                size={64}
-                options={themeSettings.logo}
-                ariaLabel="Nearbytes brand mark"
-                assetVersion={brandAssetVersion}
-              />
+              <NearbytesLogo size={64} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
             </span>
           {/if}
           <div class="brand-stack">
@@ -5979,12 +5966,7 @@
       <div class="empty-state">
         <div class="empty-content">
           <div class="empty-brand-shell">
-            <AppBrandMark
-              size={112}
-              options={themeSettings.logo}
-              ariaLabel="Nearbytes logo"
-              assetVersion={brandAssetVersion}
-            />
+            <NearbytesLogo size={112} options={themeSettings.logo} ariaLabel="Nearbytes logo" />
           </div>
           <p class="empty-eyebrow">{activeThemePreset().palette.label}</p>
           <p class="empty-hint">Enter an address to access your files</p>
@@ -7542,7 +7524,7 @@
                 <label><span>Orbit scale</span><input type="range" min="0.5" max="1.8" step="0.01" value={themeSettings.logo.orbitScale} oninput={(event) => updateThemeLogoNumber('orbitScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.orbitScale.toFixed(2)}</em></label>
                 <label><span>Size scale</span><input type="range" min="0.7" max="1.8" step="0.01" value={themeSettings.logo.sizeScale} oninput={(event) => updateThemeLogoNumber('sizeScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.sizeScale.toFixed(2)}</em></label>
                 <label><span>Bulge</span><input type="range" min="0.5" max="2.2" step="0.01" value={themeSettings.logo.bulgeScale} oninput={(event) => updateThemeLogoNumber('bulgeScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.bulgeScale.toFixed(2)}</em></label>
-                <label><span>Line weight</span><input type="range" min="0.5" max="4" step="0.01" value={themeSettings.logo.lineWeight} oninput={(event) => updateThemeLogoNumber('lineWeight', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.lineWeight.toFixed(2)}</em></label>
+                <label><span>Line weight</span><input type="range" min="0.5" max="8" step="0.01" value={themeSettings.logo.lineWeight} oninput={(event) => updateThemeLogoNumber('lineWeight', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.lineWeight.toFixed(2)}</em></label>
                 <label><span>Circle stroke</span><input type="range" min="0.5" max="4" step="0.01" value={themeSettings.logo.circleStroke} oninput={(event) => updateThemeLogoNumber('circleStroke', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.circleStroke.toFixed(2)}</em></label>
                 <label><span>Pulse speed</span><input type="range" min="0.2" max="2" step="0.01" value={themeSettings.logo.pulseSpeed} oninput={(event) => updateThemeLogoNumber('pulseSpeed', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.pulseSpeed.toFixed(2)}</em></label>
                 <label><span>Pulse magnitude</span><input type="range" min="0.2" max="2" step="0.01" value={themeSettings.logo.pulseMag} oninput={(event) => updateThemeLogoNumber('pulseMag', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.pulseMag.toFixed(2)}</em></label>

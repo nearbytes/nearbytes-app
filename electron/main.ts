@@ -359,15 +359,35 @@ function registerIpc(): void {
 }
 
 function resolveThemePresetRegistryPath(): string {
-  return path.join(app.getAppPath(), 'ui', 'public', 'branding', 'theme-presets.json');
+  return path.join(resolveProjectRoot(), 'ui', 'public', 'branding', 'theme-presets.json');
 }
 
 function resolveThemeLogoExportPath(): string {
-  return path.join(app.getAppPath(), 'build', 'icons', 'icon-master.png');
+  return path.join(resolveProjectRoot(), 'build', 'icons', 'icon-master.png');
 }
 
 function resolvePublicAppIconPath(): string {
-  return path.join(app.getAppPath(), 'ui', 'public', 'branding', 'app-icon.png');
+  return path.join(resolveProjectRoot(), 'ui', 'public', 'branding', 'app-icon.png');
+}
+
+function resolveProjectRoot(): string {
+  const candidates = [
+    process.cwd(),
+    app.getAppPath(),
+    path.resolve(app.getAppPath(), '..'),
+    path.resolve(app.getAppPath(), '..', '..'),
+    path.resolve(app.getAppPath(), '..', '..', '..'),
+  ];
+  for (const candidate of candidates) {
+    if (
+      existsSync(path.join(candidate, 'package.json')) &&
+      existsSync(path.join(candidate, 'electron')) &&
+      existsSync(path.join(candidate, 'ui'))
+    ) {
+      return candidate;
+    }
+  }
+  return process.cwd();
 }
 
 async function syncPackagedIconAssets(inputPath: string): Promise<{
@@ -375,10 +395,11 @@ async function syncPackagedIconAssets(inputPath: string): Promise<{
   icnsPath: string;
   icoPath: string;
 }> {
-  const scriptPath = path.join(app.getAppPath(), 'scripts', 'sync-brand-icons.mjs');
+  const projectRoot = resolveProjectRoot();
+  const scriptPath = path.join(projectRoot, 'scripts', 'sync-brand-icons.mjs');
   const nodeExecutable = process.env.npm_node_execpath || 'node';
   const { stdout } = await execFileAsync(nodeExecutable, [scriptPath, '--input', inputPath], {
-    cwd: app.getAppPath(),
+    cwd: projectRoot,
   });
   const parsed = JSON.parse(stdout) as {
     png?: string;
@@ -386,9 +407,9 @@ async function syncPackagedIconAssets(inputPath: string): Promise<{
     ico?: string;
   };
   return {
-    pngPath: parsed.png ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.png'),
-    icnsPath: parsed.icns ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.icns'),
-    icoPath: parsed.ico ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.ico'),
+    pngPath: parsed.png ?? path.join(projectRoot, 'build', 'icons', 'icon.png'),
+    icnsPath: parsed.icns ?? path.join(projectRoot, 'build', 'icons', 'icon.icns'),
+    icoPath: parsed.ico ?? path.join(projectRoot, 'build', 'icons', 'icon.ico'),
   };
 }
 

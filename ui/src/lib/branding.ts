@@ -421,8 +421,8 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       orbitScale: 1.1,
       sizeScale: 1.24,
       bulgeScale: 1.08,
-      lineWeight: 3.38,
-      circleStroke: 3.02,
+      lineWeight: 4,
+      circleStroke: 3.55,
       pulseSpeed: 0.78,
       pulseMag: 1.06,
       luminosity: -4,
@@ -592,7 +592,7 @@ function normalizeLogoOptions(input: unknown, fallback: NearbytesLogoOptions): N
     orbitScale: normalizeNumber(logoInput.orbitScale, fallback.orbitScale, 0.5, 1.8),
     sizeScale: normalizeNumber(logoInput.sizeScale, fallback.sizeScale, 0.7, 1.8),
     bulgeScale: normalizeNumber(logoInput.bulgeScale, fallback.bulgeScale, 0.5, 2.2),
-    lineWeight: normalizeNumber(logoInput.lineWeight, fallback.lineWeight, 0.5, 4),
+    lineWeight: normalizeNumber(logoInput.lineWeight, fallback.lineWeight, 0.5, 8),
     circleStroke: normalizeNumber(logoInput.circleStroke, fallback.circleStroke, 0.5, 4),
     pulseSpeed: normalizeNumber(logoInput.pulseSpeed, fallback.pulseSpeed, 0.2, 2),
     pulseMag: normalizeNumber(logoInput.pulseMag, fallback.pulseMag, 0.2, 2),
@@ -654,11 +654,17 @@ function shouldMigrateMonoScarletLogo(input: unknown): boolean {
   const accentColor =
     typeof logoInput.accentColor === 'string' ? logoInput.accentColor.trim().toLowerCase() : '';
   const arcColor = typeof logoInput.arcColor === 'string' ? logoInput.arcColor.trim().toLowerCase() : '';
+  const lineWeight = typeof logoInput.lineWeight === 'number' ? logoInput.lineWeight : null;
+  const circleStroke = typeof logoInput.circleStroke === 'number' ? logoInput.circleStroke : null;
   return (
     accentColor === '#ff3b30' ||
     accentColor === '#d27a54' ||
     arcColor === '#ff6b61' ||
-    arcColor === '#e5a07d'
+    arcColor === '#e5a07d' ||
+    lineWeight === 2.56 ||
+    lineWeight === 3.38 ||
+    circleStroke === 2.28 ||
+    circleStroke === 3.02
   );
 }
 
