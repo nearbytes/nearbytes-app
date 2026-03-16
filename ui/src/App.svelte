@@ -56,6 +56,7 @@
   } from './lib/nearbytesReferenceTransfer.js';
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
+  import AppBrandMark from './components/AppBrandMark.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
@@ -1442,6 +1443,7 @@
   let dragClientX = 0;
   let dragCaptureElement: HTMLElement | null = null;
   let joinLinkCopyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let brandAssetVersion = $state(Date.now());
   const mountNodes = new Map<string, HTMLElement>();
   let mountDragListenersActive = false;
   const mountWarmPromises = new Map<string, Promise<void>>();
@@ -1554,6 +1556,7 @@
         throw new Error('Logo preview is not ready yet.');
       }
       const result = await bridge.exportLogoPng(dataUrl);
+      brandAssetVersion = Date.now();
       themeDialogFeedback = {
         tone: 'success',
         message:
@@ -5446,12 +5449,22 @@
               title="Open theme studio"
             >
               <span class="brand-logo-frame interactive">
-                <NearbytesLogo size={64} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+                <AppBrandMark
+                  size={64}
+                  options={themeSettings.logo}
+                  ariaLabel="Nearbytes brand mark"
+                  assetVersion={brandAssetVersion}
+                />
               </span>
             </button>
           {:else}
             <span class="brand-logo-frame">
-              <NearbytesLogo size={64} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+              <AppBrandMark
+                size={64}
+                options={themeSettings.logo}
+                ariaLabel="Nearbytes brand mark"
+                assetVersion={brandAssetVersion}
+              />
             </span>
           {/if}
           <div class="brand-stack">
@@ -5966,7 +5979,12 @@
       <div class="empty-state">
         <div class="empty-content">
           <div class="empty-brand-shell">
-            <NearbytesLogo size={112} options={themeSettings.logo} ariaLabel="Nearbytes logo" />
+            <AppBrandMark
+              size={112}
+              options={themeSettings.logo}
+              ariaLabel="Nearbytes logo"
+              assetVersion={brandAssetVersion}
+            />
           </div>
           <p class="empty-eyebrow">{activeThemePreset().palette.label}</p>
           <p class="empty-hint">Enter an address to access your files</p>

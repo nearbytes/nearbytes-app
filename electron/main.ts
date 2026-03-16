@@ -103,7 +103,6 @@ const sessionTtlMs = parsePositiveInt(
   process.env.NEARBYTES_DESKTOP_SESSION_TTL_MS,
   DEFAULT_DESKTOP_SESSION_TTL_MS
 );
-const desktopIconPath = resolveDesktopIconPath();
 
 app.on('window-all-closed', () => {
   app.quit();
@@ -331,9 +330,14 @@ function registerIpc(): void {
     }
     const targetPath = resolveThemeLogoExportPath();
     const base64 = rawDataUrl.slice('data:image/png;base64,'.length);
-    await fs.writeFile(targetPath, Buffer.from(base64, 'base64'));
+    const pngBuffer = Buffer.from(base64, 'base64');
+    await fs.writeFile(targetPath, pngBuffer);
+    const publicIconPath = resolvePublicAppIconPath();
+    await fs.mkdir(path.dirname(publicIconPath), { recursive: true });
+    await fs.writeFile(publicIconPath, pngBuffer);
     const iconPaths = await syncPackagedIconAssets(targetPath);
-    return { path: targetPath, ...iconPaths };
+    applyDesktopIcon();
+    return { path: targetPath, publicPath: publicIconPath, ...iconPaths };
   });
   ipcMain.handle('nearbytes-desktop:choose-directory', async (_event, rawInitialPath: unknown) => {
     const initialPath =
@@ -360,6 +364,10 @@ function resolveThemePresetRegistryPath(): string {
 
 function resolveThemeLogoExportPath(): string {
   return path.join(app.getAppPath(), 'build', 'icons', 'icon-master.png');
+}
+
+function resolvePublicAppIconPath(): string {
+  return path.join(app.getAppPath(), 'ui', 'public', 'branding', 'app-icon.png');
 }
 
 async function syncPackagedIconAssets(inputPath: string): Promise<{
@@ -395,7 +403,7 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     height: 900,
     minWidth: 980,
     minHeight: 680,
-    icon: desktopIconPath ?? undefined,
+    icon: resolveDesktopIconPath() ?? undefined,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -429,13 +437,17 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     });
   }
 
-  const targetUrl = isDev ? devUiUrl : apiBaseUrl;
+  const targetUrl = isDev ? devUiUrl : `${apiBaseUrl}/`;
   const allowedOrigins = new Set<string>([new URL(targetUrl).origin]);
 
   window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedOrigin(url, allowedOrigins)) {
+      return { action: 'allow' };
+    }
     void shell.openExternal(url);
     return { action: 'deny' };
   });
+
   window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     console.log(`[renderer:${level}] ${sourceId}:${line} ${message}`);
   });
@@ -553,6 +565,7 @@ function presentWindow(window: BrowserWindow): void {
 }
 
 function applyDesktopIcon(): void {
+  const desktopIconPath = resolveDesktopIconPath();
   if (!desktopIconPath) {
     return;
   }
@@ -562,6 +575,9 @@ function applyDesktopIcon(): void {
   }
   if (process.platform === 'darwin') {
     app.dock?.setIcon(icon);
+  }
+  if (process.platform !== 'darwin' && state.window && typeof state.window.setIcon === 'function') {
+    state.window.setIcon(icon);
   }
 }
 
