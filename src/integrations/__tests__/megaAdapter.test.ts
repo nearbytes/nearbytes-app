@@ -3,6 +3,7 @@ import os from 'os';
 import path, { basename } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MegaTransportAdapter } from '../mega.js';
+import { MegaHelperInstaller } from '../megaInstaller.js';
 import { createIntegrationRuntime, type CommandExecutor, type ProviderSecretStore } from '../runtime.js';
 import type { ManagedShare } from '../types.js';
 
@@ -36,6 +37,8 @@ function createFakeMegaExecutor(state: {
   confirmCommands?: string[][];
   dfStdout?: string;
   loginMode?: 'ok' | 'already-logged-in';
+  requireExistingLocalSyncDir?: boolean;
+  mkdirAlreadyExistsPaths?: Set<string>;
 }): CommandExecutor {
   return {
     async run(invocation) {
@@ -66,7 +69,11 @@ function createFakeMegaExecutor(state: {
         return { stdout: 'Account confirmed\n', stderr: '', exitCode: 0 };
       }
       if (command === 'mega-mkdir') {
-        state.createdFolders.push(args.at(-1) ?? '');
+        const remotePath = args.at(-1) ?? '';
+        state.createdFolders.push(remotePath);
+        if (state.mkdirAlreadyExistsPaths?.has(remotePath)) {
+          return { stdout: '', stderr: `Folder already exists: ${basename(remotePath)}`, exitCode: 1 };
+        }
         return { stdout: '', stderr: '', exitCode: 0 };
       }
       if (command === 'mega-invite') {
@@ -109,6 +116,16 @@ function createFakeMegaExecutor(state: {
           return { stdout: '', stderr: '', exitCode: 0 };
         }
         const [localPath, remotePath] = args;
+        if (state.requireExistingLocalSyncDir && localPath) {
+          try {
+            const stats = await fs.stat(localPath);
+            if (!stats.isDirectory()) {
+              return { stdout: '', stderr: `Local directory ${localPath} does not exist`, exitCode: 1 };
+            }
+          } catch {
+            return { stdout: '', stderr: `Local directory ${localPath} does not exist`, exitCode: 1 };
+          }
+        }
         if (!state.syncs.some((sync) => sync.localPath === localPath)) {
           state.syncs.push({
             id: String(state.syncs.length + 1),
@@ -268,6 +285,7 @@ describe('MegaTransportAdapter', () => {
     );
     expect(accepted.remoteDescriptor?.remotePath).toBe('/nearbytes/shared-alpha');
     expect(megaState.acceptedOwners).toContain('owner@mega.example');
+    expect(megaState.syncs).toHaveLength(1);
 
     await adapter.detachManagedShare(share, account);
     expect(megaState.deletedSyncIds).toContain('1');
@@ -402,5 +420,197 @@ describe('MegaTransportAdapter', () => {
     expect(connected.status).toBe('connected');
     expect(megaState.confirmCommands).toEqual([['https://mega.nz/confirm#token', 'new@mega.example', 'signup-secret']]);
     expect(connected.account?.email).toBe('new@mega.example');
+  });
+
+  it('creates the local folder before starting a MEGA sync', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      requireExistingLocalSyncDir: true,
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+
+    const connected = await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-3',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+    const account = connected.account!;
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-sync-'));
+    const localPath = path.join(tempRoot, 'missing', 'nested', 'share');
+
+    await expect(
+      adapter.createManagedShare(
+        {
+          provider: 'mega',
+          accountId: account.id,
+          label: 'Nested Share',
+          localPath,
+        },
+        account
+      )
+    ).resolves.toBeTruthy();
+
+    await expect(fs.stat(localPath)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  it('treats an existing MEGA remote folder as reusable during share creation', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      mkdirAlreadyExistsPaths: new Set(['/nearbytes']),
+    };
+
+    const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
+    tempDirs.push(commandDirectory);
+    await fs.writeFile(path.join(commandDirectory, 'MegaClient.exe'), '');
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+        commandDirectory,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+
+    const connected = await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-root',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+    const account = connected.account!;
+
+    const created = await adapter.createManagedShare(
+      {
+        provider: 'mega',
+        accountId: account.id,
+        label: 'Nearbytes root',
+        localPath: '/tmp/nearbytes-root',
+        remoteDescriptor: {
+          remotePath: '/nearbytes',
+          shareName: 'nearbytes',
+        },
+      },
+      account
+    );
+
+    expect(created.remoteDescriptor?.remotePath).toBe('/nearbytes');
+    expect(megaState.createdFolders).toContain('/nearbytes');
+    expect(megaState.syncs[0]?.remotePath).toBe('/nearbytes');
+  });
+
+  it('auto-installs MEGAcmd and retries the command when the CLI is missing', async () => {
+    let helperInstalled = false;
+    const executor: CommandExecutor = {
+      async run(invocation) {
+        const rawCommand = basename(invocation.command);
+        const args = [...(invocation.args ?? [])];
+        const command = rawCommand === 'MegaClient.exe' ? `mega-${args.shift() ?? ''}` : rawCommand;
+        if (!helperInstalled) {
+          const error = new Error('missing');
+          (error as NodeJS.ErrnoException).code = 'ENOENT';
+          throw error;
+        }
+        if (command === 'mega-login') {
+          return { stdout: 'OK\n', stderr: '', exitCode: 0 };
+        }
+        if (command === 'mega-session') {
+          return { stdout: 'mega-session-token\n', stderr: '', exitCode: 0 };
+        }
+        throw new Error(`Unhandled MEGA command in test: ${command}`);
+      },
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: executor,
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const installer = {
+      install: async () => {
+        helperInstalled = true;
+        return {
+          status: 'ready',
+          detail: 'MEGAcmd is installed and ready.',
+          canInstall: true,
+          config: {
+            helperPath: 'C:/fake/megacmd',
+          },
+        };
+      },
+      getCommandDirectory: async () => undefined,
+      getSetupState: async () => ({
+        status: helperInstalled ? 'ready' : 'needs-install',
+        detail: helperInstalled ? 'MEGA CLI is ready to use.' : 'Nearbytes can download and install MEGAcmd automatically the first time you connect MEGA.',
+        canInstall: true,
+      }),
+    } as MegaHelperInstaller;
+
+    const adapter = new MegaTransportAdapter(runtime, installer);
+
+    const connected = await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-auto-install',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+
+    expect(helperInstalled).toBe(true);
+    expect(connected.status).toBe('connected');
+    expect(connected.account?.email).toBe('owner@mega.example');
   });
 });

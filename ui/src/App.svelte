@@ -3,7 +3,10 @@
   import { flip } from 'svelte/animate';
   import {
     openVolume,
+    openJoinLink,
+    parseJoinLink,
     type JoinLinkOpenResponse,
+    type JoinLinkParseResponse,
     listManagedShares,
     listProviderAccounts,
     listFiles,
@@ -54,7 +57,6 @@
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
-  import JoinLinkImportCard from './components/JoinLinkImportCard.svelte';
   import MountRail from './components/MountRail.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import SecretSeedFields from './components/SecretSeedFields.svelte';
@@ -804,6 +806,17 @@
     return new TextDecoder().decode(base64ToBytes(base64UrlToBase64(encoded)));
   }
 
+  function normalizeJoinLinkSerialized(value: string): string {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+      throw new Error('Paste a Nearbytes join link first.');
+    }
+    if (/^nearbytes:/iu.test(trimmed)) {
+      return decodeNearbytesJoinDeepLink(trimmed);
+    }
+    return trimmed;
+  }
+
   function secretFilePayloadDataUrl(mount: VolumeMount): string | null {
     const payload = trimSecretPart(mount.secretFilePayload);
     if (!payload.startsWith(FILE_SECRET_PREFIX)) return null;
@@ -1354,13 +1367,16 @@
   let joinLinkCopyBusy = $state(false);
   let joinLinkCopyFeedback = $state<JoinLinkCopyFeedbackState | null>(null);
   let volumeSharingFeedback = $state<{ tone: 'success' | 'warning'; message: string } | null>(null);
+  let showJoinVolumeDialog = $state(false);
+  let joinDialogSerialized = $state('');
+  let joinDialogAllowCredentialBootstrap = $state(false);
+  let joinDialogPreview = $state<JoinLinkParseResponse | JoinLinkOpenResponse | null>(null);
+  let joinDialogOpened = $state<JoinLinkOpenResponse | null>(null);
+  let joinDialogError = $state('');
+  let joinDialogClipboardBusy = $state(false);
+  let joinDialogPreviewBusy = $state(false);
+  let joinDialogOpenBusy = $state(false);
   let showVolumeShareDialog = $state(false);
-  let clipboardJoinLinkSerialized = $state('');
-  let clipboardJoinLinkBusy = $state(false);
-  let joinLinkInlineMountId = $state<string | null>(null);
-  let joinLinkInlineSerialized = $state('');
-  let joinLinkInlineNonce = $state(0);
-  let joinLinkInlineSourceLabel = $state('');
   let currentVolumeManagedShares = $state<ManagedShareSummary[]>([]);
   let currentVolumeSharingLoading = $state(false);
   let currentVolumeShareInviteDrafts = $state<Record<string, string>>({});
@@ -1410,95 +1426,13 @@
     return dragPreparedMountId === mountId || draggingMountId === mountId;
   }
 
-  function closeInlineJoinLinkEditor(mountId?: string): void {
-    if (mountId && joinLinkInlineMountId !== mountId) {
-      return;
-    }
-    joinLinkInlineMountId = null;
-    joinLinkInlineSerialized = '';
-    joinLinkInlineSourceLabel = '';
-  }
-
-  function openInlineJoinLinkEditor(serialized = '', sourceLabel = ''): void {
-    const expandedActiveMount = mounts.find(
-      (mount) => mount.id === activeMountId && !mount.collapsed
-    );
-    const targetMountId = expandedActiveMount?.id ?? createCollapsedMount();
-    mounts = mounts.map((mount) =>
-      mount.id === targetMountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
-    );
-    activeMountId = targetMountId;
-    pendingMountId = null;
-    secretPasteTargetMountId = targetMountId;
-    joinLinkInlineMountId = targetMountId;
-    joinLinkInlineSerialized = serialized;
-    joinLinkInlineSourceLabel = sourceLabel;
-    joinLinkInlineNonce += 1;
-    void tick().then(() => {
-      const textarea = document.querySelector<HTMLTextAreaElement>(
-        `.volume-chip.expanded[data-mount-id="${targetMountId}"] .join-link-input`
-      );
-      textarea?.focus();
-      textarea?.select();
-    });
-  }
-
-  function extractSerializedJoinLinkPayload(text: string): string | null {
-    const trimmed = text.trim();
-    if (trimmed === '') {
-      return null;
-    }
-    if (trimmed.toLowerCase().startsWith('nearbytes://')) {
-      try {
-        return decodeNearbytesJoinDeepLink(trimmed);
-      } catch {
-        return null;
-      }
-    }
-    try {
-      const parsed = JSON.parse(trimmed) as { p?: unknown };
-      return parsed?.p === 'nb.join.v1' ? trimmed : null;
-    } catch {
-      return null;
-    }
-  }
-
-  async function refreshClipboardJoinLinkAvailability(): Promise<void> {
-    if (typeof navigator === 'undefined' || !navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
-      return;
-    }
-    try {
-      const text = await navigator.clipboard.readText();
-      clipboardJoinLinkSerialized = extractSerializedJoinLinkPayload(text) ?? '';
-    } catch {
-      // Clipboard read is permission-gated in some environments.
-    }
-  }
-
-  async function openJoinLinkFromClipboard(): Promise<void> {
-    clipboardJoinLinkBusy = true;
-    try {
-      let serialized = clipboardJoinLinkSerialized;
-      if (!serialized) {
-        await refreshClipboardJoinLinkAvailability();
-        serialized = clipboardJoinLinkSerialized;
-      }
-      if (!serialized) {
-        throw new Error('Clipboard does not currently contain a Nearbytes join/share link.');
-      }
-      errorMessage = '';
-      openInlineJoinLinkEditor(serialized, 'clipboard');
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to open Nearbytes link from clipboard';
-    } finally {
-      clipboardJoinLinkBusy = false;
-    }
-  }
-
   async function handleDesktopDeepLink(url: string): Promise<void> {
     try {
       errorMessage = '';
-      openInlineJoinLinkEditor(decodeNearbytesJoinDeepLink(url), url);
+      const response = await openJoinLink({
+        serialized: decodeNearbytesJoinDeepLink(url),
+      });
+      await handleJoinLinkOpened(response);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to open Nearbytes link';
     }
@@ -1521,7 +1455,6 @@
     const bridge = getDesktopBridge();
     let cancelUpdaterSubscription: (() => void) | null = null;
     let cancelDeepLinkSubscription: (() => void) | null = null;
-    void refreshClipboardJoinLinkAvailability();
     if (bridge) {
       if (typeof bridge.getUpdaterState === 'function') {
         void bridge
@@ -1603,20 +1536,7 @@
   });
 
   onMount(() => {
-    const handleWindowFocus = () => {
-      void refreshClipboardJoinLinkAvailability();
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        void refreshClipboardJoinLinkAvailability();
-      }
-    };
-
-    window.addEventListener('focus', handleWindowFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
-      window.removeEventListener('focus', handleWindowFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   });
 
@@ -2221,6 +2141,7 @@
       fileName: activeMount.secretFileName,
     };
   });
+  const shareableVolumeId = $derived.by(() => volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null);
 
   const knownMountedVolumes = $derived.by<Array<{ volumeId: string; label: string }>>(() => {
     const known = new Map<string, string>();
@@ -2915,7 +2836,6 @@
     activeMountId = nextMount.id;
     pendingMountId = null;
     secretPasteTargetMountId = nextMount.id;
-    closeInlineJoinLinkEditor();
     void tick().then(() => {
       const input = document.querySelector<HTMLInputElement>(
         `.volume-chip.expanded[data-mount-id="${nextMount.id}"] .secret-seed-fields input`
@@ -2955,9 +2875,6 @@
       mount.id === mountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
     );
     activeMountId = mountId;
-    if (joinLinkInlineMountId && joinLinkInlineMountId !== mountId) {
-      closeInlineJoinLinkEditor();
-    }
   }
 
   function collapseMount(mountId: string) {
@@ -2973,7 +2890,6 @@
     if (secretPasteTargetMountId === mountId) {
       secretPasteTargetMountId = null;
     }
-    closeInlineJoinLinkEditor(mountId);
     mounts = mounts.map((mount) =>
       mount.id === mountId ? { ...mount, collapsed: true } : mount
     );
@@ -2987,7 +2903,6 @@
     if (secretPasteTargetMountId === mountId) {
       secretPasteTargetMountId = null;
     }
-    closeInlineJoinLinkEditor(mountId);
     const next = mounts.filter((mount) => mount.id !== mountId);
     mounts = next;
     if (activeMountId !== mountId) return;
@@ -3372,10 +3287,23 @@
     sourceDiscoveryPanelFocus = 'shares';
   }
 
+  function openJoinVolumeDialog(): void {
+    showStatusPanel = false;
+    showVolumeShareDialog = false;
+    joinDialogError = '';
+    showJoinVolumeDialog = true;
+  }
+
+  function closeJoinVolumeDialog(): void {
+    showJoinVolumeDialog = false;
+    joinDialogError = '';
+  }
+
   function openVolumeShareDialog(): void {
-    if (!volumeId) {
+    if (!activeMount && !shareableVolumeId) {
       return;
     }
+    showJoinVolumeDialog = false;
     showStatusPanel = false;
     showVolumeShareDialog = true;
   }
@@ -3384,8 +3312,100 @@
     showVolumeShareDialog = false;
   }
 
+  function joinDialogEndpointLabel(
+    candidate: NonNullable<JoinLinkParseResponse['plan']['attachments'][number]['selectedEndpoint']>
+  ): string {
+    const endpoint = candidate.endpoint;
+    if (endpoint.label?.trim()) {
+      return endpoint.label.trim();
+    }
+    if (endpoint.transport === 'provider-share') {
+      return endpoint.provider?.trim() || 'Provider share';
+    }
+    return endpoint.transport;
+  }
+
+  function joinDialogSpaceSummary(space: JoinLinkParseResponse['space']): string {
+    if (space.mode === 'volume-id') {
+      return 'Volume id only';
+    }
+    if (space.mode === 'secret-file') {
+      return 'Secret file';
+    }
+    return space.password ? 'Seed + password' : 'Seed';
+  }
+
+  function joinDialogActionTone(
+    status: JoinLinkOpenResponse['actions'][number]['status']
+  ): 'success' | 'warning' | 'neutral' {
+    if (status === 'attached') {
+      return 'success';
+    }
+    if (status === 'needs-account' || status === 'pending-auth' || status === 'unsupported') {
+      return 'warning';
+    }
+    return 'neutral';
+  }
+
+  async function previewJoinDialogLink(): Promise<void> {
+    joinDialogPreviewBusy = true;
+    joinDialogError = '';
+    joinDialogOpened = null;
+    try {
+      const serialized = normalizeJoinLinkSerialized(joinDialogSerialized);
+      joinDialogPreview = await parseJoinLink({
+        serialized,
+      });
+    } catch (error) {
+      joinDialogPreview = null;
+      joinDialogError = error instanceof Error ? error.message : 'Failed to preview this Nearbytes link';
+    } finally {
+      joinDialogPreviewBusy = false;
+    }
+  }
+
+  async function readJoinDialogClipboard(): Promise<void> {
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+      joinDialogError = 'Clipboard text access is unavailable in this build. Paste the link manually instead.';
+      return;
+    }
+    joinDialogClipboardBusy = true;
+    joinDialogError = '';
+    try {
+      const clipboardText = (await navigator.clipboard.readText()).trim();
+      if (clipboardText === '') {
+        throw new Error('Clipboard is empty. Copy a Nearbytes join link first.');
+      }
+      joinDialogSerialized = clipboardText;
+      await previewJoinDialogLink();
+    } catch (error) {
+      joinDialogError = error instanceof Error ? error.message : 'Failed to read the clipboard';
+    } finally {
+      joinDialogClipboardBusy = false;
+    }
+  }
+
+  async function openJoinDialogLink(): Promise<void> {
+    joinDialogOpenBusy = true;
+    joinDialogError = '';
+    try {
+      const serialized = normalizeJoinLinkSerialized(joinDialogSerialized);
+      const response = await openJoinLink({
+        serialized,
+        allowCredentialBootstrap: joinDialogAllowCredentialBootstrap,
+      });
+      joinDialogPreview = response;
+      joinDialogOpened = response;
+      await handleJoinLinkOpened(response);
+    } catch (error) {
+      joinDialogOpened = null;
+      joinDialogError = error instanceof Error ? error.message : 'Failed to join this Nearbytes link';
+    } finally {
+      joinDialogOpenBusy = false;
+    }
+  }
+
   async function handleJoinLinkOpened(response: JoinLinkOpenResponse): Promise<void> {
-    closeInlineJoinLinkEditor();
     if (response.space.mode === 'volume-id') {
       showVolumeStoragePanel = true;
       showSourcesPanel = false;
@@ -4808,7 +4828,7 @@
 
   function buildCurrentJoinLinkSpace(includeSecret: boolean): JoinLink['space'] | null {
     if (!includeSecret) {
-      return volumeId ? { mode: 'volume-id', value: volumeId } : null;
+      return shareableVolumeId ? { mode: 'volume-id', value: shareableVolumeId } : null;
     }
     if (!activeMount) {
       return null;
@@ -4899,7 +4919,8 @@
     if (!space) {
       throw new Error(includeSecret ? 'Open a space with its secret before copying that link.' : 'Open a space first.');
     }
-    if (!volumeId) {
+    const targetVolumeId = shareableVolumeId;
+    if (!targetVolumeId) {
       return {
         p: 'nb.join.v1',
         space,
@@ -4909,7 +4930,7 @@
     const [sharesResponse, accountsResponse] = await Promise.all([listManagedShares(), listProviderAccounts()]);
     const accountsById = new Map(accountsResponse.accounts.map((account) => [account.id, account]));
     const attachments = sharesResponse.shares
-      .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === volumeId))
+      .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId))
       .sort((left, right) => {
         const providerOrder = left.share.provider.localeCompare(right.share.provider);
         if (providerOrder !== 0) {
@@ -4943,7 +4964,6 @@
         feedbackMessage = 'Secret payload was too large for nearbytes://. Copied canonical JSON instead.';
       }
       await navigator.clipboard.writeText(clipboardText);
-      clipboardJoinLinkSerialized = serialized;
       setJoinLinkCopyFeedback(feedbackTone, feedbackMessage);
       volumeSharingFeedback = { tone: feedbackTone, message: feedbackMessage };
     } catch (error) {
@@ -4976,7 +4996,7 @@
   }
 
   async function refreshCurrentVolumeManagedShares(): Promise<void> {
-    if (!volumeId) {
+    if (!shareableVolumeId) {
       currentVolumeManagedShares = [];
       return;
     }
@@ -4984,7 +5004,7 @@
     try {
       const sharesResponse = await listManagedShares();
       currentVolumeManagedShares = sharesResponse.shares
-        .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === volumeId))
+        .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === shareableVolumeId))
         .sort((left, right) => left.share.label.localeCompare(right.share.label));
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to load shared storage for this volume';
@@ -5018,7 +5038,7 @@
   }
 
   $effect(() => {
-    if (!showVolumeShareDialog || !volumeId) {
+    if (!showVolumeShareDialog || !shareableVolumeId) {
       currentVolumeManagedShares = [];
       return;
     }
@@ -5049,6 +5069,11 @@
     if (timelineDetailOpen) {
       e.preventDefault();
       closeTimelineDetails();
+      return;
+    }
+    if (showJoinVolumeDialog) {
+      e.preventDefault();
+      closeJoinVolumeDialog();
       return;
     }
     if (showVolumeShareDialog) {
@@ -5193,31 +5218,6 @@
                       Drop an image/file here, or press <kbd>Cmd/Ctrl</kbd> + <kbd>V</kbd>.
                     </p>
                     <div class="secret-input-actions">
-                      <button
-                        type="button"
-                        class="workspace-toggle secret-link-btn"
-                        onclick={() => {
-                          if (joinLinkInlineMountId === mount.id) {
-                            closeInlineJoinLinkEditor(mount.id);
-                          } else {
-                            openInlineJoinLinkEditor('', '');
-                          }
-                        }}
-                      >
-                        <Link2 class="button-icon" size={15} strokeWidth={2} />
-                        <span>{joinLinkInlineMountId === mount.id ? 'Hide Link' : 'Open Link'}</span>
-                      </button>
-                      {#if clipboardJoinLinkSerialized}
-                        <button
-                          type="button"
-                          class="workspace-toggle secret-link-btn"
-                          onclick={() => void openJoinLinkFromClipboard()}
-                          disabled={clipboardJoinLinkBusy}
-                        >
-                          <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                          <span>{clipboardJoinLinkBusy ? 'Reading…' : 'Use Clipboard'}</span>
-                        </button>
-                      {/if}
                     {#if clipboardImageAvailable || clipboardImageLoading}
                       <button
                         type="button"
@@ -5231,24 +5231,6 @@
                     {/if}
                     </div>
                   </div>
-                  {#if joinLinkInlineMountId === mount.id}
-                    <div class="inline-join-link-panel">
-                      <JoinLinkImportCard
-                        compact={true}
-                        variant="dock"
-                        importedSerialized={joinLinkInlineSerialized}
-                        importedNonce={joinLinkInlineNonce}
-                        title="Open shared space link"
-                        subtitle={
-                          joinLinkInlineSourceLabel
-                            ? `Received from ${joinLinkInlineSourceLabel}`
-                            : 'Paste an nb.join.v1 payload or nearbytes:// link to preview and open it here.'
-                        }
-                        onOpened={handleJoinLinkOpened}
-                        onClose={() => closeInlineJoinLinkEditor(mount.id)}
-                      />
-                    </div>
-                  {/if}
                 </div>
                 <button
                   type="button"
@@ -5430,6 +5412,19 @@
           <button
             type="button"
             class="header-tool-btn"
+            class:active={showJoinVolumeDialog}
+            aria-label="Join shared volume"
+            title="Join shared volume"
+            onclick={(event) => {
+              event.stopPropagation();
+              openJoinVolumeDialog();
+            }}
+          >
+            <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
+          </button>
+          <button
+            type="button"
+            class="header-tool-btn"
             class:active={showVolumeShareDialog}
             aria-label="Share"
             title="Share"
@@ -5437,7 +5432,7 @@
               event.stopPropagation();
               openVolumeShareDialog();
             }}
-            disabled={!volumeId}
+            disabled={!activeMount && !shareableVolumeId}
           >
             <Link2 class="button-icon" size={14} strokeWidth={2} />
           </button>
@@ -5495,17 +5490,6 @@
               <UserRound class="button-icon" size={14} strokeWidth={2} />
             </button>
           {/if}
-          <button
-            type="button"
-            class="mount-add-btn"
-            class:visible={isHeaderHovering || isSecretDropTarget || clipboardJoinLinkSerialized !== ''}
-            onclick={() => void openJoinLinkFromClipboard()}
-            aria-label="Open space link from clipboard"
-            title="Open Nearbytes link from clipboard"
-            disabled={clipboardJoinLinkBusy || !clipboardJoinLinkSerialized}
-          >
-            <ClipboardPaste size={15} strokeWidth={2.2} />
-          </button>
           <button
             type="button"
             class="mount-add-btn"
@@ -5753,7 +5737,7 @@
                 type="button"
                 class="status-link-btn"
                 onclick={openVolumeShareDialog}
-                disabled={!volumeId}
+                disabled={!activeMount && !shareableVolumeId}
               >
                 <Link2 class="button-icon" size={15} strokeWidth={2} />
                 <span>Open share dialog</span>
@@ -6814,7 +6798,7 @@
     </div>
   {/if}
 
-  {#if showVolumeShareDialog && volumeId}
+  {#if showVolumeShareDialog}
     <div
       class="share-dialog-backdrop"
       role="dialog"
@@ -6941,6 +6925,164 @@
               </div>
             {/if}
           </section>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showJoinVolumeDialog}
+    <div
+      class="join-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Join a shared volume"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeJoinVolumeDialog();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeJoinVolumeDialog();
+        }
+      }}
+    >
+      <div class="join-dialog panel-surface" role="document" tabindex="-1">
+        <div class="join-dialog-header">
+          <div class="join-dialog-head-meta">
+            <p class="join-dialog-eyebrow">Join shared volume</p>
+            <p class="join-dialog-title">Open from clipboard</p>
+            <p class="join-dialog-subtitle">Paste a nearbytes://join link or canonical join JSON. Nearbytes will preview the volume route first, then stage any attached live storage when you join.</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close join dialog" onclick={closeJoinVolumeDialog}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div class="join-dialog-body">
+          <section class="join-dialog-section join-dialog-input-shell">
+            <div class="join-dialog-input-head">
+              <div>
+                <p class="join-dialog-section-title">Join link</p>
+                <p class="join-dialog-note">Copy the share link, then paste it here or press Paste from clipboard.</p>
+              </div>
+              <button
+                type="button"
+                class="status-link-btn secondary"
+                onclick={() => void readJoinDialogClipboard()}
+                disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
+              >
+                <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
+              </button>
+            </div>
+
+            <textarea
+              class="join-dialog-textarea"
+              bind:value={joinDialogSerialized}
+              spellcheck="false"
+              placeholder="nearbytes://join?data=..."
+            ></textarea>
+
+            <label class="join-dialog-toggle">
+              <input type="checkbox" bind:checked={joinDialogAllowCredentialBootstrap} />
+              <span>Use embedded provider sign-in details when the link includes them</span>
+            </label>
+            <p class="join-dialog-note">Leave this off unless you trust the sender. Links copied by this app do not include provider passwords.</p>
+
+            <div class="join-dialog-actions">
+              <button
+                type="button"
+                class="status-link-btn secondary"
+                onclick={() => void previewJoinDialogLink()}
+                disabled={joinDialogPreviewBusy || joinDialogOpenBusy || joinDialogClipboardBusy}
+              >
+                <span>{joinDialogPreviewBusy ? 'Previewing…' : 'Preview routes'}</span>
+              </button>
+              <button
+                type="button"
+                class="status-link-btn"
+                onclick={() => void openJoinDialogLink()}
+                disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
+              >
+                <span>{joinDialogOpenBusy ? 'Joining…' : 'Join volume'}</span>
+              </button>
+            </div>
+
+            {#if joinDialogError}
+              <p class="join-dialog-message error">{joinDialogError}</p>
+            {/if}
+          </section>
+
+          {#if joinDialogPreview}
+            <section class="join-dialog-section">
+              <div class="join-dialog-preview-head">
+                <span class="join-dialog-chip strong">{joinDialogSpaceSummary(joinDialogPreview.space)}</span>
+                <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
+              </div>
+
+              {#if joinDialogPreview.plan.attachments.length === 0}
+                <p class="join-dialog-note">This link only identifies the volume. No live storage routes were bundled with it.</p>
+              {:else}
+                <div class="join-dialog-route-list">
+                  {#each joinDialogPreview.plan.attachments as attachment (attachment.attachment.id)}
+                    <article class="join-dialog-route-card">
+                      <div class="join-dialog-route-head">
+                        <div>
+                          <p class="join-dialog-route-title">{attachment.attachment.label}</p>
+                          <p class="join-dialog-route-detail">
+                            {attachment.selectedEndpoint?.reason || 'No supported route is available in this build.'}
+                          </p>
+                        </div>
+                        {#if attachment.selectedEndpoint}
+                          <span class="join-dialog-chip strong">{joinDialogEndpointLabel(attachment.selectedEndpoint)}</span>
+                        {:else}
+                          <span class="join-dialog-chip warning">Unavailable</span>
+                        {/if}
+                      </div>
+                      {#if attachment.selectedEndpoint?.badges?.length}
+                        <div class="join-dialog-badge-row">
+                          {#each attachment.selectedEndpoint.badges as badge (badge)}
+                            <span class="join-dialog-badge">{badge}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                    </article>
+                  {/each}
+                </div>
+              {/if}
+            </section>
+          {/if}
+
+          {#if joinDialogOpened}
+            <section class="join-dialog-section">
+              <div class="join-dialog-result-head">
+                <p class="join-dialog-section-title">Join result</p>
+                {#if joinDialogOpened.secret === null}
+                  <span class="join-dialog-chip warning">No secret included</span>
+                {/if}
+              </div>
+              {#if joinDialogOpened.secret === null}
+                <p class="join-dialog-note">The link staged storage routes only. You still need the volume secret separately to open its contents.</p>
+              {/if}
+              <div class="join-dialog-result-list">
+                {#each joinDialogOpened.actions as action (`${action.attachmentId}-${action.provider || action.endpointTransport || 'route'}`)}
+                  <div class={`join-dialog-result-row ${joinDialogActionTone(action.status)}`}>
+                    <div>
+                      <p class="join-dialog-route-title">{action.attachmentId}</p>
+                      <p class="join-dialog-route-detail">{action.detail}</p>
+                      {#if action.suggestedLocalPath}
+                        <p class="join-dialog-path">Suggested folder: {action.suggestedLocalPath}</p>
+                      {/if}
+                    </div>
+                    <span class="join-dialog-chip strong">{action.status}</span>
+                  </div>
+                {/each}
+              </div>
+            </section>
+          {/if}
         </div>
       </div>
     </div>
@@ -8863,6 +9005,18 @@
     z-index: 220;
   }
 
+  .join-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(2, 6, 23, 0.8);
+    backdrop-filter: blur(12px);
+    z-index: 225;
+  }
+
   .share-dialog {
     width: min(760px, 95vw);
     max-height: 86vh;
@@ -8876,7 +9030,30 @@
     box-shadow: 0 30px 80px rgba(2, 6, 23, 0.56);
   }
 
+  .join-dialog {
+    width: min(760px, 95vw);
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    background:
+      radial-gradient(120% 120% at 100% 0%, rgba(245, 158, 11, 0.1), transparent 45%),
+      radial-gradient(120% 120% at 0% 0%, rgba(34, 211, 238, 0.12), transparent 52%),
+      linear-gradient(180deg, rgba(9, 18, 34, 0.99), rgba(6, 12, 24, 0.97));
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 20px;
+    box-shadow: 0 36px 96px rgba(2, 6, 23, 0.58);
+  }
+
   .share-dialog-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.2rem 1.3rem 0.95rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  }
+
+  .join-dialog-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -8891,6 +9068,12 @@
     min-width: 0;
   }
 
+  .join-dialog-head-meta {
+    display: grid;
+    gap: 0.34rem;
+    min-width: 0;
+  }
+
   .share-dialog-eyebrow {
     margin: 0;
     font-size: 0.68rem;
@@ -8899,11 +9082,26 @@
     color: rgba(125, 211, 252, 0.74);
   }
 
+  .join-dialog-eyebrow {
+    margin: 0;
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(253, 224, 71, 0.74);
+  }
+
   .share-dialog-title {
     margin: 0;
     font-size: 1.16rem;
     font-weight: 650;
     color: rgba(240, 249, 255, 0.98);
+  }
+
+  .join-dialog-title {
+    margin: 0;
+    font-size: 1.16rem;
+    font-weight: 650;
+    color: rgba(255, 251, 235, 0.98);
   }
 
   .share-dialog-subtitle {
@@ -8914,7 +9112,22 @@
     color: rgba(191, 219, 254, 0.74);
   }
 
+  .join-dialog-subtitle {
+    margin: 0;
+    max-width: 58ch;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    color: rgba(226, 232, 240, 0.78);
+  }
+
   .share-dialog-body {
+    overflow: auto;
+    display: grid;
+    gap: 0.95rem;
+    padding: 1rem 1.3rem 1.3rem;
+  }
+
+  .join-dialog-body {
     overflow: auto;
     display: grid;
     gap: 0.95rem;
@@ -8930,10 +9143,166 @@
     background: rgba(8, 15, 27, 0.68);
   }
 
+  .join-dialog-section {
+    display: grid;
+    gap: 0.78rem;
+    padding: 1rem;
+    border-radius: 16px;
+    border: 1px solid rgba(125, 211, 252, 0.14);
+    background: rgba(8, 15, 27, 0.72);
+  }
+
   .share-dialog-section-title {
     font-size: 0.88rem;
     font-weight: 600;
     color: rgba(240, 249, 255, 0.95);
+  }
+
+  .join-dialog-section-title {
+    margin: 0;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: rgba(248, 250, 252, 0.96);
+  }
+
+  .join-dialog-input-shell {
+    gap: 0.9rem;
+  }
+
+  .join-dialog-input-head,
+  .join-dialog-preview-head,
+  .join-dialog-result-head,
+  .join-dialog-route-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .join-dialog-textarea {
+    width: 100%;
+    min-height: 8.75rem;
+    resize: vertical;
+    border-radius: 16px;
+    border: 1px solid rgba(125, 211, 252, 0.16);
+    background: rgba(5, 10, 20, 0.84);
+    color: rgba(241, 245, 249, 0.96);
+    padding: 0.95rem 1rem;
+    font: 0.92rem/1.45 "Cascadia Code", "Fira Code", Consolas, monospace;
+  }
+
+  .join-dialog-textarea:focus {
+    outline: none;
+    border-color: rgba(56, 189, 248, 0.5);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.14);
+  }
+
+  .join-dialog-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: rgba(226, 232, 240, 0.9);
+    font-size: 0.86rem;
+  }
+
+  .join-dialog-note,
+  .join-dialog-route-detail,
+  .join-dialog-path,
+  .join-dialog-message {
+    margin: 0;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: rgba(191, 219, 254, 0.76);
+  }
+
+  .join-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+  }
+
+  .join-dialog-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.34rem 0.65rem;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(15, 23, 42, 0.72);
+    color: rgba(226, 232, 240, 0.9);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .join-dialog-chip.strong {
+    border-color: rgba(56, 189, 248, 0.26);
+    background: rgba(8, 47, 73, 0.68);
+    color: rgba(224, 242, 254, 0.98);
+  }
+
+  .join-dialog-chip.warning {
+    border-color: rgba(245, 158, 11, 0.24);
+    background: rgba(120, 53, 15, 0.34);
+    color: rgba(254, 240, 138, 0.96);
+  }
+
+  .join-dialog-route-list,
+  .join-dialog-result-list {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .join-dialog-route-card,
+  .join-dialog-result-row {
+    display: grid;
+    gap: 0.55rem;
+    padding: 0.9rem 0.95rem;
+    border-radius: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(5, 10, 20, 0.74);
+  }
+
+  .join-dialog-result-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .join-dialog-result-row.success {
+    border-color: rgba(74, 222, 128, 0.22);
+    background: rgba(6, 78, 59, 0.24);
+  }
+
+  .join-dialog-result-row.warning {
+    border-color: rgba(245, 158, 11, 0.22);
+    background: rgba(120, 53, 15, 0.22);
+  }
+
+  .join-dialog-route-title {
+    margin: 0;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: rgba(248, 250, 252, 0.96);
+  }
+
+  .join-dialog-badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .join-dialog-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.26rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.78);
+    border: 1px solid rgba(125, 211, 252, 0.14);
+    color: rgba(191, 219, 254, 0.9);
+    font-size: 0.72rem;
+  }
+
+  .join-dialog-message.error {
+    color: rgba(254, 202, 202, 0.96);
   }
 
   .share-dialog-empty {

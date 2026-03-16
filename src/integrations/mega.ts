@@ -1,4 +1,5 @@
 import { randomBytes } from 'crypto';
+import { promises as fs } from 'fs';
 import path from 'path';
 import { MegaHelperInstaller } from './megaInstaller.js';
 import type {
@@ -65,13 +66,18 @@ export class MegaTransportAdapter {
   private readonly syncTimers = new Map<string, NodeJS.Timeout>();
   private readonly installer: MegaHelperInstaller;
 
-  constructor(private readonly runtime: IntegrationRuntime) {
-    this.installer = new MegaHelperInstaller({
-      secretStore: runtime.secretStore,
-      commandExecutor: runtime.commandExecutor,
-      logger: runtime.logger,
-      configuredCommandDirectory: runtime.mega.commandDirectory,
-    });
+  constructor(
+    private readonly runtime: IntegrationRuntime,
+    installer?: MegaHelperInstaller
+  ) {
+    this.installer =
+      installer ??
+      new MegaHelperInstaller({
+        secretStore: runtime.secretStore,
+        commandExecutor: runtime.commandExecutor,
+        logger: runtime.logger,
+        configuredCommandDirectory: runtime.mega.commandDirectory,
+      });
   }
 
   async probe(endpoint: import('./types.js').TransportEndpoint): Promise<TransportState> {
@@ -137,7 +143,13 @@ export class MegaTransportAdapter {
       getStringDescriptor(input.remoteDescriptor ?? {}, 'shareName') ??
       createManagedFolderLabel(input.label, randomBytes(3).toString('hex'));
     const remotePath = explicitRemotePath ?? path.posix.join(remoteBasePath, shareName);
-    await this.runMega('mkdir', ['-p', remotePath]);
+    await this.runMega('mkdir', ['-p', remotePath]).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already exists/i.test(message)) {
+        return;
+      }
+      throw error;
+    });
     await this.ensureSyncTarget(input.localPath ?? '', remotePath);
 
     return {
@@ -180,7 +192,6 @@ export class MegaTransportAdapter {
     const remotePath =
       getStringDescriptor(input.remoteDescriptor ?? {}, 'remotePath') ??
       (await this.findRemoteSharePath(getStringDescriptor(input.remoteDescriptor ?? {}, 'shareName') ?? input.label));
-    await this.ensureSyncTarget(input.localPath ?? '', remotePath);
     return {
       remoteDescriptor: {
         ...(input.remoteDescriptor ?? {}),
@@ -504,6 +515,7 @@ export class MegaTransportAdapter {
     if (!localPath.trim()) {
       throw new Error('Nearbytes share folder is missing.');
     }
+    await fs.mkdir(localPath, { recursive: true });
     await this.runMega('sync', [localPath, remotePath], {
       timeoutMs: 60_000,
     }).catch((error) => {
@@ -553,32 +565,40 @@ export class MegaTransportAdapter {
     args: readonly string[],
     options: { timeoutMs?: number } = {}
   ): Promise<{ stdout: string; stderr: string }> {
-    const commandDirectory = await this.installer.getCommandDirectory();
-    const invocation = resolveMegaInvocation(commandDirectory, subcommand, args);
-    try {
-      const result = await this.runtime.commandExecutor.run({
-        command: invocation.command,
-        args: invocation.args,
-        cwd: commandDirectory || undefined,
-        env: commandDirectory
-          ? {
-              PATH: `${commandDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
-            }
-          : undefined,
-        timeoutMs: options.timeoutMs ?? 30_000,
-      });
-      if (result.exitCode !== 0) {
-        throw new Error(extractMegaError(result.stderr || result.stdout || `${subcommand} failed`));
+    let installAttempted = false;
+    while (true) {
+      const commandDirectory = await this.installer.getCommandDirectory();
+      const invocation = resolveMegaInvocation(commandDirectory, subcommand, args);
+      try {
+        const result = await this.runtime.commandExecutor.run({
+          command: invocation.command,
+          args: invocation.args,
+          cwd: commandDirectory || undefined,
+          env: commandDirectory
+            ? {
+                PATH: `${commandDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
+              }
+            : undefined,
+          timeoutMs: options.timeoutMs ?? 30_000,
+        });
+        if (result.exitCode !== 0) {
+          throw new Error(extractMegaError(result.stderr || result.stdout || `${subcommand} failed`));
+        }
+        return {
+          stdout: result.stdout,
+          stderr: result.stderr,
+        };
+      } catch (error) {
+        if (isCommandNotFound(error) && !installAttempted) {
+          installAttempted = true;
+          await this.installer.install();
+          continue;
+        }
+        if (isCommandNotFound(error)) {
+          throw new Error('MEGA CLI was not found. Install MEGAcmd or set NEARBYTES_MEGACMD_DIR.');
+        }
+        throw error;
       }
-      return {
-        stdout: result.stdout,
-        stderr: result.stderr,
-      };
-    } catch (error) {
-      if (isCommandNotFound(error)) {
-        throw new Error('MEGA CLI was not found. Install MEGAcmd or set NEARBYTES_MEGACMD_DIR.');
-      }
-      throw error;
     }
   }
 }
