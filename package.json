@@ -4,7 +4,7 @@
   "private": true,
   "author": "Nearbytes <vincenzoml@gmail.com>",
   "packageManager": "yarn@4.10.3",
-  "description": "NearBytes cryptographic storage protocol - immutable data collections with end-to-end encryption",
+  "description": "Nearbytes cryptographic storage protocol - immutable data collections with end-to-end encryption",
   "workspaces": [
     "ui"
   ],

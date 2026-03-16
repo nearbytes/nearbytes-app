@@ -16,9 +16,11 @@
   <div class="mount-rail-track">
     {@render children?.()}
   </div>
-  <div class="mount-rail-actions">
-    {@render actions?.()}
-  </div>
+  {#if actions}
+    <div class="mount-rail-actions">
+      {@render actions?.()}
+    </div>
+  {/if}
 </div>
 
 <style>

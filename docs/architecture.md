@@ -1,8 +1,8 @@
-# NearBytes Architecture
+# Nearbytes Architecture
 
 ## System Overview
 
-NearBytes follows a layered architecture with clear separation of concerns:
+Nearbytes follows a layered architecture with clear separation of concerns:
 
 ```
 ┌─────────────────────────────────────┐

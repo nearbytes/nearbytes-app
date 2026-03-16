@@ -6,7 +6,7 @@ import { deriveKeys, signPR, verifyPU, deriveSymKey } from './asymmetric.js';
 
 /**
  * Core cryptographic operations interface
- * Provides all cryptographic primitives needed by the NearBytes protocol
+ * Provides all cryptographic primitives needed by the Nearbytes protocol
  */
 export interface CryptoOperations {
   /**

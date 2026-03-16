@@ -1,8 +1,9 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, type OpenDialogOptions } from 'electron';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, promises as fs } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
+import { promisify } from 'util';
 import { clearPublishedDesktopSession, publishDesktopSession } from './session.js';
 import { generateDesktopApiToken } from './security.js';
 import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
@@ -53,6 +54,7 @@ interface DiagnosticsState {
 
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEEP_LINK_PROTOCOL = 'nearbytes';
+const execFileAsync = promisify(execFile);
 
 const initialDeepLinkUrls = extractDeepLinkUrls(process.argv);
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -304,9 +306,34 @@ function registerIpc(): void {
       throw new Error('Desktop UI state must be an object.');
     }
     await writeDesktopUiState(
-      rawState as { volumeMounts?: unknown; sourceDiscovery?: unknown; dismissedRootSuggestions?: unknown }
+      rawState as { volumeMounts?: unknown; sourceDiscovery?: unknown; dismissedRootSuggestions?: unknown; theme?: unknown }
     );
     return true;
+  });
+  ipcMain.handle('nearbytes-desktop:save-theme-registry', async (_event, rawRegistry: unknown) => {
+    if (!isDev) {
+      throw new Error('Theme registry editing is only available in development.');
+    }
+    if (!rawRegistry || typeof rawRegistry !== 'object' || Array.isArray(rawRegistry)) {
+      throw new Error('Theme registry payload must be an object.');
+    }
+    const targetPath = resolveThemePresetRegistryPath();
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, JSON.stringify(rawRegistry, null, 2), 'utf8');
+    return { path: targetPath };
+  });
+  ipcMain.handle('nearbytes-desktop:export-logo-png', async (_event, rawDataUrl: unknown) => {
+    if (!isDev) {
+      throw new Error('Logo export is only available in development.');
+    }
+    if (typeof rawDataUrl !== 'string' || !rawDataUrl.startsWith('data:image/png;base64,')) {
+      throw new Error('A PNG data URL is required.');
+    }
+    const targetPath = resolveThemeLogoExportPath();
+    const base64 = rawDataUrl.slice('data:image/png;base64,'.length);
+    await fs.writeFile(targetPath, Buffer.from(base64, 'base64'));
+    const iconPaths = await syncPackagedIconAssets(targetPath);
+    return { path: targetPath, ...iconPaths };
   });
   ipcMain.handle('nearbytes-desktop:choose-directory', async (_event, rawInitialPath: unknown) => {
     const initialPath =
@@ -325,6 +352,36 @@ function registerIpc(): void {
     }
     return result.filePaths[0] ?? null;
   });
+}
+
+function resolveThemePresetRegistryPath(): string {
+  return path.join(app.getAppPath(), 'ui', 'public', 'branding', 'theme-presets.json');
+}
+
+function resolveThemeLogoExportPath(): string {
+  return path.join(app.getAppPath(), 'build', 'icons', 'icon-master.png');
+}
+
+async function syncPackagedIconAssets(inputPath: string): Promise<{
+  pngPath: string;
+  icnsPath: string;
+  icoPath: string;
+}> {
+  const scriptPath = path.join(app.getAppPath(), 'scripts', 'sync-brand-icons.mjs');
+  const nodeExecutable = process.env.npm_node_execpath || 'node';
+  const { stdout } = await execFileAsync(nodeExecutable, [scriptPath, '--input', inputPath], {
+    cwd: app.getAppPath(),
+  });
+  const parsed = JSON.parse(stdout) as {
+    png?: string;
+    icns?: string;
+    ico?: string;
+  };
+  return {
+    pngPath: parsed.png ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.png'),
+    icnsPath: parsed.icns ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.icns'),
+    icoPath: parsed.ico ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.ico'),
+  };
 }
 
 async function createWindow(apiBaseUrl: string): Promise<void> {

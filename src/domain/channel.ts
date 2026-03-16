@@ -4,7 +4,7 @@ import { defaultPathMapper } from '../types/storage.js';
 
 /**
  * Channel domain model
- * Represents a NearBytes channel identified by a public key
+ * Represents a Nearbytes channel identified by a public key
  */
 export class Channel {
   constructor(

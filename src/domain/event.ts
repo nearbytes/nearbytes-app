@@ -3,7 +3,7 @@ import type { PublicKey } from '../types/keys.js';
 
 /**
  * Event domain model
- * Represents a signed event in a NearBytes channel
+ * Represents a signed event in a Nearbytes channel
  */
 export class Event {
   constructor(

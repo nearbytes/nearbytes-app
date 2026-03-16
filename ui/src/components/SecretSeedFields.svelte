@@ -68,7 +68,7 @@
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(186, 230, 253, 0.68);
+    color: var(--nb-text-faint, rgba(186, 230, 253, 0.68));
   }
 
   .secret-seed-fields input {
@@ -76,11 +76,17 @@
   }
 
   .secret-seed-fields.dense {
-    gap: 0.58rem;
+    grid-template-columns: minmax(0, 1.35fr) minmax(140px, 0.72fr);
+    gap: 0.5rem;
   }
 
   .secret-seed-fields.dense span {
-    font-size: 0.68rem;
+    font-size: 0.64rem;
+    letter-spacing: 0.06em;
+  }
+
+  .secret-seed-fields.dense label {
+    gap: 0.24rem;
   }
 
   @media (max-width: 760px) {
