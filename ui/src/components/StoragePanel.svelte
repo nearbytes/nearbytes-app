@@ -81,6 +81,16 @@
 
   type StatusTone = 'good' | 'warn' | 'muted';
   type VolumeStorageView = 'copies' | 'shares' | 'folders';
+  type ProviderFlowStep = {
+    label: string;
+    detail: string;
+    state: 'done' | 'active' | 'pending';
+  };
+
+  type CollaboratorView = {
+    label: string;
+    status: 'active' | 'invited';
+  };
 
   const DISMISSED_DISCOVERY_KEY = 'nearbytes-source-discovery-dismissed-v1';
   const RESERVE_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
@@ -315,7 +325,7 @@
     const normalized = value.trim().replace(/\\/g, '/');
     if (normalized === '') return 'Choose a folder';
     const parts = normalized.split('/').filter((part) => part.length > 0);
-    return parts.at(-1) ?? normalized;
+    return parts[parts.length - 1] ?? normalized;
   }
 
   function formatPercent(value: number): string {
@@ -556,12 +566,12 @@
   }
 
   function shareStatusLabel(summary: ManagedShareSummary): string {
-    if (summary.state.status === 'ready') return 'Ready';
-    if (summary.state.status === 'syncing') return 'Syncing';
-    if (summary.state.status === 'idle') return 'Planned';
-    if (summary.state.status === 'needs-auth') return 'Needs login';
-    if (summary.state.status === 'unsupported') return 'Experimental';
-    return 'Needs attention';
+    if (summary.state.status === 'ready') return 'Connected';
+    if (summary.state.status === 'syncing') return 'Updating';
+    if (summary.state.status === 'idle') return 'Available';
+    if (summary.state.status === 'needs-auth') return 'Reconnect';
+    if (summary.state.status === 'unsupported') return 'Other option';
+    return 'Check storage';
   }
 
   function shareAttachmentSummary(summary: ManagedShareSummary): string {
@@ -616,7 +626,7 @@
     if (currentVolumePresentation && currentVolumePresentation.volumeId === targetVolumeId) {
       return currentVolumePresentation.label.trim() || 'Current space';
     }
-    return knownVolumes.find((entry) => entry.volumeId === targetVolumeId)?.label ?? null;
+    return knownVolumes.find((entry: { volumeId: string; label: string }) => entry.volumeId === targetVolumeId)?.label ?? null;
   }
 
   function setProviderDisconnectArmed(provider: string, armed: boolean): void {
@@ -642,22 +652,22 @@
 
   function providerCardStatus(entry: ProviderCatalogEntry): string {
     const pending = pendingSessionForProvider(entry.provider);
-    if (pending?.status === 'pending') return 'Waiting';
-    if (pending?.status === 'failed') return 'Retry';
+    if (pending?.status === 'pending') return 'Almost ready';
+    if (pending?.status === 'failed') return 'Try again';
     if (entry.setup.status === 'needs-config') return 'Setup';
-    if (entry.setup.status === 'needs-install') return 'Install';
+    if (entry.setup.status === 'needs-install') return 'Get ready';
     if (entry.setup.status === 'installing') return 'Installing';
-    if (entry.setup.status === 'unsupported') return 'Unavailable';
+    if (entry.setup.status === 'unsupported') return 'Other option';
     if (entry.isConnected) return 'Connected';
     if (entry.connectionState === 'setup') return 'Setup';
     return 'Available';
   }
 
   function providerCardHeadline(entry: ProviderCatalogEntry): string {
-    if (entry.provider === 'github') return entry.isConnected ? 'Choose how Nearbytes uses GitHub' : 'Connect your GitHub account';
-    if (entry.provider === 'mega') return entry.isConnected ? 'Choose how Nearbytes uses MEGA' : 'Connect your MEGA account';
-    if (entry.provider === 'gdrive') return entry.isConnected ? 'Choose how Nearbytes uses Google Drive' : 'Connect your Google Drive account';
-    return `Use ${entry.label}`;
+    if (entry.provider === 'mega') return entry.isConnected ? 'Shared storage in MEGA' : 'Share storage with MEGA';
+    if (entry.provider === 'gdrive') return entry.isConnected ? 'Shared storage in Google Drive' : 'Use Google Drive storage';
+    if (entry.provider === 'github') return entry.isConnected ? 'Shared storage in GitHub' : 'Use GitHub storage';
+    return `Use ${entry.label} storage`;
   }
 
   function providerCardDetail(entry: ProviderCatalogEntry): string {
@@ -666,23 +676,171 @@
       return pending.detail;
     }
     if (entry.setup.status === 'installing') {
-      return 'Nearbytes is downloading and preparing the latest helper.';
+      return 'Nearbytes is preparing the local connection in the background.';
     }
     if (entry.setup.status === 'needs-install' && entry.provider === 'mega') {
-      return 'Nearbytes will download and install the latest MEGA helper when you connect.';
+      return 'Nearbytes will set up MEGA the first time you use a shared storage space.';
     }
     if (entry.provider === 'github') {
       return entry.isConnected
-        ? 'Choose a repository and a nearbytes subdirectory for each share.'
+        ? 'Use GitHub as a shared storage space for this space.'
         : entry.setup.status === 'needs-config'
-          ? 'Add the GitHub OAuth app client ID with device flow enabled, then connect.'
-          : 'GitHub shares sync blocks and channels through a configurable subdirectory in your repository.';
+          ? 'Add the GitHub app details once, then connect.'
+          : 'Use GitHub as another shared storage space.';
+    }
+    if (entry.provider === 'gdrive') {
+      return entry.isConnected
+        ? 'Use Google Drive as a shared storage space for this space.'
+        : 'Use Google Drive as another shared storage space.';
+    }
+    if (entry.provider === 'mega') {
+      return entry.isConnected
+        ? 'Use MEGA as the shared storage space for this space.'
+        : 'Use MEGA as the default shared storage space.';
     }
     return entry.setup.detail || entry.description;
   }
 
   function providerShares(provider: string): ManagedShareSummary[] {
     return managedShares.filter((summary) => summary.share.provider === provider);
+  }
+
+  function providerPriority(provider: string): number {
+    if (provider === 'mega') return 0;
+    if (provider === 'gdrive') return 1;
+    if (provider === 'github') return 2;
+    return 3;
+  }
+
+  function sortProviders(entries: readonly ProviderCatalogEntry[]): ProviderCatalogEntry[] {
+    return [...entries].sort((left, right) => {
+      const connectedOrder = Number(right.isConnected) - Number(left.isConnected);
+      if (connectedOrder !== 0) return connectedOrder;
+      const providerOrder = providerPriority(left.provider) - providerPriority(right.provider);
+      if (providerOrder !== 0) return providerOrder;
+      return left.label.localeCompare(right.label);
+    });
+  }
+
+  function sortManagedShareSummaries(entries: readonly ManagedShareSummary[]): ManagedShareSummary[] {
+    return [...entries].sort((left, right) => {
+      const attachedOrder = right.attachments.length - left.attachments.length;
+      if (attachedOrder !== 0) return attachedOrder;
+      const providerOrder = providerPriority(left.share.provider) - providerPriority(right.share.provider);
+      if (providerOrder !== 0) return providerOrder;
+      return left.share.label.localeCompare(right.share.label);
+    });
+  }
+
+  function providerShareCount(provider: string): number {
+    return providerShares(provider).length;
+  }
+
+  function providerAttachedShareCount(provider: string): number {
+    if (!volumeId) {
+      return 0;
+    }
+    return managedSharesForVolume(volumeId).filter((summary) => summary.share.provider === provider).length;
+  }
+
+  function providerPrimaryMirrorPath(entry: ProviderCatalogEntry): string | null {
+    const share = providerShares(entry.provider).find(
+      (summary) => (summary.storage?.sourcePath ?? summary.share.localPath).trim() !== ''
+    );
+    return share ? summarySourcePath(share) : null;
+  }
+
+  function providerNextAction(entry: ProviderCatalogEntry): string {
+    const pending = pendingSessionForProvider(entry.provider);
+    const shareCount = providerShareCount(entry.provider);
+    const attachedCount = providerAttachedShareCount(entry.provider);
+    if (pending) {
+      return entry.provider === 'mega'
+        ? 'Nearbytes is waiting for you to finish the MEGA confirmation step before it can create the local mirror and live location.'
+        : `Nearbytes is waiting for ${entry.label} to finish sign-in in the browser.`;
+    }
+    if (entry.setup.status === 'needs-install') {
+      return `Nearbytes still needs the local ${entry.label} helper before this provider can carry live updates.`;
+    }
+    if (entry.setup.status === 'needs-config') {
+      return `Nearbytes still needs one setup value before it can hand off to ${entry.label}.`;
+    }
+    if (!entry.isConnected) {
+      return `Connect ${entry.label}, then Nearbytes can create a local mirror folder and bind it to a live provider location.`;
+    }
+    if (shareCount === 0) {
+      return `Your ${entry.label} account is connected. The next step is to create a live location so this provider can actually carry updates.`;
+    }
+    if (volumeId && attachedCount === 0) {
+      return `This provider already has a live location. Attach one to this space so Nearbytes can use it for incoming and outgoing updates.`;
+    }
+    return `This provider is ready. Nearbytes knows where the local mirror lives and can use it for this space.`;
+  }
+
+  function providerTransparencyFacts(entry: ProviderCatalogEntry): string[] {
+    const shareCount = providerShareCount(entry.provider);
+    const attachedCount = providerAttachedShareCount(entry.provider);
+    const account = connectedAccountForProvider(entry.provider);
+    const facts = [
+      entry.isConnected ? account?.email || account?.label || 'Account connected' : 'No account connected',
+      countLabel(shareCount, 'live location'),
+    ];
+    if (volumeId) {
+      facts.push(countLabel(attachedCount, 'attached route'));
+    }
+    if (entry.provider === 'mega') {
+      facts.push(entry.setup.status === 'needs-install' ? 'Needs local helper' : 'Uses local mirror folder');
+    }
+    return facts.filter((value, index, values) => value && values.indexOf(value) === index);
+  }
+
+  function providerFlowSteps(entry: ProviderCatalogEntry): ProviderFlowStep[] {
+    const pending = pendingSessionForProvider(entry.provider);
+    const helperBlocked = entry.setup.status === 'needs-install' || entry.setup.status === 'installing';
+    const configBlocked = entry.setup.status === 'needs-config';
+    const connected = entry.isConnected;
+    const hasShare = providerShareCount(entry.provider) > 0;
+    const attachedToVolume = volumeId ? providerAttachedShareCount(entry.provider) > 0 : hasShare;
+    return [
+      {
+        label: helperBlocked ? 'Install local helper' : configBlocked ? 'Finish provider setup' : 'Provider ready',
+        detail:
+          helperBlocked
+            ? `Nearbytes prepares the local ${entry.label} helper first.`
+            : configBlocked
+              ? `Nearbytes needs one setup value before it can start ${entry.label} sign-in.`
+              : `${entry.label} is ready for connection on this device.`,
+        state: helperBlocked || configBlocked ? 'active' : 'done',
+      },
+      {
+        label: pending ? 'Finish account confirmation' : 'Connect account',
+        detail:
+          pending
+            ? pending.detail
+            : connected
+              ? `${entry.label} account connected.`
+              : `Sign in so Nearbytes can create and monitor live locations for ${entry.label}.`,
+        state: connected ? 'done' : helperBlocked || configBlocked ? 'pending' : pending ? 'active' : 'active',
+      },
+      {
+        label: volumeId ? 'Create or pick a live location' : 'Create a live location',
+        detail:
+          hasShare
+            ? 'Nearbytes already has at least one live location for this provider.'
+            : 'This is the first point where Nearbytes creates the provider-backed sync location and local mirror folder.',
+        state: hasShare ? 'done' : connected ? 'active' : 'pending',
+      },
+      {
+        label: volumeId ? 'Attach it to this space' : 'Ready for spaces',
+        detail:
+          volumeId
+            ? attachedToVolume
+              ? 'This provider already has a live route attached to the current space.'
+              : 'Attach the live location so this space can receive provider-backed updates.'
+            : 'Once a live location exists, any space can attach it later.',
+        state: attachedToVolume ? 'done' : hasShare ? 'active' : 'pending',
+      },
+    ];
   }
 
   function selectedProviderEntry(): ProviderCatalogEntry | null {
@@ -720,6 +878,44 @@
     return summary.share.capabilities.includes('write') ? 'Read and write' : 'Read only';
   }
 
+  function summarySourcePath(summary: ManagedShareSummary): string {
+    return summary.storage?.sourcePath?.trim() || summary.share.localPath;
+  }
+
+  function managedShareRoleLabel(summary: ManagedShareSummary): string {
+    return summary.share.role === 'owner' ? 'You own this live location' : 'Received from someone else';
+  }
+
+  function managedShareNarrative(summary: ManagedShareSummary): string {
+    if (summary.state.status === 'ready' && summary.attachments.length > 0) {
+      return 'Nearbytes can use this live location right now. The folder below is the local mirror that should stay in sync with the provider copy.';
+    }
+    if (summary.attachments.length === 0) {
+      return 'This live location exists, but it is not attached to the current space yet.';
+    }
+    if (summary.state.status === 'syncing') {
+      return 'Nearbytes is still waiting for the provider mirror to settle before treating this route as ready.';
+    }
+    if (summary.state.status === 'needs-auth') {
+      return 'Nearbytes cannot use this live location until the provider account is connected again.';
+    }
+    return summary.state.detail;
+  }
+
+  function managedShareStorageFacts(summary: ManagedShareSummary): string[] {
+    const facts = [
+      managedShareRoleLabel(summary),
+      managedShareAccessLabel(summary),
+      shareAttachmentSummary(summary),
+      summary.storage?.keepFullCopy ? 'Keeps a full copy' : 'On-demand copy policy',
+      summary.storage?.availableBytes !== undefined ? `${formatSize(summary.storage.availableBytes)} free locally` : null,
+      summary.storage?.remoteAvailableBytes !== undefined
+        ? `${formatSize(summary.storage.remoteAvailableBytes)} free in ${providerLabelForManagedShare(summary)}`
+        : null,
+    ];
+    return facts.filter((value): value is string => Boolean(value));
+  }
+
   function canInviteManagedShare(summary: ManagedShareSummary): boolean {
     return summary.share.capabilities.includes('invite');
   }
@@ -744,6 +940,24 @@
 
   function invitedCollaborators(summary: ManagedShareSummary): string[] {
     return summary.collaborators.map((collaborator) => collaborator.email ?? collaborator.label);
+  }
+
+  function participantCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
+    return summary.collaborators
+      .filter((collaborator) => collaborator.status === 'active')
+      .map((collaborator) => ({
+        label: collaborator.email ?? collaborator.label,
+        status: collaborator.status,
+      }));
+  }
+
+  function pendingCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
+    return summary.collaborators
+      .filter((collaborator) => collaborator.status === 'invited')
+      .map((collaborator) => ({
+        label: collaborator.email ?? collaborator.label,
+        status: collaborator.status,
+      }));
   }
 
   function sourceById(sourceId: string | undefined): SourceConfigEntry | null {
@@ -771,13 +985,7 @@
   }
 
   function defaultManagedShareLabel(): string {
-    if (currentVolumePresentation?.label?.trim()) {
-      return `${currentVolumePresentation.label.trim()} share`;
-    }
-    if (volumeId) {
-      return `Space ${volumeId.slice(0, 8)} share`;
-    }
-    return 'Nearbytes share';
+    return 'Shared storage';
   }
 
   function defaultGithubBasePath(label: string): string {
@@ -1283,12 +1491,13 @@
       }
     }
 
+    const currentSources = configDraft?.sources ?? [];
     return Array.from(unique.values())
       .map((source) => {
         const normalized = normalizeComparablePath(source.path);
         return {
           source,
-          alreadyAdded: configDraft.sources.some((entry) => normalizeComparablePath(entry.path) === normalized),
+          alreadyAdded: currentSources.some((entry) => normalizeComparablePath(entry.path) === normalized),
           dismissed: dismissedDiscoveries.includes(normalized),
         };
       })
@@ -1464,8 +1673,8 @@
     shares: ManagedShareSummary[];
   }): void {
     providerAccounts = input.accounts;
-    providerCatalog = input.providers;
-    managedShares = input.shares;
+    providerCatalog = sortProviders(input.providers);
+    managedShares = sortManagedShareSummaries(input.shares);
     providerSetupDrafts = {
       ...providerSetupDrafts,
       ...Object.fromEntries(
@@ -1917,7 +2126,8 @@
     const repoName = draft.repoName.trim();
     const basePath = normalizeGithubDraftPath(draft.basePath);
     if (repoName && basePath) {
-      const leaf = basePath.split('/').filter(Boolean).at(-1);
+      const segments = basePath.split('/').filter(Boolean);
+      const leaf = segments[segments.length - 1];
       return leaf ? `${repoName}/${leaf}` : repoName;
     }
     if (repoName) {
@@ -2883,8 +3093,8 @@
           <div class="section-head">
             <div>
               <p class="section-step">Sharing</p>
-              <h3>Share this space and choose its live sync locations</h3>
-              <p class="section-copy">A Nearbytes link opens the volume. A provider-backed location such as MEGA or Google Drive is what carries live updates and can be invited to collaborators.</p>
+              <h3>Share this space</h3>
+              <p class="section-copy">Share the space link. Add a shared storage space if you also want to share a direct route for data.</p>
             </div>
             <div class="section-metrics">
               <span class="summary-pill">{countLabel(managedSharesForVolume(volumeId).length, 'live location')} attached</span>
@@ -2892,17 +3102,12 @@
             </div>
           </div>
 
-          <div class="flow-note-card">
-            <p class="subheading">How this works</p>
-            <p class="card-copy">1. Copy a Nearbytes link for the volume. 2. Create or attach a live provider location below. 3. Invite people to that provider location if you want them to receive ongoing updates.</p>
-          </div>
-
           <div class="rule-card active volume-share-link-card">
             <div class="card-head">
               <div class="card-title">
                 <div>
                   <p class="provider-label">Volume link</p>
-                  <h4>Open this volume from another device</h4>
+                  <h4>Share this space</h4>
                 </div>
               </div>
               <div class="card-status">
@@ -2910,7 +3115,7 @@
               </div>
             </div>
 
-            <p class="card-copy">This link tells another Nearbytes app how to open the volume. It does not by itself create a live MEGA or Google Drive collaboration path.</p>
+            <p class="card-copy">Send this first.</p>
 
             <div class="button-row">
               <button
@@ -2919,15 +3124,7 @@
                 onclick={() => void onCopyShareLink?.(false)}
                 disabled={shareLinkBusy}
               >
-                <span>{shareLinkBusy ? 'Preparing...' : 'Copy link'}</span>
-              </button>
-              <button
-                type="button"
-                class="panel-btn subtle compact"
-                onclick={() => void onCopyShareLink?.(true)}
-                disabled={shareLinkBusy || !canCopySecretLink}
-              >
-                <span>Copy secret link</span>
+                <span>{shareLinkBusy ? 'Preparing...' : 'Share this space'}</span>
               </button>
             </div>
 
@@ -2956,11 +3153,18 @@
 
                 <p class="card-copy">
                   {#if provider.isConnected}
-                    Nearbytes can create a managed {provider.label} live location for this space and prefer it when future join links offer several routes.
+                    Nearbytes can use {provider.label} as shared storage for this space.
                   {:else}
                     {providerCardDetail(provider)}
                   {/if}
                 </p>
+
+                {#if providerPrimaryMirrorPath(provider)}
+                  <div class="provider-path-card">
+                    <p class="subheading">Local mirror folder</p>
+                    <p class="provider-path-copy">{providerPrimaryMirrorPath(provider)}</p>
+                  </div>
+                {/if}
 
                 {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
                   <div class="inline-progress" aria-label="Installing provider helper">
@@ -3159,7 +3363,7 @@
                       class="panel-btn subtle compact"
                       onclick={() => openProviderDocs(provider.setup.docsUrl)}
                     >
-                      <span>{provider.provider === 'gdrive' ? 'Open Google Console' : 'Open docs'}</span>
+                      <span>{provider.provider === 'gdrive' ? 'Open Google setup' : 'Open help'}</span>
                     </button>
                   {/if}
                   {#if !provider.isConnected && provider.setup.status === 'needs-config'}
@@ -3179,7 +3383,7 @@
                       onclick={() => void createManagedShareForVolume(provider)}
                       disabled={integrationBusyKey === `create:${provider.provider}`}
                     >
-                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : `Create ${provider.label} live location`}</span>
+                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : provider.provider === 'mega' ? 'Use MEGA shared storage' : `Use ${provider.label} storage`}</span>
                     </button>
                   {:else}
                     {#if provider.provider === 'mega' && pendingSessionForProvider(provider.provider)}
@@ -3268,12 +3472,20 @@
                     </div>
                   </div>
                   <div class="card-status">
-                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>Live location attached</span>
+                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>Shared storage connected</span>
                     <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
                   </div>
                 </div>
 
                 <p class="card-copy">{summary.state.detail}</p>
+
+                <div class="provider-path-card managed-share-path-card">
+                  <p class="subheading">Local mirror folder</p>
+                  <p class="provider-path-copy">{summarySourcePath(summary)}</p>
+                </div>
+                {#if summary.storage?.lastWriteFailureMessage}
+                  <p class="panel-error inline-panel-error">{summary.storage.lastWriteFailureMessage}</p>
+                {/if}
 
                 <div class="fact-row">
                   <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
@@ -3284,7 +3496,7 @@
                 {#if canInviteManagedShare(summary)}
                   <div class="managed-share-invite-row">
                     <label class="field-block managed-share-invite-field">
-                      <span>Invite collaborator</span>
+                      <span>Invite friends</span>
                       <input
                         class="panel-input"
                         type="text"
@@ -3303,19 +3515,32 @@
                       <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
                     </button>
                   </div>
-                  <p class="managed-share-invite-copy">This sends a provider-side invite from the live location behind this volume so recipients can sync updates.</p>
+                  <p class="managed-share-invite-copy">Invite people here if you want to share this storage route directly.</p>
                 {/if}
 
                 <div class="managed-share-members">
-                  <p class="subheading">Already shared with</p>
-                  {#if invitedCollaborators(summary).length > 0}
+                  <p class="subheading">Participants</p>
+                  {#if participantCollaborators(summary).length > 0}
                     <div class="managed-share-members-list">
-                      {#each invitedCollaborators(summary) as email (email)}
-                        <span class="mini-pill">{email}</span>
+                      {#each participantCollaborators(summary) as collaborator (collaborator.label)}
+                        <span class="mini-pill">{collaborator.label}</span>
                       {/each}
                     </div>
                   {:else}
-                    <p class="managed-share-invite-copy">Nobody invited yet from Nearbytes.</p>
+                    <p class="managed-share-invite-copy">No active participants yet.</p>
+                  {/if}
+                </div>
+
+                <div class="managed-share-members">
+                  <p class="subheading">Invited</p>
+                  {#if pendingCollaborators(summary).length > 0}
+                    <div class="managed-share-members-list">
+                      {#each pendingCollaborators(summary) as collaborator (collaborator.label)}
+                        <span class="mini-pill">{collaborator.label}</span>
+                      {/each}
+                    </div>
+                  {:else}
+                    <p class="managed-share-invite-copy">No pending invitations.</p>
                   {/if}
                 </div>
 
@@ -3344,11 +3569,19 @@
                   </div>
                   <div class="card-status">
                     <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
-                    <span class="status-pill tone-muted">Available to attach</span>
+                    <span class="status-pill tone-muted">Ready to use</span>
                   </div>
                 </div>
 
                 <p class="card-copy">{summary.state.detail}</p>
+
+                <div class="provider-path-card managed-share-path-card">
+                  <p class="subheading">Local mirror folder</p>
+                  <p class="provider-path-copy">{summarySourcePath(summary)}</p>
+                </div>
+                {#if summary.storage?.lastWriteFailureMessage}
+                  <p class="panel-error inline-panel-error">{summary.storage.lastWriteFailureMessage}</p>
+                {/if}
 
                 <div class="fact-row">
                   <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
@@ -3359,7 +3592,7 @@
                 {#if canInviteManagedShare(summary)}
                   <div class="managed-share-invite-row">
                     <label class="field-block managed-share-invite-field">
-                      <span>Invite collaborator</span>
+                      <span>Invite friends</span>
                       <input
                         class="panel-input"
                         type="text"
@@ -4309,6 +4542,18 @@
     background: rgba(10, 18, 31, 0.5);
   }
 
+  .onboarding-note-card {
+    gap: 0.65rem;
+    border-color: rgba(56, 189, 248, 0.18);
+    background:
+      linear-gradient(180deg, rgba(8, 21, 36, 0.86), rgba(8, 18, 31, 0.72)),
+      radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 55%);
+  }
+
+  .section-head.compact {
+    gap: 0.8rem;
+  }
+
   .volume-share-link-card {
     margin-bottom: 0.8rem;
   }
@@ -4337,6 +4582,100 @@
     border-radius: 0.8rem;
     border: 1px solid rgba(148, 163, 184, 0.3);
     background: rgba(15, 23, 42, 0.05);
+  }
+
+  .provider-story-card,
+  .managed-share-story-card {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.82rem 0.9rem;
+    border-radius: 0.9rem;
+    border: 1px solid rgba(96, 165, 250, 0.14);
+    background: rgba(8, 18, 31, 0.44);
+  }
+
+  .managed-share-story-card.compact {
+    padding: 0.74rem 0.82rem;
+  }
+
+  .provider-story-copy,
+  .managed-share-story-copy,
+  .provider-step-detail,
+  .provider-path-copy {
+    margin: 0;
+    font-size: 0.79rem;
+    line-height: 1.45;
+    color: var(--text-soft);
+  }
+
+  .provider-fact-grid,
+  .managed-share-fact-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.42rem;
+  }
+
+  .provider-fact-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0.28rem 0.62rem;
+    border-radius: 999px;
+    border: 1px solid rgba(96, 165, 250, 0.14);
+    background: rgba(15, 23, 42, 0.72);
+    color: var(--text);
+    font-size: 0.74rem;
+    font-weight: 600;
+  }
+
+  .provider-step-list {
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .provider-step {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.65rem;
+    align-items: start;
+  }
+
+  .provider-step-marker {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 999px;
+    margin-top: 0.28rem;
+    border: 1px solid rgba(148, 163, 184, 0.34);
+    background: rgba(15, 23, 42, 0.55);
+  }
+
+  .provider-step-title {
+    margin: 0;
+    font-size: 0.81rem;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .provider-path-card {
+    display: grid;
+    gap: 0.28rem;
+    padding: 0.68rem 0.76rem;
+    border-radius: 0.78rem;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(3, 10, 20, 0.5);
+  }
+
+  .provider-path-copy {
+    font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+    word-break: break-word;
+  }
+
+  .managed-share-path-card {
+    margin-top: -0.1rem;
+  }
+
+  .inline-panel-error {
+    margin: 0;
   }
 
   .provider-flow-status[data-phase='cancelled'] {

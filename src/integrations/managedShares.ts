@@ -79,6 +79,7 @@ export class ManagedShareService {
   private readonly integrationStatePath: string;
   private readonly mirrorRoot: string;
   private readonly runtime: IntegrationRuntime;
+  private readonly syncBootstrapTasks = new Map<string, Promise<void>>();
 
   constructor(private readonly options: ManagedShareServiceOptions) {
     this.runtime = createIntegrationRuntime({
@@ -105,7 +106,7 @@ export class ManagedShareService {
   }> {
     const state = await this.loadState();
     await this.ensureDefaultManagedShares(state);
-    await this.ensureManagedShareSyncs(state);
+    this.scheduleManagedShareSyncs(state);
     const setupStates = await this.getProviderSetupStates();
     const refreshedState = await this.loadState();
     const accounts = refreshedState.accounts.filter((account) => isProviderEnabled(account.provider));
@@ -256,7 +257,7 @@ export class ManagedShareService {
   async listManagedShares(): Promise<{ shares: ManagedShareSummary[] }> {
     const state = await this.loadState();
     await this.ensureDefaultManagedShares(state);
-    await this.ensureManagedShareSyncs(state);
+    this.scheduleManagedShareSyncs(state);
     const refreshedState = await this.loadState();
     const visibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     return {
@@ -450,6 +451,94 @@ export class ManagedShareService {
         });
       })
     );
+  }
+
+  private scheduleManagedShareSyncs(state: IntegrationStateSnapshot): void {
+    for (const share of state.managedShares) {
+      const account = state.accounts.find((entry) => entry.id === share.accountId);
+      if (!account || account.state !== 'connected' || this.syncBootstrapTasks.has(share.id)) {
+        continue;
+      }
+      const task = this.adapters
+        .get(normalizeProvider(share.provider))
+        ?.ensureSync?.(share, account)
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
+        })
+        .finally(() => {
+          this.syncBootstrapTasks.delete(share.id);
+        });
+      if (task) {
+        this.syncBootstrapTasks.set(share.id, task);
+      }
+    }
+  }
+
+  private fallbackTransportState(
+    share: ManagedShare,
+    runtime: MultiRootRuntimeSnapshot,
+    account: ProviderAccount | null
+  ): TransportState {
+    const status = share.sourceId ? runtime.sources.find((entry) => entry.id === share.sourceId) : undefined;
+    if (!status) {
+      return {
+        status: 'attention',
+        detail: 'The local share folder is not attached yet.',
+        badges: ['Repair'],
+      };
+    }
+    if (!status.exists || !status.isDirectory) {
+      return {
+        status: 'attention',
+        detail: 'The local share folder is missing or invalid.',
+        badges: ['Repair'],
+      };
+    }
+    if (!account) {
+      return {
+        status: 'needs-auth',
+        detail: `${defaultProviderLabel(normalizeProvider(share.provider))} needs to reconnect.`,
+        badges: ['Reconnect'],
+      };
+    }
+    return {
+      status: 'idle',
+      detail: `${defaultProviderLabel(normalizeProvider(share.provider))} shared storage is being checked.`,
+      badges: ['Checking'],
+    };
+  }
+
+  private fallbackCollaborators(share: ManagedShare): ManagedShareCollaborator[] {
+    return uniqueStrings(share.invitationEmails).map((email) => ({
+      label: email,
+      email,
+      status: 'invited',
+      source: 'nearbytes',
+    }));
+  }
+
+  private async withSoftTimeout<T>(
+    promise: Promise<T>,
+    fallback: T,
+    timeoutMs: number,
+    warning: string
+  ): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<T>((resolve) => {
+      timer = setTimeout(() => {
+        this.runtime.logger.warn(warning);
+        resolve(fallback);
+      }, timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
   }
 
   private async ensureDefaultManagedShares(state: IntegrationStateSnapshot): Promise<void> {
@@ -707,21 +796,48 @@ export class ManagedShareService {
   private async buildManagedShareSummary(share: ManagedShare): Promise<ManagedShareSummary> {
     const config = this.options.storage.getRootsConfig();
     const runtime = await this.options.storage.getRuntimeSnapshot();
-    const remoteMetrics = await this.resolveShareStorageMetrics(share);
+    const state = await this.loadState();
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    const fallbackState = this.fallbackTransportState(share, runtime, account);
+    const fallbackCollaborators = this.fallbackCollaborators(share);
+    const [remoteMetrics, transportState, collaborators] = await Promise.all([
+      this.withSoftTimeout(
+        this.resolveShareStorageMetrics(share),
+        undefined,
+        1_500,
+        `Managed share metrics timed out for ${share.id}`
+      ),
+      this.withSoftTimeout(
+        this.resolveTransportState(share, runtime, state),
+        fallbackState,
+        1_500,
+        `Managed share state timed out for ${share.id}`
+      ),
+      this.withSoftTimeout(
+        this.resolveShareCollaborators(share, state),
+        fallbackCollaborators,
+        1_500,
+        `Managed share collaborators timed out for ${share.id}`
+      ),
+    ]);
     return {
       share,
       attachments: computeManagedShareAttachments(config, share),
-      state: await this.resolveTransportState(share, runtime),
-      collaborators: await this.resolveShareCollaborators(share),
+      state: transportState,
+      collaborators,
       storage: summarizeManagedShareStorage(config, runtime, share, remoteMetrics),
     };
   }
 
-  private async resolveTransportState(share: ManagedShare, runtime?: MultiRootRuntimeSnapshot): Promise<TransportState> {
+  private async resolveTransportState(
+    share: ManagedShare,
+    runtime?: MultiRootRuntimeSnapshot,
+    stateSnapshot?: IntegrationStateSnapshot
+  ): Promise<TransportState> {
     const snapshot = runtime ?? (await this.options.storage.getRuntimeSnapshot());
     const status = share.sourceId ? snapshot.sources.find((entry) => entry.id === share.sourceId) : undefined;
     const adapter = this.adapters.get(normalizeProvider(share.provider));
-    const state = await this.loadState();
+    const state = stateSnapshot ?? (await this.loadState());
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
     if (!status) {
       return {
@@ -772,9 +888,12 @@ export class ManagedShareService {
     }
   }
 
-  private async resolveShareCollaborators(share: ManagedShare): Promise<ManagedShareCollaborator[]> {
+  private async resolveShareCollaborators(
+    share: ManagedShare,
+    stateSnapshot?: IntegrationStateSnapshot
+  ): Promise<ManagedShareCollaborator[]> {
     const adapter = this.adapters.get(normalizeProvider(share.provider));
-    const state = await this.loadState();
+    const state = stateSnapshot ?? (await this.loadState());
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
     const byKey = new Map<string, ManagedShareCollaborator>();
 

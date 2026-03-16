@@ -1409,8 +1409,20 @@
   const mountRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const MOUNT_RUNTIME_REFRESH_MS = 15000;
 
+  type ShareDialogCollaboratorView = {
+    label: string;
+    status: 'active' | 'invited';
+  };
+
   function preferredActiveMountId(nextMounts: VolumeMount[]): string {
     return nextMounts.find((mount) => !mount.collapsed)?.id ?? nextMounts[0]?.id ?? '';
+  }
+
+  function providerPriority(provider: string): number {
+    if (provider === 'mega') return 0;
+    if (provider === 'gdrive') return 1;
+    if (provider === 'github') return 2;
+    return 3;
   }
 
   function trackMountNode(node: HTMLElement, mountId: string) {
@@ -3347,6 +3359,57 @@
     return 'neutral';
   }
 
+  function joinDialogActionStatusLabel(
+    action: JoinLinkOpenResponse['actions'][number]
+  ): string {
+    if (action.status === 'attached') return 'Attached';
+    if (action.status === 'planned') return 'Planned';
+    if (action.status === 'needs-account') return 'Needs account';
+    if (action.status === 'pending-auth') return 'Waiting for sign-in';
+    return 'Unsupported';
+  }
+
+  function joinDialogActionTitle(
+    action: JoinLinkOpenResponse['actions'][number]
+  ): string {
+    const provider = action.provider === 'mega'
+      ? 'MEGA'
+      : action.provider === 'gdrive'
+        ? 'Google Drive'
+        : action.provider === 'github'
+          ? 'GitHub'
+          : action.provider || action.endpointTransport || 'Route';
+    if (action.status === 'attached') {
+      return `${provider} live route attached`;
+    }
+    if (action.status === 'planned') {
+      return `${provider} route recognized`;
+    }
+    if (action.status === 'needs-account') {
+      return `${provider} account required`;
+    }
+    if (action.status === 'pending-auth') {
+      return `${provider} sign-in still pending`;
+    }
+    return `${provider} route unavailable`;
+  }
+
+  function joinDialogActionBadges(
+    action: JoinLinkOpenResponse['actions'][number]
+  ): string[] {
+    return [
+      action.provider === 'mega'
+        ? 'MEGA'
+        : action.provider === 'gdrive'
+          ? 'Google Drive'
+          : action.provider === 'github'
+            ? 'GitHub'
+            : action.provider || action.endpointTransport || 'Transport route',
+      action.usedCredentialBootstrap ? 'Used embedded bootstrap' : null,
+      action.shareId ? `Share ${action.shareId}` : null,
+    ].filter((value): value is string => Boolean(value));
+  }
+
   async function previewJoinDialogLink(): Promise<void> {
     joinDialogPreviewBusy = true;
     joinDialogError = '';
@@ -4932,7 +4995,7 @@
     const attachments = sharesResponse.shares
       .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId))
       .sort((left, right) => {
-        const providerOrder = left.share.provider.localeCompare(right.share.provider);
+        const providerOrder = providerPriority(left.share.provider) - providerPriority(right.share.provider);
         if (providerOrder !== 0) {
           return providerOrder;
         }
@@ -4954,14 +5017,14 @@
       const serialized = serializeCanonicalJoinLink(link);
       let clipboardText = buildNearbytesJoinDeepLink(serialized);
       let feedbackTone: JoinLinkCopyFeedbackState['tone'] = 'success';
-      let feedbackMessage = includeSecret ? 'Copied secret Nearbytes link.' : 'Copied Nearbytes link.';
+      let feedbackMessage = includeSecret ? 'Copied secret share link.' : 'Copied share link.';
       if (clipboardText.length > NEARBYTES_JOIN_DEEP_LINK_MAX_LENGTH) {
         if (!includeSecret) {
-          throw new Error('This Nearbytes link is too large for a practical deep link. Reduce the exported routes or use a smaller share link.');
+          throw new Error('This share link is too large to send as a practical nearbytes:// link. Try sharing fewer storage routes.');
         }
         clipboardText = serialized;
         feedbackTone = 'warning';
-        feedbackMessage = 'Secret payload was too large for nearbytes://. Copied canonical JSON instead.';
+        feedbackMessage = 'The secret link was too large for nearbytes://. Copied the full share data instead.';
       }
       await navigator.clipboard.writeText(clipboardText);
       setJoinLinkCopyFeedback(feedbackTone, feedbackMessage);
@@ -4995,6 +5058,24 @@
     return summary.collaborators.map((collaborator) => collaborator.email ?? collaborator.label);
   }
 
+  function currentVolumeStorageParticipants(summary: ManagedShareSummary): ShareDialogCollaboratorView[] {
+    return summary.collaborators
+      .filter((collaborator) => collaborator.status === 'active')
+      .map((collaborator) => ({
+        label: collaborator.email ?? collaborator.label,
+        status: collaborator.status,
+      }));
+  }
+
+  function currentVolumeStorageInvited(summary: ManagedShareSummary): ShareDialogCollaboratorView[] {
+    return summary.collaborators
+      .filter((collaborator) => collaborator.status === 'invited')
+      .map((collaborator) => ({
+        label: collaborator.email ?? collaborator.label,
+        status: collaborator.status,
+      }));
+  }
+
   async function refreshCurrentVolumeManagedShares(): Promise<void> {
     if (!shareableVolumeId) {
       currentVolumeManagedShares = [];
@@ -5005,7 +5086,13 @@
       const sharesResponse = await listManagedShares();
       currentVolumeManagedShares = sharesResponse.shares
         .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === shareableVolumeId))
-        .sort((left, right) => left.share.label.localeCompare(right.share.label));
+        .sort((left, right) => {
+          const providerOrder = providerPriority(left.share.provider) - providerPriority(right.share.provider);
+          if (providerOrder !== 0) {
+            return providerOrder;
+          }
+          return left.share.label.localeCompare(right.share.label);
+        });
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to load shared storage for this volume';
     } finally {
@@ -5016,7 +5103,7 @@
   async function inviteCurrentVolumeStorage(summary: ManagedShareSummary): Promise<void> {
     const emails = parseInviteEmails(currentVolumeShareInviteDraft(summary.share.id));
     if (emails.length === 0) {
-      errorMessage = 'Enter at least one collaborator email first.';
+      errorMessage = 'Enter at least one friend email first.';
       return;
     }
     currentVolumeSharingLoading = true;
@@ -6820,9 +6907,9 @@
       <div class="share-dialog panel-surface" role="document" tabindex="-1">
         <div class="share-dialog-header">
           <div class="share-dialog-head-meta">
-            <p class="share-dialog-eyebrow">Volume sharing</p>
-            <p class="share-dialog-title">Share this volume</p>
-            <p class="share-dialog-subtitle">Copy a Nearbytes link to open the volume elsewhere. Invite people to live storage only when this volume needs synced collaboration.</p>
+            <p class="share-dialog-eyebrow">Shared space</p>
+            <p class="share-dialog-title">Share this space</p>
+            <p class="share-dialog-subtitle">Share the space link. Add a shared storage space if you also want to share a direct route for data.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close share dialog" onclick={closeVolumeShareDialog}>
             <X size={18} strokeWidth={2} />
@@ -6832,27 +6919,17 @@
         <div class="share-dialog-body">
           <section class="share-dialog-section">
             <div class="status-share-head">
-              <span class="share-dialog-section-title">Volume link</span>
+              <span class="share-dialog-section-title">Space link</span>
               <div class="status-link-actions">
                 <button
                   type="button"
                   class="status-link-btn"
                   onclick={() => void copyCurrentJoinLink(false)}
                   disabled={joinLinkCopyBusy}
-                  title="Copy a secretless nearbytes:// link for this volume"
+                  title="Copy a nearbytes:// link for this space"
                 >
                   <Link2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>{joinLinkCopyBusy ? 'Preparing…' : 'Share volume'}</span>
-                </button>
-                <button
-                  type="button"
-                  class="status-link-btn secondary"
-                  onclick={() => void copyCurrentJoinLink(true)}
-                  disabled={joinLinkCopyBusy || !hasCopyableCurrentSecret()}
-                  title="Copy a nearbytes:// link that includes the current secret when practical"
-                >
-                  <Link2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>Share secret volume</span>
+                  <span>{joinLinkCopyBusy ? 'Preparing…' : 'Share this space'}</span>
                 </button>
               </div>
             </div>
@@ -6865,24 +6942,24 @@
 
           <section class="share-dialog-section">
             <div class="status-share-head">
-              <span class="share-dialog-section-title">Live storage invitations</span>
+              <span class="share-dialog-section-title">Shared storage</span>
               <button
                 type="button"
                 class="status-link-btn secondary"
                 onclick={openVolumeShareStoragePanel}
               >
                 <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                <span>Choose storage</span>
+                <span>Manage storage</span>
               </button>
             </div>
-            <p class="status-share-note">If this volume needs live sync, attach MEGA or another provider-backed location and send invitations here.</p>
+            <p class="status-share-note">A shared storage space gives friends a direct route to data. MEGA is the default.</p>
 
             {#if currentVolumeSharingLoading && currentVolumeManagedShares.length === 0}
               <p class="status-share-note">Loading attached live storage…</p>
             {:else if currentVolumeManagedShares.length === 0}
               <div class="share-dialog-empty">
                 <p class="share-dialog-empty-title">No live storage attached yet</p>
-                <p class="status-share-note">Start with the volume link alone, or choose storage if this volume needs synced collaboration.</p>
+                <p class="status-share-note">You can share the space now, or add a shared storage space too.</p>
               </div>
             {:else}
               <div class="status-storage-list share-dialog-storage-list">
@@ -6893,7 +6970,7 @@
                         <p class="status-storage-provider">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
                         <p class="status-storage-title">{summary.share.label}</p>
                       </div>
-                      <span class="status-storage-state">{summary.state.status === 'ready' ? 'Live' : summary.state.detail}</span>
+                      <span class="status-storage-state">{summary.state.status === 'ready' ? 'Connected' : summary.state.detail}</span>
                     </div>
                     <div class="status-storage-invite-row">
                       <input
@@ -6910,16 +6987,33 @@
                         onclick={() => void inviteCurrentVolumeStorage(summary)}
                         disabled={currentVolumeSharingLoading}
                       >
-                        <span>{currentVolumeSharingLoading ? 'Sending…' : 'Share storage'}</span>
+                        <span>{currentVolumeSharingLoading ? 'Sending…' : 'Invite to storage'}</span>
                       </button>
                     </div>
-                    {#if currentVolumeStorageCollaborators(summary).length > 0}
-                      <div class="status-storage-members">
-                        {#each currentVolumeStorageCollaborators(summary) as email (email)}
-                          <span class="status-storage-chip">{email}</span>
-                        {/each}
-                      </div>
-                    {/if}
+                    <div class="status-storage-members">
+                      <p class="share-dialog-section-title members-label">Participants</p>
+                      {#if currentVolumeStorageParticipants(summary).length > 0}
+                        <div class="status-storage-members-list">
+                          {#each currentVolumeStorageParticipants(summary) as collaborator (collaborator.label)}
+                            <span class="status-storage-chip">{collaborator.label}</span>
+                          {/each}
+                        </div>
+                      {:else}
+                        <p class="status-share-note">No participants yet.</p>
+                      {/if}
+                    </div>
+                    <div class="status-storage-members">
+                      <p class="share-dialog-section-title members-label">Invited</p>
+                      {#if currentVolumeStorageInvited(summary).length > 0}
+                        <div class="status-storage-members-list">
+                          {#each currentVolumeStorageInvited(summary) as collaborator (collaborator.label)}
+                            <span class="status-storage-chip">{collaborator.label}</span>
+                          {/each}
+                        </div>
+                      {:else}
+                        <p class="status-share-note">No pending invitations.</p>
+                      {/if}
+                    </div>
                   </div>
                 {/each}
               </div>
@@ -6986,28 +7080,14 @@
               placeholder="nearbytes://join?data=..."
             ></textarea>
 
-            <label class="join-dialog-toggle">
-              <input type="checkbox" bind:checked={joinDialogAllowCredentialBootstrap} />
-              <span>Use embedded provider sign-in details when the link includes them</span>
-            </label>
-            <p class="join-dialog-note">Leave this off unless you trust the sender. Links copied by this app do not include provider passwords.</p>
-
             <div class="join-dialog-actions">
-              <button
-                type="button"
-                class="status-link-btn secondary"
-                onclick={() => void previewJoinDialogLink()}
-                disabled={joinDialogPreviewBusy || joinDialogOpenBusy || joinDialogClipboardBusy}
-              >
-                <span>{joinDialogPreviewBusy ? 'Previewing…' : 'Preview routes'}</span>
-              </button>
               <button
                 type="button"
                 class="status-link-btn"
                 onclick={() => void openJoinDialogLink()}
                 disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
               >
-                <span>{joinDialogOpenBusy ? 'Joining…' : 'Join volume'}</span>
+                <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared space'}</span>
               </button>
             </div>
 
@@ -7071,13 +7151,18 @@
                 {#each joinDialogOpened.actions as action (`${action.attachmentId}-${action.provider || action.endpointTransport || 'route'}`)}
                   <div class={`join-dialog-result-row ${joinDialogActionTone(action.status)}`}>
                     <div>
-                      <p class="join-dialog-route-title">{action.attachmentId}</p>
+                      <p class="join-dialog-route-title">{joinDialogActionTitle(action)}</p>
                       <p class="join-dialog-route-detail">{action.detail}</p>
+                      <div class="join-dialog-badge-row action-badges">
+                        {#each joinDialogActionBadges(action) as badge (`${action.attachmentId}-${badge}`)}
+                          <span class="join-dialog-badge">{badge}</span>
+                        {/each}
+                      </div>
                       {#if action.suggestedLocalPath}
                         <p class="join-dialog-path">Suggested folder: {action.suggestedLocalPath}</p>
                       {/if}
                     </div>
-                    <span class="join-dialog-chip strong">{action.status}</span>
+                    <span class="join-dialog-chip strong">{joinDialogActionStatusLabel(action)}</span>
                   </div>
                 {/each}
               </div>
@@ -8414,9 +8499,18 @@
   }
 
   .status-storage-members {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .status-storage-members-list {
     display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
+  }
+
+  .members-label {
+    margin: 0;
   }
 
   .status-storage-chip {
@@ -9288,6 +9382,10 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
+  }
+
+  .join-dialog-badge-row.action-badges {
+    margin-top: 0.45rem;
   }
 
   .join-dialog-badge {
