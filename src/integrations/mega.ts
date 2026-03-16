@@ -150,14 +150,15 @@ export class MegaTransportAdapter {
       }
       throw error;
     });
-        const existingSync = await this.findSyncByRemotePath(remotePath, account.id);
-        const resolvedLocalPath = existingSync?.localPath?.trim() || (input.localPath ?? '');
-        if (!existingSync) {
-          await this.ensureSyncTarget(resolvedLocalPath, remotePath);
-        }
+    const existingSync = await this.findSyncByRemotePath(remotePath, account.id);
+    const requestedLocalPath = input.localPath ?? '';
+    const resolvedLocalPath = existingSync?.localPath?.trim() || requestedLocalPath;
+    if (!existingSync) {
+      await this.ensureSyncTarget(resolvedLocalPath, remotePath);
+    }
 
     return {
-          localPath: resolvedLocalPath,
+      localPath: resolvedLocalPath,
       remoteDescriptor: {
         remotePath,
         shareName,
