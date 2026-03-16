@@ -73,6 +73,7 @@
     replaceThemePresetInRegistry,
     themeCssVariables,
     type NearbytesArcStyle,
+    type NearbytesSurfaceStyle,
     type NearbytesThemeRegistry,
     type NearbytesThemePresetId,
     type NearbytesThemeSettings,
@@ -5212,6 +5213,16 @@
     };
   }
 
+  function updateThemeSurfaceStyle(value: NearbytesSurfaceStyle): void {
+    themeSettings = normalizeThemeSettings({
+      ...themeSettings,
+      palette: {
+        ...themeSettings.palette,
+        surfaceStyle: value,
+      },
+    }, themeRegistry);
+  }
+
   function updateThemeLogoColor(key: 'accentColor' | 'peerColor' | 'arcColor' | 'bgFill' | 'nodeFill' | 'nodeStroke', value: string): void {
     themeSettings = {
       ...themeSettings,
@@ -5442,101 +5453,7 @@
                 <span class="brand-note">{activeThemePreset().palette.label}</span>
               </span>
 
-              <div class="mounts-actions brand-actions">
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showJoinVolumeDialog}
-                  aria-label="Join shared volume"
-                  title="Join shared volume"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    openJoinVolumeDialog();
-                  }}
-                >
-                  <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showVolumeShareDialog}
-                  aria-label="Share"
-                  title="Share"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    openVolumeShareDialog();
-                  }}
-                  disabled={!activeMount && !shareableVolumeId}
-                >
-                  <Link2 class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showStatusPanel}
-                  aria-label="Status"
-                  title="Status"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    showStatusPanel = !showStatusPanel;
-                  }}
-                >
-                  <Activity class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showTimeMachinePanel}
-                  aria-label="Timeline"
-                  title="Timeline"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    showTimeMachinePanel = !showTimeMachinePanel;
-                  }}
-                >
-                  <History class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showSourcesPanel}
-                  aria-label="Locations"
-                  title="Locations"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    toggleSourcesPanel();
-                  }}
-                >
-                  <HardDrive class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                {#if showChatWorkspace}
-                  <button
-                    type="button"
-                    class="header-tool-btn"
-                    class:active={showIdentityManager}
-                    aria-label="Identities"
-                    title="Identities"
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      showIdentityManager = !showIdentityManager;
-                    }}
-                  >
-                    <UserRound class="button-icon" size={14} strokeWidth={2} />
-                  </button>
-                {/if}
-                <button
-                  type="button"
-                  class="mount-add-btn"
-                  onclick={addMount}
-                  aria-label="Add space"
-                  title="Add space"
-                >
-                  <Plus size={15} strokeWidth={2.2} />
-                </button>
-              </div>
-            </div>
-
-            <MountRail dragging={draggingMountId !== null}>
+              <MountRail dragging={draggingMountId !== null}>
         {#snippet children()}
         {#each mounts as mount, index (mount.id)}
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
@@ -5772,7 +5689,101 @@
           </div>
         {/each}
         {/snippet}
-            </MountRail>
+              </MountRail>
+
+              <div class="mounts-actions brand-actions">
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showJoinVolumeDialog}
+                  aria-label="Join shared volume"
+                  title="Join shared volume"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    openJoinVolumeDialog();
+                  }}
+                >
+                  <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showVolumeShareDialog}
+                  aria-label="Share"
+                  title="Share"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    openVolumeShareDialog();
+                  }}
+                  disabled={!activeMount && !shareableVolumeId}
+                >
+                  <Link2 class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showStatusPanel}
+                  aria-label="Status"
+                  title="Status"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    showStatusPanel = !showStatusPanel;
+                  }}
+                >
+                  <Activity class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showTimeMachinePanel}
+                  aria-label="Timeline"
+                  title="Timeline"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    showTimeMachinePanel = !showTimeMachinePanel;
+                  }}
+                >
+                  <History class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showSourcesPanel}
+                  aria-label="Locations"
+                  title="Locations"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    toggleSourcesPanel();
+                  }}
+                >
+                  <HardDrive class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                {#if showChatWorkspace}
+                  <button
+                    type="button"
+                    class="header-tool-btn"
+                    class:active={showIdentityManager}
+                    aria-label="Identities"
+                    title="Identities"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      showIdentityManager = !showIdentityManager;
+                    }}
+                  >
+                    <UserRound class="button-icon" size={14} strokeWidth={2} />
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="mount-add-btn"
+                  onclick={addMount}
+                  aria-label="Add space"
+                  title="Add space"
+                >
+                  <Plus size={15} strokeWidth={2.2} />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -7433,6 +7444,16 @@
               </div>
             {:else if themeDialogSection === 'material'}
               <div class="theme-form-grid theme-form-grid-wide">
+                <label>
+                  <span>Surface style</span>
+                  <select
+                    value={themeSettings.palette.surfaceStyle}
+                    oninput={(event) => updateThemeSurfaceStyle((event.currentTarget as HTMLSelectElement).value as NearbytesSurfaceStyle)}
+                  >
+                    <option value="gradient">Gradient</option>
+                    <option value="flat">Flat</option>
+                  </select>
+                </label>
                 <label><span>App background</span><input type="color" value={themeSettings.palette.appBg} oninput={(event) => updateThemePaletteColor('appBg', (event.currentTarget as HTMLInputElement).value)} /></label>
                 <label><span>Shell top</span><input type="text" value={themeSettings.palette.shellTop} oninput={(event) => updateThemePaletteColor('shellTop', (event.currentTarget as HTMLInputElement).value)} /></label>
                 <label><span>Shell bottom</span><input type="text" value={themeSettings.palette.shellBottom} oninput={(event) => updateThemePaletteColor('shellBottom', (event.currentTarget as HTMLInputElement).value)} /></label>
@@ -7544,16 +7565,13 @@
     height: 100dvh;
     display: flex;
     flex-direction: column;
-    background:
-      radial-gradient(120% 140% at 0% 0%, var(--nb-shell-glow, rgba(34, 211, 238, 0.09)), transparent 48%),
-      radial-gradient(110% 130% at 100% 0%, var(--nb-panel-glow, rgba(14, 165, 233, 0.08)), transparent 42%),
-      linear-gradient(180deg, var(--nb-shell-top, #050b16) 0%, var(--nb-panel-bg, #09111d) 44%, var(--nb-shell-bottom, #060912) 100%);
+    background: var(--nb-app-shell-bg, linear-gradient(180deg, var(--nb-shell-top, #050b16) 0%, var(--nb-panel-bg, #09111d) 44%, var(--nb-shell-bottom, #060912) 100%));
     overflow: hidden;
     color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
   }
 
   .header {
-    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 14, 28, 0.84)) 88%, transparent);
+    background: var(--nb-header-bg, color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 14, 28, 0.84)) 88%, transparent));
     backdrop-filter: blur(18px);
     border-bottom: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
     padding: 0.75rem 2rem 0.9rem;
@@ -7575,9 +7593,7 @@
     padding: 0.7rem 0.82rem;
     border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
     border-radius: 18px;
-    background:
-      radial-gradient(120% 120% at 0% 0%, var(--nb-panel-glow, rgba(34, 211, 238, 0.08)), transparent 40%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.9)) 96%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.84)) 96%, transparent));
+    background: var(--nb-brand-rail-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.9)) 96%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.84)) 96%, transparent)));
   }
 
   .brand-badge {
@@ -7643,7 +7659,7 @@
   .brand-stack {
     min-width: 0;
     display: grid;
-    gap: 0.56rem;
+    gap: 0.18rem;
     flex: 1 1 auto;
   }
 
@@ -7653,6 +7669,16 @@
     justify-content: space-between;
     gap: 1rem;
     min-width: 0;
+  }
+
+  .brand-meta-row :global(.mount-rail) {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+
+  .brand-meta-row :global(.mount-rail-track) {
+    justify-content: flex-end;
   }
 
   .brand-title {
@@ -7758,9 +7784,7 @@
     padding: 0.78rem 0.9rem;
     border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
     border-radius: 18px;
-    background:
-      radial-gradient(140% 120% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.08)), transparent 42%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.9)) 96%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.84)) 94%, transparent));
+    background: var(--nb-identity-surface-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.9)) 96%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.84)) 94%, transparent)));
   }
 
   .identity-row-head,
@@ -7927,8 +7951,7 @@
     appearance: none;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.22)) 90%, transparent);
     border-radius: 14px;
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top, rgba(12, 25, 45, 0.9)) 94%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.88)) 94%, transparent));
+    background: var(--nb-volume-chip-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top, rgba(12, 25, 45, 0.9)) 94%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.88)) 94%, transparent)));
     width: fit-content;
     min-width: 132px;
     max-width: min(72vw, 420px);
@@ -7957,21 +7980,21 @@
   }
 
   .volume-chip.collapsed-shell.parked {
-    min-width: 46px;
-    max-width: 46px;
+    min-width: 144px;
+    max-width: min(72vw, 420px);
     transform: translateX(0) scale(1);
   }
 
   .volume-chip.collapsed-shell.parked .header-dock {
-    padding: 0.32rem;
+    padding: 0.26rem 0.3rem 0.26rem 0.62rem;
   }
 
   .volume-chip.collapsed-shell.parked .header-dock-badge {
-    gap: 0;
+    gap: 0.38rem;
   }
 
   .volume-chip.collapsed-shell.parked .header-dock-badge-top {
-    gap: 0;
+    gap: 0.5rem;
   }
 
   .volume-chip.collapsed-shell :global(.volume-identity-copy) {
@@ -7986,45 +8009,6 @@
   }
 
   .volume-chip.collapsed-shell.parked :global(.volume-identity-copy) {
-    max-width: 0;
-    opacity: 0;
-    transform: translateX(-5px);
-  }
-
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) {
-    min-width: 132px;
-    max-width: min(72vw, 420px);
-  }
-
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.pressed:not(.drag-armed):not(.dragging),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:active:not(.drag-armed):not(.dragging) {
-    min-width: 132px;
-    max-width: min(72vw, 420px);
-  }
-
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) .header-dock,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) .header-dock,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) .header-dock,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.pressed:not(.drag-armed):not(.dragging) .header-dock,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:active:not(.drag-armed):not(.dragging) .header-dock {
-    padding: 0.26rem 0.36rem 0.26rem 0.62rem;
-  }
-
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) .header-dock-badge-top,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) .header-dock-badge-top,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) .header-dock-badge-top,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.pressed:not(.drag-armed):not(.dragging) .header-dock-badge-top,
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:active:not(.drag-armed):not(.dragging) .header-dock-badge-top {
-    gap: 0.5rem;
-  }
-
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:focus-within:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:hover:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.selected:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked.pressed:not(.drag-armed):not(.dragging) :global(.volume-identity-copy),
-  :global(.mount-rail:not(.dragging)) .volume-chip.collapsed-shell.parked:active:not(.drag-armed):not(.dragging) :global(.volume-identity-copy) {
     max-width: 220px;
     opacity: 1;
     transform: translateX(0);
@@ -8033,8 +8017,7 @@
   .volume-chip.expanded {
     max-width: min(96vw, 1500px);
     border-radius: 18px;
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top, rgba(10, 23, 43, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 35, 0.94)) 98%, transparent));
+    background: var(--nb-volume-chip-expanded-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top, rgba(10, 23, 43, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 35, 0.94)) 98%, transparent)));
     border-color: color-mix(in srgb, var(--nb-border-strong, rgba(56, 189, 248, 0.34)) 88%, transparent);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.05),
@@ -8046,9 +8029,7 @@
     --volume-identity-label-color: var(--nb-accent-text, rgba(236, 254, 255, 0.98));
     --volume-identity-secondary-color: color-mix(in srgb, var(--nb-accent-strong, rgba(165, 243, 252, 0.82)) 78%, white 22%);
     border-color: color-mix(in srgb, var(--nb-accent, rgba(45, 212, 191, 0.46)) 86%, transparent);
-    background:
-      radial-gradient(120% 180% at 0% 0%, color-mix(in srgb, var(--nb-accent, rgba(45, 212, 191, 0.16)) 28%, transparent), transparent 52%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-accent-surface-strong, rgba(11, 28, 43, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 34, 0.94)) 98%, transparent));
+    background: var(--nb-volume-chip-selected-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-accent-surface-strong, rgba(11, 28, 43, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 34, 0.94)) 98%, transparent)));
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.08),
         0 0 0 1px color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.12)) 24%, transparent),
@@ -8099,8 +8080,7 @@
     cursor: grabbing;
     transition: none;
     border-color: rgba(56, 189, 248, 0.22);
-    background:
-      linear-gradient(180deg, rgba(12, 25, 45, 0.9), rgba(9, 18, 34, 0.88));
+    background: var(--nb-volume-chip-dragging-bg, linear-gradient(180deg, rgba(12, 25, 45, 0.9), rgba(9, 18, 34, 0.88)));
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.04),
       0 14px 32px rgba(2, 6, 23, 0.28);
@@ -8161,27 +8141,6 @@
     cursor: grabbing;
   }
 
-  .volume-chip.drag-armed .volume-chip-config-btn,
-  .volume-chip.dragging .volume-chip-config-btn {
-    width: 0;
-    min-width: 0;
-    opacity: 0;
-    pointer-events: none;
-    border-left-color: transparent;
-  }
-
-  .volume-chip.drag-armed:hover .volume-chip-config-btn,
-  .volume-chip.drag-armed:focus-within .volume-chip-config-btn,
-  .volume-chip.dragging:hover .volume-chip-config-btn,
-  .volume-chip.dragging:focus-within .volume-chip-config-btn {
-    width: 0;
-    min-width: 0;
-    opacity: 0;
-    pointer-events: none;
-    transform: none;
-    border-left-color: transparent;
-  }
-
   .header-dock {
     border: 0;
     background: transparent;
@@ -8209,7 +8168,7 @@
   }
 
   .volume-chip-select:hover .header-dock {
-    background: linear-gradient(180deg, rgba(14, 29, 50, 0.36), rgba(9, 21, 39, 0.18));
+    background: var(--nb-volume-chip-hover-bg, linear-gradient(180deg, rgba(14, 29, 50, 0.36), rgba(9, 21, 39, 0.18)));
   }
 
   .volume-chip-select:focus-visible {
@@ -8217,7 +8176,7 @@
   }
 
   .volume-chip-select:focus-visible .header-dock {
-    background: linear-gradient(180deg, rgba(14, 29, 50, 0.46), rgba(9, 21, 39, 0.26));
+    background: var(--nb-volume-chip-focus-bg, linear-gradient(180deg, rgba(14, 29, 50, 0.46), rgba(9, 21, 39, 0.26)));
     box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.18);
   }
 
@@ -8229,22 +8188,45 @@
     box-shadow: none;
   }
 
-  .volume-chip-action-btn {
-    appearance: none;
-    border: 0;
-    border-left: 1px solid transparent;
-    background: linear-gradient(180deg, rgba(9, 18, 33, 0.36), rgba(7, 14, 26, 0.18));
-    color: rgba(186, 230, 253, 0.72);
+  .volume-chip.drag-armed .volume-chip-config-btn,
+  .volume-chip.dragging .volume-chip-config-btn {
     width: 0;
     min-width: 0;
+    opacity: 0;
+    pointer-events: none;
+    border-left-color: transparent;
+  }
+
+  .volume-chip.drag-armed:hover .volume-chip-config-btn,
+  .volume-chip.drag-armed:focus-within .volume-chip-config-btn,
+  .volume-chip.dragging:hover .volume-chip-config-btn,
+  .volume-chip.dragging:focus-within .volume-chip-config-btn {
+    width: 0;
+    min-width: 0;
+    opacity: 0;
+    pointer-events: none;
+    transform: none;
+    border-left-color: transparent;
+  }
+
+  .volume-chip-action-btn {
+    appearance: none;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.14)) 92%, transparent);
+    background: var(--nb-volume-chip-action-bg, linear-gradient(180deg, rgba(9, 18, 33, 0.36), rgba(7, 14, 26, 0.18)));
+    color: var(--nb-text-soft, rgba(186, 230, 253, 0.72));
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     padding: 0;
+    margin: 0.14rem 0.16rem 0.14rem 0;
+    border-radius: 11px;
     cursor: pointer;
     overflow: hidden;
-    opacity: 0;
-    pointer-events: none;
+    opacity: 1;
+    pointer-events: auto;
     transition:
       width 0.2s ease,
       min-width 0.2s ease,
@@ -8261,11 +8243,8 @@
 
   .volume-chip.collapsed-shell:hover .volume-chip-action-btn,
   .volume-chip.collapsed-shell:focus-within .volume-chip-action-btn {
-    width: 31px;
-    min-width: 31px;
-    border-left-color: rgba(56, 189, 248, 0.14);
-    opacity: 1;
-    pointer-events: auto;
+    width: 32px;
+    min-width: 32px;
   }
 
   .volume-chip.drag-armed:hover .volume-chip-action-btn,
@@ -8281,17 +8260,17 @@
   }
 
   .volume-chip-action-btn:hover {
-    background: linear-gradient(180deg, rgba(18, 35, 60, 0.9), rgba(11, 22, 40, 0.84));
-    border-left-color: rgba(96, 165, 250, 0.3);
-    color: rgba(240, 249, 255, 0.96);
-    transform: translateX(1px);
+    background: var(--nb-volume-chip-action-hover-bg, linear-gradient(180deg, rgba(18, 35, 60, 0.9), rgba(11, 22, 40, 0.84)));
+    border-color: color-mix(in srgb, var(--nb-border-strong, rgba(96, 165, 250, 0.3)) 88%, transparent);
+    color: var(--nb-text-main, rgba(240, 249, 255, 0.96));
+    transform: translateY(-1px);
   }
 
   .volume-chip-action-btn:focus-visible {
     outline: none;
-    background: linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9));
-    border-left-color: rgba(125, 211, 252, 0.36);
-    color: rgba(240, 249, 255, 0.98);
+    background: var(--nb-volume-chip-action-focus-bg, linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9)));
+    border-color: color-mix(in srgb, var(--nb-border-strong, rgba(125, 211, 252, 0.36)) 92%, transparent);
+    color: var(--nb-text-main, rgba(240, 249, 255, 0.98));
     box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.18);
   }
 
@@ -9325,10 +9304,7 @@
     min-height: 420px;
     border: 1px solid rgba(56, 189, 248, 0.18);
     border-radius: 22px;
-    background:
-      radial-gradient(120% 120% at 0% 0%, rgba(34, 211, 238, 0.12), transparent 52%),
-      radial-gradient(120% 120% at 100% 0%, rgba(14, 165, 233, 0.1), transparent 48%),
-      linear-gradient(160deg, rgba(8, 18, 34, 0.96), rgba(7, 14, 28, 0.94));
+    background: var(--nb-volume-transition-bg, linear-gradient(160deg, rgba(8, 18, 34, 0.96), rgba(7, 14, 28, 0.94)));
     display: flex;
     align-items: center;
     justify-content: center;
@@ -9375,9 +9351,7 @@
     flex: 0 0 auto;
     border: 1px solid rgba(56, 189, 248, 0.18);
     border-radius: 16px;
-    background:
-      radial-gradient(140% 120% at 0% 0%, rgba(34, 211, 238, 0.08), transparent 44%),
-      linear-gradient(180deg, rgba(9, 20, 39, 0.96), rgba(8, 18, 35, 0.9));
+    background: var(--nb-time-machine-bg, linear-gradient(180deg, rgba(9, 20, 39, 0.96), rgba(8, 18, 35, 0.9)));
     padding: 0.75rem;
     display: flex;
     flex-direction: column;
@@ -9665,10 +9639,7 @@
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    background:
-      radial-gradient(120% 120% at 0% 0%, var(--nb-panel-glow, rgba(34, 211, 238, 0.12)), transparent 48%),
-      radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, var(--nb-accent, #38bdf8) 18%, transparent), transparent 42%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.99)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(6, 12, 24, 0.97)) 98%, transparent));
+    background: var(--nb-theme-dialog-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.99)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(6, 12, 24, 0.97)) 98%, transparent)));
     border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.22));
     border-radius: 22px;
     box-shadow: 0 40px 100px rgba(2, 6, 23, 0.62);
@@ -11308,12 +11279,19 @@
       pointer-events: auto;
       border-color: rgba(56, 189, 248, 0.22);
     }
+
   }
 
   @media (max-width: 640px) {
     .brand-meta-row {
       flex-direction: column;
       align-items: flex-start;
+    }
+
+    .brand-meta-row :global(.mount-rail),
+    .brand-meta-row :global(.mount-rail-track) {
+      width: 100%;
+      justify-content: flex-start;
     }
 
     .brand-actions {
@@ -11335,6 +11313,12 @@
     .mount-add-btn,
     .header-tool-btn {
       width: 30px;
+      height: 30px;
+    }
+
+    .volume-chip-action-btn {
+      width: 30px;
+      min-width: 30px;
       height: 30px;
     }
 

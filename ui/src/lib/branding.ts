@@ -1,5 +1,7 @@
 export type NearbytesArcStyle = 'dashed' | 'dotted' | 'solid';
 
+export type NearbytesSurfaceStyle = 'flat' | 'gradient';
+
 export type NearbytesLogoOptions = {
   peers: number;
   accentColor: string;
@@ -24,6 +26,7 @@ export type NearbytesPalette = {
   id: string;
   label: string;
   description: string;
+  surfaceStyle: NearbytesSurfaceStyle;
   appBg: string;
   shellTop: string;
   shellBottom: string;
@@ -65,6 +68,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       id: 'blue-current',
       label: 'Blue Current',
       description: 'Cool cyan and steel tones tuned to the current shell.',
+      surfaceStyle: 'gradient',
       appBg: '#060c18',
       shellTop: 'rgba(10, 22, 40, 0.98)',
       shellBottom: 'rgba(7, 13, 24, 0.98)',
@@ -110,6 +114,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       id: 'amber-classic',
       label: 'Amber Classic',
       description: 'Warm bronze and parchment tones based on the original logo treatment.',
+      surfaceStyle: 'gradient',
       appBg: '#15110c',
       shellTop: 'rgba(32, 24, 16, 0.98)',
       shellBottom: 'rgba(20, 15, 10, 0.98)',
@@ -155,6 +160,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       id: 'mint-vector',
       label: 'Mint Vector',
       description: 'Sea-glass mint with clean alpine neutrals and bright data highlights.',
+      surfaceStyle: 'gradient',
       appBg: '#071514',
       shellTop: 'rgba(9, 33, 31, 0.98)',
       shellBottom: 'rgba(5, 19, 18, 0.98)',
@@ -200,6 +206,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       id: 'coral-signal',
       label: 'Coral Signal',
       description: 'Signal coral and ember orange over deep volcanic browns.',
+      surfaceStyle: 'gradient',
       appBg: '#180b0d',
       shellTop: 'rgba(40, 14, 18, 0.98)',
       shellBottom: 'rgba(24, 8, 10, 0.98)',
@@ -245,6 +252,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       id: 'graphite-lime',
       label: 'Graphite Lime',
       description: 'Dark graphite framing sharp lime and soft glacier text tones.',
+      surfaceStyle: 'gradient',
       appBg: '#0b100c',
       shellTop: 'rgba(19, 26, 22, 0.98)',
       shellBottom: 'rgba(10, 14, 12, 0.98)',
@@ -290,6 +298,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       id: 'polar-night',
       label: 'Polar Night',
       description: 'Ice-blue highlights with a denser midnight shell and subdued chrome.',
+      surfaceStyle: 'gradient',
       appBg: '#040912',
       shellTop: 'rgba(9, 15, 30, 0.98)',
       shellBottom: 'rgba(5, 9, 20, 0.98)',
@@ -335,6 +344,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       id: 'sunset-radio',
       label: 'Sunset Radio',
       description: 'Magenta-to-gold warmth with studio-dark surfaces and glossy accents.',
+      surfaceStyle: 'gradient',
       appBg: '#170812',
       shellTop: 'rgba(36, 12, 27, 0.98)',
       shellBottom: 'rgba(22, 8, 18, 0.98)',
@@ -379,22 +389,23 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
     palette: {
       id: 'mono-scarlet',
       label: 'Mono Scarlet',
-      description: 'Black and white surfaces with restrained red accents and quiet Apple-like contrast.',
-      appBg: '#050505',
-      shellTop: 'rgba(16, 16, 17, 0.98)',
-      shellBottom: 'rgba(5, 5, 6, 0.99)',
-      shellGlow: 'rgba(255, 255, 255, 0.06)',
-      panelBg: 'rgba(18, 18, 20, 0.92)',
-      panelGlow: 'rgba(255, 59, 48, 0.06)',
-      border: 'rgba(245, 245, 247, 0.14)',
-      borderStrong: 'rgba(255, 59, 48, 0.36)',
+      description: 'Porcelain whites, graphite text, and disciplined scarlet accents tuned for an Apple-like light shell.',
+      surfaceStyle: 'flat',
+      appBg: '#f3f2f5',
+      shellTop: 'rgba(255, 255, 255, 0.99)',
+      shellBottom: 'rgba(244, 244, 247, 0.99)',
+      shellGlow: 'rgba(255, 255, 255, 0)',
+      panelBg: 'rgba(255, 255, 255, 0.96)',
+      panelGlow: 'rgba(255, 59, 48, 0.025)',
+      border: 'rgba(60, 60, 67, 0.10)',
+      borderStrong: 'rgba(255, 59, 48, 0.22)',
       accent: '#ff3b30',
-      accentStrong: '#f5f5f7',
-      accentSoft: 'rgba(255, 59, 48, 0.12)',
+      accentStrong: '#1c1c1e',
+      accentSoft: 'rgba(255, 59, 48, 0.08)',
       accentText: '#ffffff',
-      textMain: 'rgba(245, 245, 247, 0.96)',
-      textSoft: 'rgba(215, 215, 220, 0.78)',
-      textFaint: 'rgba(174, 174, 178, 0.66)',
+      textMain: 'rgba(28, 28, 30, 0.98)',
+      textSoft: 'rgba(58, 58, 60, 0.72)',
+      textFaint: 'rgba(110, 110, 115, 0.58)',
       success: '#30d158',
       warning: '#ffd60a',
       danger: '#ff453a',
@@ -402,11 +413,11 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
     logo: {
       peers: 3,
       accentColor: '#ff3b30',
-      peerColor: '#f5f5f7',
-      arcColor: '#ff3b30',
-      bgFill: '#0b0b0c',
-      nodeFill: '#171719',
-      nodeStroke: '#8e8e93',
+      peerColor: '#3a3a3c',
+      arcColor: '#ff6b61',
+      bgFill: '#ffffff',
+      nodeFill: '#f2f2f7',
+      nodeStroke: '#a1a1aa',
       orbitScale: 1.1,
       sizeScale: 1.24,
       bulgeScale: 1.08,
@@ -414,8 +425,8 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       circleStroke: 2.28,
       pulseSpeed: 0.78,
       pulseMag: 1.06,
-      luminosity: 0,
-      contrast: 22,
+      luminosity: -4,
+      contrast: 14,
       arcStyle: 'solid',
     },
   },
@@ -425,6 +436,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       id: 'rose-copper',
       label: 'Rose Copper',
       description: 'A softer copper family with rose highlights and parchment text.',
+      surfaceStyle: 'gradient',
       appBg: '#130d0c',
       shellTop: 'rgba(31, 21, 19, 0.98)',
       shellBottom: 'rgba(18, 12, 11, 0.98)',
@@ -467,7 +479,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
 ];
 
 export const DEFAULT_THEME_REGISTRY: NearbytesThemeRegistry = {
-  version: 1,
+  version: 2,
   defaultPresetId: 'blue-current',
   presets: DEFAULT_PRESETS,
 };
@@ -515,6 +527,13 @@ function normalizeNumber(value: unknown, fallback: number, min: number, max: num
   return Math.min(max, Math.max(min, value));
 }
 
+function normalizeSurfaceStyle(
+  value: unknown,
+  fallback: NearbytesSurfaceStyle
+): NearbytesSurfaceStyle {
+  return value === 'flat' || value === 'gradient' ? value : fallback;
+}
+
 function normalizePalette(input: unknown, fallback: NearbytesPalette): NearbytesPalette {
   const paletteInput = asObject(input);
   if (!paletteInput) {
@@ -534,6 +553,7 @@ function normalizePalette(input: unknown, fallback: NearbytesPalette): Nearbytes
       typeof paletteInput.description === 'string' && paletteInput.description.trim().length > 0
         ? paletteInput.description.trim()
         : fallback.description,
+    surfaceStyle: normalizeSurfaceStyle(paletteInput.surfaceStyle, fallback.surfaceStyle),
     appBg: normalizeHexColor(paletteInput.appBg, fallback.appBg),
     shellTop: normalizeColorString(paletteInput.shellTop, fallback.shellTop),
     shellBottom: normalizeColorString(paletteInput.shellBottom, fallback.shellBottom),
@@ -695,13 +715,79 @@ export function replaceThemePresetInRegistry(
 
 export function themeCssVariables(settings: NearbytesThemeSettings): string {
   const { palette, logo } = settings;
+  const isFlat = palette.surfaceStyle === 'flat';
+  const appSurface = isFlat
+    ? `linear-gradient(180deg, ${palette.shellTop} 0%, ${palette.shellBottom} 100%)`
+    : `radial-gradient(120% 140% at 0% 0%, ${palette.shellGlow}, transparent 48%), radial-gradient(110% 130% at 100% 0%, ${palette.panelGlow}, transparent 42%), linear-gradient(180deg, ${palette.shellTop} 0%, ${palette.panelBg} 44%, ${palette.shellBottom} 100%)`;
+  const headerSurface = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 96%, transparent)`
+    : `color-mix(in srgb, ${palette.shellBottom} 88%, transparent)`;
+  const layeredPanelSurface = isFlat
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom}))`
+    : `radial-gradient(120% 120% at 0% 0%, ${palette.panelGlow}, transparent 40%), linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 96%, transparent), color-mix(in srgb, ${palette.shellBottom} 96%, transparent))`;
+  const identitySurface = isFlat
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.panelBg} 95%, ${palette.shellBottom}))`
+    : `radial-gradient(140% 120% at 0% 0%, ${palette.accentSoft}, transparent 42%), linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 96%, transparent), color-mix(in srgb, ${palette.shellBottom} 94%, transparent))`;
+  const themeDialogSurface = isFlat
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.shellBottom} 97%, ${palette.panelBg}))`
+    : `radial-gradient(120% 120% at 0% 0%, ${palette.panelGlow}, transparent 48%), radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, ${palette.accent} 18%, transparent), transparent 42%), linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 98%, transparent), color-mix(in srgb, ${palette.shellBottom} 98%, transparent))`;
+  const volumeTransitionSurface = isFlat
+    ? `linear-gradient(160deg, color-mix(in srgb, ${palette.panelBg} 98%, white 2%), color-mix(in srgb, ${palette.shellBottom} 96%, ${palette.panelBg}))`
+    : `radial-gradient(120% 120% at 0% 0%, ${palette.accentSoft}, transparent 52%), radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, ${palette.accentStrong} 16%, transparent), transparent 48%), linear-gradient(160deg, color-mix(in srgb, ${palette.shellTop} 98%, transparent), color-mix(in srgb, ${palette.shellBottom} 96%, transparent))`;
+  const timeMachineSurface = isFlat
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom}))`
+    : `radial-gradient(140% 120% at 0% 0%, ${palette.accentSoft}, transparent 44%), linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 96%, transparent), color-mix(in srgb, ${palette.shellBottom} 90%, transparent))`;
+  const volumeChipSurface = isFlat
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 98%, white 2%), color-mix(in srgb, ${palette.panelBg} 92%, ${palette.shellBottom}))`
+    : `linear-gradient(180deg, color-mix(in srgb, ${palette.shellTop} 94%, transparent), color-mix(in srgb, ${palette.panelBg} 94%, transparent))`;
+  const volumeChipExpandedSurface = isFlat
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.panelBg} 95%, ${palette.shellBottom}))`
+    : `linear-gradient(180deg, color-mix(in srgb, ${palette.shellTop} 98%, transparent), color-mix(in srgb, ${palette.panelBg} 98%, transparent))`;
+  const volumeChipSelectedSurface = isFlat
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.accentSoft} 34%, ${palette.panelBg}), color-mix(in srgb, ${palette.panelBg} 92%, ${palette.accent}))`
+    : `radial-gradient(120% 180% at 0% 0%, color-mix(in srgb, ${palette.accent} 28%, transparent), transparent 52%), linear-gradient(180deg, color-mix(in srgb, ${palette.accentStrong} 34%, ${palette.shellTop}) 98%, color-mix(in srgb, ${palette.panelBg} 98%, transparent))`;
+  const volumeChipDraggingSurface = isFlat
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 96%, white 4%), color-mix(in srgb, ${palette.panelBg} 90%, ${palette.shellBottom}))`
+    : `linear-gradient(180deg, color-mix(in srgb, ${palette.shellTop} 94%, transparent), color-mix(in srgb, ${palette.panelBg} 94%, transparent))`;
+  const volumeChipHoverSurface = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 92%, white 8%)`
+    : `linear-gradient(180deg, rgba(14, 29, 50, 0.36), rgba(9, 21, 39, 0.18))`;
+  const volumeChipFocusSurface = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 88%, white 12%)`
+    : `linear-gradient(180deg, rgba(14, 29, 50, 0.46), rgba(9, 21, 39, 0.26))`;
+  const volumeChipActionSurface = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 94%, white 6%)`
+    : `linear-gradient(180deg, rgba(9, 18, 33, 0.36), rgba(7, 14, 26, 0.18))`;
+  const volumeChipActionHoverSurface = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 84%, ${palette.accentSoft})`
+    : `linear-gradient(180deg, rgba(18, 35, 60, 0.9), rgba(11, 22, 40, 0.84))`;
+  const volumeChipActionFocusSurface = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 80%, ${palette.accentSoft})`
+    : `linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9))`;
   return [
+    `--nb-surface-style:${palette.surfaceStyle}`,
     `--nb-app-bg:${palette.appBg}`,
     `--nb-shell-top:${palette.shellTop}`,
     `--nb-shell-bottom:${palette.shellBottom}`,
     `--nb-shell-glow:${palette.shellGlow}`,
     `--nb-panel-bg:${palette.panelBg}`,
     `--nb-panel-glow:${palette.panelGlow}`,
+    `--nb-app-shell-bg:${appSurface}`,
+    `--nb-header-bg:${headerSurface}`,
+    `--nb-brand-rail-bg:${layeredPanelSurface}`,
+    `--nb-identity-surface-bg:${identitySurface}`,
+    `--nb-theme-dialog-bg:${themeDialogSurface}`,
+    `--nb-time-machine-bg:${timeMachineSurface}`,
+    `--nb-volume-transition-bg:${volumeTransitionSurface}`,
+    `--nb-volume-chip-bg:${volumeChipSurface}`,
+    `--nb-volume-chip-expanded-bg:${volumeChipExpandedSurface}`,
+    `--nb-volume-chip-selected-bg:${volumeChipSelectedSurface}`,
+    `--nb-volume-chip-dragging-bg:${volumeChipDraggingSurface}`,
+    `--nb-volume-chip-hover-bg:${volumeChipHoverSurface}`,
+    `--nb-volume-chip-focus-bg:${volumeChipFocusSurface}`,
+    `--nb-volume-chip-action-bg:${volumeChipActionSurface}`,
+    `--nb-volume-chip-action-hover-bg:${volumeChipActionHoverSurface}`,
+    `--nb-volume-chip-action-focus-bg:${volumeChipActionFocusSurface}`,
     `--nb-border:${palette.border}`,
     `--nb-border-strong:${palette.borderStrong}`,
     `--nb-accent:${palette.accent}`,
@@ -709,8 +795,8 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     `--nb-accent-soft:${palette.accentSoft}`,
     `--nb-accent-text:${palette.accentText}`,
     `--nb-accent-ink:${palette.accentText}`,
-    `--nb-accent-surface:color-mix(in srgb, ${palette.accent} 22%, ${palette.shellBottom})`,
-    `--nb-accent-surface-strong:color-mix(in srgb, ${palette.accentStrong} 34%, ${palette.shellTop})`,
+    `--nb-accent-surface:color-mix(in srgb, ${palette.accent} ${isFlat ? 16 : 22}%, ${isFlat ? palette.panelBg : palette.shellBottom})`,
+    `--nb-accent-surface-strong:color-mix(in srgb, ${palette.accentStrong} ${isFlat ? 22 : 34}%, ${isFlat ? palette.panelBg : palette.shellTop})`,
     `--nb-text-main:${palette.textMain}`,
     `--nb-text-soft:${palette.textSoft}`,
     `--nb-text-faint:${palette.textFaint}`,
