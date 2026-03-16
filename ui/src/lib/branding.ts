@@ -400,9 +400,9 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       border: 'rgba(60, 60, 67, 0.10)',
       borderStrong: 'rgba(255, 59, 48, 0.22)',
       accent: '#ff3b30',
-      accentStrong: '#1c1c1e',
+      accentStrong: '#d70015',
       accentSoft: 'rgba(255, 59, 48, 0.08)',
-      accentText: '#ffffff',
+      accentText: 'rgba(28, 28, 30, 0.98)',
       textMain: 'rgba(28, 28, 30, 0.98)',
       textSoft: 'rgba(58, 58, 60, 0.72)',
       textFaint: 'rgba(110, 110, 115, 0.58)',
@@ -717,37 +717,40 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
   const { palette, logo } = settings;
   const isFlat = palette.surfaceStyle === 'flat';
   const appSurface = isFlat
-    ? `linear-gradient(180deg, ${palette.shellTop} 0%, ${palette.shellBottom} 100%)`
+    ? `${palette.appBg}`
     : `radial-gradient(120% 140% at 0% 0%, ${palette.shellGlow}, transparent 48%), radial-gradient(110% 130% at 100% 0%, ${palette.panelGlow}, transparent 42%), linear-gradient(180deg, ${palette.shellTop} 0%, ${palette.panelBg} 44%, ${palette.shellBottom} 100%)`;
   const headerSurface = isFlat
-    ? `color-mix(in srgb, ${palette.panelBg} 96%, transparent)`
+    ? `color-mix(in srgb, ${palette.panelBg} 98%, ${palette.shellTop})`
     : `color-mix(in srgb, ${palette.shellBottom} 88%, transparent)`;
   const layeredPanelSurface = isFlat
-    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom}))`
+    ? `color-mix(in srgb, ${palette.panelBg} 98%, ${palette.shellBottom})`
     : `radial-gradient(120% 120% at 0% 0%, ${palette.panelGlow}, transparent 40%), linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 96%, transparent), color-mix(in srgb, ${palette.shellBottom} 96%, transparent))`;
   const identitySurface = isFlat
-    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.panelBg} 95%, ${palette.shellBottom}))`
+    ? `color-mix(in srgb, ${palette.panelBg} 97%, ${palette.shellBottom})`
     : `radial-gradient(140% 120% at 0% 0%, ${palette.accentSoft}, transparent 42%), linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 96%, transparent), color-mix(in srgb, ${palette.shellBottom} 94%, transparent))`;
   const themeDialogSurface = isFlat
-    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.shellBottom} 97%, ${palette.panelBg}))`
+    ? `color-mix(in srgb, ${palette.panelBg} 98%, ${palette.shellBottom})`
     : `radial-gradient(120% 120% at 0% 0%, ${palette.panelGlow}, transparent 48%), radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, ${palette.accent} 18%, transparent), transparent 42%), linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 98%, transparent), color-mix(in srgb, ${palette.shellBottom} 98%, transparent))`;
+  const dialogSurface = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 99%, ${palette.shellTop})`
+    : `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 98%, transparent), color-mix(in srgb, ${palette.shellBottom} 98%, transparent))`;
   const volumeTransitionSurface = isFlat
-    ? `linear-gradient(160deg, color-mix(in srgb, ${palette.panelBg} 98%, white 2%), color-mix(in srgb, ${palette.shellBottom} 96%, ${palette.panelBg}))`
+    ? `color-mix(in srgb, ${palette.panelBg} 98%, ${palette.shellBottom})`
     : `radial-gradient(120% 120% at 0% 0%, ${palette.accentSoft}, transparent 52%), radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, ${palette.accentStrong} 16%, transparent), transparent 48%), linear-gradient(160deg, color-mix(in srgb, ${palette.shellTop} 98%, transparent), color-mix(in srgb, ${palette.shellBottom} 96%, transparent))`;
   const timeMachineSurface = isFlat
-    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom}))`
+    ? `color-mix(in srgb, ${palette.panelBg} 98%, ${palette.shellBottom})`
     : `radial-gradient(140% 120% at 0% 0%, ${palette.accentSoft}, transparent 44%), linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 96%, transparent), color-mix(in srgb, ${palette.shellBottom} 90%, transparent))`;
   const volumeChipSurface = isFlat
-    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 98%, white 2%), color-mix(in srgb, ${palette.panelBg} 92%, ${palette.shellBottom}))`
+    ? `color-mix(in srgb, ${palette.panelBg} 97%, ${palette.shellBottom})`
     : `linear-gradient(180deg, color-mix(in srgb, ${palette.shellTop} 94%, transparent), color-mix(in srgb, ${palette.panelBg} 94%, transparent))`;
   const volumeChipExpandedSurface = isFlat
-    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 99%, white 1%), color-mix(in srgb, ${palette.panelBg} 95%, ${palette.shellBottom}))`
+    ? `color-mix(in srgb, ${palette.panelBg} 98%, ${palette.shellBottom})`
     : `linear-gradient(180deg, color-mix(in srgb, ${palette.shellTop} 98%, transparent), color-mix(in srgb, ${palette.panelBg} 98%, transparent))`;
   const volumeChipSelectedSurface = isFlat
-    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.accentSoft} 34%, ${palette.panelBg}), color-mix(in srgb, ${palette.panelBg} 92%, ${palette.accent}))`
+    ? `color-mix(in srgb, ${palette.accent} 10%, ${palette.panelBg})`
     : `radial-gradient(120% 180% at 0% 0%, color-mix(in srgb, ${palette.accent} 28%, transparent), transparent 52%), linear-gradient(180deg, color-mix(in srgb, ${palette.accentStrong} 34%, ${palette.shellTop}) 98%, color-mix(in srgb, ${palette.panelBg} 98%, transparent))`;
   const volumeChipDraggingSurface = isFlat
-    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.panelBg} 96%, white 4%), color-mix(in srgb, ${palette.panelBg} 90%, ${palette.shellBottom}))`
+    ? `color-mix(in srgb, ${palette.panelBg} 96%, ${palette.shellBottom})`
     : `linear-gradient(180deg, color-mix(in srgb, ${palette.shellTop} 94%, transparent), color-mix(in srgb, ${palette.panelBg} 94%, transparent))`;
   const volumeChipHoverSurface = isFlat
     ? `color-mix(in srgb, ${palette.panelBg} 92%, white 8%)`
@@ -766,13 +769,13 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     : `linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9))`;
   /* ── Button / control surfaces ─────────────────────────── */
   const btnBg = isFlat
-    ? `color-mix(in srgb, ${palette.panelBg} 82%, ${palette.shellBottom})`
+    ? `color-mix(in srgb, ${palette.panelBg} 96%, ${palette.shellBottom})`
     : `rgba(10, 19, 34, 0.52)`;
   const btnHoverBg = isFlat
-    ? `color-mix(in srgb, ${palette.panelBg} 68%, ${palette.shellBottom})`
+    ? `color-mix(in srgb, ${palette.panelBg} 90%, ${palette.accentSoft})`
     : `rgba(16, 32, 56, 0.88)`;
   const btnActiveBg = isFlat
-    ? `color-mix(in srgb, ${palette.accent} 14%, ${palette.panelBg})`
+    ? `color-mix(in srgb, ${palette.accent} 12%, ${palette.panelBg})`
     : `linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94))`;
   const btnBorder = isFlat
     ? `color-mix(in srgb, ${palette.border} 80%, transparent)`
@@ -790,10 +793,10 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     ? `${palette.textMain}`
     : `rgba(224, 242, 254, 0.96)`;
   const btnActiveColor = isFlat
-    ? `${palette.accentStrong}`
+    ? `${palette.textMain}`
     : `rgba(236, 254, 255, 0.98)`;
   const btnActiveShadow = isFlat
-    ? `0 1px 3px color-mix(in srgb, ${palette.accent} 12%, transparent)`
+    ? `0 1px 2px color-mix(in srgb, ${palette.accent} 10%, transparent)`
     : `0 10px 24px rgba(6, 182, 212, 0.16)`;
   const btnDangerBg = isFlat
     ? `color-mix(in srgb, ${palette.danger} 8%, ${palette.panelBg})`
@@ -825,6 +828,7 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     `--nb-header-bg:${headerSurface}`,
     `--nb-brand-rail-bg:${layeredPanelSurface}`,
     `--nb-identity-surface-bg:${identitySurface}`,
+    `--nb-dialog-bg:${dialogSurface}`,
     `--nb-theme-dialog-bg:${themeDialogSurface}`,
     `--nb-time-machine-bg:${timeMachineSurface}`,
     `--nb-volume-transition-bg:${volumeTransitionSurface}`,
