@@ -3473,7 +3473,7 @@
                   </div>
                   <div class="card-status">
                     <span class={`status-pill tone-${shareStatusTone(summary)}`}>Shared storage connected</span>
-                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
+                    <span class={`status-pill tone-${shareStatusTone(summary)} ${shareStatusLabel(summary) === 'Ready' ? 'ready-badge' : ''}`}>{shareStatusLabel(summary)}</span>
                   </div>
                 </div>
 
@@ -3568,7 +3568,7 @@
                     </div>
                   </div>
                   <div class="card-status">
-                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
+                    <span class={`status-pill tone-${shareStatusTone(summary)} ${shareStatusLabel(summary) === 'Ready' ? 'ready-badge' : ''}`}>{shareStatusLabel(summary)}</span>
                     <span class="status-pill tone-muted">Ready to use</span>
                   </div>
                 </div>
@@ -4265,9 +4265,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    align-self: flex-start;
+    flex: 0 0 auto;
     min-height: 28px;
     max-width: 100%;
-    padding: 0.22rem 1rem;
+    padding: 0.22rem 1.08rem;
     border-radius: 999px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
@@ -4277,6 +4279,10 @@
     line-height: 1.2;
     white-space: nowrap;
     box-sizing: border-box;
+  }
+
+  .status-pill.ready-badge {
+    padding-inline: 1.22rem;
   }
 
   .mini-pill-button {
@@ -4462,7 +4468,7 @@
     margin-top: 0.22rem;
     width: 17px;
     height: 17px;
-    accent-color: var(--nb-accent, #d27a54);
+    accent-color: var(--nb-accent-strong, #8f6a3b);
   }
 
   .inline-toggle > div {
@@ -4783,7 +4789,7 @@
   .toggle-only-label input {
     width: 16px;
     height: 16px;
-    accent-color: var(--nb-accent, #d27a54);
+    accent-color: var(--nb-accent-strong, #8f6a3b);
   }
 
   .inline-progress {

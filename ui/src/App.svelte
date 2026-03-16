@@ -7609,7 +7609,7 @@
                 <label><span>Orbit scale</span><input type="range" min="0.5" max="1.8" step="0.01" value={themeSettings.logo.orbitScale} oninput={(event) => updateThemeLogoNumber('orbitScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.orbitScale.toFixed(2)}</em></label>
                 <label><span>Size scale</span><input type="range" min="0.7" max="1.8" step="0.01" value={themeSettings.logo.sizeScale} oninput={(event) => updateThemeLogoNumber('sizeScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.sizeScale.toFixed(2)}</em></label>
                 <label><span>Bulge</span><input type="range" min="0.5" max="2.2" step="0.01" value={themeSettings.logo.bulgeScale} oninput={(event) => updateThemeLogoNumber('bulgeScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.bulgeScale.toFixed(2)}</em></label>
-                <label><span>Line weight</span><input type="range" min="0.5" max="4" step="0.01" value={themeSettings.logo.lineWeight} oninput={(event) => updateThemeLogoNumber('lineWeight', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.lineWeight.toFixed(2)}</em></label>
+                <label><span>Line weight</span><input type="range" min="0.5" max="8" step="0.01" value={themeSettings.logo.lineWeight} oninput={(event) => updateThemeLogoNumber('lineWeight', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.lineWeight.toFixed(2)}</em></label>
                 <label><span>Circle stroke</span><input type="range" min="0.5" max="4" step="0.01" value={themeSettings.logo.circleStroke} oninput={(event) => updateThemeLogoNumber('circleStroke', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.circleStroke.toFixed(2)}</em></label>
                 <label><span>Pulse speed</span><input type="range" min="0.2" max="2" step="0.01" value={themeSettings.logo.pulseSpeed} oninput={(event) => updateThemeLogoNumber('pulseSpeed', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.pulseSpeed.toFixed(2)}</em></label>
                 <label><span>Pulse magnitude</span><input type="range" min="0.2" max="2" step="0.01" value={themeSettings.logo.pulseMag} oninput={(event) => updateThemeLogoNumber('pulseMag', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.pulseMag.toFixed(2)}</em></label>
@@ -9033,7 +9033,9 @@
     border-radius: 999px;
     background: var(--nb-btn-bg, rgba(12, 24, 43, 0.82));
     color: var(--nb-btn-color, rgba(226, 232, 240, 0.92));
-    min-height: 32px;
+    box-sizing: border-box;
+    min-height: 34px;
+    height: 34px;
     padding: 0 0.8rem;
     display: inline-flex;
     align-items: center;
@@ -9442,10 +9444,10 @@
   }
 
   .workspace-mode-btn.active {
-    color: var(--nb-btn-active-color, rgba(28, 28, 30, 0.98));
+    color: rgba(255, 251, 245, 0.94);
     background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, white)));
-    border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 24%, transparent);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 26%, var(--nb-border-strong, rgba(166, 151, 136, 0.18)));
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.12);
   }
 
   .volume-workspace {
@@ -11296,7 +11298,9 @@
     background: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
     color: var(--nb-btn-color, rgba(28, 28, 30, 0.92));
     border-radius: 999px;
+    box-sizing: border-box;
     min-height: 34px;
+    height: 34px;
     padding: 0 0.82rem;
     font-size: 0.78rem;
     font-weight: 600;

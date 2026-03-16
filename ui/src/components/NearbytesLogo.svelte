@@ -17,7 +17,149 @@
   let canvas: HTMLCanvasElement | null = null;
   let stopAnimation: (() => void) | null = null;
 
-  function nearbytesCogo(canvasElement: HTMLCanvasElement, opts: Partial<NearbytesLogoOptions> = {}) {
+  type NearbytesRenderOptions = {
+    bootAnimate?: boolean;
+  };
+
+  function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  let colorProbeContext: CanvasRenderingContext2D | null = null;
+
+  function parseCssColor(color: string): [number, number, number] {
+    if (!colorProbeContext) {
+      const probeCanvas = document.createElement('canvas');
+      probeCanvas.width = 1;
+      probeCanvas.height = 1;
+      colorProbeContext = probeCanvas.getContext('2d');
+    }
+
+    if (!colorProbeContext) {
+      return [128, 128, 128];
+    }
+
+    colorProbeContext.fillStyle = '#808080';
+    colorProbeContext.fillStyle = color;
+    const normalized = colorProbeContext.fillStyle;
+    const rgbMatch = normalized.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+    if (rgbMatch) {
+      return [Number(rgbMatch[1]), Number(rgbMatch[2]), Number(rgbMatch[3])];
+    }
+
+    const hexMatch = normalized.match(/^#([\da-f]{3}|[\da-f]{6})$/i);
+    if (hexMatch) {
+      const value = hexMatch[1];
+      if (value.length === 3) {
+        return [
+          Number.parseInt(`${value[0]}${value[0]}`, 16),
+          Number.parseInt(`${value[1]}${value[1]}`, 16),
+          Number.parseInt(`${value[2]}${value[2]}`, 16),
+        ];
+      }
+      return [
+        Number.parseInt(value.slice(0, 2), 16),
+        Number.parseInt(value.slice(2, 4), 16),
+        Number.parseInt(value.slice(4, 6), 16),
+      ];
+    }
+
+    return [128, 128, 128];
+  }
+
+  function mixHexColors(first: string, second: string, amount: number): string {
+    const [firstRed, firstGreen, firstBlue] = parseCssColor(first);
+    const [secondRed, secondGreen, secondBlue] = parseCssColor(second);
+    const mix = clamp(amount, 0, 1);
+    const red = Math.round(firstRed + (secondRed - firstRed) * mix);
+    const green = Math.round(firstGreen + (secondGreen - firstGreen) * mix);
+    const blue = Math.round(firstBlue + (secondBlue - firstBlue) * mix);
+    return `rgb(${red}, ${green}, ${blue})`;
+  }
+
+  function alphaColor(hex: string, alpha: number): string {
+    const [red, green, blue] = parseCssColor(hex);
+    return `rgba(${red}, ${green}, ${blue}, ${clamp(alpha, 0, 1)})`;
+  }
+
+  function traceRoundedRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number): void {
+    const boundedRadius = Math.min(radius, width / 2, height / 2);
+    context.beginPath();
+    context.moveTo(x + boundedRadius, y);
+    context.lineTo(x + width - boundedRadius, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + boundedRadius);
+    context.lineTo(x + width, y + height - boundedRadius);
+    context.quadraticCurveTo(x + width, y + height, x + width - boundedRadius, y + height);
+    context.lineTo(x + boundedRadius, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - boundedRadius);
+    context.lineTo(x, y + boundedRadius);
+    context.quadraticCurveTo(x, y, x + boundedRadius, y);
+    context.closePath();
+  }
+
+  function renderAppIconSurface(context: CanvasRenderingContext2D, size: number, options: NearbytesLogoOptions): void {
+    const outerInset = size * 0.07;
+    const plateSize = size - outerInset * 2;
+    const plateRadius = plateSize * 0.225;
+    const plateX = outerInset;
+    const plateY = outerInset;
+    const plateTop = mixHexColors(options.bgFill, '#ffffff', 0.18);
+    const plateBottom = mixHexColors(options.nodeFill, options.bgFill, 0.56);
+    const plateBorder = alphaColor(options.nodeStroke, 0.18);
+    const topGlow = alphaColor('#ffffff', 0.42);
+    const accentGlow = alphaColor(options.accentColor, 0.16);
+
+    context.clearRect(0, 0, size, size);
+    context.save();
+    context.shadowColor = alphaColor('#0f172a', 0.18);
+    context.shadowBlur = size * 0.055;
+    context.shadowOffsetY = size * 0.018;
+    traceRoundedRect(context, plateX, plateY, plateSize, plateSize, plateRadius);
+    const plateGradient = context.createLinearGradient(0, plateY, 0, plateY + plateSize);
+    plateGradient.addColorStop(0, plateTop);
+    plateGradient.addColorStop(0.58, mixHexColors(plateTop, plateBottom, 0.28));
+    plateGradient.addColorStop(1, plateBottom);
+    context.fillStyle = plateGradient;
+    context.fill();
+    context.restore();
+
+    context.save();
+    traceRoundedRect(context, plateX, plateY, plateSize, plateSize, plateRadius);
+    context.clip();
+
+    const gloss = context.createLinearGradient(plateX, plateY, plateX, plateY + plateSize * 0.46);
+    gloss.addColorStop(0, topGlow);
+    gloss.addColorStop(1, alphaColor('#ffffff', 0));
+    context.fillStyle = gloss;
+    context.fillRect(plateX, plateY, plateSize, plateSize * 0.46);
+
+    const accent = context.createRadialGradient(
+      plateX + plateSize * 0.7,
+      plateY + plateSize * 0.18,
+      plateSize * 0.04,
+      plateX + plateSize * 0.7,
+      plateY + plateSize * 0.18,
+      plateSize * 0.42
+    );
+    accent.addColorStop(0, accentGlow);
+    accent.addColorStop(1, alphaColor(options.accentColor, 0));
+    context.fillStyle = accent;
+    context.fillRect(plateX, plateY, plateSize, plateSize);
+    context.restore();
+
+    context.save();
+    traceRoundedRect(context, plateX, plateY, plateSize, plateSize, plateRadius);
+    context.strokeStyle = plateBorder;
+    context.lineWidth = Math.max(2, size * 0.004);
+    context.stroke();
+    context.restore();
+  }
+
+  function nearbytesCogo(
+    canvasElement: HTMLCanvasElement,
+    opts: Partial<NearbytesLogoOptions> = {},
+    renderOptions: NearbytesRenderOptions = {}
+  ) {
     const W = canvasElement.width;
     const H = canvasElement.height;
     const context = canvasElement.getContext('2d');
@@ -44,6 +186,7 @@
     const luminosity = opts.luminosity ?? 0;
     const contrast = opts.contrast ?? 0;
     const arcStyle = opts.arcStyle ?? 'dashed';
+    const bootAnimate = renderOptions.bootAnimate ?? true;
 
     const ease = {
       outExpo: (t: number) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t)),
@@ -59,7 +202,6 @@
       outQuart: (t: number) => 1 - Math.pow(1 - t, 4),
     };
 
-    const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
     const prog = (t: number, s: number, e: number) => clamp((t - s) / (e - s), 0, 1);
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
@@ -161,10 +303,7 @@
     let breatheT = 0;
     let rafId = 0;
 
-    function tick(ts: number) {
-      if (!animStart) animStart = ts;
-      const t = bootAnimate ? (ts - animStart) / 1000 : 4;
-      breatheT += 0.016;
+    function renderFrame(t: number, breathePhase: number) {
       const settle = clamp((t - 2.0) * 0.7, 0, 1);
 
       ctx.clearRect(0, 0, W, H);
@@ -203,7 +342,7 @@
         const pp = ease.outElastic(clamp(prog(t, d, d + 0.7), 0, 1));
         if (pp <= 0) return;
         const phase = i * ((Math.PI * 2) / nP);
-        const bs = 1 + Math.sin(breatheT * pulseSpeed * 0.65 + phase) * pulseMag * 0.042 * settle;
+        const bs = 1 + Math.sin(breathePhase * pulseSpeed * 0.65 + phase) * pulseMag * 0.042 * settle;
         const ro = rPeer * pp * bs;
         const ri = pDot * pp * bs;
         ctx.save();
@@ -223,7 +362,7 @@
 
       const cp = ease.outBack(prog(t, 0.25, 1.0));
       if (cp > 0) {
-        const bs = 1 + Math.sin(breatheT * pulseSpeed * 0.65) * pulseMag * 0.055 * settle;
+        const bs = 1 + Math.sin(breathePhase * pulseSpeed * 0.65) * pulseMag * 0.055 * settle;
         const ro = rCenter * cp * bs;
         const rm = rCenter * 0.6 * cp * bs;
         const rc = rCenter * 0.22 * cp * bs;
@@ -245,6 +384,18 @@
         ctx.fill();
         ctx.restore();
       }
+    }
+
+    if (!bootAnimate) {
+      renderFrame(4, 3.2);
+      return () => {};
+    }
+
+    function tick(ts: number) {
+      if (!animStart) animStart = ts;
+      const t = (ts - animStart) / 1000;
+      breatheT += 0.016;
+      renderFrame(t, breatheT);
 
       rafId = requestAnimationFrame(tick);
     }
@@ -265,11 +416,62 @@
     canvas.height = Math.round(size * ratio);
     canvas.style.width = `${size}px`;
     canvas.style.height = `${size}px`;
-    stopAnimation = nearbytesCogo(canvas, options);
+    stopAnimation = nearbytesCogo(canvas, options, { bootAnimate });
   }
 
   export async function exportPngDataUrl(): Promise<string | null> {
-    return canvas?.toDataURL('image/png') ?? null;
+    if (!canvas) {
+      return null;
+    }
+
+    const exportSize = 1024;
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = exportSize;
+    exportCanvas.height = exportSize;
+    const exportContext = exportCanvas.getContext('2d');
+    if (!exportContext) {
+      return canvas.toDataURL('image/png');
+    }
+
+    renderAppIconSurface(exportContext, exportSize, options);
+
+    const logoCanvas = document.createElement('canvas');
+    const logoSize = 724;
+    logoCanvas.width = logoSize;
+    logoCanvas.height = logoSize;
+    nearbytesCogo(logoCanvas, options, { bootAnimate: false });
+
+    const logoInset = Math.round((exportSize - logoSize) / 2);
+    const logoRadius = logoSize / 2;
+
+    exportContext.save();
+    exportContext.shadowColor = alphaColor('#0f172a', 0.14);
+    exportContext.shadowBlur = exportSize * 0.03;
+    exportContext.shadowOffsetY = exportSize * 0.014;
+    exportContext.beginPath();
+    exportContext.arc(exportSize / 2, exportSize / 2, logoRadius, 0, Math.PI * 2);
+    exportContext.fillStyle = alphaColor(options.nodeFill, 0.72);
+    exportContext.fill();
+    exportContext.restore();
+
+    exportContext.save();
+    exportContext.beginPath();
+    exportContext.arc(exportSize / 2, exportSize / 2, logoRadius, 0, Math.PI * 2);
+    exportContext.clip();
+    exportContext.imageSmoothingEnabled = true;
+    exportContext.imageSmoothingQuality = 'high';
+    exportContext.drawImage(logoCanvas, logoInset, logoInset, logoSize, logoSize);
+    exportContext.restore();
+
+    exportContext.save();
+    exportContext.beginPath();
+    exportContext.arc(exportSize / 2, exportSize / 2, logoRadius, 0, Math.PI * 2);
+    exportContext.strokeStyle = alphaColor(options.nodeStroke, 0.18);
+    exportContext.lineWidth = exportSize * 0.004;
+    exportContext.stroke();
+    exportContext.restore();
+
+    return exportCanvas.toDataURL('image/png');
   }
 
   $effect(() => {

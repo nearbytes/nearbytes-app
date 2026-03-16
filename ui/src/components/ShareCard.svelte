@@ -47,7 +47,7 @@
     {#if statusBadges.length > 0}
       <div class="card-status">
         {#each statusBadges as badge}
-          <span class={`status-pill tone-${badge.tone ?? 'muted'}`}>{badge.label}</span>
+          <span class={`status-pill tone-${badge.tone ?? 'muted'} ${badge.label === 'Ready' ? 'ready-badge' : ''}`}>{badge.label}</span>
         {/each}
       </div>
     {/if}
@@ -212,9 +212,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    align-self: flex-start;
+    flex: 0 0 auto;
     min-height: 28px;
     max-width: 100%;
-    padding: 0.22rem 1rem;
+    padding: 0.22rem 1.08rem;
     border-radius: 999px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
@@ -226,6 +228,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     box-sizing: border-box;
+  }
+
+  .status-pill.ready-badge {
+    padding-inline: 1.22rem;
   }
 
   .tone-good,

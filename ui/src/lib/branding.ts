@@ -421,8 +421,8 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       orbitScale: 1.1,
       sizeScale: 1.24,
       bulgeScale: 1.08,
-      lineWeight: 3.38,
-      circleStroke: 3.02,
+      lineWeight: 4,
+      circleStroke: 3.55,
       pulseSpeed: 0.78,
       pulseMag: 1.06,
       luminosity: -4,
@@ -592,7 +592,7 @@ function normalizeLogoOptions(input: unknown, fallback: NearbytesLogoOptions): N
     orbitScale: normalizeNumber(logoInput.orbitScale, fallback.orbitScale, 0.5, 1.8),
     sizeScale: normalizeNumber(logoInput.sizeScale, fallback.sizeScale, 0.7, 1.8),
     bulgeScale: normalizeNumber(logoInput.bulgeScale, fallback.bulgeScale, 0.5, 2.2),
-    lineWeight: normalizeNumber(logoInput.lineWeight, fallback.lineWeight, 0.5, 4),
+    lineWeight: normalizeNumber(logoInput.lineWeight, fallback.lineWeight, 0.5, 8),
     circleStroke: normalizeNumber(logoInput.circleStroke, fallback.circleStroke, 0.5, 4),
     pulseSpeed: normalizeNumber(logoInput.pulseSpeed, fallback.pulseSpeed, 0.2, 2),
     pulseMag: normalizeNumber(logoInput.pulseMag, fallback.pulseMag, 0.2, 2),
@@ -654,11 +654,17 @@ function shouldMigrateMonoScarletLogo(input: unknown): boolean {
   const accentColor =
     typeof logoInput.accentColor === 'string' ? logoInput.accentColor.trim().toLowerCase() : '';
   const arcColor = typeof logoInput.arcColor === 'string' ? logoInput.arcColor.trim().toLowerCase() : '';
+  const lineWeight = typeof logoInput.lineWeight === 'number' ? logoInput.lineWeight : null;
+  const circleStroke = typeof logoInput.circleStroke === 'number' ? logoInput.circleStroke : null;
   return (
     accentColor === '#ff3b30' ||
     accentColor === '#d27a54' ||
     arcColor === '#ff6b61' ||
-    arcColor === '#e5a07d'
+    arcColor === '#e5a07d' ||
+    lineWeight === 2.56 ||
+    lineWeight === 3.38 ||
+    circleStroke === 2.28 ||
+    circleStroke === 3.02
   );
 }
 
@@ -819,8 +825,8 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     ? `color-mix(in srgb, ${palette.panelBg} 92%, white 8%)`
     : `color-mix(in srgb, ${palette.panelBg} 88%, ${palette.accentSoft})`;
   const btnActiveBg = isFlat
-    ? `color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom})`
-    : `color-mix(in srgb, ${palette.panelBg} 82%, ${palette.accentSoft})`;
+    ? `linear-gradient(180deg, color-mix(in srgb, ${palette.accentStrong} 82%, ${palette.accent}) 0%, color-mix(in srgb, ${palette.accentStrong} 94%, ${palette.shellBottom}) 100%)`
+    : `linear-gradient(180deg, color-mix(in srgb, ${palette.accentStrong} 78%, ${palette.accent}) 0%, color-mix(in srgb, ${palette.accentStrong} 92%, ${palette.shellBottom}) 100%)`;
   const btnBorder = isFlat
     ? `color-mix(in srgb, ${palette.border} 80%, transparent)`
     : `color-mix(in srgb, ${palette.border} 82%, transparent)`;
@@ -828,8 +834,8 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     ? `${palette.border}`
     : `color-mix(in srgb, ${palette.border} 94%, ${palette.accent} 8%)`;
   const btnActiveBorder = isFlat
-    ? `color-mix(in srgb, ${palette.accent} 16%, ${palette.border})`
-    : `color-mix(in srgb, ${palette.accent} 30%, ${palette.border})`;
+    ? `color-mix(in srgb, ${palette.accent} 42%, ${palette.accentStrong})`
+    : `color-mix(in srgb, ${palette.accent} 54%, ${palette.accentStrong})`;
   const btnColor = isFlat
     ? `${palette.textSoft}`
     : `${palette.textSoft}`;
@@ -837,11 +843,11 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     ? `${palette.textMain}`
     : `${palette.textMain}`;
   const btnActiveColor = isFlat
-    ? `${palette.textMain}`
-    : `${palette.textMain}`;
+    ? `${palette.accentText}`
+    : `${palette.accentText}`;
   const btnActiveShadow = isFlat
-    ? `0 1px 2px rgba(82, 53, 33, 0.05)`
-    : `0 1px 2px color-mix(in srgb, ${palette.accent} 10%, transparent)`;
+    ? `0 10px 24px color-mix(in srgb, ${palette.accentStrong} 18%, transparent)`
+    : `0 12px 28px color-mix(in srgb, ${palette.accentStrong} 20%, transparent)`;
   const btnDangerBg = isFlat
     ? `color-mix(in srgb, ${palette.danger} 8%, ${palette.panelBg})`
     : `color-mix(in srgb, ${palette.danger} 8%, ${palette.panelBg})`;

@@ -711,11 +711,12 @@
   .chat-status-pill,
   .chat-banner {
     border-radius: 999px;
-    padding: 0.28rem 0.62rem;
+    padding: 0.28rem 0.82rem;
     font-size: 0.72rem;
   }
 
   .chat-status-pill {
+    align-self: flex-start;
     background: color-mix(in srgb, var(--nb-accent, #d27a54) 7%, #fff9f4);
     border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 12%, transparent);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
