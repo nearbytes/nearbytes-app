@@ -3269,7 +3269,7 @@
                   </div>
                   <div class="card-status">
                     <span class={`status-pill tone-${shareStatusTone(summary)}`}>Live location attached</span>
-                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
+                    <span class={`status-pill tone-${shareStatusTone(summary)} ${shareStatusLabel(summary) === 'Ready' ? 'ready-badge' : ''}`}>{shareStatusLabel(summary)}</span>
                   </div>
                 </div>
 
@@ -3343,7 +3343,7 @@
                     </div>
                   </div>
                   <div class="card-status">
-                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>{shareStatusLabel(summary)}</span>
+                    <span class={`status-pill tone-${shareStatusTone(summary)} ${shareStatusLabel(summary) === 'Ready' ? 'ready-badge' : ''}`}>{shareStatusLabel(summary)}</span>
                     <span class="status-pill tone-muted">Available to attach</span>
                   </div>
                 </div>
@@ -4032,9 +4032,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    align-self: flex-start;
+    flex: 0 0 auto;
     min-height: 28px;
     max-width: 100%;
-    padding: 0.22rem 1rem;
+    padding: 0.22rem 1.08rem;
     border-radius: 999px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
@@ -4044,6 +4046,10 @@
     line-height: 1.2;
     white-space: nowrap;
     box-sizing: border-box;
+  }
+
+  .status-pill.ready-badge {
+    padding-inline: 1.22rem;
   }
 
   .mini-pill-button {
