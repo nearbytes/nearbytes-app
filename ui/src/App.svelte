@@ -1354,6 +1354,7 @@
   let joinLinkCopyBusy = $state(false);
   let joinLinkCopyFeedback = $state<JoinLinkCopyFeedbackState | null>(null);
   let volumeSharingFeedback = $state<{ tone: 'success' | 'warning'; message: string } | null>(null);
+  let showVolumeShareDialog = $state(false);
   let clipboardJoinLinkSerialized = $state('');
   let clipboardJoinLinkBusy = $state(false);
   let joinLinkInlineMountId = $state<string | null>(null);
@@ -3365,9 +3366,22 @@
   }
 
   function openVolumeShareStoragePanel(): void {
+    showVolumeShareDialog = false;
     showVolumeStoragePanel = true;
     showSourcesPanel = false;
     sourceDiscoveryPanelFocus = 'shares';
+  }
+
+  function openVolumeShareDialog(): void {
+    if (!volumeId) {
+      return;
+    }
+    showStatusPanel = false;
+    showVolumeShareDialog = true;
+  }
+
+  function closeVolumeShareDialog(): void {
+    showVolumeShareDialog = false;
   }
 
   async function handleJoinLinkOpened(response: JoinLinkOpenResponse): Promise<void> {
@@ -5004,7 +5018,7 @@
   }
 
   $effect(() => {
-    if (!showStatusPanel || !volumeId) {
+    if (!showVolumeShareDialog || !volumeId) {
       currentVolumeManagedShares = [];
       return;
     }
@@ -5035,6 +5049,11 @@
     if (timelineDetailOpen) {
       e.preventDefault();
       closeTimelineDetails();
+      return;
+    }
+    if (showVolumeShareDialog) {
+      e.preventDefault();
+      closeVolumeShareDialog();
       return;
     }
     handleManagerKeydown(e);
@@ -5411,6 +5430,20 @@
           <button
             type="button"
             class="header-tool-btn"
+            class:active={showVolumeShareDialog}
+            aria-label="Share"
+            title="Share"
+            onclick={(event) => {
+              event.stopPropagation();
+              openVolumeShareDialog();
+            }}
+            disabled={!volumeId}
+          >
+            <Link2 class="button-icon" size={14} strokeWidth={2} />
+          </button>
+          <button
+            type="button"
+            class="header-tool-btn"
             class:active={showStatusPanel}
             aria-label="Status"
             title="Status"
@@ -5713,98 +5746,20 @@
           </span>
         </div>
         <div class="status-item status-share-item">
-          <div class="status-share-group">
+          <div class="status-share-group compact">
             <div class="status-share-head">
-              <span class="status-label">Share volume</span>
-              <div class="status-link-actions">
-                <button
-                  type="button"
-                  class="status-link-btn"
-                  onclick={() => void copyCurrentJoinLink(false)}
-                  disabled={joinLinkCopyBusy}
-                  title="Copy a secretless nearbytes:// link for this volume"
-                >
-                  <Link2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>{joinLinkCopyBusy ? 'Preparing…' : 'Share volume'}</span>
-                </button>
-                <button
-                  type="button"
-                  class="status-link-btn"
-                  onclick={() => void copyCurrentJoinLink(true)}
-                  disabled={joinLinkCopyBusy || !hasCopyableCurrentSecret()}
-                  title="Copy a nearbytes:// link that includes the current secret when practical"
-                >
-                  <Link2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>Share secret volume</span>
-                </button>
-              </div>
-            </div>
-            <p class="status-share-note">Use a Nearbytes volume link to open this volume elsewhere. Add live storage only when this volume actually needs synced collaboration.</p>
-            {#if volumeSharingFeedback}
-              <span class:warning={volumeSharingFeedback.tone === 'warning'} class="status-link-feedback">
-                {volumeSharingFeedback.message}
-              </span>
-            {/if}
-          </div>
-
-          <div class="status-share-group">
-            <div class="status-share-head">
-              <span class="status-label">Share storage with…</span>
+              <span class="status-label">Share</span>
               <button
                 type="button"
-                class="status-link-btn secondary"
-                onclick={openVolumeShareStoragePanel}
+                class="status-link-btn"
+                onclick={openVolumeShareDialog}
+                disabled={!volumeId}
               >
-                <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                <span>Choose storage</span>
+                <Link2 class="button-icon" size={15} strokeWidth={2} />
+                <span>Open share dialog</span>
               </button>
             </div>
-            <p class="status-share-note">Choose MEGA or another provider on a by-need basis, then invite collaborators to that live storage.</p>
-
-            {#if currentVolumeSharingLoading && currentVolumeManagedShares.length === 0}
-              <p class="status-share-note">Loading attached live storage…</p>
-            {:else if currentVolumeManagedShares.length === 0}
-              <p class="status-share-note">No live storage attached to this volume yet.</p>
-            {:else}
-              <div class="status-storage-list">
-                {#each currentVolumeManagedShares as summary (summary.share.id)}
-                  <div class="status-storage-card">
-                    <div class="status-storage-head">
-                      <div>
-                        <p class="status-storage-provider">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
-                        <p class="status-storage-title">{summary.share.label}</p>
-                      </div>
-                      <span class="status-storage-state">{summary.state.status === 'ready' ? 'Live' : summary.state.detail}</span>
-                    </div>
-                    <div class="status-storage-invite-row">
-                      <input
-                        class="status-storage-input"
-                        type="text"
-                        value={currentVolumeShareInviteDraft(summary.share.id)}
-                        placeholder="name@example.com"
-                        oninput={(event) =>
-                          setCurrentVolumeShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                      />
-                      <button
-                        type="button"
-                        class="status-link-btn secondary"
-                        onclick={() => void inviteCurrentVolumeStorage(summary)}
-                        disabled={currentVolumeSharingLoading}
-                      >
-                        <span>{currentVolumeSharingLoading ? 'Sending…' : 'Share storage'}</span>
-                      </button>
-                    </div>
-                    {#if currentVolumeStorageCollaborators(summary).length > 0}
-                      <div class="status-storage-members">
-                        {#each currentVolumeStorageCollaborators(summary) as email (email)}
-                          <span class="status-storage-chip">{email}</span>
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            {/if}
+            <p class="status-share-note">Open the share dialog to copy the volume link and optionally invite collaborators to attached live storage.</p>
           </div>
         </div>
       {/if}
@@ -6854,6 +6809,138 @@
         </div>
         <div class="tm-spec-body">
           <pre class="tm-details-pre">{specModalContent}</pre>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showVolumeShareDialog && volumeId}
+    <div
+      class="share-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Share this volume"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeVolumeShareDialog();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeVolumeShareDialog();
+        }
+      }}
+    >
+      <div class="share-dialog panel-surface" role="document" tabindex="-1">
+        <div class="share-dialog-header">
+          <div class="share-dialog-head-meta">
+            <p class="share-dialog-eyebrow">Volume sharing</p>
+            <p class="share-dialog-title">Share this volume</p>
+            <p class="share-dialog-subtitle">Copy a Nearbytes link to open the volume elsewhere. Invite people to live storage only when this volume needs synced collaboration.</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close share dialog" onclick={closeVolumeShareDialog}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div class="share-dialog-body">
+          <section class="share-dialog-section">
+            <div class="status-share-head">
+              <span class="share-dialog-section-title">Volume link</span>
+              <div class="status-link-actions">
+                <button
+                  type="button"
+                  class="status-link-btn"
+                  onclick={() => void copyCurrentJoinLink(false)}
+                  disabled={joinLinkCopyBusy}
+                  title="Copy a secretless nearbytes:// link for this volume"
+                >
+                  <Link2 class="button-icon" size={15} strokeWidth={2} />
+                  <span>{joinLinkCopyBusy ? 'Preparing…' : 'Share volume'}</span>
+                </button>
+                <button
+                  type="button"
+                  class="status-link-btn secondary"
+                  onclick={() => void copyCurrentJoinLink(true)}
+                  disabled={joinLinkCopyBusy || !hasCopyableCurrentSecret()}
+                  title="Copy a nearbytes:// link that includes the current secret when practical"
+                >
+                  <Link2 class="button-icon" size={15} strokeWidth={2} />
+                  <span>Share secret volume</span>
+                </button>
+              </div>
+            </div>
+            {#if volumeSharingFeedback}
+              <span class:warning={volumeSharingFeedback.tone === 'warning'} class="status-link-feedback">
+                {volumeSharingFeedback.message}
+              </span>
+            {/if}
+          </section>
+
+          <section class="share-dialog-section">
+            <div class="status-share-head">
+              <span class="share-dialog-section-title">Live storage invitations</span>
+              <button
+                type="button"
+                class="status-link-btn secondary"
+                onclick={openVolumeShareStoragePanel}
+              >
+                <HardDrive class="button-icon" size={15} strokeWidth={2} />
+                <span>Choose storage</span>
+              </button>
+            </div>
+            <p class="status-share-note">If this volume needs live sync, attach MEGA or another provider-backed location and send invitations here.</p>
+
+            {#if currentVolumeSharingLoading && currentVolumeManagedShares.length === 0}
+              <p class="status-share-note">Loading attached live storage…</p>
+            {:else if currentVolumeManagedShares.length === 0}
+              <div class="share-dialog-empty">
+                <p class="share-dialog-empty-title">No live storage attached yet</p>
+                <p class="status-share-note">Start with the volume link alone, or choose storage if this volume needs synced collaboration.</p>
+              </div>
+            {:else}
+              <div class="status-storage-list share-dialog-storage-list">
+                {#each currentVolumeManagedShares as summary (summary.share.id)}
+                  <div class="status-storage-card">
+                    <div class="status-storage-head">
+                      <div>
+                        <p class="status-storage-provider">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
+                        <p class="status-storage-title">{summary.share.label}</p>
+                      </div>
+                      <span class="status-storage-state">{summary.state.status === 'ready' ? 'Live' : summary.state.detail}</span>
+                    </div>
+                    <div class="status-storage-invite-row">
+                      <input
+                        class="status-storage-input"
+                        type="text"
+                        value={currentVolumeShareInviteDraft(summary.share.id)}
+                        placeholder="name@example.com"
+                        oninput={(event) =>
+                          setCurrentVolumeShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
+                      />
+                      <button
+                        type="button"
+                        class="status-link-btn secondary"
+                        onclick={() => void inviteCurrentVolumeStorage(summary)}
+                        disabled={currentVolumeSharingLoading}
+                      >
+                        <span>{currentVolumeSharingLoading ? 'Sending…' : 'Share storage'}</span>
+                      </button>
+                    </div>
+                    {#if currentVolumeStorageCollaborators(summary).length > 0}
+                      <div class="status-storage-members">
+                        {#each currentVolumeStorageCollaborators(summary) as email (email)}
+                          <span class="status-storage-chip">{email}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </section>
         </div>
       </div>
     </div>
@@ -8020,6 +8107,10 @@
     background: rgba(10, 18, 31, 0.56);
   }
 
+  .status-share-group.compact {
+    max-width: 34rem;
+  }
+
   .status-share-head {
     display: flex;
     flex-wrap: wrap;
@@ -8758,6 +8849,111 @@
     background: rgba(2, 6, 23, 0.72);
     backdrop-filter: blur(8px);
     z-index: 200;
+  }
+
+  .share-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(2, 6, 23, 0.76);
+    backdrop-filter: blur(10px);
+    z-index: 220;
+  }
+
+  .share-dialog {
+    width: min(760px, 95vw);
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    background:
+      radial-gradient(120% 120% at 0% 0%, rgba(34, 211, 238, 0.09), transparent 48%),
+      linear-gradient(180deg, rgba(9, 18, 34, 0.99), rgba(6, 12, 24, 0.97));
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 18px;
+    box-shadow: 0 30px 80px rgba(2, 6, 23, 0.56);
+  }
+
+  .share-dialog-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.2rem 1.3rem 0.95rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  }
+
+  .share-dialog-head-meta {
+    display: grid;
+    gap: 0.34rem;
+    min-width: 0;
+  }
+
+  .share-dialog-eyebrow {
+    margin: 0;
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(125, 211, 252, 0.74);
+  }
+
+  .share-dialog-title {
+    margin: 0;
+    font-size: 1.16rem;
+    font-weight: 650;
+    color: rgba(240, 249, 255, 0.98);
+  }
+
+  .share-dialog-subtitle {
+    margin: 0;
+    max-width: 54ch;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    color: rgba(191, 219, 254, 0.74);
+  }
+
+  .share-dialog-body {
+    overflow: auto;
+    display: grid;
+    gap: 0.95rem;
+    padding: 1rem 1.3rem 1.3rem;
+  }
+
+  .share-dialog-section {
+    display: grid;
+    gap: 0.7rem;
+    padding: 1rem;
+    border-radius: 16px;
+    border: 1px solid rgba(56, 189, 248, 0.12);
+    background: rgba(8, 15, 27, 0.68);
+  }
+
+  .share-dialog-section-title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: rgba(240, 249, 255, 0.95);
+  }
+
+  .share-dialog-empty {
+    display: grid;
+    gap: 0.3rem;
+    padding: 0.9rem 0.95rem;
+    border-radius: 14px;
+    border: 1px dashed rgba(96, 165, 250, 0.2);
+    background: rgba(10, 18, 31, 0.52);
+  }
+
+  .share-dialog-empty-title {
+    margin: 0;
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: rgba(226, 232, 240, 0.94);
+  }
+
+  .share-dialog-storage-list {
+    gap: 0.8rem;
   }
 
   .tm-details-modal {
