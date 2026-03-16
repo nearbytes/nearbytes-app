@@ -645,11 +645,13 @@ export class ManagedShareService {
         share = created.share;
         workingShares.push(created.share);
       } else if (share && input.volumeId) {
-        await this.adapters.get(provider)?.ensureSync?.(share, account).catch((error) => {
+        const existingShare = share;
+        const existingShareId = existingShare.id;
+        await this.adapters.get(provider)?.ensureSync?.(existingShare, account).catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
-          this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
+          this.runtime.logger.warn(`Managed share sync bootstrap failed for ${existingShareId}: ${message}`);
         });
-        await this.attachManagedShare(share.id, { volumeId: input.volumeId });
+        await this.attachManagedShare(existingShareId, { volumeId: input.volumeId });
       }
 
       actions.push({
