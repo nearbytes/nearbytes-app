@@ -7601,7 +7601,7 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 0.85rem;
+    gap: 0.95rem;
     padding: 0;
     border: 0;
     background: transparent;
@@ -7631,11 +7631,15 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0.42rem;
+    width: 78px;
+    height: 78px;
+    padding: 0;
     border-radius: 18px;
     background: color-mix(in srgb, var(--nb-logo-bg, #ffffff) 96%, var(--nb-panel-bg, #ffffff));
     border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.16));
-    box-shadow: none;
+    box-shadow:
+      0 8px 24px rgba(28, 28, 30, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.72);
   }
 
   .brand-logo-frame.interactive {
@@ -7646,20 +7650,25 @@
   .brand-logo-trigger:focus-visible .brand-logo-frame.interactive {
     border-color: var(--nb-border-strong, rgba(56, 189, 248, 0.32));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, var(--nb-accent-soft, rgba(255, 59, 48, 0.08)));
+    box-shadow:
+      0 10px 28px rgba(28, 28, 30, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.78);
   }
 
   .brand-copy {
     flex: 0 0 auto;
     display: grid;
-    gap: 0.12rem;
+    gap: 0.08rem;
     align-content: center;
+    justify-content: center;
     white-space: nowrap;
   }
 
   .brand-stack {
     min-width: 0;
-    display: grid;
-    gap: 0.18rem;
+    display: flex;
+    align-items: center;
+    min-height: 78px;
     flex: 1 1 auto;
   }
 
@@ -7668,6 +7677,7 @@
     align-items: center;
     gap: 0.65rem;
     min-width: 0;
+    width: 100%;
   }
 
   .brand-meta-row :global(.mount-rail) {
@@ -7678,7 +7688,8 @@
   .brand-title {
     font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 1.66rem;
-    font-weight: 700;
+    font-weight: 650;
+    line-height: 1.02;
     letter-spacing: 0.01em;
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
   }
@@ -7686,9 +7697,9 @@
   .brand-note {
     font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.82rem;
-    font-weight: 500;
+    font-weight: 450;
     letter-spacing: 0.02em;
-    line-height: 1.4;
+    line-height: 1.25;
     color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
   }
 
@@ -9219,6 +9230,7 @@
     gap: 0.5rem;
     min-width: 0;
     flex-wrap: wrap;
+    font-family: var(--nb-font-body, 'Avenir Next', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif);
   }
 
   .workspace-mode-secondary {
@@ -9229,6 +9241,7 @@
 
   .workspace-selection-summary {
     font-size: 0.74rem;
+    font-weight: 460;
     letter-spacing: 0.02em;
     color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
     white-space: nowrap;
@@ -9393,6 +9406,7 @@
     margin: 0.25rem 0 0;
     font-size: 0.875rem;
     color: var(--nb-text-main, rgba(226, 232, 240, 0.92));
+    font-weight: 520;
   }
 
   .time-machine-actions {
@@ -9453,9 +9467,16 @@
     align-items: start;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: 0.15rem 0.35rem 0.2rem 0;
+    padding: 0.15rem 1rem 0.32rem 0;
+    scroll-padding-inline-end: 1rem;
     scrollbar-width: none;
     box-sizing: border-box;
+  }
+
+  .tm-events::after {
+    content: '';
+    display: block;
+    width: 0.55rem;
   }
 
   .tm-events::-webkit-scrollbar {
@@ -9468,20 +9489,23 @@
     --tm-event-kind-color: var(--nb-text-soft, rgba(58, 58, 60, 0.72));
     border: 1px solid var(--tm-event-border);
     border-radius: 14px;
-    background: var(--tm-event-bg);
+    background: color-mix(in srgb, var(--tm-event-bg) 56%, rgba(255, 255, 255, 0.98));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     display: grid;
     gap: 0.15rem;
     padding: 0.42rem 0.5rem;
     text-align: left;
     cursor: pointer;
-    transition: border-color 0.18s ease, background 0.18s ease;
+    transition: border-color 0.18s ease, background 0.18s ease, opacity 0.18s ease, transform 0.18s ease, filter 0.18s ease;
     box-sizing: border-box;
     min-width: 0;
     max-width: 100%;
     overflow: hidden;
     outline: none;
-    opacity: 0.66;
+    opacity: 0.54;
+    border-style: dashed;
+    transform: translateY(1px) scale(0.985);
+    filter: saturate(0.7);
   }
 
   .tm-event-row {
@@ -9521,12 +9545,20 @@
 
   .tm-event.applied {
     opacity: 1;
+    border-style: solid;
+    background: var(--tm-event-bg);
+    transform: none;
+    filter: none;
     box-shadow: inset 3px 0 0 rgba(97, 114, 67, 0.38);
   }
 
   .tm-event.current {
     opacity: 1;
+    border-style: solid;
     border-color: color-mix(in srgb, var(--nb-text-main, rgba(28, 28, 30, 1)) 12%, transparent);
+    background: var(--tm-event-bg);
+    transform: translateY(-1px);
+    filter: none;
     box-shadow:
       inset 3px 0 0 rgba(28, 28, 30, 0.42),
       0 1px 2px rgba(0, 0, 0, 0.05);
@@ -9557,9 +9589,9 @@
   }
 
   .tm-event.chat {
-    --tm-event-bg: rgba(247, 220, 218, 0.82);
-    --tm-event-border: rgba(216, 150, 145, 0.28);
-    --tm-event-kind-color: #8a5a57;
+    --tm-event-bg: rgba(244, 224, 208, 0.84);
+    --tm-event-border: rgba(204, 152, 120, 0.28);
+    --tm-event-kind-color: #8b6148;
   }
 
   .tm-event-kind {
@@ -9567,10 +9599,12 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--tm-event-kind-color);
+    font-weight: 560;
   }
 
   .tm-event-name {
     font-size: 0.77rem;
+    font-weight: 520;
     display: -webkit-box;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -9583,6 +9617,7 @@
   .tm-event-time {
     font-size: 0.68rem;
     color: var(--nb-text-soft, rgba(191, 219, 254, 0.85));
+    font-weight: 450;
   }
 
   .tm-empty {
@@ -10654,6 +10689,7 @@
     display: grid;
     gap: 0;
     align-items: stretch;
+    font-family: var(--nb-font-body, 'Avenir Next', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif);
   }
 
   .file-list-pane,
@@ -10688,6 +10724,7 @@
     min-height: 38px;
     padding: 0 0.8rem;
     font-size: 0.875rem;
+    font-weight: 470;
     outline: none;
   }
 
@@ -10743,6 +10780,7 @@
     gap: 0.75rem;
     padding: 0 0.9rem 0.55rem;
     font-size: 0.75rem;
+    font-weight: 520;
     letter-spacing: 0.02em;
     color: color-mix(in srgb, var(--nb-text-soft, rgba(224, 224, 224, 0.56)) 70%, transparent);
     border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.12)) 68%, transparent);
@@ -10866,7 +10904,7 @@
     white-space: nowrap;
     color: var(--nb-text-main, #e8e8e8);
     font-size: 0.83rem;
-    font-weight: 600;
+    font-weight: 540;
   }
 
   .file-row-path {
@@ -10875,6 +10913,7 @@
     white-space: nowrap;
     color: color-mix(in srgb, var(--nb-text-faint, rgba(186, 230, 253, 0.45)) 76%, transparent);
     font-size: 0.72rem;
+    font-weight: 440;
   }
 
   .file-rename-input {
@@ -10907,6 +10946,7 @@
   .file-row-date {
     font-size: 0.75rem;
     color: var(--nb-text-faint, rgba(110, 110, 115, 0.58));
+    font-weight: 430;
   }
 
   .file-card {
@@ -10957,7 +10997,7 @@
 
   .file-card-name {
     font-size: 0.88rem;
-    font-weight: 650;
+    font-weight: 570;
     color: var(--nb-text-main, rgba(248, 250, 252, 0.98));
     line-height: 1.3;
     display: -webkit-box;
@@ -11020,7 +11060,7 @@
     margin: 0;
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     font-size: 1rem;
-    font-weight: 600;
+    font-weight: 560;
     max-width: 48ch;
     overflow: hidden;
     text-overflow: ellipsis;

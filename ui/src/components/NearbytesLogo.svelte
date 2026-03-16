@@ -289,8 +289,6 @@
   .nearbytes-logo-canvas {
     display: block;
     border-radius: 50%;
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.04),
-      0 18px 40px rgba(2, 6, 23, 0.26);
+    box-shadow: none;
   }
 </style>
