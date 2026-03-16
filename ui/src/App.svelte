@@ -1351,6 +1351,7 @@
   let activeMountId = $state(initialMounts[0]?.id ?? '');
   let mountRuntimeById = $state<Record<string, MountRuntimeState>>({});
   let pendingMountId = $state<string | null>(null);
+  let mountDialogMountId = $state<string | null>(null);
   let secretPasteTargetMountId = $state<string | null>(null);
   let secretFileHashes = $state<Record<string, SecretFileHashEntry>>({});
   let clipboardImageAvailable = $state(false);
@@ -2299,6 +2300,9 @@
   });
 
   const activeMount = $derived.by(() => mounts.find((mount) => mount.id === activeMountId) ?? null);
+  const mountDialogMount = $derived.by(() =>
+    mountDialogMountId ? mounts.find((mount) => mount.id === mountDialogMountId) ?? null : null
+  );
   const showFilesWorkspace = $derived.by(() => activeMount?.showFilesPane ?? true);
   const showChatWorkspace = $derived.by(() => activeMount?.showChatPane ?? false);
   const workspaceSplit = $derived.by(() => activeMount?.workspaceSplit ?? 56);
@@ -3016,23 +3020,35 @@
     return mountDisplayLabel(mount);
   }
 
+  function focusMountDialogInput(mountId: string) {
+    void tick().then(() => {
+      const input = document.querySelector<HTMLInputElement>(
+        `.mount-dialog[data-mount-id="${mountId}"] .secret-seed-fields input`
+      );
+      input?.focus();
+    });
+  }
+
+  function openMountDialog(mountId: string) {
+    if (!mounts.some((mount) => mount.id === mountId)) {
+      return;
+    }
+    mountDialogMountId = mountId;
+    secretPasteTargetMountId = mountId;
+    focusMountDialogInput(mountId);
+  }
+
   function isMountEmpty(mount: VolumeMount): boolean {
     return trimSecretPart(mount.address) === '' && trimSecretPart(mount.password) === '' && !hasFileSecret(mount);
   }
 
   function addMount() {
-    const nextMount = createMount();
+    const nextMount = createMount({ collapsed: true });
     const collapsedExisting = mounts.map((mount) => ({ ...mount, collapsed: true }));
     mounts = [nextMount, ...collapsedExisting];
     activeMountId = nextMount.id;
     pendingMountId = null;
-    secretPasteTargetMountId = nextMount.id;
-    void tick().then(() => {
-      const input = document.querySelector<HTMLInputElement>(
-        `.volume-chip.expanded[data-mount-id="${nextMount.id}"] .secret-seed-fields input`
-      );
-      input?.focus();
-    });
+    openMountDialog(nextMount.id);
   }
 
   function selectMount(mountId: string) {
@@ -3061,11 +3077,8 @@
 
   function reopenMount(mountId: string) {
     pendingMountId = null;
-    secretPasteTargetMountId = mountId;
-    mounts = mounts.map((mount) =>
-      mount.id === mountId ? { ...mount, collapsed: false } : { ...mount, collapsed: true }
-    );
     activeMountId = mountId;
+    openMountDialog(mountId);
   }
 
   function collapseMount(mountId: string) {
@@ -3077,6 +3090,9 @@
     }
     if (pendingMountId === mountId) {
       pendingMountId = null;
+    }
+    if (mountDialogMountId === mountId) {
+      mountDialogMountId = null;
     }
     if (secretPasteTargetMountId === mountId) {
       secretPasteTargetMountId = null;
@@ -3090,6 +3106,9 @@
     clearMountRuntime(mountId);
     if (pendingMountId === mountId) {
       pendingMountId = null;
+    }
+    if (mountDialogMountId === mountId) {
+      mountDialogMountId = null;
     }
     if (secretPasteTargetMountId === mountId) {
       secretPasteTargetMountId = null;
@@ -3117,22 +3136,17 @@
 
   function collapseExpandedMountFromOutside(target: EventTarget | null) {
     if (!(target instanceof Element)) {
-      if (activeMountId) {
-        const activeMount = mounts.find((mount) => mount.id === activeMountId);
-        if (activeMount && !activeMount.collapsed) {
-          collapseMount(activeMountId);
-        }
+      if (mountDialogMountId) {
+        collapseMount(mountDialogMountId);
       }
       return;
     }
 
-    if (!activeMountId) return;
-    const activeMount = mounts.find((mount) => mount.id === activeMountId);
-    if (!activeMount || activeMount.collapsed) return;
-    if (target.closest('.volume-chip.expanded')) {
+    if (!mountDialogMountId) return;
+    if (target.closest('.mount-dialog')) {
       return;
     }
-    collapseMount(activeMountId);
+    collapseMount(mountDialogMountId);
   }
 
   function updateMountAddress(mountId: string, value: string) {
@@ -3193,15 +3207,15 @@
             secretFileName: label,
             secretFileMimeType: trimSecretPart(file.type),
             volumeId: undefined,
-            collapsed: false,
+            collapsed: true,
           }
         : { ...mount, collapsed: true }
     );
     activeMountId = mountId;
     address = label;
     addressPassword = '';
-    pendingMountId = mountId;
-    secretPasteTargetMountId = null;
+    pendingMountId = null;
+    openMountDialog(mountId);
   }
 
   function clearMountDragState() {
@@ -3377,7 +3391,7 @@
   }
 
   function createCollapsedMount(): string {
-    const nextMount = createMount();
+    const nextMount = createMount({ collapsed: true });
     const collapsedExisting = mounts.map((mount) => ({ ...mount, collapsed: true }));
     mounts = [nextMount, ...collapsedExisting];
     activeMountId = nextMount.id;
@@ -3390,15 +3404,12 @@
       return explicitTargetId;
     }
 
-    if (preferNewMount) {
-      return createCollapsedMount();
+    if (mountDialogMountId && mounts.some((mount) => mount.id === mountDialogMountId)) {
+      return mountDialogMountId;
     }
 
-    const expandedActiveMount = mounts.find(
-      (mount) => mount.id === activeMountId && !mount.collapsed
-    );
-    if (expandedActiveMount) {
-      return expandedActiveMount.id;
+    if (preferNewMount) {
+      return createCollapsedMount();
     }
 
     return createCollapsedMount();
@@ -3618,7 +3629,7 @@
           secretFileName: response.space.name,
           secretFileMimeType: response.space.mime ?? '',
           volumeId: response.volumeId ?? undefined,
-          collapsed: false,
+          collapsed: true,
         };
       }
       if (response.space.mode !== 'seed') {
@@ -3632,7 +3643,7 @@
         secretFileName: '',
         secretFileMimeType: '',
         volumeId: response.volumeId ?? undefined,
-        collapsed: false,
+        collapsed: true,
       };
     });
     activeMountId = targetMountId;
@@ -4802,10 +4813,7 @@
       return true;
     }
 
-    const expandedActiveMount = mounts.find(
-      (mount) => mount.id === activeMountId && !mount.collapsed
-    );
-    if (!expandedActiveMount) {
+    if (!mountDialogMountId || !mounts.some((mount) => mount.id === mountDialogMountId)) {
       return false;
     }
 
@@ -4813,7 +4821,7 @@
       return true;
     }
 
-    return target.closest('.header-shell') !== null;
+    return target.closest('.mount-dialog') !== null || target.closest('.header-shell') !== null;
   }
 
   function handleNearbytesFileDragStart(event: DragEvent, file: FileMetadata) {
@@ -5456,7 +5464,6 @@
               <MountRail dragging={draggingMountId !== null}>
         {#snippet children()}
         {#each mounts as mount, index (mount.id)}
-          {@const expanded = mount.id === activeMountId && !mount.collapsed}
           {@const isPending = pendingMountId === mount.id}
           <div
             class="mount-stack"
@@ -5480,143 +5487,6 @@
               class:dragging={draggingMountId === mount.id}
               use:trackMountNode={mount.id}
             >
-            {#if expanded}
-              <div
-                class="volume-chip expanded"
-                class:drag-over={dragOverMountId === mount.id && dragMoved}
-                data-mount-id={mount.id}
-              >
-                <div class="header-dock">
-                <div class="header-dock-main editing">
-                  <div class="secret-input-wrapper in-dock">
-                    <SecretSeedFields
-                      dense={true}
-                      value={mount.address}
-                      password={mount.password}
-                      valueLabel="Space secret"
-                      valueAriaLabel="Space address"
-                      valuePlaceholder="address or secret seed"
-                      passwordLabel="Password (optional)"
-                      passwordAriaLabel="Optional space password"
-                      passwordPlaceholder="optional"
-                      onValueInput={(value) => updateMountAddress(mount.id, value)}
-                      onPasswordInput={(value) => updateMountPassword(mount.id, value)}
-                    />
-                    {#if isLoading && mount.id === activeMountId}
-                      <span class="loading-spinner"></span>
-                    {/if}
-                  </div>
-                  <div class="secret-input-hint-row">
-                    <p class="secret-input-hint">
-                      Drop an image/file here, or press <kbd>Cmd/Ctrl</kbd> + <kbd>V</kbd>.
-                    </p>
-                    <div class="secret-input-actions">
-                    {#if clipboardImageAvailable || clipboardImageLoading}
-                      <button
-                        type="button"
-                        class="workspace-toggle secret-clipboard-btn"
-                        onclick={() => handlePasteImageButton(mount.id)}
-                        disabled={clipboardImageLoading}
-                      >
-                        <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                        <span>{clipboardImageLoading ? 'Reading…' : 'Paste Image'}</span>
-                      </button>
-                    {/if}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  class="chip-collapse-btn"
-                  onclick={() => collapseMount(mount.id)}
-                  aria-label="Collapse"
-                  title="Collapse"
-                >
-                  <X size={14} strokeWidth={2.1} />
-                </button>
-              </div>
-              <div class="volume-chip-expanded expanded">
-                {#if hasFileSecret(mount)}
-                  {@const secretHash = secretFileHashForMount(mount)}
-                  <div class="secret-file-card">
-                    <div class="secret-file-card-preview" class:image={hasImageSecretPreview(mount)}>
-                      {#if hasImageSecretPreview(mount) && secretFilePayloadDataUrl(mount)}
-                        <img
-                          class="secret-file-card-image"
-                          src={secretFilePayloadDataUrl(mount) ?? ''}
-                          alt={"Preview of " + (mount.secretFileName || 'secret file')}
-                        />
-                      {:else}
-                        <span class="secret-file-card-icon" aria-hidden="true">
-                          {#if trimSecretPart(mount.secretFileMimeType).startsWith('image/')}
-                            <ImageIcon size={18} strokeWidth={2} />
-                          {:else}
-                            <FileText size={18} strokeWidth={2} />
-                          {/if}
-                        </span>
-                      {/if}
-                    </div>
-                    <div class="secret-file-card-meta">
-                      <p class="secret-file-card-name" title={mount.secretFileName || 'secret-file'}>
-                        {mount.secretFileName || 'secret-file'}
-                      </p>
-                      <p class="secret-file-card-info">
-                        {trimSecretPart(mount.secretFileMimeType) || 'application/octet-stream'}
-                        {#if secretFileBytes(mount)}
-                          {' • '}
-                          {formatSize(secretFileBytes(mount)?.byteLength ?? 0)}
-                        {/if}
-                      </p>
-                      <p class="secret-file-card-hash-label">SHA-256</p>
-                      <p class="secret-file-card-hash" title={secretHash?.hash || 'Computing hash…'}>
-                        {#if secretHash?.pending}
-                          Computing…
-                        {:else if secretHash?.hash}
-                          {secretHash.hash}
-                        {:else}
-                          Unavailable
-                        {/if}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      class="workspace-toggle secret-file-download"
-                      onclick={() => downloadSecretFile(mount)}
-                    >
-                      <Download class="button-icon" size={15} strokeWidth={2} />
-                      <span>Download</span>
-                    </button>
-                  </div>
-                {/if}
-                <div class="header-dock-actions">
-                  <ArmedActionButton
-                    class="panel-action-btn danger"
-                    text="Remove"
-                    icon={Trash2}
-                    armed={true}
-                    armDelayMs={0}
-                    autoDisarmMs={3000}
-                    resetKey={mount.id}
-                    onPress={() => removeMount(mount.id)}
-                    title="Remove space"
-                    ariaLabel="Remove space"
-                  />
-                  <button
-                    type="button"
-                    class="workspace-toggle"
-                    class:active={showVolumeStoragePanel}
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      toggleVolumeStoragePanel();
-                    }}
-                  >
-                    <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                      <span>Rules</span>
-                  </button>
-                </div>
-              </div>
-              </div>
-            {:else}
               <div
                 class="volume-chip collapsed-shell parked"
                 class:selected={mount.id === activeMountId}
@@ -5684,7 +5554,6 @@
                   <Settings2 size={14} strokeWidth={2} />
                 </button>
               </div>
-            {/if}
             </div>
           </div>
         {/each}
@@ -7071,6 +6940,173 @@
         </div>
         <div class="tm-spec-body">
           <pre class="tm-details-pre">{specModalContent}</pre>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if mountDialogMount}
+    <div
+      class="mount-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label={isMountEmpty(mountDialogMount) ? 'Create space' : 'Edit space properties'}
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          collapseMount(mountDialogMount.id);
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          collapseMount(mountDialogMount.id);
+        }
+      }}
+    >
+      <div class="mount-dialog panel-surface" role="document" tabindex="-1" data-mount-id={mountDialogMount.id}>
+        <div class="mount-dialog-header">
+          <div class="mount-dialog-head-meta">
+            <p class="mount-dialog-eyebrow">Space properties</p>
+            <p class="mount-dialog-title">{isMountEmpty(mountDialogMount) ? 'Create or open a space' : 'Edit this space'}</p>
+            <p class="mount-dialog-subtitle">Set the secret or attach one secret file. This editor is now separate from the top rail so it stays usable while you work.</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close space properties" onclick={() => collapseMount(mountDialogMount.id)}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div class="mount-dialog-body">
+          <section class="mount-dialog-section">
+            <div class="secret-input-wrapper mount-dialog-inputs">
+              <SecretSeedFields
+                dense={true}
+                value={mountDialogMount.address}
+                password={mountDialogMount.password}
+                valueLabel="Space secret"
+                valueAriaLabel="Space address"
+                valuePlaceholder="address or secret seed"
+                passwordLabel="Password (optional)"
+                passwordAriaLabel="Optional space password"
+                passwordPlaceholder="optional"
+                onValueInput={(value) => updateMountAddress(mountDialogMount.id, value)}
+                onPasswordInput={(value) => updateMountPassword(mountDialogMount.id, value)}
+              />
+              {#if isLoading && mountDialogMount.id === activeMountId}
+                <span class="loading-spinner"></span>
+              {/if}
+            </div>
+
+            <div class="secret-input-hint-row mount-dialog-hint-row">
+              <p class="secret-input-hint">
+                Drop an image/file here, or press <kbd>Cmd/Ctrl</kbd> + <kbd>V</kbd>.
+              </p>
+              <div class="secret-input-actions">
+                {#if clipboardImageAvailable || clipboardImageLoading}
+                  <button
+                    type="button"
+                    class="workspace-toggle secret-clipboard-btn"
+                    onclick={() => handlePasteImageButton(mountDialogMount.id)}
+                    disabled={clipboardImageLoading}
+                  >
+                    <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                    <span>{clipboardImageLoading ? 'Reading…' : 'Paste image'}</span>
+                  </button>
+                {/if}
+              </div>
+            </div>
+          </section>
+
+          {#if hasFileSecret(mountDialogMount)}
+            {@const secretHash = secretFileHashForMount(mountDialogMount)}
+            <section class="mount-dialog-section">
+              <div class="secret-file-card mount-dialog-secret-card">
+                <div class="secret-file-card-preview" class:image={hasImageSecretPreview(mountDialogMount)}>
+                  {#if hasImageSecretPreview(mountDialogMount) && secretFilePayloadDataUrl(mountDialogMount)}
+                    <img
+                      class="secret-file-card-image"
+                      src={secretFilePayloadDataUrl(mountDialogMount) ?? ''}
+                      alt={"Preview of " + (mountDialogMount.secretFileName || 'secret file')}
+                    />
+                  {:else}
+                    <span class="secret-file-card-icon" aria-hidden="true">
+                      {#if trimSecretPart(mountDialogMount.secretFileMimeType).startsWith('image/')}
+                        <ImageIcon size={18} strokeWidth={2} />
+                      {:else}
+                        <FileText size={18} strokeWidth={2} />
+                      {/if}
+                    </span>
+                  {/if}
+                </div>
+                <div class="secret-file-card-meta">
+                  <p class="secret-file-card-name" title={mountDialogMount.secretFileName || 'secret-file'}>
+                    {mountDialogMount.secretFileName || 'secret-file'}
+                  </p>
+                  <p class="secret-file-card-info">
+                    {trimSecretPart(mountDialogMount.secretFileMimeType) || 'application/octet-stream'}
+                    {#if secretFileBytes(mountDialogMount)}
+                      {' • '}
+                      {formatSize(secretFileBytes(mountDialogMount)?.byteLength ?? 0)}
+                    {/if}
+                  </p>
+                  <p class="secret-file-card-hash-label">SHA-256</p>
+                  <p class="secret-file-card-hash" title={secretHash?.hash || 'Computing hash…'}>
+                    {#if secretHash?.pending}
+                      Computing…
+                    {:else if secretHash?.hash}
+                      {secretHash.hash}
+                    {:else}
+                      Unavailable
+                    {/if}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="workspace-toggle secret-file-download"
+                  onclick={() => downloadSecretFile(mountDialogMount)}
+                >
+                  <Download class="button-icon" size={15} strokeWidth={2} />
+                  <span>Download</span>
+                </button>
+              </div>
+            </section>
+          {/if}
+
+          <section class="mount-dialog-section">
+            <div class="mount-dialog-actions">
+              <ArmedActionButton
+                class="panel-action-btn danger"
+                text="Remove"
+                icon={Trash2}
+                armed={true}
+                armDelayMs={0}
+                autoDisarmMs={3000}
+                resetKey={mountDialogMount.id}
+                onPress={() => removeMount(mountDialogMount.id)}
+                title="Remove space"
+                ariaLabel="Remove space"
+              />
+              <button
+                type="button"
+                class="workspace-toggle"
+                class:active={showVolumeStoragePanel}
+                onclick={() => {
+                  toggleVolumeStoragePanel();
+                  collapseMount(mountDialogMount.id);
+                }}
+              >
+                <HardDrive class="button-icon" size={15} strokeWidth={2} />
+                <span>Rules</span>
+              </button>
+              <button
+                type="button"
+                class="workspace-toggle"
+                onclick={() => collapseMount(mountDialogMount.id)}
+              >
+                <span>Done</span>
+              </button>
+            </div>
+          </section>
         </div>
       </div>
     </div>
@@ -8591,41 +8627,6 @@
     transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
   }
 
-  .volume-chip.expanded .header-dock {
-    align-items: flex-start;
-    gap: 0.62rem;
-    padding: 0.5rem 0.5rem 0.42rem 0.7rem;
-    min-height: 0;
-  }
-
-  .volume-chip.expanded .chip-collapse-btn {
-    width: 28px;
-    height: 28px;
-    margin-top: 0.18rem;
-    flex: 0 0 auto;
-  }
-
-  .volume-chip.expanded :global(.secret-seed-fields.dense) {
-    grid-template-columns: minmax(0, 1.5fr) minmax(160px, 0.9fr);
-    gap: 0.5rem;
-  }
-
-  .volume-chip.expanded :global(.secret-seed-fields.dense span) {
-    color: var(--nb-text-faint, rgba(110, 110, 115, 0.72));
-  }
-
-  .volume-chip.expanded .workspace-toggle,
-  .volume-chip.expanded :global(.panel-action-btn) {
-    min-height: 30px;
-    min-width: 0;
-    padding: 0 0.74rem;
-    font-size: 0.72rem;
-  }
-
-  .volume-chip.expanded .secret-input-actions .workspace-toggle {
-    min-width: 104px;
-  }
-
   :global(.secret-seed-fields input:focus) {
     border-color: var(--nb-border-strong, rgba(56, 189, 248, 0.52));
     background: var(--nb-btn-hover-bg, rgba(10, 18, 33, 0.96));
@@ -9718,15 +9719,38 @@
     z-index: 230;
   }
 
+  .mount-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(246, 238, 232, 0.72);
+    backdrop-filter: blur(18px);
+    z-index: 235;
+  }
+
+  .mount-dialog {
+    width: min(720px, 94vw);
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(255, 246, 240, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 92%, rgba(255, 250, 247, 0.88)));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.16)) 80%, rgba(210, 122, 84, 0.18));
+    border-radius: 24px;
+    box-shadow: 0 26px 90px rgba(93, 56, 34, 0.16);
+  }
+
   .share-dialog {
     width: min(760px, 95vw);
     max-height: 86vh;
     display: flex;
     flex-direction: column;
-    background: var(--nb-dialog-bg, linear-gradient(180deg, rgba(9, 18, 34, 0.99), rgba(6, 12, 24, 0.97)));
-    border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.22));
-    border-radius: 18px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, rgba(255, 248, 244, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 96%, rgba(250, 242, 236, 0.92)));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.12));
+    border-radius: 22px;
+    box-shadow: 0 24px 72px rgba(82, 53, 33, 0.12);
   }
 
   .join-dialog {
@@ -9734,10 +9758,10 @@
     max-height: 86vh;
     display: flex;
     flex-direction: column;
-    background: var(--nb-dialog-bg, linear-gradient(180deg, rgba(9, 18, 34, 0.99), rgba(6, 12, 24, 0.97)));
-    border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.22));
-    border-radius: 18px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, rgba(255, 247, 241, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 95%, rgba(251, 243, 236, 0.92)));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.16));
+    border-radius: 22px;
+    box-shadow: 0 24px 72px rgba(82, 53, 33, 0.12);
   }
 
   .theme-dialog {
@@ -9745,178 +9769,177 @@
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    background: var(--nb-theme-dialog-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.99)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(6, 12, 24, 0.97)) 98%, transparent)));
-    border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.22));
-    border-radius: 18px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(255, 247, 241, 0.94)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 96%, rgba(248, 239, 232, 0.92)));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.14));
+    border-radius: 24px;
+    box-shadow: 0 24px 80px rgba(82, 53, 33, 0.12);
   }
 
-  .share-dialog-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 1.2rem 1.3rem 0.95rem;
-    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
-  }
-
-  .join-dialog-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 1.2rem 1.3rem 0.95rem;
-    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
-  }
-
+  .mount-dialog-header,
+  .share-dialog-header,
+  .join-dialog-header,
   .theme-dialog-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 1rem;
+  }
+
+  .mount-dialog-header {
+    padding: 1.35rem 1.45rem 1rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.12));
+  }
+
+  .share-dialog-header {
+    padding: 1.2rem 1.3rem 0.95rem;
+    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+  }
+
+  .join-dialog-header {
+    padding: 1.2rem 1.3rem 0.95rem;
+    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+  }
+
+  .theme-dialog-header {
     padding: 1.3rem 1.4rem 1rem;
     border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
   }
 
-  .share-dialog-head-meta {
+  .mount-dialog-head-meta,
+  .share-dialog-head-meta,
+  .join-dialog-head-meta,
+  .theme-dialog-head-meta {
     display: grid;
-    gap: 0.34rem;
     min-width: 0;
+  }
+
+  .mount-dialog-head-meta {
+    gap: 0.38rem;
+  }
+
+  .share-dialog-head-meta {
+    gap: 0.34rem;
   }
 
   .join-dialog-head-meta {
-    display: grid;
     gap: 0.34rem;
-    min-width: 0;
   }
 
   .theme-dialog-head-meta {
-    display: grid;
     gap: 0.36rem;
-    min-width: 0;
   }
 
-  .theme-dialog-eyebrow {
-    margin: 0;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 0.68rem;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--nb-accent-strong, rgba(125, 211, 252, 0.74));
-  }
-
-  .theme-dialog-title {
-    margin: 0;
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 1.16rem;
-    font-weight: 650;
-    color: var(--nb-accent-text, rgba(248, 250, 252, 0.98));
-  }
-
-  .theme-dialog-subtitle {
-    margin: 0;
-    max-width: 62ch;
-    font-size: 0.84rem;
-    line-height: 1.55;
-    color: var(--nb-text-soft, rgba(226, 232, 240, 0.78));
-  }
-
-  .share-dialog-eyebrow {
-    margin: 0;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 0.68rem;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: rgba(125, 211, 252, 0.74);
-  }
-
+  .mount-dialog-eyebrow,
+  .theme-dialog-eyebrow,
+  .share-dialog-eyebrow,
   .join-dialog-eyebrow {
     margin: 0;
     font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.68rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: rgba(253, 224, 71, 0.74);
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.8));
   }
 
-  .share-dialog-title {
-    margin: 0;
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 1.16rem;
-    font-weight: 650;
-    color: rgba(240, 249, 255, 0.98);
-  }
-
+  .mount-dialog-title,
+  .theme-dialog-title,
+  .share-dialog-title,
   .join-dialog-title {
     margin: 0;
     font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 1.16rem;
     font-weight: 650;
-    color: rgba(255, 251, 235, 0.98);
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
 
-  .share-dialog-subtitle {
+  .mount-dialog-subtitle,
+  .theme-dialog-subtitle,
+  .share-dialog-subtitle,
+  .join-dialog-subtitle {
     margin: 0;
-    max-width: 54ch;
     font-size: 0.84rem;
-    line-height: 1.5;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
+    line-height: 1.55;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
+  }
+
+  .mount-dialog-subtitle {
+    max-width: 58ch;
+  }
+
+  .theme-dialog-subtitle {
+    max-width: 62ch;
+    max-width: 54ch;
   }
 
   .join-dialog-subtitle {
-    margin: 0;
     max-width: 58ch;
-    font-size: 0.84rem;
-    line-height: 1.5;
-    color: var(--nb-text-soft, rgba(226, 232, 240, 0.78));
+  }
+
+  .mount-dialog-body,
+  .share-dialog-body,
+  .join-dialog-body,
+  .theme-dialog-body {
+    overflow: auto;
+    display: grid;
+  }
+
+  .mount-dialog-body {
+    gap: 0.95rem;
+    padding: 1.1rem 1.45rem 1.35rem;
   }
 
   .share-dialog-body {
-    overflow: auto;
-    display: grid;
     gap: 0.95rem;
     padding: 1rem 1.3rem 1.3rem;
   }
 
   .join-dialog-body {
-    overflow: auto;
-    display: grid;
     gap: 0.95rem;
     padding: 1rem 1.3rem 1.3rem;
   }
 
   .theme-dialog-body {
-    overflow: auto;
-    display: grid;
     gap: 1rem;
     padding: 1rem 1.3rem 1.3rem;
   }
 
-  .share-dialog-section {
+  .mount-dialog-section,
+  .share-dialog-section,
+  .join-dialog-section,
+  .theme-dialog-section {
     display: grid;
+  }
+
+  .mount-dialog-section {
+    gap: 0.8rem;
+    padding: 1rem 1.05rem;
+    border-radius: 18px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.1));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(255, 245, 239, 0.9));
+  }
+
+  .share-dialog-section {
     gap: 0.7rem;
     padding: 1rem;
     border-radius: 16px;
-    border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.86));
   }
 
   .join-dialog-section {
-    display: grid;
     gap: 0.78rem;
     padding: 1rem;
     border-radius: 16px;
-    border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.88));
   }
 
   .theme-dialog-section {
-    display: grid;
     gap: 0.9rem;
     padding: 1rem;
     border-radius: 18px;
-    border: 1px solid var(--nb-border, rgba(125, 211, 252, 0.14));
-    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 15, 27, 0.72)) 94%, transparent);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
   }
 
   .theme-dialog-hero {
@@ -9928,8 +9951,8 @@
     display: inline-flex;
     padding: 0.8rem;
     border-radius: 24px;
-    background: color-mix(in srgb, var(--nb-logo-bg, #08131f) 90%, transparent);
-    border: 1px solid var(--nb-border, rgba(125, 211, 252, 0.18));
+    background: color-mix(in srgb, var(--nb-logo-bg, #f7efe9) 70%, rgba(255, 247, 241, 0.95));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%, rgba(210, 122, 84, 0.12));
   }
 
   .theme-dialog-preview-copy {
@@ -9939,7 +9962,7 @@
 
   .theme-dialog-note {
     margin: 0;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.76));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
     font-size: 0.84rem;
     line-height: 1.55;
   }
@@ -9960,9 +9983,9 @@
     margin: 0;
     padding: 0.85rem 1rem;
     border-radius: 12px;
-    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.18));
-    background: var(--nb-accent-soft, rgba(34, 211, 238, 0.12));
-    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 78%, rgba(210, 122, 84, 0.16));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 72%, rgba(255, 250, 247, 0.98));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font-size: 0.88rem;
   }
 
@@ -9987,9 +10010,9 @@
     gap: 0.35rem;
     padding: 0.38rem 0.72rem;
     border-radius: 999px;
-    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.18));
-    background: color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.92)) 92%, transparent);
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(252, 244, 238, 0.92));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
     font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.76rem;
     letter-spacing: 0.04em;
@@ -9997,15 +10020,15 @@
   }
 
   .theme-studio-chip.strong {
-    border-color: var(--nb-border-strong, rgba(34, 211, 238, 0.42));
-    background: var(--nb-accent-surface, rgba(34, 211, 238, 0.14));
-    color: var(--nb-accent-text, #ecfeff);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 28%, rgba(60, 60, 67, 0.16));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 85%, rgba(255, 247, 241, 0.98));
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 70%, rgba(28, 28, 30, 0.96));
   }
 
   .theme-dialog-tab {
-    border: 1px solid var(--nb-border, rgba(96, 165, 250, 0.18));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.1));
     background: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
-    color: var(--nb-text-soft, rgba(219, 234, 254, 0.9));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.88));
     border-radius: 999px;
     min-height: 34px;
     padding: 0 0.95rem;
@@ -10016,9 +10039,9 @@
   }
 
   .theme-dialog-tab.active {
-    border-color: var(--nb-border-strong, rgba(56, 189, 248, 0.26));
-    background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, white)));
-    color: var(--nb-btn-active-color, rgba(28, 28, 30, 0.98));
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 26%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 86%, var(--nb-panel-bg, white));
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 78%, rgba(28, 28, 30, 0.96));
   }
 
   .theme-preset-grid,
@@ -10032,8 +10055,8 @@
   }
 
   .theme-preset-card {
-    border: 1px solid var(--nb-border, rgba(96, 165, 250, 0.18));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.86));
     border-radius: 18px;
     padding: 0.95rem;
     display: grid;
@@ -10044,8 +10067,8 @@
   }
 
   .theme-preset-card.active {
-    border-color: var(--nb-border-strong, rgba(45, 212, 191, 0.3));
-    background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 10%, var(--nb-panel-bg, white)));
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 24%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 82%, var(--nb-panel-bg, white));
   }
 
   .theme-preset-swatches {
@@ -10068,13 +10091,13 @@
   .theme-preset-copy strong {
     font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.92rem;
-    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
 
   .theme-preset-copy span {
     font-size: 0.8rem;
     line-height: 1.45;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
   }
 
   .theme-form-grid {
@@ -10088,7 +10111,7 @@
   .theme-form-grid label {
     display: grid;
     gap: 0.45rem;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
     font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.8rem;
   }
@@ -10103,23 +10126,54 @@
   .theme-form-grid select {
     min-height: 40px;
     border-radius: 12px;
-    border: 1px solid var(--nb-border, rgba(96, 165, 250, 0.24));
-    background: rgba(5, 10, 20, 0.84);
-    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     padding: 0.45rem 0.6rem;
   }
 
   .theme-form-grid em {
     font-style: normal;
     font-size: 0.75rem;
-    color: var(--nb-text-faint, rgba(191, 219, 254, 0.62));
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.66));
+  }
+
+  .mount-dialog .secret-input-wrapper {
+    display: grid;
+    gap: 0.72rem;
+  }
+
+  .mount-dialog :global(.secret-seed-fields.dense) {
+    grid-template-columns: minmax(0, 1.5fr) minmax(172px, 0.92fr);
+    gap: 0.6rem;
+  }
+
+  .mount-dialog :global(.secret-seed-fields.dense span) {
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.76));
+  }
+
+  .mount-dialog-hint-row {
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .mount-dialog-secret-card {
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.92));
+  }
+
+  .mount-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
   }
 
   .share-dialog-section-title {
     font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.88rem;
     font-weight: 600;
-    color: rgba(240, 249, 255, 0.95);
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .join-dialog-section-title {
@@ -10127,7 +10181,7 @@
     font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.88rem;
     font-weight: 600;
-    color: rgba(248, 250, 252, 0.96);
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .join-dialog-input-shell {
@@ -10158,15 +10212,15 @@
 
   .join-dialog-textarea:focus {
     outline: none;
-    border-color: rgba(56, 189, 248, 0.5);
-    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.14);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 44%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 90%, transparent);
   }
 
   .join-dialog-toggle {
     display: inline-flex;
     align-items: center;
     gap: 0.55rem;
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.9));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.9));
     font-size: 0.86rem;
   }
 
@@ -10177,7 +10231,7 @@
     margin: 0;
     font-size: 0.82rem;
     line-height: 1.5;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.76));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
   }
 
   .join-dialog-actions {
@@ -10192,23 +10246,23 @@
     gap: 0.3rem;
     padding: 0.34rem 0.65rem;
     border-radius: 999px;
-    border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.18));
-    background: var(--nb-panel-bg, rgba(15, 23, 42, 0.72));
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.9));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.9));
     font-size: 0.75rem;
     font-weight: 600;
   }
 
   .join-dialog-chip.strong {
-    border-color: color-mix(in srgb, var(--nb-accent, rgba(56, 189, 248, 1)) 26%, transparent);
-    background: color-mix(in srgb, var(--nb-accent, rgba(8, 47, 73, 1)) 68%, transparent);
-    color: var(--nb-accent-text, rgba(224, 242, 254, 0.98));
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 26%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 82%, rgba(255, 247, 241, 0.98));
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 74%, rgba(28, 28, 30, 0.96));
   }
 
   .join-dialog-chip.warning {
-    border-color: rgba(245, 158, 11, 0.24);
-    background: rgba(120, 53, 15, 0.34);
-    color: rgba(254, 240, 138, 0.96);
+    border-color: color-mix(in srgb, #d4945f 34%, rgba(60, 60, 67, 0.14));
+    background: rgba(242, 223, 206, 0.86);
+    color: rgba(126, 76, 34, 0.96);
   }
 
   .join-dialog-route-list,
@@ -10223,8 +10277,8 @@
     gap: 0.55rem;
     padding: 0.9rem 0.95rem;
     border-radius: 14px;
-    border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
-    background: var(--nb-panel-bg, rgba(5, 10, 20, 0.74));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
   }
 
   .join-dialog-result-row {
@@ -10233,20 +10287,20 @@
   }
 
   .join-dialog-result-row.success {
-    border-color: rgba(74, 222, 128, 0.22);
-    background: rgba(6, 78, 59, 0.24);
+    border-color: rgba(104, 170, 117, 0.24);
+    background: rgba(232, 242, 233, 0.94);
   }
 
   .join-dialog-result-row.warning {
-    border-color: rgba(245, 158, 11, 0.22);
-    background: rgba(120, 53, 15, 0.22);
+    border-color: rgba(212, 148, 95, 0.28);
+    background: rgba(247, 236, 225, 0.94);
   }
 
   .join-dialog-route-title {
     margin: 0;
     font-size: 0.88rem;
     font-weight: 600;
-    color: var(--nb-text-main, rgba(248, 250, 252, 0.96));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
 
   .join-dialog-badge-row {
@@ -10260,14 +10314,14 @@
     align-items: center;
     padding: 0.26rem 0.5rem;
     border-radius: 999px;
-    background: var(--nb-panel-bg, rgba(15, 23, 42, 0.78));
-    border: 1px solid color-mix(in srgb, var(--nb-accent, rgba(125, 211, 252, 1)) 14%, transparent);
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.9));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.12));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.86));
     font-size: 0.72rem;
   }
 
   .join-dialog-message.error {
-    color: rgba(254, 202, 202, 0.96);
+    color: rgba(166, 63, 63, 0.94);
   }
 
   .share-dialog-empty {
@@ -10275,15 +10329,15 @@
     gap: 0.3rem;
     padding: 0.9rem 0.95rem;
     border-radius: 14px;
-    border: 1px dashed color-mix(in srgb, var(--nb-accent, rgba(96, 165, 250, 1)) 20%, transparent);
-    background: var(--nb-panel-bg, rgba(10, 18, 31, 0.52));
+    border: 1px dashed color-mix(in srgb, var(--nb-accent, #d27a54) 22%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
   }
 
   .share-dialog-empty-title {
     margin: 0;
     font-size: 0.84rem;
     font-weight: 600;
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.94));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.94));
   }
 
   .share-dialog-storage-list {
