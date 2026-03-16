@@ -126,18 +126,10 @@
     const releaseBlend = 1 - Math.exp(-elapsedSeconds * 2.15);
     const gap = 4;
     const barWidth = Math.max(4, (width - gap * (barCount - 1)) / barCount);
-    const accentSoft = resolveThemeColor('--nb-accent-soft', 'rgba(34, 211, 238, 0.28)');
-    const accent = resolveThemeColor('--nb-accent', 'rgba(56, 189, 248, 0.72)');
-    const textSoft = resolveThemeColor('--nb-text-soft', 'rgba(191, 219, 254, 0.96)');
-    const gradient = context.createLinearGradient(0, height, 0, 0);
-    gradient.addColorStop(0, accentSoft);
-    gradient.addColorStop(0.55, accent);
-    gradient.addColorStop(1, textSoft);
-
-    const glow = context.createLinearGradient(0, 0, width, height);
-    glow.addColorStop(0, accentSoft);
-    glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    context.fillStyle = glow;
+    const accentSoft = resolveThemeColor('--nb-accent-soft', 'rgba(210, 122, 84, 0.16)');
+    const accent = resolveThemeColor('--nb-accent', 'rgba(210, 122, 84, 0.82)');
+    const textSoft = resolveThemeColor('--nb-text-soft', 'rgba(70, 70, 73, 0.78)');
+    context.fillStyle = accentSoft;
     context.fillRect(0, 0, width, height);
 
     const spectrum = spectrumData;
@@ -161,7 +153,7 @@
       renderedLevels[index] = level;
       const barHeight = Math.max(10, level * (height - 12));
       const y = height - barHeight;
-      context.fillStyle = gradient;
+      context.fillStyle = playing ? accent : textSoft;
       context.beginPath();
       context.roundRect(x, y, barWidth, barHeight, 999);
       context.fill();
@@ -254,10 +246,11 @@
 
 <style>
   .audio-preview-shell {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 1rem;
     min-height: 100%;
-    align-content: start;
+    height: 100%;
   }
 
   .audio-preview-hero {
@@ -267,10 +260,8 @@
     align-items: center;
     padding: 1rem;
     border-radius: 18px;
-    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
-    background:
-      radial-gradient(120% 140% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.14)), transparent 50%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 14, 28, 0.92)) 96%, transparent));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
   }
 
   .audio-preview-badge {
@@ -280,10 +271,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: var(--nb-accent-text, rgba(236, 254, 255, 0.94));
-    background: linear-gradient(135deg, color-mix(in srgb, var(--nb-accent, rgba(14, 165, 233, 0.28)) 28%, transparent), color-mix(in srgb, var(--nb-accent-strong, rgba(59, 130, 246, 0.18)) 18%, transparent));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(125, 211, 252, 0.18)) 90%, transparent);
-    box-shadow: 0 18px 34px rgba(2, 6, 23, 0.22);
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 78%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 88%, var(--nb-panel-bg, #ffffff));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, rgba(210, 122, 84, 0.24)) 22%, rgba(60, 60, 67, 0.12));
+    box-shadow: 0 12px 28px rgba(93, 56, 34, 0.08);
   }
 
   .audio-preview-copy {
@@ -298,32 +289,28 @@
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
-    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.72));
     font-size: 0.78rem;
   }
 
   .audio-preview-title {
     margin: 0;
     font-size: 1.1rem;
-    color: var(--nb-text-main, rgba(248, 250, 252, 0.98));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .audio-preview-visual {
+    flex: 1 1 auto;
     position: relative;
-    min-height: 240px;
+    min-height: 180px;
     border-radius: 22px;
     overflow: hidden;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.12)) 84%, transparent);
-    background:
-      radial-gradient(140% 140% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.14)), transparent 48%),
-      radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, var(--nb-accent-strong, rgba(59, 130, 246, 0.12)) 16%, transparent), transparent 42%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 15, 29, 0.98)) 98%, transparent), color-mix(in srgb, var(--nb-app-bg, rgba(5, 10, 20, 0.94)) 96%, transparent));
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.04),
-      0 22px 42px rgba(2, 6, 23, 0.24);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(248, 240, 234, 0.9));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
   }
 
   .audio-preview-canvas {
@@ -333,9 +320,10 @@
   }
 
   .audio-preview-player {
+    flex: 0 0 auto;
     width: 100%;
     min-height: 52px;
     border-radius: 16px;
-    background: color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 33, 0.86)) 92%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.86));
   }
 </style>

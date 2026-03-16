@@ -388,20 +388,20 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
     presetId: 'mono-scarlet',
     palette: {
       id: 'mono-scarlet',
-      label: 'Mono Scarlet',
-      description: 'Porcelain whites, graphite text, and restrained persimmon accents tuned for an Apple-like light shell.',
+      label: 'Mono Stone',
+      description: 'Porcelain whites, graphite text, and quiet stone accents tuned for a calm light shell.',
       surfaceStyle: 'flat',
-      appBg: '#f3f2f5',
+      appBg: '#f1efeb',
       shellTop: 'rgba(255, 255, 255, 0.99)',
-      shellBottom: 'rgba(244, 244, 247, 0.99)',
+      shellBottom: 'rgba(240, 237, 232, 0.99)',
       shellGlow: 'rgba(255, 255, 255, 0)',
       panelBg: 'rgba(255, 255, 255, 0.96)',
-      panelGlow: 'rgba(210, 122, 84, 0.03)',
+      panelGlow: 'rgba(166, 151, 136, 0.02)',
       border: 'rgba(60, 60, 67, 0.10)',
-      borderStrong: 'rgba(210, 122, 84, 0.22)',
-      accent: '#d27a54',
-      accentStrong: '#b85f39',
-      accentSoft: 'rgba(210, 122, 84, 0.08)',
+      borderStrong: 'rgba(166, 151, 136, 0.18)',
+      accent: '#a69788',
+      accentStrong: '#85776b',
+      accentSoft: 'rgba(166, 151, 136, 0.08)',
       accentText: 'rgba(28, 28, 30, 0.98)',
       textMain: 'rgba(28, 28, 30, 0.98)',
       textSoft: 'rgba(58, 58, 60, 0.72)',
@@ -412,12 +412,12 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
     },
     logo: {
       peers: 3,
-      accentColor: '#d27a54',
+      accentColor: '#a69788',
       peerColor: '#3a3a3c',
-      arcColor: '#e5a07d',
+      arcColor: '#b8aa9d',
       bgFill: '#ffffff',
-      nodeFill: '#f2f2f7',
-      nodeStroke: '#a1a1aa',
+      nodeFill: '#f3f1ee',
+      nodeStroke: '#aca59d',
       orbitScale: 1.1,
       sizeScale: 1.24,
       bulgeScale: 1.08,
@@ -480,7 +480,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
 
 export const DEFAULT_THEME_REGISTRY: NearbytesThemeRegistry = {
   version: 2,
-  defaultPresetId: 'blue-current',
+  defaultPresetId: 'mono-scarlet',
   presets: DEFAULT_PRESETS,
 };
 
@@ -626,6 +626,42 @@ function normalizeThemePreset(
   };
 }
 
+function shouldMigrateMonoScarletPalette(input: unknown): boolean {
+  const paletteInput = asObject(input);
+  if (!paletteInput) {
+    return false;
+  }
+  const accent = typeof paletteInput.accent === 'string' ? paletteInput.accent.trim().toLowerCase() : '';
+  const accentStrong =
+    typeof paletteInput.accentStrong === 'string' ? paletteInput.accentStrong.trim().toLowerCase() : '';
+  const accentSoft =
+    typeof paletteInput.accentSoft === 'string' ? paletteInput.accentSoft.trim().toLowerCase() : '';
+  return (
+    accent === '#ff3b30' ||
+    accent === '#d27a54' ||
+    accentStrong === '#1c1c1e' ||
+    accentStrong === '#b85f39' ||
+    accentSoft.includes('255, 59, 48') ||
+    accentSoft.includes('210, 122, 84')
+  );
+}
+
+function shouldMigrateMonoScarletLogo(input: unknown): boolean {
+  const logoInput = asObject(input);
+  if (!logoInput) {
+    return false;
+  }
+  const accentColor =
+    typeof logoInput.accentColor === 'string' ? logoInput.accentColor.trim().toLowerCase() : '';
+  const arcColor = typeof logoInput.arcColor === 'string' ? logoInput.arcColor.trim().toLowerCase() : '';
+  return (
+    accentColor === '#ff3b30' ||
+    accentColor === '#d27a54' ||
+    arcColor === '#ff6b61' ||
+    arcColor === '#e5a07d'
+  );
+}
+
 export function findThemePreset(
   registry: NearbytesThemeRegistry,
   presetId: NearbytesThemePresetId | null | undefined
@@ -687,10 +723,18 @@ export function normalizeThemeSettings(
   if (!themeInput) {
     return cloneThemeSettings(basePreset);
   }
+  const migrateMonoScarlet =
+    basePreset.presetId === 'mono-scarlet' && shouldMigrateMonoScarletPalette(themeInput.palette);
+  const migrateMonoScarletLogo =
+    basePreset.presetId === 'mono-scarlet' && shouldMigrateMonoScarletLogo(themeInput.logo);
   return {
     presetId: basePreset.presetId,
-    palette: normalizePalette(themeInput.palette, basePreset.palette),
-    logo: normalizeLogoOptions(themeInput.logo, basePreset.logo),
+    palette: migrateMonoScarlet
+      ? { ...basePreset.palette }
+      : normalizePalette(themeInput.palette, basePreset.palette),
+    logo: migrateMonoScarletLogo
+      ? { ...basePreset.logo }
+      : normalizeLogoOptions(themeInput.logo, basePreset.logo),
   };
 }
 
@@ -747,74 +791,74 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     ? `color-mix(in srgb, ${palette.panelBg} 98%, ${palette.shellBottom})`
     : `linear-gradient(180deg, color-mix(in srgb, ${palette.shellTop} 98%, transparent), color-mix(in srgb, ${palette.panelBg} 98%, transparent))`;
   const volumeChipSelectedSurface = isFlat
-    ? `color-mix(in srgb, ${palette.accent} 10%, ${palette.panelBg})`
+    ? `color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom})`
     : `radial-gradient(120% 180% at 0% 0%, color-mix(in srgb, ${palette.accent} 28%, transparent), transparent 52%), linear-gradient(180deg, color-mix(in srgb, ${palette.accentStrong} 34%, ${palette.shellTop}) 98%, color-mix(in srgb, ${palette.panelBg} 98%, transparent))`;
   const volumeChipDraggingSurface = isFlat
     ? `color-mix(in srgb, ${palette.panelBg} 96%, ${palette.shellBottom})`
     : `linear-gradient(180deg, color-mix(in srgb, ${palette.shellTop} 94%, transparent), color-mix(in srgb, ${palette.panelBg} 94%, transparent))`;
   const volumeChipHoverSurface = isFlat
     ? `color-mix(in srgb, ${palette.panelBg} 92%, white 8%)`
-    : `linear-gradient(180deg, rgba(14, 29, 50, 0.36), rgba(9, 21, 39, 0.18))`;
+    : `color-mix(in srgb, ${palette.panelBg} 90%, white 10%)`;
   const volumeChipFocusSurface = isFlat
     ? `color-mix(in srgb, ${palette.panelBg} 88%, white 12%)`
-    : `linear-gradient(180deg, rgba(14, 29, 50, 0.46), rgba(9, 21, 39, 0.26))`;
+    : `color-mix(in srgb, ${palette.panelBg} 86%, white 14%)`;
   const volumeChipActionSurface = isFlat
     ? `color-mix(in srgb, ${palette.panelBg} 94%, white 6%)`
-    : `linear-gradient(180deg, rgba(9, 18, 33, 0.36), rgba(7, 14, 26, 0.18))`;
+    : `color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom})`;
   const volumeChipActionHoverSurface = isFlat
-    ? `color-mix(in srgb, ${palette.panelBg} 84%, ${palette.accentSoft})`
-    : `linear-gradient(180deg, rgba(18, 35, 60, 0.9), rgba(11, 22, 40, 0.84))`;
+    ? `color-mix(in srgb, ${palette.panelBg} 90%, white 10%)`
+    : `color-mix(in srgb, ${palette.panelBg} 90%, white 10%)`;
   const volumeChipActionFocusSurface = isFlat
-    ? `color-mix(in srgb, ${palette.panelBg} 80%, ${palette.accentSoft})`
-    : `linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9))`;
+    ? `color-mix(in srgb, ${palette.panelBg} 86%, white 14%)`
+    : `color-mix(in srgb, ${palette.panelBg} 86%, white 14%)`;
   /* ── Button / control surfaces ─────────────────────────── */
   const btnBg = isFlat
     ? `color-mix(in srgb, ${palette.panelBg} 96%, ${palette.shellBottom})`
-    : `rgba(10, 19, 34, 0.52)`;
+    : `color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom})`;
   const btnHoverBg = isFlat
-    ? `color-mix(in srgb, ${palette.panelBg} 90%, ${palette.accentSoft})`
-    : `rgba(16, 32, 56, 0.88)`;
+    ? `color-mix(in srgb, ${palette.panelBg} 92%, white 8%)`
+    : `color-mix(in srgb, ${palette.panelBg} 88%, ${palette.accentSoft})`;
   const btnActiveBg = isFlat
-    ? `color-mix(in srgb, ${palette.accent} 12%, ${palette.panelBg})`
-    : `linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94))`;
+    ? `color-mix(in srgb, ${palette.panelBg} 94%, ${palette.shellBottom})`
+    : `color-mix(in srgb, ${palette.panelBg} 82%, ${palette.accentSoft})`;
   const btnBorder = isFlat
     ? `color-mix(in srgb, ${palette.border} 80%, transparent)`
-    : `rgba(56, 189, 248, 0.14)`;
+    : `color-mix(in srgb, ${palette.border} 82%, transparent)`;
   const btnHoverBorder = isFlat
     ? `${palette.border}`
-    : `rgba(96, 165, 250, 0.28)`;
+    : `color-mix(in srgb, ${palette.border} 94%, ${palette.accent} 8%)`;
   const btnActiveBorder = isFlat
-    ? `color-mix(in srgb, ${palette.accent} 42%, transparent)`
-    : `rgba(34, 211, 238, 0.42)`;
+    ? `color-mix(in srgb, ${palette.accent} 16%, ${palette.border})`
+    : `color-mix(in srgb, ${palette.accent} 30%, ${palette.border})`;
   const btnColor = isFlat
     ? `${palette.textSoft}`
-    : `rgba(191, 219, 254, 0.78)`;
+    : `${palette.textSoft}`;
   const btnHoverColor = isFlat
     ? `${palette.textMain}`
-    : `rgba(224, 242, 254, 0.96)`;
+    : `${palette.textMain}`;
   const btnActiveColor = isFlat
     ? `${palette.textMain}`
-    : `rgba(236, 254, 255, 0.98)`;
+    : `${palette.textMain}`;
   const btnActiveShadow = isFlat
-    ? `0 1px 2px color-mix(in srgb, ${palette.accent} 10%, transparent)`
-    : `0 10px 24px rgba(6, 182, 212, 0.16)`;
+    ? `0 1px 2px rgba(82, 53, 33, 0.05)`
+    : `0 1px 2px color-mix(in srgb, ${palette.accent} 10%, transparent)`;
   const btnDangerBg = isFlat
     ? `color-mix(in srgb, ${palette.danger} 8%, ${palette.panelBg})`
-    : `rgba(67, 20, 20, 0.62)`;
+    : `color-mix(in srgb, ${palette.danger} 8%, ${palette.panelBg})`;
   const btnDangerBorder = isFlat
     ? `color-mix(in srgb, ${palette.danger} 22%, transparent)`
-    : `rgba(248, 113, 113, 0.24)`;
+    : `color-mix(in srgb, ${palette.danger} 22%, transparent)`;
   const btnDangerColor = isFlat
     ? `${palette.danger}`
-    : `rgba(254, 226, 226, 0.95)`;
+    : `${palette.danger}`;
   const btnDangerHoverBg = isFlat
     ? `color-mix(in srgb, ${palette.danger} 14%, ${palette.panelBg})`
-    : `rgba(88, 24, 24, 0.76)`;
+    : `color-mix(in srgb, ${palette.danger} 14%, ${palette.panelBg})`;
   const btnDangerHoverBorder = isFlat
     ? `color-mix(in srgb, ${palette.danger} 34%, transparent)`
-    : `rgba(252, 165, 165, 0.4)`;
+    : `color-mix(in srgb, ${palette.danger} 34%, transparent)`;
   const btnFocusRing = isFlat
-    ? `0 0 0 3px color-mix(in srgb, ${palette.accent} 22%, transparent)`
+    ? `0 0 0 3px color-mix(in srgb, ${palette.borderStrong} 42%, transparent)`
     : `inset 0 0 0 1px rgba(125, 211, 252, 0.18)`;
   return [
     `--nb-surface-style:${palette.surfaceStyle}`,
@@ -848,8 +892,8 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     `--nb-accent-soft:${palette.accentSoft}`,
     `--nb-accent-text:${palette.accentText}`,
     `--nb-accent-ink:${palette.accentText}`,
-    `--nb-accent-surface:color-mix(in srgb, ${palette.accent} ${isFlat ? 16 : 22}%, ${isFlat ? palette.panelBg : palette.shellBottom})`,
-    `--nb-accent-surface-strong:color-mix(in srgb, ${palette.accentStrong} ${isFlat ? 22 : 34}%, ${isFlat ? palette.panelBg : palette.shellTop})`,
+    `--nb-accent-surface:color-mix(in srgb, ${palette.accent} ${isFlat ? 10 : 22}%, ${isFlat ? palette.panelBg : palette.shellBottom})`,
+    `--nb-accent-surface-strong:color-mix(in srgb, ${palette.accentStrong} ${isFlat ? 14 : 34}%, ${isFlat ? palette.panelBg : palette.shellTop})`,
     `--nb-text-main:${palette.textMain}`,
     `--nb-text-soft:${palette.textSoft}`,
     `--nb-text-faint:${palette.textFaint}`,

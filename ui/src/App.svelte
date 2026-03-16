@@ -6969,7 +6969,7 @@
           <div class="mount-dialog-head-meta">
             <p class="mount-dialog-eyebrow">Space properties</p>
             <p class="mount-dialog-title">{isMountEmpty(mountDialogMount) ? 'Create or open a space' : 'Edit this space'}</p>
-            <p class="mount-dialog-subtitle">Set the secret or attach one secret file. This editor is now separate from the top rail so it stays usable while you work.</p>
+            <p class="mount-dialog-subtitle">Set the secret or attach one secret file.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close space properties" onclick={() => collapseMount(mountDialogMount.id)}>
             <X size={18} strokeWidth={2} />
@@ -7819,9 +7819,10 @@
     flex-direction: column;
     gap: 0.7rem;
     padding: 0.78rem 0.9rem;
-    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
     border-radius: 18px;
-    background: var(--nb-identity-surface-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.9)) 96%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.84)) 94%, transparent)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.9));
+    box-shadow: 0 10px 28px rgba(82, 53, 33, 0.06);
   }
 
   .identity-row-head,
@@ -7840,7 +7841,7 @@
     gap: 0.45rem;
     font-size: 0.88rem;
     font-weight: 600;
-    color: var(--nb-text-main, rgba(224, 242, 254, 0.92));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
 
   .identity-chip-row {
@@ -7854,9 +7855,9 @@
 
   .identity-pill {
     appearance: none;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.16)) 90%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 20, 38, 0.74)) 84%, transparent);
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.92));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(250, 244, 239, 0.9));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     border-radius: 14px;
     min-height: 42px;
     padding: 0.58rem 0.82rem;
@@ -7876,14 +7877,14 @@
   }
 
   .identity-pill:hover {
-    border-color: var(--nb-border-strong, rgba(96, 165, 250, 0.32));
-    background: color-mix(in srgb, var(--nb-shell-top, rgba(12, 28, 48, 0.92)) 94%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 10%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%);
   }
 
   .identity-pill.active {
-    border-color: color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.38)) 92%, transparent);
-    background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, white)));
-    box-shadow: var(--nb-btn-active-shadow, 0 1px 2px rgba(255, 59, 48, 0.08));
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.12));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(248, 243, 239, 0.92));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
   }
 
   .identity-pill.add {
@@ -7901,32 +7902,35 @@
 
   .identity-pill-state {
     font-size: 0.72rem;
-    color: var(--nb-text-faint, rgba(191, 219, 254, 0.66));
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.68));
     white-space: nowrap;
   }
 
   .identity-row-note {
     margin: 0;
     font-size: 0.78rem;
-    color: var(--nb-text-faint, rgba(186, 230, 253, 0.68));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
   }
 
   .identity-row-banner {
     margin: 0;
     align-self: flex-start;
-    border-radius: 999px;
-    padding: 0.38rem 0.72rem;
+    border-radius: 12px;
+    padding: 0.52rem 0.76rem;
     font-size: 0.8rem;
+    border: 1px solid transparent;
   }
 
   .identity-row-banner.error {
-    background: var(--nb-danger-surface, rgba(127, 29, 29, 0.22));
-    color: var(--nb-danger, rgba(252, 165, 165, 0.96));
+    background: color-mix(in srgb, var(--nb-danger-surface, rgba(254, 202, 202, 0.12)) 84%, rgba(255, 248, 247, 0.96));
+    border-color: color-mix(in srgb, var(--nb-danger, #c86a6a) 24%, transparent);
+    color: color-mix(in srgb, var(--nb-danger, #c86a6a) 84%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .identity-row-banner.success {
-    background: var(--nb-success-surface, rgba(20, 83, 45, 0.22));
-    color: var(--nb-success, rgba(134, 239, 172, 0.96));
+    background: color-mix(in srgb, var(--nb-success-surface, rgba(134, 239, 172, 0.12)) 84%, rgba(247, 252, 248, 0.96));
+    border-color: color-mix(in srgb, var(--nb-success, #6aa975) 24%, transparent);
+    color: color-mix(in srgb, var(--nb-success, #6aa975) 84%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .identity-editor-panel {
@@ -7940,7 +7944,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
     font-size: 0.82rem;
   }
 
@@ -7948,11 +7952,18 @@
   .identity-editor-panel textarea {
     width: 100%;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.14)) 84%, transparent);
-    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(4, 15, 28, 0.88)) 92%, transparent);
-    color: var(--nb-text-main, rgba(239, 246, 255, 0.94));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.9));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font: inherit;
     padding: 0.75rem 0.85rem;
+  }
+
+  .identity-editor-panel input:focus,
+  .identity-editor-panel textarea:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-panel-bg, #ffffff) 72%, rgba(240, 232, 226, 0.8));
   }
 
   .identity-editor-panel-wide {
@@ -7964,14 +7975,14 @@
   }
 
   .workspace-toggle.remove {
-    border-color: var(--nb-btn-danger-border, rgba(248, 113, 113, 0.22));
-    background: var(--nb-btn-danger-bg, rgba(67, 20, 20, 0.56));
-    color: var(--nb-btn-danger-color, rgba(254, 226, 226, 0.95));
+    border-color: var(--nb-btn-danger-border, color-mix(in srgb, var(--nb-danger, #c86a6a) 24%, transparent));
+    background: var(--nb-btn-danger-bg, color-mix(in srgb, var(--nb-danger-surface, rgba(254, 202, 202, 0.12)) 84%, rgba(255, 248, 247, 0.96)));
+    color: var(--nb-btn-danger-color, color-mix(in srgb, var(--nb-danger, #c86a6a) 84%, var(--nb-text-main, rgba(28, 28, 30, 0.96))));
   }
 
   .workspace-toggle.remove:hover {
-    border-color: var(--nb-btn-danger-hover-border, rgba(252, 165, 165, 0.38));
-    background: var(--nb-btn-danger-hover-bg, rgba(88, 24, 24, 0.72));
+    border-color: var(--nb-btn-danger-hover-border, color-mix(in srgb, var(--nb-danger, #c86a6a) 30%, transparent));
+    background: var(--nb-btn-danger-hover-bg, color-mix(in srgb, var(--nb-danger-surface, rgba(254, 202, 202, 0.12)) 76%, rgba(255, 244, 243, 0.98)));
   }
 
   .mounts-actions {
@@ -8234,7 +8245,7 @@
   }
 
   .volume-chip-select:hover .header-dock {
-    background: var(--nb-volume-chip-hover-bg, linear-gradient(180deg, rgba(14, 29, 50, 0.36), rgba(9, 21, 39, 0.18)));
+    background: var(--nb-volume-chip-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%));
   }
 
   .volume-chip-select:focus-visible {
@@ -8242,7 +8253,7 @@
   }
 
   .volume-chip-select:focus-visible .header-dock {
-    background: var(--nb-volume-chip-focus-bg, linear-gradient(180deg, rgba(14, 29, 50, 0.46), rgba(9, 21, 39, 0.26)));
+    background: var(--nb-volume-chip-focus-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 88%, white 12%));
     box-shadow: var(--nb-btn-focus-ring, inset 0 0 0 1px rgba(125, 211, 252, 0.18));
   }
 
@@ -8277,9 +8288,9 @@
 
   .volume-chip-action-btn {
     appearance: none;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.14)) 92%, transparent);
-    background: var(--nb-volume-chip-action-bg, linear-gradient(180deg, rgba(9, 18, 33, 0.36), rgba(7, 14, 26, 0.18)));
-    color: var(--nb-text-soft, rgba(186, 230, 253, 0.72));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, transparent);
+    background: var(--nb-volume-chip-action-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, var(--nb-shell-bottom, #f4f4f7)));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
     width: 32px;
     min-width: 32px;
     height: 32px;
@@ -8328,16 +8339,16 @@
   }
 
   .volume-chip-action-btn:hover {
-    background: var(--nb-volume-chip-action-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, var(--nb-accent-soft, rgba(255, 59, 48, 0.08))));
-    border-color: color-mix(in srgb, var(--nb-border-strong, rgba(96, 165, 250, 0.3)) 88%, transparent);
-    color: var(--nb-text-main, rgba(240, 249, 255, 0.96));
+    background: var(--nb-volume-chip-action-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, white 10%));
+    border-color: color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 96%, transparent);
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
 
   .volume-chip-action-btn:focus-visible {
     outline: none;
-    background: var(--nb-volume-chip-action-focus-bg, linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9)));
-    border-color: color-mix(in srgb, var(--nb-border-strong, rgba(125, 211, 252, 0.36)) 92%, transparent);
-    color: var(--nb-text-main, rgba(240, 249, 255, 0.98));
+    background: var(--nb-volume-chip-action-focus-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 86%, white 14%));
+    border-color: color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 96%, transparent);
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     box-shadow: var(--nb-btn-focus-ring, inset 0 0 0 1px rgba(125, 211, 252, 0.18));
   }
 

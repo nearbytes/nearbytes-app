@@ -102,15 +102,14 @@
     gap: 0.72rem;
     padding: 0.82rem;
     border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.12)) 78%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 33, 0.52)) 72%, transparent);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
   }
 
   .share-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, rgba(45, 212, 191, 0.26)) 62%, transparent);
-    background:
-      radial-gradient(circle at top left, color-mix(in srgb, var(--nb-accent, rgba(45, 212, 191, 0.26)) 28%, transparent), transparent 36%),
-      color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 33, 0.72)) 86%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.92));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 74%, rgba(210, 122, 84, 0.08));
   }
 
   .card-head,
@@ -171,15 +170,15 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.18)) 90%, transparent);
-    background: color-mix(in srgb, var(--nb-shell-top, rgba(14, 27, 49, 0.88)) 92%, transparent);
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.9));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.9));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.86));
     flex: 0 0 auto;
   }
 
   .provider-label {
     margin: 0 0 0.18rem;
-    color: var(--nb-accent-strong, rgba(103, 232, 249, 0.94));
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
     font-size: 0.72rem;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -187,7 +186,7 @@
 
   h4 {
     margin: 0;
-    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font-size: 1rem;
     line-height: 1.18;
   }
@@ -195,7 +194,7 @@
   .card-copy,
   .fact-row {
     margin: 0;
-    color: var(--nb-text-soft, rgba(184, 205, 232, 0.9));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
     font-size: 0.8rem;
     line-height: 1.38;
   }
@@ -217,9 +216,9 @@
     max-width: 100%;
     padding: 0.22rem 1rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.18)) 90%, transparent);
-    background: color-mix(in srgb, var(--nb-shell-top, rgba(12, 23, 41, 0.84)) 88%, transparent);
-    color: var(--nb-text-main, rgba(219, 234, 254, 0.92));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
     font-size: 0.7rem;
     font-weight: 600;
     line-height: 1.2;
@@ -231,21 +230,21 @@
 
   .tone-good,
   .tone-durable {
-    border-color: color-mix(in srgb, var(--nb-success, rgba(45, 212, 191, 0.28)) 62%, transparent);
-    background: color-mix(in srgb, var(--nb-success-surface, rgba(9, 58, 58, 0.42)) 90%, transparent);
-    color: var(--nb-success, #5eead4);
+    border-color: color-mix(in srgb, var(--nb-success, #6aa975) 24%, transparent);
+    background: color-mix(in srgb, var(--nb-success-surface, rgba(134, 239, 172, 0.12)) 82%, rgba(247, 252, 248, 0.96));
+    color: color-mix(in srgb, var(--nb-success, #6aa975) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .tone-warn {
-    border-color: color-mix(in srgb, var(--nb-warning, rgba(251, 191, 36, 0.28)) 62%, transparent);
-    background: color-mix(in srgb, var(--nb-warning-surface, rgba(72, 53, 16, 0.46)) 92%, transparent);
-    color: var(--nb-warning, #fbbf24);
+    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 24%, transparent);
+    background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 82%, rgba(255, 250, 245, 0.96));
+    color: color-mix(in srgb, var(--nb-warning, #d4945f) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .tone-muted,
   .tone-replica,
   .tone-off {
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.88));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
   }
 
   .button-row {

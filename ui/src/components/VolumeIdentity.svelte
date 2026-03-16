@@ -99,14 +99,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: color-mix(in srgb, var(--nb-shell-top, rgba(15, 23, 42, 0.7)) 78%, transparent);
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.22)) 92%, transparent);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(247, 241, 236, 0.9));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.06));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
   }
 
   .volume-identity-preview.image {
-    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 14, 28, 0.94)) 96%, transparent);
-    border-color: color-mix(in srgb, var(--nb-accent-strong, rgba(125, 211, 252, 0.28)) 60%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 94%, rgba(248, 243, 239, 0.94));
+    border-color: color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(210, 122, 84, 0.1));
   }
 
   .volume-identity-preview-image {
@@ -117,7 +117,7 @@
   }
 
   .volume-identity-preview-icon {
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.9));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -141,13 +141,13 @@
   .volume-identity-label {
     font-size: 0.92rem;
     font-weight: 600;
-    color: var(--volume-identity-label-color, var(--nb-text-main, rgba(240, 249, 255, 0.96)));
+    color: var(--volume-identity-label-color, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
     letter-spacing: 0.01em;
   }
 
   .volume-identity-secondary {
     font-size: 0.72rem;
-    color: var(--volume-identity-secondary-color, var(--nb-text-faint, rgba(186, 230, 253, 0.68)));
+    color: var(--volume-identity-secondary-color, var(--nb-text-faint, rgba(110, 110, 115, 0.7)));
   }
 
   .volume-identity.compact .volume-identity-label {
