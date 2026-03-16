@@ -281,10 +281,10 @@ export class ManagedShareService {
 
     const now = Date.now();
     const shareId = createId('share', provider, state.managedShares.length + 1);
-    const localPath = path.resolve(
+    const requestedLocalPath = path.resolve(
       input.localPath ?? path.join(this.mirrorRoot, createMirrorFolderName(provider, input.label, shareId))
     );
-    await ensureMirrorFolder(localPath);
+    await ensureMirrorFolder(requestedLocalPath);
 
     const initialDescriptor = {
       managedShareId: shareId,
@@ -293,13 +293,19 @@ export class ManagedShareService {
     const providerOverlay: Partial<ManagedShare> = (await adapter?.createManagedShare?.(
       {
         ...input,
-        localPath,
+        localPath: requestedLocalPath,
         remoteDescriptor: initialDescriptor,
       },
       account
     )) ?? {
       remoteDescriptor: initialDescriptor,
     };
+    const localPath = path.resolve(
+      typeof providerOverlay.localPath === 'string' && providerOverlay.localPath.trim() !== ''
+        ? providerOverlay.localPath
+        : requestedLocalPath
+    );
+    await ensureMirrorFolder(localPath);
     const remoteDescriptor = {
       ...initialDescriptor,
       ...(providerOverlay.remoteDescriptor ?? {}),
@@ -639,6 +645,10 @@ export class ManagedShareService {
         share = created.share;
         workingShares.push(created.share);
       } else if (share && input.volumeId) {
+        await this.adapters.get(provider)?.ensureSync?.(share, account).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
+        });
         await this.attachManagedShare(share.id, { volumeId: input.volumeId });
       }
 

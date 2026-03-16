@@ -83,6 +83,20 @@ class FakeTransportAdapter implements TransportAdapter {
   }
 }
 
+class LocalPathOverrideAdapter extends FakeTransportAdapter {
+  constructor(private readonly resolvedLocalPath: string) {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  override async createManagedShare(input: { remoteDescriptor?: Record<string, unknown> }) {
+    const base = await super.createManagedShare(input);
+    return {
+      ...base,
+      localPath: this.resolvedLocalPath,
+    };
+  }
+}
+
 const tempDirs = new Set<string>();
 
 async function createHarness(): Promise<{
@@ -336,6 +350,67 @@ describe('ManagedShareService', () => {
 
     const config = storage.getRootsConfig();
     expect(config.sources[0]?.integration?.managedShareId).toBe(shares.shares[0]?.share.id);
+  });
+
+  it('persists the adapter-resolved local path when creating a managed share', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-localpath-'));
+    tempDirs.add(tempDir);
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+    const resolvedLocalPath = path.join(tempDir, 'existing-nearbytes');
+
+    await fs.writeFile(
+      rootsConfigPath,
+      `${JSON.stringify({ version: 2, sources: [], defaultVolume: { destinations: [] }, volumes: [] }, null, 2)}\n`,
+      'utf8'
+    );
+
+    const storage = new MultiRootStorageBackend({
+      version: 2,
+      sources: [],
+      defaultVolume: { destinations: [] },
+      volumes: [],
+    });
+    const service = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [new LocalPathOverrideAdapter(resolvedLocalPath)],
+    });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [],
+      },
+      integrationStatePath
+    );
+
+    const summary = await service.createManagedShare({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      localPath: path.join(tempDir, 'requested-nearbytes'),
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+    });
+
+    expect(summary.share.localPath).toBe(path.resolve(resolvedLocalPath));
+    expect(summary.storage?.sourcePath).toBe(path.resolve(resolvedLocalPath));
+    expect(storage.getRootsConfig().sources[0]?.path).toBe(path.resolve(resolvedLocalPath));
   });
 
   it('disconnecting a managed provider removes its shares without silently rerouting other spaces', async () => {

@@ -150,9 +150,14 @@ export class MegaTransportAdapter {
       }
       throw error;
     });
-    await this.ensureSyncTarget(input.localPath ?? '', remotePath);
+        const existingSync = await this.findSyncByRemotePath(remotePath, account.id);
+        const resolvedLocalPath = existingSync?.localPath?.trim() || (input.localPath ?? '');
+        if (!existingSync) {
+          await this.ensureSyncTarget(resolvedLocalPath, remotePath);
+        }
 
     return {
+          localPath: resolvedLocalPath,
       remoteDescriptor: {
         remotePath,
         shareName,
@@ -264,6 +269,15 @@ export class MegaTransportAdapter {
     }
     const syncRecord = await this.findSyncByLocalPath(share.localPath, account.id);
     if (!syncRecord) {
+      const remoteSync = await this.findSyncByRemotePath(remotePath, account.id);
+      if (
+        remoteSync?.id &&
+        normalizeComparablePath(remoteSync.localPath ?? '') !== normalizeComparablePath(share.localPath)
+      ) {
+        await this.runMega('sync', ['-d', remoteSync.id], {
+          timeoutMs: 60_000,
+        });
+      }
       await this.ensureSyncTarget(share.localPath, remotePath);
     }
     await this.refreshSyncState(share, account.id);
@@ -528,20 +542,40 @@ export class MegaTransportAdapter {
   }
 
   private async findSyncByLocalPath(localPath: string, accountId: string): Promise<MegaSyncRecord | null> {
+    const target = normalizeComparablePath(localPath);
+    if (!target) {
+      return null;
+    }
+    return this.findSyncRecord(
+      (record) => normalizeComparablePath(record.localPath ?? '') === target,
+      accountId
+    );
+  }
+
+  private async findSyncByRemotePath(remotePath: string, accountId: string): Promise<MegaSyncRecord | null> {
+    const target = normalizeComparableRemotePath(remotePath);
+    if (!target) {
+      return null;
+    }
+    return this.findSyncRecord(
+      (record) => normalizeComparableRemotePath(record.remotePath ?? '') === target,
+      accountId
+    );
+  }
+
+  private async findSyncRecord(
+    predicate: (record: MegaSyncRecord) => boolean,
+    accountId: string
+  ): Promise<MegaSyncRecord | null> {
     await this.ensureLoggedIn(accountId);
     const result = await this.runMega('sync', [
       '--path-display-size=0',
       '--col-separator=\t',
       '--output-cols=ID,LOCALPATH,REMOTEPATH,RUN_STATE,STATUS,ERROR',
     ]);
-    const target = normalizeComparablePath(localPath);
     const records = parseMegaSyncTable(result.stdout);
-    return (
-      records.find((record) => normalizeComparablePath(record.localPath ?? '') === target) ??
-      null
-    );
+    return records.find((record) => predicate(record)) ?? null;
   }
-
   private async findRemoteSharePath(shareName: string): Promise<string> {
     const result = await this.runMega('find', ['/', shareName, '-t', 'd'], {
       timeoutMs: 60_000,
@@ -662,6 +696,15 @@ function normalizeMegaCell(value: string | undefined): string | undefined {
 
 function normalizeComparablePath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/u, '').toLowerCase();
+}
+
+function normalizeComparableRemotePath(value: string): string {
+  const normalized = value.trim().replace(/\\/g, '/');
+  if (!normalized) {
+    return '';
+  }
+  const collapsed = path.posix.normalize(normalized).replace(/\/+$/u, '');
+  return collapsed || '/';
 }
 
 function extractMegaError(value: string): string {
