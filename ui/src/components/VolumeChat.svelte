@@ -581,14 +581,14 @@
     --chat-border-strong: color-mix(in srgb, var(--nb-border-strong, rgba(96, 165, 250, 0.34)) 88%, transparent);
     --chat-accent: var(--nb-accent, rgba(34, 211, 238, 0.32));
     --chat-accent-strong: var(--nb-accent-strong, rgba(125, 211, 252, 0.3));
-    --chat-bg: color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.96)) 94%, transparent);
-    --chat-bg-deep: color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.9)) 92%, transparent);
-    --chat-bg-soft: color-mix(in srgb, var(--nb-shell-top, rgba(8, 18, 35, 0.72)) 82%, transparent);
-    --chat-card: color-mix(in srgb, var(--nb-shell-top, rgba(9, 24, 42, 0.86)) 92%, transparent);
-    --chat-card-own: linear-gradient(180deg, color-mix(in srgb, var(--nb-accent-surface-strong, rgba(13, 43, 67, 0.94)) 96%, transparent), color-mix(in srgb, var(--nb-accent-surface, rgba(9, 30, 50, 0.96)) 96%, transparent));
-    --chat-button-bg: color-mix(in srgb, var(--nb-shell-top, rgba(8, 20, 38, 0.82)) 90%, transparent);
-    --chat-button-hover: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 28, 48, 0.96)) 96%, transparent);
-    --chat-input-bg: color-mix(in srgb, var(--nb-shell-bottom, rgba(4, 15, 28, 0.88)) 92%, transparent);
+    --chat-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
+    --chat-bg-deep: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
+    --chat-bg-soft: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, var(--nb-shell-bottom, #f4f4f7));
+    --chat-card: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
+    --chat-card-own: color-mix(in srgb, var(--nb-accent, #ff3b30) 10%, var(--nb-panel-bg, #ffffff));
+    --chat-button-bg: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
+    --chat-button-hover: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, var(--nb-accent-soft, rgba(255, 59, 48, 0.08))));
+    --chat-input-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
     --chat-text-main: var(--nb-text-main, rgba(239, 246, 255, 0.94));
     --chat-text-soft: var(--nb-text-soft, rgba(191, 219, 254, 0.7));
     --chat-text-faint: var(--nb-text-faint, rgba(186, 230, 253, 0.64));
@@ -605,8 +605,7 @@
     position: relative;
     border: 1px solid var(--chat-border);
     border-radius: 18px;
-    background:
-      linear-gradient(180deg, var(--chat-bg), var(--chat-bg-deep));
+    background: var(--chat-bg);
   }
 
   .chat-header,
@@ -632,9 +631,7 @@
   .chat-header {
     padding: 0.95rem 1rem;
     border-bottom: 1px solid color-mix(in srgb, var(--chat-border) 90%, transparent);
-    background:
-      radial-gradient(120% 120% at 0% 0%, color-mix(in srgb, var(--chat-accent) 24%, transparent), transparent 46%),
-      var(--chat-bg-soft);
+    background: var(--chat-bg-soft);
   }
 
   .chat-title-mark {
@@ -643,8 +640,8 @@
     border-radius: 12px;
     display: grid;
     place-items: center;
-    background: radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--chat-accent-strong) 52%, transparent), color-mix(in srgb, var(--nb-accent-surface-strong, rgba(8, 47, 73, 0.94)) 96%, transparent));
-    color: var(--chat-text-main);
+    background: color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, #ffffff));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     flex: 0 0 auto;
   }
 
@@ -677,13 +674,13 @@
     border: 1px solid var(--chat-border);
     background: var(--chat-button-bg);
     color: var(--chat-text-main);
-    border-radius: 11px;
+    border-radius: 999px;
     min-height: 32px;
     padding: 0.42rem 0.72rem;
     font: inherit;
     font-size: 0.8rem;
     cursor: pointer;
-    transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+    transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
   }
 
   .chat-primary-btn:hover:not(:disabled),
@@ -692,7 +689,6 @@
   .chat-attachment:hover {
     border-color: var(--chat-border-strong);
     background: var(--chat-button-hover);
-    transform: translateY(-1px);
   }
 
   .chat-icon-btn {
@@ -707,8 +703,9 @@
   }
 
   .chat-primary-btn {
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-accent-surface-strong, rgba(15, 61, 81, 0.96)) 96%, transparent), color-mix(in srgb, var(--nb-accent-surface, rgba(10, 39, 57, 0.94)) 96%, transparent));
-    border-color: color-mix(in srgb, var(--chat-accent) 94%, transparent);
+    background: color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, #ffffff));
+    border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 24%, transparent);
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
   }
 
   .chat-status-pill,
@@ -719,8 +716,8 @@
   }
 
   .chat-status-pill {
-    background: color-mix(in srgb, var(--chat-accent-strong) 18%, transparent);
-    color: var(--nb-accent-ink, rgba(186, 230, 253, 0.9));
+    background: color-mix(in srgb, var(--nb-accent, #ff3b30) 10%, var(--nb-panel-bg, #ffffff));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
   }
 
   .chat-banner {
@@ -778,7 +775,7 @@
 
   .chat-message-card.own .chat-message-bubble {
     background: var(--chat-card-own);
-    border-color: color-mix(in srgb, var(--chat-accent) 52%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 24%, transparent);
   }
 
   .chat-message-head {
@@ -801,7 +798,7 @@
   }
 
   .chat-author-btn:hover {
-    color: var(--nb-accent-ink, rgba(186, 230, 253, 0.96));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
 
   .chat-message-body {
@@ -813,9 +810,7 @@
 
   .chat-composer {
     border-top: 1px solid color-mix(in srgb, var(--chat-border) 90%, transparent);
-    background:
-      radial-gradient(120% 120% at 0% 100%, color-mix(in srgb, var(--chat-accent) 18%, transparent), transparent 44%),
-      color-mix(in srgb, var(--chat-bg-soft) 96%, transparent);
+    background: color-mix(in srgb, var(--chat-bg-soft) 98%, transparent);
     padding: 0.82rem 1rem 0.95rem;
     display: flex;
     flex-direction: column;
@@ -880,10 +875,8 @@
     padding: 0.82rem;
     border-radius: 18px;
     border: 1px solid var(--chat-border);
-    background:
-      radial-gradient(120% 120% at 0% 0%, color-mix(in srgb, var(--chat-accent) 30%, transparent), transparent 44%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(8, 19, 36, 0.98)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(6, 15, 29, 0.96)) 98%, transparent));
-    box-shadow: 0 18px 42px rgba(2, 6, 23, 0.42);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, var(--nb-shell-bottom, #f4f4f7));
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   }
 
   .chat-profile-avatar {
@@ -892,8 +885,8 @@
     border-radius: 999px;
     display: grid;
     place-items: center;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-accent-surface-strong, rgba(16, 66, 91, 0.94)) 98%, transparent), color-mix(in srgb, var(--nb-accent-surface, rgba(10, 44, 66, 0.96)) 98%, transparent));
-    color: var(--chat-text-main);
+    background: color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, #ffffff));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     font-weight: 700;
     flex: 0 0 auto;
   }
