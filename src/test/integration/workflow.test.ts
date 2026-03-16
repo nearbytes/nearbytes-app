@@ -8,7 +8,7 @@ import { createSecret } from '../../types/keys.js';
 
 const TEST_DATA_DIR = './test-data';
 
-describe('NearBytes Workflow', () => {
+describe('Nearbytes Workflow', () => {
   beforeEach(async () => {
     // Clean up test data directory
     try {
@@ -33,7 +33,7 @@ describe('NearBytes Workflow', () => {
     expect(publicKey.length).toBeGreaterThan(0);
 
     // 2. Store data
-    const testData = new TextEncoder().encode('Hello, NearBytes!');
+    const testData = new TextEncoder().encode('Hello, Nearbytes!');
     const { eventHash, dataHash } = await storeData(testData, 'test.txt', secret, crypto, channelStorage);
     expect(eventHash).toMatch(/^[0-9a-f]{64}$/);
     expect(dataHash).toMatch(/^[0-9a-f]{64}$/);

@@ -50,9 +50,9 @@ export interface GetFileResult {
 }
 
 /**
- * NearBytes API
+ * Nearbytes API
  * 
- * Framework-agnostic backend API for NearBytes operations.
+ * Framework-agnostic backend API for Nearbytes operations.
  * Can be used from Electron IPC, web workers, or any other context.
  * 
  * This class has no CLI dependencies:
@@ -61,7 +61,7 @@ export interface GetFileResult {
  * - Returns structured data
  * - Throws errors (doesn't exit)
  */
-export class NearBytesAPI {
+export class NearbytesAPI {
   private readonly channelStorage: ChannelStorage;
   private readonly crypto: CryptoOperations;
   private readonly storage: StorageBackend;

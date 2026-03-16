@@ -764,6 +764,55 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
   const volumeChipActionFocusSurface = isFlat
     ? `color-mix(in srgb, ${palette.panelBg} 80%, ${palette.accentSoft})`
     : `linear-gradient(180deg, rgba(18, 35, 60, 0.94), rgba(11, 22, 40, 0.9))`;
+  /* ── Button / control surfaces ─────────────────────────── */
+  const btnBg = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 82%, ${palette.shellBottom})`
+    : `rgba(10, 19, 34, 0.52)`;
+  const btnHoverBg = isFlat
+    ? `color-mix(in srgb, ${palette.panelBg} 68%, ${palette.shellBottom})`
+    : `rgba(16, 32, 56, 0.88)`;
+  const btnActiveBg = isFlat
+    ? `color-mix(in srgb, ${palette.accent} 14%, ${palette.panelBg})`
+    : `linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94))`;
+  const btnBorder = isFlat
+    ? `color-mix(in srgb, ${palette.border} 80%, transparent)`
+    : `rgba(56, 189, 248, 0.14)`;
+  const btnHoverBorder = isFlat
+    ? `${palette.border}`
+    : `rgba(96, 165, 250, 0.28)`;
+  const btnActiveBorder = isFlat
+    ? `color-mix(in srgb, ${palette.accent} 42%, transparent)`
+    : `rgba(34, 211, 238, 0.42)`;
+  const btnColor = isFlat
+    ? `${palette.textSoft}`
+    : `rgba(191, 219, 254, 0.78)`;
+  const btnHoverColor = isFlat
+    ? `${palette.textMain}`
+    : `rgba(224, 242, 254, 0.96)`;
+  const btnActiveColor = isFlat
+    ? `${palette.accentStrong}`
+    : `rgba(236, 254, 255, 0.98)`;
+  const btnActiveShadow = isFlat
+    ? `0 1px 3px color-mix(in srgb, ${palette.accent} 12%, transparent)`
+    : `0 10px 24px rgba(6, 182, 212, 0.16)`;
+  const btnDangerBg = isFlat
+    ? `color-mix(in srgb, ${palette.danger} 8%, ${palette.panelBg})`
+    : `rgba(67, 20, 20, 0.62)`;
+  const btnDangerBorder = isFlat
+    ? `color-mix(in srgb, ${palette.danger} 22%, transparent)`
+    : `rgba(248, 113, 113, 0.24)`;
+  const btnDangerColor = isFlat
+    ? `${palette.danger}`
+    : `rgba(254, 226, 226, 0.95)`;
+  const btnDangerHoverBg = isFlat
+    ? `color-mix(in srgb, ${palette.danger} 14%, ${palette.panelBg})`
+    : `rgba(88, 24, 24, 0.76)`;
+  const btnDangerHoverBorder = isFlat
+    ? `color-mix(in srgb, ${palette.danger} 34%, transparent)`
+    : `rgba(252, 165, 165, 0.4)`;
+  const btnFocusRing = isFlat
+    ? `0 0 0 3px color-mix(in srgb, ${palette.accent} 22%, transparent)`
+    : `inset 0 0 0 1px rgba(125, 211, 252, 0.18)`;
   return [
     `--nb-surface-style:${palette.surfaceStyle}`,
     `--nb-app-bg:${palette.appBg}`,
@@ -807,5 +856,21 @@ export function themeCssVariables(settings: NearbytesThemeSettings): string {
     `--nb-warning-surface:color-mix(in srgb, ${palette.warning} 18%, ${palette.shellBottom})`,
     `--nb-danger-surface:color-mix(in srgb, ${palette.danger} 18%, ${palette.shellBottom})`,
     `--nb-logo-bg:${logo.bgFill}`,
+    `--nb-btn-bg:${btnBg}`,
+    `--nb-btn-hover-bg:${btnHoverBg}`,
+    `--nb-btn-active-bg:${btnActiveBg}`,
+    `--nb-btn-border:${btnBorder}`,
+    `--nb-btn-hover-border:${btnHoverBorder}`,
+    `--nb-btn-active-border:${btnActiveBorder}`,
+    `--nb-btn-color:${btnColor}`,
+    `--nb-btn-hover-color:${btnHoverColor}`,
+    `--nb-btn-active-color:${btnActiveColor}`,
+    `--nb-btn-active-shadow:${btnActiveShadow}`,
+    `--nb-btn-danger-bg:${btnDangerBg}`,
+    `--nb-btn-danger-border:${btnDangerBorder}`,
+    `--nb-btn-danger-color:${btnDangerColor}`,
+    `--nb-btn-danger-hover-bg:${btnDangerHoverBg}`,
+    `--nb-btn-danger-hover-border:${btnDangerHoverBorder}`,
+    `--nb-btn-focus-ring:${btnFocusRing}`,
   ].join(';');
 }

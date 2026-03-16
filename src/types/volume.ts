@@ -27,7 +27,7 @@ export interface EventLogEntry {
 }
 
 /**
- * Volume represents a NearBytes volume
+ * Volume represents a Nearbytes volume
  * A volume is deterministically derived from a secret seed
  * and materializes a file system through event log replay
  * 

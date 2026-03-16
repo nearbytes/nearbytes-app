@@ -1,8 +1,8 @@
-# NearBytes File System Model (Phase 1)
+# Nearbytes File System Model (Phase 1)
 
 ## Overview
 
-The file system layer is an event-sourced model built on top of the NearBytes
+The file system layer is an event-sourced model built on top of the Nearbytes
 channel log. Every file operation is recorded as an immutable event. The
 current file list is derived by replaying those events in order, which removes
 any need for a mutable index.

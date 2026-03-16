@@ -1,5 +1,5 @@
 /**
- * File-level event types for the NearBytes file layer.
+ * File-level event types for the Nearbytes file layer.
  */
 export type FileEvent = CreateFileEvent | DeleteFileEvent | RenameFileEvent;
 

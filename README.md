@@ -96,7 +96,7 @@ Retrieves and decrypts the data.
 
 ## Architecture Overview
 
-NearBytes follows a layered architecture:
+Nearbytes follows a layered architecture:
 
 1. **Crypto Layer**: Cryptographic primitives (hash, symmetric, asymmetric)
 2. **Storage Layer**: Abstract storage backend with filesystem implementation
@@ -109,7 +109,7 @@ See [docs/architecture.md](docs/architecture.md) for details.
 
 ## Phase 1: Encrypted File Layer
 
-NearBytes includes a file-aware event layer that derives file state solely by replaying
+Nearbytes includes a file-aware event layer that derives file state solely by replaying
 the append-only event log for a secret-derived channel. There is no mutable index; the
 current file list is reconstructed deterministically from events.
 
