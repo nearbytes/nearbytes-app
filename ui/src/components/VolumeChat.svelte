@@ -585,9 +585,9 @@
     --chat-bg-deep: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
     --chat-bg-soft: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, var(--nb-shell-bottom, #f4f4f7));
     --chat-card: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
-    --chat-card-own: color-mix(in srgb, var(--nb-accent, #ff3b30) 10%, var(--nb-panel-bg, #ffffff));
+    --chat-card-own: color-mix(in srgb, var(--nb-accent, #d27a54) 6%, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, #fff6ef));
     --chat-button-bg: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
-    --chat-button-hover: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, var(--nb-accent-soft, rgba(255, 59, 48, 0.08))));
+    --chat-button-hover: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, color-mix(in srgb, var(--nb-accent, #d27a54) 6%, #fff4ec)));
     --chat-input-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
     --chat-text-main: var(--nb-text-main, rgba(239, 246, 255, 0.94));
     --chat-text-soft: var(--nb-text-soft, rgba(191, 219, 254, 0.7));
@@ -640,7 +640,7 @@
     border-radius: 12px;
     display: grid;
     place-items: center;
-    background: color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, #ffffff));
+    background: color-mix(in srgb, var(--nb-accent, #d27a54) 8%, #fff8f2);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     flex: 0 0 auto;
   }
@@ -703,8 +703,8 @@
   }
 
   .chat-primary-btn {
-    background: color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, #ffffff));
-    border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 24%, transparent);
+    background: color-mix(in srgb, var(--nb-accent, #d27a54) 8%, #fff8f2);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 16%, transparent);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
   }
 
@@ -716,7 +716,8 @@
   }
 
   .chat-status-pill {
-    background: color-mix(in srgb, var(--nb-accent, #ff3b30) 10%, var(--nb-panel-bg, #ffffff));
+    background: color-mix(in srgb, var(--nb-accent, #d27a54) 7%, #fff9f4);
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 12%, transparent);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
   }
 
@@ -770,12 +771,13 @@
     border: 1px solid color-mix(in srgb, var(--chat-border) 58%, transparent);
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: 0.34rem;
   }
 
   .chat-message-card.own .chat-message-bubble {
     background: var(--chat-card-own);
-    border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 24%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 16%, transparent);
   }
 
   .chat-message-head {
@@ -845,12 +847,32 @@
   }
 
   .chat-pending-attachment {
+    min-width: 0;
     padding: 0.44rem 0.65rem;
     border-radius: 12px;
     background: color-mix(in srgb, var(--chat-button-bg) 94%, transparent);
     border: 1px solid color-mix(in srgb, var(--chat-border) 84%, transparent);
     justify-content: space-between;
     font-size: 0.82rem;
+  }
+
+  .chat-attachment {
+    min-width: 0;
+    max-width: min(100%, 16rem);
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    justify-content: flex-start;
+    border-radius: 12px;
+  }
+
+  .chat-attachment span,
+  .chat-pending-attachment span {
+    min-width: 0;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .chat-composer-meta {
@@ -885,7 +907,7 @@
     border-radius: 999px;
     display: grid;
     place-items: center;
-    background: color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, #ffffff));
+    background: color-mix(in srgb, var(--nb-accent, #d27a54) 8%, #fff8f2);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     font-weight: 700;
     flex: 0 0 auto;
