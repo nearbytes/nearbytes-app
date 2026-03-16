@@ -241,7 +241,12 @@
 
   type NearbytesDesktopBridge = {
     connectDeepLinks?: () => Promise<string[]>;
-    exportLogoPng?: (dataUrl: string) => Promise<{ path?: string } | null>;
+    exportLogoPng?: (dataUrl: string) => Promise<{
+      path?: string;
+      pngPath?: string;
+      icnsPath?: string;
+      icoPath?: string;
+    } | null>;
     fetchRemoteFile?: (url: string) => Promise<DesktopRemoteFile>;
     getClipboardImageStatus?: () => Promise<{ hasImage: boolean }>;
     readClipboardImage?: () => Promise<DesktopRemoteFile | null>;
@@ -255,7 +260,7 @@
     saveThemeRegistry?: (registry: NearbytesThemeRegistry) => Promise<{ path?: string } | null>;
   };
 
-  type ThemeDialogSection = 'preset' | 'palette' | 'logo';
+  type ThemeDialogSection = 'preset' | 'material' | 'accent' | 'logo';
 
   type SecretFileHashEntry = {
     payload: string;
@@ -1549,7 +1554,12 @@
       const result = await bridge.exportLogoPng(dataUrl);
       themeDialogFeedback = {
         tone: 'success',
-        message: result?.path ? `Exported logo PNG to ${result.path}` : 'Exported logo PNG.',
+        message:
+          result?.pngPath && result?.icnsPath && result?.icoPath
+            ? `Synced app icons for packaging from ${result.path ?? 'the exported master PNG'}`
+            : result?.path
+              ? `Exported logo PNG to ${result.path}`
+              : 'Exported logo PNG.',
       };
     } catch (error) {
       themeDialogError = error instanceof Error ? error.message : 'Failed to export logo PNG';
@@ -5417,27 +5427,116 @@
               title="Open theme studio"
             >
               <span class="brand-logo-frame interactive">
-                <NearbytesLogo size={52} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+                <NearbytesLogo size={64} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
               </span>
             </button>
           {:else}
             <span class="brand-logo-frame">
-              <NearbytesLogo size={52} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+              <NearbytesLogo size={64} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
             </span>
           {/if}
-          <span class="brand-copy">
-            <span class="brand-title">Nearbytes</span>
-            <span class="brand-note">
-              {activeThemePreset().palette.label}
-              {#if isDevThemeStudio}
-                {' · click the logo to edit the theme studio'}
-              {/if}
-            </span>
-          </span>
-        </div>
-      </div>
+          <div class="brand-stack">
+            <div class="brand-meta-row">
+              <span class="brand-copy">
+                <span class="brand-title">Nearbytes</span>
+                <span class="brand-note">{activeThemePreset().palette.label}</span>
+              </span>
 
-      <MountRail dragging={draggingMountId !== null}>
+              <div class="mounts-actions brand-actions">
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showJoinVolumeDialog}
+                  aria-label="Join shared volume"
+                  title="Join shared volume"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    openJoinVolumeDialog();
+                  }}
+                >
+                  <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showVolumeShareDialog}
+                  aria-label="Share"
+                  title="Share"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    openVolumeShareDialog();
+                  }}
+                  disabled={!activeMount && !shareableVolumeId}
+                >
+                  <Link2 class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showStatusPanel}
+                  aria-label="Status"
+                  title="Status"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    showStatusPanel = !showStatusPanel;
+                  }}
+                >
+                  <Activity class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showTimeMachinePanel}
+                  aria-label="Timeline"
+                  title="Timeline"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    showTimeMachinePanel = !showTimeMachinePanel;
+                  }}
+                >
+                  <History class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showSourcesPanel}
+                  aria-label="Locations"
+                  title="Locations"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    toggleSourcesPanel();
+                  }}
+                >
+                  <HardDrive class="button-icon" size={14} strokeWidth={2} />
+                </button>
+                {#if showChatWorkspace}
+                  <button
+                    type="button"
+                    class="header-tool-btn"
+                    class:active={showIdentityManager}
+                    aria-label="Identities"
+                    title="Identities"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      showIdentityManager = !showIdentityManager;
+                    }}
+                  >
+                    <UserRound class="button-icon" size={14} strokeWidth={2} />
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="mount-add-btn"
+                  onclick={addMount}
+                  aria-label="Add space"
+                  title="Add space"
+                >
+                  <Plus size={15} strokeWidth={2.2} />
+                </button>
+              </div>
+            </div>
+
+            <MountRail dragging={draggingMountId !== null}>
         {#snippet children()}
         {#each mounts as mount, index (mount.id)}
           {@const expanded = mount.id === activeMountId && !mount.collapsed}
@@ -5673,102 +5772,10 @@
           </div>
         {/each}
         {/snippet}
-        {#snippet actions()}
-        <div class="mounts-actions">
-          <button
-            type="button"
-            class="header-tool-btn"
-            class:active={showJoinVolumeDialog}
-            aria-label="Join shared volume"
-            title="Join shared volume"
-            onclick={(event) => {
-              event.stopPropagation();
-              openJoinVolumeDialog();
-            }}
-          >
-            <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
-          </button>
-          <button
-            type="button"
-            class="header-tool-btn"
-            class:active={showVolumeShareDialog}
-            aria-label="Share"
-            title="Share"
-            onclick={(event) => {
-              event.stopPropagation();
-              openVolumeShareDialog();
-            }}
-            disabled={!activeMount && !shareableVolumeId}
-          >
-            <Link2 class="button-icon" size={14} strokeWidth={2} />
-          </button>
-          <button
-            type="button"
-            class="header-tool-btn"
-            class:active={showStatusPanel}
-            aria-label="Status"
-            title="Status"
-            onclick={(event) => {
-              event.stopPropagation();
-              showStatusPanel = !showStatusPanel;
-            }}
-          >
-            <Activity class="button-icon" size={14} strokeWidth={2} />
-          </button>
-          <button
-            type="button"
-            class="header-tool-btn"
-            class:active={showTimeMachinePanel}
-            aria-label="Timeline"
-            title="Timeline"
-            onclick={(event) => {
-              event.stopPropagation();
-              showTimeMachinePanel = !showTimeMachinePanel;
-            }}
-          >
-            <History class="button-icon" size={14} strokeWidth={2} />
-          </button>
-          <button
-            type="button"
-            class="header-tool-btn"
-            class:active={showSourcesPanel}
-            aria-label="Locations"
-            title="Locations"
-            onclick={(event) => {
-              event.stopPropagation();
-              toggleSourcesPanel();
-            }}
-          >
-            <HardDrive class="button-icon" size={14} strokeWidth={2} />
-          </button>
-          {#if showChatWorkspace}
-            <button
-              type="button"
-              class="header-tool-btn"
-              class:active={showIdentityManager}
-              aria-label="Identities"
-              title="Identities"
-              onclick={(event) => {
-                event.stopPropagation();
-                showIdentityManager = !showIdentityManager;
-              }}
-            >
-              <UserRound class="button-icon" size={14} strokeWidth={2} />
-            </button>
-          {/if}
-          <button
-            type="button"
-            class="mount-add-btn"
-            class:visible={isHeaderHovering || isSecretDropTarget}
-            onclick={addMount}
-            aria-label="Add space"
-            title="Add space"
-          >
-            <Plus size={15} strokeWidth={2.2} />
-          </button>
+            </MountRail>
+          </div>
         </div>
-        {/snippet}
-      </MountRail>
+      </div>
 
       {#if showChatWorkspace && showIdentityManager}
         <div class="identity-row panel-surface">
@@ -7398,7 +7405,8 @@
           <section class="theme-dialog-section">
             <div class="theme-dialog-tab-row" role="tablist" aria-label="Appearance sections">
               <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'preset'} onclick={() => (themeDialogSection = 'preset')}>Presets</button>
-              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'palette'} onclick={() => (themeDialogSection = 'palette')}>Palette</button>
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'material'} onclick={() => (themeDialogSection = 'material')}>Material</button>
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'accent'} onclick={() => (themeDialogSection = 'accent')}>Accent</button>
               <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'logo'} onclick={() => (themeDialogSection = 'logo')}>Logo</button>
             </div>
 
@@ -7423,11 +7431,26 @@
                   </button>
                 {/each}
               </div>
-            {:else if themeDialogSection === 'palette'}
-              <div class="theme-form-grid">
+            {:else if themeDialogSection === 'material'}
+              <div class="theme-form-grid theme-form-grid-wide">
                 <label><span>App background</span><input type="color" value={themeSettings.palette.appBg} oninput={(event) => updateThemePaletteColor('appBg', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Shell top</span><input type="text" value={themeSettings.palette.shellTop} oninput={(event) => updateThemePaletteColor('shellTop', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Shell bottom</span><input type="text" value={themeSettings.palette.shellBottom} oninput={(event) => updateThemePaletteColor('shellBottom', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Shell glow</span><input type="text" value={themeSettings.palette.shellGlow} oninput={(event) => updateThemePaletteColor('shellGlow', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Panel background</span><input type="text" value={themeSettings.palette.panelBg} oninput={(event) => updateThemePaletteColor('panelBg', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Panel glow</span><input type="text" value={themeSettings.palette.panelGlow} oninput={(event) => updateThemePaletteColor('panelGlow', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Border</span><input type="text" value={themeSettings.palette.border} oninput={(event) => updateThemePaletteColor('border', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Border strong</span><input type="text" value={themeSettings.palette.borderStrong} oninput={(event) => updateThemePaletteColor('borderStrong', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Main text</span><input type="text" value={themeSettings.palette.textMain} oninput={(event) => updateThemePaletteColor('textMain', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Soft text</span><input type="text" value={themeSettings.palette.textSoft} oninput={(event) => updateThemePaletteColor('textSoft', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Faint text</span><input type="text" value={themeSettings.palette.textFaint} oninput={(event) => updateThemePaletteColor('textFaint', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Accent text</span><input type="text" value={themeSettings.palette.accentText} oninput={(event) => updateThemePaletteColor('accentText', (event.currentTarget as HTMLInputElement).value)} /></label>
+              </div>
+            {:else if themeDialogSection === 'accent'}
+              <div class="theme-form-grid">
                 <label><span>Accent</span><input type="color" value={themeSettings.palette.accent} oninput={(event) => updateThemePaletteColor('accent', (event.currentTarget as HTMLInputElement).value)} /></label>
                 <label><span>Accent strong</span><input type="color" value={themeSettings.palette.accentStrong} oninput={(event) => updateThemePaletteColor('accentStrong', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Accent soft</span><input type="text" value={themeSettings.palette.accentSoft} oninput={(event) => updateThemePaletteColor('accentSoft', (event.currentTarget as HTMLInputElement).value)} /></label>
                 <label><span>Success</span><input type="color" value={themeSettings.palette.success} oninput={(event) => updateThemePaletteColor('success', (event.currentTarget as HTMLInputElement).value)} /></label>
                 <label><span>Warning</span><input type="color" value={themeSettings.palette.warning} oninput={(event) => updateThemePaletteColor('warning', (event.currentTarget as HTMLInputElement).value)} /></label>
                 <label><span>Danger</span><input type="color" value={themeSettings.palette.danger} oninput={(event) => updateThemePaletteColor('danger', (event.currentTarget as HTMLInputElement).value)} /></label>
@@ -7494,13 +7517,25 @@
     box-sizing: border-box;
   }
 
+  :global(:root) {
+    --nb-font-display: 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
+    --nb-font-body: 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  }
+
   :global(body) {
     margin: 0;
     padding: 0;
     background: var(--nb-app-bg, #0a0a0f);
     color: var(--nb-text-main, #e0e0e0);
-    font-family: 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     overscroll-behavior: none;
+  }
+
+  :global(button),
+  :global(input),
+  :global(select),
+  :global(textarea) {
+    font-family: inherit;
   }
 
   .app {
@@ -7580,8 +7615,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0.34rem;
-    border-radius: 18px;
+    padding: 0.42rem;
+    border-radius: 20px;
     background: color-mix(in srgb, var(--nb-logo-bg, #08131f) 92%, transparent);
     border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.16));
     box-shadow: 0 16px 32px rgba(2, 6, 23, 0.28);
@@ -7601,21 +7636,79 @@
   .brand-copy {
     min-width: 0;
     display: grid;
-    gap: 0.08rem;
+    gap: 0.12rem;
+    align-content: center;
+  }
+
+  .brand-stack {
+    min-width: 0;
+    display: grid;
+    gap: 0.56rem;
+    flex: 1 1 auto;
+  }
+
+  .brand-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    min-width: 0;
   }
 
   .brand-title {
-    font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
-    font-size: 1.44rem;
-    font-weight: 600;
+    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-size: 1.66rem;
+    font-weight: 700;
     letter-spacing: 0.01em;
-    color: var(--nb-accent-text, rgba(240, 249, 255, 0.98));
+    color: transparent;
+    background: linear-gradient(135deg, var(--nb-accent-strong, #f5f5f7), var(--nb-accent, #ff3b30));
+    -webkit-background-clip: text;
+    background-clip: text;
   }
 
   .brand-note {
-    font-size: 0.76rem;
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-size: 0.82rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
     line-height: 1.4;
     color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
+  }
+
+  .brand-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .identity-row-title,
+  .status-storage-title,
+  .discovery-toast-title,
+  .volume-transition-title,
+  .join-dialog-route-title,
+  .share-dialog-empty-title,
+  .tm-details-title,
+  .tm-details-section-title,
+  .tm-details-spec-title,
+  .tm-spec-title,
+  .preview-title {
+    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+  }
+
+  .status-label,
+  .time-machine-eyebrow,
+  .tm-details-eyebrow,
+  .tm-details-label,
+  .empty-eyebrow {
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+  }
+
+  .brand-rail {
+    align-items: flex-start;
+  }
+
+  .brand-badge {
+    align-items: flex-start;
   }
 
   .header-shell {
@@ -8360,6 +8453,7 @@
     align-items: center;
     justify-content: center;
     gap: 0.46rem;
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.74rem;
     font-weight: 600;
     letter-spacing: 0.01em;
@@ -8579,6 +8673,7 @@
     align-items: center;
     justify-content: center;
     gap: 0.46rem;
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.74rem;
     font-weight: 600;
     letter-spacing: 0.01em;
@@ -8650,15 +8745,9 @@
   }
 
   .mount-add-btn {
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-3px) scale(0.94);
-  }
-
-  .mount-add-btn.visible {
     opacity: 1;
     pointer-events: auto;
-    transform: translateY(0) scale(1);
+    transform: none;
   }
 
   .mount-add-btn:hover,
@@ -9632,6 +9721,7 @@
 
   .theme-dialog-eyebrow {
     margin: 0;
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.68rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -9640,6 +9730,7 @@
 
   .theme-dialog-title {
     margin: 0;
+    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 1.16rem;
     font-weight: 650;
     color: var(--nb-accent-text, rgba(248, 250, 252, 0.98));
@@ -9655,6 +9746,7 @@
 
   .share-dialog-eyebrow {
     margin: 0;
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.68rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -9663,6 +9755,7 @@
 
   .join-dialog-eyebrow {
     margin: 0;
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.68rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -9671,6 +9764,7 @@
 
   .share-dialog-title {
     margin: 0;
+    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 1.16rem;
     font-weight: 650;
     color: rgba(240, 249, 255, 0.98);
@@ -9678,6 +9772,7 @@
 
   .join-dialog-title {
     margin: 0;
+    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 1.16rem;
     font-weight: 650;
     color: rgba(255, 251, 235, 0.98);
@@ -9772,6 +9867,10 @@
     line-height: 1.55;
   }
 
+  .theme-form-grid-wide {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .theme-dialog-chip-row,
   .theme-dialog-tab-row,
   .theme-dialog-actions {
@@ -9814,6 +9913,7 @@
     border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.18));
     background: color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.92)) 92%, transparent);
     color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.76rem;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -9832,7 +9932,9 @@
     border-radius: 999px;
     min-height: 34px;
     padding: 0 0.95rem;
-    font: inherit;
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-size: 0.82rem;
+    font-weight: 600;
     cursor: pointer;
   }
 
@@ -9889,6 +9991,7 @@
   }
 
   .theme-preset-copy strong {
+    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.92rem;
     color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
   }
@@ -9911,6 +10014,7 @@
     display: grid;
     gap: 0.45rem;
     color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.8rem;
   }
 
@@ -9937,6 +10041,7 @@
   }
 
   .share-dialog-section-title {
+    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.88rem;
     font-weight: 600;
     color: rgba(240, 249, 255, 0.95);
@@ -9944,6 +10049,7 @@
 
   .join-dialog-section-title {
     margin: 0;
+    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
     font-size: 0.88rem;
     font-weight: 600;
     color: rgba(248, 250, 252, 0.96);
@@ -11205,6 +11311,16 @@
   }
 
   @media (max-width: 640px) {
+    .brand-meta-row {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .brand-actions {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
     .workspace-toggle {
       font-size: 0.72rem;
       min-width: auto;
@@ -11259,6 +11375,14 @@
 
     .workspace-mode-bar {
       align-items: stretch;
+    }
+
+    .brand-badge {
+      flex-direction: column;
+    }
+
+    .brand-stack {
+      width: 100%;
     }
 
     .workspace-mode-secondary {

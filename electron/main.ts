@@ -1,8 +1,9 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, type OpenDialogOptions } from 'electron';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, promises as fs } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
+import { promisify } from 'util';
 import { clearPublishedDesktopSession, publishDesktopSession } from './session.js';
 import { generateDesktopApiToken } from './security.js';
 import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
@@ -53,6 +54,7 @@ interface DiagnosticsState {
 
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEEP_LINK_PROTOCOL = 'nearbytes';
+const execFileAsync = promisify(execFile);
 
 const initialDeepLinkUrls = extractDeepLinkUrls(process.argv);
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -330,7 +332,8 @@ function registerIpc(): void {
     const targetPath = resolveThemeLogoExportPath();
     const base64 = rawDataUrl.slice('data:image/png;base64,'.length);
     await fs.writeFile(targetPath, Buffer.from(base64, 'base64'));
-    return { path: targetPath };
+    const iconPaths = await syncPackagedIconAssets(targetPath);
+    return { path: targetPath, ...iconPaths };
   });
   ipcMain.handle('nearbytes-desktop:choose-directory', async (_event, rawInitialPath: unknown) => {
     const initialPath =
@@ -356,7 +359,29 @@ function resolveThemePresetRegistryPath(): string {
 }
 
 function resolveThemeLogoExportPath(): string {
-  return path.join(app.getAppPath(), 'nearbytes-logo.png');
+  return path.join(app.getAppPath(), 'build', 'icons', 'icon-master.png');
+}
+
+async function syncPackagedIconAssets(inputPath: string): Promise<{
+  pngPath: string;
+  icnsPath: string;
+  icoPath: string;
+}> {
+  const scriptPath = path.join(app.getAppPath(), 'scripts', 'sync-brand-icons.mjs');
+  const nodeExecutable = process.env.npm_node_execpath || 'node';
+  const { stdout } = await execFileAsync(nodeExecutable, [scriptPath, '--input', inputPath], {
+    cwd: app.getAppPath(),
+  });
+  const parsed = JSON.parse(stdout) as {
+    png?: string;
+    icns?: string;
+    ico?: string;
+  };
+  return {
+    pngPath: parsed.png ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.png'),
+    icnsPath: parsed.icns ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.icns'),
+    icoPath: parsed.ico ?? path.join(app.getAppPath(), 'build', 'icons', 'icon.ico'),
+  };
 }
 
 async function createWindow(apiBaseUrl: string): Promise<void> {
