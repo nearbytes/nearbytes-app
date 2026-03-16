@@ -99,14 +99,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: rgba(15, 23, 42, 0.7);
-    border: 1px solid rgba(96, 165, 250, 0.22);
+    background: color-mix(in srgb, var(--nb-shell-top, rgba(15, 23, 42, 0.7)) 78%, transparent);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.22)) 92%, transparent);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
 
   .volume-identity-preview.image {
-    background: rgba(7, 14, 28, 0.94);
-    border-color: rgba(125, 211, 252, 0.28);
+    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 14, 28, 0.94)) 96%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent-strong, rgba(125, 211, 252, 0.28)) 60%, transparent);
   }
 
   .volume-identity-preview-image {
@@ -117,7 +117,7 @@
   }
 
   .volume-identity-preview-icon {
-    color: rgba(191, 219, 254, 0.9);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.9));
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -141,13 +141,13 @@
   .volume-identity-label {
     font-size: 0.92rem;
     font-weight: 600;
-    color: var(--volume-identity-label-color, rgba(240, 249, 255, 0.96));
+    color: var(--volume-identity-label-color, var(--nb-text-main, rgba(240, 249, 255, 0.96)));
     letter-spacing: 0.01em;
   }
 
   .volume-identity-secondary {
     font-size: 0.72rem;
-    color: var(--volume-identity-secondary-color, rgba(186, 230, 253, 0.68));
+    color: var(--volume-identity-secondary-color, var(--nb-text-faint, rgba(186, 230, 253, 0.68)));
   }
 
   .volume-identity.compact .volume-identity-label {

@@ -3787,19 +3787,19 @@
 
 <style>
   .storage-panel {
-    --panel-border: rgba(111, 173, 252, 0.18);
-    --panel-soft-border: rgba(111, 173, 252, 0.12);
+    --panel-border: var(--nb-border, rgba(111, 173, 252, 0.18));
+    --panel-soft-border: color-mix(in srgb, var(--nb-border, rgba(111, 173, 252, 0.18)) 70%, transparent);
     --panel-bg:
-      radial-gradient(circle at top left, rgba(56, 189, 248, 0.09), transparent 32%),
-      linear-gradient(180deg, rgba(8, 16, 30, 0.97), rgba(7, 12, 24, 0.95));
-    --card-bg: rgba(10, 19, 34, 0.8);
-    --card-bg-strong: rgba(12, 22, 40, 0.92);
-    --text-main: rgba(241, 245, 249, 0.96);
-    --text-soft: rgba(191, 219, 254, 0.78);
-    --text-faint: rgba(191, 219, 254, 0.62);
-    --teal: rgba(153, 246, 228, 0.96);
-    --warn: rgba(254, 240, 138, 0.96);
-    --danger: rgba(254, 202, 202, 0.96);
+      radial-gradient(circle at top left, var(--nb-panel-glow, rgba(56, 189, 248, 0.09)), transparent 32%),
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(8, 16, 30, 0.97)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 12, 24, 0.95)) 98%, transparent));
+    --card-bg: color-mix(in srgb, var(--nb-panel-bg, rgba(10, 19, 34, 0.8)) 88%, transparent);
+    --card-bg-strong: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 22, 40, 0.92)) 96%, transparent);
+    --text-main: var(--nb-text-main, rgba(241, 245, 249, 0.96));
+    --text-soft: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    --text-faint: var(--nb-text-faint, rgba(191, 219, 254, 0.62));
+    --teal: var(--nb-success, rgba(153, 246, 228, 0.96));
+    --warn: var(--nb-warning, rgba(254, 240, 138, 0.96));
+    --danger: var(--nb-danger, rgba(254, 202, 202, 0.96));
     display: grid;
     gap: 0.85rem;
     width: 100%;
@@ -4027,9 +4027,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid rgba(96, 165, 250, 0.18);
-    background: rgba(14, 27, 49, 0.88);
-    color: rgba(191, 219, 254, 0.9);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.18)) 90%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-top, rgba(14, 27, 49, 0.88)) 92%, transparent);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.9));
   }
 
   .summary-pill,
@@ -4042,9 +4042,9 @@
     max-width: 100%;
     padding: 0.22rem 1rem;
     border-radius: 999px;
-    border: 1px solid rgba(96, 165, 250, 0.18);
-    background: rgba(12, 23, 41, 0.84);
-    color: rgba(219, 234, 254, 0.92);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.18)) 90%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-top, rgba(12, 23, 41, 0.84)) 88%, transparent);
+    color: var(--nb-text-main, rgba(219, 234, 254, 0.92));
     font-size: 0.7rem;
     font-weight: 600;
     line-height: 1.2;
@@ -4062,22 +4062,22 @@
 
   .mini-pill-button:hover {
     transform: translateY(-1px);
-    border-color: rgba(250, 204, 21, 0.34);
-    background: rgba(46, 35, 8, 0.78);
-    color: rgba(254, 240, 138, 0.96);
+    border-color: color-mix(in srgb, var(--nb-warning, rgba(250, 204, 21, 0.34)) 60%, transparent);
+    background: color-mix(in srgb, var(--nb-warning-surface, rgba(46, 35, 8, 0.78)) 94%, transparent);
+    color: var(--nb-warning, rgba(254, 240, 138, 0.96));
   }
 
   .summary-pill.warning,
   .status-pill.tone-warn {
-    border-color: rgba(251, 191, 36, 0.28);
-    background: rgba(72, 53, 16, 0.46);
+    border-color: color-mix(in srgb, var(--nb-warning, rgba(251, 191, 36, 0.28)) 62%, transparent);
+    background: color-mix(in srgb, var(--nb-warning-surface, rgba(72, 53, 16, 0.46)) 92%, transparent);
     color: var(--warn);
   }
 
   .status-pill.tone-good,
   .status-pill.tone-durable {
-    border-color: rgba(45, 212, 191, 0.28);
-    background: rgba(9, 58, 58, 0.42);
+    border-color: color-mix(in srgb, var(--nb-success, rgba(45, 212, 191, 0.28)) 62%, transparent);
+    background: color-mix(in srgb, var(--nb-success-surface, rgba(9, 58, 58, 0.42)) 90%, transparent);
     color: var(--teal);
   }
 
@@ -4085,18 +4085,18 @@
   .status-pill.tone-replica,
   .status-pill.tone-off,
   .mini-pill {
-    border-color: rgba(96, 165, 250, 0.18);
-    background: rgba(12, 23, 41, 0.82);
-    color: rgba(191, 219, 254, 0.88);
+    border-color: color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.18)) 90%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-top, rgba(12, 23, 41, 0.82)) 88%, transparent);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.88));
   }
 
   .panel-btn,
   :global(.panel-btn) {
     min-height: 34px;
     border-radius: 12px;
-    border: 1px solid rgba(96, 165, 250, 0.22);
-    background: rgba(12, 24, 43, 0.84);
-    color: rgba(241, 245, 249, 0.94);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.22)) 90%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 24, 43, 0.84)) 90%, transparent);
+    color: var(--nb-text-main, rgba(241, 245, 249, 0.94));
     padding: 0 0.82rem;
     display: inline-flex;
     align-items: center;

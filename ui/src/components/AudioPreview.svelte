@@ -18,7 +18,7 @@
   let audioContext: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
   let mediaSource: MediaElementAudioSourceNode | null = null;
-  let spectrumData: Uint8Array | null = null;
+  let spectrumData: Uint8Array<ArrayBuffer> | null = null;
   let renderedLevels: number[] = [];
   let lastFrameTime = 0;
   let playing = $state(false);
@@ -119,13 +119,13 @@
     const gap = 4;
     const barWidth = Math.max(4, (width - gap * (barCount - 1)) / barCount);
     const gradient = context.createLinearGradient(0, height, 0, 0);
-    gradient.addColorStop(0, 'rgba(34, 211, 238, 0.28)');
-    gradient.addColorStop(0.55, 'rgba(56, 189, 248, 0.72)');
-    gradient.addColorStop(1, 'rgba(191, 219, 254, 0.96)');
+    gradient.addColorStop(0, 'var(--nb-accent-soft, rgba(34, 211, 238, 0.28))');
+    gradient.addColorStop(0.55, 'var(--nb-accent, rgba(56, 189, 248, 0.72))');
+    gradient.addColorStop(1, 'var(--nb-text-soft, rgba(191, 219, 254, 0.96))');
 
     const glow = context.createLinearGradient(0, 0, width, height);
-    glow.addColorStop(0, 'rgba(34, 211, 238, 0.12)');
-    glow.addColorStop(1, 'rgba(59, 130, 246, 0.04)');
+    glow.addColorStop(0, 'var(--nb-accent-soft, rgba(34, 211, 238, 0.12))');
+    glow.addColorStop(1, 'color-mix(in srgb, var(--nb-accent, rgba(59, 130, 246, 0.04)) 16%, transparent)');
     context.fillStyle = glow;
     context.fillRect(0, 0, width, height);
 
@@ -256,10 +256,10 @@
     align-items: center;
     padding: 1rem;
     border-radius: 18px;
-    border: 1px solid rgba(56, 189, 248, 0.14);
+    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
     background:
-      radial-gradient(120% 140% at 0% 0%, rgba(34, 211, 238, 0.14), transparent 50%),
-      linear-gradient(180deg, rgba(9, 20, 39, 0.96), rgba(7, 14, 28, 0.92));
+      radial-gradient(120% 140% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.14)), transparent 50%),
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 14, 28, 0.92)) 96%, transparent));
   }
 
   .audio-preview-badge {
@@ -269,9 +269,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: rgba(236, 254, 255, 0.94);
-    background: linear-gradient(135deg, rgba(14, 165, 233, 0.28), rgba(59, 130, 246, 0.18));
-    border: 1px solid rgba(125, 211, 252, 0.18);
+    color: var(--nb-accent-text, rgba(236, 254, 255, 0.94));
+    background: linear-gradient(135deg, color-mix(in srgb, var(--nb-accent, rgba(14, 165, 233, 0.28)) 28%, transparent), color-mix(in srgb, var(--nb-accent-strong, rgba(59, 130, 246, 0.18)) 18%, transparent));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(125, 211, 252, 0.18)) 90%, transparent);
     box-shadow: 0 18px 34px rgba(2, 6, 23, 0.22);
   }
 
@@ -287,14 +287,14 @@
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
-    color: rgba(186, 230, 253, 0.72);
+    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
     font-size: 0.78rem;
   }
 
   .audio-preview-title {
     margin: 0;
     font-size: 1.1rem;
-    color: rgba(248, 250, 252, 0.98);
+    color: var(--nb-text-main, rgba(248, 250, 252, 0.98));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -305,11 +305,11 @@
     min-height: 240px;
     border-radius: 22px;
     overflow: hidden;
-    border: 1px solid rgba(56, 189, 248, 0.12);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.12)) 84%, transparent);
     background:
-      radial-gradient(140% 140% at 0% 0%, rgba(34, 211, 238, 0.14), transparent 48%),
-      radial-gradient(120% 120% at 100% 0%, rgba(59, 130, 246, 0.12), transparent 42%),
-      linear-gradient(180deg, rgba(7, 15, 29, 0.98), rgba(5, 10, 20, 0.94));
+      radial-gradient(140% 140% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.14)), transparent 48%),
+      radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, var(--nb-accent-strong, rgba(59, 130, 246, 0.12)) 16%, transparent), transparent 42%),
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 15, 29, 0.98)) 98%, transparent), color-mix(in srgb, var(--nb-app-bg, rgba(5, 10, 20, 0.94)) 96%, transparent));
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.04),
       0 22px 42px rgba(2, 6, 23, 0.24);
@@ -325,6 +325,6 @@
     width: 100%;
     min-height: 52px;
     border-radius: 16px;
-    background: rgba(9, 18, 33, 0.86);
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 33, 0.86)) 92%, transparent);
   }
 </style>

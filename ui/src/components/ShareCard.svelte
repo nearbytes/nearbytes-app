@@ -102,15 +102,15 @@
     gap: 0.72rem;
     padding: 0.82rem;
     border-radius: 16px;
-    border: 1px solid rgba(96, 165, 250, 0.12);
-    background: rgba(8, 18, 33, 0.52);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.12)) 78%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 33, 0.52)) 72%, transparent);
   }
 
   .share-card.active {
-    border-color: rgba(45, 212, 191, 0.26);
+    border-color: color-mix(in srgb, var(--nb-accent, rgba(45, 212, 191, 0.26)) 62%, transparent);
     background:
-      radial-gradient(circle at top left, rgba(45, 212, 191, 0.08), transparent 36%),
-      rgba(8, 18, 33, 0.72);
+      radial-gradient(circle at top left, color-mix(in srgb, var(--nb-accent, rgba(45, 212, 191, 0.26)) 28%, transparent), transparent 36%),
+      color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 33, 0.72)) 86%, transparent);
   }
 
   .card-head,
@@ -171,15 +171,15 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid rgba(96, 165, 250, 0.18);
-    background: rgba(14, 27, 49, 0.88);
-    color: rgba(191, 219, 254, 0.9);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.18)) 90%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-top, rgba(14, 27, 49, 0.88)) 92%, transparent);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.9));
     flex: 0 0 auto;
   }
 
   .provider-label {
     margin: 0 0 0.18rem;
-    color: rgba(103, 232, 249, 0.94);
+    color: var(--nb-accent-strong, rgba(103, 232, 249, 0.94));
     font-size: 0.72rem;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -187,7 +187,7 @@
 
   h4 {
     margin: 0;
-    color: rgba(241, 245, 249, 0.96);
+    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
     font-size: 1rem;
     line-height: 1.18;
   }
@@ -195,7 +195,7 @@
   .card-copy,
   .fact-row {
     margin: 0;
-    color: rgba(184, 205, 232, 0.9);
+    color: var(--nb-text-soft, rgba(184, 205, 232, 0.9));
     font-size: 0.8rem;
     line-height: 1.38;
   }
@@ -217,9 +217,9 @@
     max-width: 100%;
     padding: 0.22rem 1rem;
     border-radius: 999px;
-    border: 1px solid rgba(96, 165, 250, 0.18);
-    background: rgba(12, 23, 41, 0.84);
-    color: rgba(219, 234, 254, 0.92);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(96, 165, 250, 0.18)) 90%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-top, rgba(12, 23, 41, 0.84)) 88%, transparent);
+    color: var(--nb-text-main, rgba(219, 234, 254, 0.92));
     font-size: 0.7rem;
     font-weight: 600;
     line-height: 1.2;
@@ -231,21 +231,21 @@
 
   .tone-good,
   .tone-durable {
-    border-color: rgba(45, 212, 191, 0.28);
-    background: rgba(9, 58, 58, 0.42);
-    color: #5eead4;
+    border-color: color-mix(in srgb, var(--nb-success, rgba(45, 212, 191, 0.28)) 62%, transparent);
+    background: color-mix(in srgb, var(--nb-success-surface, rgba(9, 58, 58, 0.42)) 90%, transparent);
+    color: var(--nb-success, #5eead4);
   }
 
   .tone-warn {
-    border-color: rgba(251, 191, 36, 0.28);
-    background: rgba(72, 53, 16, 0.46);
-    color: #fbbf24;
+    border-color: color-mix(in srgb, var(--nb-warning, rgba(251, 191, 36, 0.28)) 62%, transparent);
+    background: color-mix(in srgb, var(--nb-warning-surface, rgba(72, 53, 16, 0.46)) 92%, transparent);
+    color: var(--nb-warning, #fbbf24);
   }
 
   .tone-muted,
   .tone-replica,
   .tone-off {
-    color: rgba(191, 219, 254, 0.88);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.88));
   }
 
   .button-row {

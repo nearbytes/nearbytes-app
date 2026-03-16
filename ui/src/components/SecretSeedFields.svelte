@@ -68,7 +68,7 @@
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(186, 230, 253, 0.68);
+    color: var(--nb-text-faint, rgba(186, 230, 253, 0.68));
   }
 
   .secret-seed-fields input {

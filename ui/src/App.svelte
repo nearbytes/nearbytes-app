@@ -57,12 +57,23 @@
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
+  import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import SecretSeedFields from './components/SecretSeedFields.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
+  import {
+    NEARBYTES_THEME_PRESET_LIST,
+    cloneThemeSettings,
+    defaultThemeSettings,
+    normalizeThemeSettings,
+    themeCssVariables,
+    type NearbytesArcStyle,
+    type NearbytesThemePresetId,
+    type NearbytesThemeSettings,
+  } from './lib/branding.js';
   import {
     Activity,
     ClipboardPaste,
@@ -197,6 +208,7 @@
   type PersistedUiState = {
     volumeMounts?: unknown;
     sourceDiscovery?: unknown;
+    theme?: unknown;
     savedAt?: unknown;
   };
 
@@ -235,6 +247,8 @@
     onUpdaterState?: (listener: (state: DesktopUpdaterState) => void) => (() => void) | void;
     saveUiState?: (state: PersistedUiState) => Promise<unknown>;
   };
+
+  type ThemeDialogSection = 'preset' | 'palette' | 'logo';
 
   type SecretFileHashEntry = {
     payload: string;
@@ -687,6 +701,7 @@
     return {
       volumeMounts: candidate.volumeMounts,
       sourceDiscovery: candidate.sourceDiscovery,
+      theme: candidate.theme,
       savedAt: typeof candidate.savedAt === 'number' && Number.isFinite(candidate.savedAt) ? candidate.savedAt : 0,
     };
   }
@@ -1328,6 +1343,9 @@
   let clipboardImageAvailable = $state(false);
   let clipboardImageLoading = $state(false);
   let persistedUiStateReady = $state(false);
+  let themeSettings = $state<NearbytesThemeSettings>(defaultThemeSettings());
+  let showThemeDialog = $state(false);
+  let themeDialogSection = $state<ThemeDialogSection>('preset');
   let isHeaderHovering = $state(false);
   let isSecretDropTarget = $state(false);
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
@@ -1393,6 +1411,7 @@
   let dragOverMountId = $state<string | null>(null);
   let dragOriginIndex = $state<number | null>(null);
   let dragPointerId = $state<number | null>(null);
+  const appThemeCssText = $derived.by(() => themeCssVariables(themeSettings));
   let dragStartX = $state(0);
   let dragStartY = $state(0);
   let dragOffsetX = $state(0);
@@ -1444,6 +1463,7 @@
     volumeChatIdentityAssignments = loadVolumeIdentityAssignments();
     identityHydrated = true;
     const localUiState = loadPersistedUiStateLocally();
+    themeSettings = normalizeThemeSettings(localUiState.theme);
     const localDiscoveryState =
       localUiState.sourceDiscovery !== undefined
         ? normalizePersistedSourceDiscovery(localUiState.sourceDiscovery)
@@ -1522,6 +1542,7 @@
         latestSourceDiscovery = discoveryState.latestResult;
         latestSourceDiscoveryRunKey = discoveryState.latestRunKey;
         lastAcknowledgedSourceDiscoveryRunKey = discoveryState.lastAcknowledgedRunKey;
+        themeSettings = normalizeThemeSettings(nextState.theme);
       } catch (error) {
         console.warn('Failed to hydrate desktop UI state:', error);
       } finally {
@@ -1764,6 +1785,33 @@
     };
   });
 
+  $effect(() => {
+    if (!persistedUiStateReady) {
+      return;
+    }
+
+    const payload: PersistedUiState = {
+      theme: cloneThemeSettings(themeSettings),
+      savedAt: Date.now(),
+    };
+    const desktopPayload = clonePersistedUiStateForBridge(payload);
+    persistUiStateLocally(payload);
+    const bridge = getDesktopBridge();
+    const persistTimer = setTimeout(() => {
+      if (bridge && typeof bridge.saveUiState === 'function') {
+        void bridge.saveUiState(desktopPayload).catch((error) => {
+          console.warn('Failed to persist desktop theme state:', error);
+        });
+        return;
+      }
+      persistUiStateLocally(payload);
+    }, 120);
+
+    return () => {
+      clearTimeout(persistTimer);
+    };
+  });
+
   onMount(() => {
     const flushPersistedUiState = () => {
       if (!persistedUiStateReady) {
@@ -1776,6 +1824,7 @@
           latestRunKey: latestSourceDiscoveryRunKey,
           latestResult: compactDiscoveryResult(latestSourceDiscovery),
         },
+        theme: cloneThemeSettings(themeSettings),
         savedAt: Date.now(),
       };
       const desktopPayload = clonePersistedUiStateForBridge(payload);
@@ -4995,6 +5044,62 @@
     return summary.collaborators.map((collaborator) => collaborator.email ?? collaborator.label);
   }
 
+  function activeThemePreset() {
+    return NEARBYTES_THEME_PRESET_LIST.find((preset) => preset.presetId === themeSettings.presetId) ?? NEARBYTES_THEME_PRESET_LIST[0];
+  }
+
+  function applyThemePreset(presetId: NearbytesThemePresetId): void {
+    const preset = NEARBYTES_THEME_PRESET_LIST.find((entry) => entry.presetId === presetId);
+    if (!preset) {
+      return;
+    }
+    themeSettings = cloneThemeSettings(preset);
+  }
+
+  function updateThemePaletteColor(key: keyof NearbytesThemeSettings['palette'], value: string): void {
+    themeSettings = {
+      ...themeSettings,
+      palette: {
+        ...themeSettings.palette,
+        [key]: value,
+      },
+    };
+  }
+
+  function updateThemeLogoColor(key: 'accentColor' | 'peerColor' | 'arcColor' | 'bgFill' | 'nodeFill' | 'nodeStroke', value: string): void {
+    themeSettings = {
+      ...themeSettings,
+      logo: {
+        ...themeSettings.logo,
+        [key]: value,
+      },
+    };
+  }
+
+  function updateThemeLogoNumber(key: 'peers' | 'orbitScale' | 'sizeScale' | 'bulgeScale' | 'lineWeight' | 'circleStroke' | 'pulseSpeed' | 'pulseMag' | 'luminosity' | 'contrast', value: number): void {
+    themeSettings = normalizeThemeSettings({
+      ...themeSettings,
+      logo: {
+        ...themeSettings.logo,
+        [key]: value,
+      },
+    });
+  }
+
+  function updateThemeArcStyle(value: NearbytesArcStyle): void {
+    themeSettings = {
+      ...themeSettings,
+      logo: {
+        ...themeSettings.logo,
+        arcStyle: value,
+      },
+    };
+  }
+
+  function resetThemeToPreset(): void {
+    applyThemePreset(themeSettings.presetId);
+  }
+
   async function refreshCurrentVolumeManagedShares(): Promise<void> {
     if (!shareableVolumeId) {
       currentVolumeManagedShares = [];
@@ -5071,6 +5176,11 @@
       closeTimelineDetails();
       return;
     }
+    if (showThemeDialog) {
+      e.preventDefault();
+      showThemeDialog = false;
+      return;
+    }
     if (showJoinVolumeDialog) {
       e.preventDefault();
       closeJoinVolumeDialog();
@@ -5117,7 +5227,7 @@
   collapseExpandedMountFromOutside(event.target);
 }} onpaste={handlePaste} />
 
-<div class="app">
+<div class="app" style={appThemeCssText}>
   <header class="header">
     <div
       class="header-shell"
@@ -5160,6 +5270,38 @@
       }}
       ondrop={handleSecretFileDrop}
     >
+      <div class="brand-rail panel-surface">
+        <button
+          type="button"
+          class="brand-badge"
+          onclick={() => {
+            themeDialogSection = 'preset';
+            showThemeDialog = true;
+          }}
+          aria-label="Open appearance settings"
+        >
+          <span class="brand-logo-frame">
+            <NearbytesLogo size={52} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+          </span>
+          <span class="brand-copy">
+            <span class="brand-kicker">Nearbytes</span>
+            <span class="brand-title">{activeThemePreset().palette.label}</span>
+            <span class="brand-note">Animated boot mark and palette are live and persistent.</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          class="brand-config-btn"
+          onclick={() => {
+            themeDialogSection = 'preset';
+            showThemeDialog = true;
+          }}
+        >
+          <Settings2 class="button-icon" size={15} strokeWidth={2} />
+          <span>Appearance</span>
+        </button>
+      </div>
+
       <MountRail dragging={draggingMountId !== null}>
         {#snippet children()}
         {#each mounts as mount, index (mount.id)}
@@ -5409,6 +5551,20 @@
             showIdentityManager
           }
         >
+          <button
+            type="button"
+            class="header-tool-btn"
+            class:active={showThemeDialog}
+            aria-label="Appearance"
+            title="Appearance"
+            onclick={(event) => {
+              event.stopPropagation();
+              themeDialogSection = 'preset';
+              showThemeDialog = true;
+            }}
+          >
+            <Settings2 class="button-icon" size={14} strokeWidth={2} />
+          </button>
           <button
             type="button"
             class="header-tool-btn"
@@ -5812,13 +5968,12 @@
       <!-- Initial state -->
       <div class="empty-state">
         <div class="empty-content">
-          <svg class="empty-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M32 8L8 20L32 32L56 20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
-            <path d="M8 20V44L32 56L56 44V20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
-            <path d="M32 32V56" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
-          </svg>
+          <div class="empty-brand-shell">
+            <NearbytesLogo size={112} options={themeSettings.logo} ariaLabel="Nearbytes logo" />
+          </div>
+          <p class="empty-eyebrow">{activeThemePreset().palette.label}</p>
           <p class="empty-hint">Enter an address to access your files</p>
-          <p class="empty-subhint">Or drag and drop files here to create a new space</p>
+          <p class="empty-subhint">Or drag and drop files here to create a new space. Open Appearance to switch between the current blue system and the classic amber system, or tune the logo directly.</p>
         </div>
       </div>
     {:else}
@@ -7088,6 +7243,129 @@
     </div>
   {/if}
 
+  {#if showThemeDialog}
+    <div
+      class="theme-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Appearance settings"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          showThemeDialog = false;
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          showThemeDialog = false;
+        }
+      }}
+    >
+      <div class="theme-dialog panel-surface" role="document" tabindex="-1">
+        <div class="theme-dialog-header">
+          <div class="theme-dialog-head-meta">
+            <p class="theme-dialog-eyebrow">Appearance</p>
+            <p class="theme-dialog-title">Brand system</p>
+            <p class="theme-dialog-subtitle">The animated logo, shell palette, and accent treatment stay in sync. Changes apply live and persist across launches.</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close appearance dialog" onclick={() => (showThemeDialog = false)}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div class="theme-dialog-body">
+          <section class="theme-dialog-section theme-dialog-hero">
+            <div class="theme-dialog-preview-mark">
+              <NearbytesLogo size={132} options={themeSettings.logo} ariaLabel="Current Nearbytes logo preview" />
+            </div>
+            <div class="theme-dialog-preview-copy">
+              <p class="theme-dialog-section-title">{activeThemePreset().palette.label}</p>
+              <p class="theme-dialog-note">{activeThemePreset().palette.description}</p>
+              <div class="theme-dialog-chip-row">
+                <span class="join-dialog-chip strong">Accent {themeSettings.palette.accent}</span>
+                <span class="join-dialog-chip">{themeSettings.logo.arcStyle}</span>
+                <span class="join-dialog-chip">{themeSettings.logo.peers} peers</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="theme-dialog-section">
+            <div class="theme-dialog-tab-row" role="tablist" aria-label="Appearance sections">
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'preset'} onclick={() => (themeDialogSection = 'preset')}>Presets</button>
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'palette'} onclick={() => (themeDialogSection = 'palette')}>Palette</button>
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'logo'} onclick={() => (themeDialogSection = 'logo')}>Logo</button>
+            </div>
+
+            {#if themeDialogSection === 'preset'}
+              <div class="theme-preset-grid">
+                {#each NEARBYTES_THEME_PRESET_LIST as preset (preset.presetId)}
+                  <button
+                    type="button"
+                    class="theme-preset-card"
+                    class:active={themeSettings.presetId === preset.presetId}
+                    onclick={() => applyThemePreset(preset.presetId)}
+                  >
+                    <span class="theme-preset-swatches">
+                      <span style:background={preset.palette.appBg}></span>
+                      <span style:background={preset.palette.accent}></span>
+                      <span style:background={preset.logo.peerColor}></span>
+                    </span>
+                    <span class="theme-preset-copy">
+                      <strong>{preset.palette.label}</strong>
+                      <span>{preset.palette.description}</span>
+                    </span>
+                  </button>
+                {/each}
+              </div>
+            {:else if themeDialogSection === 'palette'}
+              <div class="theme-form-grid">
+                <label><span>App background</span><input type="color" value={themeSettings.palette.appBg} oninput={(event) => updateThemePaletteColor('appBg', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Accent</span><input type="color" value={themeSettings.palette.accent} oninput={(event) => updateThemePaletteColor('accent', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Accent strong</span><input type="color" value={themeSettings.palette.accentStrong} oninput={(event) => updateThemePaletteColor('accentStrong', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Success</span><input type="color" value={themeSettings.palette.success} oninput={(event) => updateThemePaletteColor('success', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Warning</span><input type="color" value={themeSettings.palette.warning} oninput={(event) => updateThemePaletteColor('warning', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Danger</span><input type="color" value={themeSettings.palette.danger} oninput={(event) => updateThemePaletteColor('danger', (event.currentTarget as HTMLInputElement).value)} /></label>
+              </div>
+            {:else}
+              <div class="theme-form-grid logo-grid">
+                <label><span>Accent node</span><input type="color" value={themeSettings.logo.accentColor} oninput={(event) => updateThemeLogoColor('accentColor', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Peer node</span><input type="color" value={themeSettings.logo.peerColor} oninput={(event) => updateThemeLogoColor('peerColor', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Arc color</span><input type="color" value={themeSettings.logo.arcColor} oninput={(event) => updateThemeLogoColor('arcColor', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Background</span><input type="color" value={themeSettings.logo.bgFill} oninput={(event) => updateThemeLogoColor('bgFill', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Node fill</span><input type="color" value={themeSettings.logo.nodeFill} oninput={(event) => updateThemeLogoColor('nodeFill', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Node stroke</span><input type="color" value={themeSettings.logo.nodeStroke} oninput={(event) => updateThemeLogoColor('nodeStroke', (event.currentTarget as HTMLInputElement).value)} /></label>
+                <label><span>Peers</span><input type="range" min="2" max="8" step="1" value={themeSettings.logo.peers} oninput={(event) => updateThemeLogoNumber('peers', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.peers}</em></label>
+                <label><span>Orbit scale</span><input type="range" min="0.5" max="1.8" step="0.01" value={themeSettings.logo.orbitScale} oninput={(event) => updateThemeLogoNumber('orbitScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.orbitScale.toFixed(2)}</em></label>
+                <label><span>Size scale</span><input type="range" min="0.7" max="1.8" step="0.01" value={themeSettings.logo.sizeScale} oninput={(event) => updateThemeLogoNumber('sizeScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.sizeScale.toFixed(2)}</em></label>
+                <label><span>Bulge</span><input type="range" min="0.5" max="2.2" step="0.01" value={themeSettings.logo.bulgeScale} oninput={(event) => updateThemeLogoNumber('bulgeScale', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.bulgeScale.toFixed(2)}</em></label>
+                <label><span>Line weight</span><input type="range" min="0.5" max="4" step="0.01" value={themeSettings.logo.lineWeight} oninput={(event) => updateThemeLogoNumber('lineWeight', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.lineWeight.toFixed(2)}</em></label>
+                <label><span>Circle stroke</span><input type="range" min="0.5" max="4" step="0.01" value={themeSettings.logo.circleStroke} oninput={(event) => updateThemeLogoNumber('circleStroke', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.circleStroke.toFixed(2)}</em></label>
+                <label><span>Pulse speed</span><input type="range" min="0.2" max="2" step="0.01" value={themeSettings.logo.pulseSpeed} oninput={(event) => updateThemeLogoNumber('pulseSpeed', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.pulseSpeed.toFixed(2)}</em></label>
+                <label><span>Pulse magnitude</span><input type="range" min="0.2" max="2" step="0.01" value={themeSettings.logo.pulseMag} oninput={(event) => updateThemeLogoNumber('pulseMag', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.pulseMag.toFixed(2)}</em></label>
+                <label><span>Luminosity</span><input type="range" min="-40" max="40" step="1" value={themeSettings.logo.luminosity} oninput={(event) => updateThemeLogoNumber('luminosity', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.luminosity}</em></label>
+                <label><span>Contrast</span><input type="range" min="-60" max="60" step="1" value={themeSettings.logo.contrast} oninput={(event) => updateThemeLogoNumber('contrast', Number((event.currentTarget as HTMLInputElement).value))} /><em>{themeSettings.logo.contrast}</em></label>
+                <label>
+                  <span>Arc style</span>
+                  <select value={themeSettings.logo.arcStyle} oninput={(event) => updateThemeArcStyle((event.currentTarget as HTMLSelectElement).value as NearbytesArcStyle)}>
+                    <option value="dashed">Dashed</option>
+                    <option value="dotted">Dotted</option>
+                    <option value="solid">Solid</option>
+                  </select>
+                </label>
+              </div>
+            {/if}
+
+            <div class="theme-dialog-actions">
+              <button type="button" class="status-link-btn secondary" onclick={resetThemeToPreset}>Reset to preset</button>
+              <button type="button" class="status-link-btn" onclick={() => (showThemeDialog = false)}>Done</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  {/if}
+
 </div>
 
 <style>
@@ -7104,8 +7382,8 @@
   :global(body) {
     margin: 0;
     padding: 0;
-    background: #0a0a0f;
-    color: #e0e0e0;
+    background: var(--nb-app-bg, #0a0a0f);
+    color: var(--nb-text-main, #e0e0e0);
     font-family: 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
     overscroll-behavior: none;
   }
@@ -7117,16 +7395,17 @@
     display: flex;
     flex-direction: column;
     background:
-      radial-gradient(120% 140% at 0% 0%, rgba(34, 211, 238, 0.09), transparent 48%),
-      radial-gradient(110% 130% at 100% 0%, rgba(14, 165, 233, 0.08), transparent 42%),
-      linear-gradient(180deg, #050b16 0%, #09111d 44%, #060912 100%);
+      radial-gradient(120% 140% at 0% 0%, var(--nb-shell-glow, rgba(34, 211, 238, 0.09)), transparent 48%),
+      radial-gradient(110% 130% at 100% 0%, var(--nb-panel-glow, rgba(14, 165, 233, 0.08)), transparent 42%),
+      linear-gradient(180deg, var(--nb-shell-top, #050b16) 0%, var(--nb-panel-bg, #09111d) 44%, var(--nb-shell-bottom, #060912) 100%);
     overflow: hidden;
+    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
   }
 
   .header {
-    background: rgba(7, 14, 28, 0.84);
+    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 14, 28, 0.84)) 88%, transparent);
     backdrop-filter: blur(18px);
-    border-bottom: 1px solid rgba(56, 189, 248, 0.14);
+    border-bottom: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
     padding: 0.75rem 2rem 0.9rem;
     position: sticky;
     top: 0;
@@ -7135,6 +7414,84 @@
     flex-direction: column;
     gap: 0.7rem;
     box-shadow: 0 20px 60px rgba(2, 6, 23, 0.36);
+  }
+
+  .brand-rail {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.9rem;
+    padding: 0.7rem 0.82rem;
+    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
+    border-radius: 18px;
+    background:
+      radial-gradient(120% 120% at 0% 0%, var(--nb-panel-glow, rgba(34, 211, 238, 0.08)), transparent 40%),
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.9)) 96%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.84)) 96%, transparent));
+  }
+
+  .brand-badge {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .brand-logo-frame {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.34rem;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--nb-logo-bg, #08131f) 92%, transparent);
+    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.16));
+    box-shadow: 0 16px 32px rgba(2, 6, 23, 0.28);
+  }
+
+  .brand-copy {
+    min-width: 0;
+    display: grid;
+    gap: 0.2rem;
+  }
+
+  .brand-kicker {
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--nb-accent-strong, rgba(125, 211, 252, 0.74));
+  }
+
+  .brand-title {
+    font-size: 1rem;
+    font-weight: 650;
+    color: var(--nb-accent-text, rgba(240, 249, 255, 0.98));
+  }
+
+  .brand-note {
+    font-size: 0.8rem;
+    line-height: 1.4;
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
+  }
+
+  .brand-config-btn {
+    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.24));
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 24, 43, 0.82)) 96%, transparent);
+    color: var(--nb-text-main, rgba(226, 232, 240, 0.92));
+    border-radius: 12px;
+    min-height: 38px;
+    padding: 0 0.92rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.48rem;
+    cursor: pointer;
   }
 
   .header-shell {
@@ -7182,11 +7539,11 @@
     flex-direction: column;
     gap: 0.7rem;
     padding: 0.78rem 0.9rem;
-    border: 1px solid rgba(56, 189, 248, 0.14);
+    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
     border-radius: 18px;
     background:
-      radial-gradient(140% 120% at 0% 0%, rgba(34, 211, 238, 0.08), transparent 42%),
-      linear-gradient(180deg, rgba(9, 20, 39, 0.9), rgba(8, 18, 35, 0.84));
+      radial-gradient(140% 120% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.08)), transparent 42%),
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.9)) 96%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.84)) 94%, transparent));
   }
 
   .identity-row-head,
@@ -7205,7 +7562,7 @@
     gap: 0.45rem;
     font-size: 0.88rem;
     font-weight: 600;
-    color: rgba(224, 242, 254, 0.92);
+    color: var(--nb-text-main, rgba(224, 242, 254, 0.92));
   }
 
   .identity-chip-row {
@@ -7219,9 +7576,9 @@
 
   .identity-pill {
     appearance: none;
-    border: 1px solid rgba(56, 189, 248, 0.16);
-    background: rgba(8, 20, 38, 0.74);
-    color: rgba(226, 232, 240, 0.92);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.16)) 90%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 20, 38, 0.74)) 84%, transparent);
+    color: var(--nb-text-main, rgba(226, 232, 240, 0.92));
     border-radius: 15px;
     min-height: 42px;
     padding: 0.58rem 0.82rem;
@@ -7241,14 +7598,14 @@
   }
 
   .identity-pill:hover {
-    border-color: rgba(96, 165, 250, 0.32);
-    background: rgba(12, 28, 48, 0.92);
+    border-color: var(--nb-border-strong, rgba(96, 165, 250, 0.32));
+    background: color-mix(in srgb, var(--nb-shell-top, rgba(12, 28, 48, 0.92)) 94%, transparent);
     transform: translateY(-1px);
   }
 
   .identity-pill.active {
-    border-color: rgba(34, 211, 238, 0.38);
-    background: linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94));
+    border-color: color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.38)) 92%, transparent);
+    background: linear-gradient(180deg, var(--nb-accent-surface-strong, rgba(16, 66, 91, 0.92)), var(--nb-accent-surface, rgba(10, 44, 66, 0.94)));
     box-shadow: 0 10px 24px rgba(6, 182, 212, 0.12);
   }
 
@@ -7267,14 +7624,14 @@
 
   .identity-pill-state {
     font-size: 0.72rem;
-    color: rgba(191, 219, 254, 0.66);
+    color: var(--nb-text-faint, rgba(191, 219, 254, 0.66));
     white-space: nowrap;
   }
 
   .identity-row-note {
     margin: 0;
     font-size: 0.78rem;
-    color: rgba(186, 230, 253, 0.68);
+    color: var(--nb-text-faint, rgba(186, 230, 253, 0.68));
   }
 
   .identity-row-banner {
@@ -7306,7 +7663,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    color: rgba(191, 219, 254, 0.78);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
     font-size: 0.82rem;
   }
 
@@ -7314,9 +7671,9 @@
   .identity-editor-panel textarea {
     width: 100%;
     border-radius: 14px;
-    border: 1px solid rgba(56, 189, 248, 0.14);
-    background: rgba(4, 15, 28, 0.88);
-    color: rgba(239, 246, 255, 0.94);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.14)) 84%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(4, 15, 28, 0.88)) 92%, transparent);
+    color: var(--nb-text-main, rgba(239, 246, 255, 0.94));
     font: inherit;
     padding: 0.75rem 0.85rem;
   }
@@ -7358,10 +7715,10 @@
 
   .volume-chip {
     appearance: none;
-    border: 1px solid rgba(56, 189, 248, 0.22);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.22)) 90%, transparent);
     border-radius: 14px;
     background:
-      linear-gradient(180deg, rgba(12, 25, 45, 0.9), rgba(9, 18, 34, 0.88));
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top, rgba(12, 25, 45, 0.9)) 94%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.88)) 94%, transparent));
     width: fit-content;
     min-width: 132px;
     max-width: min(72vw, 420px);
@@ -7467,8 +7824,8 @@
     max-width: min(96vw, 1500px);
     border-radius: 18px;
     background:
-      linear-gradient(180deg, rgba(10, 23, 43, 0.96), rgba(8, 18, 35, 0.94));
-    border-color: rgba(56, 189, 248, 0.34);
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top, rgba(10, 23, 43, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 35, 0.94)) 98%, transparent));
+    border-color: color-mix(in srgb, var(--nb-border-strong, rgba(56, 189, 248, 0.34)) 88%, transparent);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.05),
       0 24px 56px rgba(2, 6, 23, 0.36);
@@ -7476,15 +7833,15 @@
   }
 
   .volume-chip.selected:not(.drag-armed):not(.dragging) {
-    --volume-identity-label-color: rgba(236, 254, 255, 0.98);
-    --volume-identity-secondary-color: rgba(165, 243, 252, 0.82);
-    border-color: rgba(45, 212, 191, 0.46);
+    --volume-identity-label-color: var(--nb-accent-text, rgba(236, 254, 255, 0.98));
+    --volume-identity-secondary-color: color-mix(in srgb, var(--nb-accent-strong, rgba(165, 243, 252, 0.82)) 78%, white 22%);
+    border-color: color-mix(in srgb, var(--nb-accent, rgba(45, 212, 191, 0.46)) 86%, transparent);
     background:
-      radial-gradient(120% 180% at 0% 0%, rgba(45, 212, 191, 0.16), transparent 52%),
-      linear-gradient(180deg, rgba(11, 28, 43, 0.96), rgba(8, 18, 34, 0.94));
+      radial-gradient(120% 180% at 0% 0%, color-mix(in srgb, var(--nb-accent, rgba(45, 212, 191, 0.16)) 28%, transparent), transparent 52%),
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-accent-surface-strong, rgba(11, 28, 43, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 34, 0.94)) 98%, transparent));
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.08),
-      0 0 0 1px rgba(34, 211, 238, 0.12),
+        0 0 0 1px color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.12)) 24%, transparent),
       0 18px 38px rgba(2, 6, 23, 0.34),
       0 12px 32px rgba(13, 148, 136, 0.14);
   }
@@ -7507,14 +7864,14 @@
     width: 7px;
     height: 7px;
     border-radius: 999px;
-    background: radial-gradient(circle, rgba(165, 243, 252, 1) 0%, rgba(34, 211, 238, 0.96) 62%, rgba(34, 211, 238, 0) 100%);
+    background: radial-gradient(circle, color-mix(in srgb, var(--nb-accent-strong, rgba(165, 243, 252, 1)) 82%, white 18%) 0%, color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.96)) 96%, transparent) 62%, color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0)) 0%, transparent) 100%);
     box-shadow:
-      0 0 0 1px rgba(103, 232, 249, 0.26),
-      0 0 14px rgba(34, 211, 238, 0.46);
+      0 0 0 1px color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.26)) 46%, transparent),
+      0 0 14px color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.46)) 68%, transparent);
   }
 
   .volume-chip.selected:not(.drag-armed):not(.dragging) .badge-meter {
-    background: rgba(34, 211, 238, 0.18);
+    background: color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.18)) 28%, transparent);
   }
 
   .volume-chip.drag-over {
@@ -9017,6 +9374,18 @@
     z-index: 225;
   }
 
+  .theme-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(2, 6, 23, 0.82);
+    backdrop-filter: blur(14px);
+    z-index: 230;
+  }
+
   .share-dialog {
     width: min(760px, 95vw);
     max-height: 86vh;
@@ -9044,6 +9413,20 @@
     box-shadow: 0 36px 96px rgba(2, 6, 23, 0.58);
   }
 
+  .theme-dialog {
+    width: min(920px, 96vw);
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    background:
+      radial-gradient(120% 120% at 0% 0%, var(--nb-panel-glow, rgba(34, 211, 238, 0.12)), transparent 48%),
+      radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, var(--nb-accent, #38bdf8) 18%, transparent), transparent 42%),
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.99)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(6, 12, 24, 0.97)) 98%, transparent));
+    border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.22));
+    border-radius: 22px;
+    box-shadow: 0 40px 100px rgba(2, 6, 23, 0.62);
+  }
+
   .share-dialog-header {
     display: flex;
     align-items: flex-start;
@@ -9062,6 +9445,15 @@
     border-bottom: 1px solid rgba(148, 163, 184, 0.14);
   }
 
+  .theme-dialog-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.3rem 1.4rem 1rem;
+    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+  }
+
   .share-dialog-head-meta {
     display: grid;
     gap: 0.34rem;
@@ -9072,6 +9464,35 @@
     display: grid;
     gap: 0.34rem;
     min-width: 0;
+  }
+
+  .theme-dialog-head-meta {
+    display: grid;
+    gap: 0.36rem;
+    min-width: 0;
+  }
+
+  .theme-dialog-eyebrow {
+    margin: 0;
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--nb-accent-strong, rgba(125, 211, 252, 0.74));
+  }
+
+  .theme-dialog-title {
+    margin: 0;
+    font-size: 1.16rem;
+    font-weight: 650;
+    color: var(--nb-accent-text, rgba(248, 250, 252, 0.98));
+  }
+
+  .theme-dialog-subtitle {
+    margin: 0;
+    max-width: 62ch;
+    font-size: 0.84rem;
+    line-height: 1.55;
+    color: var(--nb-text-soft, rgba(226, 232, 240, 0.78));
   }
 
   .share-dialog-eyebrow {
@@ -9134,6 +9555,13 @@
     padding: 1rem 1.3rem 1.3rem;
   }
 
+  .theme-dialog-body {
+    overflow: auto;
+    display: grid;
+    gap: 1rem;
+    padding: 1rem 1.3rem 1.3rem;
+  }
+
   .share-dialog-section {
     display: grid;
     gap: 0.7rem;
@@ -9150,6 +9578,159 @@
     border-radius: 16px;
     border: 1px solid rgba(125, 211, 252, 0.14);
     background: rgba(8, 15, 27, 0.72);
+  }
+
+  .theme-dialog-section {
+    display: grid;
+    gap: 0.9rem;
+    padding: 1rem;
+    border-radius: 18px;
+    border: 1px solid var(--nb-border, rgba(125, 211, 252, 0.14));
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 15, 27, 0.72)) 94%, transparent);
+  }
+
+  .theme-dialog-hero {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .theme-dialog-preview-mark {
+    display: inline-flex;
+    padding: 0.8rem;
+    border-radius: 24px;
+    background: color-mix(in srgb, var(--nb-logo-bg, #08131f) 90%, transparent);
+    border: 1px solid var(--nb-border, rgba(125, 211, 252, 0.18));
+  }
+
+  .theme-dialog-preview-copy {
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .theme-dialog-note {
+    margin: 0;
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.76));
+    font-size: 0.84rem;
+    line-height: 1.55;
+  }
+
+  .theme-dialog-chip-row,
+  .theme-dialog-tab-row,
+  .theme-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+  }
+
+  .theme-dialog-tab {
+    border: 1px solid var(--nb-border, rgba(96, 165, 250, 0.18));
+    background: rgba(12, 23, 41, 0.72);
+    color: var(--nb-text-soft, rgba(219, 234, 254, 0.9));
+    border-radius: 999px;
+    min-height: 34px;
+    padding: 0 0.95rem;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .theme-dialog-tab.active {
+    border-color: var(--nb-border-strong, rgba(56, 189, 248, 0.26));
+    background: var(--nb-accent-soft, rgba(8, 47, 73, 0.68));
+    color: var(--nb-accent-text, rgba(224, 242, 254, 0.98));
+  }
+
+  .theme-preset-grid,
+  .theme-form-grid {
+    display: grid;
+    gap: 0.8rem;
+  }
+
+  .theme-preset-grid {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+
+  .theme-preset-card {
+    border: 1px solid var(--nb-border, rgba(96, 165, 250, 0.18));
+    background: rgba(8, 18, 33, 0.56);
+    border-radius: 18px;
+    padding: 0.95rem;
+    display: grid;
+    gap: 0.75rem;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .theme-preset-card.active {
+    border-color: var(--nb-border-strong, rgba(45, 212, 191, 0.3));
+    background:
+      radial-gradient(circle at top left, var(--nb-accent-soft, rgba(45, 212, 191, 0.08)), transparent 36%),
+      rgba(8, 18, 33, 0.72);
+  }
+
+  .theme-preset-swatches {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .theme-preset-swatches span {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .theme-preset-copy {
+    display: grid;
+    gap: 0.18rem;
+  }
+
+  .theme-preset-copy strong {
+    font-size: 0.92rem;
+    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
+  }
+
+  .theme-preset-copy span {
+    font-size: 0.8rem;
+    line-height: 1.45;
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+  }
+
+  .theme-form-grid {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .theme-form-grid.logo-grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .theme-form-grid label {
+    display: grid;
+    gap: 0.45rem;
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    font-size: 0.8rem;
+  }
+
+  .theme-form-grid input[type='color'],
+  .theme-form-grid input[type='range'],
+  .theme-form-grid select {
+    width: 100%;
+  }
+
+  .theme-form-grid input[type='color'],
+  .theme-form-grid select {
+    min-height: 40px;
+    border-radius: 12px;
+    border: 1px solid var(--nb-border, rgba(96, 165, 250, 0.24));
+    background: rgba(5, 10, 20, 0.84);
+    color: var(--nb-text-main, rgba(241, 245, 249, 0.96));
+    padding: 0.45rem 0.6rem;
+  }
+
+  .theme-form-grid em {
+    font-style: normal;
+    font-size: 0.75rem;
+    color: var(--nb-text-faint, rgba(191, 219, 254, 0.62));
   }
 
   .share-dialog-section-title {
@@ -9727,26 +10308,41 @@
 
   .empty-content {
     text-align: center;
-    max-width: 400px;
+    max-width: 520px;
+    display: grid;
+    gap: 0.7rem;
+    justify-items: center;
   }
 
-  .empty-icon {
-    width: 80px;
-    height: 80px;
-    margin: 0 auto 1.5rem;
-    color: rgba(102, 126, 234, 0.3);
+  .empty-brand-shell {
+    padding: 0.75rem;
+    border-radius: 28px;
+    background:
+      radial-gradient(120% 120% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.14)), transparent 50%),
+      color-mix(in srgb, var(--nb-panel-bg, rgba(10, 19, 34, 0.8)) 94%, transparent);
+    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.18));
+    box-shadow: 0 28px 60px rgba(2, 6, 23, 0.36);
+  }
+
+  .empty-eyebrow {
+    margin: 0;
+    font-size: 0.76rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--nb-accent-strong, rgba(125, 211, 252, 0.8));
   }
 
   .empty-hint {
     font-size: 1.25rem;
-    color: rgba(224, 224, 224, 0.8);
+    color: var(--nb-text-main, rgba(224, 224, 224, 0.8));
     margin: 0 0 0.5rem;
   }
 
   .empty-subhint {
     font-size: 0.9375rem;
-    color: rgba(224, 224, 224, 0.5);
+    color: var(--nb-text-soft, rgba(224, 224, 224, 0.5));
     margin: 0;
+    max-width: 52ch;
   }
 
   /* File manager */
@@ -9763,8 +10359,8 @@
   .preview-pane {
     min-height: 0;
     background:
-      linear-gradient(180deg, rgba(9, 20, 39, 0.96), rgba(8, 18, 35, 0.9));
-    border: 1px solid rgba(56, 189, 248, 0.16);
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(9, 20, 39, 0.96)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(8, 18, 35, 0.9)) 96%, transparent));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.16)) 88%, transparent);
     border-radius: 18px;
     display: flex;
     flex-direction: column;
@@ -9786,10 +10382,10 @@
     display: grid;
     gap: 0.75rem;
     padding: 0.9rem;
-    border-bottom: 1px solid rgba(102, 126, 234, 0.18);
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.18)) 84%, transparent);
     background:
-      radial-gradient(120% 120% at 0% 0%, rgba(34, 211, 238, 0.08), transparent 46%),
-      rgba(8, 18, 35, 0.72);
+      radial-gradient(120% 120% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.08)), transparent 46%),
+      color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 35, 0.72)) 88%, transparent);
   }
 
   .manager-toolbar-top,
@@ -9810,9 +10406,9 @@
   .manager-search,
   .manager-sort,
   .manager-folder {
-    border: 1px solid rgba(56, 189, 248, 0.22);
-    background: rgba(10, 18, 33, 0.82);
-    color: #e0e0e0;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.22)) 88%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(10, 18, 33, 0.82)) 90%, transparent);
+    color: var(--nb-text-main, #e0e0e0);
     border-radius: 12px;
     min-height: 38px;
     padding: 0 0.8rem;
@@ -9823,8 +10419,8 @@
   .manager-search:focus,
   .manager-sort:focus,
   .manager-folder:focus {
-    border-color: rgba(56, 189, 248, 0.52);
-    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
+    border-color: color-mix(in srgb, var(--nb-border-strong, rgba(56, 189, 248, 0.52)) 92%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-accent, rgba(14, 165, 233, 0.12)) 22%, transparent);
   }
 
   .manager-folder {
@@ -9841,8 +10437,8 @@
     gap: 0.32rem;
     padding: 0.22rem;
     border-radius: 14px;
-    border: 1px solid rgba(56, 189, 248, 0.18);
-    background: rgba(10, 18, 33, 0.72);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.18)) 90%, transparent);
+    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(10, 18, 33, 0.72)) 86%, transparent);
   }
 
   .view-toggle {
@@ -9851,7 +10447,7 @@
     border: 0;
     border-radius: 10px;
     background: transparent;
-    color: rgba(186, 230, 253, 0.72);
+    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -9860,13 +10456,13 @@
   }
 
   .view-toggle:hover {
-    color: rgba(236, 254, 255, 0.96);
-    background: rgba(14, 165, 233, 0.12);
+    color: var(--nb-accent-text, rgba(236, 254, 255, 0.96));
+    background: color-mix(in srgb, var(--nb-accent, rgba(14, 165, 233, 0.12)) 20%, transparent);
   }
 
   .view-toggle.active {
-    color: #ecfeff;
-    background: linear-gradient(180deg, rgba(16, 66, 91, 0.96), rgba(10, 44, 66, 0.96));
+    color: var(--nb-accent-text, #ecfeff);
+    background: linear-gradient(180deg, var(--nb-accent-surface-strong, rgba(16, 66, 91, 0.96)), var(--nb-accent-surface, rgba(10, 44, 66, 0.96)));
     box-shadow: 0 10px 24px rgba(6, 182, 212, 0.16);
   }
 
@@ -9875,7 +10471,7 @@
     gap: 0.75rem;
     flex-wrap: wrap;
     font-size: 0.74rem;
-    color: rgba(186, 230, 253, 0.72);
+    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
     letter-spacing: 0.02em;
   }
 
@@ -9886,11 +10482,11 @@
     padding: 0 0.9rem 0.55rem;
     font-size: 0.75rem;
     letter-spacing: 0.02em;
-    color: rgba(224, 224, 224, 0.56);
-    border-bottom: 1px solid rgba(102, 126, 234, 0.12);
+    color: color-mix(in srgb, var(--nb-text-soft, rgba(224, 224, 224, 0.56)) 70%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.12)) 68%, transparent);
     position: sticky;
     top: 0;
-    background: linear-gradient(180deg, rgba(8, 18, 35, 0.98), rgba(8, 18, 35, 0.82));
+    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 35, 0.98)) 98%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(8, 18, 35, 0.82)) 84%, transparent));
     z-index: 1;
   }
 
@@ -9961,7 +10557,7 @@
   }
 
   .file-row:hover {
-    background: rgba(102, 126, 234, 0.08);
+    background: color-mix(in srgb, var(--nb-accent, rgba(102, 126, 234, 0.08)) 14%, transparent);
   }
 
   .file-row:active {
@@ -9969,11 +10565,11 @@
   }
 
   .file-row.selected {
-    background: rgba(102, 126, 234, 0.16);
+    background: color-mix(in srgb, var(--nb-accent, rgba(102, 126, 234, 0.16)) 22%, transparent);
   }
 
   .file-row:focus {
-    outline: 2px solid rgba(102, 126, 234, 0.5);
+    outline: 2px solid color-mix(in srgb, var(--nb-border-strong, rgba(102, 126, 234, 0.5)) 92%, transparent);
     outline-offset: -2px;
   }
 
@@ -10006,7 +10602,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #e8e8e8;
+    color: var(--nb-text-main, #e8e8e8);
     font-size: 0.83rem;
     font-weight: 600;
   }
@@ -10015,25 +10611,25 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: rgba(186, 230, 253, 0.45);
+    color: color-mix(in srgb, var(--nb-text-faint, rgba(186, 230, 253, 0.45)) 76%, transparent);
     font-size: 0.72rem;
   }
 
   .file-rename-input {
     width: 100%;
     min-height: 32px;
-    border: 1px solid rgba(56, 189, 248, 0.26);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.26)) 92%, transparent);
     border-radius: 10px;
-    background: rgba(10, 18, 33, 0.9);
-    color: #f8fafc;
+    background: color-mix(in srgb, var(--nb-shell-bottom, rgba(10, 18, 33, 0.9)) 94%, transparent);
+    color: var(--nb-text-main, #f8fafc);
     padding: 0 0.68rem;
     font: inherit;
     outline: none;
   }
 
   .file-rename-input:focus {
-    border-color: rgba(56, 189, 248, 0.52);
-    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
+    border-color: color-mix(in srgb, var(--nb-border-strong, rgba(56, 189, 248, 0.52)) 92%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-accent, rgba(14, 165, 233, 0.12)) 22%, transparent);
   }
 
   .file-name-trigger {
@@ -10054,10 +10650,10 @@
   .file-card {
     min-height: 118px;
     border-radius: 18px;
-    border: 1px solid rgba(56, 189, 248, 0.12);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.12)) 84%, transparent);
     background:
-      radial-gradient(120% 120% at 0% 0%, rgba(34, 211, 238, 0.1), transparent 48%),
-      linear-gradient(180deg, rgba(11, 22, 40, 0.98), rgba(7, 14, 27, 0.94));
+      radial-gradient(120% 120% at 0% 0%, var(--nb-accent-soft, rgba(34, 211, 238, 0.1)), transparent 48%),
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top, rgba(11, 22, 40, 0.98)) 98%, transparent), color-mix(in srgb, var(--nb-shell-bottom, rgba(7, 14, 27, 0.94)) 96%, transparent));
     padding: 0.9rem;
     display: grid;
     grid-template-rows: auto 1fr;
@@ -10073,16 +10669,16 @@
 
   .file-card:hover {
     transform: translateY(-2px);
-    border-color: rgba(103, 232, 249, 0.28);
+    border-color: color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.28)) 62%, transparent);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.05),
       0 22px 42px rgba(2, 6, 23, 0.28);
   }
 
   .file-card.selected {
-    border-color: rgba(103, 232, 249, 0.44);
+    border-color: color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.44)) 74%, transparent);
     box-shadow:
-      inset 0 0 0 1px rgba(103, 232, 249, 0.12),
+      inset 0 0 0 1px color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.12)) 28%, transparent),
       0 26px 46px rgba(8, 47, 73, 0.28);
   }
 
@@ -10107,7 +10703,7 @@
   .file-card-name {
     font-size: 0.88rem;
     font-weight: 650;
-    color: rgba(248, 250, 252, 0.98);
+    color: var(--nb-text-main, rgba(248, 250, 252, 0.98));
     line-height: 1.3;
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -10158,7 +10754,7 @@
 
   .preview-header {
     padding: 1rem;
-    border-bottom: 1px solid rgba(102, 126, 234, 0.18);
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.18)) 84%, transparent);
     display: flex;
     justify-content: space-between;
     gap: 1rem;
@@ -10167,7 +10763,7 @@
 
   .preview-title {
     margin: 0;
-    color: #f5f5f5;
+    color: var(--nb-text-main, #f5f5f5);
     font-size: 1rem;
     font-weight: 600;
     max-width: 48ch;
@@ -10178,7 +10774,7 @@
 
   .preview-meta {
     margin: 0.25rem 0 0;
-    color: rgba(224, 224, 224, 0.58);
+    color: color-mix(in srgb, var(--nb-text-soft, rgba(224, 224, 224, 0.58)) 74%, transparent);
     font-size: 0.8125rem;
   }
 
@@ -10194,9 +10790,9 @@
   }
 
   :global(.manager-btn) {
-    border: 1px solid rgba(56, 189, 248, 0.22);
-    background: rgba(12, 24, 43, 0.82);
-    color: rgba(226, 232, 240, 0.92);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.22)) 88%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 24, 43, 0.82)) 90%, transparent);
+    color: var(--nb-text-main, rgba(226, 232, 240, 0.92));
     border-radius: 11px;
     min-height: 34px;
     padding: 0 0.82rem;
@@ -10210,7 +10806,7 @@
   }
 
   :global(.manager-btn:hover) {
-    background: rgba(16, 32, 56, 0.96);
+    background: color-mix(in srgb, var(--nb-shell-top, rgba(16, 32, 56, 0.96)) 94%, transparent);
   }
 
   :global(.manager-btn.danger) {
@@ -10241,7 +10837,7 @@
     content: '';
     width: 1px;
     height: 100%;
-    background: linear-gradient(180deg, rgba(34, 211, 238, 0), rgba(34, 211, 238, 0.1), rgba(34, 211, 238, 0));
+    background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.1)) 18%, transparent), transparent);
     transition: background 0.18s ease;
   }
 
@@ -10252,7 +10848,7 @@
     height: 52px;
     border-radius: 999px;
     border: 0;
-    background: rgba(186, 230, 253, 0.06);
+    background: color-mix(in srgb, var(--nb-text-faint, rgba(186, 230, 253, 0.06)) 18%, transparent);
     color: transparent;
     display: inline-flex;
     align-items: center;
@@ -10265,14 +10861,14 @@
   .file-manager-divider:focus-visible::before,
   .workspace-divider:hover::before,
   .workspace-divider:focus-visible::before {
-    background: linear-gradient(180deg, rgba(34, 211, 238, 0), rgba(34, 211, 238, 0.18), rgba(34, 211, 238, 0));
+    background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--nb-accent, rgba(34, 211, 238, 0.18)) 30%, transparent), transparent);
   }
 
   .file-manager-divider:hover .file-manager-divider-grip,
   .file-manager-divider:focus-visible .file-manager-divider-grip,
   .workspace-divider:hover .workspace-divider-grip,
   .workspace-divider:focus-visible .workspace-divider-grip {
-    background: rgba(186, 230, 253, 0.14);
+    background: color-mix(in srgb, var(--nb-text-soft, rgba(186, 230, 253, 0.14)) 28%, transparent);
   }
 
   .preview-body {
