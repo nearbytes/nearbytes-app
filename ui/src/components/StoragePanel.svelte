@@ -1243,6 +1243,10 @@
     return provider;
   }
 
+  function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
+    return volumeId ? `Use ${providerLabelForIncoming(offer.provider)} in this hub` : 'Add storage location';
+  }
+
   function generateSourceId(provider: SourceProvider): string {
     const existing = new Set(configDraft?.sources.map((source) => source.id) ?? []);
     const prefix = `src-${provider === 'local' ? 'disk' : provider}`;
@@ -2860,6 +2864,236 @@
         {/snippet}
       </ShareCard>
     {/snippet}
+    {#snippet managedShareCard(summary: ManagedShareSummary)}
+      {@const view = managedShareView(summary)}
+      {#if view}
+        <ShareCard
+          provider={view.provider}
+          title={view.title}
+          copy={view.copy}
+          active={view.active}
+          statusBadges={view.statusBadges}
+          meta={view.meta}
+        >
+          {#snippet metaActions()}
+            <div class="inline-reserve-slot">
+              {#if activeReserveEditorKey === view.reserveKey}
+                <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
+                  <span>Keep free</span>
+                  <select
+                    class="panel-input inline-reserve-select"
+                    value={String(view.reservePercent)}
+                    onchange={(event) => {
+                      view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value));
+                      closeReserveEditor(view.reserveKey);
+                    }}
+                    onblur={() => closeReserveEditor(view.reserveKey)}
+                  >
+                    {#each RESERVE_OPTIONS as option}
+                      <option value={option}>{formatPercent(option)}</option>
+                    {/each}
+                  </select>
+                </label>
+              {:else}
+                <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(view.reserveKey)}>
+                  <span>Keep free {formatPercent(view.reservePercent)}</span>
+                </button>
+              {/if}
+            </div>
+          {/snippet}
+          {#snippet controls()}
+            <div class="setting-list">
+              <label class="setting-row">
+                <span>Use this location</span>
+                <input type="checkbox" checked={view.readable} onchange={view.onToggleReadable} />
+              </label>
+              <label class="setting-row">
+                <span>Store here</span>
+                <input type="checkbox" checked={view.writable} onchange={view.onToggleWritable} />
+              </label>
+              <label class="setting-row">
+                <span>Default full copy</span>
+                <input type="checkbox" checked={view.defaultEnabled} onchange={view.onToggleDefault} />
+              </label>
+            </div>
+          {/snippet}
+          {#snippet details()}
+            {#if canInviteManagedShare(summary)}
+              <form class="managed-share-invite-row" onsubmit={(event) => {
+                event.preventDefault();
+                void inviteManagedSharePeers(summary);
+              }}>
+                <label class="field-block managed-share-invite-field">
+                  <span>Invite people</span>
+                  <input
+                    class="panel-input"
+                    type="text"
+                    value={managedShareInviteDraft(summary.share.id)}
+                    placeholder="name@example.com"
+                    oninput={(event) =>
+                      setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
+                  />
+                </label>
+                <button
+                  type="submit"
+                  class="panel-btn subtle compact"
+                  disabled={integrationBusyKey === `invite:${summary.share.id}`}
+                >
+                  <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
+                </button>
+              </form>
+              <p class="managed-share-invite-copy">Invite people here if you want to share this storage location directly.</p>
+            {/if}
+
+            <div class="managed-share-members">
+              <p class="subheading">Joined</p>
+              {#if participantCollaborators(summary).length > 0}
+                <div class="managed-share-members-list">
+                  {#each participantCollaborators(summary) as collaborator (collaborator.label)}
+                    <span class="mini-pill">{collaborator.label}</span>
+                  {/each}
+                </div>
+              {:else}
+                <p class="managed-share-invite-copy">No one has joined this location yet.</p>
+              {/if}
+            </div>
+
+            {#if canInviteManagedShare(summary) || pendingCollaborators(summary).length > 0}
+              <div class="managed-share-members">
+                <p class="subheading">Invited</p>
+                {#if pendingCollaborators(summary).length > 0}
+                  <div class="managed-share-members-list">
+                    {#each pendingCollaborators(summary) as collaborator (collaborator.label)}
+                      <span class="mini-pill">{collaborator.label}</span>
+                    {/each}
+                  </div>
+                {:else}
+                  <p class="managed-share-invite-copy">No pending invitations.</p>
+                {/if}
+              </div>
+            {/if}
+          {/snippet}
+          {#snippet actions()}
+            <div class="storage-card-actions">
+              <div class="button-row storage-card-actions-left">
+                {#if view.onRemove && view.canRemove}
+                  <ArmedActionButton
+                    class="panel-btn subtle compact icon-btn armed-icon-danger"
+                    icon={Trash2}
+                    text=""
+                    armed={true}
+                    autoDisarmMs={3000}
+                    title="Remove"
+                    ariaLabel="Remove"
+                    resetKey={view.removeResetKey}
+                    onPress={view.onRemove}
+                  />
+                {/if}
+                {#if view.onMove}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={view.onMove}
+                    disabled={view.moveDisabled}
+                  >
+                    <ArrowRightLeft size={14} strokeWidth={2} />
+                    <span>{view.moveLabel ?? 'Move'}</span>
+                  </button>
+                {/if}
+              </div>
+
+              <div class="button-row storage-card-actions-right">
+                {#if view.onOpen}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={view.onOpen}
+                    disabled={view.openDisabled}
+                    title={view.openTitle}
+                  >
+                    <FolderOpen size={14} strokeWidth={2} />
+                    <span>Open</span>
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {/snippet}
+          {#snippet footer()}
+            {#if view.warning}
+              <p class="warning-copy">Last write problem: {view.warning}</p>
+            {/if}
+            {#if view.attachments.length > 0}
+              <div class="fact-row share-volume-row">
+                {#each view.attachments as attachment}
+                  {#if attachment.known}
+                    <button
+                      type="button"
+                      class="mini-pill mini-pill-button"
+                      onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
+                    >
+                      {attachment.label}
+                    </button>
+                  {:else}
+                    <span class="mini-pill">{attachment.label}</span>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+          {/snippet}
+        </ShareCard>
+      {/if}
+    {/snippet}
+    {#snippet incomingContactInviteCard(invite: IncomingProviderContactInvite)}
+      <ShareCard
+        provider={providerLabelForIncoming(invite.provider)}
+        title={invite.label}
+        copy={invite.detail}
+        statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
+        meta={[`Accept this first so ${providerLabelForIncoming(invite.provider)} can show any storage locations shared with you.`]}
+      >
+        {#snippet actions()}
+          <button
+            type="button"
+            class="panel-btn subtle compact"
+            onclick={() => void acceptProviderContactInviteEntry(invite)}
+            disabled={integrationBusyKey === `accept-contact:${invite.id}`}
+          >
+            <span>{integrationBusyKey === `accept-contact:${invite.id}` ? 'Accepting...' : 'Accept contact'}</span>
+          </button>
+        {/snippet}
+      </ShareCard>
+    {/snippet}
+    {#snippet incomingManagedShareCard(offer: IncomingManagedShareOffer)}
+      <ShareCard
+        provider={providerLabelForIncoming(offer.provider)}
+        title={offer.label}
+        copy={offer.detail}
+        statusBadges={[{ label: 'Incoming storage', tone: 'muted' }]}
+        meta={[
+          `Shared by ${offer.ownerLabel}`,
+          volumeId ? 'Will attach to this hub' : 'Saved as a storage location',
+        ]}
+      >
+        {#snippet details()}
+          {#if offer.suggestedLocalPath}
+            <div class="provider-path-card managed-share-path-card">
+              <p class="subheading">Suggested local mirror</p>
+              <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
+            </div>
+          {/if}
+        {/snippet}
+        {#snippet actions()}
+          <button
+            type="button"
+            class="panel-btn subtle compact"
+            onclick={() => void acceptIncomingManagedShareOffer(offer)}
+            disabled={integrationBusyKey === `accept-share:${offer.id}`}
+          >
+            <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
+          </button>
+        {/snippet}
+      </ShareCard>
+    {/snippet}
     {#snippet addLocationAction(label: string, title: string, onPress: () => void, disabled: boolean)}
       <button type="button" class="panel-btn subtle compact" onclick={onPress} {title} {disabled}>
         <Plus size={14} strokeWidth={2} />
@@ -2995,6 +3229,8 @@
       {:else}
         {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
         {@const shares = provider ? providerVisibleShares(provider.provider) : []}
+        {@const incomingInvites = provider ? incomingProviderInvitesForProvider(provider.provider) : []}
+        {@const incomingShares = provider ? incomingManagedSharesForProvider(provider.provider) : []}
         {#if provider}
           <section class="panel-section">
             <div class="section-head compact global-panel-head">
@@ -3341,13 +3577,26 @@
                 />
               {:else}
                 {#each shares as summary (summary.share.id)}
-                  {@const view = managedShareView(summary)}
-                  {#if view}
-                    {@render unifiedShareCard(view)}
-                  {/if}
+                  {@render managedShareCard(summary)}
                 {/each}
               {/if}
             </div>
+
+            {#if incomingInvites.length > 0 || incomingShares.length > 0}
+              <div class="provider-flow-status">
+                <p class="provider-flow-title">Shared with you</p>
+                <p class="muted-copy">Accept contacts first, then add the incoming storage locations you want Nearbytes to mirror.</p>
+              </div>
+
+              <div class="compact-share-grid">
+                {#each incomingInvites as invite (invite.id)}
+                  {@render incomingContactInviteCard(invite)}
+                {/each}
+                {#each incomingShares as offer (offer.id)}
+                  {@render incomingManagedShareCard(offer)}
+                {/each}
+              </div>
+            {/if}
           </section>
         {/if}
       {/if}
