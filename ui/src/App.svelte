@@ -5604,21 +5604,6 @@
                 >
                   <HardDrive class="button-icon" size={14} strokeWidth={2} />
                 </button>
-                {#if showChatWorkspace}
-                  <button
-                    type="button"
-                    class="header-tool-btn"
-                    class:active={showIdentityManager}
-                    aria-label="Identities"
-                    title="Identities"
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      showIdentityManager = !showIdentityManager;
-                    }}
-                  >
-                    <UserRound class="button-icon" size={14} strokeWidth={2} />
-                  </button>
-                {/if}
               </div>
             </div>
           </div>
@@ -6020,6 +6005,17 @@
               {/if}
             {/if}
             <div class="workspace-utility-actions">
+              <button
+                type="button"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showIdentityManager}
+                onclick={openIdentityManagerForChat}
+                disabled={!activeMount}
+                title="Manage identities"
+              >
+                <UserRound class="button-icon" size={15} strokeWidth={2} />
+                <span>Identities</span>
+              </button>
               <button
                 type="button"
                 class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
