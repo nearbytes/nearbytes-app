@@ -79,6 +79,7 @@
 
   type StatusTone = 'good' | 'warn' | 'muted';
   type VolumeStorageView = 'copies' | 'shares' | 'folders';
+  type HubLocationMode = 'store' | 'publish' | 'off';
   type ProviderFlowStep = {
     label: string;
     detail: string;
@@ -1542,9 +1543,78 @@
 
   function protectionLabel(destination: VolumeDestinationConfig | null, sourceId: string): string {
     const tone = protectionTone(destination, sourceId);
-    if (tone === 'durable') return 'Safe copy';
-    if (tone === 'replica') return 'Extra copy';
+    if (tone === 'durable') return 'Full copy';
+    if (tone === 'replica') return 'Full copy with trimming';
     return 'Not a full copy';
+  }
+
+  function hubLocationMode(targetVolumeId: string, sourceId: string): HubLocationMode {
+    const destination = destinationFor(targetVolumeId, sourceId);
+    if (!destination || !destination.enabled || !destination.storeEvents) {
+      return 'off';
+    }
+    if (keepsFullCopy(destination)) {
+      return 'store';
+    }
+    return destination.storeBlocks ? 'publish' : 'off';
+  }
+
+  function setHubLocationMode(targetVolumeId: string, sourceId: string, mode: HubLocationMode): void {
+    if (!configDraft) return;
+    upsertDestination(targetVolumeId, sourceId);
+    const apply = (destination: VolumeDestinationConfig): VolumeDestinationConfig => {
+      if (mode === 'off') {
+        return {
+          ...destination,
+          enabled: false,
+          storeEvents: false,
+          storeBlocks: false,
+          copySourceBlocks: false,
+        };
+      }
+      if (mode === 'publish') {
+        return {
+          ...destination,
+          enabled: true,
+          storeEvents: true,
+          storeBlocks: true,
+          copySourceBlocks: false,
+        };
+      }
+      return {
+        ...destination,
+        enabled: true,
+        storeEvents: true,
+        storeBlocks: true,
+        copySourceBlocks: true,
+      };
+    };
+
+    const entry = ensureExplicitVolumePolicy(targetVolumeId);
+    const volumeIndex = configDraft.volumes.findIndex((volume) => volume.volumeId === targetVolumeId);
+    const nextVolumes = [...configDraft.volumes];
+    nextVolumes[volumeIndex] = {
+      ...entry,
+      destinations: entry.destinations.map((destination) =>
+        destination.sourceId === sourceId ? apply(destination) : destination
+      ),
+    };
+    configDraft = {
+      ...configDraft,
+      volumes: nextVolumes,
+    };
+  }
+
+  function hubStorageHeading(targetVolumeId: string): string {
+    return explicitVolumePolicy(targetVolumeId)
+      ? 'This hub uses custom storage locations'
+      : 'This hub uses the default storage locations';
+  }
+
+  function hubStorageIntro(targetVolumeId: string): string {
+    return explicitVolumePolicy(targetVolumeId)
+      ? 'These choices apply only to this hub.'
+      : 'These choices come from your default storage locations. Change any location below if this hub should behave differently.';
   }
 
   function canRemoveAnySource(): boolean {
@@ -1740,9 +1810,9 @@
       return 'Nearbytes can look here, but it cannot store here right now.';
     }
     if (source.writable) {
-      return 'Nearbytes can use this location and store here.';
+      return 'This location is ready.';
     }
-    return 'Nearbytes can use this location, but it will not store here.';
+    return 'This location is ready for reading only.';
   }
 
   function usageSummary(sourceId: string): string {
@@ -1755,20 +1825,20 @@
 
   function protectionSummary(targetVolumeId: string | null): string {
     const count = durableLocationCount(targetVolumeId);
-    if (count === 0) return 'Choose a safe place';
-    if (count === 1) return '1 safe copy ready';
-    return `${count} safe copies ready`;
+    if (count === 0) return 'Choose a full copy location';
+    if (count === 1) return '1 full copy location';
+    return `${count} full copy locations`;
   }
 
   function protectionHint(targetVolumeId: string | null): string {
     if (hasDurableDestination(targetVolumeId)) {
       return targetVolumeId
-        ? 'This hub already has at least one place keeping everything safe.'
-        : 'New hubs will start with at least one place keeping everything safe.';
+        ? 'This hub already has at least one location keeping a full copy.'
+        : 'New hubs will start with at least one location keeping a full copy.';
     }
     return targetVolumeId
-      ? 'Choose at least one writable location below to keep the whole hub.'
-      : 'Every new hub needs at least one writable location that keeps the whole hub.';
+      ? 'Choose at least one writable location below to keep a full copy of this hub.'
+      : 'Every new hub needs at least one writable location that keeps a full copy.';
   }
 
   function copyHelpText(targetVolumeId: string | null, source: SourceConfigEntry): string {
@@ -1792,9 +1862,49 @@
       return 'This location is chosen, but Nearbytes cannot write to this folder right now.';
     }
     if (canReuseOtherGuaranteedCopies(destination)) {
-      return 'If this location runs low on room, Nearbytes may trim older data here, but only after another safe copy already has it.';
+      return 'If this location runs low on room, Nearbytes may trim older data here, but only after another full copy already has it.';
     }
     return 'This location keeps the whole hub.';
+  }
+
+  function hubLocationNote(targetVolumeId: string, source: SourceConfigEntry): string | null {
+    const status = sourceStatus(source.id);
+    const mode = hubLocationMode(targetVolumeId, source.id);
+    if (source.moveFromSourceId) {
+      return `Nearbytes is moving data here from ${source.moveFromSourceId}. Both folders stay active until the move finishes.`;
+    }
+    if (hasPendingMove(source.id)) {
+      return 'Nearbytes is moving this location to a new folder. Both folders stay active until the move finishes.';
+    }
+    if (!hasSourcePath(source)) {
+      return 'Choose a folder to finish setting up this location.';
+    }
+    if (!source.enabled) {
+      return 'This location is turned off right now.';
+    }
+    if (status?.exists === false) {
+      return 'This folder is not available right now.';
+    }
+    if (status && !status.isDirectory) {
+      return 'This path exists, but it is not a folder.';
+    }
+    if (mode !== 'off' && !source.writable) {
+      return mode === 'store'
+        ? 'Writing is turned off here, so this location cannot keep a full copy yet.'
+        : 'Writing is turned off here, so this location cannot publish updates yet.';
+    }
+    if (mode !== 'off' && status?.canWrite === false) {
+      return mode === 'store'
+        ? 'Nearbytes cannot write to this folder right now, so it cannot keep a full copy yet.'
+        : 'Nearbytes cannot write to this folder right now, so it cannot publish updates yet.';
+    }
+    if (mode === 'publish') {
+      return 'This location will receive new updates for this hub, but it is not keeping the whole hub here.';
+    }
+    if (mode === 'off') {
+      return 'This location is available, but this hub is not using it.';
+    }
+    return null;
   }
 
   function applyRootsResponse(response: {
@@ -3360,9 +3470,6 @@
       {/if}
     {:else}
       <div class="toolbar-row">
-        {#if volumeId}
-          <span class="summary-pill" class:warning={!hasDurableDestination(volumeId)}>{protectionSummary(volumeId)}</span>
-        {/if}
         <button
           type="button"
           class="panel-btn subtle compact icon-btn"
@@ -3379,26 +3486,6 @@
         {/if}
       </div>
 
-      {#if volumeId}
-        <div class="overview-grid">
-          <button type="button" class="overview-card tab-card" class:active={volumeView === 'copies'} onclick={() => (volumeView = 'copies')}>
-            <p class="provider-label">Safety</p>
-            <h3>{protectionSummary(volumeId)}</h3>
-            <p class="card-copy">{hasDurableDestination(volumeId) ? 'This hub has a safe home.' : 'Pick at least one place to keep everything.'}</p>
-          </button>
-          <button type="button" class="overview-card tab-card" class:active={volumeView === 'shares'} onclick={() => (volumeView = 'shares')}>
-            <p class="provider-label">Locations</p>
-            <h3>{countLabel(managedSharesForVolume(volumeId).length, 'location')}</h3>
-            <p class="card-copy">{countLabel(availableManagedSharesForVolume(volumeId).length, 'location')} available to attach.</p>
-          </button>
-          <button type="button" class="overview-card tab-card" class:active={volumeView === 'folders'} onclick={() => (volumeView = 'folders')}>
-            <p class="provider-label">Folders</p>
-            <h3>{countLabel(configDraft.sources.length, 'folder')}</h3>
-            <p class="card-copy">Machine-level storage shared by all hubs on this device.</p>
-          </button>
-        </div>
-      {/if}
-
       {#if errorMessage}
         <p class="panel-error">{errorMessage}</p>
       {/if}
@@ -3409,13 +3496,205 @@
       {#if !volumeId}
         <p class="storage-message">Open this hub first, then choose the places that should keep everything.</p>
       {:else}
-        {#if volumeView === 'shares'}
+        {#if discoveryError}
+          <p class="warning-copy">{discoveryError}</p>
+        {/if}
+
         <section class="panel-section">
           <div class="section-head">
             <div>
-              <p class="section-step">Storage</p>
-              <h3>Storage locations</h3>
-              <p class="section-copy">Connect providers, create locations, use them in this hub, and invite collaborators here.</p>
+              <h3>{hubStorageHeading(volumeId)}</h3>
+              <p class="section-copy">{hubStorageIntro(volumeId)}</p>
+            </div>
+            {#if explicitVolumePolicy(volumeId)}
+              <ArmedActionButton
+                class="panel-btn subtle compact danger"
+                icon={Trash2}
+                text="Use default storage locations again"
+                armed={true}
+                autoDisarmMs={3000}
+                onPress={() => removeVolumePolicy(volumeId)}
+              />
+            {/if}
+          </div>
+
+          <div class="rule-grid">
+            {#each configDraft.sources as source (source.id)}
+              {@const destination = destinationFor(volumeId, source.id)}
+              {@const mode = hubLocationMode(volumeId, source.id)}
+              {@const note = hubLocationNote(volumeId, source)}
+              {@const status = sourceStatus(source.id)}
+              <article class="rule-card" class:active={mode !== 'off'}>
+                <div class="card-head">
+                  <div class="card-title">
+                    <div>
+                      <p class="provider-label">{formatProvider(source.provider)}</p>
+                      <h4>{compactPath(source.path)}</h4>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="toggle-stack">
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="radio"
+                      name={`hub-location-mode-${source.id}`}
+                      checked={mode === 'store'}
+                      onchange={() => setHubLocationMode(volumeId, source.id, 'store')}
+                    />
+                    <div>
+                      <span class="toggle-title">Store this hub here</span>
+                      <span class="toggle-copy">Keep a full copy of this hub in this location.</span>
+                    </div>
+                  </label>
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="radio"
+                      name={`hub-location-mode-${source.id}`}
+                      checked={mode === 'publish'}
+                      onchange={() => setHubLocationMode(volumeId, source.id, 'publish')}
+                    />
+                    <div>
+                      <span class="toggle-title">Publish this hub updates here</span>
+                      <span class="toggle-copy">Write new updates here without keeping the whole hub in this location.</span>
+                    </div>
+                  </label>
+                  <label class="inline-toggle compact-toggle-line">
+                    <input
+                      type="radio"
+                      name={`hub-location-mode-${source.id}`}
+                      checked={mode === 'off'}
+                      onchange={() => setHubLocationMode(volumeId, source.id, 'off')}
+                    />
+                    <div>
+                      <span class="toggle-title">Do not use this location for this hub</span>
+                      <span class="toggle-copy">Leave this location available without using it for this hub.</span>
+                    </div>
+                  </label>
+                </div>
+
+                {#if note}
+                  <p class="card-copy">{note}</p>
+                {/if}
+
+                <div class="fact-row">
+                  <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
+                  <span>{usageSummary(source.id)}</span>
+                </div>
+
+                <details class="details-card inline-details">
+                  <summary>More choices</summary>
+                  {#if mode !== 'off'}
+                    <div class="field-grid">
+                      <label class="field-block">
+                        <span>Leave free room</span>
+                        <select
+                          class="panel-input"
+                          value={String(destinationReservePercent(destination))}
+                          onchange={(event) =>
+                            updateDestinationField(volumeId, source.id, 'reservePercent', clampReserve((event.currentTarget as HTMLSelectElement).value))}
+                        >
+                          {#each RESERVE_OPTIONS as option}
+                            <option value={option}>{formatPercent(option)}</option>
+                          {/each}
+                        </select>
+                      </label>
+                      {#if mode === 'store'}
+                        <label class="field-block">
+                          <span>When this location gets full</span>
+                          <select
+                            class="panel-input"
+                            value={destination?.fullPolicy ?? 'block-writes'}
+                            onchange={(event) =>
+                              updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
+                          >
+                            <option value="block-writes">Keep everything here</option>
+                            <option value="drop-older-blocks">Trim older data after another full copy exists</option>
+                          </select>
+                        </label>
+                      {/if}
+                    </div>
+                  {/if}
+
+                  <div class="button-row">
+                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id)} disabled={!hasSourcePath(source)}>
+                      <FolderOpen size={14} strokeWidth={2} />
+                      <span>Open</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void (hasSourcePath(source) ? moveSourceFolder(source.id) : chooseSourceFolder(source.id))}
+                      disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
+                      title={hasSourcePath(source) ? 'Move this storage location without interrupting service' : 'Choose folder'}
+                    >
+                      <ArrowRightLeft size={14} strokeWidth={2} />
+                      <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move folder' : 'Choose folder'}</span>
+                    </button>
+                    {#if canRemoveAnySource()}
+                      <ArmedActionButton
+                        class="panel-btn subtle compact danger"
+                        icon={Trash2}
+                        text="Remove"
+                        armed={true}
+                        autoDisarmMs={3000}
+                        onPress={() => removeSource(source.id)}
+                      />
+                    {/if}
+                  </div>
+                </details>
+              </article>
+            {/each}
+
+            {#each sourceSuggestionRows() as row (row.source.path)}
+              <article class="rule-card suggestion-card">
+                <div class="card-head">
+                  <div class="card-title">
+                    <div class="card-icon" title={row.source.path}>
+                      <Search size={16} strokeWidth={2.1} />
+                    </div>
+                    <div title={row.source.path}>
+                      <p class="provider-label">{formatProvider(row.source.provider)}</p>
+                      <h4>{compactPath(row.source.path)}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class="status-pill tone-muted">Found automatically</span>
+                  </div>
+                </div>
+
+                <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
+
+                <div class="button-row">
+                  <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
+                    <Plus size={14} strokeWidth={2} />
+                    <span>Add location</span>
+                  </button>
+                  <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
+                    <span>Hide</span>
+                  </button>
+                </div>
+              </article>
+            {/each}
+
+            <article class="rule-card add-card">
+              <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
+                <Plus size={20} strokeWidth={2.1} />
+              </button>
+              <div class="usage-main">
+                <p class="provider-label">Manual</p>
+                <h4>Add a location</h4>
+              </div>
+              <p class="card-copy">Choose a folder on this device for a new storage location.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-head">
+            <div>
+              <h3>Add or attach provider locations</h3>
+              <p class="section-copy">Connect a provider, create a location there, or attach a location that someone shared with you.</p>
             </div>
           </div>
 
@@ -3818,391 +4097,6 @@
             {/each}
           </div>
         </section>
-        {/if}
-
-        {#if volumeView === 'copies'}
-        <div class="protection-banner" class:warning={!hasDurableDestination(volumeId)}>
-          <Shield size={15} strokeWidth={2} />
-          <span>{protectionHint(volumeId)}</span>
-        </div>
-
-        {#if discoveryError}
-          <p class="warning-copy">{discoveryError}</p>
-        {/if}
-
-        <section class="panel-section">
-          <div class="section-head">
-            <div>
-              <p class="section-step">Safety</p>
-              <h3>{explicitVolumePolicy(volumeId) ? 'Where this hub keeps everything' : 'Where this hub keeps everything by default'}</h3>
-              <p class="section-copy">
-                {#if explicitVolumePolicy(volumeId)}
-                  Choose the places that should keep the whole hub. These choices apply only to this hub.
-                {:else}
-                  These are your starting choices. Changing them will store custom choices just for this hub.
-                {/if}
-              </p>
-            </div>
-            {#if explicitVolumePolicy(volumeId)}
-              <ArmedActionButton
-                class="panel-btn subtle compact danger"
-                icon={Trash2}
-                text="Go back to defaults"
-                armed={true}
-                autoDisarmMs={3000}
-                onPress={() => removeVolumePolicy(volumeId)}
-              />
-            {/if}
-          </div>
-
-          <div class="rule-grid">
-            {#each configDraft.sources as source (source.id)}
-              {@const destination = destinationFor(volumeId, source.id)}
-              {@const availability = locationAvailability(source)}
-              {@const writeState = locationWriteState(source)}
-              <article class="rule-card" class:active={protectionTone(destination, source.id) === 'durable'}>
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">{formatProvider(source.provider)}</p>
-                      <h4>{compactPath(source.path)}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class={`status-pill tone-${availability.tone}`}>{availability.label}</span>
-                    <span class={`status-pill tone-${writeState.tone}`}>{writeState.label}</span>
-                    <span class={`status-pill tone-${protectionTone(destination, source.id)}`}>{protectionLabel(destination, source.id)}</span>
-                  </div>
-                </div>
-
-                <label class="inline-toggle">
-                  <input
-                    type="checkbox"
-                    checked={keepsFullCopy(destination)}
-                    onchange={(event) => setKeepFullCopy(volumeId, source.id, (event.currentTarget as HTMLInputElement).checked)}
-                  />
-                  <div>
-                    <span class="toggle-title">Store this hub here</span>
-                    <span class="toggle-copy">Files, history, and everything needed to open it.</span>
-                  </div>
-                </label>
-
-                <p class="card-copy">{copyHelpText(volumeId, source)}</p>
-
-                <details class="details-card inline-details">
-                  <summary>More choices</summary>
-                  {#if keepsFullCopy(destination)}
-                    <div class="field-grid">
-                      <label class="field-block">
-                        <span>Leave free room</span>
-                        <select
-                          class="panel-input"
-                          value={String(destinationReservePercent(destination))}
-                          onchange={(event) =>
-                            updateDestinationField(volumeId, source.id, 'reservePercent', clampReserve((event.currentTarget as HTMLSelectElement).value))}
-                        >
-                          {#each RESERVE_OPTIONS as option}
-                            <option value={option}>{formatPercent(option)}</option>
-                          {/each}
-                        </select>
-                      </label>
-                      <label class="field-block">
-                        <span>When this place gets full</span>
-                        <select
-                          class="panel-input"
-                          value={destination?.fullPolicy ?? 'block-writes'}
-                          onchange={(event) =>
-                            updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
-                        >
-                          <option value="block-writes">Keep everything here</option>
-                          <option value="drop-older-blocks">Trim older data after another safe copy exists</option>
-                        </select>
-                      </label>
-                    </div>
-                  {/if}
-
-                  <div class="button-row">
-                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id)} disabled={!hasSourcePath(source)}>
-                      <FolderOpen size={14} strokeWidth={2} />
-                      <span>Open</span>
-                    </button>
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void (hasSourcePath(source) ? moveSourceFolder(source.id) : chooseSourceFolder(source.id))}
-                      disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
-                      title={hasSourcePath(source) ? 'Move this storage location without interrupting service' : 'Choose folder'}
-                    >
-                      <ArrowRightLeft size={14} strokeWidth={2} />
-                      <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move folder' : 'Choose folder'}</span>
-                    </button>
-                    {#if canRemoveAnySource()}
-                      <ArmedActionButton
-                        class="panel-btn subtle compact danger"
-                        icon={Trash2}
-                        text="Remove"
-                        armed={true}
-                        autoDisarmMs={3000}
-                        onPress={() => removeSource(source.id)}
-                      />
-                    {/if}
-                  </div>
-                </details>
-
-                <div class="fact-row">
-                  <span>{locationSummary(source)}</span>
-                </div>
-              </article>
-            {/each}
-            {#each sourceSuggestionRows() as row (row.source.path)}
-              <article class="rule-card suggestion-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div class="card-icon" title={row.source.path}>
-                      <Search size={16} strokeWidth={2.1} />
-                    </div>
-                    <div title={row.source.path}>
-                      <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                      <h4>{compactPath(row.source.path)}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class="status-pill tone-muted">Found automatically</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
-
-                <div class="button-row">
-                  <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                    <Plus size={14} strokeWidth={2} />
-                    <span>Add location</span>
-                  </button>
-                  <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
-                    <span>Hide</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
-            <article class="rule-card add-card">
-              <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
-                <Plus size={20} strokeWidth={2.1} />
-              </button>
-              <div class="usage-main">
-                <p class="provider-label">Manual</p>
-                <h4>Add a folder</h4>
-              </div>
-              <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
-            </article>
-          </div>
-        </section>
-        {/if}
-
-        {#if volumeView === 'folders'}
-        <section class="panel-section">
-          <div class="section-head">
-            <div>
-              <p class="section-step">Folders</p>
-              <h3>Machine-level folders</h3>
-              <p class="section-copy">Changes here affect every hub on this device. Use this view when you want to add, move, or disable a local storage folder.</p>
-            </div>
-            <div class="section-metrics">
-              <span class="summary-pill">{countLabel(configDraft.sources.length, 'folder')} added</span>
-              <span class="summary-pill" class:warning={!hasDurableDestination(null)}>{protectionSummary(null)}</span>
-            </div>
-          </div>
-
-          {#if discoveryError}
-            <p class="warning-copy">{discoveryError}</p>
-          {/if}
-
-          <div class="protection-banner" class:warning={!hasDurableDestination(null)}>
-            <Shield size={15} strokeWidth={2} />
-            <span>{protectionHint(null)}</span>
-          </div>
-
-          <div class="card-grid">
-            {#each configDraft.sources as source (source.id)}
-              {@const status = sourceStatus(source.id)}
-              {@const availability = locationAvailability(source)}
-              {@const writeState = locationWriteState(source)}
-              {@const defaultDestination = destinationFor(null, source.id)}
-              <article class="location-card" class:active={protectionTone(defaultDestination, source.id) === 'durable'}>
-                <div class="card-head">
-                  <div class="card-title">
-                    <div class="card-icon" title={source.path || 'No folder selected yet'}>
-                      <HardDrive size={16} strokeWidth={2.1} />
-                    </div>
-                    <div title={source.path || 'No folder selected yet'}>
-                      <p class="provider-label">{formatProvider(source.provider)}</p>
-                      <h4>{compactPath(source.path)}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class={`status-pill tone-${availability.tone}`}>{availability.label}</span>
-                    <span class={`status-pill tone-${writeState.tone}`}>{writeState.label}</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{locationSummary(source)}</p>
-
-                <div class="toggle-stack">
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={source.enabled}
-                      aria-label="Use this folder for reads"
-                      onchange={(event) => updateSourceField(source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Use for reads</span>
-                      <span class="toggle-copy">Read existing Nearbytes data from this folder.</span>
-                    </div>
-                  </label>
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={source.writable}
-                      aria-label="Save new data here"
-                      onchange={(event) => updateSourceField(source.id, 'writable', (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Save new data here</span>
-                      <span class="toggle-copy">Allow Nearbytes to write new encrypted data here.</span>
-                    </div>
-                  </label>
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={keepsFullCopy(defaultDestination)}
-                      aria-label="Use by default for new hubs"
-                      onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Use by default for new hubs</span>
-                      <span class="toggle-copy">{copyHelpText(null, source)}</span>
-                    </div>
-                  </label>
-                </div>
-
-                <div class="fact-row">
-                  <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
-                  <span>{usageSummary(source.id)}</span>
-                </div>
-
-                <details class="details-card inline-details">
-                  <summary>Advanced</summary>
-                  <div class="card-control-row">
-                    <label class="field-block compact-field" title="Minimum available storage to leave on this drive. Default is 5%.">
-                      <span>Keep available</span>
-                      <select
-                        class="panel-input"
-                        value={String(sourceReservePercent(source))}
-                        onchange={(event) => {
-                          const nextValue = clampReserve((event.currentTarget as HTMLSelectElement).value);
-                          updateSourceField(source.id, 'reservePercent', nextValue);
-                          if (keepsFullCopy(defaultDestination)) {
-                            updateDestinationField(null, source.id, 'reservePercent', nextValue);
-                          }
-                        }}
-                      >
-                        {#each RESERVE_OPTIONS as option}
-                          <option value={option}>{formatPercent(option)}</option>
-                        {/each}
-                      </select>
-                    </label>
-
-                    <div class="button-row">
-                      {#if hasSourcePath(source)}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => void moveSourceFolder(source.id)}
-                          disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
-                          title="Move this storage location to a different folder without interrupting service"
-                        >
-                          <ArrowRightLeft size={14} strokeWidth={2} />
-                          <span>{movingSourceId === source.id ? 'Moving...' : 'Move folder'}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => openSourceFolder(source.id)}
-                          title={source.path || 'Open folder'}
-                        >
-                          <FolderOpen size={14} strokeWidth={2} />
-                          <span>Open</span>
-                        </button>
-                      {:else}
-                        <button type="button" class="panel-btn subtle compact" onclick={() => chooseSourceFolder(source.id)}>
-                          <Search size={14} strokeWidth={2} />
-                          <span>Choose folder</span>
-                        </button>
-                      {/if}
-                      {#if canRemoveAnySource()}
-                        <ArmedActionButton
-                          class="panel-btn subtle compact danger"
-                          icon={Trash2}
-                          text="Remove"
-                          armed={true}
-                          autoDisarmMs={3000}
-                          onPress={() => removeSource(source.id)}
-                        />
-                      {/if}
-                    </div>
-                  </div>
-
-                  {#if status?.lastWriteFailure}
-                    <p class="warning-copy">Last write problem: {status.lastWriteFailure.message}</p>
-                  {/if}
-                </details>
-              </article>
-            {/each}
-            {#each sourceSuggestionRows() as row (row.source.path)}
-              <article class="location-card suggestion-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div class="card-icon" title={row.source.path}>
-                      <Search size={16} strokeWidth={2.1} />
-                    </div>
-                    <div title={row.source.path}>
-                      <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                      <h4>{compactPath(row.source.path)}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class="status-pill tone-muted">Found automatically</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
-
-                <div class="button-row">
-                  <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                    <Plus size={14} strokeWidth={2} />
-                    <span>Use folder</span>
-                  </button>
-                  <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
-                    <span>Hide</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
-            <article class="location-card add-card">
-              <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
-                <Plus size={20} strokeWidth={2.1} />
-              </button>
-              <div class="usage-main">
-                <p class="provider-label">Manual</p>
-                <h4>Add a folder</h4>
-              </div>
-              <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
-            </article>
-          </div>
-        </section>
-        {/if}
       {/if}
     {/if}
 
