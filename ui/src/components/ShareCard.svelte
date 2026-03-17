@@ -24,7 +24,7 @@
     title: string;
     copy?: string;
     active?: boolean;
-    statusBadges?: Array<{ label: string; tone?: ShareCardBadgeTone }>;
+    statusBadges?: Array<{ label: string; tone?: ShareCardBadgeTone; description?: string }>;
     meta?: string[];
     metaActions?: Snippet;
     body?: Snippet;
@@ -49,7 +49,10 @@
     {#if statusBadges.length > 0}
       <div class="card-status">
         {#each statusBadges as badge}
-          <span class={`status-pill tone-${badge.tone ?? 'muted'} ${badge.label === 'Ready' ? 'ready-badge' : ''}`}>{badge.label}</span>
+          <span
+            class={`status-pill tone-${badge.tone ?? 'muted'} ${badge.label === 'Ready' ? 'ready-badge' : ''}`}
+            title={badge.description}
+          >{badge.label}</span>
         {/each}
       </div>
     {/if}

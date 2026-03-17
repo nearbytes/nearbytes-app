@@ -83,6 +83,7 @@ export class ManagedShareService {
   private readonly mirrorRoot: string;
   private readonly runtime: IntegrationRuntime;
   private readonly syncBootstrapTasks = new Map<string, Promise<void>>();
+  private readonly autoRepairCooldowns = new Map<string, number>();
 
   constructor(private readonly options: ManagedShareServiceOptions) {
     this.runtime = createIntegrationRuntime({
@@ -263,9 +264,61 @@ export class ManagedShareService {
     this.scheduleManagedShareSyncs(state);
     const refreshedState = await this.loadState();
     const visibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
+    let summaries = await Promise.all(visibleShares.map((share) => this.buildManagedShareSummary(share)));
+    const repairableShares = summaries.filter((summary) => this.shouldAutoRepairManagedShare(summary));
+
+    if (repairableShares.length > 0) {
+      await Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary.share.id)));
+      const repairedState = await this.loadState();
+      const repairedVisibleShares = repairedState.managedShares.filter((share) => isProviderEnabled(share.provider));
+      summaries = await Promise.all(repairedVisibleShares.map((share) => this.buildManagedShareSummary(share)));
+    }
+
     return {
-      shares: await Promise.all(visibleShares.map((share) => this.buildManagedShareSummary(share))),
+      shares: summaries,
     };
+  }
+
+  async repairManagedShare(shareId: string): Promise<ManagedShareSummary> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    const localPath = path.resolve(share.localPath);
+    await ensureMirrorFolder(localPath);
+
+    const currentConfig = cloneConfig(this.options.storage.getRootsConfig());
+    const currentConfigSignature = JSON.stringify(currentConfig);
+    const { config: repairedConfig, sourceId } = ensureManagedShareSource(currentConfig, share, localPath);
+    const repairedConfigSignature = JSON.stringify(repairedConfig);
+    const nextShare =
+      share.sourceId === sourceId
+        ? share
+        : {
+            ...share,
+            sourceId,
+            updatedAt: Date.now(),
+          };
+
+    if (repairedConfigSignature !== currentConfigSignature) {
+      await this.persistRootsConfig(repairedConfig);
+    }
+    if (nextShare !== share) {
+      await this.saveState({
+        ...state,
+        managedShares: state.managedShares.map((entry) => (entry.id === shareId ? nextShare : entry)),
+      });
+    }
+
+    if (account?.state === 'connected') {
+      await adapter?.ensureSync?.(nextShare, account);
+    }
+
+    return this.buildManagedShareSummary(nextShare);
   }
 
   async listIncomingManagedShares(): Promise<{ shares: IncomingManagedShareOffer[] }> {
@@ -554,6 +607,27 @@ export class ManagedShareService {
         });
       })
     );
+  }
+
+  private shouldAutoRepairManagedShare(summary: ManagedShareSummary): boolean {
+    if (summary.state.status !== 'attention' && summary.state.status !== 'needs-auth') {
+      return false;
+    }
+    if (!summary.state.badges.some((badge) => badge === 'Repair' || badge === 'Reconnect')) {
+      return false;
+    }
+    const lastAttemptAt = this.autoRepairCooldowns.get(summary.share.id) ?? 0;
+    return Date.now() - lastAttemptAt >= 30_000;
+  }
+
+  private async autoRepairManagedShare(shareId: string): Promise<void> {
+    this.autoRepairCooldowns.set(shareId, Date.now());
+    try {
+      await this.repairManagedShare(shareId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share auto-repair failed for ${shareId}: ${message}`);
+    }
   }
 
   private scheduleManagedShareSyncs(state: IntegrationStateSnapshot): void {

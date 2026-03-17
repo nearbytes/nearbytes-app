@@ -310,6 +310,7 @@
   };
 
   type FileManagerViewMode = 'icons' | 'details';
+  type MountDialogMode = 'secret' | 'join-link';
 
   type AppReferenceClipboard = {
     bundle: SourceReferenceBundle;
@@ -1356,6 +1357,7 @@
   let mountRuntimeById = $state<Record<string, MountRuntimeState>>({});
   let pendingMountId = $state<string | null>(null);
   let mountDialogMountId = $state<string | null>(null);
+  let mountDialogMode = $state<MountDialogMode>('secret');
   let secretPasteTargetMountId = $state<string | null>(null);
   let secretFileHashes = $state<Record<string, SecretFileHashEntry>>({});
   let clipboardImageAvailable = $state(false);
@@ -3042,13 +3044,56 @@
     });
   }
 
-  function openMountDialog(mountId: string) {
+  function focusMountDialogJoinInput(mountId: string) {
+    void tick().then(() => {
+      const input = document.querySelector<HTMLTextAreaElement>(
+        `.mount-dialog[data-mount-id="${mountId}"] .join-dialog-textarea`
+      );
+      input?.focus();
+    });
+  }
+
+  function resetJoinDialogState(options: { preserveSerialized?: boolean } = {}): void {
+    if (!options.preserveSerialized) {
+      joinDialogSerialized = '';
+    }
+    joinDialogError = '';
+    joinDialogPreview = null;
+    joinDialogOpened = null;
+    joinDialogClipboardBusy = false;
+    joinDialogPreviewBusy = false;
+    joinDialogOpenBusy = false;
+  }
+
+  function openMountDialog(mountId: string, options: { mode?: MountDialogMode } = {}) {
     if (!mounts.some((mount) => mount.id === mountId)) {
       return;
     }
+    mountDialogMode = options.mode ?? 'secret';
+    resetJoinDialogState();
     mountDialogMountId = mountId;
     secretPasteTargetMountId = mountId;
+    if (mountDialogMode === 'join-link') {
+      focusMountDialogJoinInput(mountId);
+      return;
+    }
     focusMountDialogInput(mountId);
+  }
+
+  function setMountDialogMode(mode: MountDialogMode): void {
+    if (mountDialogMode === mode) {
+      return;
+    }
+    mountDialogMode = mode;
+    resetJoinDialogState();
+    if (!mountDialogMountId) {
+      return;
+    }
+    if (mode === 'join-link') {
+      focusMountDialogJoinInput(mountDialogMountId);
+      return;
+    }
+    focusMountDialogInput(mountDialogMountId);
   }
 
   function isMountEmpty(mount: VolumeMount): boolean {
@@ -3061,7 +3106,7 @@
     mounts = [nextMount, ...collapsedExisting];
     activeMountId = nextMount.id;
     pendingMountId = null;
-    openMountDialog(nextMount.id);
+    openMountDialog(nextMount.id, { mode: 'secret' });
   }
 
   function selectMount(mountId: string) {
@@ -3106,6 +3151,8 @@
     }
     if (mountDialogMountId === mountId) {
       mountDialogMountId = null;
+      mountDialogMode = 'secret';
+      resetJoinDialogState();
     }
     if (secretPasteTargetMountId === mountId) {
       secretPasteTargetMountId = null;
@@ -3530,7 +3577,7 @@
 
   function openJoinVolumeDialog(): void {
     showVolumeShareDialog = false;
-    joinDialogError = '';
+    resetJoinDialogState();
     showJoinVolumeDialog = true;
   }
 
@@ -3541,9 +3588,7 @@
 
   function closeJoinVolumeDialog(): void {
     showJoinVolumeDialog = false;
-    joinDialogError = '';
-    joinDialogPreview = null;
-    joinDialogOpened = null;
+    resetJoinDialogState();
   }
 
   function openVolumeShareDialog(): void {
@@ -3713,6 +3758,11 @@
       joinDialogPreview = response;
       joinDialogOpened = response;
       await handleJoinLinkOpened(response);
+      if (mountDialogMode === 'join-link' && mountDialogMountId) {
+        const currentMountId = mountDialogMountId;
+        collapseMount(currentMountId);
+        return;
+      }
       closeJoinVolumeDialog();
     } catch (error) {
       joinDialogOpened = null;
@@ -5529,16 +5579,6 @@
           <div class="mount-quick-actions" class:revealed={isHeaderHovering}>
             <button
               type="button"
-              class="mount-quick-secondary"
-              onclick={() => void openJoinVolumeDialogFromClipboard()}
-              aria-label="Paste shared hub link"
-              title="Paste shared hub link"
-            >
-              <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
-              <span>Paste link</span>
-            </button>
-            <button
-              type="button"
               class="mount-add-btn mount-quick-primary"
               onclick={addMount}
               aria-label="Add hub"
@@ -6845,7 +6885,37 @@
           <div class="mount-dialog-head-meta">
             <p class="mount-dialog-eyebrow">Hub properties</p>
             <p class="mount-dialog-title">{isMountEmpty(mountDialogMount) ? 'Create or open a hub' : 'Edit this hub'}</p>
-            <p class="mount-dialog-subtitle">Set the secret or attach one secret file.</p>
+            <p class="mount-dialog-subtitle">
+              {#if mountDialogMode === 'join-link' && isMountEmpty(mountDialogMount)}
+                Paste a nearbytes://join link or canonical join JSON. Nearbytes will preview the hub first, then stage attached live storage when you join.
+              {:else}
+                Set the secret or attach one secret file.
+              {/if}
+            </p>
+            {#if isMountEmpty(mountDialogMount)}
+              <div class="mount-dialog-mode-switch" role="tablist" aria-label="Create hub mode">
+                <button
+                  type="button"
+                  class="mount-dialog-mode-btn"
+                  class:active={mountDialogMode === 'secret'}
+                  aria-pressed={mountDialogMode === 'secret'}
+                  onclick={() => setMountDialogMode('secret')}
+                >
+                  <Plus size={14} strokeWidth={2.2} />
+                  <span>Secret</span>
+                </button>
+                <button
+                  type="button"
+                  class="mount-dialog-mode-btn"
+                  class:active={mountDialogMode === 'join-link'}
+                  aria-pressed={mountDialogMode === 'join-link'}
+                  onclick={() => setMountDialogMode('join-link')}
+                >
+                  <ClipboardPaste size={14} strokeWidth={2} />
+                  <span>Paste link</span>
+                </button>
+              </div>
+            {/if}
           </div>
           <button type="button" class="tm-details-close" aria-label="Close hub properties" onclick={() => collapseMount(mountDialogMount.id)}>
             <X size={18} strokeWidth={2} />
@@ -6853,6 +6923,99 @@
         </div>
 
         <div class="mount-dialog-body">
+          {#if mountDialogMode === 'join-link' && isMountEmpty(mountDialogMount)}
+            <section class="mount-dialog-section join-dialog-input-shell">
+              <div class="join-dialog-input-head">
+                <div>
+                  <p class="join-dialog-section-title">Join link</p>
+                  <p class="join-dialog-note">Copy the share link, then paste it here or press Paste from clipboard.</p>
+                </div>
+                <button
+                  type="button"
+                  class="status-link-btn secondary"
+                  onclick={() => void readJoinDialogClipboard()}
+                  disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
+                >
+                  <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                  <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
+                </button>
+              </div>
+
+              <textarea
+                class="join-dialog-textarea"
+                bind:value={joinDialogSerialized}
+                spellcheck="false"
+                placeholder="nearbytes://join?data=..."
+              ></textarea>
+
+              <div class="join-dialog-actions">
+                <button
+                  type="button"
+                  class="status-link-btn"
+                  onclick={() => void openJoinDialogLink()}
+                  disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
+                >
+                  <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
+                </button>
+              </div>
+
+              {#if joinDialogError}
+                <p class="join-dialog-message error">{joinDialogError}</p>
+              {/if}
+            </section>
+
+            {#if joinDialogPreview}
+              <section class="mount-dialog-section">
+                <div class="join-dialog-preview-head">
+                  <span class="join-dialog-chip strong">{joinDialogSpaceSummary(joinDialogPreview.space)}</span>
+                  <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} storage route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
+                </div>
+
+                {#if joinDialogPreview.plan.attachments.length === 0}
+                  <p class="join-dialog-note">This link tells Nearbytes which hub to join, but it does not include any extra shared storage routes.</p>
+                {:else}
+                  <div class="join-dialog-route-list">
+                    {#each joinDialogPreview.plan.attachments as attachment}
+                      <article class="join-dialog-route-card">
+                        <div class="join-dialog-route-head">
+                          <div>
+                            <p class="join-dialog-route-title">{joinDialogAttachmentTitle(attachment)}</p>
+                            <p class="join-dialog-route-detail">
+                              {attachment.selectedEndpoint?.reason ?? 'No supported route is available for this storage yet.'}
+                            </p>
+                          </div>
+                          {#if attachment.selectedEndpoint}
+                            <span class="join-dialog-chip strong">{joinDialogEndpointLabel(attachment.selectedEndpoint)}</span>
+                          {:else}
+                            <span class="join-dialog-chip warning">Unavailable</span>
+                          {/if}
+                        </div>
+                      </article>
+                    {/each}
+                  </div>
+                {/if}
+              </section>
+            {/if}
+
+            <section class="mount-dialog-section">
+              <div class="mount-dialog-actions">
+                <button
+                  type="button"
+                  class="workspace-toggle"
+                  onclick={() => setMountDialogMode('secret')}
+                >
+                  <span>Use secret instead</span>
+                </button>
+                <button
+                  type="button"
+                  class="workspace-toggle"
+                  onclick={() => collapseMount(mountDialogMount.id)}
+                >
+                  <span>Cancel</span>
+                </button>
+              </div>
+            </section>
+          {:else}
           {#if mountDialogMount.id === activeMountId && (volumeId || errorMessage || isOffline)}
             <section class="mount-dialog-section mount-dialog-status-section">
               <div class="mount-dialog-status-grid">
@@ -7045,6 +7208,7 @@
               </button>
             </div>
           </section>
+          {/if}
         </div>
       </div>
     </div>
@@ -7585,60 +7749,6 @@
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.18)) 88%, transparent);
     background: color-mix(in srgb, var(--nb-btn-bg, rgba(10, 19, 34, 0.52)) 92%, transparent);
     box-shadow: 0 8px 20px rgba(6, 23, 43, 0.08);
-  }
-
-  .mount-quick-secondary {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: var(--nb-btn-color, rgba(191, 219, 254, 0.82));
-    border-radius: 999px;
-    min-width: 0;
-    max-width: 0;
-    height: 36px;
-    padding: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.42rem;
-    overflow: hidden;
-    white-space: nowrap;
-    opacity: 0;
-    pointer-events: none;
-    transform: translateX(6px);
-    transition:
-      max-width 0.22s ease,
-      padding 0.22s ease,
-      opacity 0.18s ease,
-      transform 0.22s ease,
-      background-color 0.18s ease,
-      color 0.18s ease;
-  }
-
-  .mount-quick-actions.revealed .mount-quick-secondary,
-  .mount-quick-actions:focus-within .mount-quick-secondary,
-  .mount-quick-actions:hover .mount-quick-secondary {
-    max-width: 148px;
-    padding: 0 0.72rem 0 0.86rem;
-    opacity: 1;
-    pointer-events: auto;
-    transform: translateX(0);
-  }
-
-  .mount-quick-secondary:hover,
-  .mount-quick-secondary:focus-visible {
-    background: color-mix(in srgb, var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.88)) 90%, transparent);
-    color: var(--nb-btn-hover-color, rgba(224, 242, 254, 0.96));
-  }
-
-  .mount-quick-secondary:focus-visible {
-    outline: none;
-    box-shadow: var(--nb-btn-focus-ring, inset 0 0 0 1px rgba(125, 211, 252, 0.18));
-  }
-
-  .mount-quick-secondary span {
-    font-size: 0.74rem;
-    font-weight: 600;
-    letter-spacing: 0.01em;
   }
 
   .identity-row-title,
@@ -9523,6 +9633,7 @@
     display: -webkit-box;
     overflow: hidden;
     text-overflow: ellipsis;
+    line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     line-height: 1.25;
@@ -9734,6 +9845,51 @@
 
   .mount-dialog-subtitle {
     max-width: 58ch;
+  }
+
+  .mount-dialog-mode-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    padding: 0.2rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(210, 122, 84, 0.1));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(249, 244, 240, 0.82));
+  }
+
+  .mount-dialog-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 32px;
+    padding: 0.4rem 0.72rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    transition:
+      background-color 160ms ease,
+      color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .mount-dialog-mode-btn:hover,
+  .mount-dialog-mode-btn:focus-visible {
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+  }
+
+  .mount-dialog-mode-btn.active {
+    background: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(255, 255, 255, 0.92));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 16%, transparent);
+  }
+
+  .mount-dialog-mode-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--nb-accent, #d27a54) 34%, transparent);
+    outline-offset: 2px;
   }
 
   .theme-dialog-subtitle {
@@ -10980,6 +11136,7 @@
     color: var(--nb-text-main, rgba(248, 250, 252, 0.98));
     line-height: 1.3;
     display: -webkit-box;
+    line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
@@ -11296,14 +11453,6 @@
       transform: none;
     }
 
-    .mount-quick-secondary {
-      max-width: 148px;
-      padding: 0 0.72rem 0 0.86rem;
-      opacity: 1;
-      pointer-events: auto;
-      transform: translateX(0);
-    }
-
     .mount-add-btn {
       opacity: 1;
       pointer-events: auto;
@@ -11339,11 +11488,6 @@
 
     .mount-quick-actions {
       max-width: 100%;
-    }
-
-    .mount-quick-secondary {
-      max-width: none;
-      padding: 0 0.68rem 0 0.78rem;
     }
 
     .workspace-toggle {

@@ -151,7 +151,11 @@
   let activeReserveEditorKey = $state<string | null>(null);
   let discoveryRunId = 0;
 
-  type ShareBadge = { label: string; tone?: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' };
+  type ShareBadge = {
+    label: string;
+    tone?: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off';
+    description?: string;
+  };
   type ShareAttachmentChip = { volumeId: string; label: string; known: boolean };
   type ProviderFlowState = {
     phase:
@@ -646,12 +650,17 @@
   }
 
   function shareStatusLabel(summary: ManagedShareSummary): string {
+    const primaryBadge = summary.state.badges[0]?.trim();
+    if (primaryBadge === 'Repair') return 'Storage unavailable';
+    if (primaryBadge === 'Reconnect') return 'Sign-in needed';
+    if (primaryBadge === 'Syncing') return 'Syncing';
+    if (primaryBadge === 'Share') return 'Connected';
     if (summary.state.status === 'ready') return 'Connected';
-    if (summary.state.status === 'syncing') return 'Updating';
+    if (summary.state.status === 'syncing') return 'Syncing';
     if (summary.state.status === 'idle') return 'Available';
-    if (summary.state.status === 'needs-auth') return 'Reconnect';
-    if (summary.state.status === 'unsupported') return 'Other option';
-    return 'Needs attention';
+    if (summary.state.status === 'needs-auth') return 'Sign-in needed';
+    if (summary.state.status === 'unsupported') return 'Unsupported';
+    return 'Check details';
   }
 
   function shareAttachmentSummary(summary: ManagedShareSummary): string {
@@ -1050,7 +1059,7 @@
     return configDraft?.sources.find((source) => source.id === sourceId) ?? null;
   }
 
-  function shareCardBadgeForSource(source: SourceConfigEntry): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
+  function shareCardBadgeForSource(source: SourceConfigEntry): ShareBadge[] {
     const availability = locationAvailability(source);
     if (availability.label === 'Ready') {
       return [];
@@ -1059,11 +1068,12 @@
       {
         label: availability.label,
         tone: availability.tone,
+        description: locationSummary(source),
       },
     ];
   }
 
-  function shareCardBadgesForManaged(summary: ManagedShareSummary): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
+  function shareCardBadgesForManaged(summary: ManagedShareSummary): ShareBadge[] {
     const label = shareStatusLabel(summary);
     if (label === 'Connected' || label === 'Available') {
       return [];
@@ -1072,6 +1082,7 @@
       {
         label,
         tone: shareStatusTone(summary),
+        description: summary.state.detail,
       },
     ];
   }
