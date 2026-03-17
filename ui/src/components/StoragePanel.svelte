@@ -2806,11 +2806,6 @@
         </div>
       </section>
 
-      {#if configPath}
-        <details class="details-card minor-details">
-          <p class="mono-copy">{configPath}</p>
-        </details>
-      {/if}
       {:else}
         {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
         {@const shares = provider ? providerShares(provider.provider) : []}
@@ -3721,8 +3716,7 @@
   .scan-note,
   .scan-path,
   .muted-copy,
-  .warning-copy,
-  .mono-copy {
+  .warning-copy {
     margin: 0;
   }
 
@@ -3759,15 +3753,7 @@
     line-height: 1.4;
   }
 
-  .mono-copy {
-    font-family: 'Monaco', 'Menlo', monospace;
-    font-size: 0.75rem;
-    color: var(--text-soft);
-    word-break: break-all;
-  }
-
   .panel-section,
-  .details-card,
   .location-card,
   .rule-card,
   .scan-card,
@@ -3780,8 +3766,7 @@
     background: var(--card-bg);
   }
 
-  .panel-section,
-  .details-card {
+  .panel-section {
     padding: 0.82rem;
   }
 
@@ -4176,18 +4161,27 @@
   }
 
   .storage-card-actions {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.65rem;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    justify-content: space-between;
+  }
+
+  .storage-card-actions-left {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .storage-card-actions-right {
+    flex: 0 0 auto;
+    padding-left: 1rem;
     align-items: center;
   }
 
-  .storage-card-actions-left,
   .storage-card-actions-right {
     gap: 0.5rem;
-  }
-
-  .storage-card-actions-right {
     justify-content: flex-end;
     margin-left: auto;
   }
@@ -4589,10 +4583,6 @@
   .compact-note {
     font-size: 0.76rem;
     margin-top: -0.12rem;
-  }
-
-  .minor-details {
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
   }
 
   @keyframes provider-progress-slide {
