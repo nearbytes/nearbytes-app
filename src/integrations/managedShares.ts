@@ -1130,7 +1130,11 @@ export class ManagedShareService {
     }
 
     const state = await this.loadState();
-    if (state.managedShares.some((share) => normalizeProvider(share.provider) === provider && share.accountId === account.id)) {
+    const existingManagedShare = state.managedShares.find(
+      (share) => normalizeProvider(share.provider) === provider && share.accountId === account.id
+    );
+    if (existingManagedShare) {
+      await this.relocateDefaultManagedShareIfNeeded(existingManagedShare, account, state);
       return;
     }
 
@@ -1181,6 +1185,73 @@ export class ManagedShareService {
     });
   }
 
+  private async relocateDefaultManagedShareIfNeeded(
+    share: ManagedShare,
+    account: ProviderAccount,
+    stateSnapshot?: IntegrationStateSnapshot
+  ): Promise<void> {
+    if (normalizeProvider(share.provider) !== 'mega' || !isProviderBaseShare(share.label, share.remoteDescriptor)) {
+      return;
+    }
+
+    const expectedLocalPath = path.resolve(
+      resolveManagedShareLocalPath(
+        this.mirrorRoot,
+        normalizeProvider(share.provider),
+        account,
+        share.label,
+        share.id,
+        share.remoteDescriptor
+      )
+    );
+    if (normalizeComparablePath(share.localPath) === normalizeComparablePath(expectedLocalPath)) {
+      return;
+    }
+
+    const state = stateSnapshot ?? (await this.loadState());
+    let config = cloneConfig(this.options.storage.getRootsConfig());
+    const existingSource =
+      (share.sourceId ? config.sources.find((entry) => entry.id === share.sourceId) : null) ??
+      config.sources.find((entry) => entry.integration?.managedShareId === share.id) ??
+      null;
+
+    if (existingSource) {
+      const primaryLocalSource = findPrimaryLocalSource(config, existingSource.id);
+      if (
+        primaryLocalSource &&
+        normalizeComparablePath(existingSource.path) !== normalizeComparablePath(primaryLocalSource.path)
+      ) {
+        const consolidated = await this.options.storage.consolidateRoot(existingSource.id, primaryLocalSource.id);
+        config = consolidated.config;
+        await this.persistRootsConfig(config);
+      }
+    }
+
+    const nextShare: ManagedShare = {
+      ...share,
+      localPath: expectedLocalPath,
+      updatedAt: this.runtime.now(),
+    };
+    const { config: nextConfig, sourceId } = ensureManagedShareSource(config, nextShare, expectedLocalPath);
+    const relocatedShare = {
+      ...nextShare,
+      sourceId,
+    };
+
+    await ensureMirrorFolder(expectedLocalPath);
+    await this.persistRootsConfig(nextConfig);
+    await this.saveState({
+      ...state,
+      managedShares: state.managedShares.map((entry) => (entry.id === share.id ? relocatedShare : entry)),
+    });
+
+    if (account.state === 'connected') {
+      await this.adapters.get(normalizeProvider(share.provider))?.ensureSync?.(relocatedShare, account).catch(() => {
+        // Ignore sync relocation failures here; the share metadata still points to the corrected local path.
+      });
+    }
+  }
+
   private findDefaultProviderSharePath(provider: string, account: ProviderAccount): string | undefined {
     const config = this.options.storage.getRootsConfig();
     const providerSources = config.sources.filter(
@@ -1190,6 +1261,12 @@ export class ManagedShareService {
     const preferred =
       providerSources.find((source) => preferredFolderNames.has(path.basename(source.path).trim().toLowerCase())) ??
       (provider === 'mega' ? undefined : providerSources[0]);
+    if (provider === 'mega' && preferred) {
+      const expectedRoot = resolveProviderManagedShareRoot(this.mirrorRoot, provider, account);
+      if (!isPathInside(expectedRoot, preferred.path)) {
+        return undefined;
+      }
+    }
     return preferred ? path.resolve(preferred.path) : undefined;
   }
 
@@ -1312,6 +1389,21 @@ function resolveManagedShareBaseRoot(config: RootsConfig): string {
     ? getDefaultStorageHomeDir()
     : resolveStorageHomeDir(configuredStorageRoot);
   return preferredLocalSource ? resolveStorageHomeDir(preferredLocalSource.path) : fallbackBaseRoot;
+}
+
+function findPrimaryLocalSource(config: RootsConfig, excludingSourceId?: string): SourceConfigEntry | null {
+  const eligible = config.sources.filter(
+    (source) =>
+      source.id !== excludingSourceId &&
+      normalizeProvider(source.provider) === 'local' &&
+      !isUnsafeManagedSharePath(source.path)
+  );
+  return (
+    eligible.find((source) => source.enabled && source.writable) ??
+    eligible.find((source) => source.enabled) ??
+    eligible[0] ??
+    null
+  );
 }
 
 function isUnsafeManagedSharePath(targetPath: string): boolean {
