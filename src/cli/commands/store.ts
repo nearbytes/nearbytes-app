@@ -60,7 +60,7 @@ export function registerStoreCommand(program: Command): void {
     .description('Store data in a channel')
     .requiredOption('-f, --file <path>', 'Path to data file')
     .requiredOption('-s, --secret <secret>', 'Channel secret')
-    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes)', getDefaultStorageDir())
+    .option('-d, --data-dir <path>', 'Storage directory (default: ~/nearbytes/local)', getDefaultStorageDir())
     .action(handleStore);
 }
 

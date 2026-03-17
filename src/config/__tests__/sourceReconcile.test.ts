@@ -51,8 +51,15 @@ describe('source reconciliation', () => {
       includeDefaultRoots: false,
     });
 
+    const third = await reconcileDiscoveredSources({
+      currentConfig: second.config,
+      knownVolumeIds: [knownVolumeId],
+      includeDefaultRoots: false,
+    });
+
     expect(second.summary.sourcesAdded).toBe(0);
     expect(second.summary.volumeTargetsAdded).toBe(0);
+    expect(third.runKey).toBe(second.runKey);
     expect(second.config.sources.filter((source) => path.resolve(source.path) === expectedSharedRoot)).toHaveLength(1);
 
     await rm(tempDir, { recursive: true, force: true });

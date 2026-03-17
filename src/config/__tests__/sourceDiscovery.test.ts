@@ -7,6 +7,7 @@ import {
   discoverNearbytesRoots,
   discoverNearbytesSources,
   ensureNearbytesMarker,
+  getProviderScanLimits,
   inspectNearbytesRoot,
   NEARBYTES_LEGACY_MARKER_FILE,
   NEARBYTES_MARKER_FILE,
@@ -128,6 +129,17 @@ describe('source discovery', () => {
     expect(classifyNearbytesProviderName('iCloud Drive')).toBe('icloud');
     expect(classifyNearbytesProviderName('Apple Shared')).toBe('icloud');
     expect(classifyNearbytesProviderName('Dropbox')).toBe('dropbox');
+  });
+
+  it('keeps default MEGA discovery shallow', () => {
+    expect(getProviderScanLimits('mega')).toEqual({
+      maxDepth: 1,
+      maxDirectories: 240,
+    });
+    expect(getProviderScanLimits('gdrive')).toEqual({
+      maxDepth: 2,
+      maxDirectories: 600,
+    });
   });
 });
 

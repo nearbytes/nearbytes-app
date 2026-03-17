@@ -79,7 +79,6 @@
     type NearbytesThemeSettings,
   } from './lib/branding.js';
   import {
-    Activity,
     ClipboardPaste,
     Download,
     File,
@@ -1369,7 +1368,6 @@
   let isHeaderHovering = $state(false);
   let isSecretDropTarget = $state(false);
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
-  let showStatusPanel = $state(false);
   let showTimeMachinePanel = $state(false);
   let showSourcesPanel = $state(false);
   let showVolumeStoragePanel = $state(false);
@@ -3502,7 +3500,6 @@
   }
 
   function openJoinVolumeDialog(): void {
-    showStatusPanel = false;
     showVolumeShareDialog = false;
     joinDialogError = '';
     showJoinVolumeDialog = true;
@@ -3518,7 +3515,6 @@
       return;
     }
     showJoinVolumeDialog = false;
-    showStatusPanel = false;
     showVolumeShareDialog = true;
   }
 
@@ -5678,19 +5674,6 @@
                 <button
                   type="button"
                   class="header-tool-btn"
-                  class:active={showStatusPanel}
-                  aria-label="Status"
-                  title="Status"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    showStatusPanel = !showStatusPanel;
-                  }}
-                >
-                  <Activity class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
                   class:active={showTimeMachinePanel}
                   aria-label="Timeline"
                   title="Timeline"
@@ -5931,85 +5914,6 @@
       {/if}
     </div>
   </header>
-
-  <!-- Status bar -->
-  {#if showStatusPanel && (volumeId || errorMessage || isOffline)}
-    <div class="status-bar panel-surface">
-      {#if volumeId}
-        <div class="status-item">
-          <span class="status-label">Space ID:</span>
-          <button class="volume-id-btn" onclick={copyVolumeId} title="Copy space ID">
-            {volumeId.slice(0, 16)}...
-            {#if copiedVolumeId}
-              <span class="copied-indicator">✓ Copied</span>
-            {/if}
-          </button>
-        </div>
-      {/if}
-      {#if lastRefresh}
-        <div class="status-item">
-          <span class="status-label">Last refresh:</span>
-          <span class="status-value">{formatDate(lastRefresh)}</span>
-        </div>
-      {/if}
-      {#if volumeId}
-        <div class="status-item">
-          <span class="status-label">Sync:</span>
-          <span class="status-value">
-            {#if autoSyncStatus === 'connecting'}
-              Connecting…
-            {:else if autoSyncEnabled}
-              Auto
-            {:else if autoSyncStatus === 'unsupported'}
-              Manual
-            {:else if autoSyncStatus === 'error'}
-              Manual (watch offline)
-            {:else}
-              Manual
-            {/if}
-          </span>
-        </div>
-        <div class="status-item status-share-item">
-          <div class="status-share-group compact">
-            <div class="status-share-head">
-              <span class="status-label">Share</span>
-              <button
-                type="button"
-                class="status-link-btn"
-                onclick={openVolumeShareDialog}
-                disabled={!activeMount && !shareableVolumeId}
-              >
-                <Link2 class="button-icon" size={15} strokeWidth={2} />
-                <span>Open share dialog</span>
-              </button>
-            </div>
-            <p class="status-share-note">Open the share dialog to copy the volume link and optionally invite collaborators to attached live storage.</p>
-          </div>
-        </div>
-      {/if}
-      {#if isHistoryMode}
-        <div class="status-item history-indicator">
-          <span>History mode (read-only)</span>
-        </div>
-      {/if}
-      {#if isOffline}
-        <div class="status-item offline-indicator">
-          <span>📴 Offline (cached)</span>
-        </div>
-      {/if}
-      {#if errorMessage}
-        <div class="status-item error-indicator">
-          <span>{errorMessage}</span>
-        </div>
-      {/if}
-      {#if volumeId && !isLoading && !autoSyncEnabled}
-        <button class="refresh-btn" onclick={refreshFiles} title="Refresh file list">
-          <RefreshCw class="button-icon" size={15} strokeWidth={2} />
-          <span>Refresh</span>
-        </button>
-      {/if}
-    </div>
-  {/if}
 
   <!-- Main file area -->
   <main
@@ -7064,6 +6968,71 @@
         </div>
 
         <div class="mount-dialog-body">
+          {#if mountDialogMount.id === activeMountId && (volumeId || errorMessage || isOffline)}
+            <section class="mount-dialog-section mount-dialog-status-section">
+              <div class="mount-dialog-status-grid">
+                {#if volumeId}
+                  <div class="status-item mount-dialog-status-item">
+                    <span class="status-label">Space ID</span>
+                    <button class="volume-id-btn" onclick={copyVolumeId} title="Copy space ID">
+                      {volumeId.slice(0, 16)}...
+                      {#if copiedVolumeId}
+                        <span class="copied-indicator">✓ Copied</span>
+                      {/if}
+                    </button>
+                  </div>
+                {/if}
+                {#if lastRefresh}
+                  <div class="status-item mount-dialog-status-item">
+                    <span class="status-label">Last refresh</span>
+                    <span class="status-value">{formatDate(lastRefresh)}</span>
+                  </div>
+                {/if}
+                {#if volumeId}
+                  <div class="status-item mount-dialog-status-item">
+                    <span class="status-label">Sync</span>
+                    <span class="status-value">
+                      {#if autoSyncStatus === 'connecting'}
+                        Connecting…
+                      {:else if autoSyncEnabled}
+                        Auto
+                      {:else if autoSyncStatus === 'unsupported'}
+                        Manual
+                      {:else if autoSyncStatus === 'error'}
+                        Manual (watch offline)
+                      {:else}
+                        Manual
+                      {/if}
+                    </span>
+                  </div>
+                {/if}
+                {#if isHistoryMode}
+                  <div class="status-item mount-dialog-status-item history-indicator">
+                    <span>History mode (read-only)</span>
+                  </div>
+                {/if}
+                {#if isOffline}
+                  <div class="status-item mount-dialog-status-item offline-indicator">
+                    <span>Offline (cached)</span>
+                  </div>
+                {/if}
+                {#if errorMessage}
+                  <div class="status-item mount-dialog-status-item error-indicator mount-dialog-status-error">
+                    <span>{errorMessage}</span>
+                  </div>
+                {/if}
+              </div>
+              {#if volumeId && !isLoading && !autoSyncEnabled}
+                <div class="mount-dialog-status-actions">
+                  <button class="refresh-btn" onclick={refreshFiles} title="Refresh file list">
+                    <RefreshCw class="button-icon" size={15} strokeWidth={2} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+              {/if}
+            </section>
+          {/if}
+
           <section class="mount-dialog-section">
             <div class="secret-input-wrapper mount-dialog-inputs">
               <SecretSeedFields
@@ -8925,66 +8894,11 @@
     flex: 0 0 auto;
   }
 
-  /* Status bar */
-  .status-bar {
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
-    border-bottom: 1px solid var(--nb-border, rgba(56, 189, 248, 0.1));
-    padding: 0.75rem 2rem;
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-    flex-wrap: wrap;
-    font-size: 0.875rem;
-    max-width: none;
-    margin: 0;
-    width: 100%;
-    border-top: 1px solid var(--nb-border, rgba(56, 189, 248, 0.1));
-  }
-
   .status-item {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     color: var(--nb-text-soft, rgba(224, 224, 224, 0.7));
-  }
-
-  .status-link-item {
-    flex-wrap: wrap;
-  }
-
-  .status-share-item {
-    flex: 1 1 720px;
-    display: grid;
-    gap: 0.8rem;
-    align-items: stretch;
-  }
-
-  .status-share-group {
-    display: grid;
-    gap: 0.5rem;
-    padding: 0.78rem 0.9rem;
-    border-radius: 14px;
-    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.12));
-    background: var(--nb-btn-bg, rgba(10, 18, 31, 0.56));
-  }
-
-  .status-share-group.compact {
-    max-width: 34rem;
-  }
-
-  .status-share-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.7rem;
-  }
-
-  .status-share-note {
-    margin: 0;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
-    font-size: 0.76rem;
-    line-height: 1.4;
   }
 
   .status-label {
@@ -9013,6 +8927,36 @@
   .volume-id-btn:hover {
     background: var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.96));
     border-color: var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34));
+  }
+
+  .mount-dialog-status-section {
+    gap: 0.85rem;
+  }
+
+  .mount-dialog-status-grid {
+    display: grid;
+    gap: 0.7rem;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .mount-dialog-status-item {
+    min-width: 0;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.78rem 0.86rem;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.12)) 88%, transparent);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
+  }
+
+  .mount-dialog-status-error {
+    grid-column: 1 / -1;
+  }
+
+  .mount-dialog-status-actions {
+    display: flex;
+    justify-content: flex-start;
   }
 
   .copied-indicator {
@@ -11452,10 +11396,6 @@
 
     .secret-input-wrapper {
       grid-template-columns: 1fr auto;
-    }
-
-    .status-bar {
-      padding: 0.75rem 1rem;
     }
 
     .file-area {

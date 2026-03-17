@@ -395,4 +395,55 @@ describe('roots config', () => {
 
     await rm(dir, { recursive: true, force: true });
   });
+
+  it('migrates the legacy default root into the local subdirectory layout', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-roots-layout-'));
+    const storageHome = join(dir, 'nearbytes');
+    const configPath = join(dir, 'roots.json');
+    const nextBootstrapRoot = join(storageHome, 'local');
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        version: 2,
+        sources: [
+          {
+            id: 'src-home',
+            provider: 'local',
+            path: storageHome,
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+          },
+        ],
+        defaultVolume: {
+          destinations: [
+            {
+              sourceId: 'src-home',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 5,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+        volumes: [],
+      }, null, 2)}\n`,
+      'utf8'
+    );
+
+    const loaded = await loadOrCreateRootsConfig({
+      configPath,
+      defaultRootPath: nextBootstrapRoot,
+    });
+
+    expect(loaded.created).toBe(false);
+    expect(loaded.config.sources.find((source) => source.id === 'src-home')?.path).toBe(nextBootstrapRoot);
+    const saved = parseRootsConfig(JSON.parse(await readFile(configPath, 'utf8')));
+    expect(saved.sources.find((source) => source.id === 'src-home')?.path).toBe(nextBootstrapRoot);
+
+    await rm(dir, { recursive: true, force: true });
+  });
 });

@@ -343,6 +343,7 @@ function ensureBootstrapSourceOnRawConfig(value: unknown, defaultRootPath: strin
   }
 
   const bootstrapPath = path.resolve(defaultRootPath);
+  const legacyBootstrapPath = resolveLegacyBootstrapPath(bootstrapPath);
   const normalizedSources = candidate.sources.filter((entry) => entry && typeof entry === 'object') as Array<{
     id?: unknown;
     provider?: unknown;
@@ -352,20 +353,49 @@ function ensureBootstrapSourceOnRawConfig(value: unknown, defaultRootPath: strin
   const existingBootstrap = normalizedSources.find(
     (entry) => typeof entry.path === 'string' && path.resolve(entry.path) === bootstrapPath
   );
-  const nextSources = existingBootstrap
-    ? candidate.sources
-    : [
-        ...candidate.sources,
-        {
-          id: 'src-home',
-          provider: 'local',
+  const legacyBootstrap =
+    existingBootstrap || !legacyBootstrapPath
+      ? undefined
+      : normalizedSources.find(
+          (entry) =>
+            entry.provider === 'local' && typeof entry.path === 'string' && path.resolve(entry.path) === legacyBootstrapPath
+        );
+  const migratedSources = legacyBootstrap
+    ? candidate.sources.map((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return entry;
+        }
+        const source = entry as { provider?: unknown; path?: unknown };
+        if (source.provider !== 'local' || typeof source.path !== 'string' || path.resolve(source.path) !== legacyBootstrapPath) {
+          return entry;
+        }
+        return {
+          ...source,
           path: bootstrapPath,
-          enabled: true,
-          writable: true,
-          reservePercent: 5,
-          opportunisticPolicy: 'drop-older-blocks',
-        },
-      ];
+        };
+      })
+    : candidate.sources;
+  const bootstrapSourceId =
+    existingBootstrap && typeof existingBootstrap.id === 'string'
+      ? existingBootstrap.id
+      : legacyBootstrap && typeof legacyBootstrap.id === 'string'
+        ? legacyBootstrap.id
+        : 'src-home';
+  const nextSources =
+    existingBootstrap || legacyBootstrap
+      ? migratedSources
+      : [
+          ...migratedSources,
+          {
+            id: 'src-home',
+            provider: 'local',
+            path: bootstrapPath,
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+          },
+        ];
 
   const currentDefaultDestinations = Array.isArray(candidate.defaultVolume?.destinations)
     ? candidate.defaultVolume?.destinations
@@ -377,7 +407,7 @@ function ensureBootstrapSourceOnRawConfig(value: unknown, defaultRootPath: strin
           destinations: [
             ...currentDefaultDestinations,
             {
-              sourceId: existingBootstrap?.id && typeof existingBootstrap.id === 'string' ? existingBootstrap.id : 'src-home',
+              sourceId: bootstrapSourceId,
               enabled: true,
               storeEvents: true,
               storeBlocks: true,
@@ -397,6 +427,10 @@ function ensureBootstrapSourceOnRawConfig(value: unknown, defaultRootPath: strin
     sources: nextSources,
     defaultVolume: nextDefaultVolume,
   };
+}
+
+function resolveLegacyBootstrapPath(defaultRootPath: string): string | null {
+  return path.basename(defaultRootPath).trim().toLowerCase() === 'local' ? path.dirname(defaultRootPath) : null;
 }
 
 function ensureBootstrapSourceAndDefaultDestination(

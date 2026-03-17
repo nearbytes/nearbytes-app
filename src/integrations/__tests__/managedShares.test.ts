@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RootsConfig } from '../../config/roots.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import type { TransportAdapter } from '../adapters.js';
@@ -101,6 +101,7 @@ const tempDirs = new Set<string>();
 
 async function createHarness(): Promise<{
   integrationStatePath: string;
+  localRoot: string;
   rootsConfigPath: string;
   service: ManagedShareService;
 }> {
@@ -152,6 +153,7 @@ async function createHarness(): Promise<{
 
   return {
     integrationStatePath,
+    localRoot,
     rootsConfigPath,
     service,
   };
@@ -281,10 +283,10 @@ describe('ManagedShareService', () => {
     ]);
   });
 
-  it('creates the default MEGA managed share on connect and reuses an existing nearbytes folder', async () => {
+  it('creates the default MEGA managed share on connect and reuses an existing account-scoped folder', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-mega-'));
     tempDirs.add(tempDir);
-    const megaRoot = path.join(tempDir, 'MEGA', 'nearbytes');
+    const megaRoot = path.join(tempDir, 'MEGA', 'owner-example-com');
     await fs.mkdir(megaRoot, { recursive: true });
 
     const rootsConfig: RootsConfig = {
@@ -411,6 +413,157 @@ describe('ManagedShareService', () => {
     expect(summary.share.localPath).toBe(path.resolve(resolvedLocalPath));
     expect(summary.storage?.sourcePath).toBe(path.resolve(resolvedLocalPath));
     expect(storage.getRootsConfig().sources[0]?.path).toBe(path.resolve(resolvedLocalPath));
+  });
+
+  it('defaults generated managed-share mirrors under the local storage root', async () => {
+    const { integrationStatePath, localRoot, service } = await createHarness();
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [],
+      },
+      integrationStatePath
+    );
+
+    const summary = await service.createManagedShare({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+    });
+
+    expect(summary.share.localPath).toBe(path.resolve(path.join(localRoot, 'mega', 'acct-mega-1')));
+  });
+
+  it('ignores repo-contained provider folders when choosing the default managed share path', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-repo-'));
+    tempDirs.add(tempDir);
+    const localRoot = path.join(tempDir, 'local-root');
+    const accidentalRepoRoot = path.join(tempDir, 'repo', 'nearbytes');
+    await fs.mkdir(localRoot, { recursive: true });
+    await fs.mkdir(accidentalRepoRoot, { recursive: true });
+
+    const rootsConfig: RootsConfig = {
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-mega-accidental',
+          provider: 'mega',
+          path: accidentalRepoRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      defaultVolume: {
+        destinations: [
+          {
+            sourceId: 'src-local',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+      volumes: [],
+    };
+
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
+    const storage = new MultiRootStorageBackend(rootsConfig);
+    const service = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+      runtime: {
+        mega: {
+          remoteBasePath: '/nearbytes',
+        },
+      },
+    });
+
+    const fakeRepoRoot = path.join(tempDir, 'repo');
+    await fs.mkdir(fakeRepoRoot, { recursive: true });
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(fakeRepoRoot);
+
+    try {
+      await service.connectAccount({
+        provider: 'mega',
+        accountId: 'acct-mega-1',
+        label: 'MEGA',
+        email: 'owner@example.com',
+        credentials: {
+          email: 'owner@example.com',
+          password: 'secret',
+        },
+      });
+    } finally {
+      cwdSpy.mockRestore();
+    }
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(1);
+    expect(path.resolve(shares.shares[0]!.share.localPath)).toBe(path.resolve(path.join(localRoot, 'mega', 'owner-example-com')));
+    expect(path.resolve(shares.shares[0]!.share.localPath)).not.toBe(path.resolve(accidentalRepoRoot));
+  });
+
+  it('separates default MEGA roots by account identity', async () => {
+    const { service } = await createHarness();
+
+    const connect = async (accountId: string, email: string) => {
+      await service.connectAccount({
+        provider: 'mega',
+        accountId,
+        label: 'MEGA',
+        email,
+        credentials: {
+          email,
+          password: 'secret',
+        },
+      });
+      const shares = await service.listManagedShares();
+      const share = shares.shares.find((entry) => entry.share.accountId === accountId);
+      expect(share).toBeTruthy();
+      await service.disconnectAccount(accountId);
+      return share!.share.localPath;
+    };
+
+    const firstPath = await connect('acct-mega-1', 'owner@example.com');
+    const secondPath = await connect('acct-mega-2', 'other@example.com');
+
+    expect(firstPath).not.toBe(secondPath);
+    expect(firstPath.endsWith(path.join('mega', 'owner-example-com'))).toBe(true);
+    expect(secondPath.endsWith(path.join('mega', 'other-example-com'))).toBe(true);
   });
 
   it('disconnecting a managed provider removes its shares without silently rerouting other spaces', async () => {

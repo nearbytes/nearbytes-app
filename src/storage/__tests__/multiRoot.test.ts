@@ -437,4 +437,166 @@ describe('MultiRootStorageBackend', () => {
 
     await rm(dir, { recursive: true, force: true });
   });
+
+  it('collects orphaned blocks into the local root during reconciliation', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const localRoot = join(dir, 'local');
+    const remoteRoot = join(dir, 'remote');
+    await mkdir(join(localRoot, 'blocks'), { recursive: true });
+    await mkdir(join(remoteRoot, 'blocks'), { recursive: true });
+
+    const orphanHash = '1'.repeat(64);
+    const config = createConfig({
+      mainPath: localRoot,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-remote',
+          provider: 'mega',
+          path: remoteRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      volumes: [],
+    });
+
+    await writeFile(join(remoteRoot, 'blocks', `${orphanHash}.bin`), 'orphan-data', 'utf8');
+
+    const storage = new MultiRootStorageBackend(config);
+    await storage.reconcileConfiguredVolumes();
+
+    expect(await readFile(join(localRoot, 'blocks', `${orphanHash}.bin`), 'utf8')).toBe('orphan-data');
+    await expect(readFile(join(remoteRoot, 'blocks', `${orphanHash}.bin`), 'utf8')).rejects.toThrow();
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('keeps referenced blocks in place while still backfilling them to local storage', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const localRoot = join(dir, 'local');
+    const remoteRoot = join(dir, 'remote');
+    await mkdir(join(localRoot, 'blocks'), { recursive: true });
+    await mkdir(join(remoteRoot, 'blocks'), { recursive: true });
+
+    const volumeId = 'f'.repeat(130);
+    const knownHash = '2'.repeat(64);
+    const orphanHash = '3'.repeat(64);
+    const eventPayload = JSON.stringify({ payload: { type: 'CREATE_FILE', hash: knownHash } });
+
+    const config = createConfig({
+      mainPath: localRoot,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-remote',
+          provider: 'mega',
+          path: remoteRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      volumes: [
+        {
+          volumeId,
+          destinations: [
+            {
+              sourceId: 'src-remote',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 10,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+      ],
+    });
+
+    await mkdir(join(remoteRoot, 'channels', volumeId), { recursive: true });
+    await writeFile(join(remoteRoot, 'channels', volumeId, 'event.bin'), eventPayload, 'utf8');
+    await writeFile(join(remoteRoot, 'blocks', `${knownHash}.bin`), 'known-data', 'utf8');
+    await writeFile(join(remoteRoot, 'blocks', `${orphanHash}.bin`), 'orphan-data', 'utf8');
+
+    const storage = new MultiRootStorageBackend(config);
+    await storage.reconcileConfiguredVolumes();
+
+    expect(await readFile(join(localRoot, 'blocks', `${knownHash}.bin`), 'utf8')).toBe('known-data');
+    expect(await readFile(join(localRoot, 'blocks', `${orphanHash}.bin`), 'utf8')).toBe('orphan-data');
+    expect(await readFile(join(remoteRoot, 'blocks', `${knownHash}.bin`), 'utf8')).toBe('known-data');
+    await expect(readFile(join(remoteRoot, 'blocks', `${orphanHash}.bin`), 'utf8')).rejects.toThrow();
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reconciles tracked volumes that only exist on disk using default rules', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const localRoot = join(dir, 'local');
+    const remoteRoot = join(dir, 'remote');
+    await mkdir(join(localRoot, 'blocks'), { recursive: true });
+    await mkdir(join(remoteRoot, 'blocks'), { recursive: true });
+
+    const volumeId = '9'.repeat(130);
+    const blockHash = 'a'.repeat(64);
+    const eventPayload = JSON.stringify({ payload: { type: 'CREATE_FILE', hash: blockHash } });
+
+    const config = createConfig({
+      mainPath: localRoot,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-remote',
+          provider: 'mega',
+          path: remoteRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      volumes: [],
+    });
+
+    await mkdir(join(remoteRoot, 'channels', volumeId), { recursive: true });
+    await writeFile(join(remoteRoot, 'channels', volumeId, 'event.bin'), eventPayload, 'utf8');
+    await writeFile(join(remoteRoot, 'blocks', `${blockHash}.bin`), 'referenced-data', 'utf8');
+
+    const storage = new MultiRootStorageBackend(config);
+    await storage.reconcileConfiguredVolumes();
+
+    expect(await readFile(join(localRoot, 'channels', volumeId, 'event.bin'), 'utf8')).toContain(blockHash);
+    expect(await readFile(join(localRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('referenced-data');
+    expect(await readFile(join(remoteRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('referenced-data');
+
+    await rm(dir, { recursive: true, force: true });
+  });
 });

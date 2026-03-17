@@ -13,6 +13,7 @@ import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
+import { getDefaultStorageDir, getDefaultStorageHomeDir, getProviderStorageFolderName, resolveStorageHomeDir } from '../storagePath.js';
 import { createDefaultTransportAdapters, createProviderCatalog, type TransportAdapter } from './adapters.js';
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
 import { JsonFileSecretStore } from './secretStore.js';
@@ -96,7 +97,7 @@ export class ManagedShareService {
     this.integrationStatePath = resolveIntegrationStatePath(
       options.integrationStatePath ?? path.join(path.dirname(options.rootsConfigPath), 'integrations.json')
     );
-    this.mirrorRoot = path.resolve(options.mirrorRoot ?? path.join(path.dirname(this.integrationStatePath), 'mirrors'));
+    this.mirrorRoot = path.resolve(options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig()));
   }
 
   async listAccounts(): Promise<{
@@ -210,7 +211,7 @@ export class ManagedShareService {
       preferredProviders,
     });
 
-    await this.ensureDefaultManagedShare(provider, merged.account.id);
+    await this.ensureDefaultManagedShare(provider, merged.account);
     return {
       status: 'connected',
       account: merged.account,
@@ -283,7 +284,7 @@ export class ManagedShareService {
     const now = Date.now();
     const shareId = createId('share', provider, state.managedShares.length + 1);
     const requestedLocalPath = path.resolve(
-      input.localPath ?? path.join(this.mirrorRoot, createMirrorFolderName(provider, input.label, shareId))
+      input.localPath ?? resolveManagedShareLocalPath(this.mirrorRoot, provider, account, input.label, shareId, input.remoteDescriptor)
     );
     await ensureMirrorFolder(requestedLocalPath);
 
@@ -546,7 +547,7 @@ export class ManagedShareService {
       if (account.state !== 'connected') {
         continue;
       }
-      await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account.id);
+      await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account);
     }
   }
 
@@ -947,17 +948,17 @@ export class ManagedShareService {
     await ensureNearbytesMarkers(config.sources);
   }
 
-  private async ensureDefaultManagedShare(provider: string, accountId: string): Promise<void> {
+  private async ensureDefaultManagedShare(provider: string, account: ProviderAccount): Promise<void> {
     if (provider !== 'mega') {
       return;
     }
 
     const state = await this.loadState();
-    if (state.managedShares.some((share) => normalizeProvider(share.provider) === provider && share.accountId === accountId)) {
+    if (state.managedShares.some((share) => normalizeProvider(share.provider) === provider && share.accountId === account.id)) {
       return;
     }
 
-    const localPath = this.findDefaultProviderSharePath(provider);
+    const localPath = this.findDefaultProviderSharePath(provider, account);
     if (localPath) {
       const config = cloneConfig(this.options.storage.getRootsConfig());
       const existingSource = config.sources.find((source) => path.resolve(source.path) === path.resolve(localPath));
@@ -966,7 +967,7 @@ export class ManagedShareService {
         const adoptedShare: ManagedShare = {
           id: shareId,
           provider,
-          accountId,
+          accountId: account.id,
           label: 'nearbytes',
           role: 'owner',
           localPath: path.resolve(localPath),
@@ -994,7 +995,7 @@ export class ManagedShareService {
 
     await this.createManagedShare({
       provider,
-      accountId,
+      accountId: account.id,
       label: 'nearbytes',
       localPath,
       remoteDescriptor: {
@@ -1004,14 +1005,15 @@ export class ManagedShareService {
     });
   }
 
-  private findDefaultProviderSharePath(provider: string): string | undefined {
+  private findDefaultProviderSharePath(provider: string, account: ProviderAccount): string | undefined {
     const config = this.options.storage.getRootsConfig();
     const providerSources = config.sources.filter(
-      (source) => normalizeProvider(source.provider) === provider && !source.integration
+      (source) => normalizeProvider(source.provider) === provider && !source.integration && !isUnsafeManagedSharePath(source.path)
     );
+    const preferredFolderNames = getPreferredManagedShareFolderNames(provider, account);
     const preferred =
-      providerSources.find((source) => path.basename(source.path).trim().toLowerCase() === 'nearbytes') ??
-      providerSources[0];
+      providerSources.find((source) => preferredFolderNames.has(path.basename(source.path).trim().toLowerCase())) ??
+      (provider === 'mega' ? undefined : providerSources[0]);
     return preferred ? path.resolve(preferred.path) : undefined;
   }
 
@@ -1062,6 +1064,51 @@ function createMirrorFolderName(provider: string, label: string, shareId: string
   return `${base} ${shareId.slice(-6)}`.trim();
 }
 
+function resolveManagedShareLocalPath(
+  managedShareBaseRoot: string,
+  provider: string,
+  account: ProviderAccount,
+  label: string,
+  shareId: string,
+  remoteDescriptor?: Record<string, unknown>
+): string {
+  const providerRoot = resolveProviderManagedShareRoot(managedShareBaseRoot, provider, account);
+  if (isProviderBaseShare(label, remoteDescriptor)) {
+    return providerRoot;
+  }
+  return path.join(providerRoot, createMirrorFolderName(provider, label, shareId));
+}
+
+function resolveProviderManagedShareRoot(managedShareBaseRoot: string, provider: string, account: ProviderAccount): string {
+  const providerRoot = path.join(managedShareBaseRoot, getProviderStorageFolderName(provider));
+  if (provider === 'mega') {
+    return path.join(providerRoot, createManagedShareAccountFolderName(account));
+  }
+  return providerRoot;
+}
+
+function getPreferredManagedShareFolderNames(provider: string, account: ProviderAccount): ReadonlySet<string> {
+  if (provider === 'mega') {
+    return new Set([createManagedShareAccountFolderName(account)]);
+  }
+  return new Set([getProviderStorageFolderName(provider), 'nearbytes']);
+}
+
+function createManagedShareAccountFolderName(account: ProviderAccount): string {
+  const candidate = sanitizeManagedFolderLabel(account.email?.trim() || account.id.trim() || account.label?.trim()).toLowerCase();
+  return candidate.replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '') || account.id.trim().toLowerCase();
+}
+
+function isProviderBaseShare(label: string, remoteDescriptor?: Record<string, unknown>): boolean {
+  const normalizedLabel = sanitizeManagedFolderLabel(label).toLowerCase();
+  const shareName = typeof remoteDescriptor?.shareName === 'string' ? remoteDescriptor.shareName.trim().toLowerCase() : '';
+  const remotePath =
+    typeof remoteDescriptor?.remotePath === 'string'
+      ? remoteDescriptor.remotePath.trim().replace(/\\/g, '/').replace(/\/+$/u, '').toLowerCase()
+      : '';
+  return normalizedLabel === 'nearbytes' || shareName === 'nearbytes' || remotePath === '/nearbytes';
+}
+
 function sanitizeManagedFolderLabel(value: string): string {
   return value
     .trim()
@@ -1074,6 +1121,43 @@ function sanitizeManagedFolderLabel(value: string): string {
 async function ensureMirrorFolder(localPath: string): Promise<void> {
   await fs.mkdir(path.join(localPath, 'blocks'), { recursive: true });
   await fs.mkdir(path.join(localPath, 'channels'), { recursive: true });
+}
+
+function resolveManagedShareBaseRoot(config: RootsConfig): string {
+  const preferredLocalSource =
+    config.sources.find(
+      (source) => source.enabled && normalizeProvider(source.provider) === 'local' && !isUnsafeManagedSharePath(source.path)
+    ) ??
+    config.sources.find(
+      (source) => normalizeProvider(source.provider) === 'local' && !isUnsafeManagedSharePath(source.path)
+    );
+  const configuredStorageRoot = path.resolve(getDefaultStorageDir());
+  const fallbackBaseRoot = isUnsafeManagedSharePath(configuredStorageRoot)
+    ? getDefaultStorageHomeDir()
+    : resolveStorageHomeDir(configuredStorageRoot);
+  return preferredLocalSource ? resolveStorageHomeDir(preferredLocalSource.path) : fallbackBaseRoot;
+}
+
+function isUnsafeManagedSharePath(targetPath: string): boolean {
+  const currentWorkingDirectory = process.cwd?.();
+  if (!currentWorkingDirectory || !targetPath.trim()) {
+    return false;
+  }
+  return isPathInside(path.resolve(currentWorkingDirectory), path.resolve(targetPath));
+}
+
+function isPathInside(parentPath: string, childPath: string): boolean {
+  const normalizedParent = normalizeComparablePath(parentPath);
+  const normalizedChild = normalizeComparablePath(childPath);
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+}
+
+function normalizeComparablePath(value: string): string {
+  const normalized = path.resolve(value).replace(/\\/g, '/').replace(/\/+$/u, '');
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    return normalized.toLowerCase();
+  }
+  return normalized;
 }
 
 function ensureManagedShareSource(

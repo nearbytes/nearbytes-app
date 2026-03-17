@@ -52,6 +52,20 @@ interface QueueEntry {
 
 const DEFAULT_MAX_DEPTH = 4;
 const DEFAULT_MAX_DIRECTORIES = 4000;
+const DEFAULT_PROVIDER_MAX_DEPTH: Readonly<Partial<Record<RootProvider, number>>> = {
+  mega: 1,
+  dropbox: 2,
+  gdrive: 2,
+  onedrive: 2,
+  icloud: 2,
+};
+const DEFAULT_PROVIDER_MAX_DIRECTORIES: Readonly<Partial<Record<RootProvider, number>>> = {
+  mega: 240,
+  dropbox: 600,
+  gdrive: 600,
+  onedrive: 600,
+  icloud: 600,
+};
 const CHANNEL_DIRECTORY_REGEX = /^[a-f0-9]{64,200}$/i;
 export const NEARBYTES_MARKER_FILE = 'Nearbytes.html';
 export const NEARBYTES_LEGACY_MARKER_FILE = '.nearbytes';
@@ -95,7 +109,7 @@ export async function discoverNearbytesRoots(options?: {
   const discovered: DetectedNearbytesSource[] = [];
 
   for (const candidate of candidates) {
-    const roots = await scanForNearbytesRoots(candidate.path, maxDepth, maxDirectories);
+    const roots = await scanForNearbytesRoots(candidate, maxDepth, maxDirectories);
     for (const root of roots) {
       const canonicalDir = await resolveCanonicalDirectoryPath(root.path);
       if (!canonicalDir) {
@@ -299,17 +313,21 @@ async function buildScanCandidates(options?: {
 }
 
 async function scanForNearbytesRoots(
-  rootPath: string,
+  candidate: ScanCandidate,
   maxDepth: number,
   maxDirectories: number
 ): Promise<NearbytesRootInspection[]> {
+  const rootPath = candidate.path;
+  const limits = getProviderScanLimits(candidate.provider);
+  const effectiveMaxDepth = Math.min(maxDepth, limits.maxDepth);
+  const effectiveMaxDirectories = Math.min(maxDirectories, limits.maxDirectories);
   const queue: QueueEntry[] = [{ path: rootPath, depth: 0 }];
   const visited = new Set<string>();
   const discovered: NearbytesRootInspection[] = [];
   let scanned = 0;
 
   while (queue.length > 0) {
-    if (scanned >= maxDirectories) {
+    if (scanned >= effectiveMaxDirectories) {
       break;
     }
 
@@ -328,9 +346,10 @@ async function scanForNearbytesRoots(
     const inspection = await inspectNearbytesRoot(normalized);
     if (inspection) {
       discovered.push(inspection);
+      continue;
     }
 
-    if (current.depth >= maxDepth) {
+    if (current.depth >= effectiveMaxDepth) {
       continue;
     }
 
@@ -353,6 +372,16 @@ async function scanForNearbytesRoots(
   }
 
   return discovered;
+}
+
+export function getProviderScanLimits(provider: RootProvider): {
+  readonly maxDepth: number;
+  readonly maxDirectories: number;
+} {
+  return {
+    maxDepth: DEFAULT_PROVIDER_MAX_DEPTH[provider] ?? DEFAULT_MAX_DEPTH,
+    maxDirectories: DEFAULT_PROVIDER_MAX_DIRECTORIES[provider] ?? DEFAULT_MAX_DIRECTORIES,
+  };
 }
 
 async function hasMarkerFile(dirPath: string): Promise<boolean> {

@@ -187,15 +187,30 @@ export function logStorageDiagnostics(result: StorageDiagnosticsResult): void {
   console.log('[storage] blocks exists:', result.blocksDirExists);
   console.log('[storage] blocks *.bin count:', result.blocksCount);
 
-  const looksInsideRepo =
-    result.storageDirAbs.endsWith('/Nearbytes') ||
-    result.storageDirAbs.endsWith('/Nearbytes/');
+  const currentWorkingDirectory = process.cwd?.();
+  const looksInsideRepo = currentWorkingDirectory
+    ? isPathInside(path.resolve(currentWorkingDirectory), path.resolve(result.storageDirAbs))
+    : false;
 
   if (looksInsideRepo && result.megaHints.found && result.megaHints.candidates.length > 0) {
     console.warn(
-      '[storage] WARNING: Storage path appears to be inside the repo. Set NEARBYTES_STORAGE_DIR to your preferred local or synced folder (for example $HOME/nearbytes or $HOME/MEGA/nearbytes), or a path under: ' +
+      '[storage] WARNING: Storage path appears to be inside the repo. Set NEARBYTES_STORAGE_DIR to your preferred local or synced folder (for example $HOME/nearbytes/local or $HOME/nearbytes/mega), or a path under: ' +
         result.megaHints.candidates.join(', ') +
         ').'
     );
   }
+}
+
+function isPathInside(parentPath: string, childPath: string): boolean {
+  const normalizedParent = normalizeComparablePath(parentPath);
+  const normalizedChild = normalizeComparablePath(childPath);
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+}
+
+function normalizeComparablePath(value: string): string {
+  const normalized = path.resolve(value).replace(/\\/g, '/').replace(/\/+$/u, '');
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    return normalized.toLowerCase();
+  }
+  return normalized;
 }

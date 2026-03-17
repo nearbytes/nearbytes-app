@@ -18,3 +18,4 @@ coverage/
 test-data/
 .nearbytes-dev-run.json
 .yarn/install-state.gz
+nearbytes

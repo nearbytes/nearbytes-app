@@ -271,7 +271,14 @@ function createRunKey(
   items: readonly ReconciledDiscoveredSourceItem[]
 ): string {
   const payload = JSON.stringify({
-    summary,
+    summary: {
+      discoveredCount: summary.discoveredCount,
+      sourcesAdded: summary.sourcesAdded,
+      volumeTargetsAdded: summary.volumeTargetsAdded,
+      availableShares: summary.availableShares,
+      meaningfulItemCount: summary.meaningfulItemCount,
+      providers: summary.providers,
+    },
     items: items.map((item) => ({
       provider: item.provider,
       path: item.path,

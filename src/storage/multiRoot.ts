@@ -149,9 +149,11 @@ export class MultiRootStorageBackend implements StorageBackend {
   }
 
   async reconcileConfiguredVolumes(): Promise<void> {
-    for (const volume of this.config.volumes) {
-      await this.reconcileVolumeData(volume.volumeId);
+    const trackedVolumeIds = await this.listTrackedVolumeIds();
+    for (const volumeId of Array.from(trackedVolumeIds).sort()) {
+      await this.reconcileVolumeData(volumeId);
     }
+    await this.collectUnknownProvenanceBlocksToLocalRoot();
   }
 
   async getRuntimeSnapshot(): Promise<MultiRootRuntimeSnapshot> {
@@ -784,6 +786,60 @@ export class MultiRootStorageBackend implements StorageBackend {
     }
   }
 
+  private async collectUnknownProvenanceBlocksToLocalRoot(): Promise<void> {
+    const target = this.getPreferredLocalCollectionRoot();
+    if (!target) {
+      return;
+    }
+
+    const referencedHashes = await this.collectReferencedBlockHashesAcrossStates(this.rootStates);
+    const targetBlocksDir = join(target.config.path, 'blocks');
+    await fs.mkdir(targetBlocksDir, { recursive: true });
+    await ensureNearbytesMarker(target.config.path);
+
+    for (const source of this.rootStates) {
+      if (source.config.id === target.config.id) {
+        continue;
+      }
+
+      const blocksDir = join(source.config.path, 'blocks');
+      const entries = await safeReadDirEntries(blocksDir);
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.bin')) {
+          continue;
+        }
+
+        const hash = entry.name.slice(0, -4).toLowerCase();
+        if (!/^[a-f0-9]{64}$/i.test(hash) || referencedHashes.has(hash)) {
+          continue;
+        }
+
+        const sourceAbsolute = join(blocksDir, entry.name);
+        const destinationAbsolute = join(targetBlocksDir, entry.name);
+        const stats = await safeStat(sourceAbsolute);
+        if (!stats || !stats.isFile()) {
+          continue;
+        }
+
+        if (await fileExists(destinationAbsolute)) {
+          await safeUnlink(sourceAbsolute);
+          continue;
+        }
+
+        await fs.mkdir(dirname(destinationAbsolute), { recursive: true });
+        try {
+          await fs.rename(sourceAbsolute, destinationAbsolute);
+        } catch (error) {
+          if (!isCrossDeviceError(error)) {
+            throw new StorageError(`Failed to collect ${entry.name} into local storage: ${asError(error).message}`, asError(error));
+          }
+          await fs.copyFile(sourceAbsolute, destinationAbsolute);
+          await safeUnlink(sourceAbsolute);
+        }
+      }
+    }
+  }
+
   private async pruneSourceBlocks(
     sourceId: string,
     requiredFreeBytes: number,
@@ -879,8 +935,12 @@ export class MultiRootStorageBackend implements StorageBackend {
   }
 
   private async listTrackedVolumeIds(): Promise<Set<string>> {
+    return this.listTrackedVolumeIdsInStates(this.getEnabledRootStates());
+  }
+
+  private async listTrackedVolumeIdsInStates(states: readonly RootState[]): Promise<Set<string>> {
     const volumeIds = new Set<string>(this.config.volumes.map((volume) => volume.volumeId));
-    for (const state of this.getEnabledRootStates()) {
+    for (const state of states) {
       const channelsDir = join(state.config.path, 'channels');
       const entries = await safeReadDirEntries(channelsDir);
       for (const entry of entries) {
@@ -897,9 +957,13 @@ export class MultiRootStorageBackend implements StorageBackend {
   }
 
   private async collectReferencedBlockHashes(volumeId: string): Promise<Set<string>> {
+    return this.collectReferencedBlockHashesForStates(volumeId, this.prioritizeRootsForChannel(volumeId));
+  }
+
+  private async collectReferencedBlockHashesForStates(volumeId: string, states: readonly RootState[]): Promise<Set<string>> {
     const hashes = new Set<string>();
     const directory = `channels/${volumeId}`;
-    const eventFiles = await this.listFilesAcrossRoots(directory);
+    const eventFiles = await this.listFilesAcrossStates(directory, states);
 
     for (const eventFile of eventFiles) {
       if (!eventFile.endsWith('.bin')) {
@@ -908,7 +972,7 @@ export class MultiRootStorageBackend implements StorageBackend {
       const relativePath = `${directory}/${eventFile}`;
       let bytes: Uint8Array;
       try {
-        bytes = await this.readFileFromRoots(relativePath, this.prioritizeRootsForChannel(volumeId));
+        bytes = await this.readFileFromRoots(relativePath, Array.from(states));
       } catch {
         continue;
       }
@@ -926,6 +990,18 @@ export class MultiRootStorageBackend implements StorageBackend {
       }
     }
 
+    return hashes;
+  }
+
+  private async collectReferencedBlockHashesAcrossStates(states: readonly RootState[]): Promise<Set<string>> {
+    const hashes = new Set<string>();
+    const volumeIds = await this.listTrackedVolumeIdsInStates(states);
+    for (const volumeId of volumeIds) {
+      const referenced = await this.collectReferencedBlockHashesForStates(volumeId, states);
+      for (const hash of referenced) {
+        hashes.add(hash);
+      }
+    }
     return hashes;
   }
 
@@ -1144,6 +1220,29 @@ export class MultiRootStorageBackend implements StorageBackend {
       config: source,
       backend: new FilesystemStorageBackend(source.path),
     }));
+  }
+
+  private getPreferredLocalCollectionRoot(): RootState | undefined {
+    return (
+      this.rootStates.find((state) => state.config.provider === 'local' && state.config.enabled && state.config.writable) ??
+      this.rootStates.find((state) => state.config.provider === 'local' && state.config.writable) ??
+      this.rootStates.find((state) => state.config.provider === 'local')
+    );
+  }
+
+  private async listFilesAcrossStates(directory: string, states: readonly RootState[]): Promise<string[]> {
+    const files = new Set<string>();
+    for (const state of states) {
+      try {
+        const listed = await state.backend.listFiles(directory);
+        for (const file of listed) {
+          files.add(file);
+        }
+      } catch {
+        // Ignore root-specific listing failures to keep cross-root reads best effort.
+      }
+    }
+    return Array.from(files);
   }
 }
 
