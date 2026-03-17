@@ -74,11 +74,10 @@
     onOpenVolumeRouting?: ((volumeId: string) => void) | undefined;
     discoveryDetails?: ReconcileSourcesResponse | null;
     refreshToken?: number;
-    focusSection?: 'discovery' | 'defaults' | 'shares' | null;
+    focusSection?: 'discovery' | 'defaults' | null;
   }>();
 
   type StatusTone = 'good' | 'warn' | 'muted';
-  type VolumeStorageView = 'copies' | 'shares' | 'folders';
   type HubLocationMode = 'store' | 'publish' | 'off';
   type ProviderFlowStep = {
     label: string;
@@ -140,7 +139,6 @@
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let providerConnectionDialog = $state<string | null>(null);
   let selectedGlobalProvider = $state('local');
-  let volumeView = $state<VolumeStorageView>('copies');
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
   let lastRefreshToken = $state(0);
@@ -219,13 +217,6 @@
 
   $effect(() => {
     if (mode === 'global') return;
-    if (focusSection === 'discovery' || focusSection === 'defaults' || focusSection === 'shares') {
-      if (focusSection === 'shares') {
-        volumeView = 'shares';
-        return;
-      }
-      volumeView = 'folders';
-    }
   });
 
   $effect(() => {
@@ -597,46 +588,6 @@
     successMessage = '';
   }
 
-  function managedSharesForVolume(targetVolumeId: string | null): ManagedShareSummary[] {
-    if (!targetVolumeId) return [];
-    return managedShares.filter((summary) =>
-      summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId)
-    );
-  }
-
-  function availableManagedSharesForVolume(targetVolumeId: string | null): ManagedShareSummary[] {
-    if (!targetVolumeId) return managedShares;
-    return managedShares.filter(
-      (summary) => !summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId)
-    );
-  }
-
-  function providerManagedSharesForVolume(provider: string, targetVolumeId: string | null): ManagedShareSummary[] {
-    return sortManagedShareSummaries(
-      managedSharesForVolume(targetVolumeId).filter((summary) => summary.share.provider === provider)
-    );
-  }
-
-  function providerAvailableManagedSharesForVolume(provider: string, targetVolumeId: string | null): ManagedShareSummary[] {
-    return sortManagedShareSummaries(
-      availableManagedSharesForVolume(targetVolumeId).filter((summary) => summary.share.provider === provider)
-    );
-  }
-
-  function providerLocationState(provider: string, targetVolumeId: string | null): {
-    contactInvites: IncomingProviderContactInvite[];
-    incomingLocations: IncomingManagedShareOffer[];
-    attachedLocations: ManagedShareSummary[];
-    availableLocations: ManagedShareSummary[];
-  } {
-    return {
-      contactInvites: incomingProviderInvitesForProvider(provider),
-      incomingLocations: incomingManagedSharesForProvider(provider),
-      attachedLocations: providerManagedSharesForVolume(provider, targetVolumeId),
-      availableLocations: providerAvailableManagedSharesForVolume(provider, targetVolumeId),
-    };
-  }
-
   function shareStatusTone(summary: ManagedShareSummary): StatusTone {
     if (summary.state.status === 'ready') return 'good';
     if (summary.state.status === 'idle' || summary.state.status === 'syncing') return 'muted';
@@ -856,7 +807,9 @@
     if (!volumeId) {
       return 0;
     }
-    return managedSharesForVolume(volumeId).filter((summary) => summary.share.provider === provider).length;
+    return providerShares(provider).filter((summary) =>
+      summary.attachments.some((attachment) => attachment.volumeId === volumeId)
+    ).length;
   }
 
   function providerPrimaryMirrorPath(entry: ProviderCatalogEntry): string | null {
@@ -875,33 +828,6 @@
       }
     }
     return Array.from(unique.values());
-  }
-
-  function providerNextAction(entry: ProviderCatalogEntry): string {
-    const pending = pendingSessionForProvider(entry.provider);
-    const shareCount = providerShareCount(entry.provider);
-    const attachedCount = providerAttachedShareCount(entry.provider);
-    if (pending) {
-      return entry.provider === 'mega'
-        ? 'Nearbytes is waiting for you to finish the MEGA confirmation step before it can create the local mirror and live location.'
-        : `Nearbytes is waiting for ${entry.label} to finish sign-in in the browser.`;
-    }
-    if (entry.setup.status === 'needs-install') {
-      return `Nearbytes still needs the local ${entry.label} helper before this provider can carry live updates.`;
-    }
-    if (entry.setup.status === 'needs-config') {
-      return `Nearbytes still needs one setup value before it can hand off to ${entry.label}.`;
-    }
-    if (!entry.isConnected) {
-      return `Connect ${entry.label}, then Nearbytes can create a local mirror folder and bind it to a live provider location.`;
-    }
-    if (shareCount === 0) {
-      return `Your ${entry.label} account is connected. The next step is to create a live location so this provider can actually carry updates.`;
-    }
-    if (volumeId && attachedCount === 0) {
-      return `This provider already has a live location. Use one in this hub so Nearbytes can handle incoming and outgoing updates.`;
-    }
-    return `This provider is ready. Nearbytes knows where the local mirror lives and can use it for this hub.`;
   }
 
   function providerTransparencyFacts(entry: ProviderCatalogEntry): string[] {
@@ -927,55 +853,6 @@
       facts.push(entry.setup.status === 'needs-install' ? 'Needs local helper' : 'Uses local mirror folder');
     }
     return facts.filter((value, index, values) => value && values.indexOf(value) === index);
-  }
-
-  function providerFlowSteps(entry: ProviderCatalogEntry): ProviderFlowStep[] {
-    const pending = pendingSessionForProvider(entry.provider);
-    const helperBlocked = entry.setup.status === 'needs-install' || entry.setup.status === 'installing';
-    const configBlocked = entry.setup.status === 'needs-config';
-    const connected = entry.isConnected;
-    const hasShare = providerShareCount(entry.provider) > 0;
-    const attachedToVolume = volumeId ? providerAttachedShareCount(entry.provider) > 0 : hasShare;
-    return [
-      {
-        label: helperBlocked ? 'Install local helper' : configBlocked ? 'Finish provider setup' : 'Provider ready',
-        detail:
-          helperBlocked
-            ? `Nearbytes prepares the local ${entry.label} helper first.`
-            : configBlocked
-              ? `Nearbytes needs one setup value before it can start ${entry.label} sign-in.`
-              : `${entry.label} is ready for connection on this device.`,
-        state: helperBlocked || configBlocked ? 'active' : 'done',
-      },
-      {
-        label: pending ? 'Finish account confirmation' : 'Connect account',
-        detail:
-          pending
-            ? pending.detail
-            : connected
-              ? `${entry.label} account connected.`
-              : `Sign in so Nearbytes can create and monitor live locations for ${entry.label}.`,
-        state: connected ? 'done' : helperBlocked || configBlocked ? 'pending' : pending ? 'active' : 'active',
-      },
-      {
-        label: volumeId ? 'Create or pick a live location' : 'Create a live location',
-        detail:
-          hasShare
-            ? 'Nearbytes already has at least one live location for this provider.'
-            : 'This is the first point where Nearbytes creates the provider-backed sync location and local mirror folder.',
-        state: hasShare ? 'done' : connected ? 'active' : 'pending',
-      },
-      {
-        label: volumeId ? 'Use it in this hub' : 'Ready for hubs',
-        detail:
-          volumeId
-            ? attachedToVolume
-              ? 'This provider already has a live location attached to the current hub.'
-              : 'Use the live location so this hub can receive provider-backed updates.'
-            : 'Once a live location exists, any hub can use it later.',
-        state: attachedToVolume ? 'done' : hasShare ? 'active' : 'pending',
-      },
-    ];
   }
 
   function localMachineShareCount(): number {
@@ -1244,10 +1121,6 @@
     if (provider === 'mega') return 'MEGA';
     if (provider === 'github') return 'GitHub';
     return provider;
-  }
-
-  function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
-    return volumeId ? `Use ${providerLabelForIncoming(offer.provider)} in this hub` : 'Add storage location';
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -1615,6 +1488,10 @@
     return explicitVolumePolicy(targetVolumeId)
       ? 'These choices apply only to this hub.'
       : 'These choices come from your default storage locations. Change any location below if this hub should behave differently.';
+  }
+
+  function hubAttachedSources(targetVolumeId: string): SourceConfigEntry[] {
+    return (configDraft?.sources ?? []).filter((source) => hubLocationMode(targetVolumeId, source.id) !== 'off');
   }
 
   function canRemoveAnySource(): boolean {
@@ -2592,22 +2469,6 @@
     }
   }
 
-  async function attachManagedShareToVolume(summary: ManagedShareSummary): Promise<void> {
-    if (!volumeId) return;
-    integrationBusyKey = `attach:${summary.share.id}`;
-    errorMessage = '';
-    successMessage = '';
-    try {
-      await attachManagedShare(summary.share.id, volumeId);
-      successMessage = `${summary.share.label} attached to this hub.`;
-      await loadPanel();
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to attach storage location';
-    } finally {
-      integrationBusyKey = null;
-    }
-  }
-
   async function inviteManagedSharePeers(summary: ManagedShareSummary): Promise<void> {
     const emails = parseInviteEmails(managedShareInviteDraft(summary.share.id));
     if (emails.length === 0) {
@@ -2802,175 +2663,6 @@
           {#if view.attachments.length > 0}
             <div class="fact-row share-volume-row">
               {#each view.attachments as attachment}
-                {#if attachment.known}
-                  <button
-                    type="button"
-                    class="mini-pill mini-pill-button"
-                    onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
-                  >
-                    {attachment.label}
-                  </button>
-                {:else}
-                  <span class="mini-pill">{attachment.label}</span>
-                {/if}
-              {/each}
-            </div>
-          {/if}
-        {/snippet}
-      </ShareCard>
-    {/snippet}
-    {#snippet providerContactInviteCard(invite: IncomingProviderContactInvite)}
-      <ShareCard
-        provider={providerLabelForIncoming(invite.provider)}
-        title={invite.label}
-        copy={invite.detail}
-        statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
-      >
-        {#snippet body()}
-          <p class="managed-share-invite-copy">Accept this first so {providerLabelForIncoming(invite.provider)} can show any storage locations shared with you.</p>
-        {/snippet}
-        {#snippet actions()}
-          <button
-            type="button"
-            class="panel-btn subtle compact"
-            onclick={() => void acceptProviderContactInviteEntry(invite)}
-            disabled={integrationBusyKey === `accept-contact:${invite.id}`}
-          >
-            <span>{integrationBusyKey === `accept-contact:${invite.id}` ? 'Accepting...' : 'Accept contact'}</span>
-          </button>
-        {/snippet}
-      </ShareCard>
-    {/snippet}
-    {#snippet incomingLocationCard(offer: IncomingManagedShareOffer)}
-      <ShareCard
-        provider={providerLabelForIncoming(offer.provider)}
-        title={offer.label}
-        copy={offer.detail}
-        statusBadges={[{ label: 'Incoming location', tone: 'muted' }]}
-        meta={[`Shared by ${offer.ownerLabel}`, volumeId ? 'Will attach to this hub' : 'Added as a storage location']}
-      >
-        {#snippet body()}
-          {#if offer.suggestedLocalPath}
-            <div class="provider-path-card managed-share-path-card">
-              <p class="subheading">Suggested local mirror</p>
-              <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
-            </div>
-          {/if}
-        {/snippet}
-        {#snippet actions()}
-          <button
-            type="button"
-            class="panel-btn subtle compact"
-            onclick={() => void acceptIncomingManagedShareOffer(offer)}
-            disabled={integrationBusyKey === `accept-share:${offer.id}`}
-          >
-            <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
-          </button>
-        {/snippet}
-      </ShareCard>
-    {/snippet}
-    {#snippet providerManagedLocationCard(summary: ManagedShareSummary, attachedHere: boolean)}
-      <ShareCard
-        provider={providerLabelForManagedShare(summary)}
-        title={summary.share.label}
-        copy={managedShareNarrative(summary)}
-        active={attachedHere || summary.state.status === 'ready'}
-        statusBadges={[{ label: shareStatusLabel(summary), tone: shareStatusTone(summary) }]}
-        meta={managedShareStorageFacts(summary)}
-      >
-        {#snippet body()}
-          <div class="provider-path-card managed-share-path-card">
-            <p class="subheading">Local mirror folder</p>
-            <p class="provider-path-copy">{summarySourcePath(summary)}</p>
-          </div>
-          {#if summary.storage?.lastWriteFailureMessage}
-            <p class="panel-error inline-panel-error">{summary.storage.lastWriteFailureMessage}</p>
-          {/if}
-          {#if canInviteManagedShare(summary)}
-            <form class="managed-share-invite-row" onsubmit={(event) => {
-              event.preventDefault();
-              void inviteManagedSharePeers(summary);
-            }}>
-              <label class="field-block managed-share-invite-field">
-                <span>Invite collaborators</span>
-                <input
-                  class="panel-input"
-                  type="text"
-                  value={managedShareInviteDraft(summary.share.id)}
-                  placeholder="name@example.com"
-                  oninput={(event) =>
-                    setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                />
-              </label>
-              <button
-                type="submit"
-                class="panel-btn subtle compact"
-                disabled={integrationBusyKey === `invite:${summary.share.id}`}
-              >
-                <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
-              </button>
-            </form>
-            <p class="managed-share-invite-copy">
-              {#if attachedHere}
-                Invite people here if you want other people to use this storage location directly.
-              {:else}
-                Invite people to this provider location now, then use it in this hub when you want Nearbytes to use it here.
-              {/if}
-            </p>
-          {/if}
-          {#if participantCollaborators(summary).length > 0 || pendingCollaborators(summary).length > 0}
-            <div class="managed-share-members">
-              <p class="subheading">Participants</p>
-              {#if participantCollaborators(summary).length > 0}
-                <div class="managed-share-members-list">
-                  {#each participantCollaborators(summary) as collaborator (collaborator.label)}
-                    <span class="mini-pill">{collaborator.label}</span>
-                  {/each}
-                </div>
-              {:else}
-                <p class="managed-share-invite-copy">No active participants yet.</p>
-              {/if}
-            </div>
-
-            <div class="managed-share-members">
-              <p class="subheading">Invited</p>
-              {#if pendingCollaborators(summary).length > 0}
-                <div class="managed-share-members-list">
-                  {#each pendingCollaborators(summary) as collaborator (collaborator.label)}
-                    <span class="mini-pill">{collaborator.label}</span>
-                  {/each}
-                </div>
-              {:else}
-                <p class="managed-share-invite-copy">No pending invitations.</p>
-              {/if}
-            </div>
-          {/if}
-        {/snippet}
-        {#snippet actions()}
-          <button
-            type="button"
-            class="panel-btn subtle compact"
-            onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
-            disabled={!summary.share.sourceId}
-          >
-            <FolderOpen size={14} strokeWidth={2} />
-            <span>Open</span>
-          </button>
-          {#if !attachedHere && volumeId}
-            <button
-              type="button"
-              class="panel-btn subtle compact"
-              onclick={() => void attachManagedShareToVolume(summary)}
-              disabled={integrationBusyKey === `attach:${summary.share.id}`}
-            >
-              <span>{integrationBusyKey === `attach:${summary.share.id}` ? 'Attaching...' : 'Use in this hub'}</span>
-            </button>
-          {/if}
-        {/snippet}
-        {#snippet footer()}
-          {#if shareAttachmentLabels(summary).length > 0}
-            <div class="fact-row share-volume-row">
-              {#each shareAttachmentLabels(summary) as attachment}
                 {#if attachment.known}
                   <button
                     type="button"
@@ -3519,7 +3211,13 @@
           </div>
 
           <div class="rule-grid">
-            {#each configDraft.sources as source (source.id)}
+            {#if hubAttachedSources(volumeId).length === 0}
+              <article class="rule-card">
+                <p class="card-copy">This hub is not using any storage location yet. Add or attach locations in storage setup, then come back here to decide how this hub should use them.</p>
+              </article>
+            {/if}
+
+            {#each hubAttachedSources(volumeId) as source (source.id)}
               {@const destination = destinationFor(volumeId, source.id)}
               {@const mode = hubLocationMode(volumeId, source.id)}
               {@const note = hubLocationNote(volumeId, source)}
@@ -3557,18 +3255,6 @@
                     <div>
                       <span class="toggle-title">Publish this hub updates here</span>
                       <span class="toggle-copy">Write new updates here without keeping the whole hub in this location.</span>
-                    </div>
-                  </label>
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="radio"
-                      name={`hub-location-mode-${source.id}`}
-                      checked={mode === 'off'}
-                      onchange={() => setHubLocationMode(volumeId, source.id, 'off')}
-                    />
-                    <div>
-                      <span class="toggle-title">Do not use this location for this hub</span>
-                      <span class="toggle-copy">Leave this location available without using it for this hub.</span>
                     </div>
                   </label>
                 </div>
@@ -3631,472 +3317,21 @@
                       <ArrowRightLeft size={14} strokeWidth={2} />
                       <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move folder' : 'Choose folder'}</span>
                     </button>
-                    {#if canRemoveAnySource()}
-                      <ArmedActionButton
-                        class="panel-btn subtle compact danger"
-                        icon={Trash2}
-                        text="Remove"
-                        armed={true}
-                        autoDisarmMs={3000}
-                        onPress={() => removeSource(source.id)}
-                      />
-                    {/if}
+                    <ArmedActionButton
+                      class="panel-btn subtle compact danger"
+                      icon={Trash2}
+                      text="Remove from this hub"
+                      armed={true}
+                      autoDisarmMs={3000}
+                      onPress={() => setHubLocationMode(volumeId, source.id, 'off')}
+                    />
                   </div>
                 </details>
               </article>
             {/each}
-
-            {#each sourceSuggestionRows() as row (row.source.path)}
-              <article class="rule-card suggestion-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div class="card-icon" title={row.source.path}>
-                      <Search size={16} strokeWidth={2.1} />
-                    </div>
-                    <div title={row.source.path}>
-                      <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                      <h4>{compactPath(row.source.path)}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class="status-pill tone-muted">Found automatically</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
-
-                <div class="button-row">
-                  <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                    <Plus size={14} strokeWidth={2} />
-                    <span>Add location</span>
-                  </button>
-                  <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
-                    <span>Hide</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
-            <article class="rule-card add-card">
-              <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
-                <Plus size={20} strokeWidth={2.1} />
-              </button>
-              <div class="usage-main">
-                <p class="provider-label">Manual</p>
-                <h4>Add a location</h4>
-              </div>
-              <p class="card-copy">Choose a folder on this device for a new storage location.</p>
-            </article>
           </div>
         </section>
 
-        <section class="panel-section">
-          <div class="section-head">
-            <div>
-              <h3>Add or attach provider locations</h3>
-              <p class="section-copy">Connect a provider, create a location there, or attach a location that someone shared with you.</p>
-            </div>
-          </div>
-
-          <div class="card-grid">
-            {#each providerCatalog as provider (provider.provider)}
-              {@const account = connectedAccountForProvider(provider.provider)}
-              <article class="rule-card provider-card provider-card-compact" class:active={provider.isConnected}>
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">Provider</p>
-                      <h4>
-                        {provider.label}
-                        {#if account?.email || account?.label}
-                          <span class="provider-account-inline">{account?.email ?? account?.label}</span>
-                        {/if}
-                      </h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    {#if provider.isConnected}
-                      <button
-                        type="button"
-                        class={`status-pill status-pill-button ${providerDisconnectArmed[provider.provider] ? 'tone-danger' : 'tone-good'}`}
-                        onclick={() =>
-                          providerDisconnectArmed[provider.provider]
-                            ? void disconnectProvider(provider)
-                            : setProviderDisconnectArmed(provider.provider, true)}
-                        disabled={integrationBusyKey === `disconnect:${provider.provider}`}
-                        title={providerDisconnectArmed[provider.provider] ? `Disconnect ${provider.label}` : `Disconnect ${provider.label}`}
-                      >
-                        {integrationBusyKey === `disconnect:${provider.provider}`
-                          ? 'Disconnecting...'
-                          : providerDisconnectArmed[provider.provider]
-                            ? 'Disconnect'
-                            : 'Connected'}
-                      </button>
-                    {:else}
-                      <span class={`status-pill tone-${providerCardTone(provider)}`}>{providerCardStatus(provider)}</span>
-                      {#each provider.badges as badge}
-                        <span class="status-pill tone-muted">{badge}</span>
-                      {/each}
-                    {/if}
-                  </div>
-                </div>
-
-                {#if !provider.isConnected}
-                  <p class="card-copy">{providerCardDetail(provider)}</p>
-                {/if}
-
-                {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
-                  <div class="inline-progress" aria-label="Installing provider helper">
-                    <div class="inline-progress-bar"></div>
-                  </div>
-                {/if}
-
-                {#if !provider.isConnected && provider.provider === 'gdrive' && provider.setup.status === 'needs-config'}
-                  {@const draft = providerSetupDraft(provider.provider)}
-                  <div class="provider-credentials">
-                    <label class="field-block compact-field">
-                      <span>Client ID</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.clientId}
-                        placeholder="Google Desktop app client id"
-                        oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                  </div>
-                  <p class="muted-copy">Create a Google OAuth Desktop app client, paste the client ID here, then connect. Nearbytes uses the installed-app PKCE flow, so you do not need a client secret.</p>
-                {/if}
-
-                {#if !provider.isConnected && provider.provider === 'github' && provider.setup.status === 'needs-config'}
-                  {@const draft = providerSetupDraft(provider.provider)}
-                  <div class="provider-credentials">
-                    <label class="field-block compact-field">
-                      <span>Client ID</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.clientId}
-                        placeholder="GitHub OAuth app client id"
-                        oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                  </div>
-                  <p class="muted-copy">Create a GitHub OAuth app, enable device flow, then paste the client ID here.</p>
-                {/if}
-
-                {#if !provider.isConnected && provider.provider === 'mega'}
-                  {@const draft = providerCredentialDraft(provider.provider)}
-                  {@const pendingSession = pendingSessionForProvider(provider.provider)}
-                  <form class="provider-story-card mega-onboarding-card" onsubmit={(event) => {
-                    event.preventDefault();
-                    void submitMegaAction(provider);
-                  }}>
-                    <div class="mega-onboarding-head">
-                      <div>
-                        <p class="subheading">MEGA onboarding</p>
-                        <p class="provider-story-copy">{megaOnboardingCopy(provider.provider)}</p>
-                      </div>
-                      <span class={`status-pill ${pendingSession ? 'tone-warn' : draft.mode === 'signup' ? 'tone-durable' : 'tone-muted'}`}>
-                        {pendingSession ? 'Email confirmation' : draft.mode === 'signup' ? 'Create account' : 'Sign in'}
-                      </span>
-                    </div>
-
-                    <div class="provider-credentials">
-                      {#if pendingSession}
-                        <label class="field-block compact-field">
-                          <span>Confirmation link</span>
-                          <input
-                            class="panel-input"
-                            type="url"
-                            value={draft.confirmationLink}
-                            placeholder="https://mega.nz/confirm#..."
-                            oninput={(event) => setProviderCredential(provider.provider, 'confirmationLink', (event.currentTarget as HTMLInputElement).value)}
-                          />
-                        </label>
-                      {:else}
-                        <div class="segmented-toggle">
-                          <button
-                            type="button"
-                            class="segmented-toggle-btn"
-                            class:active={draft.mode === 'login'}
-                            onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
-                          >
-                            Sign in
-                          </button>
-                          <button
-                            type="button"
-                            class="segmented-toggle-btn"
-                            class:active={draft.mode === 'signup'}
-                            onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
-                          >
-                            Create account
-                          </button>
-                        </div>
-                        {#if draft.mode === 'signup'}
-                          <label class="field-block compact-field">
-                            <span>Name</span>
-                            <input
-                              class="panel-input"
-                              type="text"
-                              value={draft.name}
-                              placeholder="Your name"
-                              oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
-                            />
-                          </label>
-                        {/if}
-                        <label class="field-block compact-field">
-                          <span>Email</span>
-                          <input
-                            class="panel-input"
-                            type="email"
-                            value={draft.email}
-                            placeholder="name@example.com"
-                            oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
-                          />
-                        </label>
-                        <label class="field-block compact-field">
-                          <span>Password</span>
-                          <input
-                            class="panel-input"
-                            type="password"
-                            value={draft.password}
-                            placeholder="MEGA password"
-                            oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
-                          />
-                        </label>
-                        {#if draft.mode === 'login'}
-                          <label class="field-block compact-field">
-                            <span class="toggle-only-label">
-                              <input
-                                type="checkbox"
-                                checked={draft.useMfa}
-                                onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
-                              />
-                              <span>I enabled 2-factor authentication on MEGA</span>
-                            </span>
-                          </label>
-                        {/if}
-                        {#if draft.mode === 'login' && draft.useMfa}
-                          <label class="field-block compact-field">
-                            <span>2FA code</span>
-                            <input
-                              class="panel-input"
-                              type="text"
-                              value={draft.mfaCode}
-                              placeholder="6-digit code"
-                              oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
-                            />
-                          </label>
-                        {/if}
-                      {/if}
-                    </div>
-
-                    <div class="mega-onboarding-actions">
-                      {#if providerFlowState(provider.provider)?.canCancel}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => cancelProviderFlow(provider.provider)}
-                        >
-                          <span>Cancel</span>
-                        </button>
-                      {/if}
-                      {#if pendingSession}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => clearProviderSession(provider.provider)}
-                          disabled={integrationBusyKey === `confirm:${provider.provider}`}
-                        >
-                          <span>Start again</span>
-                        </button>
-                      {:else if canResetProviderFlow(provider.provider)}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => resetProviderFlow(provider.provider)}
-                          disabled={providerFlowState(provider.provider)?.canCancel === true}
-                        >
-                          <span>Reset</span>
-                        </button>
-                      {/if}
-                      <button
-                        type="submit"
-                        class="panel-btn primary"
-                        disabled={
-                          !canSubmitMegaAction(provider.provider) ||
-                          integrationBusyKey === `connect:${provider.provider}` ||
-                          integrationBusyKey === `confirm:${provider.provider}` ||
-                          provider.setup.status === 'needs-config' ||
-                          provider.setup.status === 'unsupported'
-                        }
-                      >
-                        <span>{megaPrimaryActionLabel(provider.provider)}</span>
-                      </button>
-                    </div>
-                  </form>
-                {/if}
-
-                {#if provider.isConnected && provider.provider === 'github'}
-                  {@const draft = providerShareDraft(provider.provider)}
-                  <div class="provider-credentials">
-                    <label class="field-block compact-field">
-                      <span>Owner</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.repoOwner}
-                        placeholder="nearbytes"
-                        oninput={(event) => setProviderShareField(provider.provider, 'repoOwner', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block compact-field">
-                      <span>Repo</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.repoName}
-                        placeholder="nearbytes-sync"
-                        oninput={(event) => setProviderShareField(provider.provider, 'repoName', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block compact-field">
-                      <span>Branch</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.branch}
-                        placeholder="main"
-                        oninput={(event) => setProviderShareField(provider.provider, 'branch', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block">
-                      <span>nearbytes path</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.basePath}
-                        placeholder={defaultGithubBasePath(defaultManagedShareLabel())}
-                        oninput={(event) => setProviderShareField(provider.provider, 'basePath', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                  </div>
-                {/if}
-
-                {#if providerFlowState(provider.provider)}
-                  <div class="provider-flow-status" data-phase={providerFlowState(provider.provider)?.phase}>
-                    <p class="provider-flow-title">{providerFlowState(provider.provider)?.title}</p>
-                    <p class="muted-copy">{providerFlowState(provider.provider)?.detail}</p>
-                  </div>
-                {/if}
-
-                <div class="button-row">
-                  {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => openProviderDocs(provider.setup.docsUrl)}
-                    >
-                      <span>{provider.provider === 'gdrive' ? 'Open Google setup' : 'Open help'}</span>
-                    </button>
-                  {/if}
-                  {#if !provider.isConnected && provider.setup.status === 'needs-config'}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void configureProvider(provider)}
-                      disabled={integrationBusyKey === `setup:${provider.provider}`}
-                    >
-                      <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
-                    </button>
-                  {/if}
-                  {#if provider.isConnected}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void createManagedShareForVolume(provider)}
-                      disabled={integrationBusyKey === `create:${provider.provider}`}
-                    >
-                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : provider.provider === 'mega' ? 'Create MEGA location' : `Create ${provider.label} location`}</span>
-                    </button>
-                  {:else if provider.provider !== 'mega'}
-                    {#if providerFlowState(provider.provider)?.canCancel}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => cancelProviderFlow(provider.provider)}
-                      >
-                        <span>Cancel</span>
-                      </button>
-                    {/if}
-                    {#if canResetProviderFlow(provider.provider)}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => resetProviderFlow(provider.provider)}
-                        disabled={providerFlowState(provider.provider)?.canCancel === true}
-                      >
-                        <span>Reset</span>
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void connectProvider(provider)}
-                      disabled={
-                        integrationBusyKey === `connect:${provider.provider}` ||
-                        provider.setup.status === 'needs-config' ||
-                        provider.setup.status === 'unsupported'
-                      }
-                    >
-                      <span>
-                        {integrationBusyKey === `connect:${provider.provider}`
-                          ? provider.setup.status === 'needs-install'
-                            ? 'Installing...'
-                            : 'Connecting...'
-                          : provider.provider === 'gdrive'
-                            ? 'Connect with Google'
-                            : 'Connect'}
-                      </span>
-                    </button>
-                  {/if}
-                </div>
-
-                {#each [providerLocationState(provider.provider, volumeId)] as locationState}
-                  {#if locationState.contactInvites.length > 0 || locationState.incomingLocations.length > 0 || locationState.attachedLocations.length > 0 || locationState.availableLocations.length > 0 || provider.isConnected}
-                    <div class="provider-location-stack">
-                      {#each locationState.contactInvites as invite (invite.id)}
-                        {@render providerContactInviteCard(invite)}
-                      {/each}
-
-                      {#each locationState.incomingLocations as offer (offer.id)}
-                        {@render incomingLocationCard(offer)}
-                      {/each}
-
-                      {#each locationState.attachedLocations as summary (summary.share.id)}
-                        {@render providerManagedLocationCard(summary, true)}
-                      {/each}
-
-                      {#each locationState.availableLocations as summary (summary.share.id)}
-                        {@render providerManagedLocationCard(summary, false)}
-                      {/each}
-
-                      {#if provider.isConnected && locationState.attachedLocations.length === 0 && locationState.availableLocations.length === 0 && locationState.incomingLocations.length === 0}
-                        <ShareCard
-                          provider={provider.label}
-                          title="No locations yet"
-                          copy="Create the first provider-backed storage location here. Once it exists, you can invite collaborators and use it in this hub."
-                          statusBadges={[{ label: 'Connected', tone: 'good' }]}
-                        />
-                      {/if}
-                    </div>
-                  {/if}
-                {/each}
-              </article>
-            {/each}
-          </div>
-        </section>
       {/if}
     {/if}
 
