@@ -41,9 +41,9 @@
   import ShareCard from './ShareCard.svelte';
   import {
     ArrowRightLeft,
-    Check,
     FolderOpen,
     HardDrive,
+    Link2,
     Plus,
     RefreshCw,
     Search,
@@ -57,6 +57,7 @@
     currentVolumePresentation = null,
     knownVolumes = [],
     onOpenVolumeRouting = undefined,
+    onOpenStorageSetup = undefined,
     discoveryDetails = null,
     refreshToken = 0,
     focusSection = null,
@@ -72,9 +73,10 @@
     } | null;
     knownVolumes?: Array<{ volumeId: string; label: string }>;
     onOpenVolumeRouting?: ((volumeId: string) => void) | undefined;
+    onOpenStorageSetup?: (() => void) | undefined;
     discoveryDetails?: ReconcileSourcesResponse | null;
     refreshToken?: number;
-    focusSection?: 'discovery' | 'defaults' | null;
+    focusSection?: 'discovery' | 'defaults' | 'shares' | null;
   }>();
 
   type StatusTone = 'good' | 'warn' | 'muted';
@@ -138,6 +140,7 @@
   let managedShareInviteDrafts = $state<Record<string, string>>({});
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let providerConnectionDialog = $state<string | null>(null);
+  let hubLocationDialogVolumeId = $state<string | null>(null);
   let selectedGlobalProvider = $state('local');
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
@@ -217,6 +220,12 @@
 
   $effect(() => {
     if (mode === 'global') return;
+  });
+
+  $effect(() => {
+    if (mode !== 'volume' || !volumeId || hubLocationDialogVolumeId !== volumeId) {
+      hubLocationDialogVolumeId = null;
+    }
   });
 
   $effect(() => {
@@ -680,17 +689,6 @@
     providerConnectionDialog = null;
   }
 
-  function providerCardTone(entry: ProviderCatalogEntry): StatusTone {
-    const pending = pendingSessionForProvider(entry.provider);
-    if (pending && pending.status === 'pending') return 'muted';
-    if (pending && pending.status === 'failed') return 'warn';
-    if (entry.setup.status === 'needs-config' || entry.setup.status === 'needs-install' || entry.setup.status === 'unsupported') {
-      return entry.setup.status === 'unsupported' ? 'warn' : 'muted';
-    }
-    if (entry.setup.status === 'installing') return 'muted';
-    return entry.isConnected ? 'good' : entry.connectionState === 'setup' ? 'warn' : 'muted';
-  }
-
   function providerCardStatus(entry: ProviderCatalogEntry): string {
     const pending = pendingSessionForProvider(entry.provider);
     if (pending?.status === 'pending') return 'Almost ready';
@@ -702,13 +700,6 @@
     if (entry.isConnected) return 'Connected';
     if (entry.connectionState === 'setup') return 'Setup';
     return 'Available';
-  }
-
-  function providerCardHeadline(entry: ProviderCatalogEntry): string {
-    if (entry.provider === 'mega') return entry.isConnected ? 'Storage locations in MEGA' : 'Use MEGA locations';
-    if (entry.provider === 'gdrive') return entry.isConnected ? 'Storage locations in Google Drive' : 'Use Google Drive locations';
-    if (entry.provider === 'github') return entry.isConnected ? 'Storage locations in GitHub' : 'Use GitHub locations';
-    return `Use ${entry.label} locations`;
   }
 
   function providerCardDetail(entry: ProviderCatalogEntry): string {
@@ -975,6 +966,9 @@
 
   function shareCardBadgeForSource(source: SourceConfigEntry): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
     const availability = locationAvailability(source);
+    if (availability.label === 'Ready') {
+      return [];
+    }
     return [
       {
         label: availability.label,
@@ -984,9 +978,13 @@
   }
 
   function shareCardBadgesForManaged(summary: ManagedShareSummary): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
+    const label = shareStatusLabel(summary);
+    if (label === 'Connected' || label === 'Available') {
+      return [];
+    }
     return [
       {
-        label: shareStatusLabel(summary),
+        label,
         tone: shareStatusTone(summary),
       },
     ];
@@ -1074,19 +1072,22 @@
     return {
       provider: summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider === 'github' ? 'GitHub' : summary.share.provider,
       title: summary.share.label,
-      copy: summary.state.detail,
+      copy: managedShareNarrative(summary),
       active: summary.state.status === 'ready',
       statusBadges: shareCardBadgesForManaged(summary),
       meta: [
-        managedShareAccessLabel(summary),
-        summary.storage?.availableBytes !== undefined ? `Available storage: ${formatSize(summary.storage.availableBytes)}` : 'Available storage unknown',
-        summary.storage?.remoteAvailableBytes !== undefined
-          ? `Available storage: ${formatSize(summary.storage.remoteAvailableBytes)} in ${providerLabelForManagedShare(summary)}`
-          : null,
+        summary.storage?.availableBytes !== undefined
+          ? `Available storage: ${formatSize(summary.storage.availableBytes)}`
+          : summary.storage?.remoteAvailableBytes !== undefined
+            ? `Available storage: ${formatSize(summary.storage.remoteAvailableBytes)} in ${providerLabelForManagedShare(summary)}`
+            : 'Available storage unknown',
         typeof summary.storage?.usageTotalBytes === 'number'
-          ? `Nearbytes is using ${formatSize(summary.storage.usageTotalBytes)} in this location.`
-          : 'Local usage unavailable',
-        managedShareOpenLabel(summary),
+          ? `Using ${formatSize(summary.storage.usageTotalBytes)} here.`
+          : managedShareOpenLabel(summary),
+        summary.storage?.remoteAvailableBytes !== undefined
+          && summary.storage?.availableBytes !== undefined
+          ? `${formatSize(summary.storage.remoteAvailableBytes)} available in ${providerLabelForManagedShare(summary)}`
+          : null,
       ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
@@ -1492,6 +1493,29 @@
 
   function hubAttachedSources(targetVolumeId: string): SourceConfigEntry[] {
     return (configDraft?.sources ?? []).filter((source) => hubLocationMode(targetVolumeId, source.id) !== 'off');
+  }
+
+  function hubAvailableSources(targetVolumeId: string): SourceConfigEntry[] {
+    return (configDraft?.sources ?? []).filter((source) => hubLocationMode(targetVolumeId, source.id) === 'off');
+  }
+
+  function openHubLocationDialog(targetVolumeId: string): void {
+    hubLocationDialogVolumeId = targetVolumeId;
+  }
+
+  function closeHubLocationDialog(): void {
+    hubLocationDialogVolumeId = null;
+  }
+
+  function addSourceToHub(targetVolumeId: string, sourceId: string): void {
+    setHubLocationMode(targetVolumeId, sourceId, 'store');
+    hubLocationDialogVolumeId = null;
+    successMessage = 'Storage location added to this hub.';
+  }
+
+  function openStorageSetupFromHubDialog(): void {
+    hubLocationDialogVolumeId = null;
+    onOpenStorageSetup?.();
   }
 
   function canRemoveAnySource(): boolean {
@@ -2554,54 +2578,24 @@
         meta={view.meta}
       >
         {#snippet controls()}
-          <div class="share-toggle-row">
-            <button
-              type="button"
-              class="share-toggle-pill"
-              class:active={view.readable}
-              aria-pressed={view.readable}
-              onclick={view.onToggleReadable}
-            >
-              <span class="share-toggle-icon" aria-hidden="true">
-                {#if view.readable}
-                  <Check size={13} strokeWidth={2.6} />
-                {/if}
-              </span>
-              <span>Readable</span>
-            </button>
-            <button
-              type="button"
-              class="share-toggle-pill"
-              class:active={view.writable}
-              aria-pressed={view.writable}
-              onclick={view.onToggleWritable}
-            >
-              <span class="share-toggle-icon" aria-hidden="true">
-                {#if view.writable}
-                  <Check size={13} strokeWidth={2.6} />
-                {/if}
-              </span>
-              <span>Writable</span>
-            </button>
-            <button
-              type="button"
-              class="share-toggle-pill"
-              class:active={view.defaultEnabled}
-              aria-pressed={view.defaultEnabled}
-              onclick={view.onToggleDefault}
-            >
-              <span class="share-toggle-icon" aria-hidden="true">
-                {#if view.defaultEnabled}
-                  <Check size={13} strokeWidth={2.6} />
-                {/if}
-              </span>
-              <span>Default</span>
-            </button>
+          <div class="setting-list">
+            <label class="setting-row">
+              <span>Use this location</span>
+              <input type="checkbox" checked={view.readable} onchange={view.onToggleReadable} />
+            </label>
+            <label class="setting-row">
+              <span>Store here</span>
+              <input type="checkbox" checked={view.writable} onchange={view.onToggleWritable} />
+            </label>
+            <label class="setting-row">
+              <span>Default full copy</span>
+              <input type="checkbox" checked={view.defaultEnabled} onchange={view.onToggleDefault} />
+            </label>
           </div>
         {/snippet}
         {#snippet details()}
           <details class="details-card inline-details compact-share-advanced">
-            <summary>Advanced</summary>
+            <summary>More</summary>
             <div class="card-control-row">
               <label class="field-block compact-field" title="Minimum available storage to leave on this drive. Default is 5%.">
                 <span>Keep available</span>
@@ -2681,142 +2675,28 @@
       </ShareCard>
     {/snippet}
     {#if mode === 'global'}
-      <div class="overview-grid">
-        <article class="overview-card tab-card tab-card-shell" class:active={selectedGlobalProvider === 'local'}>
-          <button type="button" class="tab-card-select" onclick={() => (selectedGlobalProvider = 'local')}>
-            <p class="provider-label">Local machine</p>
-            <h3>{countLabel(localMachineShareCount(), 'share')}</h3>
-            <p class="card-copy">{activeFolderCount()} enabled on this device.</p>
-          </button>
-          {#if selectedGlobalProvider === 'local'}
-            <div class="tab-card-meta">
-              <div class="card-status">
-                <span class="status-pill tone-good">Available</span>
-                <span class="status-pill tone-muted">{countLabel(localShares().length, 'share')}</span>
-              </div>
-
-              <div class="button-row tab-card-actions">
-                <button
-                  type="button"
-                  class="panel-btn subtle compact icon-btn"
-                  onclick={() => void refreshDiscoverySuggestions()}
-                  disabled={discoveryLoading}
-                  title="Scan again"
-                >
-                  <RefreshCw size={14} strokeWidth={2} />
-                </button>
-                {#if dismissedSuggestionCount() > 0}
-                  <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
-                    <span>Restore hidden suggestions</span>
-                  </button>
-                {/if}
-              </div>
-            </div>
-          {/if}
-        </article>
+      <div class="provider-tabs" role="tablist" aria-label="Storage providers">
+        <button
+          type="button"
+          class="provider-tab"
+          class:active={selectedGlobalProvider === 'local'}
+          onclick={() => (selectedGlobalProvider = 'local')}
+        >
+          <span class="provider-tab-label">This device</span>
+          <span class="provider-tab-copy">{countLabel(localMachineShareCount(), 'location')}</span>
+        </button>
         {#each providerCatalog as provider (provider.provider)}
-          {@const isSelected = selectedGlobalProvider === provider.provider}
-          <article class="overview-card tab-card tab-card-shell" class:active={isSelected}>
-            <button type="button" class="tab-card-select" onclick={() => (selectedGlobalProvider = provider.provider)}>
-              <p class="provider-label">{provider.label}</p>
-              <h3>{provider.isConnected ? provider.label : providerCardStatus(provider)}</h3>
-              <p class="card-copy">{providerShares(provider.provider).length} shares</p>
-            </button>
-            {#if isSelected}
-              <div class="tab-card-meta">
-                <div class="card-status">
-                  {#if provider.isConnected}
-                    <button
-                      type="button"
-                      class={`status-pill status-pill-button tone-${providerCardTone(provider)}`}
-                      onclick={() => openProviderConnectionDialog(provider.provider)}
-                    >
-                      {providerCardStatus(provider)}
-                    </button>
-                  {:else}
-                    <span class={`status-pill tone-${providerCardTone(provider)}`}>{providerCardStatus(provider)}</span>
-                  {/if}
-                  {#each provider.badges as badge}
-                    <span class="status-pill tone-muted">{badge}</span>
-                  {/each}
-                </div>
-
-                <div class="button-row tab-card-actions">
-                  {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => openProviderDocs(provider.setup.docsUrl)}
-                    >
-                      <span>{provider.provider === 'gdrive' ? 'Open Google Console' : 'Open docs'}</span>
-                    </button>
-                  {/if}
-                  {#if !provider.isConnected && provider.setup.status === 'needs-config'}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void configureProvider(provider)}
-                      disabled={integrationBusyKey === `setup:${provider.provider}`}
-                    >
-                      <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
-                    </button>
-                  {/if}
-                  {#if provider.isConnected}
-                    {#if provider.provider === 'github'}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => void createManagedShareForProvider(provider)}
-                        disabled={integrationBusyKey === `create:${provider.provider}`}
-                      >
-                        <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create location'}</span>
-                      </button>
-                    {/if}
-                  {:else if provider.provider !== 'mega'}
-                    {#if providerFlowState(provider.provider)?.canCancel}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => cancelProviderFlow(provider.provider)}
-                      >
-                        <span>Cancel</span>
-                      </button>
-                    {/if}
-                    {#if canResetProviderFlow(provider.provider)}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => resetProviderFlow(provider.provider)}
-                        disabled={providerFlowState(provider.provider)?.canCancel === true}
-                      >
-                        <span>Reset</span>
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void connectProvider(provider)}
-                      disabled={
-                        integrationBusyKey === `connect:${provider.provider}` ||
-                        provider.setup.status === 'needs-config' ||
-                        provider.setup.status === 'unsupported'
-                      }
-                    >
-                      <span>
-                        {integrationBusyKey === `connect:${provider.provider}`
-                          ? provider.setup.status === 'needs-install'
-                            ? 'Installing...'
-                            : 'Connecting...'
-                          : provider.provider === 'gdrive'
-                            ? 'Connect with Google'
-                            : 'Connect'}
-                      </span>
-                    </button>
-                  {/if}
-                </div>
-              </div>
-            {/if}
-          </article>
+          <button
+            type="button"
+            class="provider-tab"
+            class:active={selectedGlobalProvider === provider.provider}
+            onclick={() => (selectedGlobalProvider = provider.provider)}
+          >
+            <span class="provider-tab-label">{provider.label}</span>
+            <span class="provider-tab-copy">
+              {provider.isConnected ? countLabel(providerShares(provider.provider).length, 'location') : providerCardStatus(provider)}
+            </span>
+          </button>
         {/each}
       </div>
 
@@ -2829,6 +2709,29 @@
 
       {#if selectedGlobalProvider === 'local'}
       <section class="panel-section">
+        <div class="section-head compact global-panel-head">
+          <div>
+            <h3>Saved locations</h3>
+            <p class="section-copy">{activeFolderCount()} active on this device.</p>
+          </div>
+          <div class="button-row compact-panel-actions">
+            <button
+              type="button"
+              class="panel-btn subtle compact icon-btn"
+              onclick={() => void refreshDiscoverySuggestions()}
+              disabled={discoveryLoading}
+              title="Scan again"
+            >
+              <RefreshCw size={14} strokeWidth={2} />
+            </button>
+            {#if dismissedSuggestionCount() > 0}
+              <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
+                <span>Show hidden</span>
+              </button>
+            {/if}
+          </div>
+        </div>
+
         {#if discoveryError}
           <p class="warning-copy">{discoveryError}</p>
         {/if}
@@ -2849,9 +2752,6 @@
                     <h4>{compactPath(row.source.path)}</h4>
                   </div>
                 </div>
-                <div class="card-status">
-                  <span class="status-pill tone-muted">Found automatically</span>
-                </div>
               </div>
 
               <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
@@ -2869,13 +2769,10 @@
           {/each}
 
           <article class="location-card add-card">
-            <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
-              <Plus size={20} strokeWidth={2.1} />
+            <button type="button" class="add-card-button wide" onclick={addSourceCard} title="Add a storage location manually">
+              <Plus size={16} strokeWidth={2.1} />
+              <span>Add a folder</span>
             </button>
-            <div class="usage-main">
-              <p class="provider-label">Manual</p>
-              <h4>Add a folder</h4>
-            </div>
             <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
           </article>
         </div>
@@ -2890,9 +2787,95 @@
       {:else}
         {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
         {@const shares = provider ? providerShares(provider.provider) : []}
-        {@const disconnectImpact = provider ? providerDisconnectImpact(provider.provider) : { shares: 0, spaces: 0, inaccessibleSpaces: [] }}
         {#if provider}
           <section class="panel-section">
+            <div class="section-head compact global-panel-head">
+              <div>
+                <h3>{provider.label}</h3>
+                <p class="section-copy">{providerCardDetail(provider)}</p>
+              </div>
+              <div class="button-row compact-panel-actions">
+                {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => openProviderDocs(provider.setup.docsUrl)}
+                  >
+                    <span>{provider.provider === 'gdrive' ? 'Open Google Console' : 'Open docs'}</span>
+                  </button>
+                {/if}
+                {#if !provider.isConnected && provider.setup.status === 'needs-config'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void configureProvider(provider)}
+                    disabled={integrationBusyKey === `setup:${provider.provider}`}
+                  >
+                    <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
+                  </button>
+                {/if}
+                {#if provider.isConnected}
+                  {#if provider.provider === 'github'}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void createManagedShareForProvider(provider)}
+                      disabled={integrationBusyKey === `create:${provider.provider}`}
+                    >
+                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create location'}</span>
+                    </button>
+                  {/if}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => openProviderConnectionDialog(provider.provider)}
+                  >
+                    <span>{providerCardStatus(provider)}</span>
+                  </button>
+                {:else if provider.provider !== 'mega'}
+                  {#if providerFlowState(provider.provider)?.canCancel}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => cancelProviderFlow(provider.provider)}
+                    >
+                      <span>Cancel</span>
+                    </button>
+                  {/if}
+                  {#if canResetProviderFlow(provider.provider)}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => resetProviderFlow(provider.provider)}
+                      disabled={providerFlowState(provider.provider)?.canCancel === true}
+                    >
+                      <span>Reset</span>
+                    </button>
+                  {/if}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void connectProvider(provider)}
+                    disabled={
+                      integrationBusyKey === `connect:${provider.provider}` ||
+                      provider.setup.status === 'needs-config' ||
+                      provider.setup.status === 'unsupported'
+                    }
+                  >
+                    <span>
+                      {integrationBusyKey === `connect:${provider.provider}`
+                        ? provider.setup.status === 'needs-install'
+                          ? 'Installing...'
+                          : 'Connecting...'
+                        : provider.provider === 'gdrive'
+                          ? 'Connect with Google'
+                          : 'Connect'}
+                    </span>
+                  </button>
+                {/if}
+              </div>
+            </div>
+
             {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
               <div class="inline-progress" aria-label="Installing provider helper">
                 <div class="inline-progress-bar"></div>
@@ -2901,7 +2884,7 @@
 
             {#if !provider.isConnected && provider.provider === 'gdrive' && provider.setup.status === 'needs-config'}
                 {@const draft = providerSetupDraft(provider.provider)}
-                <div class="provider-credentials">
+                <div class="provider-story-card compact-provider-card">
                   <label class="field-block compact-field">
                     <span>Client ID</span>
                     <input
@@ -2912,13 +2895,13 @@
                       oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
                     />
                   </label>
+                  <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client ID here.</p>
                 </div>
-                <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client ID here.</p>
             {/if}
 
             {#if !provider.isConnected && provider.provider === 'github' && provider.setup.status === 'needs-config'}
                 {@const draft = providerSetupDraft(provider.provider)}
-                <div class="provider-credentials">
+                <div class="provider-story-card compact-provider-card">
                   <label class="field-block compact-field">
                     <span>Client ID</span>
                     <input
@@ -2929,8 +2912,8 @@
                       oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
                     />
                   </label>
+                  <p class="muted-copy">Create a GitHub OAuth app, enable device flow, then paste the client ID here.</p>
                 </div>
-                <p class="muted-copy">Create a GitHub OAuth app, enable device flow, then paste the client ID here.</p>
             {/if}
 
             {#if !provider.isConnected && provider.provider === 'mega'}
@@ -2942,12 +2925,10 @@
                 }}>
                   <div class="mega-onboarding-head">
                     <div>
-                      <p class="subheading">MEGA onboarding</p>
+                      <h4>MEGA account</h4>
                       <p class="provider-story-copy">{megaOnboardingCopy(provider.provider)}</p>
                     </div>
-                    <span class={`status-pill ${pendingSession ? 'tone-warn' : draft.mode === 'signup' ? 'tone-durable' : 'tone-muted'}`}>
-                      {pendingSession ? 'Email confirmation' : draft.mode === 'signup' ? 'Create account' : 'Sign in'}
-                    </span>
+                    <p class="muted-copy compact-mode-copy">{pendingSession ? 'Email confirmation' : draft.mode === 'signup' ? 'Create account' : 'Sign in'}</p>
                   </div>
 
                   <div class="provider-credentials">
@@ -3145,8 +3126,8 @@
                   provider={provider.label}
                   title="No shares yet"
                   copy={provider.isConnected ? `Nearbytes should create or adopt the default nearbytes share automatically.` : `Connect ${provider.label} first, then Nearbytes will manage its shares here.`}
-                  statusBadges={[{ label: provider.isConnected ? 'Connected' : providerCardStatus(provider), tone: providerCardTone(provider) }]}
-                  meta={[provider.label]}
+                  statusBadges={[]}
+                  meta={[]}
                 />
               {:else}
                 {#each shares as summary (summary.share.id)}
@@ -3198,22 +3179,38 @@
               <h3>{hubStorageHeading(volumeId)}</h3>
               <p class="section-copy">{hubStorageIntro(volumeId)}</p>
             </div>
-            {#if explicitVolumePolicy(volumeId)}
-              <ArmedActionButton
-                class="panel-btn subtle compact danger"
-                icon={Trash2}
-                text="Use default storage locations again"
-                armed={true}
-                autoDisarmMs={3000}
-                onPress={() => removeVolumePolicy(volumeId)}
-              />
-            {/if}
+            <div class="section-actions">
+              <button type="button" class="panel-btn subtle compact" onclick={() => openHubLocationDialog(volumeId)}>
+                <Plus size={14} strokeWidth={2} />
+                <span>Add another location</span>
+              </button>
+              {#if explicitVolumePolicy(volumeId)}
+                <ArmedActionButton
+                  class="panel-btn subtle compact danger"
+                  icon={Trash2}
+                  text="Use default storage locations again"
+                  armed={true}
+                  autoDisarmMs={3000}
+                  onPress={() => removeVolumePolicy(volumeId)}
+                />
+              {/if}
+            </div>
           </div>
 
           <div class="rule-grid">
             {#if hubAttachedSources(volumeId).length === 0}
               <article class="rule-card">
-                <p class="card-copy">This hub is not using any storage location yet. Add or attach locations in storage setup, then come back here to decide how this hub should use them.</p>
+                <p class="card-copy">This hub is not using any storage location yet. Add one of your saved locations here, or open storage setup to create another.</p>
+                <div class="button-row inline-dialog-actions">
+                  <button type="button" class="panel-btn subtle compact" onclick={() => openHubLocationDialog(volumeId)}>
+                    <Plus size={14} strokeWidth={2} />
+                    <span>Choose a saved location</span>
+                  </button>
+                  <button type="button" class="panel-btn subtle compact" onclick={openStorageSetupFromHubDialog}>
+                    <Link2 size={14} strokeWidth={2} />
+                    <span>Open storage setup</span>
+                  </button>
+                </div>
               </article>
             {/if}
 
@@ -3332,6 +3329,65 @@
           </div>
         </section>
 
+        {#if hubLocationDialogVolumeId === volumeId}
+          {@const availableSources = hubAvailableSources(volumeId)}
+          <div class="provider-dialog-backdrop" role="presentation" onclick={closeHubLocationDialog}></div>
+          <div class="provider-dialog" role="dialog" aria-modal="true" aria-label="Add storage location to this hub">
+            <div class="section-head compact provider-dialog-head">
+              <div>
+                <p class="section-step">Hub storage</p>
+                <h3>Add another location</h3>
+              </div>
+              <button type="button" class="panel-btn subtle compact" onclick={closeHubLocationDialog}>
+                <span>Close</span>
+              </button>
+            </div>
+
+            <p class="section-copy">Choose one of your saved storage locations. Nearbytes will add it as a full copy for this hub, and you can fine-tune it right after.</p>
+
+            {#if availableSources.length > 0}
+              <div class="rule-grid dialog-rule-grid">
+                {#each availableSources as source (source.id)}
+                  {@const status = sourceStatus(source.id)}
+                  <article class="rule-card active">
+                    <div class="card-head">
+                      <div class="card-title">
+                        <div>
+                          <p class="provider-label">{formatProvider(source.provider)}</p>
+                          <h4>{compactPath(source.path)}</h4>
+                        </div>
+                      </div>
+                    </div>
+
+                    <p class="card-copy">{locationSummary(source)}</p>
+
+                    <div class="fact-row">
+                      <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
+                      <span>{usageSummary(source.id)}</span>
+                    </div>
+
+                    <div class="button-row inline-dialog-actions">
+                      <button type="button" class="panel-btn subtle compact" onclick={() => addSourceToHub(volumeId, source.id)}>
+                        <Plus size={14} strokeWidth={2} />
+                        <span>Use this location</span>
+                      </button>
+                    </div>
+                  </article>
+                {/each}
+              </div>
+            {:else}
+              <article class="rule-card active">
+                <p class="card-copy">You do not have any saved storage locations left to add to this hub.</p>
+                <div class="button-row inline-dialog-actions">
+                  <button type="button" class="panel-btn subtle compact" onclick={closeHubLocationDialog}>
+                    <span>Not now</span>
+                  </button>
+                </div>
+              </article>
+            {/if}
+          </div>
+        {/if}
+
       {/if}
     {/if}
 
@@ -3344,8 +3400,8 @@
         <div class="provider-dialog" role="dialog" aria-modal="true" aria-label={`${dialogProvider.label} connection`}>
           <div class="section-head compact provider-dialog-head">
             <div>
-              <p class="section-step">Connection</p>
               <h3>{dialogProvider.label}</h3>
+              <p class="section-copy">Connection details</p>
             </div>
             <button type="button" class="panel-btn subtle compact" onclick={closeProviderConnectionDialog}>
               <span>Close</span>
@@ -3360,9 +3416,9 @@
 
             <div class="provider-path-card">
               <p class="subheading">Mirror settings</p>
-              <div class="provider-fact-grid">
+              <div class="provider-fact-list">
                 {#each providerTransparencyFacts(dialogProvider) as fact}
-                  <span class="provider-fact-chip">{fact}</span>
+                  <p class="provider-story-copy">{fact}</p>
                 {/each}
               </div>
             </div>
@@ -3409,7 +3465,7 @@
           <div class="button-row provider-dialog-actions">
             <button
               type="button"
-              class={`status-pill status-pill-button ${providerDisconnectArmed[dialogProvider.provider] ? 'tone-danger' : 'tone-good'}`}
+              class={`panel-btn subtle compact ${providerDisconnectArmed[dialogProvider.provider] ? 'danger' : ''}`}
               onclick={async () => {
                 if (providerDisconnectArmed[dialogProvider.provider]) {
                   await disconnectProvider(dialogProvider);
@@ -3424,7 +3480,7 @@
                 ? 'Disconnecting...'
                 : providerDisconnectArmed[dialogProvider.provider]
                   ? 'Confirm disconnect'
-                  : 'Connected'}
+                  : 'Disconnect'}
             </button>
           </div>
         </div>
@@ -3443,7 +3499,7 @@
     --text-main: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     --text-soft: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
     --text-faint: var(--nb-text-faint, rgba(110, 110, 115, 0.62));
-    --teal: color-mix(in srgb, var(--nb-success, #6aa975) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    --teal: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 42%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
     --warn: color-mix(in srgb, var(--nb-warning, #d4945f) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
     --danger: color-mix(in srgb, var(--nb-danger, #c86a6a) 86%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
     display: grid;
@@ -3484,75 +3540,51 @@
     margin-bottom: 0.15rem;
   }
 
-  .overview-grid {
-    display: grid;
-    gap: 0.75rem;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  .provider-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.62rem;
+    align-items: stretch;
   }
 
-  .overview-card {
-    display: grid;
-    text-align: left;
-    gap: 0.35rem;
-    padding: 0.82rem;
-    border-radius: 16px;
+  .provider-tab {
+    min-height: 58px;
+    min-width: 150px;
+    padding: 0.7rem 0.84rem;
+    border-radius: 14px;
     border: 1px solid var(--panel-soft-border);
     background: var(--card-bg);
-  }
-
-  .tab-card {
-    cursor: pointer;
-    transition:
-      transform 120ms ease,
-      border-color 120ms ease,
-      background 120ms ease,
-      box-shadow 120ms ease;
-  }
-
-  .tab-card:hover {
-    transform: translateY(-1px);
-    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
-    background: color-mix(in srgb, var(--card-bg) 92%, rgba(255, 249, 245, 0.92));
-  }
-
-  .tab-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--card-bg-strong) 95%, rgba(255, 255, 255, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 74%, rgba(210, 122, 84, 0.08));
-  }
-
-  .tab-card-shell {
-    padding: 0;
-    overflow: hidden;
-  }
-
-  .tab-card-select {
-    width: 100%;
+    color: var(--text-main);
     display: grid;
-    gap: 0.35rem;
-    padding: 0.82rem;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
+    align-content: center;
+    gap: 0.16rem;
     text-align: left;
+    font: inherit;
     cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
   }
 
-  .tab-card-meta {
-    display: grid;
-    gap: 0.52rem;
-    padding: 0 0.82rem 0.72rem;
-    border-top: 1px solid var(--panel-soft-border);
+  .provider-tab:hover {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 12%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--card-bg) 96%, rgba(255, 252, 249, 0.92));
   }
 
-  .tab-card-actions {
-    margin-top: 0.05rem;
+  .provider-tab.active {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--card-bg-strong) 96%, rgba(255, 255, 255, 0.92));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
   }
 
-  .provider-section-meta {
-    display: grid;
-    gap: 0.62rem;
+  .provider-tab-label {
+    font-size: 0.84rem;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .provider-tab-copy {
+    color: var(--text-soft);
+    font-size: 0.75rem;
+    line-height: 1.2;
   }
 
   .provider-dialog-backdrop {
@@ -3590,12 +3622,37 @@
     gap: 0.72rem;
   }
 
+  .section-actions,
+  .inline-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem;
+  }
+
+  .dialog-rule-grid {
+    margin-top: 0.15rem;
+  }
+
   .provider-dialog-grid {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
 
   .provider-dialog-actions {
     justify-content: flex-end;
+  }
+
+  .global-panel-head {
+    gap: 0.9rem;
+  }
+
+  .compact-panel-actions {
+    gap: 0.5rem;
+    justify-content: flex-end;
+  }
+
+  .compact-provider-card {
+    padding: 0.76rem 0.82rem;
   }
 
   .section-head > div:first-child,
@@ -3792,26 +3849,6 @@
     color: var(--nb-btn-hover-color, rgba(28, 28, 30, 0.96));
   }
 
-  .status-pill-button {
-    cursor: pointer;
-    font: inherit;
-    transition:
-      border-color 120ms ease,
-      background 120ms ease,
-      color 120ms ease,
-      transform 120ms ease;
-  }
-
-  .status-pill-button:hover:not(:disabled) {
-    transform: translateY(-1px);
-  }
-
-  .status-pill-button:disabled {
-    opacity: 0.55;
-    cursor: default;
-    transform: none;
-  }
-
   .summary-pill.warning,
   .status-pill.tone-warn {
     border-color: color-mix(in srgb, var(--nb-warning, rgba(251, 191, 36, 0.28)) 62%, transparent);
@@ -3821,8 +3858,8 @@
 
   .status-pill.tone-good,
   .status-pill.tone-durable {
-    border-color: color-mix(in srgb, var(--nb-success, rgba(45, 212, 191, 0.28)) 62%, transparent);
-    background: color-mix(in srgb, var(--nb-success-surface, rgba(9, 58, 58, 0.42)) 90%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 16%, rgba(60, 60, 67, 0.12));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.92));
     color: var(--teal);
   }
 
@@ -3930,14 +3967,14 @@
 
   .panel-success {
     color: var(--teal);
-    border: 1px solid color-mix(in srgb, var(--nb-success, #6aa975) 24%, transparent);
-    background: color-mix(in srgb, var(--nb-success-surface, rgba(134, 239, 172, 0.12)) 84%, rgba(247, 252, 248, 0.96));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 18%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
   }
 
   .protection-banner {
     color: var(--teal);
-    border: 1px solid color-mix(in srgb, var(--nb-success, #6aa975) 20%, transparent);
-    background: color-mix(in srgb, var(--nb-success-surface, rgba(134, 239, 172, 0.12)) 78%, rgba(247, 252, 248, 0.96));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 16%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.9));
   }
 
   .protection-banner.warning {
@@ -3951,6 +3988,30 @@
   .danger-block {
     display: grid;
     gap: 0.68rem;
+  }
+
+  .setting-list {
+    display: grid;
+    gap: 0.42rem;
+  }
+
+  .setting-row {
+    min-height: 36px;
+    padding: 0.48rem 0.06rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: center;
+    color: var(--text-main);
+    font-size: 0.79rem;
+    font-weight: 600;
+  }
+
+  .setting-row input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--nb-accent-strong, #8f6a3b);
   }
 
   .toggle-stack {
@@ -4099,24 +4160,23 @@
 
   .mega-onboarding-card {
     gap: 0.9rem;
-    padding: 0.88rem 0.92rem;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--card-bg-strong) 95%, rgba(255, 251, 247, 0.96)), color-mix(in srgb, var(--card-bg) 98%, rgba(249, 244, 240, 0.88))),
-      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #d27a54) 10%, transparent), transparent 56%);
+    padding: 0.82rem 0.88rem;
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 12%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
   }
 
   .mega-onboarding-head {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.72rem;
-    justify-content: space-between;
-    align-items: start;
+    display: grid;
+    gap: 0.28rem;
   }
 
   .mega-onboarding-head > div {
     display: grid;
     gap: 0.22rem;
+  }
+
+  .compact-mode-copy {
+    margin: 0;
   }
 
   .mega-onboarding-actions {
@@ -4169,10 +4229,10 @@
   .provider-flow-status {
     display: grid;
     gap: 0.25rem;
-    padding: 0.7rem 0.85rem;
+    padding: 0.62rem 0.78rem;
     border-radius: 0.8rem;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(249, 244, 240, 0.88));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(249, 244, 240, 0.8));
   }
 
   .provider-story-card,
@@ -4199,24 +4259,15 @@
     color: var(--text-soft);
   }
 
-  .provider-fact-grid,
   .managed-share-fact-grid {
     display: flex;
     flex-wrap: wrap;
     gap: 0.42rem;
   }
 
-  .provider-fact-chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 28px;
-    padding: 0.28rem 0.62rem;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
-    color: var(--text-main);
-    font-size: 0.74rem;
-    font-weight: 600;
+  .provider-fact-list {
+    display: grid;
+    gap: 0.24rem;
   }
 
   .provider-step-list {
@@ -4250,10 +4301,10 @@
   .provider-path-card {
     display: grid;
     gap: 0.28rem;
-    padding: 0.68rem 0.76rem;
+    padding: 0.62rem 0.72rem;
     border-radius: 0.78rem;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.9));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.84));
   }
 
   .provider-path-copy {
@@ -4286,6 +4337,11 @@
       width: calc(100vw - 1rem);
       padding: 0.82rem;
     }
+
+    .section-actions,
+    .inline-dialog-actions {
+      width: 100%;
+    }
   }
 
   .compact-share-grid {
@@ -4294,69 +4350,10 @@
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 
-  .share-toggle-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.46rem;
-  }
-
-  .share-toggle-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    min-height: 32px;
-    padding: 0.28rem 0.78rem 0.28rem 0.62rem;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
-    color: var(--text-soft);
-    font: inherit;
-    font-size: 0.78rem;
-    font-weight: 600;
-    line-height: 1.1;
-    cursor: pointer;
-    transition:
-      border-color 140ms ease,
-      background 140ms ease,
-      color 140ms ease,
-      transform 140ms ease;
-  }
-
-  .share-toggle-pill:hover {
-    transform: translateY(-1px);
-    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
-    background: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%));
-    color: var(--nb-btn-hover-color, rgba(28, 28, 30, 0.96));
-  }
-
-  .share-toggle-pill.active {
-    border-color: var(--nb-btn-active-border, color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12))));
-    background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92)));
-    color: var(--nb-btn-active-color, rgba(28, 28, 30, 0.96));
-  }
-
-  .share-toggle-icon {
-    width: 16px;
-    height: 16px;
-    border-radius: 999px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.9));
-    color: inherit;
-    flex: 0 0 auto;
-  }
-
-  .share-toggle-pill.active .share-toggle-icon {
-    border-color: var(--nb-btn-active-border, color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12))));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
-  }
-
   .compact-share-advanced {
-    padding: 0.72rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(248, 243, 239, 0.88));
+    padding: 0.58rem 0;
+    border: 0;
+    background: transparent;
   }
 
   .field-block {
@@ -4427,7 +4424,7 @@
   .details-card summary {
     cursor: pointer;
     color: var(--text-main);
-    font-size: 0.83rem;
+    font-size: 0.78rem;
     font-weight: 600;
     list-style: none;
   }
@@ -4452,16 +4449,13 @@
   }
 
   .add-card {
-    place-items: center;
     align-content: center;
-    text-align: center;
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.9));
     border-style: dashed;
   }
 
   .add-card-button {
-    width: 46px;
-    height: 46px;
+    min-height: 38px;
     border-radius: 16px;
     border: 1px dashed color-mix(in srgb, var(--nb-accent, #d27a54) 22%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
@@ -4469,11 +4463,17 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 0.45rem;
+    padding: 0 0.82rem;
     cursor: pointer;
     transition:
       transform 120ms ease,
       border-color 120ms ease,
       background 120ms ease;
+  }
+
+  .add-card-button.wide {
+    width: fit-content;
   }
 
   .add-card-button:hover {
@@ -4527,8 +4527,8 @@
   }
 
   .inline-details {
-    padding: 0.72rem 0.78rem;
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
+    padding: 0.58rem 0 0;
+    background: transparent;
   }
 
   @keyframes provider-progress-slide {
@@ -4544,6 +4544,15 @@
     .storage-panel {
       padding: 0.85rem;
       border-radius: 18px;
+    }
+
+    .provider-tabs {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    }
+
+    .provider-tab {
+      min-width: 0;
     }
 
     .section-head,
@@ -4563,7 +4572,7 @@
 
     .button-row > :global(*),
     .toolbar-row > *,
-    .tab-card {
+    .provider-tab {
       flex: 1 1 100%;
     }
   }

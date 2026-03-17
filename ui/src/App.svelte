@@ -52,6 +52,7 @@
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
+  import HubStorageButton from './components/HubStorageButton.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
   import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
@@ -546,6 +547,12 @@
     sourceDiscoveryPanelFocus = focus;
     showSourcesPanel = true;
     showVolumeStoragePanel = false;
+  }
+
+  function openVolumeStoragePanel(): void {
+    sourceDiscoveryPanelFocus = null;
+    showVolumeStoragePanel = true;
+    showSourcesPanel = false;
   }
 
   function stopSourceDiscoveryWatch(): void {
@@ -3478,15 +3485,12 @@
       return;
     }
     selectMountPreservingLayout(targetMount.id);
-    showVolumeStoragePanel = true;
-    showSourcesPanel = false;
-    sourceDiscoveryPanelFocus = null;
+    openVolumeStoragePanel();
   }
 
   function openVolumeShareStoragePanel(): void {
     showVolumeShareDialog = false;
-    showVolumeStoragePanel = true;
-    showSourcesPanel = false;
+    openVolumeStoragePanel();
     sourceDiscoveryPanelFocus = 'shares';
   }
 
@@ -5785,6 +5789,7 @@
           currentVolumePresentation={currentMountedVolumePresentation}
           knownVolumes={knownMountedVolumes}
           onOpenVolumeRouting={openMountedVolumeRouting}
+          onOpenStorageSetup={() => openSourcesPanelWithFocus(null)}
           discoveryDetails={latestSourceDiscovery}
           refreshToken={sourceDiscoveryRefreshToken}
           focusSection={sourceDiscoveryPanelFocus}
@@ -5798,6 +5803,7 @@
           currentVolumePresentation={currentMountedVolumePresentation}
           knownVolumes={knownMountedVolumes}
           onOpenVolumeRouting={openMountedVolumeRouting}
+          onOpenStorageSetup={() => openSourcesPanelWithFocus(null)}
           refreshToken={sourceDiscoveryRefreshToken}
         />
       </div>
@@ -6991,18 +6997,15 @@
                 title="Remove hub"
                 ariaLabel="Remove hub"
               />
-              <button
-                type="button"
-                class="workspace-toggle"
-                class:active={showVolumeStoragePanel}
+              <HubStorageButton
+                active={showVolumeStoragePanel}
+                badge="Hub"
+                label="Storage locations"
                 onclick={() => {
-                  toggleVolumeStoragePanel();
+                  openVolumeStoragePanel();
                   collapseMount(mountDialogMount.id);
                 }}
-              >
-                <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                <span>Rules</span>
-              </button>
+              />
               <button
                 type="button"
                 class="workspace-toggle"
