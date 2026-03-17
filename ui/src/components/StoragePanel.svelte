@@ -1542,9 +1542,9 @@
 
   function protectionLabel(destination: VolumeDestinationConfig | null, sourceId: string): string {
     const tone = protectionTone(destination, sourceId);
-    if (tone === 'durable') return 'Protected copy';
-    if (tone === 'replica') return 'Spare copy';
-    return 'Not keeping a copy';
+    if (tone === 'durable') return 'Safe copy';
+    if (tone === 'replica') return 'Extra copy';
+    return 'Not a full copy';
   }
 
   function canRemoveAnySource(): boolean {
@@ -1713,7 +1713,7 @@
     if (status && status.exists && !status.canWrite) {
       return { label: 'Cannot write now', tone: 'warn' as StatusTone };
     }
-    return { label: 'Can save new data', tone: 'good' as StatusTone };
+    return { label: 'Can store here', tone: 'good' as StatusTone };
   }
 
   function locationSummary(source: SourceConfigEntry): string {
@@ -1725,50 +1725,50 @@
       return 'Nearbytes is moving this location to a new folder. Both folders stay active until the move finishes.';
     }
     if (!hasSourcePath(source)) {
-      return 'Choose a folder to finish setting up this storage location.';
+      return 'Choose a folder to finish setting up this location.';
     }
     if (!source.enabled) {
       return 'Nearbytes will ignore this location until you turn it back on.';
     }
     if (status?.exists === false) {
-      return 'This folder is not available right now. Your rules stay saved, but Nearbytes cannot use it.';
+      return 'This folder is not available right now. Your choices stay stored, but Nearbytes cannot use this location.';
     }
     if (status && !status.isDirectory) {
       return 'This path exists, but it is not a folder.';
     }
     if (source.writable && status?.canWrite === false) {
-      return 'Nearbytes can read this location, but it cannot save new data here right now.';
+      return 'Nearbytes can look here, but it cannot store here right now.';
     }
     if (source.writable) {
-      return 'Nearbytes can read this location and save new encrypted data here.';
+      return 'Nearbytes can use this location and store here.';
     }
-    return 'Nearbytes can read this location, but it will not save new data here.';
+    return 'Nearbytes can use this location, but it will not store here.';
   }
 
   function usageSummary(sourceId: string): string {
     const totalBytes = sourceStatus(sourceId)?.usage.totalBytes ?? 0;
     if (totalBytes <= 0) {
-      return 'No Nearbytes data is stored here yet.';
+      return 'Nothing is stored here yet.';
     }
-    return `Nearbytes is using ${formatSize(totalBytes)} in this location.`;
+    return `Using ${formatSize(totalBytes)} here.`;
   }
 
   function protectionSummary(targetVolumeId: string | null): string {
     const count = durableLocationCount(targetVolumeId);
-    if (count === 0) return 'Choose at least one protected copy';
-    if (count === 1) return '1 protected copy ready';
-    return `${count} protected copies ready`;
+    if (count === 0) return 'Choose a safe place';
+    if (count === 1) return '1 safe copy ready';
+    return `${count} safe copies ready`;
   }
 
   function protectionHint(targetVolumeId: string | null): string {
     if (hasDurableDestination(targetVolumeId)) {
       return targetVolumeId
-        ? 'This hub already has at least one writable protected copy.'
-        : 'New hubs will start with at least one writable protected copy.';
+        ? 'This hub already has at least one place keeping everything safe.'
+        : 'New hubs will start with at least one place keeping everything safe.';
     }
     return targetVolumeId
-      ? 'Turn on "Keep a full copy" for at least one writable location below.'
-      : 'Every new hub needs at least one writable location that keeps a protected copy.';
+      ? 'Choose at least one writable location below to keep the whole hub.'
+      : 'Every new hub needs at least one writable location that keeps the whole hub.';
   }
 
   function copyHelpText(targetVolumeId: string | null, source: SourceConfigEntry): string {
@@ -1776,25 +1776,25 @@
     const status = sourceStatus(source.id);
     if (!keepsFullCopy(destination)) {
       return targetVolumeId
-        ? 'This hub is not being kept here.'
-        : 'New hubs will not keep a full copy here.';
+        ? 'This location is not keeping the whole hub.'
+        : 'New hubs will not keep a full copy here by default.';
     }
     if (!source.enabled) {
-      return 'This rule is saved, but the location itself is turned off.';
+      return 'This location is chosen, but the location itself is turned off right now.';
     }
     if (!source.writable) {
-      return 'This rule is saved, but Nearbytes cannot keep a protected copy here until writing is allowed.';
+      return 'This location is chosen, but Nearbytes cannot store the whole hub here until writing is allowed.';
     }
     if (status?.exists === false) {
-      return 'This rule is saved, but the folder is not available right now.';
+      return 'This location is chosen, but the folder is not available right now.';
     }
     if (status && status.exists && !status.canWrite) {
-      return 'This rule is saved, but Nearbytes cannot write to this folder right now.';
+      return 'This location is chosen, but Nearbytes cannot write to this folder right now.';
     }
     if (canReuseOtherGuaranteedCopies(destination)) {
-      return 'If available storage runs low, Nearbytes may delete blocks from this location, but only after another protected location already has them.';
+      return 'If this location runs low on room, Nearbytes may trim older data here, but only after another safe copy already has it.';
     }
-    return 'This location keeps a protected full copy.';
+    return 'This location keeps the whole hub.';
   }
 
   function applyRootsResponse(response: {
@@ -2737,7 +2737,7 @@
         title={offer.label}
         copy={offer.detail}
         statusBadges={[{ label: 'Incoming location', tone: 'muted' }]}
-        meta={[`Shared by ${offer.ownerLabel}`, volumeId ? 'Will attach to this hub' : 'Saved as a storage location']}
+        meta={[`Shared by ${offer.ownerLabel}`, volumeId ? 'Will attach to this hub' : 'Added as a storage location']}
       >
         {#snippet body()}
           {#if offer.suggestedLocalPath}
@@ -3382,9 +3382,9 @@
       {#if volumeId}
         <div class="overview-grid">
           <button type="button" class="overview-card tab-card" class:active={volumeView === 'copies'} onclick={() => (volumeView = 'copies')}>
-            <p class="provider-label">Copies</p>
+            <p class="provider-label">Safety</p>
             <h3>{protectionSummary(volumeId)}</h3>
-            <p class="card-copy">{hasDurableDestination(volumeId) ? 'This hub is protected.' : 'Choose at least one protected copy.'}</p>
+            <p class="card-copy">{hasDurableDestination(volumeId) ? 'This hub has a safe home.' : 'Pick at least one place to keep everything.'}</p>
           </button>
           <button type="button" class="overview-card tab-card" class:active={volumeView === 'shares'} onclick={() => (volumeView = 'shares')}>
             <p class="provider-label">Locations</p>
@@ -3407,7 +3407,7 @@
       {/if}
 
       {#if !volumeId}
-        <p class="storage-message">Open this hub first, then choose which locations keep a full copy.</p>
+        <p class="storage-message">Open this hub first, then choose the places that should keep everything.</p>
       {:else}
         {#if volumeView === 'shares'}
         <section class="panel-section">
@@ -3833,13 +3833,13 @@
         <section class="panel-section">
           <div class="section-head">
             <div>
-              <p class="section-step">Copies</p>
-              <h3>{explicitVolumePolicy(volumeId) ? 'This hub has its own copy rule' : 'This hub currently inherits the default copy rule'}</h3>
+              <p class="section-step">Safety</p>
+              <h3>{explicitVolumePolicy(volumeId) ? 'Where this hub keeps everything' : 'Where this hub keeps everything by default'}</h3>
               <p class="section-copy">
                 {#if explicitVolumePolicy(volumeId)}
-                  Changes below are saved only for this hub. Remove the custom rule to use the default rule again.
+                  Choose the places that should keep the whole hub. These choices apply only to this hub.
                 {:else}
-                  The switches below start from your default rule. Changing them will create a saved rule for this hub only.
+                  These are your starting choices. Changing them will store custom choices just for this hub.
                 {/if}
               </p>
             </div>
@@ -3847,7 +3847,7 @@
               <ArmedActionButton
                 class="panel-btn subtle compact danger"
                 icon={Trash2}
-                text="Use default rules again"
+                text="Go back to defaults"
                 armed={true}
                 autoDisarmMs={3000}
                 onPress={() => removeVolumePolicy(volumeId)}
@@ -3882,19 +3882,19 @@
                     onchange={(event) => setKeepFullCopy(volumeId, source.id, (event.currentTarget as HTMLInputElement).checked)}
                   />
                   <div>
-                    <span class="toggle-title">Keep this hub here</span>
-                    <span class="toggle-copy">Full history and file data.</span>
+                    <span class="toggle-title">Store this hub here</span>
+                    <span class="toggle-copy">Files, history, and everything needed to open it.</span>
                   </div>
                 </label>
 
                 <p class="card-copy">{copyHelpText(volumeId, source)}</p>
 
                 <details class="details-card inline-details">
-                  <summary>Advanced</summary>
+                  <summary>More choices</summary>
                   {#if keepsFullCopy(destination)}
                     <div class="field-grid">
                       <label class="field-block">
-                        <span>Keep available</span>
+                        <span>Leave free room</span>
                         <select
                           class="panel-input"
                           value={String(destinationReservePercent(destination))}
@@ -3907,15 +3907,15 @@
                         </select>
                       </label>
                       <label class="field-block">
-                        <span>If available storage runs low</span>
+                        <span>When this place gets full</span>
                         <select
                           class="panel-input"
                           value={destination?.fullPolicy ?? 'block-writes'}
                           onchange={(event) =>
                             updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
                         >
-                          <option value="block-writes">Never delete this protected copy</option>
-                          <option value="drop-older-blocks">Delete blocks here after another protected copy exists</option>
+                          <option value="block-writes">Keep everything here</option>
+                          <option value="drop-older-blocks">Trim older data after another safe copy exists</option>
                         </select>
                       </label>
                     </div>
@@ -4008,7 +4008,7 @@
               <p class="section-copy">Changes here affect every hub on this device. Use this view when you want to add, move, or disable a local storage folder.</p>
             </div>
             <div class="section-metrics">
-              <span class="summary-pill">{countLabel(configDraft.sources.length, 'folder')} saved</span>
+              <span class="summary-pill">{countLabel(configDraft.sources.length, 'folder')} added</span>
               <span class="summary-pill" class:warning={!hasDurableDestination(null)}>{protectionSummary(null)}</span>
             </div>
           </div>

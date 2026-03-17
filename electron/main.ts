@@ -887,6 +887,8 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
         let lastInputAt = performance.now();
         let lastFrameAt = performance.now();
 
+        const isRendererVisible = () => !document.hidden && document.visibilityState === 'visible';
+
         const describeTarget = (target) => {
           try {
             if (target === window) {
@@ -935,6 +937,14 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
         };
         trackedEvents.forEach((type) => {
           window.addEventListener(type, inputCapture, { capture: true, passive: true });
+        });
+        document.addEventListener('visibilitychange', () => {
+          const now = performance.now();
+          lastFrameAt = now;
+          lastInputAt = now;
+          if (!isRendererVisible()) {
+            lastInputSummary = 'none';
+          }
         });
 
         const originalAddEventListener = EventTarget.prototype.addEventListener;
@@ -1051,6 +1061,10 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
         let lastTickAt = performance.now();
         setInterval(() => {
           const now = performance.now();
+          if (!isRendererVisible()) {
+            lastTickAt = now;
+            return;
+          }
           const driftMs = now - lastTickAt - 1000;
           if (driftMs >= stallThresholdMs) {
             console.warn(
@@ -1066,6 +1080,11 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
         }, 1000);
 
         const monitorFrames = (timestamp) => {
+          if (!isRendererVisible()) {
+            lastFrameAt = timestamp;
+            window.requestAnimationFrame(monitorFrames);
+            return;
+          }
           const gapMs = timestamp - lastFrameAt;
           if (gapMs >= frameGapThresholdMs) {
             console.warn(
