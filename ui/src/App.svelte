@@ -4822,7 +4822,11 @@
       updateConfiguredChatIdentity(identity.id, {
         publicKey: published.published.authorPublicKey,
       });
-      await handleChatMutated();
+      try {
+        await handleChatMutated();
+      } catch (refreshError) {
+        console.warn('Identity was published but chat refresh failed:', refreshError);
+      }
       if (options.announceSuccess) {
         identityManagerMessage = `Published ${identity.displayName.trim()} to this hub.`;
       }
