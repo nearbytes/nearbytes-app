@@ -11,6 +11,8 @@ import {
   inspectNearbytesRoot,
   NEARBYTES_LEGACY_MARKER_FILE,
   NEARBYTES_MARKER_FILE,
+  NEARBYTES_ROOT_META_FILE,
+  NEARBYTES_ROOT_META_KIND,
 } from '../sourceDiscovery.js';
 
 describe('source discovery', () => {
@@ -46,18 +48,31 @@ describe('source discovery', () => {
     const root = path.join(tempDir, 'root');
 
     const created = await ensureNearbytesMarker(root);
-    expect(created).toBe(true);
+    expect(created.created).toBe(true);
 
     const markerPath = path.join(root, NEARBYTES_MARKER_FILE);
     const markerPayload = await readFile(markerPath, 'utf8');
     expect(markerPayload).toContain('Nearbytes storage location');
 
+    const metadataPath = path.join(root, NEARBYTES_ROOT_META_FILE);
+    const metadataPayload = JSON.parse(await readFile(metadataPath, 'utf8')) as {
+      p?: string;
+      rootId?: string;
+    };
+    expect(metadataPayload.p).toBe(NEARBYTES_ROOT_META_KIND);
+    expect(metadataPayload.rootId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+    expect(created.rootMetaId).toBe(metadataPayload.rootId);
+
     const second = await ensureNearbytesMarker(root);
-    expect(second).toBe(false);
+    expect(second.created).toBe(false);
+    expect(second.rootMetaId).toBe(metadataPayload.rootId);
 
     await rm(markerPath, { force: true });
     const recreated = await ensureNearbytesMarker(root);
-    expect(recreated).toBe(true);
+    expect(recreated.created).toBe(true);
+    expect(recreated.rootMetaId).toBe(metadataPayload.rootId);
 
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -104,6 +119,7 @@ describe('source discovery', () => {
     expect(inspection).not.toBeNull();
     expect(inspection?.sourceType).toBe('marker');
     expect(inspection?.hasMarker).toBe(true);
+    expect(inspection?.rootMetaId).toBeUndefined();
     expect(inspection?.hasChannels).toBe(false);
     expect(inspection?.hasBlocks).toBe(false);
     expect(inspection?.volumeIds).toEqual([]);
@@ -120,6 +136,30 @@ describe('source discovery', () => {
     const inspection = await inspectNearbytesRoot(root);
     expect(inspection).not.toBeNull();
     expect(inspection?.markerFile).toBe(path.join(root, NEARBYTES_LEGACY_MARKER_FILE));
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('includes root metadata IDs in discovered sources when present', async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), 'nearbytes-source-root-meta-'));
+    const root = path.join(tempDir, 'meta-root');
+
+    const ensured = await ensureNearbytesMarker(root);
+    process.env.NEARBYTES_SOURCE_SCAN_DIRS = root;
+
+    const discovered = await discoverNearbytesRoots({
+      maxDepth: 1,
+      maxDirectories: 50,
+      includeDefaultRoots: false,
+    });
+    expect(discovered[0]?.rootMetaId).toBe(ensured.rootMetaId);
+
+    const sourceSuggestions = await discoverNearbytesSources({
+      maxDepth: 1,
+      maxDirectories: 50,
+      includeDefaultRoots: false,
+    });
+    expect(sourceSuggestions[0]?.rootMetaId).toBe(ensured.rootMetaId);
 
     await rm(tempDir, { recursive: true, force: true });
   });

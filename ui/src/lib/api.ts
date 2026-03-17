@@ -670,6 +670,7 @@ export interface DiscoveredNearbytesSource {
   provider: SourceProvider;
   path: string;
   markerFile: string;
+  rootMetaId?: string;
   autoUpdate: boolean;
   sourceType: 'marker' | 'layout' | 'suggested';
 }
@@ -697,6 +698,7 @@ export interface ReconciledDiscoveredSourceItem {
   provider: SourceProvider;
   path: string;
   markerFile: string;
+  rootMetaId?: string;
   classification: 'marker' | 'layout';
   hasMarker: boolean;
   hasBlocks: boolean;

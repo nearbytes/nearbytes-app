@@ -145,6 +145,7 @@
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
   let lastRefreshToken = $state(0);
+  let activeReserveEditorKey = $state<string | null>(null);
   let discoveryRunId = 0;
 
   type ShareBadge = { label: string; tone?: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' };
@@ -173,6 +174,7 @@
     writable: boolean;
     defaultEnabled: boolean;
     reservePercent: number;
+    reserveKey: string;
     warning?: string;
     attachments: ShareAttachmentChip[];
     onToggleReadable: () => void;
@@ -1005,22 +1007,6 @@
     return `nearbytes/${slug}`;
   }
 
-  function sourceReservePercent(source: SourceConfigEntry): number {
-    return Number.isFinite(source.reservePercent) ? source.reservePercent : DEFAULT_RESERVE_PERCENT;
-  }
-
-  function managedShareReservePercent(summary: ManagedShareSummary, source: SourceConfigEntry | null): number {
-    return Number.isFinite(summary.storage?.reservePercent)
-      ? summary.storage!.reservePercent!
-      : source
-        ? sourceReservePercent(source)
-        : DEFAULT_RESERVE_PERCENT;
-  }
-
-  function destinationReservePercent(destination: VolumeDestinationConfig | null): number {
-    return Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT;
-  }
-
   function localShareView(source: SourceConfigEntry): UnifiedShareView {
     const status = sourceStatus(source.id);
     const defaultDestination = destinationFor(null, source.id);
@@ -1037,7 +1023,12 @@
       readable: source.enabled,
       writable: source.writable,
       defaultEnabled: keepsFullCopy(defaultDestination),
-      reservePercent: sourceReservePercent(source),
+      reservePercent: Number.isFinite(defaultDestination?.reservePercent)
+        ? defaultDestination!.reservePercent
+        : Number.isFinite(source.reservePercent)
+          ? source.reservePercent
+          : DEFAULT_RESERVE_PERCENT,
+      reserveKey: `source:${source.id}`,
       warning: status?.lastWriteFailure?.message,
       attachments: [],
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
@@ -1045,9 +1036,7 @@
       onToggleDefault: () => setKeepFullCopy(null, source.id, !keepsFullCopy(defaultDestination)),
       onReserveChange: (nextValue) => {
         updateSourceField(source.id, 'reservePercent', nextValue);
-        if (keepsFullCopy(defaultDestination)) {
-          updateDestinationField(null, source.id, 'reservePercent', nextValue);
-        }
+        updateDestinationField(null, source.id, 'reservePercent', nextValue);
       },
       onOpen: hasSourcePath(source) ? () => openSourceFolder(source.id) : undefined,
       openDisabled: !hasSourcePath(source),
@@ -1068,7 +1057,6 @@
     }
     const defaultDestination = destinationFor(null, source.id);
     const keepFullCopy = keepsFullCopy(defaultDestination);
-    const reservePercent = managedShareReservePercent(summary, source);
     return {
       provider: summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider === 'github' ? 'GitHub' : summary.share.provider,
       title: summary.share.label,
@@ -1092,7 +1080,12 @@
       readable: source.enabled,
       writable: source.writable,
       defaultEnabled: keepFullCopy,
-      reservePercent,
+      reservePercent: Number.isFinite(defaultDestination?.reservePercent)
+        ? defaultDestination!.reservePercent
+        : Number.isFinite(source.reservePercent)
+          ? source.reservePercent
+          : DEFAULT_RESERVE_PERCENT,
+      reserveKey: `managed:${summary.share.id}`,
       warning: summary.storage?.lastWriteFailureMessage,
       attachments: shareAttachmentLabels(summary),
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
@@ -1100,9 +1093,7 @@
       onToggleDefault: () => setKeepFullCopy(null, source.id, !keepFullCopy),
       onReserveChange: (nextValue) => {
         updateSourceField(source.id, 'reservePercent', nextValue);
-        if (keepFullCopy) {
-          updateDestinationField(null, source.id, 'reservePercent', nextValue);
-        }
+        updateDestinationField(null, source.id, 'reservePercent', nextValue);
       },
       onOpen: summary.share.sourceId ? () => openSourceFolder(summary.share.sourceId!) : undefined,
       openDisabled: !summary.share.sourceId,
@@ -1588,6 +1579,17 @@
     return keepsFullCopy(destination) && destination?.fullPolicy === 'drop-older-blocks';
   }
 
+  function knownManagedMirrorPaths(): Set<string> {
+    const known = new Set<string>();
+    for (const summary of managedShares) {
+      const resolved = normalizeComparablePath(summarySourcePath(summary));
+      if (resolved) {
+        known.add(resolved);
+      }
+    }
+    return known;
+  }
+
   function sourceSuggestionRows(): Array<{
     source: DiscoveredNearbytesSource;
     alreadyAdded: boolean;
@@ -1595,8 +1597,12 @@
   }> {
     if (!configDraft) return [];
     const unique = new Map<string, DiscoveredNearbytesSource>();
+    const managedMirrorPaths = knownManagedMirrorPaths();
     for (const source of discoveredSources) {
       const key = normalizeComparablePath(source.path);
+      if (managedMirrorPaths.has(key)) {
+        continue;
+      }
       const current = unique.get(key);
       if (!current || sourceSuggestionPriority(source.sourceType) < sourceSuggestionPriority(current.sourceType)) {
         unique.set(key, source);
@@ -2560,6 +2566,17 @@
     if (!Number.isFinite(parsed)) return DEFAULT_RESERVE_PERCENT;
     return Math.max(0, Math.min(95, parsed));
   }
+
+  function toggleReserveEditor(key: string): void {
+    activeReserveEditorKey = activeReserveEditorKey === key ? null : key;
+  }
+
+  function closeReserveEditor(key: string): void {
+    if (activeReserveEditorKey === key) {
+      activeReserveEditorKey = null;
+    }
+  }
+
 </script>
 
 {#if loading && !configDraft}
@@ -2577,6 +2594,32 @@
         statusBadges={view.statusBadges}
         meta={view.meta}
       >
+        {#snippet metaActions()}
+          <div class="inline-reserve-slot">
+            {#if activeReserveEditorKey === view.reserveKey}
+              <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
+                <span>Keep free</span>
+                <select
+                  class="panel-input inline-reserve-select"
+                  value={String(view.reservePercent)}
+                  onchange={(event) => {
+                    view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value));
+                    closeReserveEditor(view.reserveKey);
+                  }}
+                  onblur={() => closeReserveEditor(view.reserveKey)}
+                >
+                  {#each RESERVE_OPTIONS as option}
+                    <option value={option}>{formatPercent(option)}</option>
+                  {/each}
+                </select>
+              </label>
+            {:else}
+              <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(view.reserveKey)}>
+                <span>Keep free {formatPercent(view.reservePercent)}</span>
+              </button>
+            {/if}
+          </div>
+        {/snippet}
         {#snippet controls()}
           <div class="setting-list">
             <label class="setting-row">
@@ -2593,67 +2636,53 @@
             </label>
           </div>
         {/snippet}
-        {#snippet details()}
-          <details class="details-card inline-details compact-share-advanced">
-            <summary>More</summary>
-            <div class="card-control-row">
-              <label class="field-block compact-field" title="Minimum available storage to leave on this drive. Default is 5%.">
-                <span>Keep available</span>
-                <select
-                  class="panel-input"
-                  value={String(view.reservePercent)}
-                  onchange={(event) => view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value))}
-                >
-                  {#each RESERVE_OPTIONS as option}
-                    <option value={option}>{formatPercent(option)}</option>
-                  {/each}
-                </select>
-              </label>
-              <div class="button-row">
-                {#if view.onMove}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={view.onMove}
-                    disabled={view.moveDisabled}
-                  >
-                    <ArrowRightLeft size={14} strokeWidth={2} />
-                    <span>{view.moveLabel ?? 'Move'}</span>
-                  </button>
-                {/if}
-                {#if view.onRemove && view.canRemove}
-                  <ArmedActionButton
-                    class="panel-btn subtle compact danger"
-                    icon={Trash2}
-                    text="Remove"
-                    armed={true}
-                    autoDisarmMs={3000}
-                    resetKey={view.removeResetKey}
-                    onPress={view.onRemove}
-                  />
-                {/if}
-              </div>
-            </div>
-            {#if view.warning}
-              <p class="warning-copy">Last write problem: {view.warning}</p>
-            {/if}
-          </details>
-        {/snippet}
         {#snippet actions()}
-          {#if view.onOpen}
-            <button
-              type="button"
-              class="panel-btn subtle compact"
-              onclick={view.onOpen}
-              disabled={view.openDisabled}
-              title={view.openTitle}
-            >
-              <FolderOpen size={14} strokeWidth={2} />
-              <span>Open</span>
-            </button>
-          {/if}
+          <div class="storage-card-actions">
+            <div class="button-row storage-card-actions-left">
+              {#if view.onRemove && view.canRemove}
+                <ArmedActionButton
+                  class="panel-btn subtle compact danger"
+                  icon={Trash2}
+                  text="Remove"
+                  armed={true}
+                  autoDisarmMs={3000}
+                  resetKey={view.removeResetKey}
+                  onPress={view.onRemove}
+                />
+              {/if}
+              {#if view.onMove}
+                <button
+                  type="button"
+                  class="panel-btn subtle compact"
+                  onclick={view.onMove}
+                  disabled={view.moveDisabled}
+                >
+                  <ArrowRightLeft size={14} strokeWidth={2} />
+                  <span>{view.moveLabel ?? 'Move'}</span>
+                </button>
+              {/if}
+            </div>
+
+            <div class="button-row storage-card-actions-right">
+              {#if view.onOpen}
+                <button
+                  type="button"
+                  class="panel-btn subtle compact"
+                  onclick={view.onOpen}
+                  disabled={view.openDisabled}
+                  title={view.openTitle}
+                >
+                  <FolderOpen size={14} strokeWidth={2} />
+                  <span>Open</span>
+                </button>
+              {/if}
+            </div>
+          </div>
         {/snippet}
         {#snippet footer()}
+          {#if view.warning}
+            <p class="warning-copy">Last write problem: {view.warning}</p>
+          {/if}
           {#if view.attachments.length > 0}
             <div class="fact-row share-volume-row">
               {#each view.attachments as attachment}
@@ -2773,14 +2802,12 @@
               <Plus size={16} strokeWidth={2.1} />
               <span>Add a folder</span>
             </button>
-            <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
           </article>
         </div>
       </section>
 
       {#if configPath}
         <details class="details-card minor-details">
-          <summary>Configuration file</summary>
           <p class="mono-copy">{configPath}</p>
         </details>
       {/if}
@@ -3263,47 +3290,42 @@
                 <div class="fact-row">
                   <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
                   <span>{usageSummary(source.id)}</span>
-                </div>
-
-                <details class="details-card inline-details">
-                  <summary>More choices</summary>
-                  {#if mode !== 'off'}
-                    <div class="field-grid">
-                      <label class="field-block">
-                        <span>Leave free room</span>
+                  <div class="inline-reserve-slot">
+                    {#if activeReserveEditorKey === `hub:${volumeId}:${source.id}`}
+                      <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
+                        <span>Keep free</span>
                         <select
-                          class="panel-input"
-                          value={String(destinationReservePercent(destination))}
-                          onchange={(event) =>
-                            updateDestinationField(volumeId, source.id, 'reservePercent', clampReserve((event.currentTarget as HTMLSelectElement).value))}
+                          class="panel-input inline-reserve-select"
+                          value={String(Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT)}
+                          onchange={(event) => {
+                            updateDestinationField(volumeId, source.id, 'reservePercent', clampReserve((event.currentTarget as HTMLSelectElement).value));
+                            closeReserveEditor(`hub:${volumeId}:${source.id}`);
+                          }}
+                          onblur={() => closeReserveEditor(`hub:${volumeId}:${source.id}`)}
                         >
                           {#each RESERVE_OPTIONS as option}
                             <option value={option}>{formatPercent(option)}</option>
                           {/each}
                         </select>
                       </label>
-                      {#if mode === 'store'}
-                        <label class="field-block">
-                          <span>When this location gets full</span>
-                          <select
-                            class="panel-input"
-                            value={destination?.fullPolicy ?? 'block-writes'}
-                            onchange={(event) =>
-                              updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
-                          >
-                            <option value="block-writes">Keep everything here</option>
-                            <option value="drop-older-blocks">Trim older data after another full copy exists</option>
-                          </select>
-                        </label>
-                      {/if}
-                    </div>
-                  {/if}
+                    {:else}
+                      <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(`hub:${volumeId}:${source.id}`)}>
+                        <span>Keep free {formatPercent(Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT)}</span>
+                      </button>
+                    {/if}
+                  </div>
+                </div>
 
-                  <div class="button-row">
-                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id)} disabled={!hasSourcePath(source)}>
-                      <FolderOpen size={14} strokeWidth={2} />
-                      <span>Open</span>
-                    </button>
+                <div class="storage-card-actions">
+                  <div class="button-row storage-card-actions-left">
+                    <ArmedActionButton
+                      class="panel-btn subtle compact danger"
+                      icon={Trash2}
+                      text="Remove"
+                      armed={true}
+                      autoDisarmMs={3000}
+                      onPress={() => setHubLocationMode(volumeId, source.id, 'off')}
+                    />
                     <button
                       type="button"
                       class="panel-btn subtle compact"
@@ -3314,16 +3336,32 @@
                       <ArrowRightLeft size={14} strokeWidth={2} />
                       <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move folder' : 'Choose folder'}</span>
                     </button>
-                    <ArmedActionButton
-                      class="panel-btn subtle compact danger"
-                      icon={Trash2}
-                      text="Remove from this hub"
-                      armed={true}
-                      autoDisarmMs={3000}
-                      onPress={() => setHubLocationMode(volumeId, source.id, 'off')}
-                    />
                   </div>
-                </details>
+
+                  <div class="button-row storage-card-actions-right">
+                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id)} disabled={!hasSourcePath(source)}>
+                      <FolderOpen size={14} strokeWidth={2} />
+                      <span>Open</span>
+                    </button>
+                  </div>
+                </div>
+
+                {#if mode === 'store'}
+                  <div class="field-grid compact-visible-fields">
+                    <label class="field-block">
+                      <span>When this location gets full</span>
+                      <select
+                        class="panel-input"
+                        value={destination?.fullPolicy ?? 'block-writes'}
+                        onchange={(event) =>
+                          updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
+                      >
+                        <option value="block-writes">Keep everything here</option>
+                        <option value="drop-older-blocks">Trim older data after another full copy exists</option>
+                      </select>
+                    </label>
+                  </div>
+                {/if}
               </article>
             {/each}
           </div>
@@ -4086,6 +4124,45 @@
     overflow-wrap: anywhere;
   }
 
+  .inline-reserve-slot {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .inline-reserve-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 0.28rem 0.82rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.88));
+    color: var(--text-main);
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .inline-reserve-editor {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-soft);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .inline-reserve-select {
+    min-width: 86px;
+    height: 30px;
+    padding-block: 0.15rem;
+    padding-inline: 0.55rem 1.7rem;
+    border-radius: 999px;
+  }
+
   .subheading {
     margin: 0;
     color: var(--text-main);
@@ -4096,6 +4173,27 @@
     display: grid;
     gap: 0.65rem;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .storage-card-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.65rem;
+    align-items: center;
+  }
+
+  .storage-card-actions-left,
+  .storage-card-actions-right {
+    gap: 0.5rem;
+  }
+
+  .storage-card-actions-right {
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+
+  .compact-visible-fields {
+    margin-top: -0.05rem;
   }
 
   .managed-share-invite-row {
@@ -4350,12 +4448,6 @@
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 
-  .compact-share-advanced {
-    padding: 0.58rem 0;
-    border: 0;
-    background: transparent;
-  }
-
   .field-block {
     display: grid;
     gap: 0.3rem;
@@ -4419,29 +4511,6 @@
 
   .panel-input:disabled {
     opacity: 0.55;
-  }
-
-  .details-card summary {
-    cursor: pointer;
-    color: var(--text-main);
-    font-size: 0.78rem;
-    font-weight: 600;
-    list-style: none;
-  }
-
-  .details-card summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .details-card summary::before {
-    content: '+';
-    display: inline-block;
-    width: 1rem;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
-  }
-
-  .details-card[open] summary::before {
-    content: '-';
   }
 
   .suggestion-card {
@@ -4526,11 +4595,6 @@
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
   }
 
-  .inline-details {
-    padding: 0.58rem 0 0;
-    background: transparent;
-  }
-
   @keyframes provider-progress-slide {
     0% {
       transform: translateX(-110%);
@@ -4544,6 +4608,25 @@
     .storage-panel {
       padding: 0.85rem;
       border-radius: 18px;
+    }
+
+    .storage-card-actions {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+
+    .storage-card-actions-right {
+      margin-left: 0;
+      justify-content: flex-start;
+    }
+
+    .inline-reserve-slot {
+      margin-left: 0;
+    }
+
+    .inline-reserve-editor {
+      width: 100%;
+      justify-content: space-between;
     }
 
     .provider-tabs {

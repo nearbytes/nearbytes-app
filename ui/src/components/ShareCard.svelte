@@ -12,6 +12,7 @@
     active = false,
     statusBadges = [],
     meta = [],
+    metaActions,
     body,
     controls,
     details,
@@ -25,6 +26,7 @@
     active?: boolean;
     statusBadges?: Array<{ label: string; tone?: ShareCardBadgeTone }>;
     meta?: string[];
+    metaActions?: Snippet;
     body?: Snippet;
     controls?: Snippet;
     details?: Snippet;
@@ -69,11 +71,14 @@
     </div>
   {/if}
 
-  {#if meta.length > 0}
+  {#if meta.length > 0 || metaActions}
     <div class="fact-row">
       {#each meta as item}
         <span>{item}</span>
       {/each}
+      {#if metaActions}
+        {@render metaActions()}
+      {/if}
     </div>
   {/if}
 
