@@ -103,6 +103,7 @@
       return {
         displayName: published.record.profile.displayName,
         bio: published.record.profile.bio ?? '',
+        avatarDataUrl: '',
         publicKey: published.authorPublicKey,
         publishedAt: published.publishedAt,
         localOnly: false,
@@ -112,6 +113,7 @@
       return {
         displayName: activeIdentity.displayName || shortPublicKey(selectedProfilePublicKey),
         bio: activeIdentity.bio,
+        avatarDataUrl: activeIdentity.avatarDataUrl,
         publicKey: selectedProfilePublicKey,
         publishedAt: undefined,
         localOnly: true,
@@ -120,6 +122,7 @@
     return {
       displayName: shortPublicKey(selectedProfilePublicKey),
       bio: '',
+      avatarDataUrl: '',
       publicKey: selectedProfilePublicKey,
       publishedAt: undefined,
       localOnly: true,
@@ -421,7 +424,17 @@
   {#if selectedProfile}
     <section class="chat-profile-popover panel-surface" aria-label="Profile details">
       <div class="chat-profile-head">
-        <div class="chat-profile-avatar">{selectedProfile.displayName.charAt(0).toUpperCase() || '?'}</div>
+        <div class="chat-profile-avatar">
+          {#if selectedProfile.avatarDataUrl}
+            <img
+              class="chat-profile-avatar-image"
+              src={selectedProfile.avatarDataUrl}
+              alt={selectedProfile.displayName || 'Identity avatar'}
+            />
+          {:else}
+            {selectedProfile.displayName.charAt(0).toUpperCase() || '?'}
+          {/if}
+        </div>
         <div class="chat-profile-copy">
           <p class="chat-eyebrow">Profile</p>
           <h4>{selectedProfile.displayName}</h4>
@@ -906,12 +919,20 @@
     width: 34px;
     height: 34px;
     border-radius: 999px;
+    overflow: hidden;
     display: grid;
     place-items: center;
     background: color-mix(in srgb, var(--nb-accent, #d27a54) 8%, #fff8f2);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     font-weight: 700;
     flex: 0 0 auto;
+  }
+
+  .chat-profile-avatar-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
   }
 
   .chat-profile-copy {

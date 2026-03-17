@@ -36,6 +36,7 @@
   import {
     buildIdentitySecret,
     createConfiguredIdentity,
+    hasConfiguredIdentitySecret,
     loadActiveIdentityId,
     loadConfiguredIdentities,
     loadVolumeIdentityAssignments,
@@ -55,9 +56,9 @@
   import HubStorageButton from './components/HubStorageButton.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
+  import SharedSecretEditor from './components/SharedSecretEditor.svelte';
   import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
-  import SecretSeedFields from './components/SecretSeedFields.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
@@ -78,7 +79,6 @@
   import {
     ClipboardPaste,
     Download,
-    File,
     FileArchive,
     FileAudio,
     FileCode2,
@@ -873,6 +873,47 @@
     return `data:${mimeType};base64,${base64UrlToBase64(encoded)}`;
   }
 
+  function configuredIdentitySecretDataUrl(identity: ConfiguredIdentity): string | null {
+    const payload = trimSecretPart(identity.secretFilePayload);
+    if (!payload.startsWith(FILE_SECRET_PREFIX)) return null;
+    const encoded = payload.slice(FILE_SECRET_PREFIX.length);
+    if (encoded === '') return null;
+    const mimeType = trimSecretPart(identity.secretFileMimeType) || 'application/octet-stream';
+    return `data:${mimeType};base64,${base64UrlToBase64(encoded)}`;
+  }
+
+  function configuredIdentityHasImageSecret(identity: ConfiguredIdentity): boolean {
+    return (
+      trimSecretPart(identity.secretFilePayload) !== '' &&
+      trimSecretPart(identity.secretFileMimeType).startsWith('image/')
+    );
+  }
+
+  function configuredIdentityAvatarLabel(identity: ConfiguredIdentity): string {
+    const displayName = identity.displayName.trim();
+    if (displayName !== '') {
+      return displayName.charAt(0).toUpperCase();
+    }
+    return '?';
+  }
+
+  function readFileAsDataUrl(file: globalThis.File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error('Failed to read file'));
+      };
+      reader.onerror = () => {
+        reject(reader.error ?? new Error('Failed to read file'));
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   function secretFileBytesFromPayload(payload: string): Uint8Array | null {
     const trimmed = trimSecretPart(payload);
     if (!trimmed.startsWith(FILE_SECRET_PREFIX)) return null;
@@ -1400,9 +1441,11 @@
   let activeChatIdentityId = $state('');
   let volumeChatIdentityAssignments = $state<Record<string, string>>({});
   let showIdentityManager = $state(false);
+  let showCreateChooser = $state(false);
   let identityManagerLoading = $state(false);
   let identityManagerMessage = $state('');
   let identityManagerError = $state('');
+  let identityAvatarFileInput = $state<HTMLInputElement | null>(null);
   let identityHydrated = false;
   let chatRefreshVersion = $state(0);
   let fileManagerViewMode = $state<FileManagerViewMode>('icons');
@@ -2618,7 +2661,7 @@
     }
     if (mime.includes('zip') || mime.includes('tar') || mime.includes('compressed')) return FileArchive;
     if (mime.includes('pdf')) return FileText;
-    return File;
+    return FileText;
   }
 
   function formatRelativeDay(value: number): string {
@@ -3310,7 +3353,7 @@
     }
   }
 
-  async function applySecretFileToMount(file: File, mountId: string) {
+  async function applySecretFileToMount(file: globalThis.File, mountId: string) {
     clearMountRuntime(mountId);
     const fileBytes = new Uint8Array(await file.arrayBuffer());
     const payload = buildFileSecretPayload(fileBytes);
@@ -3636,6 +3679,7 @@
 
   function openJoinVolumeDialog(): void {
     showVolumeShareDialog = false;
+    showCreateChooser = false;
     resetJoinDialogState();
     showJoinVolumeDialog = true;
   }
@@ -3655,7 +3699,27 @@
       return;
     }
     showJoinVolumeDialog = false;
+    showCreateChooser = false;
     showVolumeShareDialog = true;
+  }
+
+  function openCreateChooser(): void {
+    showIdentityManager = false;
+    showCreateChooser = true;
+  }
+
+  function closeCreateChooser(): void {
+    showCreateChooser = false;
+  }
+
+  function startCreateHub(): void {
+    closeCreateChooser();
+    addMount();
+  }
+
+  function startCreateIdentity(): void {
+    closeCreateChooser();
+    addConfiguredChatIdentity();
   }
 
   function closeVolumeShareDialog(): void {
@@ -4530,7 +4594,6 @@
       fileManagerActive = false;
     }
     if (!nextShowChat) {
-      showIdentityManager = false;
     }
   }
 
@@ -4550,17 +4613,21 @@
         return identity;
       }
 
-      const nextAddress =
-        typeof patch.address === 'string' ? patch.address.trim() : identity.address;
-      const nextPassword =
-        typeof patch.password === 'string' ? patch.password.trim() : identity.password;
-      secretChanged = nextAddress !== identity.address || nextPassword !== identity.password;
-
-      return createConfiguredIdentity({
+      const previousSecret = buildIdentitySecret(identity);
+      const nextIdentity = createConfiguredIdentity({
         ...identity,
         ...patch,
-        publicKey: secretChanged ? undefined : patch.publicKey ?? identity.publicKey,
+        publicKey: patch.publicKey ?? identity.publicKey,
       });
+
+      secretChanged = buildIdentitySecret(nextIdentity) !== previousSecret;
+
+      return secretChanged
+        ? createConfiguredIdentity({
+            ...nextIdentity,
+            publicKey: undefined,
+          })
+        : nextIdentity;
     });
 
     if (secretChanged) {
@@ -4575,6 +4642,96 @@
         identityManagerMessage = 'Identity secret changed. Rejoin any hub chats explicitly.';
       }
     }
+  }
+
+  function updateConfiguredChatIdentitySecretText(
+    identityId: string,
+    field: 'address' | 'password',
+    value: string
+  ) {
+    updateConfiguredChatIdentity(identityId, {
+      [field]: value,
+      secretFilePayload: '',
+      secretFileName: '',
+      secretFileMimeType: '',
+    });
+  }
+
+  function clearConfiguredChatIdentitySecretFile(identityId: string) {
+    updateConfiguredChatIdentity(identityId, {
+      secretFilePayload: '',
+      secretFileName: '',
+      secretFileMimeType: '',
+    });
+  }
+
+  async function applySecretFileToIdentity(file: globalThis.File, identityId: string) {
+    const fileBytes = new Uint8Array(await file.arrayBuffer());
+    const payload = buildFileSecretPayload(fileBytes);
+    const label = trimSecretPart(file.name) || 'identity-secret-file';
+
+    updateConfiguredChatIdentity(identityId, {
+      address: label,
+      password: '',
+      secretFilePayload: payload,
+      secretFileName: label,
+      secretFileMimeType: trimSecretPart(file.type),
+    });
+    identityManagerError = '';
+    identityManagerMessage = 'Identity secret file attached.';
+  }
+
+  function handleMountDialogSecretSelected(file: globalThis.File) {
+    if (!mountDialogMount) {
+      return;
+    }
+    return applySecretFileToMount(file, mountDialogMount.id);
+  }
+
+  function handleSelectedIdentitySecretSelected(file: globalThis.File) {
+    if (!selectedChatIdentity) {
+      return;
+    }
+    return applySecretFileToIdentity(file, selectedChatIdentity.id);
+  }
+
+  async function applyAvatarFileToIdentity(file: globalThis.File, identityId: string) {
+    if (!trimSecretPart(file.type).startsWith('image/')) {
+      throw new Error('Avatar must be an image file.');
+    }
+    const dataUrl = await readFileAsDataUrl(file);
+    updateConfiguredChatIdentity(identityId, {
+      avatarDataUrl: dataUrl,
+      avatarFileName: trimSecretPart(file.name) || 'avatar',
+      avatarMimeType: trimSecretPart(file.type),
+    });
+    identityManagerError = '';
+    identityManagerMessage = 'Identity picture updated.';
+  }
+
+  async function handleIdentityAvatarFileChange(event: Event, identityId: string) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) {
+      return;
+    }
+    try {
+      await applyAvatarFileToIdentity(file, identityId);
+    } catch (error) {
+      identityManagerError = error instanceof Error ? error.message : 'Failed to read avatar image';
+      identityManagerMessage = '';
+    }
+  }
+
+  function clearConfiguredChatIdentityAvatar(identityId: string) {
+    updateConfiguredChatIdentity(identityId, {
+      avatarDataUrl: '',
+      avatarFileName: '',
+      avatarMimeType: '',
+    });
+    identityManagerError = '';
+    identityManagerMessage = 'Identity picture removed.';
   }
 
   function removeConfiguredChatIdentity(identityId: string) {
@@ -4592,18 +4749,16 @@
     chatRefreshVersion += 1;
   }
 
-  function openIdentityManagerForChat() {
-    const currentMount = mounts.find((mount) => mount.id === activeMountId);
-    if (currentMount && !currentMount.showChatPane) {
-      updateActiveMountWorkspace({
-        showFilesPane: currentMount.showFilesPane,
-        showChatPane: true,
-      });
-    }
+  function openIdentityManager() {
+    showCreateChooser = false;
     if (currentVolumeChatIdentityId) {
       activeChatIdentityId = currentVolumeChatIdentityId;
     }
     showIdentityManager = true;
+  }
+
+  function closeIdentityManager() {
+    showIdentityManager = false;
   }
 
   function configuredIdentityNeedsPublish(identity: ConfiguredIdentity): boolean {
@@ -4634,7 +4789,7 @@
       identityManagerMessage = '';
       return null;
     }
-    if (identity.address.trim() === '') {
+    if (!hasConfiguredIdentitySecret(identity)) {
       identityManagerError = 'Identity secret is required.';
       identityManagerMessage = '';
       if (options.openManagerOnError) {
@@ -4759,6 +4914,18 @@
   }
 
   function handleManagerKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && showCreateChooser) {
+      event.preventDefault();
+      closeCreateChooser();
+      return;
+    }
+
+    if (event.key === 'Escape' && showIdentityManager) {
+      event.preventDefault();
+      closeIdentityManager();
+      return;
+    }
+
     const activeElement = document.activeElement;
     if (
       event.key === 'Escape' &&
@@ -5512,7 +5679,9 @@
         if (!canHandleSecretDropPayload(event.dataTransfer)) return;
         event.preventDefault();
         isSecretDropTarget = true;
-        event.dataTransfer.dropEffect = 'copy';
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = 'copy';
+        }
       }}
       ondragleave={(event) => {
         const relatedTarget = event.relatedTarget;
@@ -5639,9 +5808,9 @@
             <button
               type="button"
               class="mount-add-btn mount-quick-primary"
-              onclick={addMount}
-              aria-label="Add hub"
-              title="Add hub"
+              onclick={openCreateChooser}
+              aria-label="Create"
+              title="Create"
             >
               <Plus size={15} strokeWidth={2.2} />
             </button>
@@ -5650,6 +5819,19 @@
               </MountRail>
 
               <div class="mounts-actions brand-actions">
+                <button
+                  type="button"
+                  class="header-tool-btn"
+                  class:active={showIdentityManager}
+                  aria-label="Identities"
+                  title="Identities"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    openIdentityManager();
+                  }}
+                >
+                  <UserRound class="button-icon" size={14} strokeWidth={2} />
+                </button>
                 <button
                   type="button"
                   class="header-tool-btn"
@@ -5668,193 +5850,7 @@
           </div>
         </div>
       </div>
-
-      {#if showChatWorkspace && showIdentityManager}
-        <div class="identity-row panel-surface">
-          <div class="identity-row-head">
-            <div class="identity-row-title">
-              <UserRound class="button-icon" size={15} strokeWidth={2} />
-              <span>Identities</span>
-            </div>
-            <div class="identity-row-actions">
-              <button
-                type="button"
-                class="workspace-toggle"
-                onclick={() => void joinCurrentVolumeChat()}
-                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
-                title={
-                  !auth
-                    ? 'Open a hub before joining'
-                    : isHistoryMode
-                      ? 'Jump to Latest before joining'
-                      : ''
-                }
-              >
-                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                <span>
-                  {identityManagerLoading
-                    ? 'Joining…'
-                    : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
-                      ? 'Joined'
-                      : 'Join this hub'}
-                </span>
-              </button>
-              <button
-                type="button"
-                class="workspace-toggle"
-                onclick={() => void publishSelectedChatIdentity()}
-                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
-                title={
-                  !auth
-                    ? 'Open a hub before publishing'
-                    : isHistoryMode
-                      ? 'Jump to Latest before publishing'
-                      : ''
-                }
-              >
-                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                <span>
-                  {identityManagerLoading
-                    ? 'Publishing…'
-                    : selectedChatIdentityNeedsPublish
-                      ? 'Publish identity'
-                      : 'Published'}
-                </span>
-              </button>
-            </div>
-          </div>
-
-          <div class="identity-chip-row">
-            {#if configuredIdentities.length === 0}
-              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
-                <Plus size={14} strokeWidth={2} />
-                <span>Add identity</span>
-              </button>
-            {:else}
-              {#each configuredIdentities as identity (identity.id)}
-                <button
-                  type="button"
-                  class="identity-pill"
-                  class:active={identity.id === activeChatIdentityId}
-                  onclick={() => {
-                    activeChatIdentityId = identity.id;
-                    identityManagerError = '';
-                    identityManagerMessage = '';
-                  }}
-                >
-                  <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
-                  <span class="identity-pill-state">
-                    {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
-                      Joined · update pending
-                    {:else if identity.id === currentVolumeChatIdentityId}
-                      Joined
-                    {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
-                      Needs publish
-                    {:else if identity.publicKey}
-                      Published
-                    {:else}
-                      Local
-                    {/if}
-                  </span>
-                </button>
-              {/each}
-              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
-                <Plus size={14} strokeWidth={2} />
-                <span>New</span>
-              </button>
-            {/if}
-          </div>
-
-          <p class="identity-row-note">
-            This hub will chat as
-            <strong>{joinedChatIdentity?.displayName || 'no identity yet'}</strong>.
-            Joining is an explicit per-hub local choice.
-          </p>
-          <p class="identity-row-note">
-            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into this hub.
-          </p>
-
-          {#if identityManagerError}
-            <p class="identity-row-banner error">{identityManagerError}</p>
-          {:else if identityManagerMessage}
-            <p class="identity-row-banner success">{identityManagerMessage}</p>
-          {/if}
-
-          {#if selectedChatIdentity}
-            <div class="identity-editor-panel">
-              <div class="identity-editor-panel-wide">
-                <SecretSeedFields
-                  value={selectedChatIdentity.address}
-                  password={selectedChatIdentity.password}
-                  valueLabel="Identity secret"
-                  valueAriaLabel="Identity secret"
-                  valuePlaceholder="address or secret seed"
-                  passwordLabel="Password (optional)"
-                  passwordAriaLabel="Optional identity password"
-                  passwordPlaceholder="optional"
-                  onValueInput={(value) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      address: value,
-                    })}
-                  onPasswordInput={(value) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      password: value,
-                    })}
-                />
-              </div>
-              <label>
-                <span>Display name</span>
-                <input
-                  type="text"
-                  value={selectedChatIdentity.displayName}
-                  oninput={(event) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      displayName: (event.currentTarget as HTMLInputElement).value,
-                    })}
-                  placeholder="Ada"
-                />
-              </label>
-              <label class="identity-editor-panel-wide">
-                <span>Bio</span>
-                <textarea
-                  rows="2"
-                  oninput={(event) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      bio: (event.currentTarget as HTMLTextAreaElement).value,
-                    })}
-                  placeholder="Who is speaking from this key?"
-                >{selectedChatIdentity.bio}</textarea>
-              </label>
-              <div class="identity-editor-panel-actions">
-                <button
-                  type="button"
-                  class="workspace-toggle remove"
-                  onclick={() => removeConfiguredChatIdentity(selectedChatIdentity.id)}
-                >
-                  <Trash2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>Remove</span>
-                </button>
-                <button
-                  type="button"
-                  class="workspace-toggle"
-                  onclick={() => void publishSelectedChatIdentity()}
-                  disabled={!auth || isHistoryMode || identityManagerLoading}
-                >
-                  <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                  <span>
-                    {identityManagerLoading
-                      ? 'Publishing…'
-                      : selectedChatIdentityNeedsPublish
-                        ? 'Publish to hub'
-                        : 'Published'}
-                  </span>
-                </button>
-              </div>
-            </div>
-          {/if}
-        </div>
-      {/if}
-    </div>
+      </div>
   </header>
 
   <!-- Main file area -->
@@ -6011,7 +6007,7 @@
             aria-pressed={showFilesWorkspace}
             onclick={() => toggleWorkspacePane('files')}
           >
-            <File size={15} strokeWidth={2} />
+            <FileText size={15} strokeWidth={2} />
             <span>Files</span>
           </button>
           <button
@@ -6064,17 +6060,6 @@
               {/if}
             {/if}
             <div class="workspace-utility-actions">
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showIdentityManager}
-                onclick={openIdentityManagerForChat}
-                disabled={!activeMount}
-                title="Manage identities"
-              >
-                <UserRound class="button-icon" size={15} strokeWidth={2} />
-                <span>Identities</span>
-              </button>
               <button
                 type="button"
                 class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
@@ -6397,7 +6382,7 @@
               historyState={isHistoryMode ? historicalChatState : null}
               activeIdentity={joinedChatIdentity}
               identityNeedsPublish={joinedChatIdentityNeedsPublish}
-              onOpenIdentityManager={openIdentityManagerForChat}
+              onOpenIdentityManager={openIdentityManager}
               onEnsureIdentityPublished={async (identity) =>
                 (await ensureChatIdentityPublished(identity, {
                   announceSuccess: false,
@@ -7136,9 +7121,10 @@
             </section>
           {/if}
 
+          {@const secretHash = hasFileSecret(mountDialogMount) ? secretFileHashForMount(mountDialogMount) : null}
           <section class="mount-dialog-section">
             <div class="secret-input-wrapper mount-dialog-inputs">
-              <SecretSeedFields
+              <SharedSecretEditor
                 dense={true}
                 value={mountDialogMount.address}
                 password={mountDialogMount.password}
@@ -7148,88 +7134,30 @@
                 passwordLabel="Password (optional)"
                 passwordAriaLabel="Optional hub password"
                 passwordPlaceholder="optional"
+                hint="Drop an image/file here, or press Cmd/Ctrl + V."
+                showPasteButton={clipboardImageAvailable || clipboardImageLoading}
+                pasteButtonLabel="Paste image"
+                pasteButtonBusy={clipboardImageLoading}
+                fileName={mountDialogMount.secretFileName}
+                fileMimeType={mountDialogMount.secretFileMimeType}
+                filePreviewUrl={secretFilePayloadDataUrl(mountDialogMount)}
+                fileIsImage={hasImageSecretPreview(mountDialogMount)}
+                fileInfo={secretFileBytes(mountDialogMount) ? formatSize(secretFileBytes(mountDialogMount)?.byteLength ?? 0) : ''}
+                fileHashLabel={hasFileSecret(mountDialogMount) ? 'SHA-256' : ''}
+                fileHashValue={secretHash?.hash ?? ''}
+                fileHashPending={secretHash?.pending ?? false}
+                showDownloadButton={hasFileSecret(mountDialogMount)}
                 onValueInput={(value) => updateMountAddress(mountDialogMount.id, value)}
                 onPasswordInput={(value) => updateMountPassword(mountDialogMount.id, value)}
+                onFileSelected={handleMountDialogSecretSelected}
+                onPasteButton={() => handlePasteImageButton(mountDialogMount.id)}
+                onDownloadFile={() => downloadSecretFile(mountDialogMount)}
               />
               {#if isLoading && mountDialogMount.id === activeMountId}
                 <span class="loading-spinner"></span>
               {/if}
             </div>
-
-            <div class="secret-input-hint-row mount-dialog-hint-row">
-              <p class="secret-input-hint">
-                Drop an image/file here, or press <kbd>Cmd/Ctrl</kbd> + <kbd>V</kbd>.
-              </p>
-              <div class="secret-input-actions">
-                {#if clipboardImageAvailable || clipboardImageLoading}
-                  <button
-                    type="button"
-                    class="workspace-toggle secret-clipboard-btn"
-                    onclick={() => handlePasteImageButton(mountDialogMount.id)}
-                    disabled={clipboardImageLoading}
-                  >
-                    <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                    <span>{clipboardImageLoading ? 'Reading…' : 'Paste image'}</span>
-                  </button>
-                {/if}
-              </div>
-            </div>
           </section>
-
-          {#if hasFileSecret(mountDialogMount)}
-            {@const secretHash = secretFileHashForMount(mountDialogMount)}
-            <section class="mount-dialog-section">
-              <div class="secret-file-card mount-dialog-secret-card">
-                <div class="secret-file-card-preview" class:image={hasImageSecretPreview(mountDialogMount)}>
-                  {#if hasImageSecretPreview(mountDialogMount) && secretFilePayloadDataUrl(mountDialogMount)}
-                    <img
-                      class="secret-file-card-image"
-                      src={secretFilePayloadDataUrl(mountDialogMount) ?? ''}
-                      alt={"Preview of " + (mountDialogMount.secretFileName || 'secret file')}
-                    />
-                  {:else}
-                    <span class="secret-file-card-icon" aria-hidden="true">
-                      {#if trimSecretPart(mountDialogMount.secretFileMimeType).startsWith('image/')}
-                        <ImageIcon size={18} strokeWidth={2} />
-                      {:else}
-                        <FileText size={18} strokeWidth={2} />
-                      {/if}
-                    </span>
-                  {/if}
-                </div>
-                <div class="secret-file-card-meta">
-                  <p class="secret-file-card-name" title={mountDialogMount.secretFileName || 'secret-file'}>
-                    {mountDialogMount.secretFileName || 'secret-file'}
-                  </p>
-                  <p class="secret-file-card-info">
-                    {trimSecretPart(mountDialogMount.secretFileMimeType) || 'application/octet-stream'}
-                    {#if secretFileBytes(mountDialogMount)}
-                      {' • '}
-                      {formatSize(secretFileBytes(mountDialogMount)?.byteLength ?? 0)}
-                    {/if}
-                  </p>
-                  <p class="secret-file-card-hash-label">SHA-256</p>
-                  <p class="secret-file-card-hash" title={secretHash?.hash || 'Computing hash…'}>
-                    {#if secretHash?.pending}
-                      Computing…
-                    {:else if secretHash?.hash}
-                      {secretHash.hash}
-                    {:else}
-                      Unavailable
-                    {/if}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  class="workspace-toggle secret-file-download"
-                  onclick={() => downloadSecretFile(mountDialogMount)}
-                >
-                  <Download class="button-icon" size={15} strokeWidth={2} />
-                  <span>Download</span>
-                </button>
-              </div>
-            </section>
-          {/if}
 
           <section class="mount-dialog-section">
             <div class="mount-dialog-actions">
@@ -7263,6 +7191,308 @@
               </button>
             </div>
           </section>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showCreateChooser}
+    <div
+      class="mount-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Create"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeCreateChooser();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeCreateChooser();
+        }
+      }}
+    >
+      <div class="create-chooser-modal panel-surface" role="document" tabindex="-1">
+        <div class="create-chooser-head">
+          <div>
+            <p class="mount-dialog-eyebrow">Create</p>
+            <p class="mount-dialog-title">What do you want to make?</p>
+            <p class="mount-dialog-subtitle">Hubs hold app logs and files. Identities are your local signing personas.</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close create chooser" onclick={closeCreateChooser}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+        <div class="create-chooser-grid">
+          <button type="button" class="create-chooser-card" onclick={startCreateHub}>
+            <Plus size={18} strokeWidth={2.2} />
+            <span class="create-chooser-card-title">Hub</span>
+            <span class="create-chooser-card-copy">Create or open a hub from a secret.</span>
+          </button>
+          <button type="button" class="create-chooser-card" onclick={startCreateIdentity}>
+            <UserRound size={18} strokeWidth={2} />
+            <span class="create-chooser-card-title">Identity</span>
+            <span class="create-chooser-card-copy">Create a local identity with the same secret model.</span>
+          </button>
+          <button type="button" class="create-chooser-card" onclick={() => void openJoinVolumeDialogFromClipboard()}>
+            <ClipboardPaste size={18} strokeWidth={2} />
+            <span class="create-chooser-card-title">Paste link</span>
+            <span class="create-chooser-card-copy">Join a shared hub from a Nearbytes link.</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showIdentityManager}
+    <div
+      class="mount-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Manage identities"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeIdentityManager();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeIdentityManager();
+        }
+      }}
+    >
+      <div class="identity-manager-modal panel-surface" role="document" tabindex="-1">
+        <div class="identity-row identity-manager-panel">
+          <div class="identity-row-head">
+            <div class="identity-row-title">
+              <UserRound class="button-icon" size={15} strokeWidth={2} />
+              <span>Identities</span>
+            </div>
+            <div class="identity-row-actions">
+              <button
+                type="button"
+                class="workspace-toggle"
+                onclick={() => void joinCurrentVolumeChat()}
+                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
+                title={
+                  !auth
+                    ? 'Open a hub before joining'
+                    : isHistoryMode
+                      ? 'Jump to Latest before joining'
+                      : ''
+                }
+              >
+                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                <span>
+                  {identityManagerLoading
+                    ? 'Joining…'
+                    : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
+                      ? 'Joined'
+                      : 'Join this hub'}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="workspace-toggle"
+                onclick={() => void publishSelectedChatIdentity()}
+                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
+                title={
+                  !auth
+                    ? 'Open a hub before publishing'
+                    : isHistoryMode
+                      ? 'Jump to Latest before publishing'
+                      : ''
+                }
+              >
+                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                <span>
+                  {identityManagerLoading
+                    ? 'Publishing…'
+                    : selectedChatIdentityNeedsPublish
+                      ? 'Publish identity'
+                      : 'Published'}
+                </span>
+              </button>
+              <button type="button" class="tm-details-close" aria-label="Close identities" onclick={closeIdentityManager}>
+                <X size={18} strokeWidth={2} />
+              </button>
+            </div>
+          </div>
+
+          <div class="identity-chip-row">
+            {#if configuredIdentities.length === 0}
+              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
+                <Plus size={14} strokeWidth={2} />
+                <span>Add identity</span>
+              </button>
+            {:else}
+              {#each configuredIdentities as identity (identity.id)}
+                <button
+                  type="button"
+                  class="identity-pill"
+                  class:active={identity.id === activeChatIdentityId}
+                  onclick={() => {
+                    activeChatIdentityId = identity.id;
+                    identityManagerError = '';
+                    identityManagerMessage = '';
+                  }}
+                >
+                  <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
+                  <span class="identity-pill-state">
+                    {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
+                      Joined · update pending
+                    {:else if identity.id === currentVolumeChatIdentityId}
+                      Joined
+                    {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
+                      Needs publish
+                    {:else if identity.publicKey}
+                      Published
+                    {:else}
+                      Local
+                    {/if}
+                  </span>
+                </button>
+              {/each}
+              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
+                <Plus size={14} strokeWidth={2} />
+                <span>New</span>
+              </button>
+            {/if}
+          </div>
+
+          <p class="identity-row-note">
+            {#if activeMount}
+              This hub will chat as <strong>{joinedChatIdentity?.displayName || 'no identity yet'}</strong>. Joining is an explicit per-hub local choice.
+            {:else}
+              Identities are global to this app. Joining remains an explicit local choice per hub.
+            {/if}
+          </p>
+          <p class="identity-row-note">
+            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into the current hub.
+          </p>
+
+          {#if identityManagerError}
+            <p class="identity-row-banner error">{identityManagerError}</p>
+          {:else if identityManagerMessage}
+            <p class="identity-row-banner success">{identityManagerMessage}</p>
+          {/if}
+
+          {#if selectedChatIdentity}
+            <div class="identity-editor-panel">
+              <div class="identity-editor-panel-wide">
+                <SharedSecretEditor
+                  value={selectedChatIdentity.address}
+                  password={selectedChatIdentity.password}
+                  valueLabel="Identity secret"
+                  valueAriaLabel="Identity secret"
+                  valuePlaceholder="address or secret seed"
+                  passwordLabel="Password (optional)"
+                  passwordAriaLabel="Optional identity password"
+                  passwordPlaceholder="optional"
+                  hint="Use text, or attach a file to act as this identity secret."
+                  fileName={selectedChatIdentity.secretFileName}
+                  fileMimeType={selectedChatIdentity.secretFileMimeType}
+                  filePreviewUrl={configuredIdentitySecretDataUrl(selectedChatIdentity)}
+                  fileIsImage={configuredIdentityHasImageSecret(selectedChatIdentity)}
+                  onValueInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'address', value)}
+                  onPasswordInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'password', value)}
+                  onFileSelected={handleSelectedIdentitySecretSelected}
+                  onClearFile={() => clearConfiguredChatIdentitySecretFile(selectedChatIdentity.id)}
+                />
+              </div>
+              <label class="identity-editor-panel-wide">
+                <span>Picture</span>
+                <div class="identity-avatar-row">
+                  <div class="identity-avatar-preview">
+                    {#if selectedChatIdentity.avatarDataUrl}
+                      <img
+                        class="identity-avatar-image"
+                        src={selectedChatIdentity.avatarDataUrl}
+                        alt={selectedChatIdentity.displayName || 'Identity avatar'}
+                      />
+                    {:else}
+                      <span>{configuredIdentityAvatarLabel(selectedChatIdentity)}</span>
+                    {/if}
+                  </div>
+                  <div class="identity-avatar-actions">
+                    <input
+                      bind:this={identityAvatarFileInput}
+                      hidden
+                      type="file"
+                      accept="image/*"
+                      aria-label="Choose identity picture"
+                      onchange={(event) => void handleIdentityAvatarFileChange(event, selectedChatIdentity.id)}
+                    />
+                    <button type="button" class="workspace-toggle" onclick={() => identityAvatarFileInput?.click()}>
+                      <span>{selectedChatIdentity.avatarDataUrl ? 'Change picture' : 'Choose picture'}</span>
+                    </button>
+                    {#if selectedChatIdentity.avatarDataUrl}
+                      <button
+                        type="button"
+                        class="workspace-toggle remove"
+                        onclick={() => clearConfiguredChatIdentityAvatar(selectedChatIdentity.id)}
+                      >
+                        <span>Remove picture</span>
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              </label>
+              <label>
+                <span>Display name</span>
+                <input
+                  type="text"
+                  value={selectedChatIdentity.displayName}
+                  oninput={(event) =>
+                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
+                      displayName: (event.currentTarget as HTMLInputElement).value,
+                    })}
+                  placeholder="Ada"
+                />
+              </label>
+              <label class="identity-editor-panel-wide">
+                <span>Bio</span>
+                <textarea
+                  rows="2"
+                  oninput={(event) =>
+                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
+                      bio: (event.currentTarget as HTMLTextAreaElement).value,
+                    })}
+                  placeholder="Who is speaking from this key?"
+                >{selectedChatIdentity.bio}</textarea>
+              </label>
+              <div class="identity-editor-panel-actions">
+                <button
+                  type="button"
+                  class="workspace-toggle remove"
+                  onclick={() => removeConfiguredChatIdentity(selectedChatIdentity.id)}
+                >
+                  <Trash2 class="button-icon" size={15} strokeWidth={2} />
+                  <span>Remove</span>
+                </button>
+                <button
+                  type="button"
+                  class="workspace-toggle"
+                  onclick={() => void publishSelectedChatIdentity()}
+                  disabled={!auth || isHistoryMode || identityManagerLoading}
+                >
+                  <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                  <span>
+                    {identityManagerLoading
+                      ? 'Publishing…'
+                      : selectedChatIdentityNeedsPublish
+                        ? 'Publish to hub'
+                        : 'Published'}
+                  </span>
+                </button>
+              </div>
+            </div>
           {/if}
         </div>
       </div>
@@ -7613,7 +7843,6 @@
   {/if}
 
 </div>
-
 <style>
   :global(html, body, #app) {
     height: 100%;
@@ -8034,6 +8263,111 @@
 
   .identity-editor-panel-actions {
     grid-column: 1 / -1;
+  }
+
+  .identity-avatar-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.85rem;
+  }
+
+  .identity-avatar-preview {
+    width: 58px;
+    height: 58px;
+    border-radius: 18px;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--nb-accent, #d27a54) 8%, #fff8f2);
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+    font-size: 1.2rem;
+    font-weight: 700;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.16)) 88%, transparent);
+    flex: 0 0 auto;
+  }
+
+  .identity-avatar-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .identity-avatar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+  }
+
+  .create-chooser-modal,
+  .identity-manager-modal {
+    width: min(760px, calc(100vw - 2rem));
+    max-height: min(86vh, 920px);
+    overflow: auto;
+    border-radius: 24px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.92));
+    box-shadow: 0 24px 72px rgba(42, 28, 18, 0.18);
+  }
+
+  .create-chooser-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1rem 0;
+  }
+
+  .create-chooser-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.85rem;
+    padding: 1rem;
+  }
+
+  .create-chooser-card {
+    appearance: none;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(250, 244, 239, 0.9));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+    border-radius: 18px;
+    padding: 1rem;
+    display: grid;
+    gap: 0.45rem;
+    justify-items: start;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      transform 0.18s ease,
+      background-color 0.18s ease,
+      border-color 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+
+  .create-chooser-card:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 10%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    box-shadow: 0 14px 28px rgba(82, 53, 33, 0.08);
+  }
+
+  .create-chooser-card-title {
+    font-size: 0.94rem;
+    font-weight: 700;
+  }
+
+  .create-chooser-card-copy {
+    font-size: 0.79rem;
+    line-height: 1.45;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
+  }
+
+  .identity-manager-panel {
+    width: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
   }
 
   .workspace-toggle.remove {
