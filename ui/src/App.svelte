@@ -807,7 +807,11 @@
     if (trimSecretPart(mount.secretFileName) !== '') {
       return trimSecretPart(mount.secretFileName);
     }
-    return trimSecretPart(mount.address);
+    const seedLabel = trimSecretPart(mount.address);
+    if (seedLabel !== '') {
+      return seedLabel;
+    }
+    return mount.volumeId ? 'Shared space' : '';
   }
 
   function base64UrlToBase64(value: string): string {
@@ -2336,11 +2340,12 @@
   );
   const currentPreviewFile = $derived.by(() => previewFileOverride ?? selectedFile);
   const currentMountedVolumePresentation = $derived.by<MountedVolumePresentation | null>(() => {
-    if (!activeMount || !volumeId) {
+    const currentVolumeId = volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null;
+    if (!activeMount || !currentVolumeId) {
       return null;
     }
     return {
-      volumeId,
+      volumeId: currentVolumeId,
       label: mountLabel(activeMount),
       filePayload: activeMount.secretFilePayload,
       fileMimeType: activeMount.secretFileMimeType,
@@ -3050,7 +3055,7 @@
   }
 
   function isMountEmpty(mount: VolumeMount): boolean {
-    return trimSecretPart(mount.address) === '' && trimSecretPart(mount.password) === '' && !hasFileSecret(mount);
+    return trimSecretPart(mount.address) === '' && trimSecretPart(mount.password) === '' && !hasFileSecret(mount) && !mount.volumeId;
   }
 
   function addMount() {
@@ -3509,6 +3514,8 @@
   function closeJoinVolumeDialog(): void {
     showJoinVolumeDialog = false;
     joinDialogError = '';
+    joinDialogPreview = null;
+    joinDialogOpened = null;
   }
 
   function openVolumeShareDialog(): void {
@@ -3678,6 +3685,7 @@
       joinDialogPreview = response;
       joinDialogOpened = response;
       await handleJoinLinkOpened(response);
+      closeJoinVolumeDialog();
     } catch (error) {
       joinDialogOpened = null;
       joinDialogError = error instanceof Error ? error.message : 'Failed to join this Nearbytes link';
@@ -3688,9 +3696,25 @@
 
   async function handleJoinLinkOpened(response: JoinLinkOpenResponse): Promise<void> {
     if (response.space.mode === 'volume-id') {
+      const normalizedVolumeId = response.space.value.trim().toLowerCase();
+      const existingMount = mounts.find((mount) => mount.volumeId?.trim().toLowerCase() === normalizedVolumeId) ?? null;
+      const targetMountId = existingMount?.id ?? createCollapsedMount();
+      mounts = mounts.map((mount) => {
+        if (mount.id !== targetMountId) {
+          return { ...mount, collapsed: true };
+        }
+        return {
+          ...mount,
+          volumeId: normalizedVolumeId,
+          collapsed: true,
+        };
+      });
+      activeMountId = targetMountId;
+      pendingMountId = null;
+      secretPasteTargetMountId = null;
       showVolumeStoragePanel = true;
       showSourcesPanel = false;
-      sourceDiscoveryPanelFocus = null;
+      sourceDiscoveryPanelFocus = 'shares';
       return;
     }
 
@@ -5952,7 +5976,7 @@
       <div class="workspace-panel-view">
         <StoragePanel
           mode="global"
-          {volumeId}
+          volumeId={shareableVolumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
           knownVolumes={knownMountedVolumes}
           onOpenVolumeRouting={openMountedVolumeRouting}
@@ -5965,7 +5989,7 @@
       <div class="workspace-panel-view">
         <StoragePanel
           mode="volume"
-          {volumeId}
+          volumeId={shareableVolumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
           knownVolumes={knownMountedVolumes}
           onOpenVolumeRouting={openMountedVolumeRouting}

@@ -2716,7 +2716,7 @@
                 </button>
                 {#if dismissedSuggestionCount() > 0}
                   <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
-                    <span>Show hidden</span>
+                    <span>Restore hidden suggestions</span>
                   </button>
                 {/if}
               </div>
@@ -3185,7 +3185,7 @@
         </button>
         {#if dismissedSuggestionCount() > 0}
           <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
-            <span>Show hidden</span>
+            <span>Restore hidden suggestions</span>
           </button>
         {/if}
       </div>
