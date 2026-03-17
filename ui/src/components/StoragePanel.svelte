@@ -509,6 +509,54 @@
     return pendingSessionForProvider(provider) !== null || providerFlowState(provider) !== null || hasProviderDraft(provider);
   }
 
+  function canSubmitMegaAction(provider: string): boolean {
+    const draft = providerCredentialDraft(provider);
+    if (pendingSessionForProvider(provider)) {
+      return draft.confirmationLink.trim() !== '';
+    }
+    if (draft.mode === 'signup') {
+      return draft.name.trim() !== '' && draft.email.trim() !== '' && draft.password.trim() !== '';
+    }
+    if (draft.email.trim() === '' || draft.password.trim() === '') {
+      return false;
+    }
+    return !draft.useMfa || draft.mfaCode.trim() !== '';
+  }
+
+  function megaPrimaryActionLabel(provider: string): string {
+    if (integrationBusyKey === `confirm:${provider}`) {
+      return 'Confirming...';
+    }
+    if (integrationBusyKey === `connect:${provider}`) {
+      const draft = providerCredentialDraft(provider);
+      return draft.mode === 'signup' ? 'Creating...' : 'Signing in...';
+    }
+    if (pendingSessionForProvider(provider)) {
+      return 'Confirm account';
+    }
+    return providerCredentialDraft(provider).mode === 'signup' ? 'Create account' : 'Sign in to MEGA';
+  }
+
+  function megaOnboardingCopy(provider: string): string {
+    const draft = providerCredentialDraft(provider);
+    const pending = pendingSessionForProvider(provider);
+    if (pending) {
+      return pending.detail || 'Paste the MEGA confirmation link from your email to finish creating the account.';
+    }
+    if (draft.mode === 'signup') {
+      return 'Create the MEGA account here, then finish the email confirmation step inside Nearbytes.';
+    }
+    return 'Sign in here so Nearbytes can create the live mirror, keep it synced, and send MEGA storage invites for this space.';
+  }
+
+  async function submitMegaAction(provider: ProviderCatalogEntry): Promise<void> {
+    if (pendingSessionForProvider(provider.provider)) {
+      await confirmMegaSignup(provider);
+      return;
+    }
+    await connectProvider(provider);
+  }
+
   function resetProviderDraft(provider: string): void {
     if (!(provider in providerCredentialDrafts)) return;
     const next = { ...providerCredentialDrafts };
@@ -2633,78 +2681,46 @@
                         <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create share'}</span>
                       </button>
                     {/if}
-                  {:else}
-                    {#if provider.provider === 'mega' && pendingSessionForProvider(provider.provider)}
-                      {#if providerFlowState(provider.provider)?.canReset}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => resetProviderFlow(provider.provider)}
-                        >
-                          <span>Reset</span>
-                        </button>
-                      {/if}
+                  {:else if provider.provider !== 'mega'}
+                    {#if providerFlowState(provider.provider)?.canCancel}
                       <button
                         type="button"
                         class="panel-btn subtle compact"
-                        onclick={() => clearProviderSession(provider.provider)}
-                        disabled={integrationBusyKey === `confirm:${provider.provider}`}
+                        onclick={() => cancelProviderFlow(provider.provider)}
                       >
-                        <span>Start again</span>
-                      </button>
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => void confirmMegaSignup(provider)}
-                        disabled={integrationBusyKey === `confirm:${provider.provider}`}
-                      >
-                        <span>{integrationBusyKey === `confirm:${provider.provider}` ? 'Confirming...' : 'Confirm account'}</span>
-                      </button>
-                    {:else}
-                      {#if providerFlowState(provider.provider)?.canCancel}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => cancelProviderFlow(provider.provider)}
-                        >
-                          <span>Cancel</span>
-                        </button>
-                      {/if}
-                      {#if canResetProviderFlow(provider.provider)}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => resetProviderFlow(provider.provider)}
-                          disabled={providerFlowState(provider.provider)?.canCancel === true}
-                        >
-                          <span>Reset</span>
-                        </button>
-                      {/if}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => void connectProvider(provider)}
-                        disabled={
-                          integrationBusyKey === `connect:${provider.provider}` ||
-                          provider.setup.status === 'needs-config' ||
-                          provider.setup.status === 'unsupported'
-                        }
-                      >
-                        <span>
-                          {integrationBusyKey === `connect:${provider.provider}`
-                            ? provider.setup.status === 'needs-install'
-                              ? 'Installing...'
-                              : provider.provider === 'mega' && providerCredentialDraft(provider.provider).mode === 'signup'
-                                ? 'Creating...'
-                                : 'Connecting...'
-                            : provider.provider === 'gdrive'
-                              ? 'Connect with Google'
-                              : provider.provider === 'mega' && providerCredentialDraft(provider.provider).mode === 'signup'
-                                ? 'Create account'
-                                : 'Connect'}
-                        </span>
+                        <span>Cancel</span>
                       </button>
                     {/if}
+                    {#if canResetProviderFlow(provider.provider)}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => resetProviderFlow(provider.provider)}
+                        disabled={providerFlowState(provider.provider)?.canCancel === true}
+                      >
+                        <span>Reset</span>
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void connectProvider(provider)}
+                      disabled={
+                        integrationBusyKey === `connect:${provider.provider}` ||
+                        provider.setup.status === 'needs-config' ||
+                        provider.setup.status === 'unsupported'
+                      }
+                    >
+                      <span>
+                        {integrationBusyKey === `connect:${provider.provider}`
+                          ? provider.setup.status === 'needs-install'
+                            ? 'Installing...'
+                            : 'Connecting...'
+                          : provider.provider === 'gdrive'
+                            ? 'Connect with Google'
+                            : 'Connect'}
+                      </span>
+                    </button>
                   {/if}
                 </div>
               </div>
@@ -2829,98 +2845,154 @@
             {#if !provider.isConnected && provider.provider === 'mega'}
                 {@const draft = providerCredentialDraft(provider.provider)}
                 {@const pendingSession = pendingSessionForProvider(provider.provider)}
-                <div class="provider-credentials">
-                  {#if pendingSession}
-                    <label class="field-block compact-field">
-                      <span>Confirmation link</span>
-                      <input
-                        class="panel-input"
-                        type="url"
-                        value={draft.confirmationLink}
-                        placeholder="https://mega.nz/confirm#..."
-                        oninput={(event) => setProviderCredential(provider.provider, 'confirmationLink', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                  {:else}
-                    <div class="segmented-toggle">
-                      <button
-                        type="button"
-                        class="segmented-toggle-btn"
-                        class:active={draft.mode === 'login'}
-                        onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
-                      >
-                        Sign in
-                      </button>
-                      <button
-                        type="button"
-                        class="segmented-toggle-btn"
-                        class:active={draft.mode === 'signup'}
-                        onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
-                      >
-                        Create account
-                      </button>
+                <form class="provider-story-card mega-onboarding-card" onsubmit={(event) => {
+                  event.preventDefault();
+                  void submitMegaAction(provider);
+                }}>
+                  <div class="mega-onboarding-head">
+                    <div>
+                      <p class="subheading">MEGA onboarding</p>
+                      <p class="provider-story-copy">{megaOnboardingCopy(provider.provider)}</p>
                     </div>
-                    {#if draft.mode === 'signup'}
+                    <span class={`status-pill ${pendingSession ? 'tone-warn' : draft.mode === 'signup' ? 'tone-durable' : 'tone-muted'}`}>
+                      {pendingSession ? 'Email confirmation' : draft.mode === 'signup' ? 'Create account' : 'Sign in'}
+                    </span>
+                  </div>
+
+                  <div class="provider-credentials">
+                    {#if pendingSession}
                       <label class="field-block compact-field">
-                        <span>Name</span>
+                        <span>Confirmation link</span>
                         <input
                           class="panel-input"
-                          type="text"
-                          value={draft.name}
-                          placeholder="Your name"
-                          oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
+                          type="url"
+                          value={draft.confirmationLink}
+                          placeholder="https://mega.nz/confirm#..."
+                          oninput={(event) => setProviderCredential(provider.provider, 'confirmationLink', (event.currentTarget as HTMLInputElement).value)}
                         />
                       </label>
-                    {/if}
-                    <label class="field-block compact-field">
-                      <span>Email</span>
-                      <input
-                        class="panel-input"
-                        type="email"
-                        value={draft.email}
-                        placeholder="name@example.com"
-                        oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block compact-field">
-                      <span>Password</span>
-                      <input
-                        class="panel-input"
-                        type="password"
-                        value={draft.password}
-                        placeholder="MEGA password"
-                        oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    {#if draft.mode === 'login'}
-                      <label class="field-block compact-field">
-                        <span class="toggle-only-label">
+                    {:else}
+                      <div class="segmented-toggle">
+                        <button
+                          type="button"
+                          class="segmented-toggle-btn"
+                          class:active={draft.mode === 'login'}
+                          onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
+                        >
+                          Sign in
+                        </button>
+                        <button
+                          type="button"
+                          class="segmented-toggle-btn"
+                          class:active={draft.mode === 'signup'}
+                          onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
+                        >
+                          Create account
+                        </button>
+                      </div>
+                      {#if draft.mode === 'signup'}
+                        <label class="field-block compact-field">
+                          <span>Name</span>
                           <input
-                            type="checkbox"
-                            checked={draft.useMfa}
-                            onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
+                            class="panel-input"
+                            type="text"
+                            value={draft.name}
+                            placeholder="Your name"
+                            oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
                           />
-                          <span>I enabled 2-factor authentication on MEGA</span>
-                        </span>
-                      </label>
-                    {/if}
-                    {#if draft.mode === 'login' && draft.useMfa}
+                        </label>
+                      {/if}
                       <label class="field-block compact-field">
-                        <span>2FA code</span>
+                        <span>Email</span>
                         <input
                           class="panel-input"
-                          type="text"
-                          value={draft.mfaCode}
-                          placeholder="6-digit code"
-                          oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                          type="email"
+                          value={draft.email}
+                          placeholder="name@example.com"
+                          oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
                         />
                       </label>
+                      <label class="field-block compact-field">
+                        <span>Password</span>
+                        <input
+                          class="panel-input"
+                          type="password"
+                          value={draft.password}
+                          placeholder="MEGA password"
+                          oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
+                        />
+                      </label>
+                      {#if draft.mode === 'login'}
+                        <label class="field-block compact-field">
+                          <span class="toggle-only-label">
+                            <input
+                              type="checkbox"
+                              checked={draft.useMfa}
+                              onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
+                            />
+                            <span>I enabled 2-factor authentication on MEGA</span>
+                          </span>
+                        </label>
+                      {/if}
+                      {#if draft.mode === 'login' && draft.useMfa}
+                        <label class="field-block compact-field">
+                          <span>2FA code</span>
+                          <input
+                            class="panel-input"
+                            type="text"
+                            value={draft.mfaCode}
+                            placeholder="6-digit code"
+                            oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                          />
+                        </label>
+                      {/if}
                     {/if}
-                  {/if}
-                </div>
-                {#if pendingSession}
-                  <p class="muted-copy">{pendingSession.detail}</p>
-                {/if}
+                  </div>
+
+                  <div class="mega-onboarding-actions">
+                    {#if providerFlowState(provider.provider)?.canCancel}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => cancelProviderFlow(provider.provider)}
+                      >
+                        <span>Cancel</span>
+                      </button>
+                    {/if}
+                    {#if pendingSession}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => clearProviderSession(provider.provider)}
+                        disabled={integrationBusyKey === `confirm:${provider.provider}`}
+                      >
+                        <span>Start again</span>
+                      </button>
+                    {:else if canResetProviderFlow(provider.provider)}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => resetProviderFlow(provider.provider)}
+                        disabled={providerFlowState(provider.provider)?.canCancel === true}
+                      >
+                        <span>Reset</span>
+                      </button>
+                    {/if}
+                    <button
+                      type="submit"
+                      class="panel-btn primary"
+                      disabled={
+                        !canSubmitMegaAction(provider.provider) ||
+                        integrationBusyKey === `connect:${provider.provider}` ||
+                        integrationBusyKey === `confirm:${provider.provider}` ||
+                        provider.setup.status === 'needs-config' ||
+                        provider.setup.status === 'unsupported'
+                      }
+                    >
+                      <span>{megaPrimaryActionLabel(provider.provider)}</span>
+                    </button>
+                  </div>
+                </form>
             {/if}
 
             {#if provider.isConnected && provider.provider === 'github'}
@@ -3179,98 +3251,154 @@
                 {#if !provider.isConnected && provider.provider === 'mega'}
                   {@const draft = providerCredentialDraft(provider.provider)}
                   {@const pendingSession = pendingSessionForProvider(provider.provider)}
-                  <div class="provider-credentials">
-                    {#if pendingSession}
-                      <label class="field-block compact-field">
-                        <span>Confirmation link</span>
-                        <input
-                          class="panel-input"
-                          type="url"
-                          value={draft.confirmationLink}
-                          placeholder="https://mega.nz/confirm#..."
-                          oninput={(event) => setProviderCredential(provider.provider, 'confirmationLink', (event.currentTarget as HTMLInputElement).value)}
-                        />
-                      </label>
-                    {:else}
-                      <div class="segmented-toggle">
-                        <button
-                          type="button"
-                          class="segmented-toggle-btn"
-                          class:active={draft.mode === 'login'}
-                          onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
-                        >
-                          Sign in
-                        </button>
-                        <button
-                          type="button"
-                          class="segmented-toggle-btn"
-                          class:active={draft.mode === 'signup'}
-                          onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
-                        >
-                          Create account
-                        </button>
+                  <form class="provider-story-card mega-onboarding-card" onsubmit={(event) => {
+                    event.preventDefault();
+                    void submitMegaAction(provider);
+                  }}>
+                    <div class="mega-onboarding-head">
+                      <div>
+                        <p class="subheading">MEGA onboarding</p>
+                        <p class="provider-story-copy">{megaOnboardingCopy(provider.provider)}</p>
                       </div>
-                      {#if draft.mode === 'signup'}
+                      <span class={`status-pill ${pendingSession ? 'tone-warn' : draft.mode === 'signup' ? 'tone-durable' : 'tone-muted'}`}>
+                        {pendingSession ? 'Email confirmation' : draft.mode === 'signup' ? 'Create account' : 'Sign in'}
+                      </span>
+                    </div>
+
+                    <div class="provider-credentials">
+                      {#if pendingSession}
                         <label class="field-block compact-field">
-                          <span>Name</span>
+                          <span>Confirmation link</span>
                           <input
                             class="panel-input"
-                            type="text"
-                            value={draft.name}
-                            placeholder="Your name"
-                            oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
+                            type="url"
+                            value={draft.confirmationLink}
+                            placeholder="https://mega.nz/confirm#..."
+                            oninput={(event) => setProviderCredential(provider.provider, 'confirmationLink', (event.currentTarget as HTMLInputElement).value)}
                           />
                         </label>
-                      {/if}
-                      <label class="field-block compact-field">
-                        <span>Email</span>
-                        <input
-                          class="panel-input"
-                          type="email"
-                          value={draft.email}
-                          placeholder="name@example.com"
-                          oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
-                        />
-                      </label>
-                      <label class="field-block compact-field">
-                        <span>Password</span>
-                        <input
-                          class="panel-input"
-                          type="password"
-                          value={draft.password}
-                          placeholder="MEGA password"
-                          oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
-                        />
-                      </label>
-                      {#if draft.mode === 'login'}
-                        <label class="field-block compact-field">
-                          <span class="toggle-only-label">
+                      {:else}
+                        <div class="segmented-toggle">
+                          <button
+                            type="button"
+                            class="segmented-toggle-btn"
+                            class:active={draft.mode === 'login'}
+                            onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
+                          >
+                            Sign in
+                          </button>
+                          <button
+                            type="button"
+                            class="segmented-toggle-btn"
+                            class:active={draft.mode === 'signup'}
+                            onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
+                          >
+                            Create account
+                          </button>
+                        </div>
+                        {#if draft.mode === 'signup'}
+                          <label class="field-block compact-field">
+                            <span>Name</span>
                             <input
-                              type="checkbox"
-                              checked={draft.useMfa}
-                              onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
+                              class="panel-input"
+                              type="text"
+                              value={draft.name}
+                              placeholder="Your name"
+                              oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
                             />
-                            <span>I enabled 2-factor authentication on MEGA</span>
-                          </span>
-                        </label>
-                      {/if}
-                      {#if draft.mode === 'login' && draft.useMfa}
+                          </label>
+                        {/if}
                         <label class="field-block compact-field">
-                          <span>2FA code</span>
+                          <span>Email</span>
                           <input
                             class="panel-input"
-                            type="text"
-                            value={draft.mfaCode}
-                            placeholder="6-digit code"
-                            oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                            type="email"
+                            value={draft.email}
+                            placeholder="name@example.com"
+                            oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
                           />
                         </label>
+                        <label class="field-block compact-field">
+                          <span>Password</span>
+                          <input
+                            class="panel-input"
+                            type="password"
+                            value={draft.password}
+                            placeholder="MEGA password"
+                            oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
+                          />
+                        </label>
+                        {#if draft.mode === 'login'}
+                          <label class="field-block compact-field">
+                            <span class="toggle-only-label">
+                              <input
+                                type="checkbox"
+                                checked={draft.useMfa}
+                                onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
+                              />
+                              <span>I enabled 2-factor authentication on MEGA</span>
+                            </span>
+                          </label>
+                        {/if}
+                        {#if draft.mode === 'login' && draft.useMfa}
+                          <label class="field-block compact-field">
+                            <span>2FA code</span>
+                            <input
+                              class="panel-input"
+                              type="text"
+                              value={draft.mfaCode}
+                              placeholder="6-digit code"
+                              oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
+                            />
+                          </label>
+                        {/if}
                       {/if}
-                    {/if}
-                  </div>
-                  {#if pendingSession}
-                    <p class="muted-copy">{pendingSession.detail}</p>
-                  {/if}
+                    </div>
+
+                    <div class="mega-onboarding-actions">
+                      {#if providerFlowState(provider.provider)?.canCancel}
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => cancelProviderFlow(provider.provider)}
+                        >
+                          <span>Cancel</span>
+                        </button>
+                      {/if}
+                      {#if pendingSession}
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => clearProviderSession(provider.provider)}
+                          disabled={integrationBusyKey === `confirm:${provider.provider}`}
+                        >
+                          <span>Start again</span>
+                        </button>
+                      {:else if canResetProviderFlow(provider.provider)}
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => resetProviderFlow(provider.provider)}
+                          disabled={providerFlowState(provider.provider)?.canCancel === true}
+                        >
+                          <span>Reset</span>
+                        </button>
+                      {/if}
+                      <button
+                        type="submit"
+                        class="panel-btn primary"
+                        disabled={
+                          !canSubmitMegaAction(provider.provider) ||
+                          integrationBusyKey === `connect:${provider.provider}` ||
+                          integrationBusyKey === `confirm:${provider.provider}` ||
+                          provider.setup.status === 'needs-config' ||
+                          provider.setup.status === 'unsupported'
+                        }
+                      >
+                        <span>{megaPrimaryActionLabel(provider.provider)}</span>
+                      </button>
+                    </div>
+                  </form>
                 {/if}
 
                 {#if provider.isConnected && provider.provider === 'github'}
@@ -3355,78 +3483,46 @@
                     >
                       <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : provider.provider === 'mega' ? 'Use MEGA shared storage' : `Use ${provider.label} storage`}</span>
                     </button>
-                  {:else}
-                    {#if provider.provider === 'mega' && pendingSessionForProvider(provider.provider)}
-                      {#if providerFlowState(provider.provider)?.canReset}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => resetProviderFlow(provider.provider)}
-                        >
-                          <span>Reset</span>
-                        </button>
-                      {/if}
+                  {:else if provider.provider !== 'mega'}
+                    {#if providerFlowState(provider.provider)?.canCancel}
                       <button
                         type="button"
                         class="panel-btn subtle compact"
-                        onclick={() => clearProviderSession(provider.provider)}
-                        disabled={integrationBusyKey === `confirm:${provider.provider}`}
+                        onclick={() => cancelProviderFlow(provider.provider)}
                       >
-                        <span>Start again</span>
-                      </button>
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => void confirmMegaSignup(provider)}
-                        disabled={integrationBusyKey === `confirm:${provider.provider}`}
-                      >
-                        <span>{integrationBusyKey === `confirm:${provider.provider}` ? 'Confirming...' : 'Confirm account'}</span>
-                      </button>
-                    {:else}
-                      {#if providerFlowState(provider.provider)?.canCancel}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => cancelProviderFlow(provider.provider)}
-                        >
-                          <span>Cancel</span>
-                        </button>
-                      {/if}
-                      {#if canResetProviderFlow(provider.provider)}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => resetProviderFlow(provider.provider)}
-                          disabled={providerFlowState(provider.provider)?.canCancel === true}
-                        >
-                          <span>Reset</span>
-                        </button>
-                      {/if}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => void connectProvider(provider)}
-                        disabled={
-                          integrationBusyKey === `connect:${provider.provider}` ||
-                          provider.setup.status === 'needs-config' ||
-                          provider.setup.status === 'unsupported'
-                        }
-                      >
-                        <span>
-                          {integrationBusyKey === `connect:${provider.provider}`
-                            ? provider.setup.status === 'needs-install'
-                              ? 'Installing...'
-                              : provider.provider === 'mega' && providerCredentialDraft(provider.provider).mode === 'signup'
-                                ? 'Creating...'
-                                : 'Connecting...'
-                            : provider.provider === 'gdrive'
-                              ? 'Connect with Google'
-                              : provider.provider === 'mega' && providerCredentialDraft(provider.provider).mode === 'signup'
-                                ? 'Create account'
-                                : 'Connect'}
-                        </span>
+                        <span>Cancel</span>
                       </button>
                     {/if}
+                    {#if canResetProviderFlow(provider.provider)}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => resetProviderFlow(provider.provider)}
+                        disabled={providerFlowState(provider.provider)?.canCancel === true}
+                      >
+                        <span>Reset</span>
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void connectProvider(provider)}
+                      disabled={
+                        integrationBusyKey === `connect:${provider.provider}` ||
+                        provider.setup.status === 'needs-config' ||
+                        provider.setup.status === 'unsupported'
+                      }
+                    >
+                      <span>
+                        {integrationBusyKey === `connect:${provider.provider}`
+                          ? provider.setup.status === 'needs-install'
+                            ? 'Installing...'
+                            : 'Connecting...'
+                          : provider.provider === 'gdrive'
+                            ? 'Connect with Google'
+                            : 'Connect'}
+                      </span>
+                    </button>
                   {/if}
                 </div>
               </article>
@@ -3464,7 +3560,10 @@
                 </div>
 
                 {#if canInviteManagedShare(summary)}
-                  <div class="managed-share-invite-row">
+                  <form class="managed-share-invite-row" onsubmit={(event) => {
+                    event.preventDefault();
+                    void inviteManagedSharePeers(summary);
+                  }}>
                     <label class="field-block managed-share-invite-field">
                       <span>Invite friends</span>
                       <input
@@ -3477,14 +3576,13 @@
                       />
                     </label>
                     <button
-                      type="button"
+                      type="submit"
                       class="panel-btn subtle compact"
-                      onclick={() => void inviteManagedSharePeers(summary)}
                       disabled={integrationBusyKey === `invite:${summary.share.id}`}
                     >
                       <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
                     </button>
-                  </div>
+                  </form>
                   <p class="managed-share-invite-copy">Invite people here if you want to share this storage route directly.</p>
                 {/if}
 
@@ -3560,7 +3658,10 @@
                 </div>
 
                 {#if canInviteManagedShare(summary)}
-                  <div class="managed-share-invite-row">
+                  <form class="managed-share-invite-row" onsubmit={(event) => {
+                    event.preventDefault();
+                    void inviteManagedSharePeers(summary);
+                  }}>
                     <label class="field-block managed-share-invite-field">
                       <span>Invite friends</span>
                       <input
@@ -3573,14 +3674,13 @@
                       />
                     </label>
                     <button
-                      type="button"
+                      type="submit"
                       class="panel-btn subtle compact"
-                      onclick={() => void inviteManagedSharePeers(summary)}
                       disabled={integrationBusyKey === `invite:${summary.share.id}`}
                     >
                       <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
                     </button>
-                  </div>
+                  </form>
                   <p class="managed-share-invite-copy">Invite people to this provider location now, then attach it to this volume when you want Nearbytes to use it here.</p>
                 {/if}
 
@@ -4746,6 +4846,75 @@
     display: grid;
     gap: 0.62rem;
     grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  }
+
+  .mega-onboarding-card {
+    gap: 0.9rem;
+    padding: 0.88rem 0.92rem;
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--card-bg-strong) 95%, rgba(255, 251, 247, 0.96)), color-mix(in srgb, var(--card-bg) 98%, rgba(249, 244, 240, 0.88))),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #d27a54) 10%, transparent), transparent 56%);
+  }
+
+  .mega-onboarding-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.72rem;
+    justify-content: space-between;
+    align-items: start;
+  }
+
+  .mega-onboarding-head > div {
+    display: grid;
+    gap: 0.22rem;
+  }
+
+  .mega-onboarding-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.62rem;
+    justify-content: flex-end;
+    align-items: center;
+  }
+
+  .segmented-toggle {
+    display: inline-grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.22rem;
+    padding: 0.22rem;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
+  }
+
+  .segmented-toggle-btn {
+    min-height: 34px;
+    padding: 0 0.88rem;
+    border: 0;
+    border-radius: 11px;
+    background: transparent;
+    color: var(--text-soft);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease,
+      transform 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .segmented-toggle-btn:hover {
+    color: var(--text-main);
+    transform: translateY(-1px);
+  }
+
+  .segmented-toggle-btn.active {
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.94));
+    color: var(--text-main);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12)));
   }
 
   .provider-flow-status {

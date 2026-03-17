@@ -1415,6 +1415,7 @@
   let showVolumeShareDialog = $state(false);
   let currentVolumeManagedShares = $state<ManagedShareSummary[]>([]);
   let currentVolumeSharingLoading = $state(false);
+  let currentVolumeShareInviteBusyKey = $state<string | null>(null);
   let currentVolumeShareInviteDrafts = $state<Record<string, string>>({});
   let sourceDiscoveryRefreshToken = $state(0);
   let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | 'shares' | null>(null);
@@ -5242,6 +5243,10 @@
     };
   }
 
+  function canInviteCurrentVolumeStorage(summary: ManagedShareSummary): boolean {
+    return summary.share.capabilities.includes('invite');
+  }
+
   function parseInviteEmails(value: string): string[] {
     return value
       .split(/[\s,;]+/u)
@@ -5372,7 +5377,7 @@
       errorMessage = 'Enter at least one friend email first.';
       return;
     }
-    currentVolumeSharingLoading = true;
+    currentVolumeShareInviteBusyKey = summary.share.id;
     volumeSharingFeedback = null;
     errorMessage = '';
     try {
@@ -5386,7 +5391,7 @@
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to share storage for this volume';
     } finally {
-      currentVolumeSharingLoading = false;
+      currentVolumeShareInviteBusyKey = null;
     }
   }
 
@@ -7255,24 +7260,30 @@
                       </div>
                       <span class="status-storage-state">{summary.state.status === 'ready' ? 'Connected' : summary.state.detail}</span>
                     </div>
-                    <div class="status-storage-invite-row">
-                      <input
-                        class="status-storage-input"
-                        type="text"
-                        value={currentVolumeShareInviteDraft(summary.share.id)}
-                        placeholder="name@example.com"
-                        oninput={(event) =>
-                          setCurrentVolumeShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                      />
-                      <button
-                        type="button"
-                        class="status-link-btn secondary"
-                        onclick={() => void inviteCurrentVolumeStorage(summary)}
-                        disabled={currentVolumeSharingLoading}
-                      >
-                        <span>{currentVolumeSharingLoading ? 'Sending…' : 'Invite to storage'}</span>
-                      </button>
-                    </div>
+                    {#if canInviteCurrentVolumeStorage(summary)}
+                      <form class="status-storage-invite-row" onsubmit={(event) => {
+                        event.preventDefault();
+                        void inviteCurrentVolumeStorage(summary);
+                      }}>
+                        <input
+                          class="status-storage-input"
+                          type="text"
+                          value={currentVolumeShareInviteDraft(summary.share.id)}
+                          placeholder="name@example.com"
+                          oninput={(event) =>
+                            setCurrentVolumeShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
+                        />
+                        <button
+                          type="submit"
+                          class="status-link-btn secondary"
+                          disabled={currentVolumeShareInviteBusyKey === summary.share.id}
+                        >
+                          <span>{currentVolumeShareInviteBusyKey === summary.share.id ? 'Sending…' : 'Invite to storage'}</span>
+                        </button>
+                      </form>
+                    {:else}
+                      <p class="status-share-note">This storage route is attached, but this provider does not support sending invites from Nearbytes.</p>
+                    {/if}
                     <div class="status-storage-members">
                       <p class="share-dialog-section-title members-label">Participants</p>
                       {#if currentVolumeStorageParticipants(summary).length > 0}
