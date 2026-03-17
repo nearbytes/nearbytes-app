@@ -471,6 +471,28 @@ export class ManagedShareService {
     return this.buildManagedShareSummary(share);
   }
 
+  async removeManagedShare(shareId: string): Promise<void> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    const config = removeManagedShareFromConfig(cloneConfig(this.options.storage.getRootsConfig()), shareId);
+    await this.persistRootsConfig(config);
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    await adapter?.detachManagedShare?.(share, account).catch(() => {
+      // Ignore cleanup failures when removing local managed-share state.
+    });
+
+    await this.saveState({
+      ...state,
+      managedShares: state.managedShares.filter((entry) => entry.id !== shareId),
+    });
+  }
+
   async acceptManagedShare(input: AcceptManagedShareInput): Promise<ManagedShareSummary> {
     const state = await this.loadState();
     const provider = normalizeProvider(input.provider);

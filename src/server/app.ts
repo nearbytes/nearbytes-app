@@ -99,7 +99,12 @@ export function createApp(deps: AppDependencies): express.Express {
 }
 
 function requestLogger(): RequestHandler {
+  const enabled = isRequestDebugEnabled();
   return (req, res, next) => {
+    if (!enabled) {
+      next();
+      return;
+    }
     const startedAt = Date.now();
     res.on('finish', () => {
       const durationMs = Date.now() - startedAt;
@@ -107,6 +112,20 @@ function requestLogger(): RequestHandler {
     });
     next();
   };
+}
+
+function isRequestDebugEnabled(): boolean {
+  const value = process.env.DEBUG?.trim();
+  if (!value) {
+    return false;
+  }
+  if (value === '1' || value.toLowerCase() === 'true' || value === '*') {
+    return true;
+  }
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .some((entry) => entry === 'nearbytes' || entry === 'nearbytes:requests' || entry === 'requests');
 }
 
 function resolveUiDistPath(value: string | undefined): string | null {

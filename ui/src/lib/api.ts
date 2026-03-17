@@ -1388,6 +1388,13 @@ export async function attachManagedShare(
   });
 }
 
+export async function removeManagedShare(shareId: string): Promise<void> {
+  const encoded = encodeURIComponent(shareId);
+  await apiRequest<{ ok: true }>(`/integrations/shares/${encoded}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function acceptManagedShare(input: {
   provider: string;
   accountId: string;
@@ -1445,13 +1452,15 @@ export async function openJoinLink(input: {
   });
 }
 
+import { uiDebugLog } from './debug.js';
+
 export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnection {
   const abortController = new AbortController();
   const connectionId = Math.random().toString(36).slice(2, 8);
 
   void (async () => {
     try {
-      console.log(`[watch-sources:${connectionId}] opening`);
+      uiDebugLog('watchers', `[watch-sources:${connectionId}] opening`);
       const runtimeConfig = await getRuntimeConfig();
       const headers = new Headers();
       if (runtimeConfig.desktopToken.trim().length > 0) {
@@ -1473,7 +1482,7 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
         throw new Error('Source watch stream is not available');
       }
 
-      console.log(`[watch-sources:${connectionId}] opened`);
+      uiDebugLog('watchers', `[watch-sources:${connectionId}] opened`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -1494,11 +1503,11 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
         }
       }
 
-      console.log(`[watch-sources:${connectionId}] stream ended`);
+      uiDebugLog('watchers', `[watch-sources:${connectionId}] stream ended`);
       handlers.onClose?.();
     } catch (error) {
       if (abortController.signal.aborted) {
-        console.log(`[watch-sources:${connectionId}] aborted`);
+        uiDebugLog('watchers', `[watch-sources:${connectionId}] aborted`);
         handlers.onClose?.();
         return;
       }
@@ -1513,7 +1522,7 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
 
   return {
     close() {
-      console.log(`[watch-sources:${connectionId}] close requested`);
+      uiDebugLog('watchers', `[watch-sources:${connectionId}] close requested`);
       abortController.abort();
     },
   };
@@ -1528,7 +1537,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
 
   void (async () => {
     try {
-      console.log(`[watch-volume:${connectionId}] opening`);
+      uiDebugLog('watchers', `[watch-volume:${connectionId}] opening`);
       const runtimeConfig = await getRuntimeConfig();
       const headers = new Headers(createAuthHeaders(auth));
       if (runtimeConfig.desktopToken.trim().length > 0) {
@@ -1550,7 +1559,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
         throw new Error('Watch stream is not available');
       }
 
-      console.log(`[watch-volume:${connectionId}] opened`);
+      uiDebugLog('watchers', `[watch-volume:${connectionId}] opened`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -1571,11 +1580,11 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
         }
       }
 
-      console.log(`[watch-volume:${connectionId}] stream ended`);
+      uiDebugLog('watchers', `[watch-volume:${connectionId}] stream ended`);
       handlers.onClose?.();
     } catch (error) {
       if (abortController.signal.aborted) {
-        console.log(`[watch-volume:${connectionId}] aborted`);
+        uiDebugLog('watchers', `[watch-volume:${connectionId}] aborted`);
         handlers.onClose?.();
         return;
       }
@@ -1590,7 +1599,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
 
   return {
     close() {
-      console.log(`[watch-volume:${connectionId}] close requested`);
+      uiDebugLog('watchers', `[watch-volume:${connectionId}] close requested`);
       abortController.abort();
     },
   };

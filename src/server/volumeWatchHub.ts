@@ -3,6 +3,7 @@ import path from 'path';
 import type { RootProvider } from '../config/roots.js';
 import { isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { StorageBackend } from '../types/storage.js';
+import { debugServerLog } from './debug.js';
 
 export type VolumeChangeType = 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
 
@@ -69,7 +70,8 @@ export class VolumeWatchHub {
 
     const existing = this.entries.get(volumeId);
     if (existing) {
-      console.log(
+      debugServerLog(
+        'watchers',
         `[volume-watch] reusing watcher #${existing.id} for volume=${volumeId}; subscribers=${existing.subscribers.size + 1}`
       );
       existing.subscribers.add(onUpdate);
@@ -97,7 +99,8 @@ export class VolumeWatchHub {
       errorSubscribers: new Set([onError]),
     };
 
-    console.log(
+    debugServerLog(
+      'watchers',
       `[volume-watch] created watcher #${entry.id} for volume=${volumeId}; targets=${JSON.stringify(plan.targets)} includePrefixes=${JSON.stringify(plan.includePrefixes)}`
     );
 
@@ -129,7 +132,7 @@ export class VolumeWatchHub {
     });
 
     watcher.on('ready', () => {
-      console.log(`[volume-watch] watcher #${entry.id} ready for volume=${volumeId}`);
+      debugServerLog('watchers', `[volume-watch] watcher #${entry.id} ready for volume=${volumeId}`);
     });
 
     this.entries.set(volumeId, entry);
@@ -152,7 +155,8 @@ export class VolumeWatchHub {
 
     entry.subscribers.delete(onUpdate);
     entry.errorSubscribers.delete(onError);
-    console.log(
+    debugServerLog(
+      'watchers',
       `[volume-watch] unsubscribe watcher #${entry.id} for volume=${volumeId}; remaining-subscribers=${entry.subscribers.size}`
     );
     if (entry.subscribers.size > 0) {
@@ -161,9 +165,10 @@ export class VolumeWatchHub {
 
     this.entries.delete(volumeId);
     const closeStartedAt = Date.now();
-    console.log(`[volume-watch] closing watcher #${entry.id} for volume=${volumeId}`);
+    debugServerLog('watchers', `[volume-watch] closing watcher #${entry.id} for volume=${volumeId}`);
     void entry.watcher.close().then(() => {
-      console.log(
+      debugServerLog(
+        'watchers',
         `[volume-watch] closed watcher #${entry.id} for volume=${volumeId} in ${Date.now() - closeStartedAt}ms`
       );
     });

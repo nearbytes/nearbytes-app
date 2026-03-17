@@ -1437,11 +1437,12 @@
   let dragOffsetX = $state(0);
   let dragTranslateX = $state(0);
   let dragMoved = $state(false);
-  let suppressMountClick = $state(false);
+  let suppressMountClickMountId = $state<string | null>(null);
   let dragRaf = 0;
   let dragClientX = 0;
   let dragCaptureElement: HTMLElement | null = null;
   let joinLinkCopyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let suppressMountClickTimer: ReturnType<typeof setTimeout> | null = null;
   const mountNodes = new Map<string, HTMLElement>();
   let mountDragListenersActive = false;
   const mountWarmPromises = new Map<string, Promise<void>>();
@@ -1591,7 +1592,7 @@
   }
 
   function isMountReorderActive(mountId: string): boolean {
-    return dragPreparedMountId === mountId || draggingMountId === mountId;
+    return draggingMountId === mountId;
   }
 
   async function handleDesktopDeepLink(url: string): Promise<void> {
@@ -1715,6 +1716,10 @@
     if (mountPressReleaseTimer) {
       clearTimeout(mountPressReleaseTimer);
       mountPressReleaseTimer = null;
+    }
+    if (suppressMountClickTimer) {
+      clearTimeout(suppressMountClickTimer);
+      suppressMountClickTimer = null;
     }
     if (joinLinkCopyFeedbackTimer) {
       clearTimeout(joinLinkCopyFeedbackTimer);
@@ -3254,6 +3259,17 @@
     dragOffsetX = 0;
   }
 
+  function suppressMountClickFor(mountId: string) {
+    if (suppressMountClickTimer) {
+      clearTimeout(suppressMountClickTimer);
+    }
+    suppressMountClickMountId = mountId;
+    suppressMountClickTimer = setTimeout(() => {
+      suppressMountClickMountId = null;
+      suppressMountClickTimer = null;
+    }, 220);
+  }
+
   function moveMountToIndex(draggedId: string, targetIndex: number) {
     const currentIndex = mounts.findIndex((mount) => mount.id === draggedId);
     if (currentIndex < 0) return;
@@ -3300,30 +3316,41 @@
     });
   }
 
+  function activateMountReorder(pointerEvent: PointerEvent, mountId: string): boolean {
+    const node = mountNodes.get(mountId);
+    if (!node) {
+      return false;
+    }
+    draggingMountId = mountId;
+    dragOriginIndex = mounts.findIndex((mount) => mount.id === mountId);
+    dragOverMountId = null;
+    dragClientX = pointerEvent.clientX;
+    const rect = node.getBoundingClientRect();
+    if (rect.width > PARKED_MOUNT_WIDTH + 4) {
+      dragOffsetX = PARKED_MOUNT_WIDTH / 2;
+    } else {
+      dragOffsetX = Math.max(0, Math.min(PARKED_MOUNT_WIDTH, pointerEvent.clientX - rect.left));
+    }
+    dragTranslateX = pointerEvent.clientX - rect.left - dragOffsetX;
+    dragMoved = true;
+    pressedMountId = null;
+    return true;
+  }
+
   function beginMountReorder(event: PointerEvent, mountId: string, isCollapsed: boolean) {
     if (!isCollapsed) return;
     if (event.button !== 0) return;
     const node = mountNodes.get(mountId);
     if (!node) return;
-    event.preventDefault();
     pressedMountId = mountId;
     dragPreparedMountId = mountId;
-    dragOriginIndex = mounts.findIndex((mount) => mount.id === mountId);
     dragPointerId = event.pointerId;
-    draggingMountId = mountId;
     dragOverMountId = null;
     dragStartX = event.clientX;
     dragStartY = event.clientY;
     dragClientX = event.clientX;
-    const rect = node.getBoundingClientRect();
-    if (rect.width > PARKED_MOUNT_WIDTH + 4) {
-      dragOffsetX = PARKED_MOUNT_WIDTH / 2;
-    } else {
-      dragOffsetX = Math.max(0, Math.min(PARKED_MOUNT_WIDTH, event.clientX - rect.left));
-    }
-    dragTranslateX = event.clientX - rect.left - dragOffsetX;
     dragMoved = false;
-    suppressMountClick = false;
+    suppressMountClickMountId = null;
     const captureTarget = event.currentTarget instanceof HTMLElement ? event.currentTarget : node;
     captureTarget.setPointerCapture(event.pointerId);
     dragCaptureElement = captureTarget;
@@ -3336,23 +3363,26 @@
   }
 
   function handleMountPointerMove(event: PointerEvent) {
-    if (!draggingMountId || dragPointerId !== event.pointerId) return;
+    if (!dragPreparedMountId || dragPointerId !== event.pointerId) return;
     const dx = event.clientX - dragStartX;
     const dy = event.clientY - dragStartY;
-    if (!dragMoved && Math.hypot(dx, dy) < 4) {
+    if (!draggingMountId && Math.hypot(dx, dy) < 4) {
       return;
     }
     event.preventDefault();
-    dragPreparedMountId = draggingMountId;
-    dragMoved = true;
+    if (!draggingMountId && !activateMountReorder(event, dragPreparedMountId)) {
+      clearMountDragState();
+      return;
+    }
     dragClientX = event.clientX;
     scheduleDragUpdate();
   }
 
   function handleMountPointerUp(event: PointerEvent) {
-    if (!draggingMountId || dragPointerId !== event.pointerId) return;
-    if (dragMoved) {
-      suppressMountClick = true;
+    if (dragPointerId !== event.pointerId) return;
+    const draggedMountId = draggingMountId;
+    if (draggedMountId && dragMoved) {
+      suppressMountClickFor(draggedMountId);
       dragClientX = event.clientX;
       applyDragUpdate(dragClientX);
     }
@@ -3374,8 +3404,12 @@
   }
 
   function handleMountClick(mountId: string) {
-    if (suppressMountClick) {
-      suppressMountClick = false;
+    if (suppressMountClickMountId === mountId) {
+      if (suppressMountClickTimer) {
+        clearTimeout(suppressMountClickTimer);
+        suppressMountClickTimer = null;
+      }
+      suppressMountClickMountId = null;
       pressedMountId = null;
       return;
     }
@@ -3498,6 +3532,11 @@
     showVolumeShareDialog = false;
     joinDialogError = '';
     showJoinVolumeDialog = true;
+  }
+
+  async function openJoinVolumeDialogFromClipboard(): Promise<void> {
+    openJoinVolumeDialog();
+    await readJoinDialogClipboard();
   }
 
   function closeJoinVolumeDialog(): void {
@@ -5431,7 +5470,6 @@
                 class="volume-chip collapsed-shell parked"
                 class:selected={mount.id === activeMountId}
                 class:pressed={pressedMountId === mount.id}
-                class:drag-armed={isMountReorderActive(mount.id)}
                 class:dragging={draggingMountId === mount.id && dragMoved}
                 class:drag-over={dragOverMountId === mount.id && dragMoved}
                 data-mount-id={mount.id}
@@ -5442,6 +5480,10 @@
                   class="volume-chip-select"
                   aria-label={mountLabel(mount) || 'Hub entry'}
                   onclick={() => handleMountClick(mount.id)}
+                  onpointerdown={(event) => beginMountReorder(event, mount.id, mount.collapsed)}
+                  onpointermove={handleMountPointerMove}
+                  onpointerup={handleMountPointerUp}
+                  onpointercancel={handleMountPointerCancel}
                   title={mountLabel(mount) || 'Open hub'}
                 >
                   <div class="header-dock">
@@ -5468,21 +5510,6 @@
                 </button>
                 <button
                   type="button"
-                  class="volume-chip-action-btn volume-chip-drag-btn"
-                  aria-label={`Reorder ${mountLabel(mount) || 'hub'}`}
-                  title="Drag to reorder"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                  }}
-                  onpointerdown={(event) => beginMountReorder(event, mount.id, mount.collapsed)}
-                  onpointermove={handleMountPointerMove}
-                  onpointerup={handleMountPointerUp}
-                  onpointercancel={handleMountPointerCancel}
-                >
-                  <GripVertical size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
                   class="volume-chip-action-btn volume-chip-config-btn"
                   aria-label={`Edit ${mountLabel(mount) || 'hub'}`}
                   title="Edit hub"
@@ -5498,49 +5525,32 @@
           </div>
         {/each}
         {/snippet}
+        {#snippet actions()}
+          <div class="mount-quick-actions" class:revealed={isHeaderHovering}>
+            <button
+              type="button"
+              class="mount-quick-secondary"
+              onclick={() => void openJoinVolumeDialogFromClipboard()}
+              aria-label="Paste shared hub link"
+              title="Paste shared hub link"
+            >
+              <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
+              <span>Paste link</span>
+            </button>
+            <button
+              type="button"
+              class="mount-add-btn mount-quick-primary"
+              onclick={addMount}
+              aria-label="Add hub"
+              title="Add hub"
+            >
+              <Plus size={15} strokeWidth={2.2} />
+            </button>
+          </div>
+        {/snippet}
               </MountRail>
 
               <div class="mounts-actions brand-actions">
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showJoinVolumeDialog}
-                  aria-label="Join shared hub"
-                  title="Join shared hub"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    openJoinVolumeDialog();
-                  }}
-                >
-                  <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showVolumeShareDialog}
-                  aria-label="Share"
-                  title="Share"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    openVolumeShareDialog();
-                  }}
-                  disabled={!activeMount && !shareableVolumeId}
-                >
-                  <Link2 class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showTimeMachinePanel}
-                  aria-label="Timeline"
-                  title="Timeline"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    showTimeMachinePanel = !showTimeMachinePanel;
-                  }}
-                >
-                  <History class="button-icon" size={14} strokeWidth={2} />
-                </button>
                 <button
                   type="button"
                   class="header-tool-btn"
@@ -5569,15 +5579,6 @@
                     <UserRound class="button-icon" size={14} strokeWidth={2} />
                   </button>
                 {/if}
-                <button
-                  type="button"
-                  class="mount-add-btn"
-                  onclick={addMount}
-                  aria-label="Add hub"
-                  title="Add hub"
-                >
-                  <Plus size={15} strokeWidth={2.2} />
-                </button>
               </div>
             </div>
           </div>
@@ -5940,63 +5941,92 @@
             <span>Chat</span>
           </button>
         </div>
-        {#if showFilesWorkspace}
+        {#if showFilesWorkspace || activeMount || shareableVolumeId}
           <div class="workspace-mode-secondary">
-            <span class="workspace-selection-summary">
-              {selectedFileNames.length === 0
-                ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
-                : selectedFileNames.length === 1 && selectedFile
-                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
-                  : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
-            </span>
-            <input
-              type="text"
-              class="manager-search workspace-compact-control"
-              placeholder="Search files"
-              bind:value={searchQuery}
-              aria-label="Search files"
-            />
-            <select class="manager-sort workspace-compact-control" bind:value={sortBy} aria-label="Sort files">
-              <option value="newest">Newest</option>
-              <option value="oldest">Oldest</option>
-              <option value="name">Name</option>
-              <option value="name-desc">Name (Z-A)</option>
-              <option value="size">Size</option>
-              <option value="size-asc">Size (Smallest)</option>
-            </select>
-            <div class="manager-view-switch" role="tablist" aria-label="File browser view">
+            {#if showFilesWorkspace}
+              <span class="workspace-selection-summary">
+                {selectedFileNames.length === 0
+                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
+                  : selectedFileNames.length === 1 && selectedFile
+                    ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
+                    : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
+              </span>
+              <input
+                type="text"
+                class="manager-search workspace-compact-control"
+                placeholder="Search files"
+                bind:value={searchQuery}
+                aria-label="Search files"
+              />
+              <select class="manager-sort workspace-compact-control" bind:value={sortBy} aria-label="Sort files">
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="name">Name</option>
+                <option value="name-desc">Name (Z-A)</option>
+                <option value="size">Size</option>
+                <option value="size-asc">Size (Smallest)</option>
+              </select>
+              {#if appReferenceClipboard}
+                <button
+                  type="button"
+                  class="manager-btn workspace-toolbar-btn"
+                  onclick={() => void pasteCopiedFiles()}
+                  disabled={!auth || isHistoryMode}
+                  title={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
+                >
+                  <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                  Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
+                </button>
+              {/if}
+            {/if}
+            <div class="workspace-utility-actions">
               <button
                 type="button"
-                class="view-toggle"
-                class:active={fileManagerViewMode === 'icons'}
-                onclick={() => (fileManagerViewMode = 'icons')}
-                aria-pressed={fileManagerViewMode === 'icons'}
-                title="Icon view"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showVolumeShareDialog}
+                onclick={openVolumeShareDialog}
+                disabled={!activeMount && !shareableVolumeId}
+                title="Share this hub"
               >
-                <LayoutGrid size={15} strokeWidth={2} />
+                <Link2 class="button-icon" size={15} strokeWidth={2} />
+                <span>Share</span>
               </button>
               <button
                 type="button"
-                class="view-toggle"
-                class:active={fileManagerViewMode === 'details'}
-                onclick={() => (fileManagerViewMode = 'details')}
-                aria-pressed={fileManagerViewMode === 'details'}
-                title="Details view"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showTimeMachinePanel}
+                onclick={() => {
+                  showTimeMachinePanel = !showTimeMachinePanel;
+                }}
+                title="Show hub timeline"
               >
-                <Rows3 size={15} strokeWidth={2} />
+                <History class="button-icon" size={15} strokeWidth={2} />
+                <span>Timeline</span>
               </button>
             </div>
-            {#if appReferenceClipboard}
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn"
-                onclick={() => void pasteCopiedFiles()}
-                disabled={!auth || isHistoryMode}
-                title={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
-              >
-                <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
-              </button>
+            {#if showFilesWorkspace}
+              <div class="manager-view-switch" role="tablist" aria-label="File browser view">
+                <button
+                  type="button"
+                  class="view-toggle"
+                  class:active={fileManagerViewMode === 'icons'}
+                  onclick={() => (fileManagerViewMode = 'icons')}
+                  aria-pressed={fileManagerViewMode === 'icons'}
+                  title="Icon view"
+                >
+                  <LayoutGrid size={15} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="view-toggle"
+                  class:active={fileManagerViewMode === 'details'}
+                  onclick={() => (fileManagerViewMode = 'details')}
+                  aria-pressed={fileManagerViewMode === 'details'}
+                  title="Details view"
+                >
+                  <Rows3 size={15} strokeWidth={2} />
+                </button>
+              </div>
             {/if}
           </div>
         {/if}
@@ -7546,6 +7576,71 @@
     flex-wrap: wrap;
   }
 
+  .mount-quick-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.16rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.18)) 88%, transparent);
+    background: color-mix(in srgb, var(--nb-btn-bg, rgba(10, 19, 34, 0.52)) 92%, transparent);
+    box-shadow: 0 8px 20px rgba(6, 23, 43, 0.08);
+  }
+
+  .mount-quick-secondary {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--nb-btn-color, rgba(191, 219, 254, 0.82));
+    border-radius: 999px;
+    min-width: 0;
+    max-width: 0;
+    height: 36px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    overflow: hidden;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(6px);
+    transition:
+      max-width 0.22s ease,
+      padding 0.22s ease,
+      opacity 0.18s ease,
+      transform 0.22s ease,
+      background-color 0.18s ease,
+      color 0.18s ease;
+  }
+
+  .mount-quick-actions.revealed .mount-quick-secondary,
+  .mount-quick-actions:focus-within .mount-quick-secondary,
+  .mount-quick-actions:hover .mount-quick-secondary {
+    max-width: 148px;
+    padding: 0 0.72rem 0 0.86rem;
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+  }
+
+  .mount-quick-secondary:hover,
+  .mount-quick-secondary:focus-visible {
+    background: color-mix(in srgb, var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.88)) 90%, transparent);
+    color: var(--nb-btn-hover-color, rgba(224, 242, 254, 0.96));
+  }
+
+  .mount-quick-secondary:focus-visible {
+    outline: none;
+    box-shadow: var(--nb-btn-focus-ring, inset 0 0 0 1px rgba(125, 211, 252, 0.18));
+  }
+
+  .mount-quick-secondary span {
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
   .identity-row-title,
   .status-storage-title,
   .discovery-toast-title,
@@ -7966,34 +8061,6 @@
     z-index: 40;
   }
 
-  .volume-chip.drag-armed {
-    min-width: 46px;
-    max-width: 46px;
-    transition: none;
-  }
-
-  .volume-chip.drag-armed .header-dock {
-    padding: 0.32rem;
-  }
-
-  .volume-chip.drag-armed .header-dock-badge,
-  .volume-chip.drag-armed .header-dock-badge-top {
-    gap: 0;
-  }
-
-  .volume-chip.drag-armed :global(.volume-identity-copy) {
-    max-width: 0;
-    opacity: 0;
-    transform: translateX(-5px);
-  }
-
-  .volume-chip.drag-armed .header-dock-badge::before {
-    width: 0;
-    height: 0;
-    opacity: 0;
-    box-shadow: none;
-  }
-
   .volume-chip.dragging .header-dock {
     padding: 0.32rem;
   }
@@ -8059,15 +8126,12 @@
     box-shadow: var(--nb-btn-focus-ring, inset 0 0 0 1px rgba(125, 211, 252, 0.18));
   }
 
-  .volume-chip.drag-armed .volume-chip-select:hover .header-dock,
-  .volume-chip.drag-armed .volume-chip-select:focus-visible .header-dock,
   .volume-chip.dragging .volume-chip-select:hover .header-dock,
   .volume-chip.dragging .volume-chip-select:focus-visible .header-dock {
     background: transparent;
     box-shadow: none;
   }
 
-  .volume-chip.drag-armed .volume-chip-config-btn,
   .volume-chip.dragging .volume-chip-config-btn {
     width: 0;
     min-width: 0;
@@ -8076,8 +8140,6 @@
     border-left-color: transparent;
   }
 
-  .volume-chip.drag-armed:hover .volume-chip-config-btn,
-  .volume-chip.drag-armed:focus-within .volume-chip-config-btn,
   .volume-chip.dragging:hover .volume-chip-config-btn,
   .volume-chip.dragging:focus-within .volume-chip-config-btn {
     width: 0;
@@ -8116,10 +8178,6 @@
       transform 0.2s ease;
   }
 
-  .volume-chip-drag-btn {
-    touch-action: none;
-  }
-
   .volume-chip.collapsed-shell:hover .volume-chip-action-btn,
   .volume-chip.collapsed-shell:focus-within .volume-chip-action-btn {
     width: 32px;
@@ -8128,8 +8186,6 @@
     pointer-events: auto;
   }
 
-  .volume-chip.drag-armed:hover .volume-chip-action-btn,
-  .volume-chip.drag-armed:focus-within .volume-chip-action-btn,
   .volume-chip.dragging:hover .volume-chip-action-btn,
   .volume-chip.dragging:focus-within .volume-chip-action-btn {
     width: 0;
@@ -9083,6 +9139,14 @@
     flex: 1 1 420px;
   }
 
+  .workspace-utility-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-left: auto;
+    flex: 0 0 auto;
+  }
+
   .workspace-selection-summary {
     font-size: 0.74rem;
     font-weight: 460;
@@ -9105,6 +9169,13 @@
 
   .workspace-toolbar-btn {
     flex: 0 0 auto;
+  }
+
+  .workspace-toolbar-utility.active {
+    border-color: var(--nb-btn-active-border, rgba(34, 211, 238, 0.42));
+    background: var(--nb-btn-active-bg, linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94)));
+    color: var(--nb-btn-active-color, rgba(236, 254, 255, 0.98));
+    box-shadow: var(--nb-btn-active-shadow, 0 10px 24px rgba(6, 182, 212, 0.16));
   }
 
   .workspace-mode-btn {
@@ -9961,11 +10032,18 @@
   }
 
   .mount-dialog-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+    align-items: stretch;
     gap: 0.7rem;
+  }
+
+  .mount-dialog-actions > .workspace-toggle,
+  .mount-dialog-actions :global(.hub-storage-button),
+  .mount-dialog-actions :global(.panel-action-btn) {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
   }
 
   .share-dialog-section-title {
@@ -11218,6 +11296,14 @@
       transform: none;
     }
 
+    .mount-quick-secondary {
+      max-width: 148px;
+      padding: 0 0.72rem 0 0.86rem;
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+    }
+
     .mount-add-btn {
       opacity: 1;
       pointer-events: auto;
@@ -11249,6 +11335,15 @@
     .brand-actions {
       width: 100%;
       justify-content: flex-start;
+    }
+
+    .mount-quick-actions {
+      max-width: 100%;
+    }
+
+    .mount-quick-secondary {
+      max-width: none;
+      padding: 0 0.68rem 0 0.78rem;
     }
 
     .workspace-toggle {

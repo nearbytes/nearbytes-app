@@ -20,6 +20,7 @@
     listManagedShares,
     listProviderAccounts,
     openRootInFileManager,
+    removeManagedShare,
     type DiscoveredNearbytesSource,
     type IncomingManagedShareOffer,
     type IncomingProviderContactInvite,
@@ -137,6 +138,8 @@
   }>>({});
   let providerSetupDrafts = $state<Record<string, { clientId: string }>>({});
   let providerShareDrafts = $state<Record<string, { repoOwner: string; repoName: string; branch: string; basePath: string }>>({});
+  let providerLocationNameDrafts = $state<Record<string, string>>({});
+  let providerCreateComposerOpen = $state<Record<string, boolean>>({});
   let managedShareInviteDrafts = $state<Record<string, string>>({});
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let providerConnectionDialog = $state<string | null>(null);
@@ -415,6 +418,18 @@
     };
   }
 
+  function providerLocationNameDraft(provider: string): string {
+    return providerLocationNameDrafts[provider] ?? '';
+  }
+
+  function isInlineLocationComposerProvider(provider: string): boolean {
+    return provider !== 'github';
+  }
+
+  function isProviderCreateComposerOpen(provider: string): boolean {
+    return providerCreateComposerOpen[provider] ?? false;
+  }
+
   function setProviderCredential(
     provider: string,
     field: 'mode' | 'name' | 'email' | 'password' | 'mfaCode' | 'useMfa' | 'confirmationLink',
@@ -455,6 +470,29 @@
         [field]: value,
       },
     };
+  }
+
+  function setProviderLocationName(provider: string, value: string): void {
+    providerLocationNameDrafts = {
+      ...providerLocationNameDrafts,
+      [provider]: value,
+    };
+  }
+
+  function setProviderCreateComposerOpenState(provider: string, open: boolean): void {
+    providerCreateComposerOpen = {
+      ...providerCreateComposerOpen,
+      [provider]: open,
+    };
+  }
+
+  function openProviderCreateComposer(provider: string): void {
+    setProviderCreateComposerOpenState(provider, true);
+  }
+
+  function closeProviderCreateComposer(provider: string): void {
+    setProviderCreateComposerOpenState(provider, false);
+    setProviderLocationName(provider, '');
   }
 
   function setProviderFlowState(provider: string, state: ProviderFlowState | null): void {
@@ -549,7 +587,9 @@
     if (draft.mode === 'signup') {
       return 'Create the MEGA account here, then finish the email confirmation step inside Nearbytes.';
     }
-    return 'Sign in here so Nearbytes can create the live mirror, keep it synced, and send MEGA storage invites for this hub.';
+    return mode === 'volume'
+      ? 'Sign in here so Nearbytes can create the live mirror, keep it synced, and send MEGA storage invites for this hub.'
+      : 'Sign in here so Nearbytes can create live mirror locations, keep them synced, and send MEGA storage invites.';
   }
 
   async function submitMegaAction(provider: ProviderCatalogEntry): Promise<void> {
@@ -611,13 +651,37 @@
     if (summary.state.status === 'idle') return 'Available';
     if (summary.state.status === 'needs-auth') return 'Reconnect';
     if (summary.state.status === 'unsupported') return 'Other option';
-    return 'Check storage';
+    return 'Needs attention';
   }
 
   function shareAttachmentSummary(summary: ManagedShareSummary): string {
     const count = summary.attachments.length;
     if (count === 0) {
-      return 'Not attached to a hub yet.';
+      return 'Not attached to any hub yet.';
+    }
+    return `${countLabel(count, 'hub')} attached`;
+  }
+
+  function sourceAttachmentLabels(sourceId: string): Array<{ volumeId: string; label: string; known: boolean }> {
+    if (!configDraft) {
+      return [];
+    }
+    return configDraft.volumes
+      .filter((volume) => volume.destinations.some((destination) => destination.sourceId === sourceId))
+      .map((volume) => {
+        const knownLabel = knownVolumeLabel(volume.volumeId);
+        return {
+          volumeId: volume.volumeId,
+          label: knownLabel ?? `Hub ${volume.volumeId.slice(0, 8)}`,
+          known: Boolean(knownLabel),
+        };
+      });
+  }
+
+  function sourceAttachmentSummary(sourceId: string): string {
+    const count = sourceAttachmentLabels(sourceId).length;
+    if (count === 0) {
+      return 'Not attached to any hub yet.';
     }
     return `${countLabel(count, 'hub')} attached`;
   }
@@ -717,19 +781,25 @@
     }
     if (entry.provider === 'github') {
       return entry.isConnected
-        ? 'Use GitHub as a provider for storage locations for this hub.'
+        ? mode === 'volume'
+          ? 'Use GitHub as a provider for storage locations for this hub.'
+          : 'Use GitHub as a provider for storage locations in Nearbytes.'
         : entry.setup.status === 'needs-config'
           ? 'Add the GitHub app details once, then connect.'
           : 'Use GitHub as another storage location provider.';
     }
     if (entry.provider === 'gdrive') {
       return entry.isConnected
-        ? 'Use Google Drive as a provider for storage locations for this hub.'
+        ? mode === 'volume'
+          ? 'Use Google Drive as a provider for storage locations for this hub.'
+          : 'Use Google Drive as a provider for storage locations in Nearbytes.'
         : 'Use Google Drive as another storage location provider.';
     }
     if (entry.provider === 'mega') {
       return entry.isConnected
-        ? 'Use MEGA as a provider for storage locations for this hub.'
+        ? mode === 'volume'
+          ? 'Use MEGA as a provider for storage locations for this hub.'
+          : 'Use MEGA as a provider for storage locations in Nearbytes.'
         : 'Use MEGA as a storage location provider.';
     }
     return entry.setup.detail || entry.description;
@@ -796,8 +866,20 @@
     return providerShares(provider).length;
   }
 
+  function visibleManagedShare(summary: ManagedShareSummary): boolean {
+    return sourceById(summary.share.sourceId) !== null;
+  }
+
+  function providerVisibleShares(provider: string): ManagedShareSummary[] {
+    return providerShares(provider).filter((summary) => visibleManagedShare(summary));
+  }
+
+  function providerVisibleShareCount(provider: string): number {
+    return providerVisibleShares(provider).length;
+  }
+
   function providerAttachedShareCount(provider: string): number {
-    if (!volumeId) {
+    if (mode !== 'volume' || !volumeId) {
       return 0;
     }
     return providerShares(provider).filter((summary) =>
@@ -824,7 +906,7 @@
   }
 
   function providerTransparencyFacts(entry: ProviderCatalogEntry): string[] {
-    const shareCount = providerShareCount(entry.provider);
+    const shareCount = providerVisibleShareCount(entry.provider);
     const attachedCount = providerAttachedShareCount(entry.provider);
     const account = connectedAccountForProvider(entry.provider);
     const facts = [
@@ -839,7 +921,7 @@
     if (incomingShareCount > 0) {
       facts.push(countLabel(incomingShareCount, 'incoming storage location'));
     }
-    if (volumeId) {
+    if (mode === 'volume' && volumeId) {
       facts.push(countLabel(attachedCount, 'attached location'));
     }
     if (entry.provider === 'mega') {
@@ -868,7 +950,7 @@
       const basePath = typeof summary.share.remoteDescriptor.basePath === 'string' ? summary.share.remoteDescriptor.basePath : null;
       return repoFullName && basePath ? `${repoFullName} → ${basePath}` : 'GitHub repository share';
     }
-    return summary.share.sourceId ? 'Local folder managed by Nearbytes' : 'Waiting for local folder';
+    return summary.share.sourceId ? 'Local mirror folder managed by Nearbytes' : 'Mirror folder needs attention';
   }
 
   function localShares(): SourceConfigEntry[] {
@@ -888,17 +970,19 @@
   }
 
   function managedShareNarrative(summary: ManagedShareSummary): string {
-    if (summary.state.status === 'ready' && summary.attachments.length > 0) {
-      return 'Nearbytes can use this live location right now. The folder below is the local mirror that should stay in sync with the provider copy.';
+    if (summary.state.status === 'ready') {
+      return 'This live location is ready. The folder below is the local mirror that should stay in sync with the provider copy.';
     }
     if (summary.attachments.length === 0) {
-      return 'This live location exists, but it is not attached to the current hub yet.';
+      return mode === 'volume'
+        ? 'This live location exists, but the current hub is not using it yet.'
+        : 'This live location exists in Nearbytes and is ready to attach when you need it.';
     }
     if (summary.state.status === 'syncing') {
-      return 'Nearbytes is still waiting for the provider mirror to settle before treating this route as ready.';
+      return 'Nearbytes is still waiting for the provider mirror to settle before treating this location as ready.';
     }
     if (summary.state.status === 'needs-auth') {
-      return 'Nearbytes cannot use this live location until the provider account is connected again.';
+      return 'Nearbytes cannot use this location until the provider account is connected again.';
     }
     return summary.state.detail;
   }
@@ -996,6 +1080,33 @@
     return 'Storage location';
   }
 
+  function nextManagedShareLabel(provider: string): string {
+    const baseLabel = defaultManagedShareLabel();
+    const matchingCount = providerShares(provider).filter((summary) => {
+      const label = summary.share.label.trim();
+      return label === baseLabel || /^Storage location \d+$/u.test(label);
+    }).length;
+    return matchingCount === 0 ? baseLabel : `${baseLabel} ${matchingCount + 1}`;
+  }
+
+  function providerEmptyShareCopy(provider: ProviderCatalogEntry): string {
+    if (!provider.isConnected) {
+      return `Connect ${provider.label} first, then Nearbytes will manage its shares here.`;
+    }
+    if (provider.provider === 'mega') {
+      return 'Nearbytes should create or adopt the default nearbytes share automatically. If it does not appear, use Add a location.';
+    }
+    return 'Create a storage location here to make it available in Nearbytes.';
+  }
+
+  function managedShareCreateLabel(provider: string): string {
+    if (provider === 'github') {
+      return githubShareLabel();
+    }
+    const draft = providerLocationNameDraft(provider).trim();
+    return draft || nextManagedShareLabel(provider);
+  }
+
   function defaultGithubBasePath(label: string): string {
     const slug =
       label
@@ -1010,6 +1121,7 @@
   function localShareView(source: SourceConfigEntry): UnifiedShareView {
     const status = sourceStatus(source.id);
     const defaultDestination = destinationFor(null, source.id);
+    const attachments = sourceAttachmentLabels(source.id);
     return {
       provider: formatProvider(source.provider),
       title: compactPath(source.path),
@@ -1019,6 +1131,7 @@
       meta: [
         status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown',
         usageSummary(source.id),
+        sourceAttachmentSummary(source.id),
       ],
       readable: source.enabled,
       writable: source.writable,
@@ -1030,7 +1143,7 @@
           : DEFAULT_RESERVE_PERCENT,
       reserveKey: `source:${source.id}`,
       warning: status?.lastWriteFailure?.message,
-      attachments: [],
+      attachments,
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
       onToggleDefault: () => setKeepFullCopy(null, source.id, !keepsFullCopy(defaultDestination)),
@@ -1064,6 +1177,7 @@
       active: summary.state.status === 'ready',
       statusBadges: shareCardBadgesForManaged(summary),
       meta: [
+        shareAttachmentSummary(summary),
         summary.storage?.availableBytes !== undefined
           ? `Available storage: ${formatSize(summary.storage.availableBytes)}`
           : summary.storage?.remoteAvailableBytes !== undefined
@@ -1098,6 +1212,9 @@
       onOpen: summary.share.sourceId ? () => openSourceFolder(summary.share.sourceId!) : undefined,
       openDisabled: !summary.share.sourceId,
       openTitle: source.path || summary.share.localPath,
+      onRemove: () => void removeManagedShareSummary(summary),
+      canRemove: true,
+      removeResetKey: `managed:${summary.share.id}:${summary.share.label}:${summary.attachments.length}`,
     };
   }
 
@@ -2279,17 +2396,44 @@
     errorMessage = '';
     successMessage = '';
     try {
-      const label = provider.provider === 'github' ? githubShareLabel() : defaultManagedShareLabel();
+      const label = managedShareCreateLabel(provider.provider);
       await createManagedShare({
         provider: provider.provider,
         accountId: provider.accountId,
         label,
         remoteDescriptor: provider.provider === 'github' ? githubShareDescriptor(label) : undefined,
       });
+      if (providerLocationNameDraft(provider.provider).trim()) {
+        setProviderLocationName(provider.provider, '');
+      }
+      setProviderCreateComposerOpenState(provider.provider, false);
       successMessage = `${provider.label} location created.`;
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} location`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  function handleProviderAddLocation(provider: ProviderCatalogEntry): void {
+    if (isInlineLocationComposerProvider(provider.provider)) {
+      openProviderCreateComposer(provider.provider);
+      return;
+    }
+    void createManagedShareForProvider(provider);
+  }
+
+  async function removeManagedShareSummary(summary: ManagedShareSummary): Promise<void> {
+    integrationBusyKey = `remove-share:${summary.share.id}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await removeManagedShare(summary.share.id);
+      successMessage = `${summary.share.label} removed.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to remove ${summary.share.label}`;
     } finally {
       integrationBusyKey = null;
     }
@@ -2548,11 +2692,11 @@
         provider: offer.provider,
         accountId: offer.accountId,
         label: offer.label,
-        volumeId: volumeId ?? undefined,
+        volumeId: mode === 'volume' ? volumeId ?? undefined : undefined,
         localPath: offer.suggestedLocalPath,
         remoteDescriptor: offer.remoteDescriptor,
       });
-      successMessage = `${offer.label} is ready in ${volumeId ? 'this hub' : 'Nearbytes'}.`;
+      successMessage = `${offer.label} is ready in ${mode === 'volume' && volumeId ? 'this hub' : 'Nearbytes'}.`;
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to accept incoming storage location';
@@ -2641,11 +2785,13 @@
             <div class="button-row storage-card-actions-left">
               {#if view.onRemove && view.canRemove}
                 <ArmedActionButton
-                  class="panel-btn subtle compact danger"
+                  class="panel-btn subtle compact icon-btn armed-icon-danger"
                   icon={Trash2}
-                  text="Remove"
+                  text=""
                   armed={true}
                   autoDisarmMs={3000}
+                  title="Remove"
+                  ariaLabel="Remove"
                   resetKey={view.removeResetKey}
                   onPress={view.onRemove}
                 />
@@ -2703,6 +2849,41 @@
         {/snippet}
       </ShareCard>
     {/snippet}
+    {#snippet addLocationAction(label: string, title: string, onPress: () => void, disabled: boolean)}
+      <button type="button" class="panel-btn subtle compact" onclick={onPress} {title} {disabled}>
+        <Plus size={14} strokeWidth={2} />
+        <span>{label}</span>
+      </button>
+    {/snippet}
+    {#snippet addLocationComposer(provider: ProviderCatalogEntry)}
+      <form class="provider-create-inline" onsubmit={(event) => {
+        event.preventDefault();
+        void createManagedShareForProvider(provider);
+      }}>
+        <input
+          class="panel-input provider-create-inline-input"
+          type="text"
+          value={providerLocationNameDraft(provider.provider)}
+          placeholder={nextManagedShareLabel(provider.provider)}
+          oninput={(event) => setProviderLocationName(provider.provider, (event.currentTarget as HTMLInputElement).value)}
+        />
+        <button
+          type="submit"
+          class="panel-btn primary compact"
+          disabled={integrationBusyKey === `create:${provider.provider}`}
+        >
+          <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create'}</span>
+        </button>
+        <button
+          type="button"
+          class="panel-btn subtle compact"
+          onclick={() => closeProviderCreateComposer(provider.provider)}
+          disabled={integrationBusyKey === `create:${provider.provider}`}
+        >
+          <span>Cancel</span>
+        </button>
+      </form>
+    {/snippet}
     {#if mode === 'global'}
       <div class="provider-tabs" role="tablist" aria-label="Storage providers">
         <button
@@ -2723,7 +2904,7 @@
           >
             <span class="provider-tab-label">{provider.label}</span>
             <span class="provider-tab-copy">
-              {provider.isConnected ? countLabel(providerShares(provider.provider).length, 'location') : providerCardStatus(provider)}
+              {provider.isConnected ? countLabel(providerVisibleShareCount(provider.provider), 'location') : providerCardStatus(provider)}
             </span>
           </button>
         {/each}
@@ -2744,6 +2925,7 @@
             <p class="section-copy">{activeFolderCount()} active on this device.</p>
           </div>
           <div class="button-row compact-panel-actions">
+            {@render addLocationAction('Add a location', 'Add a storage location manually', addSourceCard, false)}
             <button
               type="button"
               class="panel-btn subtle compact icon-btn"
@@ -2796,19 +2978,12 @@
               </div>
             </article>
           {/each}
-
-          <article class="location-card add-card">
-            <button type="button" class="add-card-button wide" onclick={addSourceCard} title="Add a storage location manually">
-              <Plus size={16} strokeWidth={2.1} />
-              <span>Add a folder</span>
-            </button>
-          </article>
         </div>
       </section>
 
       {:else}
         {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
-        {@const shares = provider ? providerShares(provider.provider) : []}
+        {@const shares = provider ? providerVisibleShares(provider.provider) : []}
         {#if provider}
           <section class="panel-section">
             <div class="section-head compact global-panel-head">
@@ -2817,6 +2992,18 @@
                 <p class="section-copy">{providerCardDetail(provider)}</p>
               </div>
               <div class="button-row compact-panel-actions">
+                {#if provider.isConnected}
+                  {#if isInlineLocationComposerProvider(provider.provider) && isProviderCreateComposerOpen(provider.provider)}
+                    {@render addLocationComposer(provider)}
+                  {:else}
+                    {@render addLocationAction(
+                      'Add a location',
+                      `Add a ${provider.label} storage location`,
+                      () => handleProviderAddLocation(provider),
+                      integrationBusyKey === `create:${provider.provider}`
+                    )}
+                  {/if}
+                {/if}
                 {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
                   <button
                     type="button"
@@ -2837,16 +3024,6 @@
                   </button>
                 {/if}
                 {#if provider.isConnected}
-                  {#if provider.provider === 'github'}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void createManagedShareForProvider(provider)}
-                      disabled={integrationBusyKey === `create:${provider.provider}`}
-                    >
-                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create location'}</span>
-                    </button>
-                  {/if}
                   <button
                     type="button"
                     class="panel-btn subtle compact"
@@ -3147,7 +3324,7 @@
                 <ShareCard
                   provider={provider.label}
                   title="No shares yet"
-                  copy={provider.isConnected ? `Nearbytes should create or adopt the default nearbytes share automatically.` : `Connect ${provider.label} first, then Nearbytes will manage its shares here.`}
+                  copy={providerEmptyShareCopy(provider)}
                   statusBadges={[]}
                   meta={[]}
                 />
@@ -3314,11 +3491,13 @@
                 <div class="storage-card-actions">
                   <div class="button-row storage-card-actions-left">
                     <ArmedActionButton
-                      class="panel-btn subtle compact danger"
+                      class="panel-btn subtle compact icon-btn armed-icon-danger"
                       icon={Trash2}
-                      text="Remove"
+                      text=""
                       armed={true}
                       autoDisarmMs={3000}
+                      title="Remove"
+                      ariaLabel="Remove"
                       onPress={() => setHubLocationMode(volumeId, source.id, 'off')}
                     />
                     <button
@@ -3329,7 +3508,7 @@
                       title={hasSourcePath(source) ? 'Move this storage location without interrupting service' : 'Choose folder'}
                     >
                       <ArrowRightLeft size={14} strokeWidth={2} />
-                      <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move folder' : 'Choose folder'}</span>
+                      <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move' : 'Choose folder'}</span>
                     </button>
                   </div>
 
@@ -3684,6 +3863,20 @@
     justify-content: flex-end;
   }
 
+  .provider-create-inline {
+    display: inline-grid;
+    grid-template-columns: minmax(160px, 220px) auto auto;
+    gap: 0.45rem;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .provider-create-inline-input {
+    min-width: 0;
+    height: 30px;
+    padding-block: 0.2rem;
+  }
+
   .compact-provider-card {
     padding: 0.76rem 0.82rem;
   }
@@ -3969,6 +4162,18 @@
     color: var(--nb-btn-danger-color, rgba(166, 63, 63, 0.94));
   }
 
+  .panel-btn.armed-icon-danger,
+  :global(.panel-btn.armed-icon-danger) {
+    color: var(--nb-btn-color, rgba(70, 70, 73, 0.94));
+  }
+
+  .panel-btn.armed-icon-danger.armed,
+  :global(.panel-btn.armed-icon-danger.armed) {
+    border-color: var(--nb-btn-danger-border, color-mix(in srgb, var(--nb-danger, #c86a6a) 22%, transparent));
+    background: color-mix(in srgb, var(--nb-danger-surface, rgba(254, 202, 202, 0.12)) 84%, rgba(255, 248, 247, 0.96));
+    color: var(--nb-btn-danger-color, rgba(166, 63, 63, 0.94));
+  }
+
   .panel-error,
   .panel-success,
   .protection-banner {
@@ -4162,10 +4367,10 @@
 
   .storage-card-actions {
     width: 100%;
-    display: flex;
-    align-items: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
     gap: 0.75rem;
-    justify-content: space-between;
   }
 
   .storage-card-actions-left {
@@ -4175,15 +4380,24 @@
   }
 
   .storage-card-actions-right {
-    flex: 0 0 auto;
-    padding-left: 1rem;
+    min-width: 0;
     align-items: center;
   }
 
   .storage-card-actions-right {
     gap: 0.5rem;
     justify-content: flex-end;
-    margin-left: auto;
+    margin-left: 0;
+  }
+
+  .storage-card-actions-left,
+  .storage-card-actions-right {
+    width: 100%;
+  }
+
+  .storage-card-actions .button-row > :global(*),
+  .storage-card-actions .button-row > * {
+    min-width: 0;
   }
 
   .compact-visible-fields {
@@ -4608,6 +4822,17 @@
     .storage-card-actions-right {
       margin-left: 0;
       justify-content: flex-start;
+    }
+
+    .storage-card-actions-left,
+    .storage-card-actions-right,
+    .storage-card-actions .button-row {
+      width: 100%;
+    }
+
+    .storage-card-actions .button-row > :global(*),
+    .storage-card-actions .button-row > * {
+      flex: 1 1 100%;
     }
 
     .inline-reserve-slot {

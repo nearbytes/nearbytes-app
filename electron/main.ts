@@ -858,6 +858,9 @@ async function assertRuntimeBridge(window: BrowserWindow): Promise<void> {
 }
 
 async function installRendererDiagnostics(window: BrowserWindow): Promise<void> {
+  if (!isDesktopDebugEnabled('renderer-diag')) {
+    return;
+  }
   try {
     await window.webContents.executeJavaScript(
       `(() => {
@@ -1109,6 +1112,25 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     console.error(`[desktop] failed to install renderer diagnostics: ${message}`);
   }
+}
+
+function isDesktopDebugEnabled(scope?: string): boolean {
+  const value = process.env.DEBUG?.trim();
+  if (!value) {
+    return false;
+  }
+  const tokens = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+  const normalizedScope = scope?.trim().toLowerCase();
+  return tokens.some((token) => {
+    const normalized = token.toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === '*' || normalized === 'nearbytes') {
+      return true;
+    }
+    if (!normalizedScope) {
+      return false;
+    }
+    return normalized === normalizedScope || normalized === `nearbytes:${normalizedScope}`;
+  });
 }
 
 async function startRendererCpuProfile(window: BrowserWindow): Promise<void> {

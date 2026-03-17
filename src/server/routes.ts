@@ -348,6 +348,14 @@ export function createRoutes(deps: RouteDependencies): Router {
     });
   }));
 
+  router.delete('/integrations/shares/:shareId', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    await service.removeManagedShare(shareId);
+    res.json({ ok: true });
+  }));
+
   router.post('/integrations/shares/accept', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);

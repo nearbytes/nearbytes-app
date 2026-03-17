@@ -5,6 +5,7 @@ import {
   type DiscoveredNearbytesSource,
 } from '../config/sourceDiscovery.js';
 import type { RootProvider } from '../config/roots.js';
+import { debugServerLog } from './debug.js';
 
 export interface SourceWatchReady {
   readonly autoUpdate: boolean;
@@ -74,7 +75,8 @@ export class SourceWatchHub {
     }
 
     if (this.entry) {
-      console.log(
+      debugServerLog(
+        'watchers',
         `[source-watch] reusing watcher #${this.entry.id} for subscriber; subscribers=${this.entry.subscribers.size + 1}`
       );
       this.entry.subscribers.add(onUpdate);
@@ -105,7 +107,8 @@ export class SourceWatchHub {
       debounceTimer: null,
     };
 
-    console.log(
+    debugServerLog(
+      'watchers',
       `[source-watch] created watcher #${entry.id}; targets=${JSON.stringify(plan.targets)} depth=${this.watchDepth}`
     );
 
@@ -144,7 +147,7 @@ export class SourceWatchHub {
     });
 
     watcher.on('ready', () => {
-      console.log(`[source-watch] watcher #${entry.id} ready`);
+      debugServerLog('watchers', `[source-watch] watcher #${entry.id} ready`);
     });
 
     this.entry = entry;
@@ -165,7 +168,8 @@ export class SourceWatchHub {
 
     entry.subscribers.delete(onUpdate);
     entry.errorSubscribers.delete(onError);
-    console.log(
+    debugServerLog(
+      'watchers',
       `[source-watch] unsubscribe watcher #${entry.id}; remaining-subscribers=${entry.subscribers.size}`
     );
     if (entry.subscribers.size > 0) {
@@ -178,9 +182,10 @@ export class SourceWatchHub {
     }
     this.entry = null;
     const closeStartedAt = Date.now();
-    console.log(`[source-watch] closing watcher #${entry.id}`);
+    debugServerLog('watchers', `[source-watch] closing watcher #${entry.id}`);
     void entry.watcher.close().then(() => {
-      console.log(
+      debugServerLog(
+        'watchers',
         `[source-watch] closed watcher #${entry.id} in ${Date.now() - closeStartedAt}ms`
       );
     });
