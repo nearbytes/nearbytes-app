@@ -12,16 +12,16 @@ Internal terms such as `volume`, `source`, `destination`, and `root` may remain 
 
 ## Primary terms
 
-### Space
-`Space` is the primary user-facing word for the logical Nearbytes unit.
+### Hub
+`Hub` is the primary user-facing word for the logical Nearbytes unit that is opened from a secret.
 
-A space can contain:
+A hub can contain:
 - files
 - chat
 - history
 - identities
 
-Use `space` in UI for:
+Use `hub` in UI for:
 - opening
 - switching
 - joining chat
@@ -29,10 +29,10 @@ Use `space` in UI for:
 - default rules
 
 Examples:
-- `Open space`
-- `Switching space`
-- `Space ID`
-- `This space will chat as Ada`
+- `Open hub`
+- `Switching hub`
+- `Hub ID`
+- `This hub will chat as Ada`
 
 ### Storage location
 `Storage location` is the primary user-facing word for a physical place where Nearbytes can read or write encrypted data.
@@ -50,11 +50,13 @@ Use `location` or `storage location` in UI for:
 - configuration
 - diagnostics
 - lists of saved folders
+- capacity readouts about available storage
 
 Examples:
 - `Storage locations`
 - `New Nearbytes storage locations detected`
 - `Saved locations`
+- `Available storage`
 - `This location keeps a protected copy`
 
 ### Folder
@@ -73,13 +75,13 @@ Use `provider` in UI for:
 - provider cards
 - provider badges
 - connected account status
-- managed-share selection
+- storage location selection
 - route choice when several transports are possible
 
 Use provider names as labels for both:
 
 - the service hosting a storage location
-- the service behind a managed share or suggested route
+- the service behind a provider-backed location or suggested route
 
 Examples:
 - `Dropbox`
@@ -90,16 +92,16 @@ Examples:
 - `This join link recommends Google Drive first`
 
 ### Keep rule / sync rule
-Use `keep rule` or `sync rule` for user-facing policy about where a space stores encrypted history and blocks.
+Use `keep rule` or `sync rule` for user-facing policy about where a hub stores encrypted history and blocks.
 
 Use:
 - `keep rule` when the UI is specifically about retaining full copies
-- `sync rule` when the UI is about enabling a location for a known space
+- `sync rule` when the UI is about enabling a location for a known hub
 
 Examples:
 - `Edit rules`
 - `Forget saved keep rule`
-- `Sync enabled for 2 known spaces`
+- `Sync enabled for 2 known hubs`
 
 ## Terms to avoid in main UI
 
@@ -133,7 +135,7 @@ Do not use as the main Nearbytes noun.
 
 Reason:
 - a cloud share is a transport or permission concept
-- a Nearbytes space can span multiple locations
+- a Nearbytes hub can span multiple locations
 - a location may exist without being the logical thing people collaborate in
 
 Use only when talking about the cloud provider’s own sharing feature.
@@ -143,13 +145,13 @@ Do not use as the default Nearbytes noun.
 
 Reason:
 - too narrow
-- Nearbytes spaces may be personal, social, archival, or experimental
+- Nearbytes hubs may be personal, social, archival, or experimental
 
 ## Copy rules
 
 ### Prefer plain language
 Prefer:
-- `space`
+- `hub`
 - `storage location`
 - `folder`
 - `rules`
@@ -161,15 +163,15 @@ Avoid:
 - `root`
 
 ### Be concrete about physical vs logical
-Use `space` for the logical unit.
+Use `hub` for the logical unit.
 Use `storage location` for the physical folder/provider.
 
 Bad:
 - `This share stores your source`
 
 Good:
-- `This storage location keeps a protected copy of this space`
-- `Choose a provider, then attach the managed share to this space`
+- `This storage location keeps a protected copy of this hub`
+- `Choose a provider, then use that storage location in this hub`
 
 ### Use folder when asking for a path
 If the action opens a picker or file manager, say `folder`, not `location`.
@@ -182,16 +184,17 @@ Good:
 
 | Internal term | End-user term |
 | --- | --- |
-| volume | space |
+| volume | hub |
 | source | storage location |
 | destination | keep rule / sync rule / location |
 | root | folder / storage location |
-| defaultVolume | defaults for newly opened spaces |
+| defaultVolume | defaults for newly opened hubs |
 
 ## Example UI phrases
 - `Storage locations`
 - `Saved locations`
+- `Available storage`
 - `New Nearbytes storage locations detected in Dropbox and Apple/iCloud.`
-- `We added 3 locations and enabled sync for 2 known spaces.`
-- `Open this space first, then choose which locations keep a full copy.`
-- `This location is not keeping this space yet.`
+- `We added 3 locations and enabled sync for 2 known hubs.`
+- `Open this hub first, then choose which locations keep a full copy.`
+- `This location is not keeping this hub yet.`

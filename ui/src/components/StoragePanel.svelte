@@ -57,10 +57,6 @@
     currentVolumePresentation = null,
     knownVolumes = [],
     onOpenVolumeRouting = undefined,
-    onCopyShareLink = undefined,
-    canCopySecretLink = false,
-    shareLinkBusy = false,
-    shareLinkFeedback = null,
     discoveryDetails = null,
     refreshToken = 0,
     focusSection = null,
@@ -76,10 +72,6 @@
     } | null;
     knownVolumes?: Array<{ volumeId: string; label: string }>;
     onOpenVolumeRouting?: ((volumeId: string) => void) | undefined;
-    onCopyShareLink?: ((includeSecret: boolean) => Promise<void> | void) | undefined;
-    canCopySecretLink?: boolean;
-    shareLinkBusy?: boolean;
-    shareLinkFeedback?: { tone: 'success' | 'warning'; message: string } | null;
     discoveryDetails?: ReconcileSourcesResponse | null;
     refreshToken?: number;
     focusSection?: 'discovery' | 'defaults' | 'shares' | null;
@@ -554,7 +546,7 @@
     if (draft.mode === 'signup') {
       return 'Create the MEGA account here, then finish the email confirmation step inside Nearbytes.';
     }
-    return 'Sign in here so Nearbytes can create the live mirror, keep it synced, and send MEGA storage invites for this space.';
+    return 'Sign in here so Nearbytes can create the live mirror, keep it synced, and send MEGA storage invites for this hub.';
   }
 
   async function submitMegaAction(provider: ProviderCatalogEntry): Promise<void> {
@@ -618,6 +610,32 @@
     );
   }
 
+  function providerManagedSharesForVolume(provider: string, targetVolumeId: string | null): ManagedShareSummary[] {
+    return sortManagedShareSummaries(
+      managedSharesForVolume(targetVolumeId).filter((summary) => summary.share.provider === provider)
+    );
+  }
+
+  function providerAvailableManagedSharesForVolume(provider: string, targetVolumeId: string | null): ManagedShareSummary[] {
+    return sortManagedShareSummaries(
+      availableManagedSharesForVolume(targetVolumeId).filter((summary) => summary.share.provider === provider)
+    );
+  }
+
+  function providerLocationState(provider: string, targetVolumeId: string | null): {
+    contactInvites: IncomingProviderContactInvite[];
+    incomingLocations: IncomingManagedShareOffer[];
+    attachedLocations: ManagedShareSummary[];
+    availableLocations: ManagedShareSummary[];
+  } {
+    return {
+      contactInvites: incomingProviderInvitesForProvider(provider),
+      incomingLocations: incomingManagedSharesForProvider(provider),
+      attachedLocations: providerManagedSharesForVolume(provider, targetVolumeId),
+      availableLocations: providerAvailableManagedSharesForVolume(provider, targetVolumeId),
+    };
+  }
+
   function shareStatusTone(summary: ManagedShareSummary): StatusTone {
     if (summary.state.status === 'ready') return 'good';
     if (summary.state.status === 'idle' || summary.state.status === 'syncing') return 'muted';
@@ -636,9 +654,9 @@
   function shareAttachmentSummary(summary: ManagedShareSummary): string {
     const count = summary.attachments.length;
     if (count === 0) {
-      return 'Not attached to a space yet.';
+      return 'Not attached to a hub yet.';
     }
-    return `${countLabel(count, 'space')} attached`;
+    return `${countLabel(count, 'hub')} attached`;
   }
 
   function shareAttachmentLabels(summary: ManagedShareSummary): Array<{ volumeId: string; label: string; known: boolean }> {
@@ -649,7 +667,7 @@
       const knownLabel = knownVolumeLabel(attachment.volumeId);
       return {
         volumeId: attachment.volumeId,
-        label: knownLabel ?? `Space ${attachment.volumeId.slice(0, 8)}`,
+        label: knownLabel ?? `Hub ${attachment.volumeId.slice(0, 8)}`,
         known: Boolean(knownLabel),
       };
     });
@@ -683,7 +701,7 @@
 
   function knownVolumeLabel(targetVolumeId: string): string | null {
     if (currentVolumePresentation && currentVolumePresentation.volumeId === targetVolumeId) {
-      return currentVolumePresentation.label.trim() || 'Current space';
+      return currentVolumePresentation.label.trim() || 'Current hub';
     }
     return knownVolumes.find((entry: { volumeId: string; label: string }) => entry.volumeId === targetVolumeId)?.label ?? null;
   }
@@ -735,10 +753,10 @@
   }
 
   function providerCardHeadline(entry: ProviderCatalogEntry): string {
-    if (entry.provider === 'mega') return entry.isConnected ? 'Shared storage in MEGA' : 'Share storage with MEGA';
-    if (entry.provider === 'gdrive') return entry.isConnected ? 'Shared storage in Google Drive' : 'Use Google Drive storage';
-    if (entry.provider === 'github') return entry.isConnected ? 'Shared storage in GitHub' : 'Use GitHub storage';
-    return `Use ${entry.label} storage`;
+    if (entry.provider === 'mega') return entry.isConnected ? 'Storage locations in MEGA' : 'Use MEGA locations';
+    if (entry.provider === 'gdrive') return entry.isConnected ? 'Storage locations in Google Drive' : 'Use Google Drive locations';
+    if (entry.provider === 'github') return entry.isConnected ? 'Storage locations in GitHub' : 'Use GitHub locations';
+    return `Use ${entry.label} locations`;
   }
 
   function providerCardDetail(entry: ProviderCatalogEntry): string {
@@ -750,38 +768,40 @@
       return 'Nearbytes is preparing the local connection in the background.';
     }
     if (entry.setup.status === 'needs-install' && entry.provider === 'mega') {
-      return 'Nearbytes will set up MEGA the first time you use a shared storage space.';
+      return 'Nearbytes will set up MEGA the first time you create a storage location there.';
     }
     if (entry.provider === 'github') {
       return entry.isConnected
-        ? 'Use GitHub as a shared storage space for this space.'
+        ? 'Use GitHub as a provider for storage locations for this hub.'
         : entry.setup.status === 'needs-config'
           ? 'Add the GitHub app details once, then connect.'
-          : 'Use GitHub as another shared storage space.';
+          : 'Use GitHub as another storage location provider.';
     }
     if (entry.provider === 'gdrive') {
       return entry.isConnected
-        ? 'Use Google Drive as a shared storage space for this space.'
-        : 'Use Google Drive as another shared storage space.';
+        ? 'Use Google Drive as a provider for storage locations for this hub.'
+        : 'Use Google Drive as another storage location provider.';
     }
     if (entry.provider === 'mega') {
       return entry.isConnected
-        ? 'Use MEGA as the shared storage space for this space.'
-        : 'Use MEGA as the default shared storage space.';
+        ? 'Use MEGA as a provider for storage locations for this hub.'
+        : 'Use MEGA as a storage location provider.';
     }
     return entry.setup.detail || entry.description;
   }
 
   function providerShares(provider: string): ManagedShareSummary[] {
-    return managedShares.filter((summary) => summary.share.provider === provider);
+    return sortManagedShareSummaries(managedShares.filter((summary) => summary.share.provider === provider));
   }
 
   function incomingManagedSharesForProvider(provider: string): IncomingManagedShareOffer[] {
-    return incomingManagedShareOffers.filter((offer) => offer.provider === provider);
+    return sortIncomingManagedShareOffers(incomingManagedShareOffers.filter((offer) => offer.provider === provider));
   }
 
   function incomingProviderInvitesForProvider(provider: string): IncomingProviderContactInvite[] {
-    return incomingProviderContactInvites.filter((invite) => invite.provider === provider);
+    return sortIncomingProviderContactInviteEntries(
+      incomingProviderContactInvites.filter((invite) => invite.provider === provider)
+    );
   }
 
   function providerPriority(provider: string): number {
@@ -878,9 +898,9 @@
       return `Your ${entry.label} account is connected. The next step is to create a live location so this provider can actually carry updates.`;
     }
     if (volumeId && attachedCount === 0) {
-      return `This provider already has a live location. Attach one to this space so Nearbytes can use it for incoming and outgoing updates.`;
+      return `This provider already has a live location. Use one in this hub so Nearbytes can handle incoming and outgoing updates.`;
     }
-    return `This provider is ready. Nearbytes knows where the local mirror lives and can use it for this space.`;
+    return `This provider is ready. Nearbytes knows where the local mirror lives and can use it for this hub.`;
   }
 
   function providerTransparencyFacts(entry: ProviderCatalogEntry): string[] {
@@ -900,7 +920,7 @@
       facts.push(countLabel(incomingShareCount, 'incoming storage location'));
     }
     if (volumeId) {
-      facts.push(countLabel(attachedCount, 'attached route'));
+      facts.push(countLabel(attachedCount, 'attached location'));
     }
     if (entry.provider === 'mega') {
       facts.push(entry.setup.status === 'needs-install' ? 'Needs local helper' : 'Uses local mirror folder');
@@ -945,13 +965,13 @@
         state: hasShare ? 'done' : connected ? 'active' : 'pending',
       },
       {
-        label: volumeId ? 'Attach it to this space' : 'Ready for spaces',
+        label: volumeId ? 'Use it in this hub' : 'Ready for hubs',
         detail:
           volumeId
             ? attachedToVolume
-              ? 'This provider already has a live route attached to the current space.'
-              : 'Attach the live location so this space can receive provider-backed updates.'
-            : 'Once a live location exists, any space can attach it later.',
+              ? 'This provider already has a live location attached to the current hub.'
+              : 'Use the live location so this hub can receive provider-backed updates.'
+            : 'Once a live location exists, any hub can use it later.',
         state: attachedToVolume ? 'done' : hasShare ? 'active' : 'pending',
       },
     ];
@@ -1001,7 +1021,7 @@
       return 'Nearbytes can use this live location right now. The folder below is the local mirror that should stay in sync with the provider copy.';
     }
     if (summary.attachments.length === 0) {
-      return 'This live location exists, but it is not attached to the current space yet.';
+      return 'This live location exists, but it is not attached to the current hub yet.';
     }
     if (summary.state.status === 'syncing') {
       return 'Nearbytes is still waiting for the provider mirror to settle before treating this route as ready.';
@@ -1018,9 +1038,9 @@
       managedShareAccessLabel(summary),
       shareAttachmentSummary(summary),
       summary.storage?.keepFullCopy ? 'Keeps a full copy' : 'On-demand copy policy',
-      summary.storage?.availableBytes !== undefined ? `${formatSize(summary.storage.availableBytes)} free locally` : null,
+      summary.storage?.availableBytes !== undefined ? `Available storage: ${formatSize(summary.storage.availableBytes)} locally` : null,
       summary.storage?.remoteAvailableBytes !== undefined
-        ? `${formatSize(summary.storage.remoteAvailableBytes)} free in ${providerLabelForManagedShare(summary)}`
+        ? `Available storage: ${formatSize(summary.storage.remoteAvailableBytes)} in ${providerLabelForManagedShare(summary)}`
         : null,
     ];
     return facts.filter((value): value is string => Boolean(value));
@@ -1095,7 +1115,7 @@
   }
 
   function defaultManagedShareLabel(): string {
-    return 'Shared storage';
+    return 'Storage location';
   }
 
   function defaultGithubBasePath(label: string): string {
@@ -1135,7 +1155,7 @@
       active: protectionTone(defaultDestination, source.id) === 'durable',
       statusBadges: shareCardBadgeForSource(source),
       meta: [
-        status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown',
+        status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown',
         usageSummary(source.id),
       ],
       readable: source.enabled,
@@ -1181,9 +1201,9 @@
       statusBadges: shareCardBadgesForManaged(summary),
       meta: [
         managedShareAccessLabel(summary),
-        summary.storage?.availableBytes !== undefined ? `${formatSize(summary.storage.availableBytes)} free` : 'Free space unknown',
+        summary.storage?.availableBytes !== undefined ? `Available storage: ${formatSize(summary.storage.availableBytes)}` : 'Available storage unknown',
         summary.storage?.remoteAvailableBytes !== undefined
-          ? `${formatSize(summary.storage.remoteAvailableBytes)} free in ${providerLabelForManagedShare(summary)}`
+          ? `Available storage: ${formatSize(summary.storage.remoteAvailableBytes)} in ${providerLabelForManagedShare(summary)}`
           : null,
         typeof summary.storage?.usageTotalBytes === 'number'
           ? `Nearbytes is using ${formatSize(summary.storage.usageTotalBytes)} in this location.`
@@ -1226,7 +1246,7 @@
   }
 
   function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
-    return volumeId ? `Use ${providerLabelForIncoming(offer.provider)} in this space` : 'Add storage location';
+    return volumeId ? `Use ${providerLabelForIncoming(offer.provider)} in this hub` : 'Add storage location';
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -1743,12 +1763,12 @@
   function protectionHint(targetVolumeId: string | null): string {
     if (hasDurableDestination(targetVolumeId)) {
       return targetVolumeId
-        ? 'This space already has at least one writable protected copy.'
-        : 'New spaces will start with at least one writable protected copy.';
+        ? 'This hub already has at least one writable protected copy.'
+        : 'New hubs will start with at least one writable protected copy.';
     }
     return targetVolumeId
       ? 'Turn on "Keep a full copy" for at least one writable location below.'
-      : 'Every new space needs at least one writable location that keeps a protected copy.';
+      : 'Every new hub needs at least one writable location that keeps a protected copy.';
   }
 
   function copyHelpText(targetVolumeId: string | null, source: SourceConfigEntry): string {
@@ -1756,8 +1776,8 @@
     const status = sourceStatus(source.id);
     if (!keepsFullCopy(destination)) {
       return targetVolumeId
-        ? 'This space is not being kept here.'
-        : 'New spaces will not keep a full copy here.';
+        ? 'This hub is not being kept here.'
+        : 'New hubs will not keep a full copy here.';
     }
     if (!source.enabled) {
       return 'This rule is saved, but the location itself is turned off.';
@@ -1772,7 +1792,7 @@
       return 'This rule is saved, but Nearbytes cannot write to this folder right now.';
     }
     if (canReuseOtherGuaranteedCopies(destination)) {
-      return 'If space runs low, Nearbytes may delete blocks from this location, but only after another protected location already has them.';
+      return 'If available storage runs low, Nearbytes may delete blocks from this location, but only after another protected location already has them.';
     }
     return 'This location keeps a protected full copy.';
   }
@@ -2227,10 +2247,10 @@
         volumeId,
         remoteDescriptor,
       });
-      successMessage = `${provider.label} share created for this space.`;
+      successMessage = `${provider.label} location created for this hub.`;
       await loadPanel();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} share`;
+      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} location`;
     } finally {
       integrationBusyKey = null;
     }
@@ -2249,10 +2269,10 @@
         label,
         remoteDescriptor: provider.provider === 'github' ? githubShareDescriptor(label) : undefined,
       });
-      successMessage = `${provider.label} share created.`;
+      successMessage = `${provider.label} location created.`;
       await loadPanel();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} share`;
+      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} location`;
     } finally {
       integrationBusyKey = null;
     }
@@ -2469,10 +2489,10 @@
     successMessage = '';
     try {
       await attachManagedShare(summary.share.id, volumeId);
-      successMessage = `${summary.share.label} attached to this space.`;
+      successMessage = `${summary.share.label} attached to this hub.`;
       await loadPanel();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to attach managed share';
+      errorMessage = error instanceof Error ? error.message : 'Failed to attach storage location';
     } finally {
       integrationBusyKey = null;
     }
@@ -2490,10 +2510,10 @@
     try {
       await inviteManagedShare(summary.share.id, emails);
       setManagedShareInviteDraft(summary.share.id, '');
-      successMessage = `${summary.share.label} shared with ${emails.join(', ')}.`;
+      successMessage = `${summary.share.label} location shared with ${emails.join(', ')}.`;
       await loadPanel();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to share managed location';
+      errorMessage = error instanceof Error ? error.message : 'Failed to invite people to this location';
     } finally {
       integrationBusyKey = null;
     }
@@ -2531,7 +2551,7 @@
         localPath: offer.suggestedLocalPath,
         remoteDescriptor: offer.remoteDescriptor,
       });
-      successMessage = `${offer.label} is ready in ${volumeId ? 'this space' : 'Nearbytes'}.`;
+      successMessage = `${offer.label} is ready in ${volumeId ? 'this hub' : 'Nearbytes'}.`;
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to accept incoming storage location';
@@ -2612,8 +2632,8 @@
           <details class="details-card inline-details compact-share-advanced">
             <summary>Advanced</summary>
             <div class="card-control-row">
-              <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
-                <span>Keep free</span>
+              <label class="field-block compact-field" title="Minimum available storage to leave on this drive. Default is 5%.">
+                <span>Keep available</span>
                 <select
                   class="panel-input"
                   value={String(view.reservePercent)}
@@ -2672,6 +2692,175 @@
           {#if view.attachments.length > 0}
             <div class="fact-row share-volume-row">
               {#each view.attachments as attachment}
+                {#if attachment.known}
+                  <button
+                    type="button"
+                    class="mini-pill mini-pill-button"
+                    onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
+                  >
+                    {attachment.label}
+                  </button>
+                {:else}
+                  <span class="mini-pill">{attachment.label}</span>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        {/snippet}
+      </ShareCard>
+    {/snippet}
+    {#snippet providerContactInviteCard(invite: IncomingProviderContactInvite)}
+      <ShareCard
+        provider={providerLabelForIncoming(invite.provider)}
+        title={invite.label}
+        copy={invite.detail}
+        statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
+      >
+        {#snippet body()}
+          <p class="managed-share-invite-copy">Accept this first so {providerLabelForIncoming(invite.provider)} can show any storage locations shared with you.</p>
+        {/snippet}
+        {#snippet actions()}
+          <button
+            type="button"
+            class="panel-btn subtle compact"
+            onclick={() => void acceptProviderContactInviteEntry(invite)}
+            disabled={integrationBusyKey === `accept-contact:${invite.id}`}
+          >
+            <span>{integrationBusyKey === `accept-contact:${invite.id}` ? 'Accepting...' : 'Accept contact'}</span>
+          </button>
+        {/snippet}
+      </ShareCard>
+    {/snippet}
+    {#snippet incomingLocationCard(offer: IncomingManagedShareOffer)}
+      <ShareCard
+        provider={providerLabelForIncoming(offer.provider)}
+        title={offer.label}
+        copy={offer.detail}
+        statusBadges={[{ label: 'Incoming location', tone: 'muted' }]}
+        meta={[`Shared by ${offer.ownerLabel}`, volumeId ? 'Will attach to this hub' : 'Saved as a storage location']}
+      >
+        {#snippet body()}
+          {#if offer.suggestedLocalPath}
+            <div class="provider-path-card managed-share-path-card">
+              <p class="subheading">Suggested local mirror</p>
+              <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
+            </div>
+          {/if}
+        {/snippet}
+        {#snippet actions()}
+          <button
+            type="button"
+            class="panel-btn subtle compact"
+            onclick={() => void acceptIncomingManagedShareOffer(offer)}
+            disabled={integrationBusyKey === `accept-share:${offer.id}`}
+          >
+            <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
+          </button>
+        {/snippet}
+      </ShareCard>
+    {/snippet}
+    {#snippet providerManagedLocationCard(summary: ManagedShareSummary, attachedHere: boolean)}
+      <ShareCard
+        provider={providerLabelForManagedShare(summary)}
+        title={summary.share.label}
+        copy={managedShareNarrative(summary)}
+        active={attachedHere || summary.state.status === 'ready'}
+        statusBadges={[{ label: shareStatusLabel(summary), tone: shareStatusTone(summary) }]}
+        meta={managedShareStorageFacts(summary)}
+      >
+        {#snippet body()}
+          <div class="provider-path-card managed-share-path-card">
+            <p class="subheading">Local mirror folder</p>
+            <p class="provider-path-copy">{summarySourcePath(summary)}</p>
+          </div>
+          {#if summary.storage?.lastWriteFailureMessage}
+            <p class="panel-error inline-panel-error">{summary.storage.lastWriteFailureMessage}</p>
+          {/if}
+          {#if canInviteManagedShare(summary)}
+            <form class="managed-share-invite-row" onsubmit={(event) => {
+              event.preventDefault();
+              void inviteManagedSharePeers(summary);
+            }}>
+              <label class="field-block managed-share-invite-field">
+                <span>Invite collaborators</span>
+                <input
+                  class="panel-input"
+                  type="text"
+                  value={managedShareInviteDraft(summary.share.id)}
+                  placeholder="name@example.com"
+                  oninput={(event) =>
+                    setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
+                />
+              </label>
+              <button
+                type="submit"
+                class="panel-btn subtle compact"
+                disabled={integrationBusyKey === `invite:${summary.share.id}`}
+              >
+                <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
+              </button>
+            </form>
+            <p class="managed-share-invite-copy">
+              {#if attachedHere}
+                Invite people here if you want other people to use this storage location directly.
+              {:else}
+                Invite people to this provider location now, then use it in this hub when you want Nearbytes to use it here.
+              {/if}
+            </p>
+          {/if}
+          {#if participantCollaborators(summary).length > 0 || pendingCollaborators(summary).length > 0}
+            <div class="managed-share-members">
+              <p class="subheading">Participants</p>
+              {#if participantCollaborators(summary).length > 0}
+                <div class="managed-share-members-list">
+                  {#each participantCollaborators(summary) as collaborator (collaborator.label)}
+                    <span class="mini-pill">{collaborator.label}</span>
+                  {/each}
+                </div>
+              {:else}
+                <p class="managed-share-invite-copy">No active participants yet.</p>
+              {/if}
+            </div>
+
+            <div class="managed-share-members">
+              <p class="subheading">Invited</p>
+              {#if pendingCollaborators(summary).length > 0}
+                <div class="managed-share-members-list">
+                  {#each pendingCollaborators(summary) as collaborator (collaborator.label)}
+                    <span class="mini-pill">{collaborator.label}</span>
+                  {/each}
+                </div>
+              {:else}
+                <p class="managed-share-invite-copy">No pending invitations.</p>
+              {/if}
+            </div>
+          {/if}
+        {/snippet}
+        {#snippet actions()}
+          <button
+            type="button"
+            class="panel-btn subtle compact"
+            onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
+            disabled={!summary.share.sourceId}
+          >
+            <FolderOpen size={14} strokeWidth={2} />
+            <span>Open</span>
+          </button>
+          {#if !attachedHere && volumeId}
+            <button
+              type="button"
+              class="panel-btn subtle compact"
+              onclick={() => void attachManagedShareToVolume(summary)}
+              disabled={integrationBusyKey === `attach:${summary.share.id}`}
+            >
+              <span>{integrationBusyKey === `attach:${summary.share.id}` ? 'Attaching...' : 'Use in this hub'}</span>
+            </button>
+          {/if}
+        {/snippet}
+        {#snippet footer()}
+          {#if shareAttachmentLabels(summary).length > 0}
+            <div class="fact-row share-volume-row">
+              {#each shareAttachmentLabels(summary) as attachment}
                 {#if attachment.known}
                   <button
                     type="button"
@@ -2778,7 +2967,7 @@
                         onclick={() => void createManagedShareForProvider(provider)}
                         disabled={integrationBusyKey === `create:${provider.provider}`}
                       >
-                        <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create share'}</span>
+                        <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create location'}</span>
                       </button>
                     {/if}
                   {:else if provider.provider !== 'mega'}
@@ -3195,17 +3384,17 @@
           <button type="button" class="overview-card tab-card" class:active={volumeView === 'copies'} onclick={() => (volumeView = 'copies')}>
             <p class="provider-label">Copies</p>
             <h3>{protectionSummary(volumeId)}</h3>
-            <p class="card-copy">{hasDurableDestination(volumeId) ? 'This space is protected.' : 'Choose at least one protected copy.'}</p>
+            <p class="card-copy">{hasDurableDestination(volumeId) ? 'This hub is protected.' : 'Choose at least one protected copy.'}</p>
           </button>
           <button type="button" class="overview-card tab-card" class:active={volumeView === 'shares'} onclick={() => (volumeView = 'shares')}>
-            <p class="provider-label">Shares</p>
-            <h3>{countLabel(managedSharesForVolume(volumeId).length, 'share')}</h3>
-            <p class="card-copy">{countLabel(availableManagedSharesForVolume(volumeId).length, 'share')} available to attach.</p>
+            <p class="provider-label">Locations</p>
+            <h3>{countLabel(managedSharesForVolume(volumeId).length, 'location')}</h3>
+            <p class="card-copy">{countLabel(availableManagedSharesForVolume(volumeId).length, 'location')} available to attach.</p>
           </button>
           <button type="button" class="overview-card tab-card" class:active={volumeView === 'folders'} onclick={() => (volumeView = 'folders')}>
             <p class="provider-label">Folders</p>
             <h3>{countLabel(configDraft.sources.length, 'folder')}</h3>
-            <p class="card-copy">Machine-level storage shared by all spaces on this device.</p>
+            <p class="card-copy">Machine-level storage shared by all hubs on this device.</p>
           </button>
         </div>
       {/if}
@@ -3218,121 +3407,19 @@
       {/if}
 
       {#if !volumeId}
-        <p class="storage-message">Open this space first, then choose which locations keep a full copy.</p>
+        <p class="storage-message">Open this hub first, then choose which locations keep a full copy.</p>
       {:else}
         {#if volumeView === 'shares'}
         <section class="panel-section">
           <div class="section-head">
             <div>
-              <p class="section-step">Sharing</p>
-              <h3>Share this space</h3>
-              <p class="section-copy">Share the space link. Add a shared storage space if you also want to share a direct route for data.</p>
+              <p class="section-step">Storage</p>
+              <h3>Storage locations</h3>
+              <p class="section-copy">Connect providers, create locations, use them in this hub, and invite collaborators here.</p>
             </div>
-          </div>
-
-          <div class="rule-card active volume-share-link-card">
-            <div class="card-head">
-              <div class="card-title">
-                <div>
-                  <p class="provider-label">Volume link</p>
-                  <h4>Share this space</h4>
-                </div>
-              </div>
-              <div class="card-status">
-                <span class="status-pill tone-muted">nearbytes://</span>
-              </div>
-            </div>
-
-            <p class="card-copy">Send this first.</p>
-
-            <div class="button-row">
-              <button
-                type="button"
-                class="panel-btn subtle compact"
-                onclick={() => void onCopyShareLink?.(false)}
-                disabled={shareLinkBusy}
-              >
-                <span>{shareLinkBusy ? 'Preparing...' : 'Share this space'}</span>
-              </button>
-            </div>
-
-            {#if shareLinkFeedback}
-              <p class="managed-share-invite-copy" class:warning-copy={shareLinkFeedback.tone === 'warning'}>{shareLinkFeedback.message}</p>
-            {/if}
           </div>
 
           <div class="card-grid">
-            {#each incomingProviderContactInvites as invite (invite.id)}
-              <article class="rule-card suggestion-card incoming-share-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">{providerLabelForIncoming(invite.provider)}</p>
-                      <h4>{invite.label}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class="status-pill tone-warn">Contact invite</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{invite.detail}</p>
-                <p class="managed-share-invite-copy">Accept this first so {providerLabelForIncoming(invite.provider)} can show any storage locations shared with you.</p>
-
-                <div class="button-row">
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => void acceptProviderContactInviteEntry(invite)}
-                    disabled={integrationBusyKey === `accept-contact:${invite.id}`}
-                  >
-                    <span>{integrationBusyKey === `accept-contact:${invite.id}` ? 'Accepting...' : 'Accept contact'}</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
-            {#each incomingManagedShareOffers as offer (offer.id)}
-              <article class="rule-card suggestion-card incoming-share-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">{providerLabelForIncoming(offer.provider)}</p>
-                      <h4>{offer.label}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class="status-pill tone-muted">Incoming storage</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{offer.detail}</p>
-
-                {#if offer.suggestedLocalPath}
-                  <div class="provider-path-card managed-share-path-card">
-                    <p class="subheading">Suggested local mirror</p>
-                    <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
-                  </div>
-                {/if}
-
-                <div class="fact-row">
-                  <span>Shared by {offer.ownerLabel}</span>
-                  <span>{volumeId ? 'Will attach to this space' : 'Saved as a storage location'}</span>
-                </div>
-
-                <div class="button-row">
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => void acceptIncomingManagedShareOffer(offer)}
-                    disabled={integrationBusyKey === `accept-share:${offer.id}`}
-                  >
-                    <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
             {#each providerCatalog as provider (provider.provider)}
               {@const account = connectedAccountForProvider(provider.provider)}
               <article class="rule-card provider-card provider-card-compact" class:active={provider.isConnected}>
@@ -3652,7 +3739,7 @@
                       onclick={() => void createManagedShareForVolume(provider)}
                       disabled={integrationBusyKey === `create:${provider.provider}`}
                     >
-                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : provider.provider === 'mega' ? 'Use MEGA shared storage' : `Use ${provider.label} storage`}</span>
+                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : provider.provider === 'mega' ? 'Create MEGA location' : `Create ${provider.label} location`}</span>
                     </button>
                   {:else if provider.provider !== 'mega'}
                     {#if providerFlowState(provider.provider)?.canCancel}
@@ -3696,175 +3783,37 @@
                     </button>
                   {/if}
                 </div>
-              </article>
-            {/each}
 
-            {#each managedSharesForVolume(volumeId) as summary (summary.share.id)}
-              <article class="rule-card" class:active={true}>
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
-                      <h4>{summary.share.label}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>Shared storage connected</span>
-                    <span class={`status-pill tone-${shareStatusTone(summary)} ${shareStatusLabel(summary) === 'Ready' ? 'ready-badge' : ''}`}>{shareStatusLabel(summary)}</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{summary.state.detail}</p>
-
-                <div class="provider-path-card managed-share-path-card">
-                  <p class="subheading">Local mirror folder</p>
-                  <p class="provider-path-copy">{summarySourcePath(summary)}</p>
-                </div>
-                {#if summary.storage?.lastWriteFailureMessage}
-                  <p class="panel-error inline-panel-error">{summary.storage.lastWriteFailureMessage}</p>
-                {/if}
-
-                <div class="fact-row">
-                  <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
-                  <span>{managedShareAccessLabel(summary)}</span>
-                  <span>{shareAttachmentSummary(summary)}</span>
-                </div>
-
-                {#if canInviteManagedShare(summary)}
-                  <form class="managed-share-invite-row" onsubmit={(event) => {
-                    event.preventDefault();
-                    void inviteManagedSharePeers(summary);
-                  }}>
-                    <label class="field-block managed-share-invite-field">
-                      <span>Invite friends</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={managedShareInviteDraft(summary.share.id)}
-                        placeholder="name@example.com"
-                        oninput={(event) =>
-                          setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <button
-                      type="submit"
-                      class="panel-btn subtle compact"
-                      disabled={integrationBusyKey === `invite:${summary.share.id}`}
-                    >
-                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
-                    </button>
-                  </form>
-                  <p class="managed-share-invite-copy">Invite people here if you want to share this storage route directly.</p>
-                {/if}
-
-                <div class="managed-share-members">
-                  <p class="subheading">Participants</p>
-                  {#if participantCollaborators(summary).length > 0}
-                    <div class="managed-share-members-list">
-                      {#each participantCollaborators(summary) as collaborator (collaborator.label)}
-                        <span class="mini-pill">{collaborator.label}</span>
+                {#each [providerLocationState(provider.provider, volumeId)] as locationState}
+                  {#if locationState.contactInvites.length > 0 || locationState.incomingLocations.length > 0 || locationState.attachedLocations.length > 0 || locationState.availableLocations.length > 0 || provider.isConnected}
+                    <div class="provider-location-stack">
+                      {#each locationState.contactInvites as invite (invite.id)}
+                        {@render providerContactInviteCard(invite)}
                       {/each}
-                    </div>
-                  {:else}
-                    <p class="managed-share-invite-copy">No active participants yet.</p>
-                  {/if}
-                </div>
 
-                <div class="managed-share-members">
-                  <p class="subheading">Invited</p>
-                  {#if pendingCollaborators(summary).length > 0}
-                    <div class="managed-share-members-list">
-                      {#each pendingCollaborators(summary) as collaborator (collaborator.label)}
-                        <span class="mini-pill">{collaborator.label}</span>
+                      {#each locationState.incomingLocations as offer (offer.id)}
+                        {@render incomingLocationCard(offer)}
                       {/each}
+
+                      {#each locationState.attachedLocations as summary (summary.share.id)}
+                        {@render providerManagedLocationCard(summary, true)}
+                      {/each}
+
+                      {#each locationState.availableLocations as summary (summary.share.id)}
+                        {@render providerManagedLocationCard(summary, false)}
+                      {/each}
+
+                      {#if provider.isConnected && locationState.attachedLocations.length === 0 && locationState.availableLocations.length === 0 && locationState.incomingLocations.length === 0}
+                        <ShareCard
+                          provider={provider.label}
+                          title="No locations yet"
+                          copy="Create the first provider-backed storage location here. Once it exists, you can invite collaborators and use it in this hub."
+                          statusBadges={[{ label: 'Connected', tone: 'good' }]}
+                        />
+                      {/if}
                     </div>
-                  {:else}
-                    <p class="managed-share-invite-copy">No pending invitations.</p>
                   {/if}
-                </div>
-
-                <div class="button-row">
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
-                    disabled={!summary.share.sourceId}
-                  >
-                    <FolderOpen size={14} strokeWidth={2} />
-                    <span>Open</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
-            {#each availableManagedSharesForVolume(volumeId) as summary (summary.share.id)}
-              <article class="rule-card suggestion-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
-                      <h4>{summary.share.label}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class={`status-pill tone-${shareStatusTone(summary)} ${shareStatusLabel(summary) === 'Ready' ? 'ready-badge' : ''}`}>{shareStatusLabel(summary)}</span>
-                    <span class="status-pill tone-muted">Ready to use</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{summary.state.detail}</p>
-
-                <div class="provider-path-card managed-share-path-card">
-                  <p class="subheading">Local mirror folder</p>
-                  <p class="provider-path-copy">{summarySourcePath(summary)}</p>
-                </div>
-                {#if summary.storage?.lastWriteFailureMessage}
-                  <p class="panel-error inline-panel-error">{summary.storage.lastWriteFailureMessage}</p>
-                {/if}
-
-                <div class="fact-row">
-                  <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
-                  <span>{managedShareAccessLabel(summary)}</span>
-                  <span>{shareAttachmentSummary(summary)}</span>
-                </div>
-
-                {#if canInviteManagedShare(summary)}
-                  <form class="managed-share-invite-row" onsubmit={(event) => {
-                    event.preventDefault();
-                    void inviteManagedSharePeers(summary);
-                  }}>
-                    <label class="field-block managed-share-invite-field">
-                      <span>Invite friends</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={managedShareInviteDraft(summary.share.id)}
-                        placeholder="name@example.com"
-                        oninput={(event) =>
-                          setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <button
-                      type="submit"
-                      class="panel-btn subtle compact"
-                      disabled={integrationBusyKey === `invite:${summary.share.id}`}
-                    >
-                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
-                    </button>
-                  </form>
-                  <p class="managed-share-invite-copy">Invite people to this provider location now, then attach it to this volume when you want Nearbytes to use it here.</p>
-                {/if}
-
-                <div class="button-row">
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => void attachManagedShareToVolume(summary)}
-                    disabled={integrationBusyKey === `attach:${summary.share.id}`}
-                  >
-                    <span>{integrationBusyKey === `attach:${summary.share.id}` ? 'Attaching...' : 'Attach to this space'}</span>
-                  </button>
-                </div>
+                {/each}
               </article>
             {/each}
           </div>
@@ -3885,12 +3834,12 @@
           <div class="section-head">
             <div>
               <p class="section-step">Copies</p>
-              <h3>{explicitVolumePolicy(volumeId) ? 'This space has its own copy rule' : 'This space currently inherits the default copy rule'}</h3>
+              <h3>{explicitVolumePolicy(volumeId) ? 'This hub has its own copy rule' : 'This hub currently inherits the default copy rule'}</h3>
               <p class="section-copy">
                 {#if explicitVolumePolicy(volumeId)}
-                  Changes below are saved only for this space. Remove the custom rule to use the default rule again.
+                  Changes below are saved only for this hub. Remove the custom rule to use the default rule again.
                 {:else}
-                  The switches below start from your default rule. Changing them will create a saved rule for this space only.
+                  The switches below start from your default rule. Changing them will create a saved rule for this hub only.
                 {/if}
               </p>
             </div>
@@ -3933,7 +3882,7 @@
                     onchange={(event) => setKeepFullCopy(volumeId, source.id, (event.currentTarget as HTMLInputElement).checked)}
                   />
                   <div>
-                    <span class="toggle-title">Keep this space here</span>
+                    <span class="toggle-title">Keep this hub here</span>
                     <span class="toggle-copy">Full history and file data.</span>
                   </div>
                 </label>
@@ -3945,7 +3894,7 @@
                   {#if keepsFullCopy(destination)}
                     <div class="field-grid">
                       <label class="field-block">
-                        <span>Keep free</span>
+                        <span>Keep available</span>
                         <select
                           class="panel-input"
                           value={String(destinationReservePercent(destination))}
@@ -3958,7 +3907,7 @@
                         </select>
                       </label>
                       <label class="field-block">
-                        <span>If space runs low</span>
+                        <span>If available storage runs low</span>
                         <select
                           class="panel-input"
                           value={destination?.fullPolicy ?? 'block-writes'}
@@ -4056,7 +4005,7 @@
             <div>
               <p class="section-step">Folders</p>
               <h3>Machine-level folders</h3>
-              <p class="section-copy">Changes here affect every space on this device. Use this view when you want to add, move, or disable a local storage folder.</p>
+              <p class="section-copy">Changes here affect every hub on this device. Use this view when you want to add, move, or disable a local storage folder.</p>
             </div>
             <div class="section-metrics">
               <span class="summary-pill">{countLabel(configDraft.sources.length, 'folder')} saved</span>
@@ -4127,26 +4076,26 @@
                     <input
                       type="checkbox"
                       checked={keepsFullCopy(defaultDestination)}
-                      aria-label="Use by default for new spaces"
+                      aria-label="Use by default for new hubs"
                       onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
                     />
                     <div>
-                      <span class="toggle-title">Use by default for new spaces</span>
+                      <span class="toggle-title">Use by default for new hubs</span>
                       <span class="toggle-copy">{copyHelpText(null, source)}</span>
                     </div>
                   </label>
                 </div>
 
                 <div class="fact-row">
-                  <span>{status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown'}</span>
+                  <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
                   <span>{usageSummary(source.id)}</span>
                 </div>
 
                 <details class="details-card inline-details">
                   <summary>Advanced</summary>
                   <div class="card-control-row">
-                    <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
-                      <span>Keep free</span>
+                    <label class="field-block compact-field" title="Minimum available storage to leave on this drive. Default is 5%.">
+                      <span>Keep available</span>
                       <select
                         class="panel-input"
                         value={String(sourceReservePercent(source))}
@@ -4304,9 +4253,9 @@
           {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
             <p class="panel-error">
               {#if dialogDisconnectImpact.inaccessibleSpaces.length > 0}
-                Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'space')} not accessible until you reconnect it.
+                Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'hub')} not accessible until you reconnect it.
               {:else}
-                Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'share')} from {countLabel(dialogDisconnectImpact.spaces, 'space')}, but those spaces will stay accessible.
+                Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'location')} from {countLabel(dialogDisconnectImpact.spaces, 'hub')}, but those hubs will stay accessible.
               {/if}
             </p>
           {/if}

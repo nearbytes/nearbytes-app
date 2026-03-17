@@ -5,7 +5,7 @@
   export type ShareCardBadgeTone = 'good' | 'warn' | 'muted' | 'durable' | 'replica' | 'off';
 
   const {
-    eyebrow = 'Share',
+    eyebrow = 'Location',
     provider = '',
     title,
     copy = '',

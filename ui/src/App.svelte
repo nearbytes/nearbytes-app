@@ -7,11 +7,8 @@
     parseJoinLink,
     type JoinLinkOpenResponse,
     type JoinLinkParseResponse,
-    listManagedShares,
-    listProviderAccounts,
     listFiles,
     getTimeline,
-    inviteManagedShare,
     getEventDetail,
     uploadFiles,
     deleteFile,
@@ -26,8 +23,6 @@
     type ChatAttachment,
     type FileMetadata,
     type JoinLink,
-    type ManagedShareSummary,
-    type ProviderAccount,
     type SerializedEvent,
     type SourceFileReference,
     type RecipientFileReference,
@@ -59,6 +54,7 @@
   import AudioPreview from './components/AudioPreview.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
+  import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import SecretSeedFields from './components/SecretSeedFields.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
@@ -514,9 +510,7 @@
       details.push(`${result.summary.sourcesAdded} location${result.summary.sourcesAdded === 1 ? '' : 's'} added`);
     }
     if (result.summary.volumeTargetsAdded > 0) {
-      details.push(
-        `sync enabled for ${result.summary.volumeTargetsAdded} known space${result.summary.volumeTargetsAdded === 1 ? '' : 's'}`
-      );
+        details.push(`sync enabled for ${result.summary.volumeTargetsAdded} known hub${result.summary.volumeTargetsAdded === 1 ? '' : 's'}`);
     }
     if (result.summary.availableShares > 0) {
       details.push(`${result.summary.availableShares} location${result.summary.availableShares === 1 ? '' : 's'} to review`);
@@ -811,7 +805,7 @@
     if (seedLabel !== '') {
       return seedLabel;
     }
-    return mount.volumeId ? 'Shared space' : '';
+      return mount.volumeId ? 'Shared hub' : '';
   }
 
   function base64UrlToBase64(value: string): string {
@@ -910,7 +904,7 @@
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = mount.secretFileName || mount.address || 'secret-file';
+      anchor.download = mount.secretFileName || mount.address || 'hub-secret-file';
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
@@ -1417,10 +1411,6 @@
   let joinDialogPreviewBusy = $state(false);
   let joinDialogOpenBusy = $state(false);
   let showVolumeShareDialog = $state(false);
-  let currentVolumeManagedShares = $state<ManagedShareSummary[]>([]);
-  let currentVolumeSharingLoading = $state(false);
-  let currentVolumeShareInviteBusyKey = $state<string | null>(null);
-  let currentVolumeShareInviteDrafts = $state<Record<string, string>>({});
   let sourceDiscoveryRefreshToken = $state(0);
   let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | 'shares' | null>(null);
   let sourceDiscoveryInFlight = false;
@@ -1450,11 +1440,6 @@
   const mountWarmPromises = new Map<string, Promise<void>>();
   const mountRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const MOUNT_RUNTIME_REFRESH_MS = 15000;
-
-  type ShareDialogCollaboratorView = {
-    label: string;
-    status: 'active' | 'invited';
-  };
 
   async function loadThemeRegistryAsset(): Promise<void> {
     try {
@@ -2495,7 +2480,7 @@
       const nextRuntime: MountRuntimeState = {
         ...runtime,
         isOffline: true,
-        errorMessage: error instanceof Error ? error.message : 'Failed to refresh space',
+        errorMessage: error instanceof Error ? error.message : 'Failed to refresh hub',
       };
       writeMountRuntime(mountId, nextRuntime);
       if (activeMountId === mountId && authEquals(auth, runtime.auth)) {
@@ -2772,7 +2757,7 @@
       const response = await withTimeout(
         openVolume(secret),
         12000,
-        'Opening this space timed out. Check the storage locations and try again.'
+        'Opening this hub timed out. Check the storage locations and try again.'
       );
       const nextAuth =
         response.token
@@ -3021,7 +3006,7 @@
         if (activeMountId !== currentMount.id) {
           return;
         }
-        errorMessage = error instanceof Error ? error.message : 'Failed to load space';
+        errorMessage = error instanceof Error ? error.message : 'Failed to load hub';
         isVolumeTransitioning = false;
         isLoading = false;
       });
@@ -3601,7 +3586,7 @@
           ? 'GitHub'
           : action.provider || action.endpointTransport || 'Route';
     if (action.status === 'attached') {
-      return `${provider} storage added to this space`;
+      return `${provider} storage added to this hub`;
     }
     if (action.status === 'planned') {
       return `${provider} storage found`;
@@ -4067,7 +4052,7 @@
 
   async function openTimelineDetailsByHash(eventHash: string, seedEvent?: TimelineEvent) {
     if (!auth) {
-      errorMessage = 'Open a space to view event details.';
+      errorMessage = 'Open a hub to view event details.';
       return;
     }
     timelineDetailOpen = true;
@@ -4435,7 +4420,7 @@
       if (Object.keys(nextAssignments).length !== Object.keys(volumeChatIdentityAssignments).length) {
         volumeChatIdentityAssignments = nextAssignments;
         identityManagerError = '';
-        identityManagerMessage = 'Identity secret changed. Rejoin any space chats explicitly.';
+        identityManagerMessage = 'Identity secret changed. Rejoin any hub chats explicitly.';
       }
     }
   }
@@ -4488,7 +4473,7 @@
     options: { announceSuccess?: boolean; openManagerOnError?: boolean } = {}
   ): Promise<ConfiguredIdentity | null> {
     if (!auth) {
-      identityManagerError = 'Open a space before publishing an identity.';
+      identityManagerError = 'Open a hub before publishing an identity.';
       identityManagerMessage = '';
       return null;
     }
@@ -4532,7 +4517,7 @@
       });
       await handleChatMutated();
       if (options.announceSuccess) {
-        identityManagerMessage = `Published ${identity.displayName.trim()} to this space.`;
+        identityManagerMessage = `Published ${identity.displayName.trim()} to this hub.`;
       }
       return {
         ...identity,
@@ -4563,7 +4548,7 @@
 
   async function joinCurrentVolumeChat(): Promise<ConfiguredIdentity | null> {
     if (!auth || !volumeId) {
-      identityManagerError = 'Open a space before joining chat.';
+      identityManagerError = 'Open a hub before joining chat.';
       identityManagerMessage = '';
       return null;
     }
@@ -4589,7 +4574,7 @@
       [volumeId]: publishedIdentity.id,
     };
     identityManagerError = '';
-    identityManagerMessage = `Joined this space as ${publishedIdentity.displayName.trim()}.`;
+    identityManagerMessage = `Joined this hub as ${publishedIdentity.displayName.trim()}.`;
     return publishedIdentity;
   }
 
@@ -4675,7 +4660,7 @@
 
   async function importNearbytesBundleIntoCurrentVolume(bundle: SourceReferenceBundle) {
     if (!auth || !effectiveSecret) {
-      throw new Error('Open a destination space before pasting.');
+      throw new Error('Open a destination hub before pasting.');
     }
     if (isHistoryMode) {
       throw new Error('History mode is read-only. Jump to Latest before pasting.');
@@ -4881,7 +4866,7 @@
       errorMessage = '';
       if (e.dataTransfer?.types.includes(NEARBYTES_DRAG_TYPE)) {
         if (!auth || !effectiveSecret) {
-          throw new Error('Open a destination space before pasting.');
+          throw new Error('Open a destination hub before pasting.');
         }
         const bundle = await exportSourceReferenceBundleFromDrag(
           auth,
@@ -5112,11 +5097,6 @@
     return `nearbytes://join?data=${bytesToBase64Url(new TextEncoder().encode(serialized))}`;
   }
 
-  function lastPathSegment(value: string): string {
-    const normalized = value.replace(/\\/g, '/').split('/').filter(Boolean);
-    return normalized[normalized.length - 1] ?? value.trim();
-  }
-
   function setJoinLinkCopyFeedback(tone: JoinLinkCopyFeedbackState['tone'], message: string): void {
     joinLinkCopyFeedback = { tone, message };
     if (joinLinkCopyFeedbackTimer) {
@@ -5159,93 +5139,15 @@
     return buildCurrentJoinLinkSpace(true) !== null;
   }
 
-  function buildJoinLinkAttachmentFromManagedShare(
-    summary: ManagedShareSummary,
-    accountsById: Map<string, ProviderAccount>,
-    index: number
-  ): JoinLink['attachments'][number] | null {
-    const descriptor = normalizeJoinLinkJsonValue(summary.share.remoteDescriptor);
-    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor) || Object.keys(descriptor).length === 0) {
-      return null;
-    }
-    const provider = summary.share.provider.trim().toLowerCase();
-    const label = summary.share.label.trim() || `${provider} share`;
-    const account = accountsById.get(summary.share.accountId);
-    const localPathHint =
-      lastPathSegment(summary.storage?.sourcePath || '') ||
-      lastPathSegment(summary.share.localPath) ||
-      label;
-
-    return {
-      id: `attachment-${provider}-${index + 1}`,
-      label,
-      recipe: {
-        p: 'nb.transport.recipe.v1',
-        id: `recipe-${provider}-${index + 1}`,
-        label,
-        purpose: 'mirror',
-        endpoints: [
-          {
-            p: 'nb.transport.endpoint.v1',
-            transport: 'provider-share',
-            provider,
-            priority: Math.max(1, 100 - index),
-            capabilities: summary.share.capabilities.filter((value) => value.trim() !== ''),
-            descriptor: descriptor as Record<string, unknown>,
-            label,
-            badges: ['Attached share'],
-            bootstrap: {
-              account:
-                account && (account.label.trim() !== '' || (account.email ?? '').trim() !== '')
-                  ? {
-                      mode: 'login',
-                      label: account.label.trim() || undefined,
-                      email: account.email?.trim() || undefined,
-                      preferred: true,
-                    }
-                  : undefined,
-              storage: localPathHint
-                ? {
-                    localPathHint,
-                  }
-                : undefined,
-            },
-          },
-        ],
-      },
-    };
-  }
-
   async function buildCurrentJoinLink(includeSecret: boolean): Promise<JoinLink> {
     const space = buildCurrentJoinLinkSpace(includeSecret);
     if (!space) {
-      throw new Error(includeSecret ? 'Open a space with its secret before copying that link.' : 'Open a space first.');
+      throw new Error(includeSecret ? 'Open a hub with its secret before copying that link.' : 'Open a hub first.');
     }
-    const targetVolumeId = shareableVolumeId;
-    if (!targetVolumeId) {
-      return {
-        p: 'nb.join.v1',
-        space,
-        attachments: [],
-      };
-    }
-    const [sharesResponse, accountsResponse] = await Promise.all([listManagedShares(), listProviderAccounts()]);
-    const accountsById = new Map(accountsResponse.accounts.map((account) => [account.id, account]));
-    const attachments = sharesResponse.shares
-      .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId))
-      .sort((left, right) => {
-        const providerOrder = providerPriority(left.share.provider) - providerPriority(right.share.provider);
-        if (providerOrder !== 0) {
-          return providerOrder;
-        }
-        return left.share.label.localeCompare(right.share.label);
-      })
-      .map((summary, index) => buildJoinLinkAttachmentFromManagedShare(summary, accountsById, index))
-      .filter((attachment): attachment is JoinLink['attachments'][number] => attachment !== null);
     return {
       p: 'nb.join.v1',
       space,
-      attachments,
+      attachments: [],
     };
   }
 
@@ -5256,14 +5158,17 @@
       const serialized = serializeCanonicalJoinLink(link);
       let clipboardText = buildNearbytesJoinDeepLink(serialized);
       let feedbackTone: JoinLinkCopyFeedbackState['tone'] = 'success';
-      let feedbackMessage = includeSecret ? 'Copied secret share link.' : 'Copied share link.';
+      let feedbackMessage = includeSecret ? 'Copied secret share payload.' : 'Copied share link.';
       if (clipboardText.length > NEARBYTES_JOIN_DEEP_LINK_MAX_LENGTH) {
         if (!includeSecret) {
-          throw new Error('This share link is too large to send as a practical nearbytes:// link. Try sharing fewer storage routes.');
+          throw new Error(
+            'This link is too large to fit in a nearbytes:// link. Copy the secret payload instead, or share the hub without embedding a large secret file.'
+          );
         }
         clipboardText = serialized;
         feedbackTone = 'warning';
-        feedbackMessage = 'The secret link was too large for nearbytes://. Copied the full share data instead.';
+        feedbackMessage =
+          'Copied raw share data JSON, not a nearbytes:// link. Send or paste this text into Open from clipboard. This happened because the embedded secret payload exceeded the 16 KB deep-link limit.';
       }
       await navigator.clipboard.writeText(clipboardText);
       setJoinLinkCopyFeedback(feedbackTone, feedbackMessage);
@@ -5273,50 +5178,6 @@
     } finally {
       joinLinkCopyBusy = false;
     }
-  }
-
-  function currentVolumeShareInviteDraft(shareId: string): string {
-    return currentVolumeShareInviteDrafts[shareId] ?? '';
-  }
-
-  function setCurrentVolumeShareInviteDraft(shareId: string, value: string): void {
-    currentVolumeShareInviteDrafts = {
-      ...currentVolumeShareInviteDrafts,
-      [shareId]: value,
-    };
-  }
-
-  function canInviteCurrentVolumeStorage(summary: ManagedShareSummary): boolean {
-    return summary.share.capabilities.includes('invite');
-  }
-
-  function parseInviteEmails(value: string): string[] {
-    return value
-      .split(/[\s,;]+/u)
-      .map((entry) => entry.trim())
-      .filter((entry, index, entries) => entry !== '' && entries.indexOf(entry) === index);
-  }
-
-  function currentVolumeStorageCollaborators(summary: ManagedShareSummary): string[] {
-    return summary.collaborators.map((collaborator) => collaborator.email ?? collaborator.label);
-  }
-
-  function currentVolumeStorageParticipants(summary: ManagedShareSummary): ShareDialogCollaboratorView[] {
-    return summary.collaborators
-      .filter((collaborator) => collaborator.status === 'active')
-      .map((collaborator) => ({
-        label: collaborator.email ?? collaborator.label,
-        status: collaborator.status,
-      }));
-  }
-
-  function currentVolumeStorageInvited(summary: ManagedShareSummary): ShareDialogCollaboratorView[] {
-    return summary.collaborators
-      .filter((collaborator) => collaborator.status === 'invited')
-      .map((collaborator) => ({
-        label: collaborator.email ?? collaborator.label,
-        status: collaborator.status,
-      }));
   }
 
   function activeThemePreset() {
@@ -5389,62 +5250,6 @@
   function resetThemeToPreset(): void {
     applyThemePreset(themeSettings.presetId);
   }
-
-  async function refreshCurrentVolumeManagedShares(): Promise<void> {
-    if (!shareableVolumeId) {
-      currentVolumeManagedShares = [];
-      return;
-    }
-    currentVolumeSharingLoading = true;
-    try {
-      const sharesResponse = await listManagedShares();
-      currentVolumeManagedShares = sharesResponse.shares
-        .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === shareableVolumeId))
-        .sort((left, right) => {
-          const providerOrder = providerPriority(left.share.provider) - providerPriority(right.share.provider);
-          if (providerOrder !== 0) {
-            return providerOrder;
-          }
-          return left.share.label.localeCompare(right.share.label);
-        });
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to load shared storage for this volume';
-    } finally {
-      currentVolumeSharingLoading = false;
-    }
-  }
-
-  async function inviteCurrentVolumeStorage(summary: ManagedShareSummary): Promise<void> {
-    const emails = parseInviteEmails(currentVolumeShareInviteDraft(summary.share.id));
-    if (emails.length === 0) {
-      errorMessage = 'Enter at least one friend email first.';
-      return;
-    }
-    currentVolumeShareInviteBusyKey = summary.share.id;
-    volumeSharingFeedback = null;
-    errorMessage = '';
-    try {
-      await inviteManagedShare(summary.share.id, emails);
-      setCurrentVolumeShareInviteDraft(summary.share.id, '');
-      volumeSharingFeedback = {
-        tone: 'success',
-        message: `${summary.share.label} storage shared with ${emails.join(', ')}.`,
-      };
-      await refreshCurrentVolumeManagedShares();
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to share storage for this volume';
-    } finally {
-      currentVolumeShareInviteBusyKey = null;
-    }
-  }
-
-  $effect(() => {
-    if (!showVolumeShareDialog || !shareableVolumeId) {
-      currentVolumeManagedShares = [];
-      return;
-    }
-    void refreshCurrentVolumeManagedShares();
-  });
 
   // Format file size
   function formatSize(bytes: number): string {
@@ -5529,7 +5334,7 @@
       class="header-shell"
       class:secret-drop-target={isSecretDropTarget}
       role="group"
-      aria-label="Space controls"
+      aria-label="Hub controls"
       onmouseenter={() => {
         isHeaderHovering = true;
       }}
@@ -5631,9 +5436,9 @@
                 <button
                   type="button"
                   class="volume-chip-select"
-                  aria-label={mountLabel(mount) || 'Space entry'}
+                  aria-label={mountLabel(mount) || 'Hub entry'}
                   onclick={() => handleMountClick(mount.id)}
-                  title={mountLabel(mount) || 'Open space'}
+                  title={mountLabel(mount) || 'Open hub'}
                 >
                   <div class="header-dock">
                     <div class="header-dock-main">
@@ -5660,7 +5465,7 @@
                 <button
                   type="button"
                   class="volume-chip-action-btn volume-chip-drag-btn"
-                  aria-label={`Reorder ${mountLabel(mount) || 'space'}`}
+                  aria-label={`Reorder ${mountLabel(mount) || 'hub'}`}
                   title="Drag to reorder"
                   onclick={(event) => {
                     event.stopPropagation();
@@ -5675,8 +5480,8 @@
                 <button
                   type="button"
                   class="volume-chip-action-btn volume-chip-config-btn"
-                  aria-label={`Edit ${mountLabel(mount) || 'space'}`}
-                  title="Edit space"
+                  aria-label={`Edit ${mountLabel(mount) || 'hub'}`}
+                  title="Edit hub"
                   onclick={(event) => {
                     event.stopPropagation();
                     reopenMount(mount.id);
@@ -5696,8 +5501,8 @@
                   type="button"
                   class="header-tool-btn"
                   class:active={showJoinVolumeDialog}
-                  aria-label="Join shared volume"
-                  title="Join shared volume"
+                  aria-label="Join shared hub"
+                  title="Join shared hub"
                   onclick={(event) => {
                     event.stopPropagation();
                     openJoinVolumeDialog();
@@ -5764,8 +5569,8 @@
                   type="button"
                   class="mount-add-btn"
                   onclick={addMount}
-                  aria-label="Add space"
-                  title="Add space"
+                  aria-label="Add hub"
+                  title="Add hub"
                 >
                   <Plus size={15} strokeWidth={2.2} />
                 </button>
@@ -5790,7 +5595,7 @@
                 disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
                 title={
                   !auth
-                    ? 'Open a space before joining'
+                    ? 'Open a hub before joining'
                     : isHistoryMode
                       ? 'Jump to Latest before joining'
                       : ''
@@ -5802,7 +5607,7 @@
                     ? 'Joining…'
                     : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
                       ? 'Joined'
-                      : 'Join this space'}
+                      : 'Join this hub'}
                 </span>
               </button>
               <button
@@ -5812,7 +5617,7 @@
                 disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
                 title={
                   !auth
-                    ? 'Open a space before publishing'
+                    ? 'Open a hub before publishing'
                     : isHistoryMode
                       ? 'Jump to Latest before publishing'
                       : ''
@@ -5872,12 +5677,12 @@
           </div>
 
           <p class="identity-row-note">
-            This space will chat as
+            This hub will chat as
             <strong>{joinedChatIdentity?.displayName || 'no identity yet'}</strong>.
-            Joining is an explicit per-space local choice.
+            Joining is an explicit per-hub local choice.
           </p>
           <p class="identity-row-note">
-            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into this space.
+            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into this hub.
           </p>
 
           {#if identityManagerError}
@@ -5951,7 +5756,7 @@
                     {identityManagerLoading
                       ? 'Publishing…'
                       : selectedChatIdentityNeedsPublish
-                        ? 'Publish to space'
+                        ? 'Publish to hub'
                         : 'Published'}
                   </span>
                 </button>
@@ -5993,10 +5798,6 @@
           currentVolumePresentation={currentMountedVolumePresentation}
           knownVolumes={knownMountedVolumes}
           onOpenVolumeRouting={openMountedVolumeRouting}
-          onCopyShareLink={copyCurrentJoinLink}
-          canCopySecretLink={hasCopyableCurrentSecret()}
-          shareLinkBusy={joinLinkCopyBusy}
-          shareLinkFeedback={joinLinkCopyFeedback}
           refreshToken={sourceDiscoveryRefreshToken}
         />
       </div>
@@ -6009,7 +5810,7 @@
           </div>
           <p class="empty-eyebrow">{activeThemePreset().palette.label}</p>
           <p class="empty-hint">Enter an address to access your files</p>
-          <p class="empty-subhint">Or drag and drop files here to create a new space.{#if isDevThemeStudio} Click the brand mark to edit presets and export the checked-in logo asset.{:else} The active preset stays consistent across launches.{/if}</p>
+          <p class="empty-subhint">Or drag and drop files here to create a new hub.{#if isDevThemeStudio} Click the brand mark to edit presets and export the checked-in logo asset.{:else} The active preset stays consistent across launches.{/if}</p>
         </div>
       </div>
     {:else}
@@ -6018,13 +5819,13 @@
         <div class="volume-transition-state panel-surface" aria-live="polite">
           <div class="volume-transition-spinner"></div>
           <div class="volume-transition-copy">
-            <p class="volume-transition-title">Switching space</p>
+            <p class="volume-transition-title">Switching hub</p>
             <p class="volume-transition-subtitle">Replaying history off-screen…</p>
           </div>
         </div>
       {:else}
       {#if showTimeMachinePanel}
-      <section class="time-machine panel-surface" aria-label="Space timeline">
+      <section class="time-machine panel-surface" aria-label="Hub timeline">
         <div class="time-machine-head">
           <div>
             <p class="time-machine-eyebrow">Timeline</p>
@@ -6110,7 +5911,7 @@
       </section>
       {/if}
 
-      <div class="workspace-mode-bar panel-surface" role="group" aria-label="Space workspace">
+      <div class="workspace-mode-bar panel-surface" role="group" aria-label="Hub workspace">
         <div class="workspace-mode-primary">
           <button
             type="button"
@@ -6185,7 +5986,7 @@
                 class="manager-btn workspace-toolbar-btn"
                 onclick={() => void pasteCopiedFiles()}
                 disabled={!auth || isHistoryMode}
-                title={!auth ? 'Open a destination space before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
+                title={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
               >
                 <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
                 Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
@@ -6624,8 +6425,8 @@
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">signedBy</span>
                   <div class="tm-details-value-group">
-                    <span class="tm-details-value">volume key (space secret)</span>
-                    <span class="tm-details-help">Outer signature proves this event belongs to the space.</span>
+                    <span class="tm-details-value">volume key (hub secret)</span>
+                    <span class="tm-details-help">Outer signature proves this event belongs to the hub.</span>
                   </div>
                 </div>
                 <div class="tm-details-grid-row">
@@ -6663,7 +6464,7 @@
               <p class="tm-details-section-title">Signed envelope</p>
               <p class="tm-details-section-note">
                 The signature covers the serialized payload fields below and is verified with the volume public key
-                derived from this space secret.
+                derived from this hub secret.
               </p>
               <div class="tm-details-grid">
                 <div class="tm-details-grid-row">
@@ -6821,7 +6622,7 @@
               <div class="tm-details-section">
                 <p class="tm-details-section-title">Encrypted file payload</p>
                 <p class="tm-details-section-note">
-                  Ciphertext is stored as a block addressed by the hash above. Use the space secret to decrypt; this
+                  Ciphertext is stored as a block addressed by the hash above. Use the hub secret to decrypt; this
                   panel can open a decrypted preview when available.
                 </p>
                 <div class="tm-details-action-row">
@@ -6989,7 +6790,7 @@
       class="mount-dialog-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label={isMountEmpty(mountDialogMount) ? 'Create space' : 'Edit space properties'}
+      aria-label={isMountEmpty(mountDialogMount) ? 'Create hub' : 'Edit hub properties'}
       tabindex="-1"
       onclick={(event) => {
         if (event.target === event.currentTarget) {
@@ -7006,11 +6807,11 @@
       <div class="mount-dialog panel-surface" role="document" tabindex="-1" data-mount-id={mountDialogMount.id}>
         <div class="mount-dialog-header">
           <div class="mount-dialog-head-meta">
-            <p class="mount-dialog-eyebrow">Space properties</p>
-            <p class="mount-dialog-title">{isMountEmpty(mountDialogMount) ? 'Create or open a space' : 'Edit this space'}</p>
+            <p class="mount-dialog-eyebrow">Hub properties</p>
+            <p class="mount-dialog-title">{isMountEmpty(mountDialogMount) ? 'Create or open a hub' : 'Edit this hub'}</p>
             <p class="mount-dialog-subtitle">Set the secret or attach one secret file.</p>
           </div>
-          <button type="button" class="tm-details-close" aria-label="Close space properties" onclick={() => collapseMount(mountDialogMount.id)}>
+          <button type="button" class="tm-details-close" aria-label="Close hub properties" onclick={() => collapseMount(mountDialogMount.id)}>
             <X size={18} strokeWidth={2} />
           </button>
         </div>
@@ -7021,8 +6822,8 @@
               <div class="mount-dialog-status-grid">
                 {#if volumeId}
                   <div class="status-item mount-dialog-status-item">
-                    <span class="status-label">Space ID</span>
-                    <button class="volume-id-btn" onclick={copyVolumeId} title="Copy space ID">
+                    <span class="status-label">Hub ID</span>
+                    <button class="volume-id-btn" onclick={copyVolumeId} title="Copy hub ID">
                       {volumeId.slice(0, 16)}...
                       {#if copiedVolumeId}
                         <span class="copied-indicator">✓ Copied</span>
@@ -7087,11 +6888,11 @@
                 dense={true}
                 value={mountDialogMount.address}
                 password={mountDialogMount.password}
-                valueLabel="Space secret"
-                valueAriaLabel="Space address"
+                valueLabel="Hub secret"
+                valueAriaLabel="Hub address"
                 valuePlaceholder="address or secret seed"
                 passwordLabel="Password (optional)"
-                passwordAriaLabel="Optional space password"
+                passwordAriaLabel="Optional hub password"
                 passwordPlaceholder="optional"
                 onValueInput={(value) => updateMountAddress(mountDialogMount.id, value)}
                 onPasswordInput={(value) => updateMountPassword(mountDialogMount.id, value)}
@@ -7187,8 +6988,8 @@
                 autoDisarmMs={3000}
                 resetKey={mountDialogMount.id}
                 onPress={() => removeMount(mountDialogMount.id)}
-                title="Remove space"
-                ariaLabel="Remove space"
+                title="Remove hub"
+                ariaLabel="Remove hub"
               />
               <button
                 type="button"
@@ -7221,7 +7022,7 @@
       class="share-dialog-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Share this volume"
+      aria-label="Share this hub"
       tabindex="-1"
       onclick={(event) => {
         if (event.target === event.currentTarget) {
@@ -7238,9 +7039,9 @@
       <div class="share-dialog panel-surface" role="document" tabindex="-1">
         <div class="share-dialog-header">
           <div class="share-dialog-head-meta">
-            <p class="share-dialog-eyebrow">Shared space</p>
-            <p class="share-dialog-title">Share this space</p>
-            <p class="share-dialog-subtitle">Share the space link. Add a shared storage space if you also want to share a direct route for data.</p>
+            <p class="share-dialog-eyebrow">Shared hub</p>
+            <p class="share-dialog-title">Share this hub</p>
+            <p class="share-dialog-subtitle">Share the hub itself here. Configure shared storage separately in storage settings.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close share dialog" onclick={closeVolumeShareDialog}>
             <X size={18} strokeWidth={2} />
@@ -7249,112 +7050,14 @@
 
         <div class="share-dialog-body">
           <section class="share-dialog-section">
-            <div class="status-share-head">
-              <span class="share-dialog-section-title">Space link</span>
-              <div class="status-link-actions">
-                <button
-                  type="button"
-                  class="status-link-btn"
-                  onclick={() => void copyCurrentJoinLink(false)}
-                  disabled={joinLinkCopyBusy}
-                  title="Copy a nearbytes:// link for this space"
-                >
-                  <Link2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>{joinLinkCopyBusy ? 'Preparing…' : 'Share this space'}</span>
-                </button>
-              </div>
-            </div>
-            {#if volumeSharingFeedback}
-              <span class:warning={volumeSharingFeedback.tone === 'warning'} class="status-link-feedback">
-                {volumeSharingFeedback.message}
-              </span>
-            {/if}
-          </section>
-
-          <section class="share-dialog-section">
-            <div class="status-share-head">
-              <span class="share-dialog-section-title">Shared storage</span>
-              <button
-                type="button"
-                class="status-link-btn secondary"
-                onclick={openVolumeShareStoragePanel}
-              >
-                <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                <span>Manage storage</span>
-              </button>
-            </div>
-            <p class="status-share-note">A shared storage space gives friends a direct route to data. MEGA is the default.</p>
-
-            {#if currentVolumeSharingLoading && currentVolumeManagedShares.length === 0}
-              <p class="status-share-note">Loading attached live storage…</p>
-            {:else if currentVolumeManagedShares.length === 0}
-              <div class="share-dialog-empty">
-                <p class="share-dialog-empty-title">No live storage attached yet</p>
-                <p class="status-share-note">You can share the space now, or add a shared storage space too.</p>
-              </div>
-            {:else}
-              <div class="status-storage-list share-dialog-storage-list">
-                {#each currentVolumeManagedShares as summary (summary.share.id)}
-                  <div class="status-storage-card">
-                    <div class="status-storage-head">
-                      <div>
-                        <p class="status-storage-provider">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
-                        <p class="status-storage-title">{summary.share.label}</p>
-                      </div>
-                      <span class="status-storage-state">{summary.state.status === 'ready' ? 'Connected' : summary.state.detail}</span>
-                    </div>
-                    {#if canInviteCurrentVolumeStorage(summary)}
-                      <form class="status-storage-invite-row" onsubmit={(event) => {
-                        event.preventDefault();
-                        void inviteCurrentVolumeStorage(summary);
-                      }}>
-                        <input
-                          class="status-storage-input"
-                          type="text"
-                          value={currentVolumeShareInviteDraft(summary.share.id)}
-                          placeholder="name@example.com"
-                          oninput={(event) =>
-                            setCurrentVolumeShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                        />
-                        <button
-                          type="submit"
-                          class="status-link-btn secondary"
-                          disabled={currentVolumeShareInviteBusyKey === summary.share.id}
-                        >
-                          <span>{currentVolumeShareInviteBusyKey === summary.share.id ? 'Sending…' : 'Invite to storage'}</span>
-                        </button>
-                      </form>
-                    {:else}
-                      <p class="status-share-note">This storage route is attached, but this provider does not support sending invites from Nearbytes.</p>
-                    {/if}
-                    <div class="status-storage-members">
-                      <p class="share-dialog-section-title members-label">Participants</p>
-                      {#if currentVolumeStorageParticipants(summary).length > 0}
-                        <div class="status-storage-members-list">
-                          {#each currentVolumeStorageParticipants(summary) as collaborator (collaborator.label)}
-                            <span class="status-storage-chip">{collaborator.label}</span>
-                          {/each}
-                        </div>
-                      {:else}
-                        <p class="status-share-note">No participants yet.</p>
-                      {/if}
-                    </div>
-                    <div class="status-storage-members">
-                      <p class="share-dialog-section-title members-label">Invited</p>
-                      {#if currentVolumeStorageInvited(summary).length > 0}
-                        <div class="status-storage-members-list">
-                          {#each currentVolumeStorageInvited(summary) as collaborator (collaborator.label)}
-                            <span class="status-storage-chip">{collaborator.label}</span>
-                          {/each}
-                        </div>
-                      {:else}
-                        <p class="status-share-note">No pending invitations.</p>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {/if}
+            <ShareSpaceLinkSection
+              canCopySecretLink={hasCopyableCurrentSecret()}
+              shareLinkBusy={joinLinkCopyBusy}
+              shareLinkFeedback={volumeSharingFeedback}
+              onCopyShareLink={copyCurrentJoinLink}
+              onManageStorage={openVolumeShareStoragePanel}
+              showManageStorage={true}
+            />
           </section>
         </div>
       </div>
@@ -7383,9 +7086,9 @@
       <div class="join-dialog panel-surface" role="document" tabindex="-1">
         <div class="join-dialog-header">
           <div class="join-dialog-head-meta">
-            <p class="join-dialog-eyebrow">Join shared volume</p>
+            <p class="join-dialog-eyebrow">Join shared hub</p>
             <p class="join-dialog-title">Open from clipboard</p>
-            <p class="join-dialog-subtitle">Paste a nearbytes://join link or canonical join JSON. Nearbytes will preview the volume route first, then stage any attached live storage when you join.</p>
+            <p class="join-dialog-subtitle">Paste a nearbytes://join link or canonical join JSON. Nearbytes will preview the hub first, then stage any attached live storage when you join.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close join dialog" onclick={closeJoinVolumeDialog}>
             <X size={18} strokeWidth={2} />
@@ -7424,7 +7127,7 @@
                 onclick={() => void openJoinDialogLink()}
                 disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
               >
-                <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared space'}</span>
+                <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
               </button>
             </div>
 
@@ -7441,7 +7144,7 @@
               </div>
 
               {#if joinDialogPreview.plan.attachments.length === 0}
-                <p class="join-dialog-note">This link tells Nearbytes which space to join, but it does not include any extra shared storage routes.</p>
+                <p class="join-dialog-note">This link tells Nearbytes which hub to join, but it does not include any extra shared storage routes.</p>
               {:else}
                 <div class="join-dialog-route-list">
                   {#each joinDialogPreview.plan.attachments as attachment (attachment.attachment.id)}
@@ -7475,7 +7178,7 @@
                 {/if}
               </div>
               {#if joinDialogOpened.secret === null}
-                <p class="join-dialog-note">Nearbytes staged the shared storage, but this link does not contain the space secret. You still need the secret to open the space contents.</p>
+                <p class="join-dialog-note">Nearbytes staged the shared storage, but this link does not contain the hub secret. You still need the secret to open the hub contents.</p>
               {/if}
               <div class="join-dialog-result-list">
                 {#each joinDialogOpened.actions as action (`${action.attachmentId}-${action.provider || action.endpointTransport || 'route'}`)}
