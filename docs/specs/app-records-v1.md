@@ -2,7 +2,7 @@
 
 Status: draft normative specification.
 
-This document defines the generic outer log event used for non-filesystem application data in Nearbytes. Use it when a channel needs to carry structured records such as chat messages, identity updates, or future app-level payloads without inventing a new outer event type each time.
+This document defines the generic outer log event used for non-filesystem application data in Nearbytes. Use it when a hub or channel needs to carry structured records such as chat messages, identity updates, or future app-level payloads without inventing a new outer event type each time.
 
 Its scope is only the shared outer envelope and replay contract. It does not define the inner schemas of specific application protocols.
 
@@ -11,7 +11,7 @@ Its scope is only the shared outer envelope and replay contract. It does not def
 This specification defines:
 
 1. a generic outer channel event form for non-filesystem application payloads;
-2. deterministic replay rules for those payloads inside any Nearbytes channel;
+2. deterministic replay rules for those payloads inside any Nearbytes hub or channel;
 3. the relationship between outer channel signatures and nested application signatures.
 
 This specification does not define:
@@ -19,6 +19,10 @@ This specification does not define:
 1. the schema of individual nested protocols;
 2. file-system `CREATE_FILE` / `DELETE_FILE` / `RENAME_FILE` events;
 3. trust or moderation policies.
+
+Relationship note:
+
+1. the enclosing hub/channel model is defined in `hub-model-v1.md`.
 
 ## 2. Outer Event Type
 
@@ -46,11 +50,11 @@ Field rules:
 
 `APP_RECORD` MAY appear in:
 
-1. secret-derived Nearbytes volumes;
+1. secret-derived Nearbytes hubs;
 2. public-key-addressed public channels such as identity channels;
 3. future mixed-purpose channels.
 
-All `APP_RECORD` events share the same deterministic ordering rules as the enclosing channel log.
+All `APP_RECORD` events share the same authoritative ordering rules as the enclosing hub/channel log.
 
 ## 4. Replay Rules
 
@@ -60,6 +64,11 @@ Readers MUST:
 2. parse the nested canonical JSON from `record`;
 3. reject the individual record if `protocol` and nested `p` disagree;
 4. dispatch the record to the protocol-specific reader identified by `protocol`.
+
+Ordering rule:
+
+1. the authoritative replay order is the enclosing hub/channel log order;
+2. nested timestamps are record metadata and MUST NOT replace that order.
 
 Readers MAY ignore unsupported application protocols while continuing to replay the rest of the channel.
 

@@ -1,32 +1,32 @@
-# Nearbytes Volume Chat Events v1
+# Nearbytes Chat Protocol v1
 
 Status: draft normative specification.
 
-This document defines how chat messages live inside a Nearbytes log. It covers the sender-signed message payload, the allowed outer event forms that can carry chat and identity state, and the attachment model for file references.
+This document defines how chat messages live inside a Nearbytes hub log. It covers the sender-signed message payload, the preferred outer event form that carries chat and identity state, and the attachment model for file references.
 
-Its scope is basic message transport and replay inside a shared volume or channel. It does not define richer chat product features such as reactions, threads, or moderation.
+Its scope is basic message transport and replay inside a shared hub or channel. It does not define richer chat product features such as reactions, threads, or moderation.
 
 ## 1. Scope
 
 This specification defines:
 
-1. chat-capable event types stored in the same append-only volume log as file events;
-2. the identity-signed `nb.chat.message.v1` payload carried by those events;
+1. the identity-signed `nb.chat.message.v1` payload carried inside a hub log;
+2. the preferred application-level carrier for chat and related identity material;
 3. attachment semantics for source-bound file references in chat messages.
 
 This specification does not define:
 
-1. end-to-end encryption beyond volume access;
+1. end-to-end encryption beyond hub access;
 2. reactions, edits, threads, receipts, or moderation;
-3. cross-volume federation;
+3. cross-hub federation;
 4. out-of-band identity discovery.
 
 Introductory model (non-normative):
 
-1. the enclosing volume signature still proves the event belongs to the volume log;
-2. chat and identity payloads inside that event are additionally signed by sender identity keypairs;
-3. a client that can open the volume can read the chat in v1;
-4. sender identity comes from the nested signature, not from the volume key alone.
+1. the enclosing hub signature proves the record belongs to the hub log;
+2. chat and identity payloads inside that record are additionally signed by sender identity keypairs;
+3. a client that can open the hub can read the chat in v1;
+4. sender identity comes from the nested signature, not from the hub key alone.
 
 ## 2. Relationship to Other Specs
 
@@ -35,28 +35,38 @@ Introductory model (non-normative):
 3. Source-bound file references are defined in `nb-src-ref-v1.md` and `nb-src-refs-v1.md`.
 4. Generic application-carried outer events are defined in `app-records-v1.md`.
 5. Canonical identity publication is defined in `identity-channel-v1.md`.
-6. Local volume materialization of identity state is defined in `identity-snapshot-v1.md`.
+6. Local hub materialization of identity state is defined in `identity-snapshot-v1.md`.
+7. The enclosing hub model is defined in `hub-model-v1.md`.
 
-## 3. Outer Volume Event Types
+## 3. Preferred Carrier
 
-Two new volume-log event types are introduced:
+New chat-capable writers SHOULD emit chat and identity-related hub material as `APP_RECORD`.
+
+Preferred mappings:
+
+1. `protocol = "nb.chat.message.v1"` for chat messages;
+2. `protocol = "nb.identity.snapshot.v1"` for foreign-hub identity materialization.
+
+Legacy outer event types remain readable for compatibility only.
+
+## 4. Legacy Outer Event Types
+
+Older chat-capable hubs may still contain these outer event types:
 
 1. `DECLARE_IDENTITY`
 2. `CHAT_MESSAGE`
-
-These events live in the same append-only volume log as file events.
 
 Replay rule:
 
 1. file-system replay MUST ignore non-file event types;
 2. chat replay MUST ignore file-system event types;
-3. all event types share the same deterministic ordering rules of the enclosing volume log.
+3. all event types share the authoritative ordering rules of the enclosing hub log.
 
-## 4. `DECLARE_IDENTITY` (Legacy Compatibility)
+## 5. `DECLARE_IDENTITY` (Legacy Compatibility)
 
 Purpose:
 
-1. preserve compatibility with older chat-capable volumes that embedded identity records directly in the volume log.
+1. preserve compatibility with older chat-capable hubs that embedded identity records directly in the hub log.
 
 Required outer fields:
 
@@ -69,9 +79,9 @@ Rules:
 
 1. `authorPublicKey` MUST equal the `k` field inside the embedded identity record.
 2. the embedded record MUST verify successfully according to `identity-record-v1.md`.
-3. the enclosing volume event MUST still be signed by the volume key.
+3. the enclosing hub event MUST still be signed by the hub key.
 
-## 5. `nb.chat.message.v1`
+## 6. `nb.chat.message.v1`
 
 Minimal required object:
 
@@ -106,7 +116,7 @@ Field requirements:
 6. at least one of `body` or `attachment` MUST be present.
 7. `sig` MUST be a valid signature by identity key `k` over the canonical JSON encoding of the object with `sig` omitted.
 
-## 6. Attachment Rules
+## 7. Attachment Rules
 
 In v1, attachment payloads are source-bound file references.
 
@@ -124,14 +134,14 @@ Optional attachment fields:
 Interpretation:
 
 1. dragging a file into chat SHOULD produce a signed chat message carrying a source-bound reference to that file;
-2. recipients who can open the same source volume MAY later import the referenced file;
+2. recipients who can open the same source hub MAY later import the referenced file;
 3. the attachment is a reference, not a duplicated blob.
 
-## 7. `CHAT_MESSAGE` (Legacy Compatibility)
+## 8. `CHAT_MESSAGE` (Legacy Compatibility)
 
 Purpose:
 
-1. preserve compatibility with older chat-capable volumes that emitted chat messages as their own outer event type.
+1. preserve compatibility with older chat-capable hubs that emitted chat messages as their own outer event type.
 
 Required outer fields:
 
@@ -144,11 +154,11 @@ Rules:
 
 1. `authorPublicKey` MUST equal the `k` field inside the embedded message object.
 2. the embedded message MUST verify successfully.
-3. the enclosing volume event MUST still be signed by the volume key.
+3. the enclosing hub event MUST still be signed by the hub key.
 
-## 8. Ordering and Materialization
+## 9. Ordering and Materialization
 
-Chat clients reconstruct chat state by scanning the shared volume log and selecting:
+Chat clients reconstruct chat state by scanning the shared hub log and selecting:
 
 1. valid `DECLARE_IDENTITY` events for legacy identity state;
 2. valid `CHAT_MESSAGE` events for legacy message history;
@@ -157,27 +167,28 @@ Chat clients reconstruct chat state by scanning the shared volume log and select
 
 Ordering rule:
 
-1. primary order is `publishedAt`;
-2. ties are broken by enclosing event hash in lexicographic order.
+1. authoritative order is the enclosing hub-log order;
+2. `publishedAt` and nested `ts` fields are message metadata and SHOULD be shown to users, but they MUST NOT replace hub-log order for replay.
 
 Materialized identity state:
 
-1. latest valid `DECLARE_IDENTITY` per `authorPublicKey`.
+1. latest valid identity material per identity public key in hub-log order, preferring `nb.identity.snapshot.v1` or other current app-record forms when present;
+2. `DECLARE_IDENTITY` remains a legacy compatibility input only.
 
 Materialized chat history:
 
-1. all valid `CHAT_MESSAGE` events in deterministic order.
+1. all valid `nb.chat.message.v1` and legacy `CHAT_MESSAGE` entries in hub-log order.
 
-## 9. Security Properties
+## 10. Security Properties
 
 In v1:
 
-1. possession of the volume secret is sufficient to read chat messages;
+1. possession of the hub secret is sufficient to read chat messages;
 2. sender authenticity comes from the nested identity signature;
-3. volume membership comes from the outer volume signature;
+3. hub membership comes from the outer hub signature;
 4. a party without the relevant identity private key MUST NOT be able to forge a valid nested chat or identity payload for that sender.
 
-## 10. Failure Conditions
+## 11. Failure Conditions
 
 Readers MUST ignore an individual chat or identity event if:
 

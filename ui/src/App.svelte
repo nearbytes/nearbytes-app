@@ -124,6 +124,13 @@
   }
   const SPEC_DOCS: SpecDoc[] = [
     {
+      id: 'hub-model-v1',
+      title: 'Hub model v1',
+      filename: 'hub-model-v1.md',
+      summary: 'Hub log model and subsystem projection rules.',
+      always: true,
+    },
+    {
       id: 'app-records-v1',
       title: 'App records v1',
       filename: 'app-records-v1.md',
@@ -132,18 +139,25 @@
     },
     {
       id: 'file-events-v2',
-      title: 'File events v2',
+      title: 'File protocol v2',
       filename: 'file-events-v2.md',
-      summary: 'CREATE/DELETE/RENAME semantics for file events.',
+      summary: 'CREATE/DELETE/RENAME file replay semantics.',
       eventTypes: ['CREATE_FILE', 'DELETE_FILE', 'RENAME_FILE'],
     },
     {
       id: 'chat-events-v1',
-      title: 'Chat events v1',
+      title: 'Chat protocol v1',
       filename: 'chat-events-v1.md',
-      summary: 'Chat events + nb.chat.message.v1 payload rules.',
+      summary: 'Hub chat payload and replay rules.',
       protocols: ['nb.chat.message.v1'],
       eventTypes: ['CHAT_MESSAGE', 'DECLARE_IDENTITY'],
+    },
+    {
+      id: 'identity-management-v1',
+      title: 'Identity management v1',
+      filename: 'identity-management-v1.md',
+      summary: 'Identity lifecycle from local creation to hub materialization.',
+      always: true,
     },
     {
       id: 'identity-record-v1',
@@ -162,9 +176,9 @@
     },
     {
       id: 'identity-channel-v1',
-      title: 'Identity channel v1',
+      title: 'Identity publication v1',
       filename: 'identity-channel-v1.md',
-      summary: 'How identity records are emitted in channels.',
+      summary: 'Canonical publication rules for identity records.',
       protocols: ['nb.identity.record.v1'],
     },
     {

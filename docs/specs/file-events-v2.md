@@ -1,8 +1,8 @@
-# Nearbytes File Events v2
+# Nearbytes File Protocol v2
 
 Status: draft normative specification.
 
-This document defines the low-level filesystem event model for Nearbytes. It is the replay contract that turns an append-only log into the current file map.
+This document defines the low-level file command model for Nearbytes hubs. It is the replay contract that turns an append-only hub log into the current file map.
 
 Its scope is the event layer itself: file creation, deletion, rename, and replay semantics. It does not define higher-level command orchestration or standalone folder objects.
 
@@ -10,25 +10,26 @@ Its scope is the event layer itself: file creation, deletion, rename, and replay
 
 This specification defines:
 
-1. The event model for the Nearbytes file-system layer.
-2. A first-class `RENAME_FILE` log event.
-3. Replay semantics for path-like filenames and virtual folders.
+1. the event model for the Nearbytes file-system layer;
+2. a first-class `RENAME_FILE` log event;
+3. replay semantics for path-like filenames and virtual folders.
 
 This specification does not define:
 
-1. Standalone folder objects.
-2. ACLs, locking, or concurrent merge policy.
-3. Filesystem mount behavior outside the event log.
+1. standalone folder objects;
+2. ACLs, locking, or concurrent merge policy;
+3. filesystem mount behavior outside the event log.
 
 Command note:
 
-1. User-level commands such as upload, copy, paste, recipient-bound export, and folder rename orchestration are defined in `file-commands-v1.md`.
+1. user-level commands such as upload, copy, paste, recipient-bound export, and folder rename orchestration are defined in `file-commands-v1.md`;
+2. the enclosing hub model is defined in `hub-model-v1.md`.
 
 ## 2. Terms
 
 1. **Logical filename**: UTF-8 path-like name stored in events, for example `photos/2026/a.jpg`.
 2. **Virtual folder**: a UI/view concept derived from filename prefixes split on `/`.
-3. **Current state**: the deterministic file map obtained by replaying the append-only event log.
+3. **Current state**: the deterministic file map obtained by replaying the append-only hub log.
 4. **Blob**: encrypted content block addressed by SHA-256 hash.
 
 ## 3. Data Model
@@ -36,9 +37,9 @@ Command note:
 Nearbytes stores files as:
 
 1. encrypted blobs, content-addressed by `blobHash`;
-2. signed log events that bind logical filenames to blobs over time.
+2. signed hub-log events that bind logical filenames to blobs over time.
 
-There are no standalone folder entries in v2. A “folder” exists only because filenames may contain `/`.
+There are no standalone folder entries in v2. A folder exists only because filenames may contain `/`.
 
 Example:
 
@@ -106,15 +107,15 @@ For `RENAME_FILE`:
 
 1. `fileName` and `toFileName` MUST both be non-empty.
 2. `fileName` and `toFileName` MUST NOT be equal.
-3. Replay MUST treat rename as a metadata move, not a copy.
-4. If the source does not exist at replay time, the rename is a no-op.
-5. If the destination already exists at replay time, the destination MUST be overwritten by the moved file.
+3. replay MUST treat rename as a metadata move, not a copy.
+4. if the source does not exist at replay time, the rename is a no-op.
+5. if the destination already exists at replay time, the destination MUST be overwritten by the moved file.
 
 Rule 5 matches existing event-sourced overwrite semantics used by `CREATE_FILE`.
 
 ## 6. Replay Semantics
 
-Clients reconstruct file state by replaying events in chronological order:
+Clients reconstruct file state by replaying events in hub-log order:
 
 1. `CREATE_FILE(name, blob)` sets `state[name] = blob`.
 2. `DELETE_FILE(name)` removes `state[name]`.
@@ -128,9 +129,9 @@ The moved metadata is:
 1. `blobHash`
 2. `size`
 3. `mimeType`
-4. original file creation time already associated with the file entry
+4. original file creation time already associated with the file entry.
 
-The rename event timestamp is used only for event ordering, not as a replacement for file creation time.
+The rename event timestamp is metadata only. It MUST NOT replace hub-log order and MUST NOT replace file creation time.
 
 ## 7. Virtual Folder Behavior
 
@@ -138,7 +139,7 @@ Because folders are derived from path prefixes:
 
 1. renaming a file across prefixes changes its apparent folder;
 2. empty folders disappear automatically when no filenames remain under their prefix;
-3. renaming a “folder” is syntactic sugar for applying file renames to every matching prefix.
+3. renaming a folder is syntactic sugar for applying file renames to every matching prefix.
 
 So:
 

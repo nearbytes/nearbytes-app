@@ -98,10 +98,12 @@ Multiple identity records for the same `k` MAY appear over time.
 Readers SHOULD:
 
 1. group records by `k`;
-2. sort valid records by `ts`, then by enclosing volume-log event hash if a tie-breaker is needed;
+2. if records are observed inside an enclosing channel or hub, use that enclosing log order rather than `ts` to decide recency;
 3. treat the latest valid record as the active profile for `k`.
 
 Older valid records remain part of history but are superseded by later valid records.
+
+`ts` is signer-supplied profile metadata. It is not the authoritative ordering source.
 
 ## 7. Failure Conditions
 

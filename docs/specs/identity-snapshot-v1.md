@@ -76,7 +76,9 @@ Clients SHOULD append a new snapshot only if either:
 Within any foreign volume:
 
 1. readers MUST group snapshots by `k`;
-2. readers MUST order valid snapshots by `publishedAt`, then enclosing event hash;
+2. readers MUST order valid snapshots by the enclosing foreign-hub log order;
 3. the latest valid snapshot becomes the active local profile for that identity in that volume.
 
 Older snapshots remain part of the foreign volume's history but are superseded by later ones.
+
+`ts` and `publishedAt` remain useful metadata but are not the authoritative replay order.
