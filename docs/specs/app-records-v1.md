@@ -2,6 +2,8 @@
 
 Status: draft normative specification.
 
+Ordering status: non-final. Current implementations generally use `publishedAt` plus a deterministic tie-breaker when replaying `APP_RECORD` events, but that is a temporary convention and not a final full-stack ordering rule.
+
 This document defines the generic outer log event used for non-filesystem application data in Nearbytes. Use it when a hub or channel needs to carry structured records such as chat messages, identity updates, or future app-level payloads without inventing a new outer event type each time.
 
 Its scope is only the shared outer envelope and replay contract. It does not define the inner schemas of specific application protocols.
@@ -54,7 +56,9 @@ Field rules:
 2. public-key-addressed public channels such as identity channels;
 3. future mixed-purpose channels.
 
-All `APP_RECORD` events share the same authoritative ordering rules as the enclosing hub/channel log.
+`APP_RECORD` events participate in whatever ordering rule the enclosing hub/channel currently uses.
+
+That enclosing ordering rule is not finalized yet.
 
 ## 4. Replay Rules
 
@@ -65,10 +69,11 @@ Readers MUST:
 3. reject the individual record if `protocol` and nested `p` disagree;
 4. dispatch the record to the protocol-specific reader identified by `protocol`.
 
-Ordering rule:
+Temporary replay rule used by current implementations:
 
-1. the authoritative replay order is the enclosing hub/channel log order;
-2. nested timestamps are record metadata and MUST NOT replace that order.
+1. implementations commonly order `APP_RECORD` entries by `publishedAt`;
+2. ties are commonly broken deterministically, for example by event hash;
+3. this behavior is non-final and may be replaced by a more explicit log-order layer in a future spec.
 
 Readers MAY ignore unsupported application protocols while continuing to replay the rest of the channel.
 

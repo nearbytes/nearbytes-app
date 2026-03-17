@@ -2,6 +2,8 @@
 
 Status: draft normative specification.
 
+Ordering status: non-final. Current implementations generally order chat-visible records by `publishedAt` with a deterministic tie-breaker. This is a temporary replay convention rather than a final Nearbytes ordering specification.
+
 This document defines how chat messages live inside a Nearbytes hub log. It covers the sender-signed message payload, the preferred outer event form that carries chat and identity state, and the attachment model for file references.
 
 Its scope is basic message transport and replay inside a shared hub or channel. It does not define richer chat product features such as reactions, threads, or moderation.
@@ -60,7 +62,7 @@ Replay rule:
 
 1. file-system replay MUST ignore non-file event types;
 2. chat replay MUST ignore file-system event types;
-3. all event types share the authoritative ordering rules of the enclosing hub log.
+3. all event types are replayed using the enclosing hub's current ordering convention, which is not finalized yet.
 
 ## 5. `DECLARE_IDENTITY` (Legacy Compatibility)
 
@@ -165,19 +167,21 @@ Chat clients reconstruct chat state by scanning the shared hub log and selecting
 3. valid `APP_RECORD` events carrying `nb.identity.snapshot.v1` for current identity state;
 4. valid `APP_RECORD` events carrying `nb.chat.message.v1` for current message history.
 
-Ordering rule:
+Temporary replay rule used by current implementations:
 
-1. authoritative order is the enclosing hub-log order;
-2. `publishedAt` and nested `ts` fields are message metadata and SHOULD be shown to users, but they MUST NOT replace hub-log order for replay.
+1. chat-capable implementations commonly order records by `publishedAt`;
+2. ties are commonly broken deterministically, for example by enclosing event hash;
+3. nested `ts` remains message metadata and SHOULD be shown to users;
+4. this behavior is non-final and expected to change once Nearbytes specifies its full ordering layer.
 
 Materialized identity state:
 
-1. latest valid identity material per identity public key in hub-log order, preferring `nb.identity.snapshot.v1` or other current app-record forms when present;
+1. latest valid identity material per identity public key under the current replay convention, preferring `nb.identity.snapshot.v1` or other current app-record forms when present;
 2. `DECLARE_IDENTITY` remains a legacy compatibility input only.
 
 Materialized chat history:
 
-1. all valid `nb.chat.message.v1` and legacy `CHAT_MESSAGE` entries in hub-log order.
+1. all valid `nb.chat.message.v1` and legacy `CHAT_MESSAGE` entries under the current replay convention.
 
 ## 10. Security Properties
 

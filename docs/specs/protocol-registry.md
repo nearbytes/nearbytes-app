@@ -6,6 +6,10 @@ This document is the registry of protocol identifiers used across the Nearbytes 
 
 Its scope is naming and versioning discipline, not the payload rules of each individual protocol.
 
+Relationship note:
+
+1. the current provisional Nearbytes stack model is outlined in `hub-model-v1.md`.
+
 ## 1. Naming Rule
 
 Protocol identifiers MUST use:
@@ -57,13 +61,28 @@ Current examples:
 3. file event/replay model -> `file-events-v2.md`
 4. identity management command semantics -> `identity-management-v1.md`
 
-## 5. Forward Compatibility Rule For Transport Recipes
+## 5. Provisional Stack View
+
+The Nearbytes specifications already imply several layers, even though the full stack is not finalized yet.
+
+1. vocabulary/product layer
+2. application semantics layer
+3. nested application record layer (`nb.*` payloads)
+4. outer log/event envelope layer
+5. ordering/replay layer
+6. cryptographic and canonical-encoding layer
+7. blob/reference layer
+8. storage/transport/sync layer
+
+The ordering/replay layer is currently the least settled part of the stack and should be considered non-final.
+
+## 6. Forward Compatibility Rule For Transport Recipes
 
 1. Unknown protocol IDs still fail closed.
 2. Known composite protocols MAY define open-string subtypes that must be ignored rather than rejected.
 3. `nb.transport.recipe.v1` and `nb.join.v1` define that unknown endpoint `transport` kinds MUST be ignored by clients without rejecting the whole recipe or link.
 
-## 6. Canonical Encoding Policy
+## 7. Canonical Encoding Policy
 
 Unless explicitly overridden by a specific protocol document:
 
@@ -71,7 +90,7 @@ Unless explicitly overridden by a specific protocol document:
 2. Binary values MUST be base64url without padding.
 3. Hash values MUST be lowercase hexadecimal.
 
-## 7. Change Control
+## 8. Change Control
 
 Any new `nb.*` protocol ID or major-version increment MUST include:
 

@@ -493,10 +493,13 @@ describe('Nearbytes API', () => {
       .expect(200);
 
     const identityTimelineEvent = timelineRes.body.events.find(
-      (event: { type: string }) => event.type === 'DECLARE_IDENTITY'
+      (event: { type: string; protocol?: string }) =>
+        event.type === 'APP_RECORD' &&
+        (event.protocol === 'nb.identity.record.v1' || event.protocol === 'nb.identity.snapshot.v1')
     );
     const chatTimelineEvent = timelineRes.body.events.find(
-      (event: { type: string }) => event.type === 'CHAT_MESSAGE'
+      (event: { type: string; protocol?: string }) =>
+        event.type === 'APP_RECORD' && event.protocol === 'nb.chat.message.v1'
     );
 
     expect(identityTimelineEvent?.record?.profile?.displayName).toBe('Ada');

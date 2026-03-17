@@ -165,9 +165,10 @@ export interface SnapshotResponse {
 
 export interface TimelineEvent {
   eventHash: string;
-  type: 'CREATE_FILE' | 'DELETE_FILE' | 'RENAME_FILE' | 'DECLARE_IDENTITY' | 'CHAT_MESSAGE';
+  type: 'CREATE_FILE' | 'DELETE_FILE' | 'RENAME_FILE' | 'DECLARE_IDENTITY' | 'CHAT_MESSAGE' | 'APP_RECORD';
   filename: string;
   timestamp: number;
+  protocol?: string;
   blobHash?: string;
   contentType?: 'b' | 'm';
   toFilename?: string;

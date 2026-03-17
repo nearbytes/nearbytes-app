@@ -2,6 +2,8 @@
 
 Status: draft normative specification.
 
+Ordering status: non-final. Current implementations generally reconstruct file state using event timestamps such as `createdAt`, `deletedAt`, and `renamedAt`, together with deterministic tie-breakers. This is a temporary implementation rule rather than a final Nearbytes ordering specification.
+
 This document defines the low-level file command model for Nearbytes hubs. It is the replay contract that turns an append-only hub log into the current file map.
 
 Its scope is the event layer itself: file creation, deletion, rename, and replay semantics. It does not define higher-level command orchestration or standalone folder objects.
@@ -115,7 +117,11 @@ Rule 5 matches existing event-sourced overwrite semantics used by `CREATE_FILE`.
 
 ## 6. Replay Semantics
 
-Clients reconstruct file state by replaying events in hub-log order:
+Clients reconstruct file state by replaying events in the implementation's current deterministic order.
+
+Today that commonly means timestamp-first replay using file-event timestamps and deterministic tie-breakers, but this behavior is non-final.
+
+Under that temporary rule:
 
 1. `CREATE_FILE(name, blob)` sets `state[name] = blob`.
 2. `DELETE_FILE(name)` removes `state[name]`.
@@ -131,7 +137,7 @@ The moved metadata is:
 3. `mimeType`
 4. original file creation time already associated with the file entry.
 
-The rename event timestamp is metadata only. It MUST NOT replace hub-log order and MUST NOT replace file creation time.
+The rename event timestamp currently participates in replay in existing implementations, but that behavior is provisional. It still MUST NOT replace the file's own creation-time metadata in the materialized file entry.
 
 ## 7. Virtual Folder Behavior
 

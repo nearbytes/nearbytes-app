@@ -2,6 +2,8 @@
 
 Status: draft normative specification.
 
+Ordering status: non-final. Current implementations generally resolve snapshot recency using `publishedAt` plus deterministic tie-breakers. This is a temporary replay convention rather than a final ordering specification.
+
 This document defines the record copied into a foreign volume when that volume needs a local, replayable view of an identity. A snapshot carries readable public profile data plus a precise reference back to the canonical identity-channel event it came from.
 
 Its scope is this local materialization format. It is not the canonical identity log itself.
@@ -76,9 +78,9 @@ Clients SHOULD append a new snapshot only if either:
 Within any foreign volume:
 
 1. readers MUST group snapshots by `k`;
-2. readers MUST order valid snapshots by the enclosing foreign-hub log order;
+2. readers MUST order valid snapshots by the enclosing foreign hub's current replay convention;
 3. the latest valid snapshot becomes the active local profile for that identity in that volume.
 
 Older snapshots remain part of the foreign volume's history but are superseded by later ones.
 
-`ts` and `publishedAt` remain useful metadata but are not the authoritative replay order.
+In current implementations, `ts` and `publishedAt` may influence replay because timestamps are used as a temporary ordering aid. That behavior is provisional and non-final.

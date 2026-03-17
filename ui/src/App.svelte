@@ -2093,6 +2093,14 @@
         return 'Identity';
       case 'CHAT_MESSAGE':
         return 'Chat';
+      case 'APP_RECORD':
+        if (event.protocol === 'nb.identity.record.v1' || event.protocol === 'nb.identity.snapshot.v1') {
+          return 'Identity';
+        }
+        if (event.protocol === 'nb.chat.message.v1') {
+          return 'Chat';
+        }
+        return 'App';
     }
   }
 
@@ -2110,6 +2118,17 @@
         return event.displayName ? `Publish ${event.displayName}` : 'Publish identity';
       case 'CHAT_MESSAGE':
         return event.summary ?? 'Chat message';
+      case 'APP_RECORD':
+        if (event.protocol === 'nb.identity.snapshot.v1') {
+          return event.displayName ? `Sync ${event.displayName}` : 'Sync identity';
+        }
+        if (event.protocol === 'nb.identity.record.v1') {
+          return event.displayName ? `Publish ${event.displayName}` : 'Publish identity';
+        }
+        if (event.protocol === 'nb.chat.message.v1') {
+          return event.summary ?? 'Chat message';
+        }
+        return event.protocol ?? event.summary ?? 'App record';
     }
   }
 
@@ -2125,7 +2144,33 @@
         return `${position}/${total} • ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
       case 'CHAT_MESSAGE':
         return `${position}/${total} • ${event.summary ?? 'Chat message'}`;
+      case 'APP_RECORD':
+        if (event.protocol === 'nb.identity.snapshot.v1') {
+          return `${position}/${total} • ${event.displayName ? `${event.displayName} synced` : 'Identity synced'}`;
+        }
+        if (event.protocol === 'nb.identity.record.v1') {
+          return `${position}/${total} • ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
+        }
+        if (event.protocol === 'nb.chat.message.v1') {
+          return `${position}/${total} • ${event.summary ?? 'Chat message'}`;
+        }
+        return `${position}/${total} • ${event.protocol ?? 'App record'}`;
     }
+  }
+
+  function isTimelineIdentityEvent(event: TimelineEvent): boolean {
+    return (
+      event.type === 'DECLARE_IDENTITY' ||
+      (event.type === 'APP_RECORD' &&
+        (event.protocol === 'nb.identity.record.v1' || event.protocol === 'nb.identity.snapshot.v1'))
+    );
+  }
+
+  function isTimelineChatEvent(event: TimelineEvent): boolean {
+    return (
+      event.type === 'CHAT_MESSAGE' ||
+      (event.type === 'APP_RECORD' && event.protocol === 'nb.chat.message.v1')
+    );
   }
 
   function timelineTitle(event: TimelineEvent): string {
@@ -2148,7 +2193,7 @@
     for (let index = 0; index < clampedLimit; index += 1) {
       const event = timelineEvents[index];
       if (
-        event.type === 'DECLARE_IDENTITY' &&
+        isTimelineIdentityEvent(event) &&
         event.authorPublicKey &&
         event.record
       ) {
@@ -2162,7 +2207,7 @@
       }
 
       if (
-        event.type === 'CHAT_MESSAGE' &&
+        isTimelineChatEvent(event) &&
         event.authorPublicKey &&
         event.message
       ) {
@@ -5928,8 +5973,8 @@
                   class:create={event.type === 'CREATE_FILE'}
                   class:delete={event.type === 'DELETE_FILE'}
                   class:rename={event.type === 'RENAME_FILE'}
-                  class:identity={event.type === 'DECLARE_IDENTITY'}
-                  class:chat={event.type === 'CHAT_MESSAGE'}
+                  class:identity={isTimelineIdentityEvent(event)}
+                  class:chat={isTimelineChatEvent(event)}
                   onclick={() => jumpToEvent(index)}
                   title={timelineTitle(event)}
                 >

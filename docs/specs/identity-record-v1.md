@@ -2,6 +2,8 @@
 
 Status: draft normative specification.
 
+Ordering status: non-final. The record format is stable enough to specify, but the larger Nearbytes replay/order model is not final. Current implementations usually resolve recency through enclosing timestamps and deterministic tie-breakers.
+
 This document defines the signed public profile object for a Nearbytes identity. It is the portable statement a sender makes about their public-facing name and profile data, signed by that sender's identity key.
 
 Its scope is the record format and its validation rules. It does not define discovery, trust policy, or private profile data.
@@ -98,12 +100,12 @@ Multiple identity records for the same `k` MAY appear over time.
 Readers SHOULD:
 
 1. group records by `k`;
-2. if records are observed inside an enclosing channel or hub, use that enclosing log order rather than `ts` to decide recency;
+2. if records are observed inside an enclosing channel or hub, use that enclosing context's current replay convention to decide recency;
 3. treat the latest valid record as the active profile for `k`.
 
 Older valid records remain part of history but are superseded by later valid records.
 
-`ts` is signer-supplied profile metadata. It is not the authoritative ordering source.
+In current implementations, `ts` may participate indirectly in recency because enclosing replay often uses timestamps. That behavior is provisional and non-final.
 
 ## 7. Failure Conditions
 

@@ -2,6 +2,8 @@
 
 Status: draft normative specification.
 
+Ordering status: non-final. This document intentionally leaves the final log-order model unspecified for now. Current implementations commonly use monotonic timestamps as a temporary replay aid, but that behavior is provisional and expected to change when the full stack ordering model is specified.
+
 This document defines the core Nearbytes application model: a hub is an append-only authenticated log that may carry commands for multiple subsystems. Files, chat, identity material, and future features are not separate storage universes; they are different protocol families interpreted over the same hub log.
 
 Its scope is the shared hub model. It does not define the payload schema of each subsystem command.
@@ -46,19 +48,17 @@ Examples of subsystems include:
 
 A hub MAY contain commands for one subsystem only, or for many subsystems mixed together.
 
-## 4. Ordering Rule
+## 4. Ordering Status
 
-The authoritative order is the hub log order.
+The final ordering model of a Nearbytes hub is not specified yet.
 
-Rules:
+For now:
 
-1. subsystem projections MUST be derived from the enclosing hub-log order;
-2. signer-supplied timestamps such as `ts`, `createdAt`, or `publishedAt` are payload metadata and MUST NOT redefine the authoritative order of the log;
-3. if two subsystem records disagree semantically, the subsystem specification decides the replay rule, but that rule MUST start from hub-log order.
+1. this document defines a hub as an append-only authenticated log, but does not yet define the exact full-stack rule by which that append order is recovered and replayed;
+2. current implementations commonly use signer-supplied timestamps such as `ts`, `createdAt`, or `publishedAt`, often with a deterministic tie-breaker, as a temporary approximation;
+3. this timestamp-based behavior is non-final and SHOULD be treated as an implementation convention rather than a settled architectural rule.
 
-Non-normative note:
-
-1. some current implementations may use timestamps as a temporary approximation for display or replay, but that is not the intended long-term Nearbytes model.
+Future Nearbytes specs are expected to define a stronger ordering layer that explains how append order, replay order, and any tie-breaking or causality metadata relate.
 
 ## 5. Command Families
 
@@ -88,7 +88,24 @@ Examples:
 
 Subsystems MUST ignore commands outside their own scope unless explicitly defined otherwise.
 
-## 7. Relationship to Public Channels
+Because the final ordering model is not yet specified, any subsystem projection that depends on ordering MUST state which temporary implementation rule it assumes today.
+
+## 7. Stack Levels (Provisional)
+
+The current Nearbytes stack can already be described in layers, even though some boundaries are still evolving.
+
+1. product/vocabulary layer: user-facing concepts such as hub, identity, file, storage location, and share;
+2. application semantics layer: commands and projections such as file operations, identity lifecycle, chat behavior, and future subsystems;
+3. application record layer: protocol payloads such as `nb.chat.message.v1`, `nb.identity.record.v1`, `nb.identity.snapshot.v1`, and future `nb.*` records;
+4. log/event envelope layer: outer events such as `CREATE_FILE`, `DELETE_FILE`, `RENAME_FILE`, `APP_RECORD`, and legacy compatibility events;
+5. ordering/replay layer: the rule that turns a set of authenticated log entries into a deterministic replay sequence; this layer is non-final and still needs its own proper specification;
+6. cryptographic layer: secret derivation, signatures, hashes, wrapped file keys, and canonical encoding rules;
+7. blob/reference layer: encrypted blocks, manifests, recipient-bound references, source-bound references, and attachment descriptors;
+8. storage/transport layer: channels, roots, providers, synchronization, and discovery/transport recipes.
+
+This layering is descriptive, not yet a fully normative stack specification.
+
+## 8. Relationship to Public Channels
 
 The same append-only protocol model also applies to public-key-addressed channels such as an identity publication channel.
 
@@ -97,7 +114,7 @@ However:
 1. user-facing product language SHOULD reserve `hub` for the main logical unit opened and used like a shared or local Nearbytes space;
 2. a public identity channel follows the same log principles but is not necessarily presented as a hub in the UI.
 
-## 8. Relationship to Other Specs
+## 9. Relationship to Other Specs
 
 1. generic application-carried records are defined in `app-records-v1.md`;
 2. file subsystem replay is defined in `file-events-v2.md` and `file-commands-v1.md`;
@@ -105,7 +122,7 @@ However:
 4. identity publication is defined in `identity-channel-v1.md`, `identity-record-v1.md`, and `identity-snapshot-v1.md`;
 5. chat payloads are defined in `chat-events-v1.md`.
 
-## 9. Open-Ended Extension Rule
+## 10. Open-Ended Extension Rule
 
 Nearbytes hubs are intentionally open-ended.
 

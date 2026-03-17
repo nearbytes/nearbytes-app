@@ -81,6 +81,7 @@ export interface TimelineEvent {
   type: EventType;
   filename: string;
   timestamp: number;
+  protocol?: string;
   toFilename?: string;
   blobHash?: string;
   contentType?: FileContentType;
@@ -175,6 +176,7 @@ interface StoredTimelineRow {
   timestamp: number;
   hasExplicitTimestamp: boolean;
   sequence: number;
+  protocol?: string;
   toFilename?: string;
   blobHash?: string;
   encryptedKey?: EncryptedData;
@@ -1036,6 +1038,7 @@ function mapEntriesToTimeline(entries: EventLogEntry[]): TimelineEvent[] {
     type: row.type,
     filename: row.filename,
     timestamp: row.timestamp,
+    protocol: row.protocol,
     toFilename: row.toFilename,
     blobHash: row.blobHash,
     contentType: row.contentType,
@@ -1217,11 +1220,12 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
         const displayName = identityRecord?.profile.displayName;
         rows.push({
           eventHash: entry.eventHash,
-          type: EventType.DECLARE_IDENTITY,
+          type: EventType.APP_RECORD,
           filename: '',
           timestamp: inferredTimestamp,
           hasExplicitTimestamp: true,
           sequence,
+          protocol: payload.protocol,
           publishedAt: inferredTimestamp,
           authorPublicKey: payload.authorPublicKey,
           displayName,
@@ -1237,11 +1241,12 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
         const displayName = identityRecord?.profile.displayName;
         rows.push({
           eventHash: entry.eventHash,
-          type: EventType.DECLARE_IDENTITY,
+          type: EventType.APP_RECORD,
           filename: '',
           timestamp: inferredTimestamp,
           hasExplicitTimestamp: true,
           sequence,
+          protocol: payload.protocol,
           publishedAt: inferredTimestamp,
           authorPublicKey: payload.authorPublicKey,
           displayName,
@@ -1257,11 +1262,12 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
         const attachmentName = chatMessage?.attachment?.name;
         rows.push({
           eventHash: entry.eventHash,
-          type: EventType.CHAT_MESSAGE,
+          type: EventType.APP_RECORD,
           filename: '',
           timestamp: inferredTimestamp,
           hasExplicitTimestamp: true,
           sequence,
+          protocol: payload.protocol,
           publishedAt: inferredTimestamp,
           authorPublicKey: payload.authorPublicKey,
           body,
@@ -1269,7 +1275,21 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
           summary: body ?? attachmentName ?? 'Attachment message',
           message: chatMessage ?? undefined,
         });
+        continue;
       }
+
+      rows.push({
+        eventHash: entry.eventHash,
+        type: EventType.APP_RECORD,
+        filename: '',
+        timestamp: inferredTimestamp,
+        hasExplicitTimestamp: true,
+        sequence,
+        protocol: payload.protocol,
+        publishedAt: inferredTimestamp,
+        authorPublicKey: payload.authorPublicKey,
+        summary: payload.protocol,
+      });
     }
   }
 
