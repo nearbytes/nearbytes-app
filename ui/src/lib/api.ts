@@ -470,6 +470,25 @@ export interface ManagedShareSummary {
   };
 }
 
+export interface IncomingManagedShareOffer {
+  id: string;
+  provider: string;
+  accountId: string;
+  label: string;
+  ownerLabel: string;
+  detail: string;
+  remoteDescriptor: Record<string, unknown>;
+  suggestedLocalPath?: string;
+}
+
+export interface IncomingProviderContactInvite {
+  id: string;
+  provider: string;
+  accountId: string;
+  label: string;
+  detail: string;
+}
+
 export interface PlannedTransportCandidate {
   endpoint: TransportEndpoint;
   score: [number, number, number, number, number, number];
@@ -498,6 +517,14 @@ export interface ProviderAccountsResponse {
 
 export interface ManagedSharesResponse {
   shares: ManagedShareSummary[];
+}
+
+export interface IncomingManagedSharesResponse {
+  shares: IncomingManagedShareOffer[];
+}
+
+export interface IncomingProviderContactInvitesResponse {
+  invites: IncomingProviderContactInvite[];
 }
 
 export interface ConnectProviderAccountResponse {
@@ -1309,6 +1336,18 @@ export async function listManagedShares(): Promise<ManagedSharesResponse> {
   });
 }
 
+export async function listIncomingManagedShares(): Promise<IncomingManagedSharesResponse> {
+  return apiRequest<IncomingManagedSharesResponse>('/integrations/shares/incoming', {
+    method: 'GET',
+  });
+}
+
+export async function listIncomingProviderContactInvites(): Promise<IncomingProviderContactInvitesResponse> {
+  return apiRequest<IncomingProviderContactInvitesResponse>('/integrations/providers/contact-invites', {
+    method: 'GET',
+  });
+}
+
 export async function createManagedShare(input: {
   provider: string;
   accountId: string;
@@ -1354,8 +1393,20 @@ export async function acceptManagedShare(input: {
   volumeId?: string;
   localPath?: string;
   remoteDescriptor?: Record<string, unknown>;
+  capabilities?: string[];
 }): Promise<ManagedShareMutationResponse> {
   return apiRequest<ManagedShareMutationResponse>('/integrations/shares/accept', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function acceptIncomingProviderContactInvite(input: {
+  provider: string;
+  accountId: string;
+  inviteId: string;
+}): Promise<void> {
+  await apiRequest<{ ok: true }>('/integrations/providers/contact-invites/accept', {
     method: 'POST',
     body: JSON.stringify(input),
   });

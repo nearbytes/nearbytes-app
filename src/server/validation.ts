@@ -159,6 +159,13 @@ export const acceptManagedShareBodySchema = z.object({
     .optional(),
   localPath: z.string().trim().min(1).optional(),
   remoteDescriptor: z.record(z.string(), z.unknown()).optional(),
+  capabilities: z.array(z.string().trim().min(1)).optional(),
+});
+
+export const acceptProviderContactInviteBodySchema = z.object({
+  provider: z.string().trim().min(1, 'Provider is required'),
+  accountId: z.string().trim().min(1, 'Provider account id is required'),
+  inviteId: z.string().trim().min(1, 'Invite id is required'),
 });
 
 export const parseJoinLinkBodySchema = z.object({

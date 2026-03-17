@@ -8,6 +8,8 @@ import type {
   ConnectProviderAccountResult,
   ConfigureProviderInput,
   CreateManagedShareInput,
+  IncomingManagedShareOffer,
+  IncomingProviderContactInvite,
   InviteManagedShareInput,
   ManagedShareCollaborator,
   ManagedShare,
@@ -44,6 +46,18 @@ interface MegaStorageQuota {
 interface MegaShareCollaboratorRecord {
   readonly email: string;
   readonly accessLevel?: string;
+}
+
+interface MegaIncomingShareRecord {
+  readonly ownerEmail: string;
+  readonly shareName: string;
+  readonly remotePath: string;
+  readonly accessLevel?: string;
+}
+
+interface MegaIncomingContactInviteRecord {
+  readonly id: string;
+  readonly email: string;
 }
 
 interface MegaAuthSession extends ProviderAuthSession {
@@ -205,6 +219,47 @@ export class MegaTransportAdapter {
       },
       capabilities: ['mirror', 'read', 'write', 'accept'],
     };
+  }
+
+  async listIncomingShares(account: ProviderAccount): Promise<IncomingManagedShareOffer[]> {
+    await this.ensureLoggedIn(account.id);
+    const result = await this.runMega('mount', [], {
+      timeoutMs: 30_000,
+    });
+    return parseMegaIncomingShares(result.stdout).map((entry) => ({
+      id: `mega:incoming:${entry.remotePath.toLowerCase()}`,
+      provider: this.provider,
+      accountId: account.id,
+      label: entry.shareName,
+      ownerLabel: entry.ownerEmail,
+      detail: `${entry.ownerEmail} shared this MEGA location${entry.accessLevel ? ` with ${entry.accessLevel}` : ''}. Accept it to mirror it locally in Nearbytes.`,
+      remoteDescriptor: {
+        remotePath: entry.remotePath,
+        shareName: entry.shareName,
+        ownerEmail: entry.ownerEmail,
+      },
+    }));
+  }
+
+  async listIncomingContactInvites(account: ProviderAccount): Promise<IncomingProviderContactInvite[]> {
+    await this.ensureLoggedIn(account.id);
+    const result = await this.runMega('showpcr', ['--in'], {
+      timeoutMs: 30_000,
+    });
+    return parseMegaIncomingContactInvites(result.stdout).map((invite) => ({
+      id: invite.id,
+      provider: this.provider,
+      accountId: account.id,
+      label: invite.email,
+      detail: `Accept ${invite.email} as a MEGA contact so shared storage locations from that person can appear in Nearbytes.`,
+    }));
+  }
+
+  async acceptIncomingContactInvite(account: ProviderAccount, inviteId: string): Promise<void> {
+    await this.ensureLoggedIn(account.id);
+    await this.runMega('ipc', [inviteId, '-a'], {
+      timeoutMs: 30_000,
+    });
   }
 
   async getState(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState> {
@@ -761,6 +816,63 @@ function parseMegaShareCollaborators(stdout: string): MegaShareCollaboratorRecor
     });
   }
   return collaborators;
+}
+
+function parseMegaIncomingShares(stdout: string): MegaIncomingShareRecord[] {
+  const shares: MegaIncomingShareRecord[] = [];
+  const seen = new Set<string>();
+  for (const line of stdout.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('INSHARE on //from/')) {
+      continue;
+    }
+    const match = trimmed.match(/^INSHARE on \/\/from\/([^:]+):(.+?)(?: \((.+?)\))?$/u);
+    if (!match) {
+      continue;
+    }
+    const ownerEmail = (match[1] ?? '').trim().toLowerCase();
+    const shareName = (match[2] ?? '').trim();
+    const accessLevel = (match[3] ?? '').trim() || undefined;
+    if (!ownerEmail || !shareName) {
+      continue;
+    }
+    const remotePath = `${ownerEmail}:${shareName}`;
+    const key = remotePath.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    shares.push({
+      ownerEmail,
+      shareName,
+      remotePath,
+      accessLevel,
+    });
+  }
+  return shares;
+}
+
+function parseMegaIncomingContactInvites(stdout: string): MegaIncomingContactInviteRecord[] {
+  const invites: MegaIncomingContactInviteRecord[] = [];
+  const seen = new Set<string>();
+  for (const line of stdout.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed || /^Incoming PCRs:/i.test(trimmed) || /^Outgoing PCRs:/i.test(trimmed)) {
+      continue;
+    }
+    const match = trimmed.match(/^([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}).*?\(id:\s*([^,\)\s]+)/iu);
+    if (!match) {
+      continue;
+    }
+    const email = (match[1] ?? '').trim().toLowerCase();
+    const id = (match[2] ?? '').trim();
+    if (!email || !id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    invites.push({ id, email });
+  }
+  return invites;
 }
 
 function mapMegaAccessLevel(accessLevel: string | undefined): string | undefined {

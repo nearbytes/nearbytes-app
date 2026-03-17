@@ -3527,23 +3527,38 @@
     candidate: NonNullable<JoinLinkParseResponse['plan']['attachments'][number]['selectedEndpoint']>
   ): string {
     const endpoint = candidate.endpoint;
-    if (endpoint.label?.trim()) {
-      return endpoint.label.trim();
+    const provider = endpoint.provider?.trim().toLowerCase() || '';
+    const providerLabel =
+      provider === 'mega'
+        ? 'MEGA'
+        : provider === 'gdrive'
+          ? 'Google Drive'
+          : provider === 'github'
+            ? 'GitHub'
+            : endpoint.provider?.trim() || '';
+    if (candidate.badges.includes('Connected') && providerLabel !== '') {
+      return `${providerLabel} ready here`;
+    }
+    if (candidate.badges.includes('Suggested folder') && providerLabel !== '') {
+      return `${providerLabel} suggested`;
+    }
+    if (providerLabel !== '') {
+      return `Via ${providerLabel}`;
     }
     if (endpoint.transport === 'provider-share') {
-      return endpoint.provider?.trim() || 'Provider share';
+      return 'Provider route';
     }
-    return endpoint.transport;
+    return `Via ${endpoint.transport}`;
   }
 
   function joinDialogSpaceSummary(space: JoinLinkParseResponse['space']): string {
     if (space.mode === 'volume-id') {
-      return 'Volume id only';
+      return 'Needs separate secret';
     }
     if (space.mode === 'secret-file') {
-      return 'Secret file';
+      return 'Secret file included';
     }
-    return space.password ? 'Seed + password' : 'Seed';
+    return space.password ? 'Secret and password included' : 'Secret included';
   }
 
   function joinDialogActionTone(
@@ -3561,11 +3576,11 @@
   function joinDialogActionStatusLabel(
     action: JoinLinkOpenResponse['actions'][number]
   ): string {
-    if (action.status === 'attached') return 'Attached';
-    if (action.status === 'planned') return 'Planned';
-    if (action.status === 'needs-account') return 'Needs account';
-    if (action.status === 'pending-auth') return 'Waiting for sign-in';
-    return 'Unsupported';
+    if (action.status === 'attached') return 'Added';
+    if (action.status === 'planned') return 'Recognized';
+    if (action.status === 'needs-account') return 'Sign in needed';
+    if (action.status === 'pending-auth') return 'Finish sign-in';
+    return 'Unavailable';
   }
 
   function joinDialogActionTitle(
@@ -3579,34 +3594,38 @@
           ? 'GitHub'
           : action.provider || action.endpointTransport || 'Route';
     if (action.status === 'attached') {
-      return `${provider} live route attached`;
+      return `${provider} storage added to this space`;
     }
     if (action.status === 'planned') {
-      return `${provider} route recognized`;
+      return `${provider} storage found`;
     }
     if (action.status === 'needs-account') {
-      return `${provider} account required`;
+      return `Connect ${provider}`;
     }
     if (action.status === 'pending-auth') {
-      return `${provider} sign-in still pending`;
+      return `Finish ${provider} sign-in`;
     }
-    return `${provider} route unavailable`;
+    return `${provider} storage unavailable`;
   }
 
-  function joinDialogActionBadges(
-    action: JoinLinkOpenResponse['actions'][number]
-  ): string[] {
-    return [
-      action.provider === 'mega'
+  function joinDialogAttachmentTitle(
+    attachment: JoinLinkParseResponse['plan']['attachments'][number]
+  ): string {
+    const rawLabel = attachment.attachment.label.trim();
+    const normalized = rawLabel.toLowerCase();
+    const provider = attachment.selectedEndpoint?.endpoint.provider?.trim().toLowerCase() || '';
+    const providerLabel =
+      provider === 'mega'
         ? 'MEGA'
-        : action.provider === 'gdrive'
+        : provider === 'gdrive'
           ? 'Google Drive'
-          : action.provider === 'github'
+          : provider === 'github'
             ? 'GitHub'
-            : action.provider || action.endpointTransport || 'Transport route',
-      action.usedCredentialBootstrap ? 'Used embedded bootstrap' : null,
-      action.shareId ? `Share ${action.shareId}` : null,
-    ].filter((value): value is string => Boolean(value));
+            : attachment.selectedEndpoint?.endpoint.provider?.trim() || '';
+    if (normalized === '' || normalized === 'nearbytes' || normalized === 'shared storage' || normalized === 'share') {
+      return providerLabel !== '' ? `${providerLabel} shared storage` : 'Shared storage';
+    }
+    return rawLabel;
   }
 
   async function previewJoinDialogLink(): Promise<void> {
@@ -7394,18 +7413,18 @@
             <section class="join-dialog-section">
               <div class="join-dialog-preview-head">
                 <span class="join-dialog-chip strong">{joinDialogSpaceSummary(joinDialogPreview.space)}</span>
-                <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
+                <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} storage route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
               </div>
 
               {#if joinDialogPreview.plan.attachments.length === 0}
-                <p class="join-dialog-note">This link only identifies the volume. No live storage routes were bundled with it.</p>
+                <p class="join-dialog-note">This link tells Nearbytes which space to join, but it does not include any extra shared storage routes.</p>
               {:else}
                 <div class="join-dialog-route-list">
                   {#each joinDialogPreview.plan.attachments as attachment (attachment.attachment.id)}
                     <article class="join-dialog-route-card">
                       <div class="join-dialog-route-head">
                         <div>
-                          <p class="join-dialog-route-title">{attachment.attachment.label}</p>
+                          <p class="join-dialog-route-title">{joinDialogAttachmentTitle(attachment)}</p>
                           <p class="join-dialog-route-detail">
                             {attachment.selectedEndpoint?.reason || 'No supported route is available in this build.'}
                           </p>
@@ -7416,13 +7435,6 @@
                           <span class="join-dialog-chip warning">Unavailable</span>
                         {/if}
                       </div>
-                      {#if attachment.selectedEndpoint?.badges?.length}
-                        <div class="join-dialog-badge-row">
-                          {#each attachment.selectedEndpoint.badges as badge (badge)}
-                            <span class="join-dialog-badge">{badge}</span>
-                          {/each}
-                        </div>
-                      {/if}
                     </article>
                   {/each}
                 </div>
@@ -7439,7 +7451,7 @@
                 {/if}
               </div>
               {#if joinDialogOpened.secret === null}
-                <p class="join-dialog-note">The link staged storage routes only. You still need the volume secret separately to open its contents.</p>
+                <p class="join-dialog-note">Nearbytes staged the shared storage, but this link does not contain the space secret. You still need the secret to open the space contents.</p>
               {/if}
               <div class="join-dialog-result-list">
                 {#each joinDialogOpened.actions as action (`${action.attachmentId}-${action.provider || action.endpointTransport || 'route'}`)}
@@ -7447,13 +7459,8 @@
                     <div>
                       <p class="join-dialog-route-title">{joinDialogActionTitle(action)}</p>
                       <p class="join-dialog-route-detail">{action.detail}</p>
-                      <div class="join-dialog-badge-row action-badges">
-                        {#each joinDialogActionBadges(action) as badge (`${action.attachmentId}-${badge}`)}
-                          <span class="join-dialog-badge">{badge}</span>
-                        {/each}
-                      </div>
                       {#if action.suggestedLocalPath}
-                        <p class="join-dialog-path">Suggested folder: {action.suggestedLocalPath}</p>
+                        <p class="join-dialog-path">Nearbytes will mirror it in: {action.suggestedLocalPath}</p>
                       {/if}
                     </div>
                     <span class="join-dialog-chip strong">{joinDialogActionStatusLabel(action)}</span>

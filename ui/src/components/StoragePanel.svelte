@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import {
+    acceptManagedShare,
+    acceptIncomingProviderContactInvite,
     attachManagedShare,
     chooseDirectoryPath,
     configureProviderSetup,
@@ -13,10 +15,14 @@
     hasDesktopDirectoryPicker,
     installProviderHelper,
     inviteManagedShare,
+    listIncomingManagedShares,
+    listIncomingProviderContactInvites,
     listManagedShares,
     listProviderAccounts,
     openRootInFileManager,
     type DiscoveredNearbytesSource,
+    type IncomingManagedShareOffer,
+    type IncomingProviderContactInvite,
     type ManagedShareSummary,
     type ProviderAccount,
     type ProviderAuthSession,
@@ -121,6 +127,8 @@
   let providerAccounts = $state<ProviderAccount[]>([]);
   let providerCatalog = $state<ProviderCatalogEntry[]>([]);
   let managedShares = $state<ManagedShareSummary[]>([]);
+  let incomingManagedShareOffers = $state<IncomingManagedShareOffer[]>([]);
+  let incomingProviderContactInvites = $state<IncomingProviderContactInvite[]>([]);
   let integrationBusyKey = $state<string | null>(null);
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
   let providerFlowStates = $state<Record<string, ProviderFlowState>>({});
@@ -768,6 +776,14 @@
     return managedShares.filter((summary) => summary.share.provider === provider);
   }
 
+  function incomingManagedSharesForProvider(provider: string): IncomingManagedShareOffer[] {
+    return incomingManagedShareOffers.filter((offer) => offer.provider === provider);
+  }
+
+  function incomingProviderInvitesForProvider(provider: string): IncomingProviderContactInvite[] {
+    return incomingProviderContactInvites.filter((invite) => invite.provider === provider);
+  }
+
   function providerPriority(provider: string): number {
     if (provider === 'mega') return 0;
     if (provider === 'gdrive') return 1;
@@ -792,6 +808,22 @@
       const providerOrder = providerPriority(left.share.provider) - providerPriority(right.share.provider);
       if (providerOrder !== 0) return providerOrder;
       return left.share.label.localeCompare(right.share.label);
+    });
+  }
+
+  function sortIncomingManagedShareOffers(entries: readonly IncomingManagedShareOffer[]): IncomingManagedShareOffer[] {
+    return [...entries].sort((left, right) => {
+      const providerOrder = providerPriority(left.provider) - providerPriority(right.provider);
+      if (providerOrder !== 0) return providerOrder;
+      return left.label.localeCompare(right.label);
+    });
+  }
+
+  function sortIncomingProviderContactInviteEntries(entries: readonly IncomingProviderContactInvite[]): IncomingProviderContactInvite[] {
+    return [...entries].sort((left, right) => {
+      const providerOrder = providerPriority(left.provider) - providerPriority(right.provider);
+      if (providerOrder !== 0) return providerOrder;
+      return left.label.localeCompare(right.label);
     });
   }
 
@@ -859,6 +891,14 @@
       entry.isConnected ? account?.email || account?.label || 'Account connected' : 'No account connected',
       countLabel(shareCount, 'live location'),
     ];
+    const incomingInviteCount = incomingProviderInvitesForProvider(entry.provider).length;
+    const incomingShareCount = incomingManagedSharesForProvider(entry.provider).length;
+    if (incomingInviteCount > 0) {
+      facts.push(countLabel(incomingInviteCount, 'incoming contact invite'));
+    }
+    if (incomingShareCount > 0) {
+      facts.push(countLabel(incomingShareCount, 'incoming storage location'));
+    }
     if (volumeId) {
       facts.push(countLabel(attachedCount, 'attached route'));
     }
@@ -1176,6 +1216,17 @@
     if (summary.share.provider === 'mega') return 'MEGA cloud';
     if (summary.share.provider === 'github') return 'GitHub';
     return summary.share.provider;
+  }
+
+  function providerLabelForIncoming(provider: string): string {
+    if (provider === 'gdrive') return 'Google Drive';
+    if (provider === 'mega') return 'MEGA';
+    if (provider === 'github') return 'GitHub';
+    return provider;
+  }
+
+  function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
+    return volumeId ? `Use ${providerLabelForIncoming(offer.provider)} in this space` : 'Add storage location';
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -1741,10 +1792,14 @@
     accounts: ProviderAccount[];
     providers: ProviderCatalogEntry[];
     shares: ManagedShareSummary[];
+    incomingShares: IncomingManagedShareOffer[];
+    incomingInvites: IncomingProviderContactInvite[];
   }): void {
     providerAccounts = input.accounts;
     providerCatalog = sortProviders(input.providers);
     managedShares = sortManagedShareSummaries(input.shares);
+    incomingManagedShareOffers = sortIncomingManagedShareOffers(input.incomingShares);
+    incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(input.incomingInvites);
     providerSetupDrafts = {
       ...providerSetupDrafts,
       ...Object.fromEntries(
@@ -1774,16 +1829,20 @@
       successMessage = '';
     }
     try {
-      const [rootsResponse, accountsResponse, sharesResponse] = await Promise.all([
+      const [rootsResponse, accountsResponse, sharesResponse, incomingSharesResponse, incomingInvitesResponse] = await Promise.all([
         getRootsConfig(),
         listProviderAccounts(),
         listManagedShares(),
+        listIncomingManagedShares(),
+        listIncomingProviderContactInvites(),
       ]);
       applyRootsResponse(rootsResponse);
       applyIntegrationsResponse({
         accounts: accountsResponse.accounts,
         providers: accountsResponse.providers,
         shares: sharesResponse.shares,
+        incomingShares: incomingSharesResponse.shares,
+        incomingInvites: incomingInvitesResponse.invites,
       });
       autosaveStatus = 'idle';
       void refreshDiscoverySuggestions();
@@ -2435,6 +2494,47 @@
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to share managed location';
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function acceptProviderContactInviteEntry(invite: IncomingProviderContactInvite): Promise<void> {
+    integrationBusyKey = `accept-contact:${invite.id}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await acceptIncomingProviderContactInvite({
+        provider: invite.provider,
+        accountId: invite.accountId,
+        inviteId: invite.id,
+      });
+      successMessage = `${invite.label} is now an accepted ${providerLabelForIncoming(invite.provider)} contact.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to accept provider contact invite';
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function acceptIncomingManagedShareOffer(offer: IncomingManagedShareOffer): Promise<void> {
+    integrationBusyKey = `accept-share:${offer.id}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await acceptManagedShare({
+        provider: offer.provider,
+        accountId: offer.accountId,
+        label: offer.label,
+        volumeId: volumeId ?? undefined,
+        localPath: offer.suggestedLocalPath,
+        remoteDescriptor: offer.remoteDescriptor,
+      });
+      successMessage = `${offer.label} is ready in ${volumeId ? 'this space' : 'Nearbytes'}.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to accept incoming storage location';
     } finally {
       integrationBusyKey = null;
     }
@@ -3162,6 +3262,77 @@
           </div>
 
           <div class="card-grid">
+            {#each incomingProviderContactInvites as invite (invite.id)}
+              <article class="rule-card suggestion-card incoming-share-card">
+                <div class="card-head">
+                  <div class="card-title">
+                    <div>
+                      <p class="provider-label">{providerLabelForIncoming(invite.provider)}</p>
+                      <h4>{invite.label}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class="status-pill tone-warn">Contact invite</span>
+                  </div>
+                </div>
+
+                <p class="card-copy">{invite.detail}</p>
+                <p class="managed-share-invite-copy">Accept this first so {providerLabelForIncoming(invite.provider)} can show any storage locations shared with you.</p>
+
+                <div class="button-row">
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void acceptProviderContactInviteEntry(invite)}
+                    disabled={integrationBusyKey === `accept-contact:${invite.id}`}
+                  >
+                    <span>{integrationBusyKey === `accept-contact:${invite.id}` ? 'Accepting...' : 'Accept contact'}</span>
+                  </button>
+                </div>
+              </article>
+            {/each}
+
+            {#each incomingManagedShareOffers as offer (offer.id)}
+              <article class="rule-card suggestion-card incoming-share-card">
+                <div class="card-head">
+                  <div class="card-title">
+                    <div>
+                      <p class="provider-label">{providerLabelForIncoming(offer.provider)}</p>
+                      <h4>{offer.label}</h4>
+                    </div>
+                  </div>
+                  <div class="card-status">
+                    <span class="status-pill tone-muted">Incoming storage</span>
+                  </div>
+                </div>
+
+                <p class="card-copy">{offer.detail}</p>
+
+                {#if offer.suggestedLocalPath}
+                  <div class="provider-path-card managed-share-path-card">
+                    <p class="subheading">Suggested local mirror</p>
+                    <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
+                  </div>
+                {/if}
+
+                <div class="fact-row">
+                  <span>Shared by {offer.ownerLabel}</span>
+                  <span>{volumeId ? 'Will attach to this space' : 'Saved as a storage location'}</span>
+                </div>
+
+                <div class="button-row">
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void acceptIncomingManagedShareOffer(offer)}
+                    disabled={integrationBusyKey === `accept-share:${offer.id}`}
+                  >
+                    <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
+                  </button>
+                </div>
+              </article>
+            {/each}
+
             {#each providerCatalog as provider (provider.provider)}
               {@const account = connectedAccountForProvider(provider.provider)}
               <article class="rule-card provider-card provider-card-compact" class:active={provider.isConnected}>

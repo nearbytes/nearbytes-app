@@ -31,6 +31,8 @@ import type {
   ConnectProviderAccountResult,
   ConfigureProviderInput,
   CreateManagedShareInput,
+  IncomingManagedShareOffer,
+  IncomingProviderContactInvite,
   JoinLink,
   JoinLinkPlan,
   JoinLinkSpace,
@@ -266,6 +268,78 @@ export class ManagedShareService {
     };
   }
 
+  async listIncomingManagedShares(): Promise<{ shares: IncomingManagedShareOffer[] }> {
+    const state = await this.loadState();
+    const attachedKeys = buildAttachedShareKeys(state.managedShares);
+    const offers = await Promise.all(
+      state.accounts
+        .filter((account) => account.state === 'connected' && isProviderEnabled(account.provider))
+        .map(async (account) => {
+          const adapter = this.adapters.get(normalizeProvider(account.provider));
+          if (!adapter?.listIncomingShares) {
+            return [] satisfies IncomingManagedShareOffer[];
+          }
+          try {
+            return await adapter.listIncomingShares(account);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.runtime.logger.warn(`Incoming managed share discovery failed for ${account.provider}:${account.id}: ${message}`);
+            return [] satisfies IncomingManagedShareOffer[];
+          }
+        })
+    );
+    return {
+      shares: offers
+        .flat()
+        .filter((offer) => !buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key)))
+        .sort((left, right) => {
+          const providerOrder = left.provider.localeCompare(right.provider);
+          if (providerOrder !== 0) {
+            return providerOrder;
+          }
+          return left.label.localeCompare(right.label);
+        }),
+    };
+  }
+
+  async listIncomingProviderContactInvites(): Promise<{ invites: IncomingProviderContactInvite[] }> {
+    const state = await this.loadState();
+    const invites = await Promise.all(
+      state.accounts
+        .filter((account) => account.state === 'connected' && isProviderEnabled(account.provider))
+        .map(async (account) => {
+          const adapter = this.adapters.get(normalizeProvider(account.provider));
+          if (!adapter?.listIncomingContactInvites) {
+            return [] satisfies IncomingProviderContactInvite[];
+          }
+          try {
+            return await adapter.listIncomingContactInvites(account);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.runtime.logger.warn(`Incoming contact invite lookup failed for ${account.provider}:${account.id}: ${message}`);
+            return [] satisfies IncomingProviderContactInvite[];
+          }
+        })
+    );
+    return {
+      invites: invites.flat().sort((left, right) => left.label.localeCompare(right.label)),
+    };
+  }
+
+  async acceptIncomingProviderContactInvite(providerInput: string, accountId: string, inviteId: string): Promise<void> {
+    const provider = normalizeProvider(providerInput);
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.acceptIncomingContactInvite) {
+      throw new ManagedShareServiceError(501, 'NOT_IMPLEMENTED', `Provider contact invites are not supported for ${provider}`);
+    }
+    const state = await this.loadState();
+    const account = state.accounts.find((entry) => entry.id === accountId);
+    if (!account) {
+      throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${accountId}`);
+    }
+    await adapter.acceptIncomingContactInvite(account, inviteId);
+  }
+
   async createManagedShare(input: CreateManagedShareInput): Promise<ManagedShareSummary> {
     const state = await this.loadState();
     const provider = normalizeProvider(input.provider);
@@ -292,16 +366,22 @@ export class ManagedShareService {
       managedShareId: shareId,
       ...(input.remoteDescriptor ?? {}),
     };
-    const providerOverlay: Partial<ManagedShare> = (await adapter?.createManagedShare?.(
-      {
-        ...input,
-        localPath: requestedLocalPath,
-        remoteDescriptor: initialDescriptor,
-      },
-      account
-    )) ?? {
-      remoteDescriptor: initialDescriptor,
-    };
+    const providerOverlay: Partial<ManagedShare> =
+      input.role === 'recipient'
+        ? {
+            remoteDescriptor: initialDescriptor,
+            capabilities: input.capabilities,
+          }
+        : (await adapter?.createManagedShare?.(
+            {
+              ...input,
+              localPath: requestedLocalPath,
+              remoteDescriptor: initialDescriptor,
+            },
+            account
+          )) ?? {
+            remoteDescriptor: initialDescriptor,
+          };
     const localPath = path.resolve(
       typeof providerOverlay.localPath === 'string' && providerOverlay.localPath.trim() !== ''
         ? providerOverlay.localPath
@@ -1402,6 +1482,28 @@ function buildManagedShareMatchKeys(share: ManagedShare): Set<string> {
     keys.add(repositoryKey);
   }
   return keys;
+}
+
+function buildIncomingManagedShareOfferKeys(offer: IncomingManagedShareOffer): string[] {
+  const descriptor = offer.remoteDescriptor;
+  const keys = new Set<string>();
+  if (typeof descriptor.remotePath === 'string' && descriptor.remotePath.trim() !== '') {
+    keys.add(`${offer.provider}:path:${descriptor.remotePath.trim().toLowerCase()}`);
+  }
+  if (typeof descriptor.remoteId === 'string' && descriptor.remoteId.trim() !== '') {
+    keys.add(`${offer.provider}:remote:${descriptor.remoteId.trim().toLowerCase()}`);
+  }
+  if (typeof descriptor.folderId === 'string' && descriptor.folderId.trim() !== '') {
+    keys.add(`${offer.provider}:remote:${descriptor.folderId.trim().toLowerCase()}`);
+  }
+  if (typeof descriptor.shareId === 'string' && descriptor.shareId.trim() !== '') {
+    keys.add(`${offer.provider}:share:${descriptor.shareId.trim().toLowerCase()}`);
+  }
+  const repositoryKey = buildRepositoryMatchKey(offer.provider, descriptor);
+  if (repositoryKey) {
+    keys.add(repositoryKey);
+  }
+  return Array.from(keys.values());
 }
 
 function resolveJoinLinkSuggestedLocalPath(endpoint: import('./types.js').TransportEndpoint): string | undefined {

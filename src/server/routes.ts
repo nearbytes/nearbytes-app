@@ -40,6 +40,7 @@ import {
   inviteManagedShareBodySchema,
   attachManagedShareBodySchema,
   acceptManagedShareBodySchema,
+  acceptProviderContactInviteBodySchema,
   exportRecipientReferencesBodySchema,
   exportReferencesBodySchema,
   fileHashParamSchema,
@@ -296,6 +297,26 @@ export function createRoutes(deps: RouteDependencies): Router {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
     res.json(await service.listManagedShares());
+  }));
+
+  router.get('/integrations/shares/incoming', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    res.json(await service.listIncomingManagedShares());
+  }));
+
+  router.get('/integrations/providers/contact-invites', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    res.json(await service.listIncomingProviderContactInvites());
+  }));
+
+  router.post('/integrations/providers/contact-invites/accept', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const input = parseWithSchema(acceptProviderContactInviteBodySchema, req.body);
+    await service.acceptIncomingProviderContactInvite(input.provider, input.accountId, input.inviteId);
+    res.json({ ok: true });
   }));
 
   router.post('/integrations/shares', asyncHandler(async (req, res) => {

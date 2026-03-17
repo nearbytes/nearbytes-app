@@ -177,6 +177,25 @@ export interface ManagedShareSummary {
   };
 }
 
+export interface IncomingManagedShareOffer {
+  readonly id: string;
+  readonly provider: string;
+  readonly accountId: string;
+  readonly label: string;
+  readonly ownerLabel: string;
+  readonly detail: string;
+  readonly remoteDescriptor: Record<string, unknown>;
+  readonly suggestedLocalPath?: string;
+}
+
+export interface IncomingProviderContactInvite {
+  readonly id: string;
+  readonly provider: string;
+  readonly accountId: string;
+  readonly label: string;
+  readonly detail: string;
+}
+
 export interface ShareStorageMetrics {
   readonly remoteAvailableBytes?: number;
   readonly remoteTotalBytes?: number;
@@ -243,6 +262,7 @@ export interface AcceptManagedShareInput {
   readonly volumeId?: string;
   readonly localPath?: string;
   readonly remoteDescriptor?: Record<string, unknown>;
+  readonly capabilities?: string[];
 }
 
 export interface JoinLinkPlannerContext {

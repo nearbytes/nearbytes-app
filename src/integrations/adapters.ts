@@ -9,6 +9,8 @@ import type {
   ConnectProviderAccountResult,
   ConfigureProviderInput,
   CreateManagedShareInput,
+  IncomingManagedShareOffer,
+  IncomingProviderContactInvite,
   ManagedShareCollaborator,
   InviteManagedShareInput,
   ManagedShare,
@@ -49,6 +51,9 @@ export interface TransportAdapter {
   createManagedShare?(input: CreateManagedShareInput, account: ProviderAccount): Promise<Partial<ManagedShare>>;
   invite?(share: ManagedShare, input: InviteManagedShareInput, account: ProviderAccount): Promise<void>;
   acceptInvite?(input: AcceptManagedShareInput, account: ProviderAccount): Promise<Partial<ManagedShare>>;
+  listIncomingShares?(account: ProviderAccount): Promise<IncomingManagedShareOffer[]>;
+  listIncomingContactInvites?(account: ProviderAccount): Promise<IncomingProviderContactInvite[]>;
+  acceptIncomingContactInvite?(account: ProviderAccount, inviteId: string): Promise<void>;
   getState?(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState>;
   getCollaborators?(share: ManagedShare, account: ProviderAccount | null): Promise<ManagedShareCollaborator[]>;
   getShareStorageMetrics?(share: ManagedShare, account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined>;

@@ -160,7 +160,6 @@
     justify-content: flex-end;
     align-self: start;
     min-width: 0;
-    max-width: min(48%, 100%);
   }
 
   .card-icon {
@@ -213,9 +212,8 @@
     align-items: center;
     justify-content: center;
     align-self: flex-start;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     min-height: 28px;
-    max-width: 100%;
     padding: 0.22rem 1.08rem;
     border-radius: 999px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
@@ -224,9 +222,8 @@
     font-size: 0.7rem;
     font-weight: 600;
     line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
     box-sizing: border-box;
   }
 
