@@ -1657,7 +1657,7 @@ export class ManagedShareService {
   private async persistRootsConfig(config: RootsConfig): Promise<void> {
     await saveRootsConfig(this.options.rootsConfigPath, config);
     this.options.storage.updateRootsConfig(config);
-    await this.options.storage.reconcileConfiguredVolumes();
+    this.options.storage.scheduleReconcileConfiguredVolumes();
     await ensureNearbytesMarkers(config.sources);
   }
 

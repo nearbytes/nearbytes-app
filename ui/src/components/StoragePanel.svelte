@@ -1198,6 +1198,17 @@
     return summary.share.label;
   }
 
+  function sourceDisplayTitle(source: SourceConfigEntry): string {
+    const linkedSummary = managedShares.find((summary) => summary.share.sourceId === source.id)
+      ?? (source.integration?.managedShareId
+        ? managedShares.find((summary) => summary.share.id === source.integration?.managedShareId)
+        : undefined);
+    if (linkedSummary) {
+      return managedShareTitle(linkedSummary);
+    }
+    return compactPath(source.path);
+  }
+
   function managedShareRoleLabel(summary: ManagedShareSummary): string {
     if (summary.share.role === 'owner') {
       return 'You own this live location';
@@ -2315,14 +2326,26 @@
       successMessage = '';
     }
     try {
-      const [rootsResponse, accountsResponse, sharesResponse, incomingSharesResponse, incomingInvitesResponse] = await Promise.all([
-        getRootsConfig(),
+      const rootsResponse = await getRootsConfig();
+      applyRootsResponse(rootsResponse);
+
+      const [accountsResult, sharesResult, incomingSharesResult, incomingInvitesResult] = await Promise.allSettled([
         listProviderAccounts(),
         listManagedShares(),
         listIncomingManagedShares(),
         listIncomingProviderContactInvites(),
       ]);
-      applyRootsResponse(rootsResponse);
+
+      const accountsResponse =
+        accountsResult.status === 'fulfilled'
+          ? accountsResult.value
+          : { accounts: [], providers: [], preferredProviders: [] };
+      const sharesResponse = sharesResult.status === 'fulfilled' ? sharesResult.value : { shares: [] };
+      const incomingSharesResponse =
+        incomingSharesResult.status === 'fulfilled' ? incomingSharesResult.value : { shares: [] };
+      const incomingInvitesResponse =
+        incomingInvitesResult.status === 'fulfilled' ? incomingInvitesResult.value : { invites: [] };
+
       applyIntegrationsResponse({
         accounts: accountsResponse.accounts,
         providers: accountsResponse.providers,
@@ -2330,6 +2353,16 @@
         incomingShares: incomingSharesResponse.shares,
         incomingInvites: incomingInvitesResponse.invites,
       });
+
+      const integrationFailures = [accountsResult, sharesResult, incomingSharesResult, incomingInvitesResult].filter(
+        (result) => result.status === 'rejected'
+      );
+      if (integrationFailures.length > 0) {
+        const firstFailure = integrationFailures[0] as PromiseRejectedResult;
+        const detail = firstFailure.reason instanceof Error ? firstFailure.reason.message : String(firstFailure.reason);
+        errorMessage = `Some sharing data could not be loaded yet: ${detail}`;
+      }
+
       autosaveStatus = 'idle';
       void refreshDiscoverySuggestions();
     } catch (error) {
@@ -4179,7 +4212,7 @@
                       <div class="card-title">
                         <div>
                           <p class="provider-label">{formatProvider(source.provider)}</p>
-                          <h4>{compactPath(source.path)}</h4>
+                          <h4>{sourceDisplayTitle(source)}</h4>
                         </div>
                       </div>
                     </div>

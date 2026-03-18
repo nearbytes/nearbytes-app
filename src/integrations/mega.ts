@@ -808,7 +808,9 @@ export class MegaTransportAdapter {
       '--path-display-size=0',
       '--col-separator=\t',
       '--output-cols=ID,LOCALPATH,REMOTEPATH,RUN_STATE,STATUS,ERROR',
-    ]);
+    ], {
+      timeoutMs: 12_000,
+    });
     return parseMegaSyncTable(result.stdout);
   }
 
@@ -994,6 +996,54 @@ export class MegaTransportAdapter {
     await this.runMega('get', ['-m', remotePath, localPath], {
       timeoutMs: 120_000,
     });
+    await this.normalizeIncomingMirrorLayout(localPath, remotePath);
+  }
+
+  private async normalizeIncomingMirrorLayout(localPath: string, remotePath: string): Promise<void> {
+    const entries = await fs.readdir(localPath, { withFileTypes: true }).catch(() => []);
+    const hasTopLevelData = entries.some((entry) =>
+      entry.isDirectory() && (entry.name === 'blocks' || entry.name === 'channels')
+    );
+    if (hasTopLevelData) {
+      return;
+    }
+
+    const remoteSegments = normalizeComparableRemotePath(remotePath).split('/').filter(Boolean);
+    const remoteLeaf = remoteSegments.length > 0 ? remoteSegments[remoteSegments.length - 1]!.toLowerCase() : '';
+    const nestedDirectories = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    let nestedFolderName = remoteLeaf
+      ? nestedDirectories.find((name) => name.toLowerCase() === remoteLeaf) ?? ''
+      : '';
+    if (!nestedFolderName && nestedDirectories.length === 1) {
+      nestedFolderName = nestedDirectories[0]!;
+    }
+    if (!nestedFolderName) {
+      return;
+    }
+
+    const nestedPath = path.join(localPath, nestedFolderName);
+    const nestedEntries = await fs.readdir(nestedPath, { withFileTypes: true }).catch(() => []);
+    const hasNestedData = nestedEntries.some((entry) =>
+      entry.isDirectory() && (entry.name === 'blocks' || entry.name === 'channels')
+    );
+    if (!hasNestedData) {
+      return;
+    }
+
+    for (const entry of nestedEntries) {
+      const fromPath = path.join(nestedPath, entry.name);
+      const toPath = path.join(localPath, entry.name);
+      const targetExists = await fs.lstat(toPath).then(() => true).catch(() => false);
+      if (targetExists) {
+        continue;
+      }
+      await fs.rename(fromPath, toPath).catch(() => undefined);
+    }
+
+    const remainingEntries = await fs.readdir(nestedPath).catch(() => []);
+    if (remainingEntries.length === 0) {
+      await fs.rm(nestedPath, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   private async cleanupIncomingMirrorMarkers(localPath: string): Promise<void> {
