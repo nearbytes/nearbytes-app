@@ -242,19 +242,24 @@ export class MegaTransportAdapter {
       }
       throw error;
     });
-    return parseMegaIncomingShares(result.stdout).map((entry) => ({
-      id: `mega:incoming:${entry.remotePath.toLowerCase()}`,
-      provider: this.provider,
-      accountId: account.id,
-      label: entry.shareName,
-      ownerLabel: entry.ownerEmail,
-      detail: `${entry.ownerEmail} shared this MEGA location${entry.accessLevel ? ` with ${entry.accessLevel}` : ''}. Accept it to mirror it locally in Nearbytes.`,
-      remoteDescriptor: {
-        remotePath: entry.remotePath,
-        shareName: entry.shareName,
-        ownerEmail: entry.ownerEmail,
-      },
-    }));
+    return parseMegaIncomingShares(result.stdout).map((entry) => {
+      const hiddenName = isMegaHiddenShareName(entry.shareName);
+      return {
+        id: `mega:incoming:${entry.remotePath.toLowerCase()}`,
+        provider: this.provider,
+        accountId: account.id,
+        label: hiddenName ? 'Shared MEGA folder' : entry.shareName,
+        ownerLabel: entry.ownerEmail,
+        detail: hiddenName
+          ? `${entry.ownerEmail} shared a MEGA location, but MEGA has not revealed its folder name yet. Accept it to mirror it locally in Nearbytes.`
+          : `${entry.ownerEmail} shared this MEGA location${entry.accessLevel ? ` with ${entry.accessLevel}` : ''}. Accept it to mirror it locally in Nearbytes.`,
+        remoteDescriptor: {
+          remotePath: entry.remotePath,
+          shareName: entry.shareName,
+          ownerEmail: entry.ownerEmail,
+        },
+      };
+    });
   }
 
   async listManagedShareMirrors(account: ProviderAccount): Promise<ManagedShareMirrorEntry[]> {
@@ -1043,6 +1048,11 @@ function isMegaDfTemporarilyUnavailableError(message: string): boolean {
 
 function isMegaMissingSharedPathError(message: string): boolean {
   return /no shared found for given path/i.test(message);
+}
+
+function isMegaHiddenShareName(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'no_key' || normalized === 'nokey' || normalized === 'no-key';
 }
 
 function extractMegaError(value: string): string {
