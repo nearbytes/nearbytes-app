@@ -1975,7 +1975,7 @@
       return { label: 'Move target', tone: 'good' as StatusTone };
     }
     if (!source.enabled) {
-      return { label: 'Turned off', tone: 'muted' as StatusTone };
+      return { label: 'Disabled', tone: 'muted' as StatusTone };
     }
     if (!hasSourcePath(source)) {
       return { label: 'Choose a folder', tone: 'warn' as StatusTone };
@@ -2015,7 +2015,7 @@
       return 'Choose a folder to finish setting up this location.';
     }
     if (!source.enabled) {
-      return 'Nearbytes will ignore this location until you turn it back on.';
+      return 'This location is disabled across Nearbytes. Turn it back on before any hub can use it.';
     }
     if (status?.exists === false) {
       return 'This folder is not available right now. Your choices stay stored, but Nearbytes cannot use this location.';
@@ -2067,7 +2067,7 @@
         : 'New hubs will not keep a full copy here by default.';
     }
     if (!source.enabled) {
-      return 'This location is chosen, but the location itself is turned off right now.';
+      return 'This location is chosen, but the location is disabled across Nearbytes right now. Turn it back on before this hub can keep a full copy here.';
     }
     if (!source.writable) {
       return 'This location is chosen, but Nearbytes cannot store the whole hub here until writing is allowed.';
@@ -2097,7 +2097,11 @@
       return 'Choose a folder to finish setting up this location.';
     }
     if (!source.enabled) {
-      return 'This location is turned off right now.';
+      return mode === 'store'
+        ? 'This hub is set to keep a full copy here, but the location is disabled across Nearbytes right now.'
+        : mode === 'publish'
+          ? 'This hub is set to publish updates here, but the location is disabled across Nearbytes right now.'
+          : 'This location is disabled across Nearbytes right now.';
     }
     if (status?.exists === false) {
       return 'This folder is not available right now.';
@@ -3933,14 +3937,27 @@
                       onchange={() => setHubLocationMode(volumeId, source.id, 'publish')}
                     />
                     <div>
-                      <span class="toggle-title">Publish this hub updates here</span>
-                      <span class="toggle-copy">Write new updates here without keeping the whole hub in this location.</span>
+                      <span class="toggle-title">Publish new hub updates here</span>
+                      <span class="toggle-copy">Write new updates here without keeping a full copy in this location.</span>
                     </div>
                   </label>
                 </div>
 
                 {#if note}
                   <p class="card-copy">{note}</p>
+                {/if}
+
+                {#if !source.enabled}
+                  <div class="button-row inline-dialog-actions">
+                    <button type="button" class="panel-btn subtle compact" onclick={() => updateSourceField(source.id, 'enabled', true)}>
+                      <span>Turn location back on</span>
+                    </button>
+                    {#if onOpenStorageSetup}
+                      <button type="button" class="panel-btn subtle compact" onclick={openStorageSetupFromHubDialog}>
+                        <span>Open storage setup</span>
+                      </button>
+                    {/if}
+                  </div>
                 {/if}
 
                 <div class="fact-row">
@@ -3980,8 +3997,8 @@
                       text=""
                       armed={true}
                       autoDisarmMs={3000}
-                      title="Remove"
-                      ariaLabel="Remove"
+                      title="Stop using this location for this hub"
+                      ariaLabel="Stop using this location for this hub"
                       onPress={() => setHubLocationMode(volumeId, source.id, 'off')}
                     />
                     <button

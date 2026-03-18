@@ -156,6 +156,12 @@ Interpretation:
 2. A durable destination MUST attempt best-effort backfill of referenced blocks already visible from other enabled sources.
 3. Non-durable destinations may evict older replicas if another durable destination still protects the volume.
 
+Provider-managed share clarification:
+
+1. A provider-managed share that may be used by new recipients in the future MUST be configured as a durable destination.
+2. Therefore, a provider-managed share used for onboarding or recipient sync MUST NOT rely on `copySourceBlocks=false`.
+3. Writing only new updates to a share is insufficient for late-joining recipients because historical referenced blocks would be missing.
+
 Clarification:
 
 1. A source that is also a destination is sufficient to durably host a volume only if that destination stores events and blocks for the volume.

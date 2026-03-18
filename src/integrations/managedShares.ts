@@ -14,7 +14,12 @@ import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '.
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
 import { getDefaultStorageDir, getDefaultStorageHomeDir, getProviderStorageFolderName, resolveStorageHomeDir } from '../storagePath.js';
-import { createDefaultTransportAdapters, createProviderCatalog, type TransportAdapter } from './adapters.js';
+import {
+  createDefaultTransportAdapters,
+  createProviderCatalog,
+  type ManagedShareMirrorEntry,
+  type TransportAdapter,
+} from './adapters.js';
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
 import { JsonFileSecretStore } from './secretStore.js';
 import { createIntegrationRuntime, type IntegrationRuntime, type IntegrationRuntimeOptions } from './runtime.js';
@@ -110,15 +115,16 @@ export class ManagedShareService {
     preferredProviders: string[];
   }> {
     const state = await this.loadState();
-    await this.ensureDefaultManagedShares(state);
-    this.scheduleManagedShareSyncs(state);
-    const setupStates = await this.getProviderSetupStates();
+    await this.ensureDefaultManagedShares(state, { createMissing: false });
     const refreshedState = await this.loadState();
-    const accounts = refreshedState.accounts.filter((account) => isProviderEnabled(account.provider));
+    this.scheduleManagedShareSyncs(refreshedState);
+    const setupStates = await this.getProviderSetupStates();
+    const settledState = await this.loadState();
+    const accounts = settledState.accounts.filter((account) => isProviderEnabled(account.provider));
     return {
       accounts,
-      providers: createProviderCatalog(Array.from(this.adapters.values()), refreshedState.accounts, setupStates),
-      preferredProviders: refreshedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+      providers: createProviderCatalog(Array.from(this.adapters.values()), settledState.accounts, setupStates),
+      preferredProviders: settledState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
     };
   }
 
@@ -215,7 +221,16 @@ export class ManagedShareService {
       preferredProviders,
     });
 
-    await this.ensureDefaultManagedShare(provider, merged.account);
+    const connectedState: IntegrationStateSnapshot = {
+      ...state,
+      accounts: merged.accounts,
+      preferredProviders,
+    };
+    const reconciled = await this.reconcileProviderManagedShares(provider, merged.account, connectedState);
+    await this.ensureDefaultManagedShare(provider, merged.account, {
+      stateSnapshot: reconciled.state,
+      createMissing: true,
+    });
     return {
       status: 'connected',
       account: merged.account,
@@ -229,30 +244,23 @@ export class ManagedShareService {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${accountId}`);
     }
 
-    const shareIds = new Set(state.managedShares.filter((share) => share.accountId === accountId).map((share) => share.id));
-    const ownedShares = state.managedShares.filter((share) => share.accountId === accountId);
-    let config = cloneConfig(this.options.storage.getRootsConfig());
-    for (const shareId of shareIds) {
-      config = removeManagedShareFromConfig(config, shareId);
-    }
-    await this.persistRootsConfig(config);
+    let workingState = state;
+    const ownedShares = workingState.managedShares.filter((share) => share.accountId === accountId);
     for (const share of ownedShares) {
-      const adapter = this.adapters.get(normalizeProvider(share.provider));
-      await adapter?.detachManagedShare?.(share, account).catch(() => {
-        // Ignore cleanup failures when removing account state.
-      });
+      const retired = await this.retireManagedShareEntry(share, workingState, account);
+      workingState = retired.state;
     }
     await this.adapters.get(normalizeProvider(account.provider))?.disconnect?.(account).catch(() => {
       // Ignore provider-specific disconnect failures after config cleanup.
     });
 
-    const remainingAccounts = state.accounts.filter((entry) => entry.id !== accountId);
-    const remainingShares = state.managedShares.filter((share) => share.accountId !== accountId);
-    const preferredProviders = state.preferredProviders.filter(
+    const remainingAccounts = workingState.accounts.filter((entry) => entry.id !== accountId);
+    const remainingShares = workingState.managedShares.filter((share) => share.accountId !== accountId);
+    const preferredProviders = workingState.preferredProviders.filter(
       (provider) => provider !== normalizeProvider(account.provider)
     );
     await this.saveState({
-      ...state,
+      ...workingState,
       accounts: remainingAccounts,
       managedShares: remainingShares,
       preferredProviders,
@@ -261,8 +269,10 @@ export class ManagedShareService {
 
   async listManagedShares(): Promise<{ shares: ManagedShareSummary[] }> {
     const state = await this.loadState();
-    await this.ensureDefaultManagedShares(state);
-    this.scheduleManagedShareSyncs(state);
+    const reconciledState = await this.reconcileConnectedManagedShareInventories(state);
+    await this.ensureDefaultManagedShares(reconciledState, { createMissing: false });
+    const syncState = await this.loadState();
+    this.scheduleManagedShareSyncs(syncState);
     const refreshedState = await this.loadState();
     const visibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     let summaries = await Promise.all(visibleShares.map((share) => this.buildManagedShareSummary(share)));
@@ -508,18 +518,7 @@ export class ManagedShareService {
     }
 
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
-    const config = removeManagedShareFromConfig(cloneConfig(this.options.storage.getRootsConfig()), shareId);
-    await this.persistRootsConfig(config);
-
-    const adapter = this.adapters.get(normalizeProvider(share.provider));
-    await adapter?.detachManagedShare?.(share, account).catch(() => {
-      // Ignore cleanup failures when removing local managed-share state.
-    });
-
-    await this.saveState({
-      ...state,
-      managedShares: state.managedShares.filter((entry) => entry.id !== shareId),
-    });
+    await this.retireManagedShareEntry(share, state, account);
   }
 
   async acceptManagedShare(input: AcceptManagedShareInput): Promise<ManagedShareSummary> {
@@ -562,12 +561,369 @@ export class ManagedShareService {
     return this.buildManagedShareSummary(share);
   }
 
+  async reconcileProviderManagedShareInventory(providerInput: string): Promise<{
+    provider: string;
+    adoptedShares: number;
+    retiredShares: number;
+    migratedShares: number;
+  }> {
+    const provider = normalizeProvider(providerInput);
+    const state = await this.loadState();
+    const connectedAccounts = state.accounts.filter(
+      (account) => normalizeProvider(account.provider) === provider && account.state === 'connected'
+    );
+
+    let workingState = state;
+    let adoptedShares = 0;
+    let retiredShares = 0;
+    let migratedShares = 0;
+
+    if (connectedAccounts.length === 0) {
+      const retired = await this.retireProviderManagedShares(provider, workingState);
+      workingState = retired.state;
+      retiredShares += retired.retiredShares;
+      migratedShares += retired.migratedShares;
+    } else {
+      for (const account of connectedAccounts) {
+        const reconciled = await this.reconcileProviderManagedShares(provider, account, workingState);
+        workingState = reconciled.state;
+        adoptedShares += reconciled.adoptedShares;
+        retiredShares += reconciled.retiredShares;
+        migratedShares += reconciled.migratedShares;
+      }
+    }
+
+    return {
+      provider,
+      adoptedShares,
+      retiredShares,
+      migratedShares,
+    };
+  }
+
   async handleProviderCallback(provider: string, query: URLSearchParams): Promise<string> {
     const adapter = this.adapters.get(normalizeProvider(provider));
     if (!adapter?.handleOAuthCallback) {
       throw new ManagedShareServiceError(404, 'UNKNOWN_PROVIDER', `No external callback is registered for ${provider}`);
     }
     return adapter.handleOAuthCallback(query);
+  }
+
+  private async reconcileConnectedManagedShareInventories(
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    let state = stateSnapshot;
+    for (const account of state.accounts.filter((entry) => entry.state === 'connected')) {
+      const provider = normalizeProvider(account.provider);
+      const adapter = this.adapters.get(provider);
+      if (!adapter?.listManagedShareMirrors) {
+        continue;
+      }
+      const reconciled = await this.reconcileProviderManagedShares(provider, account, state);
+      state = reconciled.state;
+    }
+    return state;
+  }
+
+  private async reconcileProviderManagedShares(
+    provider: string,
+    account: ProviderAccount,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    adoptedShares: number;
+    retiredShares: number;
+    migratedShares: number;
+  }> {
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.listManagedShareMirrors) {
+      return {
+        state: stateSnapshot,
+        adoptedShares: 0,
+        retiredShares: 0,
+        migratedShares: 0,
+      };
+    }
+
+    let state = stateSnapshot;
+    let adoptedShares = 0;
+    let retiredShares = 0;
+    let migratedShares = 0;
+    let mirrors: ManagedShareMirrorEntry[] = [];
+    try {
+      mirrors = dedupeManagedShareMirrors(await adapter.listManagedShareMirrors(account), provider);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share inventory discovery failed for ${provider}:${account.id}: ${message}`);
+      return {
+        state,
+        adoptedShares,
+        retiredShares,
+        migratedShares,
+      };
+    }
+    const retainedShareIds = new Set<string>();
+
+    for (const mirror of mirrors) {
+      const adopted = await this.adoptManagedShareMirror(provider, account, mirror, state);
+      state = adopted.state;
+      retainedShareIds.add(adopted.shareId);
+      if (adopted.adopted) {
+        adoptedShares += 1;
+      }
+      if (adopted.migrated) {
+        migratedShares += 1;
+      }
+    }
+
+    const trackedShares = state.managedShares.filter((share) =>
+      normalizeProvider(share.provider) === provider &&
+      share.accountId === account.id &&
+      this.shouldManageShareThroughMirrorInventory(provider, share) &&
+      !retainedShareIds.has(share.id)
+    );
+    for (const share of trackedShares) {
+      const retired = await this.retireManagedShareEntry(share, state, account);
+      state = retired.state;
+      retiredShares += 1;
+      if (retired.migrated) {
+        migratedShares += 1;
+      }
+    }
+
+    return {
+      state,
+      adoptedShares,
+      retiredShares,
+      migratedShares,
+    };
+  }
+
+  private async retireProviderManagedShares(
+    provider: string,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    retiredShares: number;
+    migratedShares: number;
+  }> {
+    let state = stateSnapshot;
+    let retiredShares = 0;
+    let migratedShares = 0;
+    const shares = state.managedShares.filter((share) => normalizeProvider(share.provider) === provider);
+    for (const share of shares) {
+      const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+      const retired = await this.retireManagedShareEntry(share, state, account);
+      state = retired.state;
+      retiredShares += 1;
+      if (retired.migrated) {
+        migratedShares += 1;
+      }
+    }
+    return {
+      state,
+      retiredShares,
+      migratedShares,
+    };
+  }
+
+  private async adoptManagedShareMirror(
+    provider: string,
+    account: ProviderAccount,
+    mirror: ManagedShareMirrorEntry,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    shareId: string;
+    adopted: boolean;
+    migrated: boolean;
+  }> {
+    let state = stateSnapshot;
+    let migrated = false;
+    const existing = this.findMatchingManagedShareMirror(provider, account.id, mirror, state.managedShares);
+    if (existing && normalizeComparablePath(existing.localPath) !== normalizeComparablePath(mirror.localPath)) {
+      const moved = await this.moveManagedShareSourceIntoPrimaryLocalRoot(existing);
+      state = moved.state;
+      migrated = moved.migrated;
+    }
+
+    const shareId = existing?.id ?? createId('share', provider, state.managedShares.length + 1);
+    const nextShare: ManagedShare = {
+      id: shareId,
+      provider,
+      accountId: account.id,
+      label: existing?.label?.trim() || mirror.label.trim() || defaultProviderMirrorLabel(provider, mirror.remotePath),
+      role: existing?.role ?? 'owner',
+      localPath: path.resolve(mirror.localPath),
+      sourceId: existing?.sourceId,
+      syncMode: 'mirror',
+      remoteDescriptor: mergeManagedShareMirrorDescriptor(provider, existing?.remoteDescriptor, mirror, shareId),
+      capabilities: existing?.capabilities ?? ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: existing?.invitationEmails ?? [],
+      createdAt: existing?.createdAt ?? this.runtime.now(),
+      updatedAt: this.runtime.now(),
+    };
+
+    const config = cloneConfig(this.options.storage.getRootsConfig());
+    const { config: nextConfig, sourceId } = ensureManagedShareSource(config, nextShare, nextShare.localPath);
+    const adoptedShare = {
+      ...nextShare,
+      sourceId,
+    };
+    await this.persistRootsConfig(nextConfig);
+
+    const nextState: IntegrationStateSnapshot = {
+      ...state,
+      managedShares: existing
+        ? state.managedShares.map((entry) => (entry.id === existing.id ? adoptedShare : entry))
+        : [...state.managedShares, adoptedShare],
+    };
+    await this.saveState(nextState);
+
+    return {
+      state: nextState,
+      shareId: adoptedShare.id,
+      adopted: !existing,
+      migrated,
+    };
+  }
+
+  private async retireManagedShareEntry(
+    share: ManagedShare,
+    stateSnapshot: IntegrationStateSnapshot,
+    account: ProviderAccount | null
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    migrated: boolean;
+  }> {
+    const moved = await this.moveManagedShareSourceIntoPrimaryLocalRoot(share);
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    await adapter?.detachManagedShare?.(share, account).catch(() => {
+      // Ignore cleanup failures when removing local managed-share state.
+    });
+
+    const nextConfig = removeManagedShareFromConfig(cloneConfig(this.options.storage.getRootsConfig()), share.id);
+    await this.persistRootsConfig(nextConfig);
+
+    const nextState: IntegrationStateSnapshot = {
+      ...stateSnapshot,
+      managedShares: stateSnapshot.managedShares.filter((entry) => entry.id !== share.id),
+    };
+    await this.saveState(nextState);
+    return {
+      state: nextState,
+      migrated: moved.migrated,
+    };
+  }
+
+  private async moveManagedShareSourceIntoPrimaryLocalRoot(share: ManagedShare): Promise<{
+    state: IntegrationStateSnapshot;
+    migrated: boolean;
+  }> {
+    const config = cloneConfig(this.options.storage.getRootsConfig());
+    const source =
+      (share.sourceId ? config.sources.find((entry) => entry.id === share.sourceId) : null) ??
+      config.sources.find((entry) => entry.integration?.managedShareId === share.id) ??
+      null;
+    if (!source) {
+      return {
+        state: await this.loadState(),
+        migrated: false,
+      };
+    }
+
+    const target = await this.ensurePrimaryLocalMigrationSource(source.id);
+    if (
+      !target ||
+      target.id === source.id ||
+      normalizeComparablePath(target.path) === normalizeComparablePath(source.path)
+    ) {
+      return {
+        state: await this.loadState(),
+        migrated: false,
+      };
+    }
+
+    const consolidated = await this.options.storage.consolidateRoot(source.id, target.id);
+    await this.persistRootsConfig(consolidated.config);
+    return {
+      state: await this.loadState(),
+      migrated:
+        consolidated.result.movedFiles > 0 ||
+        consolidated.result.removedSourceFiles > 0 ||
+        consolidated.result.skippedExisting > 0,
+    };
+  }
+
+  private async ensurePrimaryLocalMigrationSource(excludingSourceId?: string): Promise<SourceConfigEntry | null> {
+    const config = cloneConfig(this.options.storage.getRootsConfig());
+    const existing = findPrimaryLocalSource(config, excludingSourceId);
+    if (existing) {
+      return existing;
+    }
+
+    const fallbackPath = path.resolve(getDefaultStorageDir());
+    const candidate =
+      config.sources.find((source) => normalizeComparablePath(source.path) === normalizeComparablePath(fallbackPath)) ??
+      null;
+    const nextSource: SourceConfigEntry = candidate
+      ? {
+          ...candidate,
+          provider: 'local',
+          path: fallbackPath,
+          enabled: true,
+          writable: true,
+        }
+      : {
+          id: nextLocalSourceId(config),
+          provider: 'local',
+          path: fallbackPath,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        };
+    const nextConfig: RootsConfig = candidate
+      ? {
+          ...config,
+          sources: config.sources.map((source) => (source.id === candidate.id ? nextSource : source)),
+        }
+      : {
+          ...config,
+          sources: [...config.sources, nextSource],
+        };
+    await this.persistRootsConfig(nextConfig);
+    return nextSource;
+  }
+
+  private findMatchingManagedShareMirror(
+    provider: string,
+    accountId: string,
+    mirror: ManagedShareMirrorEntry,
+    shares: readonly ManagedShare[]
+  ): ManagedShare | undefined {
+    const remotePath = normalizeManagedShareRemotePath(provider, mirror.remotePath);
+    return shares.find((share) =>
+      normalizeProvider(share.provider) === provider &&
+      share.accountId === accountId &&
+      getManagedShareRemotePath(provider, share.remoteDescriptor) === remotePath
+    ) ?? shares.find((share) =>
+      normalizeProvider(share.provider) === provider &&
+      share.accountId === accountId &&
+      normalizeComparablePath(share.localPath) === normalizeComparablePath(mirror.localPath) &&
+      this.shouldManageShareThroughMirrorInventory(provider, share)
+    );
+  }
+
+  private shouldManageShareThroughMirrorInventory(provider: string, share: ManagedShare): boolean {
+    const remotePath = getManagedShareRemotePath(provider, share.remoteDescriptor);
+    if (!remotePath) {
+      return false;
+    }
+    if (provider === 'mega') {
+      return isManagedMirrorRemotePath(remotePath, this.runtime.mega.remoteBasePath);
+    }
+    return false;
   }
 
   private async ensureManagedShareSyncs(state: IntegrationStateSnapshot): Promise<void> {
@@ -745,12 +1101,20 @@ export class ManagedShareService {
     }
   }
 
-  private async ensureDefaultManagedShares(state: IntegrationStateSnapshot): Promise<void> {
+  private async ensureDefaultManagedShares(
+    state: IntegrationStateSnapshot,
+    options: {
+      readonly createMissing?: boolean;
+    } = {}
+  ): Promise<void> {
     for (const account of state.accounts) {
       if (account.state !== 'connected') {
         continue;
       }
-      await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account);
+      await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account, {
+        stateSnapshot: state,
+        createMissing: options.createMissing,
+      });
     }
   }
 
@@ -1201,17 +1565,30 @@ export class ManagedShareService {
     await ensureNearbytesMarkers(config.sources);
   }
 
-  private async ensureDefaultManagedShare(provider: string, account: ProviderAccount): Promise<void> {
+  private async ensureDefaultManagedShare(
+    provider: string,
+    account: ProviderAccount,
+    options: {
+      readonly stateSnapshot?: IntegrationStateSnapshot;
+      readonly createMissing?: boolean;
+    } = {}
+  ): Promise<void> {
     if (provider !== 'mega') {
       return;
     }
 
-    const state = await this.loadState();
+    const state = options.stateSnapshot ?? (await this.loadState());
     const existingManagedShare = state.managedShares.find(
-      (share) => normalizeProvider(share.provider) === provider && share.accountId === account.id
+      (share) =>
+        normalizeProvider(share.provider) === provider &&
+        share.accountId === account.id &&
+        isProviderBaseShare(share.label, share.remoteDescriptor)
     );
     if (existingManagedShare) {
       await this.relocateDefaultManagedShareIfNeeded(existingManagedShare, account, state);
+      return;
+    }
+    if (options.createMissing === false) {
       return;
     }
 
@@ -1378,6 +1755,64 @@ function normalizeProvider(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function dedupeManagedShareMirrors(
+  mirrors: readonly ManagedShareMirrorEntry[],
+  provider: string
+): ManagedShareMirrorEntry[] {
+  const unique = new Map<string, ManagedShareMirrorEntry>();
+  for (const mirror of mirrors) {
+    const remotePath = normalizeManagedShareRemotePath(provider, mirror.remotePath);
+    if (!remotePath || unique.has(remotePath)) {
+      continue;
+    }
+    unique.set(remotePath, {
+      label: mirror.label.trim(),
+      localPath: path.resolve(mirror.localPath),
+      remotePath,
+    });
+  }
+  return Array.from(unique.values());
+}
+
+function getManagedShareRemotePath(provider: string, descriptor: Record<string, unknown>): string | null {
+  const remotePath = typeof descriptor.remotePath === 'string' ? descriptor.remotePath.trim() : '';
+  if (!remotePath) {
+    return null;
+  }
+  return normalizeManagedShareRemotePath(provider, remotePath);
+}
+
+function normalizeManagedShareRemotePath(provider: string, remotePath: string): string {
+  if (normalizeProvider(provider) === 'mega') {
+    const normalized = path.posix.normalize(remotePath.trim().replace(/\\/g, '/')).replace(/\/+$/u, '');
+    return (normalized || '/').toLowerCase();
+  }
+  return remotePath.trim().toLowerCase();
+}
+
+function isManagedMirrorRemotePath(remotePath: string, remoteBasePath: string): boolean {
+  const normalizedRemote = normalizeManagedShareRemotePath('mega', remotePath);
+  const normalizedBase = normalizeManagedShareRemotePath('mega', remoteBasePath);
+  return normalizedRemote === normalizedBase || normalizedRemote.startsWith(`${normalizedBase}/`);
+}
+
+function mergeManagedShareMirrorDescriptor(
+  provider: string,
+  current: Record<string, unknown> | undefined,
+  mirror: ManagedShareMirrorEntry,
+  shareId: string
+): Record<string, unknown> {
+  const descriptor: Record<string, unknown> = {
+    ...(current ?? {}),
+    remotePath: normalizeManagedShareRemotePath(provider, mirror.remotePath),
+    managedShareId: shareId,
+  };
+  if (provider === 'mega') {
+    descriptor.shareName = mirror.label.trim() || defaultProviderMirrorLabel(provider, mirror.remotePath);
+  }
+  return descriptor;
+}
+
 function defaultProviderLabel(provider: string): string {
   if (provider === 'gdrive') return 'Google Drive';
   if (provider === 'mega') return 'MEGA';
@@ -1385,8 +1820,27 @@ function defaultProviderLabel(provider: string): string {
   return provider;
 }
 
+function defaultProviderMirrorLabel(provider: string, remotePath: string): string {
+  if (provider === 'mega') {
+    const normalized = normalizeManagedShareRemotePath(provider, remotePath);
+    const base = normalized === '/' ? '' : path.posix.basename(normalized);
+    return base || 'nearbytes';
+  }
+  return defaultProviderLabel(provider);
+}
+
 function createId(prefix: string, provider: string, serial: number): string {
   return `${prefix}-${provider}-${serial}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function nextLocalSourceId(config: RootsConfig): string {
+  const existing = new Set(config.sources.map((source) => source.id));
+  const prefix = 'src-local';
+  let counter = config.sources.length + 1;
+  while (existing.has(`${prefix}-${counter}`)) {
+    counter += 1;
+  }
+  return `${prefix}-${counter}`;
 }
 
 function createMirrorFolderName(provider: string, label: string, shareId: string): string {

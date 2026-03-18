@@ -296,6 +296,10 @@ Request:
 
 Downloads and prepares provider-specific local helpers when a provider needs them. Nearbytes uses this for automatic MEGAcmd setup.
 
+### POST /integrations/providers/:provider/reconcile (local-only)
+
+Reconciles the provider's managed-share inventory against local Nearbytes state. This adopts live provider mirrors, retires stale local entries, and migrates stale managed-share data back into the primary local root instead of deleting it.
+
 ### GET /integrations/shares (local-only)
 
 Returns Nearbytes-managed provider shares, their attached spaces, and current local mirror state.

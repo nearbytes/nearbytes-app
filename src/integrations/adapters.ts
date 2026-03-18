@@ -27,6 +27,12 @@ export interface MirrorRemoteEntry {
   readonly size: number;
 }
 
+export interface ManagedShareMirrorEntry {
+  readonly label: string;
+  readonly localPath: string;
+  readonly remotePath: string;
+}
+
 export interface MirrorRemoteAdapter {
   list(): Promise<readonly MirrorRemoteEntry[]>;
   download(path: string): Promise<Uint8Array>;
@@ -52,6 +58,7 @@ export interface TransportAdapter {
   invite?(share: ManagedShare, input: InviteManagedShareInput, account: ProviderAccount): Promise<void>;
   acceptInvite?(input: AcceptManagedShareInput, account: ProviderAccount): Promise<Partial<ManagedShare>>;
   listIncomingShares?(account: ProviderAccount): Promise<IncomingManagedShareOffer[]>;
+  listManagedShareMirrors?(account: ProviderAccount): Promise<ManagedShareMirrorEntry[]>;
   listIncomingContactInvites?(account: ProviderAccount): Promise<IncomingProviderContactInvite[]>;
   acceptIncomingContactInvite?(account: ProviderAccount, inviteId: string): Promise<void>;
   getState?(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState>;

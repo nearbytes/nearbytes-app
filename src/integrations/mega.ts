@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { MegaHelperInstaller } from './megaInstaller.js';
+import type { ManagedShareMirrorEntry } from './adapters.js';
 import type {
   AcceptManagedShareInput,
   ConnectProviderAccountInput,
@@ -256,6 +257,30 @@ export class MegaTransportAdapter {
     }));
   }
 
+  async listManagedShareMirrors(account: ProviderAccount): Promise<ManagedShareMirrorEntry[]> {
+    const records = await this.listSyncRecords(account.id);
+    const mirrors = new Map<string, MegaSyncRecord>();
+    for (const record of records) {
+      const remotePath = normalizeComparableRemotePath(record.remotePath ?? '');
+      const localPath = record.localPath?.trim() ?? '';
+      if (!remotePath || !localPath || !isManagedMirrorRemotePath(remotePath, this.runtime.mega.remoteBasePath)) {
+        continue;
+      }
+      const existing = mirrors.get(remotePath);
+      if (!existing || scoreMegaSyncRecord(record) > scoreMegaSyncRecord(existing)) {
+        mirrors.set(remotePath, record);
+      }
+    }
+
+    return Array.from(mirrors.values())
+      .map((record) => ({
+        label: labelForManagedShareRemotePath(record.remotePath ?? '', this.runtime.mega.remoteBasePath),
+        localPath: path.resolve(record.localPath!.trim()),
+        remotePath: normalizeComparableRemotePath(record.remotePath ?? ''),
+      }))
+      .sort((left, right) => left.remotePath.localeCompare(right.remotePath));
+  }
+
   async listIncomingContactInvites(account: ProviderAccount): Promise<IncomingProviderContactInvite[]> {
     await this.ensureLoggedIn(account.id);
     const result = await this.runMega('showpcr', ['--in'], {
@@ -357,17 +382,42 @@ export class MegaTransportAdapter {
     if (!remotePath) {
       throw new Error('MEGA share is missing remotePath.');
     }
-    const syncRecord = await this.findSyncByLocalPath(share.localPath, account.id);
-    if (!syncRecord) {
-      const remoteSync = await this.findSyncByRemotePath(remotePath, account.id);
-      if (
-        remoteSync?.id &&
-        normalizeComparablePath(remoteSync.localPath ?? '') !== normalizeComparablePath(share.localPath)
-      ) {
-        await this.runMega('sync', ['-d', remoteSync.id], {
-          timeoutMs: 60_000,
-        });
-      }
+    const matches = await this.findSyncMatches(share.localPath, remotePath, account.id);
+    const localTarget = normalizeComparablePath(share.localPath);
+    const remoteTarget = normalizeComparableRemotePath(remotePath);
+    const exactSamePathError = Boolean(matches.exact?.error && /same path/i.test(matches.exact.error));
+
+    if (exactSamePathError && matches.exact?.id) {
+      await this.runMega('sync', ['-d', matches.exact.id], {
+        timeoutMs: 60_000,
+      });
+      matches.exact = null;
+    }
+
+    if (
+      matches.local?.id &&
+      matches.local.id !== matches.exact?.id &&
+      normalizeComparableRemotePath(matches.local.remotePath ?? '') !== remoteTarget
+    ) {
+      await this.runMega('sync', ['-d', matches.local.id], {
+        timeoutMs: 60_000,
+      });
+      matches.local = null;
+    }
+
+    if (
+      matches.remote?.id &&
+      matches.remote.id !== matches.exact?.id &&
+      matches.remote.id !== matches.local?.id &&
+      normalizeComparablePath(matches.remote.localPath ?? '') !== localTarget
+    ) {
+      await this.runMega('sync', ['-d', matches.remote.id], {
+        timeoutMs: 60_000,
+      });
+      matches.remote = null;
+    }
+
+    if (!matches.exact) {
       await this.ensureSyncTarget(share.localPath, remotePath);
     }
     await this.refreshSyncState(share, account.id);
@@ -564,7 +614,15 @@ export class MegaTransportAdapter {
 
   private async readSyncState(share: ManagedShare, accountId: string): Promise<TransportState> {
     await this.ensureLoggedIn(accountId);
-    const syncRecord = await this.findSyncByLocalPath(share.localPath, accountId);
+    const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath');
+    const syncMatches = remotePath
+      ? await this.findSyncMatches(share.localPath, remotePath, accountId)
+      : {
+          exact: null,
+          local: await this.findSyncByLocalPath(share.localPath, accountId),
+          remote: null,
+        };
+    const syncRecord = syncMatches.exact ?? syncMatches.local ?? syncMatches.remote;
     if (!syncRecord) {
       return {
         status: 'attention',
@@ -698,10 +756,8 @@ export class MegaTransportAdapter {
     if (!target) {
       return null;
     }
-    return this.findSyncRecord(
-      (record) => normalizeComparablePath(record.localPath ?? '') === target,
-      accountId
-    );
+    return (await this.listSyncRecords(accountId))
+      .find((record) => normalizeComparablePath(record.localPath ?? '') === target) ?? null;
   }
 
   private async findSyncByRemotePath(remotePath: string, accountId: string): Promise<MegaSyncRecord | null> {
@@ -709,24 +765,51 @@ export class MegaTransportAdapter {
     if (!target) {
       return null;
     }
-    return this.findSyncRecord(
-      (record) => normalizeComparableRemotePath(record.remotePath ?? '') === target,
-      accountId
-    );
+    return (await this.listSyncRecords(accountId))
+      .find((record) => normalizeComparableRemotePath(record.remotePath ?? '') === target) ?? null;
   }
 
   private async findSyncRecord(
     predicate: (record: MegaSyncRecord) => boolean,
     accountId: string
   ): Promise<MegaSyncRecord | null> {
+    const records = await this.listSyncRecords(accountId);
+    return records.find((record) => predicate(record)) ?? null;
+  }
+
+  private async listSyncRecords(accountId: string): Promise<MegaSyncRecord[]> {
     await this.ensureLoggedIn(accountId);
     const result = await this.runMega('sync', [
       '--path-display-size=0',
       '--col-separator=\t',
       '--output-cols=ID,LOCALPATH,REMOTEPATH,RUN_STATE,STATUS,ERROR',
     ]);
-    const records = parseMegaSyncTable(result.stdout);
-    return records.find((record) => predicate(record)) ?? null;
+    return parseMegaSyncTable(result.stdout);
+  }
+
+  private async findSyncMatches(
+    localPath: string,
+    remotePath: string,
+    accountId: string
+  ): Promise<{
+    exact: MegaSyncRecord | null;
+    local: MegaSyncRecord | null;
+    remote: MegaSyncRecord | null;
+  }> {
+    const localTarget = normalizeComparablePath(localPath);
+    const remoteTarget = normalizeComparableRemotePath(remotePath);
+    const records = await this.listSyncRecords(accountId);
+    const exact = records.find((record) =>
+      normalizeComparablePath(record.localPath ?? '') === localTarget &&
+      normalizeComparableRemotePath(record.remotePath ?? '') === remoteTarget
+    ) ?? null;
+    const local = records.find((record) => normalizeComparablePath(record.localPath ?? '') === localTarget) ?? null;
+    const remote = records.find((record) => normalizeComparableRemotePath(record.remotePath ?? '') === remoteTarget) ?? null;
+    return {
+      exact,
+      local,
+      remote,
+    };
   }
   private async findRemoteSharePath(shareName: string): Promise<string> {
     const result = await this.runMega('find', ['/', shareName, '-t', 'd'], {
@@ -910,6 +993,44 @@ function normalizeComparableRemotePath(value: string): string {
   }
   const collapsed = path.posix.normalize(normalized).replace(/\/+$/u, '');
   return collapsed || '/';
+}
+
+function isManagedMirrorRemotePath(remotePath: string, remoteBasePath: string): boolean {
+  const normalizedRemote = normalizeComparableRemotePath(remotePath);
+  const normalizedBase = normalizeComparableRemotePath(remoteBasePath);
+  return normalizedRemote === normalizedBase || normalizedRemote.startsWith(`${normalizedBase}/`);
+}
+
+function labelForManagedShareRemotePath(remotePath: string, remoteBasePath: string): string {
+  const normalizedRemote = normalizeComparableRemotePath(remotePath);
+  const normalizedBase = normalizeComparableRemotePath(remoteBasePath);
+  if (normalizedRemote === normalizedBase) {
+    return path.posix.basename(normalizedBase) || 'nearbytes';
+  }
+  return path.posix.basename(normalizedRemote) || 'nearbytes';
+}
+
+function scoreMegaSyncRecord(record: MegaSyncRecord): number {
+  let score = 0;
+  const runState = (record.runState ?? '').trim().toLowerCase();
+  const status = (record.status ?? '').trim().toLowerCase();
+  const error = (record.error ?? '').trim();
+  if (runState.includes('run')) {
+    score += 4;
+  }
+  if (status.includes('synced') || status.includes('up to date')) {
+    score += 3;
+  } else if (status.includes('pending') || status.includes('process')) {
+    score += 1;
+  }
+  if (!error) {
+    score += 2;
+  } else if (/same path/i.test(error)) {
+    score -= 2;
+  } else {
+    score -= 1;
+  }
+  return score;
 }
 
 function isMegaMountTemporarilyUnavailableError(message: string): boolean {
@@ -1116,6 +1237,9 @@ function summarizeMegaDiagnostic(detail: string, needsAuth: boolean): string {
   }
   if (/permission|access denied|cannot write|read-only/i.test(normalized)) {
     return 'Nearbytes cannot write to the local MEGA mirror path.';
+  }
+  if (/same path/i.test(normalized)) {
+    return 'MEGA thinks another sync already uses this local path.';
   }
   return normalized;
 }

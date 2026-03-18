@@ -120,6 +120,13 @@ interface ManagedShareMutationResponseBody {
   summary: ManagedShareSummaryBody;
 }
 
+interface ReconcileProviderManagedSharesResponseBody {
+  provider: string;
+  adoptedShares: number;
+  retiredShares: number;
+  migratedShares: number;
+}
+
 interface UiDebugCapabilitiesBody {
   available: boolean;
   screenshot: boolean;
@@ -640,6 +647,17 @@ describe('Nearbytes API (multi-root)', () => {
       })
       .expect(200);
     const accountId = typedBody<{ account?: { id: string } }>(connectRes).account?.id as string;
+
+    const reconcileRes = await request(app)
+      .post('/integrations/providers/gdrive/reconcile')
+      .send({})
+      .expect(200);
+    expect(typedBody<ReconcileProviderManagedSharesResponseBody>(reconcileRes)).toEqual({
+      provider: 'gdrive',
+      adoptedShares: 0,
+      retiredShares: 0,
+      migratedShares: 0,
+    });
 
     const openRes = await request(app).post('/open').send({ secret: SECRET }).expect(200);
     const openBody = typedBody<OpenResponseBody>(openRes);

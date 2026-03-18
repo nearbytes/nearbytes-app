@@ -548,6 +548,13 @@ export interface ConfigureProviderResponse {
   setup: ProviderSetupState;
 }
 
+export interface ReconcileProviderManagedSharesResponse {
+  provider: string;
+  adoptedShares: number;
+  retiredShares: number;
+  migratedShares: number;
+}
+
 export interface ManagedShareMutationResponse {
   summary: ManagedShareSummary;
 }
@@ -1366,6 +1373,17 @@ export async function installProviderHelper(
 ): Promise<ConfigureProviderResponse> {
   const encoded = encodeURIComponent(provider);
   return apiRequest<ConfigureProviderResponse>(`/integrations/providers/${encoded}/install`, {
+    method: 'POST',
+    signal: options.signal,
+  });
+}
+
+export async function reconcileProviderManagedShares(
+  provider: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<ReconcileProviderManagedSharesResponse> {
+  const encoded = encodeURIComponent(provider);
+  return apiRequest<ReconcileProviderManagedSharesResponse>(`/integrations/providers/${encoded}/reconcile`, {
     method: 'POST',
     signal: options.signal,
   });

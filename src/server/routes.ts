@@ -290,6 +290,13 @@ export function createRoutes(deps: RouteDependencies): Router {
     });
   }));
 
+  router.post('/integrations/providers/:provider/reconcile', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { provider } = parseWithSchema(providerIdParamSchema, req.params);
+    res.json(await service.reconcileProviderManagedShareInventory(provider));
+  }));
+
   router.delete('/integrations/accounts/:id', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);

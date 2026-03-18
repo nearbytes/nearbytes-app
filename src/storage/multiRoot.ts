@@ -484,7 +484,11 @@ export class MultiRootStorageBackend implements StorageBackend {
             ? { ...entry, moveFromSourceId: undefined }
             : entry
         ),
-      defaultVolume: this.config.defaultVolume,
+      defaultVolume: {
+        destinations: this.config.defaultVolume.destinations.filter(
+          (destination) => destination.sourceId !== source.config.id
+        ),
+      },
       volumes: this.config.volumes.map((volume) => ({
         volumeId: volume.volumeId,
         destinations: volume.destinations.filter((destination) => destination.sourceId !== source.config.id),
@@ -709,6 +713,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     const isBlockWrite = BLOCK_PATH_REGEX.test(normalizeRelativePath(relativePath));
     const targets = this.getWritableVolumeDestinationTargets(channelKeyHex, {
       requireBlocks: isBlockWrite,
+      allowPublishedBlocks: isBlockWrite,
     });
     if (targets.length === 0) {
       throw new StorageError(
@@ -839,7 +844,7 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   private getVolumeDestinationTargets(
     channelKeyHex: string,
-    options: { requireBlocks: boolean }
+    options: { requireBlocks: boolean; allowPublishedBlocks?: boolean }
   ): VolumeDestinationTarget[] {
     const destinations = resolveVolumeDestinations(this.config, channelKeyHex);
     const targets: VolumeDestinationTarget[] = [];
@@ -854,7 +859,10 @@ export class MultiRootStorageBackend implements StorageBackend {
       if (!destination.storeEvents) {
         continue;
       }
-      if (options.requireBlocks && (!destination.storeBlocks || !destination.copySourceBlocks)) {
+      if (options.requireBlocks && !destination.storeBlocks) {
+        continue;
+      }
+      if (options.requireBlocks && !options.allowPublishedBlocks && !destination.copySourceBlocks) {
         continue;
       }
       targets.push({ state, policy: destination });
@@ -864,7 +872,7 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   private getWritableVolumeDestinationTargets(
     channelKeyHex: string,
-    options: { requireBlocks: boolean }
+    options: { requireBlocks: boolean; allowPublishedBlocks?: boolean }
   ): VolumeDestinationTarget[] {
     return this.getVolumeDestinationTargets(channelKeyHex, options);
   }
@@ -969,7 +977,10 @@ export class MultiRootStorageBackend implements StorageBackend {
       return;
     }
 
-    const blockTargets = this.getWritableVolumeDestinationTargets(volumeId, { requireBlocks: true });
+    const blockTargets = this.getWritableVolumeDestinationTargets(volumeId, {
+      requireBlocks: true,
+      allowPublishedBlocks: false,
+    });
     for (const target of blockTargets) {
       for (const hash of referencedHashes) {
         const relativePath = `blocks/${hash}.bin`;

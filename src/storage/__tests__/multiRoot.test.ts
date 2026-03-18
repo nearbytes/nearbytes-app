@@ -311,6 +311,125 @@ describe('MultiRootStorageBackend', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it('pushes new block writes to publish-only destinations without backfilling them as full copies', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    const publishRoot = join(dir, 'publish');
+    await mkdir(mainRoot, { recursive: true });
+    await mkdir(publishRoot, { recursive: true });
+
+    const keyHex = 'a'.repeat(130);
+    const blockHash = '1'.repeat(64);
+    const config = createConfig({
+      mainPath: mainRoot,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: mainRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-publish',
+          provider: 'mega',
+          path: publishRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      volumes: [
+        {
+          volumeId: keyHex,
+          destinations: [
+            {
+              sourceId: 'src-publish',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: false,
+              reservePercent: 10,
+              fullPolicy: 'drop-older-blocks',
+            },
+          ],
+        },
+      ],
+    });
+
+    const storage = new MultiRootStorageBackend(config);
+    await storage.writeFileForChannel(`blocks/${blockHash}.bin`, bytes('block-data'), keyHex);
+    await storage.writeFileForChannel(`channels/${keyHex}/event.bin`, bytes('event-data'), keyHex);
+
+    expect(await readFile(join(mainRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('block-data');
+    expect(await readFile(join(publishRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('block-data');
+    expect(await readFile(join(publishRoot, 'channels', keyHex, 'event.bin'), 'utf8')).toBe('event-data');
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reads a missing block from any enabled source when the prioritized destination does not have it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    const publishRoot = join(dir, 'publish');
+    await mkdir(join(mainRoot, 'blocks'), { recursive: true });
+    await mkdir(publishRoot, { recursive: true });
+
+    const keyHex = 'b'.repeat(130);
+    const blockHash = '2'.repeat(64);
+    const config = createConfig({
+      mainPath: mainRoot,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: mainRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-publish',
+          provider: 'mega',
+          path: publishRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      volumes: [
+        {
+          volumeId: keyHex,
+          destinations: [
+            {
+              sourceId: 'src-publish',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: false,
+              reservePercent: 10,
+              fullPolicy: 'drop-older-blocks',
+            },
+          ],
+        },
+      ],
+    });
+
+    await writeFile(join(mainRoot, 'blocks', `${blockHash}.bin`), 'fallback-data', 'utf8');
+
+    const storage = new MultiRootStorageBackend(config);
+    const bytesValue = await storage.readFileForChannel(`blocks/${blockHash}.bin`, keyHex);
+
+    expect(new TextDecoder().decode(bytesValue)).toBe('fallback-data');
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it('requires at least one writable destination for the volume', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
     const mainRoot = join(dir, 'main');

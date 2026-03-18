@@ -9,6 +9,8 @@ Two MEGA modes are now available:
 - Legacy folder mode: Nearbytes writes directly into a local MEGA-synced folder controlled by `NEARBYTES_STORAGE_DIR`.
 - Managed provider mode: the desktop app can control MEGAcmd directly for provider-managed shares. Set `NEARBYTES_MEGACMD_DIR` if the MEGAcmd binaries are not already on `PATH`.
 
+For the managed provider flow, the Nearbytes-owned MEGA share should be treated as a durable mirror of every attached volume, not as a "new writes only" outlet. The local MEGA sync folder is just the transport surface for MEGA; Nearbytes may still read missing blocks from any enabled local source, but the provider share itself must retain historical referenced blocks so new recipients can sync later.
+
 The legacy path below still works and remains useful for manual setups. The provider-managed flow is the preferred desktop onboarding path when you want Nearbytes to control login, sharing, and sync startup.
 
 **Shared workflow:** The team uses a shared MEGA folder with structure **MEGA** (top level) → **NearbytesStorage** → **NearbytesStorage** → **blocks**, **channels**. Anyone who clones the repo and is a shared member of that MEGA folder should sync it locally to the standard path (or set `NEARBYTES_STORAGE_DIR`); with the shared secrets they can run the app and see the same photos; new channels and uploads sync via MEGA.
@@ -167,6 +169,7 @@ MEGA **never** sees:
 3. **Backup your secrets**: Without the secret, encrypted files cannot be decrypted
 4. **Monitor sync status**: Check MEGA desktop app to ensure files are syncing
 5. **Don't commit to git**: Add MEGA folder to `.gitignore` if it's in your repository
+6. **Prefer one Nearbytes-owned MEGA root**: Nearbytes-managed MEGA should prefer one fixed `/nearbytes` share per account and attach volumes under that durable root instead of creating many sibling share folders.
 
 ## Limitations
 
