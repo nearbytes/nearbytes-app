@@ -298,7 +298,7 @@ Downloads and prepares provider-specific local helpers when a provider needs the
 
 ### POST /integrations/providers/:provider/reconcile (local-only)
 
-Reconciles the provider's managed-share inventory against local Nearbytes state. This adopts live provider mirrors, retires stale local entries, and migrates stale managed-share data back into the primary local root instead of deleting it.
+Reconciles the provider's managed-share inventory against local Nearbytes state. This adopts live provider mirrors, retires stale local entries, migrates disconnected share data back into the primary local root instead of deleting it, and for the canonical MEGA base share keeps the live mirror under `.../mega/<account>/nearbytes` while quarantining stale siblings inside the managed container.
 
 ### GET /integrations/shares (local-only)
 

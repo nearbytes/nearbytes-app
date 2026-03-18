@@ -169,7 +169,7 @@ MEGA **never** sees:
 3. **Backup your secrets**: Without the secret, encrypted files cannot be decrypted
 4. **Monitor sync status**: Check MEGA desktop app to ensure files are syncing
 5. **Don't commit to git**: Add MEGA folder to `.gitignore` if it's in your repository
-6. **Prefer one Nearbytes-owned MEGA root**: Nearbytes-managed MEGA should prefer one fixed `/nearbytes` share per account and attach volumes under that durable root instead of creating many sibling share folders.
+6. **Prefer one Nearbytes-owned MEGA root**: Nearbytes-managed MEGA should prefer one fixed `/nearbytes` share per account and attach volumes under that durable root instead of creating many sibling share folders. The local mirror for that base share should live under one canonical account container as `.../mega/<account>/nearbytes`; stale top-level leftovers belong in app-managed debris, not beside the live mirror.
 
 ## Limitations
 

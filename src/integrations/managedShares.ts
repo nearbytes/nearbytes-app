@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import type { Dirent } from 'fs';
 import path from 'path';
 import { isProviderEnabled } from '../config/appConfig.js';
 import {
@@ -61,6 +62,17 @@ const DEFAULT_DESTINATION: VolumeDestinationConfig = {
   reservePercent: 5,
   fullPolicy: 'block-writes',
 };
+
+const MEGA_BASE_SHARE_FOLDER_NAME = 'nearbytes';
+const MANAGED_SHARE_TOP_LEVEL_ENTRY_NAMES = [
+  '.nearbytes',
+  'Nearbytes.html',
+  'Nearbytes.json',
+  'blocks',
+  'channels',
+] as const;
+const MANAGED_SHARE_CONTAINER_RESERVED_NAMES = new Set<string>(['.debris', MEGA_BASE_SHARE_FOLDER_NAME]);
+const MANAGED_SHARE_DEBRIS_ROOT_NAME = '.debris';
 
 export class ManagedShareServiceError extends Error {
   constructor(
@@ -249,6 +261,9 @@ export class ManagedShareService {
     for (const share of ownedShares) {
       const retired = await this.retireManagedShareEntry(share, workingState, account);
       workingState = retired.state;
+    }
+    if (normalizeProvider(account.provider) === 'mega') {
+      await this.cleanupMegaManagedShareContainer(account, workingState, { quarantineAll: true });
     }
     await this.adapters.get(normalizeProvider(account.provider))?.disconnect?.(account).catch(() => {
       // Ignore provider-specific disconnect failures after config cleanup.
@@ -1623,11 +1638,15 @@ export class ManagedShareService {
           ...state,
           managedShares: [...state.managedShares, adoptedShare],
         });
+        await this.relocateDefaultManagedShareIfNeeded(adoptedShare, account, {
+          ...state,
+          managedShares: [...state.managedShares, adoptedShare],
+        });
         return;
       }
     }
 
-    await this.createManagedShare({
+    const created = await this.createManagedShare({
       provider,
       accountId: account.id,
       label: 'nearbytes',
@@ -1637,6 +1656,7 @@ export class ManagedShareService {
         shareName: 'nearbytes',
       },
     });
+    await this.relocateDefaultManagedShareIfNeeded(created.share, account);
   }
 
   private async relocateDefaultManagedShareIfNeeded(
@@ -1658,52 +1678,252 @@ export class ManagedShareService {
         share.remoteDescriptor
       )
     );
-    if (normalizeComparablePath(share.localPath) === normalizeComparablePath(expectedLocalPath)) {
-      return;
-    }
-
     const state = stateSnapshot ?? (await this.loadState());
-    let config = cloneConfig(this.options.storage.getRootsConfig());
-    const existingSource =
-      (share.sourceId ? config.sources.find((entry) => entry.id === share.sourceId) : null) ??
-      config.sources.find((entry) => entry.integration?.managedShareId === share.id) ??
-      null;
-
-    if (existingSource) {
-      const primaryLocalSource = findPrimaryLocalSource(config, existingSource.id);
-      if (
-        primaryLocalSource &&
-        normalizeComparablePath(existingSource.path) !== normalizeComparablePath(primaryLocalSource.path)
-      ) {
-        const consolidated = await this.options.storage.consolidateRoot(existingSource.id, primaryLocalSource.id);
-        config = consolidated.config;
-        await this.persistRootsConfig(config);
-      }
+    await ensureMirrorFolder(expectedLocalPath);
+    if (normalizeComparablePath(share.localPath) !== normalizeComparablePath(expectedLocalPath)) {
+      await this.migrateMegaBaseShareContents(account, share.localPath, expectedLocalPath);
     }
 
-    const nextShare: ManagedShare = {
-      ...share,
-      localPath: expectedLocalPath,
-      updatedAt: this.runtime.now(),
-    };
-    const { config: nextConfig, sourceId } = ensureManagedShareSource(config, nextShare, expectedLocalPath);
-    const relocatedShare = {
-      ...nextShare,
-      sourceId,
-    };
+    const currentConfig = cloneConfig(this.options.storage.getRootsConfig());
+    const currentConfigSignature = JSON.stringify(currentConfig);
+    const nextShareBase =
+      normalizeComparablePath(share.localPath) === normalizeComparablePath(expectedLocalPath)
+        ? share
+        : {
+            ...share,
+            localPath: expectedLocalPath,
+            updatedAt: this.runtime.now(),
+          };
+    const { config: nextConfig, sourceId } = ensureManagedShareSource(currentConfig, nextShareBase, expectedLocalPath);
+    const nextConfigSignature = JSON.stringify(nextConfig);
+    const relocatedShare =
+      nextShareBase.sourceId === sourceId
+        ? nextShareBase
+        : {
+            ...nextShareBase,
+            sourceId,
+            updatedAt: nextShareBase === share ? this.runtime.now() : nextShareBase.updatedAt,
+          };
+    const shareChanged =
+      normalizeComparablePath(share.localPath) !== normalizeComparablePath(relocatedShare.localPath) ||
+      share.sourceId !== relocatedShare.sourceId;
 
-    await ensureMirrorFolder(expectedLocalPath);
-    await this.persistRootsConfig(nextConfig);
-    await this.saveState({
-      ...state,
-      managedShares: state.managedShares.map((entry) => (entry.id === share.id ? relocatedShare : entry)),
-    });
+    if (nextConfigSignature !== currentConfigSignature) {
+      await this.persistRootsConfig(nextConfig);
+    }
 
-    if (account.state === 'connected') {
+    const nextState =
+      shareChanged
+        ? {
+            ...state,
+            managedShares: state.managedShares.map((entry) => (entry.id === share.id ? relocatedShare : entry)),
+          }
+        : state;
+    if (shareChanged) {
+      await this.saveState(nextState);
+    }
+
+    await this.cleanupMegaManagedShareContainer(account, nextState);
+
+    if (
+      account.state === 'connected' &&
+      normalizeComparablePath(share.localPath) !== normalizeComparablePath(relocatedShare.localPath)
+    ) {
       await this.adapters.get(normalizeProvider(share.provider))?.ensureSync?.(relocatedShare, account).catch(() => {
         // Ignore sync relocation failures here; the share metadata still points to the corrected local path.
       });
     }
+  }
+
+  private async migrateMegaBaseShareContents(
+    account: ProviderAccount,
+    currentLocalPath: string,
+    expectedLocalPath: string
+  ): Promise<void> {
+    const containerRoot = await this.getValidatedMegaManagedShareContainerRoot(account);
+    if (!containerRoot) {
+      return;
+    }
+
+    const normalizedCurrent = normalizeComparablePath(currentLocalPath);
+    const normalizedContainer = normalizeComparablePath(containerRoot);
+    const normalizedExpected = normalizeComparablePath(expectedLocalPath);
+
+    if (normalizedCurrent === normalizedExpected) {
+      return;
+    }
+
+    if (normalizedCurrent === normalizedContainer) {
+      for (const entryName of MANAGED_SHARE_TOP_LEVEL_ENTRY_NAMES) {
+        await this.mergeManagedShareEntryIntoCanonicalPath(
+          containerRoot,
+          path.join(containerRoot, entryName),
+          path.join(expectedLocalPath, entryName)
+        );
+      }
+      return;
+    }
+
+    if (!isPathInside(containerRoot, currentLocalPath)) {
+      this.runtime.logger.warn(
+        `Skipping MEGA base-share migration outside managed container: ${currentLocalPath} -> ${expectedLocalPath}`
+      );
+      return;
+    }
+
+    for (const entryName of MANAGED_SHARE_TOP_LEVEL_ENTRY_NAMES) {
+      await this.mergeManagedShareEntryIntoCanonicalPath(
+        containerRoot,
+        path.join(currentLocalPath, entryName),
+        path.join(expectedLocalPath, entryName)
+      );
+    }
+
+    const legacyEntryName = resolveManagedShareContainerEntryName(containerRoot, currentLocalPath);
+    if (legacyEntryName && legacyEntryName !== MEGA_BASE_SHARE_FOLDER_NAME) {
+      await this.quarantineManagedSharePath(containerRoot, path.join(containerRoot, legacyEntryName), 'legacy-base-share');
+    }
+  }
+
+  private async cleanupMegaManagedShareContainer(
+    account: ProviderAccount,
+    stateSnapshot: IntegrationStateSnapshot,
+    options: {
+      readonly quarantineAll?: boolean;
+    } = {}
+  ): Promise<void> {
+    const containerRoot = await this.getValidatedMegaManagedShareContainerRoot(account);
+    if (!containerRoot) {
+      return;
+    }
+
+    const allowedEntries = new Set<string>(
+      options.quarantineAll ? [MANAGED_SHARE_DEBRIS_ROOT_NAME] : MANAGED_SHARE_CONTAINER_RESERVED_NAMES
+    );
+    if (!options.quarantineAll) {
+      for (const share of stateSnapshot.managedShares) {
+        if (normalizeProvider(share.provider) !== 'mega' || share.accountId !== account.id) {
+          continue;
+        }
+        const entryName = resolveManagedShareContainerEntryName(containerRoot, share.localPath);
+        if (entryName) {
+          allowedEntries.add(entryName);
+        }
+      }
+    }
+
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(containerRoot, { withFileTypes: true });
+    } catch (error) {
+      const code = extractFsErrorCode(error);
+      if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM') {
+        return;
+      }
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (allowedEntries.has(entry.name)) {
+        continue;
+      }
+      await this.quarantineManagedSharePath(containerRoot, path.join(containerRoot, entry.name), 'stale-top-level');
+    }
+  }
+
+  private async getValidatedMegaManagedShareContainerRoot(account: ProviderAccount): Promise<string | null> {
+    const providerRoot = resolveProviderManagedShareRoot(this.mirrorRoot, 'mega', account);
+    const stats = await safeLstat(providerRoot);
+    if (!stats) {
+      return null;
+    }
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      this.runtime.logger.warn(`Skipping MEGA mirror cleanup for insecure container: ${providerRoot}`);
+      return null;
+    }
+    const realPath = await safeRealpath(providerRoot);
+    const realMirrorRoot = (await safeRealpath(this.mirrorRoot)) ?? path.resolve(this.mirrorRoot);
+    if (!realPath || !isPathInside(realMirrorRoot, realPath)) {
+      this.runtime.logger.warn(`Skipping MEGA mirror cleanup outside the managed mirror root: ${providerRoot}`);
+      return null;
+    }
+    return providerRoot;
+  }
+
+  private async mergeManagedShareEntryIntoCanonicalPath(
+    containerRoot: string,
+    sourcePath: string,
+    targetPath: string
+  ): Promise<void> {
+    if (!isPathInside(containerRoot, sourcePath) || !isPathInside(containerRoot, targetPath)) {
+      this.runtime.logger.warn(`Skipping MEGA mirror migration outside managed container: ${sourcePath} -> ${targetPath}`);
+      return;
+    }
+
+    const sourceStats = await safeLstat(sourcePath);
+    if (!sourceStats) {
+      return;
+    }
+    if (sourceStats.isSymbolicLink()) {
+      await this.quarantineManagedSharePath(containerRoot, sourcePath, 'symlink');
+      return;
+    }
+
+    if (sourceStats.isDirectory()) {
+      await ensureSecureManagedShareDirectory(containerRoot, targetPath);
+      const entries = await safeReadDir(sourcePath);
+      for (const entry of entries) {
+        await this.mergeManagedShareEntryIntoCanonicalPath(
+          containerRoot,
+          path.join(sourcePath, entry.name),
+          path.join(targetPath, entry.name)
+        );
+      }
+      await removeEmptyManagedShareDirectories(containerRoot, sourcePath);
+      return;
+    }
+
+    if (!sourceStats.isFile()) {
+      await this.quarantineManagedSharePath(containerRoot, sourcePath, 'unsupported-entry');
+      return;
+    }
+
+    await ensureSecureManagedShareDirectory(containerRoot, path.dirname(targetPath));
+    const targetStats = await safeLstat(targetPath);
+    if (!targetStats) {
+      await secureRenameWithinContainer(containerRoot, sourcePath, targetPath);
+      return;
+    }
+
+    if (!targetStats.isFile() || targetStats.isSymbolicLink()) {
+      await this.quarantineManagedSharePath(containerRoot, sourcePath, 'target-conflict');
+      return;
+    }
+
+    if (await areFilesEquivalent(sourcePath, targetPath)) {
+      await safeUnlink(sourcePath);
+      return;
+    }
+
+    await this.quarantineManagedSharePath(containerRoot, sourcePath, 'content-conflict');
+  }
+
+  private async quarantineManagedSharePath(containerRoot: string, sourcePath: string, reason: string): Promise<void> {
+    if (!isPathInside(containerRoot, sourcePath)) {
+      this.runtime.logger.warn(`Refusing to quarantine path outside managed container: ${sourcePath}`);
+      return;
+    }
+    const sourceStats = await safeLstat(sourcePath);
+    if (!sourceStats) {
+      return;
+    }
+
+    const debrisRoot = path.join(containerRoot, MANAGED_SHARE_DEBRIS_ROOT_NAME);
+    const debrisDir = await ensureSecureManagedShareDirectory(containerRoot, debrisRoot);
+    const relative = path.relative(containerRoot, sourcePath).replace(/\\/g, '/');
+    const sanitized = sanitizeManagedFolderLabel(`${reason} ${relative.replace(/\//g, ' ')}`) || 'debris';
+    const targetPath = await resolveUniqueManagedShareDebrisPath(debrisDir, sanitized);
+    await secureRenameWithinContainer(containerRoot, sourcePath, targetPath);
   }
 
   private findDefaultProviderSharePath(provider: string, account: ProviderAccount): string | undefined {
@@ -1712,9 +1932,15 @@ export class ManagedShareService {
       (source) => normalizeProvider(source.provider) === provider && !source.integration && !isUnsafeManagedSharePath(source.path)
     );
     const preferredFolderNames = getPreferredManagedShareFolderNames(provider, account);
-    const preferred =
-      providerSources.find((source) => preferredFolderNames.has(path.basename(source.path).trim().toLowerCase())) ??
-      (provider === 'mega' ? undefined : providerSources[0]);
+    let preferred = provider === 'mega' ? undefined : providerSources[0];
+    for (const preferredFolderName of preferredFolderNames) {
+      preferred =
+        providerSources.find((source) => path.basename(source.path).trim().toLowerCase() === preferredFolderName) ??
+        preferred;
+      if (preferred) {
+        break;
+      }
+    }
     if (provider === 'mega' && preferred) {
       const expectedRoot = resolveProviderManagedShareRoot(this.mirrorRoot, provider, account);
       if (!isPathInside(expectedRoot, preferred.path)) {
@@ -1858,7 +2084,7 @@ function resolveManagedShareLocalPath(
 ): string {
   const providerRoot = resolveProviderManagedShareRoot(managedShareBaseRoot, provider, account);
   if (isProviderBaseShare(label, remoteDescriptor)) {
-    return providerRoot;
+    return path.join(providerRoot, MEGA_BASE_SHARE_FOLDER_NAME);
   }
   return path.join(providerRoot, createMirrorFolderName(provider, label, shareId));
 }
@@ -1871,11 +2097,11 @@ function resolveProviderManagedShareRoot(managedShareBaseRoot: string, provider:
   return providerRoot;
 }
 
-function getPreferredManagedShareFolderNames(provider: string, account: ProviderAccount): ReadonlySet<string> {
+function getPreferredManagedShareFolderNames(provider: string, account: ProviderAccount): readonly string[] {
   if (provider === 'mega') {
-    return new Set([createManagedShareAccountFolderName(account)]);
+    return [MEGA_BASE_SHARE_FOLDER_NAME, createManagedShareAccountFolderName(account)];
   }
-  return new Set([getProviderStorageFolderName(provider), 'nearbytes']);
+  return [getProviderStorageFolderName(provider), 'nearbytes'];
 }
 
 function createManagedShareAccountFolderName(account: ProviderAccount): string {
@@ -1949,6 +2175,18 @@ function isPathInside(parentPath: string, childPath: string): boolean {
   const normalizedParent = normalizeComparablePath(parentPath);
   const normalizedChild = normalizeComparablePath(childPath);
   return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+}
+
+function resolveManagedShareContainerEntryName(containerRoot: string, localPath: string): string | null {
+  if (!isPathInside(containerRoot, localPath)) {
+    return null;
+  }
+  const relative = path.relative(containerRoot, localPath);
+  if (!relative || relative === '.' || relative.startsWith('..')) {
+    return null;
+  }
+  const [entryName] = relative.split(path.sep).filter(Boolean);
+  return entryName?.trim() || null;
 }
 
 function normalizeComparablePath(value: string): string {
@@ -2114,6 +2352,122 @@ function cloneConfig(config: RootsConfig): RootsConfig {
       destinations: volume.destinations.map((destination) => ({ ...destination })),
     })),
   };
+}
+
+async function ensureSecureManagedShareDirectory(containerRoot: string, targetPath: string): Promise<string> {
+  if (!isPathInside(containerRoot, targetPath)) {
+    throw new Error(`Managed-share directory escapes container: ${targetPath}`);
+  }
+  await fs.mkdir(targetPath, { recursive: true });
+  const stats = await safeLstat(targetPath);
+  if (!stats || !stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`Managed-share directory is not a secure directory: ${targetPath}`);
+  }
+  const realPath = await safeRealpath(targetPath);
+  const realContainerRoot = (await safeRealpath(containerRoot)) ?? path.resolve(containerRoot);
+  if (!realPath || !isPathInside(realContainerRoot, realPath)) {
+    throw new Error(`Managed-share directory resolved outside the container: ${targetPath}`);
+  }
+  return targetPath;
+}
+
+async function secureRenameWithinContainer(containerRoot: string, sourcePath: string, targetPath: string): Promise<void> {
+  if (!isPathInside(containerRoot, sourcePath) || !isPathInside(containerRoot, targetPath)) {
+    throw new Error(`Managed-share rename escapes the container: ${sourcePath} -> ${targetPath}`);
+  }
+  await ensureSecureManagedShareDirectory(containerRoot, path.dirname(targetPath));
+  await fs.rename(sourcePath, targetPath);
+}
+
+async function resolveUniqueManagedShareDebrisPath(parentPath: string, baseName: string): Promise<string> {
+  const candidateBase = sanitizeManagedFolderLabel(baseName) || 'debris';
+  for (let attempt = 0; attempt < 128; attempt += 1) {
+    const suffix = attempt === 0 ? '' : ` ${attempt + 1}`;
+    const candidate = path.join(parentPath, `${candidateBase}${suffix}`);
+    if (!(await safeLstat(candidate))) {
+      return candidate;
+    }
+  }
+  throw new Error(`Unable to allocate debris path under ${parentPath}`);
+}
+
+async function removeEmptyManagedShareDirectories(containerRoot: string, rootPath: string): Promise<void> {
+  const normalizedContainer = normalizeComparablePath(containerRoot);
+  let current = rootPath;
+  while (normalizeComparablePath(current).startsWith(`${normalizedContainer}/`)) {
+    const stats = await safeLstat(current);
+    if (!stats || !stats.isDirectory() || stats.isSymbolicLink()) {
+      return;
+    }
+    const entries = await safeReadDir(current);
+    if (entries.length > 0) {
+      return;
+    }
+    try {
+      await fs.rmdir(current);
+    } catch {
+      return;
+    }
+    const parent = path.dirname(current);
+    if (normalizeComparablePath(parent) === normalizedContainer) {
+      return;
+    }
+    current = parent;
+  }
+}
+
+async function areFilesEquivalent(leftPath: string, rightPath: string): Promise<boolean> {
+  const [leftStats, rightStats] = await Promise.all([safeLstat(leftPath), safeLstat(rightPath)]);
+  if (!leftStats || !rightStats || !leftStats.isFile() || !rightStats.isFile() || leftStats.size !== rightStats.size) {
+    return false;
+  }
+  const [leftContents, rightContents] = await Promise.all([fs.readFile(leftPath), fs.readFile(rightPath)]);
+  return leftContents.equals(rightContents);
+}
+
+async function safeLstat(targetPath: string): Promise<Awaited<ReturnType<typeof fs.lstat>> | null> {
+  try {
+    return await fs.lstat(targetPath);
+  } catch {
+    return null;
+  }
+}
+
+async function safeRealpath(targetPath: string): Promise<string | null> {
+  try {
+    return await fs.realpath(targetPath);
+  } catch {
+    return null;
+  }
+}
+
+async function safeReadDir(targetPath: string): Promise<Dirent[]> {
+  try {
+    return await fs.readdir(targetPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+async function safeUnlink(targetPath: string): Promise<void> {
+  try {
+    await fs.unlink(targetPath);
+  } catch (error) {
+    if (extractFsErrorCode(error) === 'ENOENT') {
+      return;
+    }
+    throw error;
+  }
+}
+
+function extractFsErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+  if ('code' in error && typeof (error as { code?: unknown }).code === 'string') {
+    return (error as { code: string }).code;
+  }
+  return undefined;
 }
 
 function removeManagedShareFromConfig(config: RootsConfig, shareId: string): RootsConfig {

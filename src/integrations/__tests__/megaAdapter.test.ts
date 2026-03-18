@@ -820,7 +820,7 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
     await expect(adapter.getCollaborators(share, account)).resolves.toEqual([]);
   });
 
-  it('reuses an existing local sync when the same remote path is already mirrored', async () => {
+  it('rebinds an existing remote sync to the requested local mirror when the same remote path is already mirrored', async () => {
     const megaState = {
       sessionToken: 'mega-session-token',
       syncs: [
@@ -892,9 +892,10 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
       account
     );
 
-    expect(created.localPath).toBe('/tmp/existing-nearbytes');
+    expect(created.localPath).toBe('/tmp/requested-nearbytes');
+    expect(megaState.deletedSyncIds).toContain('1');
     expect(megaState.syncs).toHaveLength(1);
-    expect(megaState.syncs[0]?.localPath).toBe('/tmp/existing-nearbytes');
+    expect(megaState.syncs[0]?.localPath).toBe('/tmp/requested-nearbytes');
   });
 
   it('rebinds an existing remote sync to the share local path when a stale share record is reused', async () => {

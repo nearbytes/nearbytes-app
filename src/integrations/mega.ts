@@ -176,8 +176,10 @@ export class MegaTransportAdapter {
     });
     const existingSync = await this.findSyncByRemotePath(remotePath, account.id);
     const requestedLocalPath = input.localPath ?? '';
-    const resolvedLocalPath = existingSync?.localPath?.trim() || requestedLocalPath;
-    if (!existingSync) {
+    const resolvedLocalPath = requestedLocalPath || existingSync?.localPath?.trim() || '';
+    if (requestedLocalPath && normalizeComparablePath(existingSync?.localPath ?? '') !== normalizeComparablePath(requestedLocalPath)) {
+      await this.ensureSyncBinding(requestedLocalPath, remotePath, account.id);
+    } else if (!existingSync) {
       await this.ensureSyncTarget(resolvedLocalPath, remotePath);
     }
 
@@ -387,8 +389,18 @@ export class MegaTransportAdapter {
     if (!remotePath) {
       throw new Error('MEGA share is missing remotePath.');
     }
-    const matches = await this.findSyncMatches(share.localPath, remotePath, account.id);
-    const localTarget = normalizeComparablePath(share.localPath);
+    await this.ensureSyncBinding(share.localPath, remotePath, account.id);
+    await this.refreshSyncState(share, account.id);
+    const timer = setInterval(() => {
+      void this.refreshSyncState(share, account.id);
+    }, this.runtime.mega.syncIntervalMs);
+    timer.unref?.();
+    this.syncTimers.set(share.id, timer);
+  }
+
+  private async ensureSyncBinding(localPath: string, remotePath: string, accountId: string): Promise<void> {
+    const matches = await this.findSyncMatches(localPath, remotePath, accountId);
+    const localTarget = normalizeComparablePath(localPath);
     const remoteTarget = normalizeComparableRemotePath(remotePath);
     const exactSamePathError = Boolean(matches.exact?.error && /same path/i.test(matches.exact.error));
 
@@ -423,14 +435,8 @@ export class MegaTransportAdapter {
     }
 
     if (!matches.exact) {
-      await this.ensureSyncTarget(share.localPath, remotePath);
+      await this.ensureSyncTarget(localPath, remotePath);
     }
-    await this.refreshSyncState(share, account.id);
-    const timer = setInterval(() => {
-      void this.refreshSyncState(share, account.id);
-    }, this.runtime.mega.syncIntervalMs);
-    timer.unref?.();
-    this.syncTimers.set(share.id, timer);
   }
 
   async detachManagedShare(share: ManagedShare, account: ProviderAccount | null): Promise<void> {
