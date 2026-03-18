@@ -49,7 +49,6 @@
     Plus,
     RefreshCw,
     Search,
-    Shield,
     Trash2,
   } from 'lucide-svelte';
 
@@ -684,10 +683,39 @@
     return 'warn';
   }
 
+  function compactShareStatusDetail(detail: string | undefined): string | null {
+    const normalized = detail?.trim().replace(/\s+/gu, ' ');
+    if (!normalized) {
+      return null;
+    }
+    if (/sync issues?/i.test(normalized)) {
+      return 'Sync problem';
+    }
+    if (/missing or invalid/i.test(normalized)) {
+      return 'Folder missing';
+    }
+    if (/not running/i.test(normalized)) {
+      return 'Sync not running';
+    }
+    if (/cannot write/i.test(normalized)) {
+      return 'Cannot write';
+    }
+    if (/login|session|auth|connected again/i.test(normalized)) {
+      return 'Sign-in needed';
+    }
+    if (normalized.length <= 28) {
+      return normalized;
+    }
+    return `${normalized.slice(0, 25).trimEnd()}...`;
+  }
+
   function shareStatusLabel(summary: ManagedShareSummary): string {
     const primaryBadge = summary.state.badges[0]?.trim();
     if (primaryBadge === 'Repair') {
-      return summary.storage?.sourcePath?.trim() ? 'Sync issue' : 'Storage unavailable';
+      if (!summary.storage?.sourcePath?.trim()) {
+        return 'Storage unavailable';
+      }
+      return compactShareStatusDetail(summary.state.detail) ?? 'Needs repair';
     }
     if (primaryBadge === 'Reconnect') return 'Sign-in needed';
     if (primaryBadge === 'Syncing') return 'Syncing';
@@ -3053,14 +3081,15 @@
     {#snippet managedShareCard(summary: ManagedShareSummary)}
       {@const view = managedShareView(summary)}
       {#if view}
-        <ShareCard
-          provider={view.provider}
-          title={view.title}
-          copy={view.copy}
-          active={view.active}
-          statusBadges={view.statusBadges}
-          meta={view.meta}
-        >
+        <div data-managed-share-id={summary.share.id}>
+          <ShareCard
+            provider={view.provider}
+            title={view.title}
+            copy={view.copy}
+            active={view.active}
+            statusBadges={view.statusBadges}
+            meta={view.meta}
+          >
           {#snippet metaActions()}
             <div class="inline-reserve-slot">
               {#if activeReserveEditorKey === view.reserveKey}
@@ -3234,7 +3263,8 @@
               </div>
             {/if}
           {/snippet}
-        </ShareCard>
+          </ShareCard>
+        </div>
       {/if}
     {/snippet}
     {#snippet incomingContactInviteCard(invite: IncomingProviderContactInvite)}
