@@ -66,6 +66,12 @@ export interface MultiRootRuntimeSnapshot {
   readonly writeFailures: RootWriteFailure[];
 }
 
+interface RepairMonitorOptions {
+  readonly repairableDelayMs: number;
+  readonly blockedDelayMs: number;
+  readonly healthyDelayMs: number;
+}
+
 export interface RootConsolidationSource {
   readonly id: string;
   readonly kind: 'source';
@@ -125,6 +131,16 @@ export class MultiRootStorageBackend implements StorageBackend {
   private config: RootsConfig;
   private rootStates: RootState[];
   private readonly lastWriteFailures = new Map<string, RootWriteFailure>();
+  private reconcileInFlight: Promise<void> | null = null;
+  private reconcileQueued = false;
+  private repairMonitorTimer: ReturnType<typeof setTimeout> | null = null;
+  private repairMonitorRunning = false;
+  private repairAuditInFlight = false;
+  private repairMonitorOptions: RepairMonitorOptions = {
+    repairableDelayMs: 5_000,
+    blockedDelayMs: 30_000,
+    healthyDelayMs: 120_000,
+  };
 
   constructor(initialConfig: RootsConfig) {
     this.config = initialConfig;
@@ -154,6 +170,146 @@ export class MultiRootStorageBackend implements StorageBackend {
       await this.reconcileVolumeData(volumeId);
     }
     await this.collectUnknownProvenanceBlocksToLocalRoot();
+  }
+
+  scheduleReconcileConfiguredVolumes(): void {
+    this.reconcileQueued = true;
+    if (this.repairMonitorRunning) {
+      this.scheduleRepairAudit(this.repairMonitorOptions.repairableDelayMs);
+    }
+    if (this.reconcileInFlight) {
+      return;
+    }
+    this.reconcileInFlight = this.runScheduledReconcileLoop().finally(() => {
+      this.reconcileInFlight = null;
+      if (this.reconcileQueued) {
+        this.scheduleReconcileConfiguredVolumes();
+      }
+    });
+  }
+
+  isReconcileScheduled(): boolean {
+    return this.reconcileQueued || this.reconcileInFlight !== null;
+  }
+
+  startRepairMonitor(options: Partial<RepairMonitorOptions> = {}): void {
+    this.repairMonitorOptions = {
+      ...this.repairMonitorOptions,
+      ...options,
+    };
+    if (this.repairMonitorRunning) {
+      this.scheduleRepairAudit(this.repairMonitorOptions.repairableDelayMs);
+      return;
+    }
+    this.repairMonitorRunning = true;
+    this.scheduleRepairAudit(0);
+  }
+
+  stopRepairMonitor(): void {
+    this.repairMonitorRunning = false;
+    if (this.repairMonitorTimer) {
+      clearTimeout(this.repairMonitorTimer);
+      this.repairMonitorTimer = null;
+    }
+  }
+
+  private async runScheduledReconcileLoop(): Promise<void> {
+    while (this.reconcileQueued) {
+      this.reconcileQueued = false;
+      await this.reconcileConfiguredVolumes();
+    }
+  }
+
+  private scheduleRepairAudit(delayMs: number): void {
+    if (!this.repairMonitorRunning) {
+      return;
+    }
+    if (this.repairMonitorTimer) {
+      clearTimeout(this.repairMonitorTimer);
+    }
+    this.repairMonitorTimer = setTimeout(() => {
+      this.repairMonitorTimer = null;
+      void this.runRepairAudit();
+    }, Math.max(0, delayMs));
+    if (typeof this.repairMonitorTimer === 'object' && this.repairMonitorTimer && 'unref' in this.repairMonitorTimer) {
+      this.repairMonitorTimer.unref();
+    }
+  }
+
+  private async runRepairAudit(): Promise<void> {
+    if (!this.repairMonitorRunning || this.repairAuditInFlight) {
+      return;
+    }
+    this.repairAuditInFlight = true;
+    try {
+      const snapshot = await this.getRuntimeSnapshot();
+      const repairState = this.inspectRepairState(snapshot);
+      if (repairState === 'repairable') {
+        this.scheduleReconcileConfiguredVolumes();
+      }
+      if (!this.repairMonitorRunning) {
+        return;
+      }
+      if (repairState === 'repairable') {
+        this.scheduleRepairAudit(this.repairMonitorOptions.repairableDelayMs);
+        return;
+      }
+      if (repairState === 'blocked') {
+        this.scheduleRepairAudit(this.repairMonitorOptions.blockedDelayMs);
+        return;
+      }
+      this.scheduleRepairAudit(this.repairMonitorOptions.healthyDelayMs);
+    } finally {
+      this.repairAuditInFlight = false;
+    }
+  }
+
+  private inspectRepairState(snapshot: MultiRootRuntimeSnapshot): 'repairable' | 'blocked' | 'healthy' {
+    const volumeIds = new Set<string>();
+    for (const source of snapshot.sources) {
+      for (const usage of source.usage.volumeUsages) {
+        volumeIds.add(usage.volumeId);
+      }
+    }
+
+    for (const volumeId of Array.from(volumeIds.values()).sort()) {
+      let expectedHistoryBytes = 0;
+      let expectedFileBytes = 0;
+      for (const source of snapshot.sources) {
+        const usage = source.usage.volumeUsages.find((entry) => entry.volumeId === volumeId);
+        if (!usage) {
+          continue;
+        }
+        expectedHistoryBytes = Math.max(expectedHistoryBytes, usage.historyBytes);
+        expectedFileBytes = Math.max(expectedFileBytes, usage.fileBytes);
+      }
+
+      const expectedBytes = expectedHistoryBytes + expectedFileBytes;
+      if (expectedBytes === 0) {
+        continue;
+      }
+
+      for (const destination of resolveVolumeDestinations(this.config, volumeId)) {
+        if (!isDurableDestination(destination) || !destination.enabled) {
+          continue;
+        }
+        const source = snapshot.sources.find((entry) => entry.id === destination.sourceId);
+        if (!source || !source.enabled || !source.writable) {
+          return 'blocked';
+        }
+        const usage = source.usage.volumeUsages.find((entry) => entry.volumeId === volumeId);
+        const presentBytes = (usage?.historyBytes ?? 0) + (usage?.fileBytes ?? 0);
+        if (presentBytes >= expectedBytes) {
+          continue;
+        }
+        if (!source.exists || !source.isDirectory || !source.canWrite) {
+          return 'blocked';
+        }
+        return 'repairable';
+      }
+    }
+
+    return 'healthy';
   }
 
   async getRuntimeSnapshot(): Promise<MultiRootRuntimeSnapshot> {

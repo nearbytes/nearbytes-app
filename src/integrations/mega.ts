@@ -225,6 +225,12 @@ export class MegaTransportAdapter {
     await this.ensureLoggedIn(account.id);
     const result = await this.runMega('mount', [], {
       timeoutMs: 30_000,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isMegaMountTemporarilyUnavailableError(message)) {
+        return { stdout: '', stderr: message };
+      }
+      throw error;
     });
     return parseMegaIncomingShares(result.stdout).map((entry) => ({
       id: `mega:incoming:${entry.remotePath.toLowerCase()}`,
@@ -304,6 +310,12 @@ export class MegaTransportAdapter {
     }
     const result = await this.runMega('share', [remotePath], {
       timeoutMs: 30_000,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isMegaMissingSharedPathError(message)) {
+        return { stdout: '', stderr: message };
+      }
+      throw error;
     });
     return parseMegaShareCollaborators(result.stdout).map((entry) => ({
       label: entry.email,
@@ -761,6 +773,14 @@ function normalizeComparableRemotePath(value: string): string {
   }
   const collapsed = path.posix.normalize(normalized).replace(/\/+$/u, '');
   return collapsed || '/';
+}
+
+function isMegaMountTemporarilyUnavailableError(message: string): boolean {
+  return /command not valid while login in:\s*mount/i.test(message);
+}
+
+function isMegaMissingSharedPathError(message: string): boolean {
+  return /no shared found for given path/i.test(message);
 }
 
 function extractMegaError(value: string): string {

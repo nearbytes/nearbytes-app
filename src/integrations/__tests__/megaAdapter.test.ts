@@ -39,6 +39,8 @@ function createFakeMegaExecutor(state: {
   loginMode?: 'ok' | 'already-logged-in';
   requireExistingLocalSyncDir?: boolean;
   mkdirAlreadyExistsPaths?: Set<string>;
+  mountError?: string;
+  missingSharePaths?: Set<string>;
 }): CommandExecutor {
   return {
     async run(invocation) {
@@ -84,11 +86,24 @@ function createFakeMegaExecutor(state: {
         state.shareCommands.push(args);
         if (!args.includes('-a')) {
           const remotePath = args.at(-1) ?? '';
+          if (state.missingSharePaths?.has(remotePath)) {
+            return {
+              stdout: '',
+              stderr: `No shared found for given path: ${remotePath}`,
+              exitCode: 1,
+            };
+          }
           return {
             stdout: `${(state.shareListings?.get(remotePath) ?? []).join('\n')}${state.shareListings?.get(remotePath)?.length ? '\n' : ''}`,
             stderr: '',
             exitCode: 0,
           };
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }
+      if (command === 'mega-mount') {
+        if (state.mountError) {
+          return { stdout: '', stderr: state.mountError, exitCode: 1 };
         }
         return { stdout: '', stderr: '', exitCode: 0 };
       }
@@ -366,6 +381,113 @@ describe('MegaTransportAdapter', () => {
 
     const state = await adapter.getState(share, account);
     expect(state.status).toBe('ready');
+  });
+
+  it('treats transient mount/login races as no incoming shares instead of failing', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      mountError: 'Command not valid while login in: mount',
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    await expect(adapter.listIncomingShares(account)).resolves.toEqual([]);
+  });
+
+  it('treats missing remote share paths as no collaborators instead of failing', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      missingSharePaths: new Set(['/nearbytes/missing-share']),
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+    const share: ManagedShare = {
+      id: 'share-mega-missing',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'Missing share',
+      role: 'owner',
+      localPath: '/tmp/missing-share',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes/missing-share',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.getCollaborators(share, account)).resolves.toEqual([]);
   });
 
   it('reuses an existing local sync when the same remote path is already mirrored', async () => {

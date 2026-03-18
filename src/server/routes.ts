@@ -174,7 +174,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     await saveRootsConfig(deps.rootsConfigPath, nextConfig);
     const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
     multiRootStorage.updateRootsConfig(nextConfig);
-    await multiRootStorage.reconcileConfiguredVolumes();
+    multiRootStorage.scheduleReconcileConfiguredVolumes();
     await ensureNearbytesMarkers(nextConfig.sources);
     const runtime = await multiRootStorage.getRuntimeSnapshot();
 

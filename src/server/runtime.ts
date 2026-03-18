@@ -93,6 +93,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
 
   await ensureBootstrapDirectories(storage, logger);
   await storage.reconcileConfiguredVolumes();
+  storage.startRepairMonitor();
 
   const app = createApp({
     fileService,
@@ -112,7 +113,9 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
   const server = await listen(app, host, port);
   const bound = getBoundPort(server);
 
-  const stop = createStop(server);
+  const stop = createStop(server, () => {
+    storage.stopRepairMonitor();
+  });
   latestStop = stop;
 
   return {
@@ -247,13 +250,14 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-function createStop(server: Server): () => Promise<void> {
+function createStop(server: Server, onStop?: () => void): () => Promise<void> {
   let stopped = false;
   const stopFn = async () => {
     if (stopped) {
       return;
     }
     stopped = true;
+    onStop?.();
     await closeServer(server);
     if (latestStop === stopFn) {
       latestStop = null;

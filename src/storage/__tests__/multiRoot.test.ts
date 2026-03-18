@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { type RootsConfig } from '../../config/roots.js';
-import { MultiRootStorageBackend } from '../multiRoot.js';
+import { MultiRootStorageBackend, type MultiRootRuntimeSnapshot } from '../multiRoot.js';
 
 function bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
@@ -46,6 +46,211 @@ function createConfig(args: {
 }
 
 describe('MultiRootStorageBackend', () => {
+  it('reruns scheduled reconciliation without overlapping active work', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    await mkdir(mainRoot, { recursive: true });
+
+    const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot }));
+    const originalReconcile = storage.reconcileConfiguredVolumes.bind(storage);
+    let runs = 0;
+
+    storage.reconcileConfiguredVolumes = vi.fn(async () => {
+      runs += 1;
+      if (runs === 1) {
+        storage.scheduleReconcileConfiguredVolumes();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      await originalReconcile();
+    });
+
+    storage.scheduleReconcileConfiguredVolumes();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(runs).toBe(2);
+    expect(storage.isReconcileScheduled()).toBe(false);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('audits incomplete full-copy destinations in the background and stops once healthy', async () => {
+    vi.useFakeTimers();
+    try {
+      const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+      const mainRoot = join(dir, 'main');
+      const backupRoot = join(dir, 'backup');
+      await mkdir(mainRoot, { recursive: true });
+      await mkdir(backupRoot, { recursive: true });
+
+      const volumeId = '1'.repeat(130);
+      const storage = new MultiRootStorageBackend(
+        createConfig({
+          mainPath: mainRoot,
+          sources: [
+            {
+              id: 'src-main',
+              provider: 'local',
+              path: mainRoot,
+              enabled: true,
+              writable: true,
+              reservePercent: 10,
+              opportunisticPolicy: 'drop-older-blocks',
+            },
+            {
+              id: 'src-backup',
+              provider: 'dropbox',
+              path: backupRoot,
+              enabled: true,
+              writable: true,
+              reservePercent: 10,
+              opportunisticPolicy: 'drop-older-blocks',
+            },
+          ],
+          volumes: [
+            {
+              volumeId,
+              destinations: [
+                {
+                  sourceId: 'src-backup',
+                  enabled: true,
+                  storeEvents: true,
+                  storeBlocks: true,
+                  copySourceBlocks: true,
+                  reservePercent: 10,
+                  fullPolicy: 'block-writes',
+                },
+              ],
+            },
+          ],
+        })
+      );
+
+      const realSnapshot = storage.getRuntimeSnapshot.bind(storage);
+      const realSchedule = storage.scheduleReconcileConfiguredVolumes.bind(storage);
+      let reconciles = 0;
+      let healthy = false;
+
+      const healthySnapshot: MultiRootRuntimeSnapshot = {
+        sources: [
+          {
+            id: 'src-main',
+            kind: 'source',
+            path: mainRoot,
+            enabled: true,
+            writable: true,
+            provider: 'local',
+            reservePercent: 10,
+            opportunisticPolicy: 'drop-older-blocks',
+            exists: true,
+            isDirectory: true,
+            canWrite: true,
+            usage: {
+              totalBytes: 10,
+              channelBytes: 5,
+              blockBytes: 5,
+              otherBytes: 0,
+              blockCount: 1,
+              volumeUsages: [{ volumeId, historyBytes: 5, historyFileCount: 1, fileBytes: 5, fileCount: 1 }],
+            },
+          },
+          {
+            id: 'src-backup',
+            kind: 'source',
+            path: backupRoot,
+            enabled: true,
+            writable: true,
+            provider: 'dropbox',
+            reservePercent: 10,
+            opportunisticPolicy: 'drop-older-blocks',
+            exists: true,
+            isDirectory: true,
+            canWrite: true,
+            usage: {
+              totalBytes: 10,
+              channelBytes: 5,
+              blockBytes: 5,
+              otherBytes: 0,
+              blockCount: 1,
+              volumeUsages: [{ volumeId, historyBytes: 5, historyFileCount: 1, fileBytes: 5, fileCount: 1 }],
+            },
+          },
+        ],
+        writeFailures: [],
+      };
+      const incompleteSnapshot: MultiRootRuntimeSnapshot = {
+        sources: [
+          {
+            id: 'src-main',
+            kind: 'source',
+            path: mainRoot,
+            enabled: true,
+            writable: true,
+            provider: 'local',
+            reservePercent: 10,
+            opportunisticPolicy: 'drop-older-blocks',
+            exists: true,
+            isDirectory: true,
+            canWrite: true,
+            usage: {
+              totalBytes: 10,
+              channelBytes: 5,
+              blockBytes: 5,
+              otherBytes: 0,
+              blockCount: 1,
+              volumeUsages: [{ volumeId, historyBytes: 5, historyFileCount: 1, fileBytes: 5, fileCount: 1 }],
+            },
+          },
+          {
+            id: 'src-backup',
+            kind: 'source',
+            path: backupRoot,
+            enabled: true,
+            writable: true,
+            provider: 'dropbox',
+            reservePercent: 10,
+            opportunisticPolicy: 'drop-older-blocks',
+            exists: true,
+            isDirectory: true,
+            canWrite: true,
+            usage: {
+              totalBytes: 5,
+              channelBytes: 5,
+              blockBytes: 0,
+              otherBytes: 0,
+              blockCount: 0,
+              volumeUsages: [{ volumeId, historyBytes: 5, historyFileCount: 1, fileBytes: 0, fileCount: 0 }],
+            },
+          },
+        ],
+        writeFailures: [],
+      };
+      storage.getRuntimeSnapshot = vi.fn(async (): Promise<MultiRootRuntimeSnapshot> => {
+        return healthy ? healthySnapshot : incompleteSnapshot;
+      });
+      storage.scheduleReconcileConfiguredVolumes = vi.fn(() => {
+        reconciles += 1;
+        realSchedule();
+      });
+      storage.reconcileConfiguredVolumes = vi.fn(async () => {
+        healthy = true;
+      });
+
+      storage.startRepairMonitor({ repairableDelayMs: 20, blockedDelayMs: 40, healthyDelayMs: 200 });
+      await vi.advanceTimersByTimeAsync(25);
+      expect(reconciles).toBeGreaterThan(0);
+
+      await vi.advanceTimersByTimeAsync(60);
+      expect(reconciles).toBe(1);
+
+      storage.stopRepairMonitor();
+      storage.getRuntimeSnapshot = realSnapshot;
+      storage.scheduleReconcileConfiguredVolumes = realSchedule;
+      await rm(dir, { recursive: true, force: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('writes channel files to the default durable source and explicit volume destinations', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
     const mainRoot = join(dir, 'main');

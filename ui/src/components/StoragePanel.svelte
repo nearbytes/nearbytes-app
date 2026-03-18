@@ -21,6 +21,7 @@
     listProviderAccounts,
     openRootInFileManager,
     removeManagedShare,
+    watchSources,
     type DiscoveredNearbytesSource,
     type IncomingManagedShareOffer,
     type IncomingProviderContactInvite,
@@ -156,7 +157,13 @@
     tone?: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off';
     description?: string;
   };
-  type ShareAttachmentChip = { volumeId: string; label: string; known: boolean };
+  type ShareAttachmentChip = {
+    volumeId: string;
+    label: string;
+    known: boolean;
+    usageBytes: number;
+    usagePercent: number;
+  };
   type ProviderFlowState = {
     phase:
       | 'installing'
@@ -201,9 +208,27 @@
 
   const providerSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const providerAbortControllers = new Map<string, AbortController>();
+  let sourceWatchConnection: { close(): void } | null = null;
+  let runtimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let backfillPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let runtimeRefreshInFlight = false;
+  let backfillPollIdleRounds = 0;
+  let lastBackfillProgressSignature = '';
 
   onMount(() => {
     void loadPanel();
+
+    sourceWatchConnection = watchSources({
+      onUpdate() {
+        scheduleRuntimeRefresh();
+      },
+      onError(error) {
+        console.warn('Storage panel source watch unavailable:', error);
+      },
+      onClose() {
+        sourceWatchConnection = null;
+      },
+    });
   });
 
   onDestroy(() => {
@@ -215,6 +240,16 @@
       controller.abort();
     }
     providerAbortControllers.clear();
+    if (runtimeRefreshTimer) {
+      clearTimeout(runtimeRefreshTimer);
+      runtimeRefreshTimer = null;
+    }
+    if (backfillPollTimer) {
+      clearTimeout(backfillPollTimer);
+      backfillPollTimer = null;
+    }
+    sourceWatchConnection?.close();
+    sourceWatchConnection = null;
   });
 
   $effect(() => {
@@ -651,7 +686,9 @@
 
   function shareStatusLabel(summary: ManagedShareSummary): string {
     const primaryBadge = summary.state.badges[0]?.trim();
-    if (primaryBadge === 'Repair') return 'Storage unavailable';
+    if (primaryBadge === 'Repair') {
+      return summary.storage?.sourcePath?.trim() ? 'Sync issue' : 'Storage unavailable';
+    }
     if (primaryBadge === 'Reconnect') return 'Sign-in needed';
     if (primaryBadge === 'Syncing') return 'Syncing';
     if (primaryBadge === 'Share') return 'Connected';
@@ -671,7 +708,36 @@
     return `${countLabel(count, 'hub')} attached`;
   }
 
-  function sourceAttachmentLabels(sourceId: string): Array<{ volumeId: string; label: string; known: boolean }> {
+  function expectedVolumeBytes(targetVolumeId: string): number {
+    if (!runtime) {
+      return 0;
+    }
+    let historyBytes = 0;
+    let fileBytes = 0;
+    for (const source of runtime.sources) {
+      const entry = source.usage.volumeUsages.find((item) => item.volumeId === targetVolumeId);
+      if (!entry) {
+        continue;
+      }
+      historyBytes = Math.max(historyBytes, entry.historyBytes ?? 0);
+      fileBytes = Math.max(fileBytes, entry.fileBytes ?? 0);
+    }
+    return historyBytes + fileBytes;
+  }
+
+  function sourceVolumeUsage(sourceId: string, targetVolumeId: string): { usageBytes: number; usagePercent: number } {
+    const usage = sourceStatus(sourceId)?.usage;
+    const entry = usage?.volumeUsages.find((item) => item.volumeId === targetVolumeId);
+    const usageBytes = (entry?.historyBytes ?? 0) + (entry?.fileBytes ?? 0);
+    const expectedBytes = expectedVolumeBytes(targetVolumeId);
+    const usagePercent = expectedBytes > 0 ? Math.min(100, Math.round((usageBytes / expectedBytes) * 100)) : 100;
+    return {
+      usageBytes,
+      usagePercent,
+    };
+  }
+
+  function sourceAttachmentLabels(sourceId: string): ShareAttachmentChip[] {
     if (!configDraft) {
       return [];
     }
@@ -679,10 +745,13 @@
       .filter((volume) => volume.destinations.some((destination) => destination.sourceId === sourceId))
       .map((volume) => {
         const knownLabel = knownVolumeLabel(volume.volumeId);
+        const usage = sourceVolumeUsage(sourceId, volume.volumeId);
         return {
           volumeId: volume.volumeId,
           label: knownLabel ?? `Hub ${volume.volumeId.slice(0, 8)}`,
           known: Boolean(knownLabel),
+          usageBytes: usage.usageBytes,
+          usagePercent: usage.usagePercent,
         };
       });
   }
@@ -695,16 +764,94 @@
     return `${countLabel(count, 'hub')} attached`;
   }
 
-  function shareAttachmentLabels(summary: ManagedShareSummary): Array<{ volumeId: string; label: string; known: boolean }> {
+  function activeBackfillTargets(): Array<{ sourceId: string; volumeId: string; usagePercent: number }> {
+    if (!configDraft || !runtime) {
+      return [];
+    }
+    const trackedVolumeIds = new Set<string>();
+    for (const source of runtime.sources) {
+      for (const entry of source.usage.volumeUsages) {
+        trackedVolumeIds.add(entry.volumeId);
+      }
+    }
+
+    const active: Array<{ sourceId: string; volumeId: string; usagePercent: number }> = [];
+    for (const volumeId of Array.from(trackedVolumeIds.values()).sort()) {
+      for (const destination of effectiveDestinations(volumeId)) {
+        if (!keepsFullCopy(destination)) {
+          continue;
+        }
+        const source = configDraft.sources.find((entry) => entry.id === destination.sourceId);
+        if (!source || !source.enabled || !source.writable) {
+          continue;
+        }
+        const usage = sourceVolumeUsage(destination.sourceId, volumeId);
+        if (usage.usagePercent >= 100) {
+          continue;
+        }
+        active.push({
+          sourceId: destination.sourceId,
+          volumeId,
+          usagePercent: usage.usagePercent,
+        });
+      }
+    }
+
+    return active;
+  }
+
+  function clearBackfillPolling(): void {
+    if (backfillPollTimer) {
+      clearTimeout(backfillPollTimer);
+      backfillPollTimer = null;
+    }
+  }
+
+  function updateBackfillPolling(): void {
+    const activeTargets = activeBackfillTargets();
+    if (activeTargets.length === 0) {
+      backfillPollIdleRounds = 0;
+      lastBackfillProgressSignature = '';
+      clearBackfillPolling();
+      return;
+    }
+
+    const signature = activeTargets
+      .map((target) => `${target.sourceId}:${target.volumeId}:${target.usagePercent}`)
+      .sort()
+      .join('|');
+
+    if (signature === lastBackfillProgressSignature) {
+      backfillPollIdleRounds += 1;
+    } else {
+      lastBackfillProgressSignature = signature;
+      backfillPollIdleRounds = 0;
+    }
+
+    if (backfillPollTimer || runtimeRefreshInFlight) {
+      return;
+    }
+
+    const delayMs = backfillPollIdleRounds >= 3 ? 4500 : 1500;
+    backfillPollTimer = setTimeout(() => {
+      backfillPollTimer = null;
+      void refreshRuntimeSnapshot();
+    }, delayMs);
+  }
+
+  function shareAttachmentLabels(summary: ManagedShareSummary): ShareAttachmentChip[] {
     if (summary.attachments.length === 0) {
       return [];
     }
     return summary.attachments.map((attachment) => {
       const knownLabel = knownVolumeLabel(attachment.volumeId);
+      const usage = summary.share.sourceId ? sourceVolumeUsage(summary.share.sourceId, attachment.volumeId) : { usageBytes: 0, usagePercent: 0 };
       return {
         volumeId: attachment.volumeId,
         label: knownLabel ?? `Hub ${attachment.volumeId.slice(0, 8)}`,
         known: Boolean(knownLabel),
+        usageBytes: usage.usageBytes,
+        usagePercent: usage.usagePercent,
       };
     });
   }
@@ -982,16 +1129,19 @@
     if (summary.state.status === 'ready') {
       return 'This live location is ready. The folder below is the local mirror that should stay in sync with the provider copy.';
     }
-    if (summary.attachments.length === 0) {
-      return mode === 'volume'
-        ? 'This live location exists, but the current hub is not using it yet.'
-        : 'This live location exists in Nearbytes and is ready to attach when you need it.';
+    if (summary.state.status === 'attention') {
+      return summary.state.detail || 'This live location needs attention before Nearbytes can rely on it.';
+    }
+    if (summary.state.status === 'needs-auth') {
+      return 'Nearbytes cannot use this location until the provider account is connected again.';
     }
     if (summary.state.status === 'syncing') {
       return 'Nearbytes is still waiting for the provider mirror to settle before treating this location as ready.';
     }
-    if (summary.state.status === 'needs-auth') {
-      return 'Nearbytes cannot use this location until the provider account is connected again.';
+    if (summary.attachments.length === 0) {
+      return mode === 'volume'
+        ? 'This live location exists, but the current hub is not using it yet.'
+        : 'This live location exists in Nearbytes and is ready to attach when you need it.';
     }
     return summary.state.detail;
   }
@@ -1955,6 +2105,34 @@
     configDraft = cloneConfig(response.config);
     runtime = response.runtime;
     lastSavedSignature = serializeConfig(cloneConfig(response.config));
+    updateBackfillPolling();
+  }
+
+  async function refreshRuntimeSnapshot(): Promise<void> {
+    if (runtimeRefreshInFlight) {
+      return;
+    }
+    runtimeRefreshInFlight = true;
+    try {
+      const response = await getRootsConfig();
+      configPath = response.configPath;
+      runtime = response.runtime;
+    } catch {
+      // Keep existing UI state if the background refresh fails.
+    } finally {
+      runtimeRefreshInFlight = false;
+      updateBackfillPolling();
+    }
+  }
+
+  function scheduleRuntimeRefresh(delayMs = 220): void {
+    if (runtimeRefreshTimer) {
+      clearTimeout(runtimeRefreshTimer);
+    }
+    runtimeRefreshTimer = setTimeout(() => {
+      runtimeRefreshTimer = null;
+      void refreshRuntimeSnapshot();
+    }, delayMs);
   }
 
   function applyIntegrationsResponse(input: {
@@ -2851,12 +3029,20 @@
                   <button
                     type="button"
                     class="mini-pill mini-pill-button"
+                    title={`${attachment.label}: ${attachment.usagePercent}% of this hub is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
                     onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
                   >
-                    {attachment.label}
+                    <span>{attachment.label}</span>
+                    <span class="mini-pill-metric">{attachment.usagePercent}%</span>
                   </button>
                 {:else}
-                  <span class="mini-pill">{attachment.label}</span>
+                  <span
+                    class="mini-pill"
+                    title={`${attachment.label}: ${attachment.usagePercent}% of this hub is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                  >
+                    <span>{attachment.label}</span>
+                    <span class="mini-pill-metric">{attachment.usagePercent}%</span>
+                  </span>
                 {/if}
               {/each}
             </div>
@@ -3029,12 +3215,20 @@
                     <button
                       type="button"
                       class="mini-pill mini-pill-button"
+                        title={`${attachment.label}: ${attachment.usagePercent}% of this hub is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
                       onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
                     >
-                      {attachment.label}
+                        <span>{attachment.label}</span>
+                        <span class="mini-pill-metric">{attachment.usagePercent}%</span>
                     </button>
                   {:else}
-                    <span class="mini-pill">{attachment.label}</span>
+                      <span
+                        class="mini-pill"
+                        title={`${attachment.label}: ${attachment.usagePercent}% of this hub is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                      >
+                        <span>{attachment.label}</span>
+                        <span class="mini-pill-metric">{attachment.usagePercent}%</span>
+                      </span>
                   {/if}
                 {/each}
               </div>
@@ -4323,6 +4517,14 @@
     border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
     background: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%));
     color: var(--nb-btn-hover-color, rgba(28, 28, 30, 0.96));
+  }
+
+  .mini-pill-metric {
+    margin-left: 0.42rem;
+    color: var(--text-main);
+    font-size: 0.68rem;
+    font-weight: 700;
+    opacity: 0.9;
   }
 
   .summary-pill.warning,
