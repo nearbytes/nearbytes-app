@@ -37,6 +37,15 @@ interface MegaSyncRecord {
   readonly error?: string;
 }
 
+interface MegaSyncIssueDetail {
+  readonly issueId: string;
+  readonly parentSyncId: string;
+  readonly reason: string;
+  readonly filename?: string;
+  readonly parentLocalPath?: string;
+  readonly parentRemotePath?: string;
+}
+
 interface MegaStorageQuota {
   readonly usedBytes: number;
   readonly totalBytes: number;
@@ -570,18 +579,47 @@ export class MegaTransportAdapter {
         }, this.runtime.now()),
       };
     }
-    if (syncRecord.error?.trim()) {
-      const detail = syncRecord.error.trim();
+    let syncErrorDetail = syncRecord.error?.trim();
+    if (syncErrorDetail) {
+      const detail = syncErrorDetail;
+      const syncIssueCount = parseMegaSyncIssueCount(detail);
+      if (syncIssueCount !== null && syncRecord.id) {
+        const issues = await this.readSyncIssues(accountId).catch(() => null);
+        if (issues) {
+          const ownIssues = issues.filter((issue) => issue.parentSyncId === syncRecord.id);
+          if (ownIssues.length > 0) {
+            const issueSummary = summarizeMegaSyncIssueDetails(ownIssues, syncIssueCount);
+            return {
+              status: 'attention',
+              detail: issueSummary.detail,
+              badges: ['Repair'],
+              lastSyncAt: this.runtime.now(),
+              diagnostic: buildMegaDiagnostic({
+                code: issueSummary.code,
+                title: issueSummary.title,
+                summary: issueSummary.summary,
+                detail: issueSummary.primaryReason,
+                share,
+                syncRecord,
+                syncIssues: ownIssues,
+              }, this.runtime.now()),
+            };
+          }
+          syncErrorDetail = undefined;
+        }
+      }
+    }
+    if (syncErrorDetail) {
       return {
         status: 'attention',
-        detail,
+        detail: syncErrorDetail,
         badges: ['Repair'],
         lastSyncAt: this.runtime.now(),
         diagnostic: buildMegaDiagnostic({
           code: 'mega-sync-error',
           title: 'MEGA reported a sync error',
-          summary: summarizeMegaDiagnostic(detail, false),
-          detail,
+          summary: summarizeMegaDiagnostic(syncErrorDetail, false),
+          detail: syncErrorDetail,
           share,
           syncRecord,
         }, this.runtime.now()),
@@ -708,6 +746,20 @@ export class MegaTransportAdapter {
     return parseMegaDf(result.stdout);
   }
 
+  private async readSyncIssues(accountId: string): Promise<MegaSyncIssueDetail[]> {
+    await this.ensureLoggedIn(accountId);
+    const result = await this.runMega('sync-issues', ['--detail', '--all'], {
+      timeoutMs: 60_000,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/no sync issues/i.test(message)) {
+        return { stdout: '', stderr: '' };
+      }
+      throw error;
+    });
+    return parseMegaSyncIssueDetails(result.stdout);
+  }
+
   private async runMega(
     subcommand: string,
     args: readonly string[],
@@ -795,6 +847,45 @@ function parseMegaSyncTable(stdout: string): MegaSyncRecord[] {
         error: normalizeMegaCell(error),
       } satisfies MegaSyncRecord;
     });
+}
+
+function parseMegaSyncIssueCount(detail: string): number | null {
+  const match = detail.match(/sync issues\s*\((\d+)\)/i);
+  if (!match) {
+    return null;
+  }
+  const parsed = Number.parseInt(match[1] ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseMegaSyncIssueDetails(stdout: string): MegaSyncIssueDetail[] {
+  const blocks = stdout
+    .split(/\n(?=\[Details on issue )/u)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  const issues: MegaSyncIssueDetail[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+    const header = lines[0]?.match(/^\[Details on issue\s+([^\]]+)\]$/u);
+    const reason = lines[1]?.trim();
+    const parentLine = lines.find((line) => line.startsWith('Parent sync:'));
+    const parentMatch = parentLine?.match(/^Parent sync:\s+(\S+)\s+\((.+)\s+to\s+(.+)\)$/u);
+    if (!header || !reason || !parentMatch) {
+      continue;
+    }
+    const filenameMatch = reason.match(/Unable to sync '([^']+)'/u);
+    issues.push({
+      issueId: header[1] ?? '',
+      parentSyncId: parentMatch[1] ?? '',
+      reason,
+      filename: filenameMatch?.[1]?.trim(),
+      parentLocalPath: parentMatch[2]?.trim(),
+      parentRemotePath: parentMatch[3]?.trim(),
+    });
+  }
+
+  return issues;
 }
 
 function normalizeMegaCell(value: string | undefined): string | undefined {
@@ -984,6 +1075,7 @@ function buildMegaDiagnostic(
     detail?: string;
     share: ManagedShare;
     syncRecord?: MegaSyncRecord | null;
+    syncIssues?: readonly MegaSyncIssueDetail[];
   },
   capturedAt: number
 ): NonNullable<TransportState['diagnostic']> {
@@ -995,6 +1087,8 @@ function buildMegaDiagnostic(
       : null,
     input.syncRecord?.runState ? { label: 'Run state', value: input.syncRecord.runState } : null,
     input.syncRecord?.status ? { label: 'MEGA status', value: input.syncRecord.status } : null,
+    input.syncIssues?.length ? { label: 'Issue count', value: String(input.syncIssues.length) } : null,
+    input.syncIssues?.[0]?.filename ? { label: 'First file', value: input.syncIssues[0].filename } : null,
     { label: 'Captured', value: new Date(capturedAt).toISOString() },
   ].filter((entry): entry is { label: string; value: string } => Boolean(entry));
   return {
@@ -1035,6 +1129,41 @@ function summarizeMegaStatus(detail: string): string {
     return normalized;
   }
   return `MEGA reported: ${normalized}`;
+}
+
+function summarizeMegaSyncIssueDetails(
+  issues: readonly MegaSyncIssueDetail[],
+  reportedCount: number | null
+): {
+  code: string;
+  title: string;
+  summary: string;
+  detail: string;
+  primaryReason: string;
+} {
+  const count = Math.max(issues.length, reportedCount ?? 0);
+  const conflictingCopies = issues.every((issue) => /conflicting copies/i.test(issue.reason));
+  if (conflictingCopies) {
+    const message = count === 1
+      ? 'MEGA found a conflicting copy for 1 file in this sync.'
+      : `MEGA found conflicting copies for ${count} files in this sync.`;
+    return {
+      code: 'mega-sync-conflict',
+      title: 'MEGA found conflicting copies',
+      summary: message,
+      detail: message,
+      primaryReason: issues[0]?.reason ?? message,
+    };
+  }
+  const firstReason = issues[0]?.reason?.trim() || 'MEGA reported sync issues for this location.';
+  const summary = count > 1 ? `${firstReason} (${count} issues)` : firstReason;
+  return {
+    code: 'mega-sync-error',
+    title: 'MEGA reported a sync error',
+    summary,
+    detail: summary,
+    primaryReason: firstReason,
+  };
 }
 
 function toPublicAuthSession(session: MegaAuthSession): ProviderAuthSession {

@@ -37,6 +37,7 @@ function createFakeMegaExecutor(state: {
   confirmCommands?: string[][];
   dfStdout?: string;
   dfError?: string;
+  syncIssuesDetailStdout?: string;
   loginMode?: 'ok' | 'already-logged-in';
   requireExistingLocalSyncDir?: boolean;
   mkdirAlreadyExistsPaths?: Set<string>;
@@ -167,6 +168,13 @@ function createFakeMegaExecutor(state: {
         }
         return {
           stdout: state.dfStdout ?? 'USED STORAGE: 1048576 bytes of 1073741824 bytes\n',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (command === 'mega-sync-issues') {
+        return {
+          stdout: state.syncIssuesDetailStdout ?? '',
           stderr: '',
           exitCode: 0,
         };
@@ -468,6 +476,194 @@ describe('MegaTransportAdapter', () => {
       expect.arrayContaining([
         { label: 'Local path', value: '/tmp/alpha-mirror' },
         { label: 'Remote path', value: '/nearbytes/alpha' },
+      ])
+    );
+  });
+
+  it('ignores sync issue counts that belong to a different MEGA sync', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [
+        {
+          id: 'legacy-sync',
+          localPath: '/Users/vincenzo/MEGA/nearbytes',
+          remotePath: '/nearbytes',
+          runState: 'Unknown',
+          status: 'Processing',
+          error: 'Active sync same path',
+        },
+        {
+          id: 'managed-sync',
+          localPath: '/tmp/alpha-mirror',
+          remotePath: '/nearbytes/alpha',
+          runState: 'Running',
+          status: 'Pending',
+          error: 'Sync Issues (2)',
+        },
+      ],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      syncIssuesDetailStdout: `[Details on issue issue-1]
+Unable to sync 'deadbeef.bin'. This file has conflicting copies.
+Parent sync: legacy-sync (/Users/vincenzo/MEGA/nearbytes to <CLOUD>/nearbytes)
+
+PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
+/Users/...dead.bin -          2026-03-17 22:17:49 -                   299.00  B
+<CLOUD>/...dead.bin -          2026-03-17 15:09:30 2026-03-17 22:15:43 299.00  B
+`,
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Alpha Mirror',
+      role: 'owner',
+      localPath: '/tmp/alpha-mirror',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes/alpha',
+        shareName: 'alpha',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('ready');
+    expect(state.detail).toBe('MEGA sync is running for this share.');
+    expect(state.diagnostic).toBeUndefined();
+  });
+
+  it('attributes sync issue counts to the matching MEGA sync id', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [
+        {
+          id: 'managed-sync',
+          localPath: '/tmp/alpha-mirror',
+          remotePath: '/nearbytes/alpha',
+          runState: 'Running',
+          status: 'Pending',
+          error: 'Sync Issues (2)',
+        },
+      ],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      syncIssuesDetailStdout: `[Details on issue issue-1]
+Unable to sync 'deadbeef.bin'. This file has conflicting copies.
+Parent sync: managed-sync (/tmp/alpha-mirror to <CLOUD>/nearbytes/alpha)
+
+PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
+/Users/...dead.bin -          2026-03-17 22:17:49 -                   299.00  B
+<CLOUD>/...dead.bin -          2026-03-17 15:09:30 2026-03-17 22:15:43 299.00  B
+
+[Details on issue issue-2]
+Unable to sync 'beaded.bin'. This file has conflicting copies.
+Parent sync: managed-sync (/tmp/alpha-mirror to <CLOUD>/nearbytes/alpha)
+
+PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
+/Users/...beaded.bin -          2026-03-17 22:17:49 -                   299.00  B
+<CLOUD>/...beaded.bin -          2026-03-17 15:09:30 2026-03-17 22:15:43 299.00  B
+`,
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Alpha Mirror',
+      role: 'owner',
+      localPath: '/tmp/alpha-mirror',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes/alpha',
+        shareName: 'alpha',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('attention');
+    expect(state.detail).toBe('MEGA found conflicting copies for 2 files in this sync.');
+    expect(state.diagnostic?.code).toBe('mega-sync-conflict');
+    expect(state.diagnostic?.facts).toEqual(
+      expect.arrayContaining([
+        { label: 'Issue count', value: '2' },
+        { label: 'First file', value: 'deadbeef.bin' },
       ])
     );
   });
