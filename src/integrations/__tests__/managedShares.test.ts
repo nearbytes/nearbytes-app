@@ -34,13 +34,15 @@ class FakeTransportAdapter implements TransportAdapter {
     };
   }
 
-  async getState(): Promise<TransportState> {
+  async getState(_share: ManagedShare): Promise<TransportState> {
     return {
       status: 'ready',
       detail: `${this.label} is ready.`,
       badges: ['Fake'],
     };
   }
+
+  async ensureSync(): Promise<void> {}
 
   async getCollaborators(share: ManagedShare): Promise<ManagedShareCollaborator[]> {
     return share.invitationEmails.includes('active@example.com')
@@ -94,6 +96,40 @@ class LocalPathOverrideAdapter extends FakeTransportAdapter {
       ...base,
       localPath: this.resolvedLocalPath,
     };
+  }
+}
+
+class ConflictRepairAdapter extends FakeTransportAdapter {
+  ensureSyncCalls = 0;
+
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  override async getState(share: ManagedShare): Promise<TransportState> {
+    try {
+      await fs.stat(path.join(share.localPath, 'Nearbytes.json'));
+      return {
+        status: 'attention',
+        detail: 'Conflicting copies detected for this source.',
+        badges: ['Repair'],
+        diagnostic: {
+          code: 'provider-sync-conflict',
+          title: 'Source conflict',
+          summary: 'Conflicting copies detected for this source.',
+        },
+      };
+    } catch {
+      return {
+        status: 'ready',
+        detail: 'MEGA is ready.',
+        badges: ['Connected'],
+      };
+    }
+  }
+
+  override async ensureSync(): Promise<void> {
+    this.ensureSyncCalls += 1;
   }
 }
 
@@ -281,6 +317,143 @@ describe('ManagedShareService', () => {
         source: 'nearbytes',
       },
     ]);
+  });
+
+  it('auto-repairs provider source conflicts by merging roots and removing stale metadata', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-conflict-'));
+    tempDirs.add(tempDir);
+    const localRoot = path.join(tempDir, 'local-root');
+    const managedRoot = path.join(tempDir, 'managed-root');
+    await fs.mkdir(localRoot, { recursive: true });
+    await fs.mkdir(managedRoot, { recursive: true });
+
+    const volumeId = 'a'.repeat(130);
+    const blockHash = 'b'.repeat(64);
+    await fs.mkdir(path.join(localRoot, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(localRoot, 'channels', volumeId), { recursive: true });
+    await fs.writeFile(path.join(localRoot, 'blocks', `${blockHash}.bin`), 'block-data', 'utf8');
+    await fs.writeFile(
+      path.join(localRoot, 'channels', volumeId, 'event.bin'),
+      JSON.stringify({
+        payload: {
+          type: 'CREATE_FILE',
+          hash: blockHash,
+        },
+      }),
+      'utf8'
+    );
+    await fs.writeFile(path.join(managedRoot, 'Nearbytes.html'), 'stale marker\n', 'utf8');
+    await fs.writeFile(path.join(managedRoot, 'Nearbytes.json'), '{"legacy":true}\n', 'utf8');
+
+    const rootsConfig: RootsConfig = {
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-mega-root',
+          provider: 'mega',
+          path: managedRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'mega',
+            managedShareId: 'share-mega-1',
+          },
+        },
+      ],
+      defaultVolume: {
+        destinations: [
+          {
+            sourceId: 'src-local',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+          {
+            sourceId: 'src-mega-root',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+      volumes: [],
+    };
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'owner@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'MEGA share',
+            role: 'owner',
+            localPath: managedRoot,
+            sourceId: 'src-mega-root',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes/MEGA share' },
+            capabilities: ['mirror'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const adapter = new ConflictRepairAdapter();
+    const storage = new MultiRootStorageBackend(rootsConfig);
+    const service = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [adapter],
+    });
+
+    const shares = await service.listManagedShares();
+
+    expect(adapter.ensureSyncCalls).toBeGreaterThanOrEqual(2);
+    expect(shares.shares[0]?.state.status).toBe('ready');
+    expect(await fs.readFile(path.join(localRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('block-data');
+    expect(await fs.readFile(path.join(localRoot, 'channels', volumeId, 'event.bin'), 'utf8')).toContain(blockHash);
+    await expect(fs.readFile(path.join(managedRoot, 'blocks', `${blockHash}.bin`), 'utf8')).rejects.toThrow();
+    await expect(fs.readFile(path.join(managedRoot, 'channels', volumeId, 'event.bin'), 'utf8')).rejects.toThrow();
+    expect(await fs.readFile(path.join(managedRoot, 'Nearbytes.html'), 'utf8')).toContain('Nearbytes storage location');
+    await expect(fs.readFile(path.join(managedRoot, 'Nearbytes.json'), 'utf8')).rejects.toThrow();
   });
 
   it('creates the default MEGA managed share on connect and reuses an existing account-scoped folder', async () => {

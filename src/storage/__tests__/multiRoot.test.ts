@@ -330,6 +330,22 @@ describe('MultiRootStorageBackend', () => {
           opportunisticPolicy: 'drop-older-blocks',
         },
       ],
+      volumes: [
+        {
+          volumeId: keyHex,
+          destinations: [
+            {
+              sourceId: 'src-backup',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 10,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+      ],
     });
 
     const storage = new MultiRootStorageBackend(config);
@@ -552,6 +568,88 @@ describe('MultiRootStorageBackend', () => {
     await expect(storage.consolidateRoot('src-source', 'src-target')).rejects.toThrow(
       /Both sources must be enabled/i
     );
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('resolves source conflicts by merging monotonic data, rewriting the marker, and removing stale metadata', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    const backupRoot = join(dir, 'backup');
+    await mkdir(mainRoot, { recursive: true });
+    await mkdir(backupRoot, { recursive: true });
+
+    const keyHex = 'f'.repeat(130);
+    const blockHash = 'e'.repeat(64);
+    const config = createConfig({
+      mainPath: mainRoot,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: mainRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-backup',
+          provider: 'mega',
+          path: backupRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      volumes: [
+        {
+          volumeId: keyHex,
+          destinations: [
+            {
+              sourceId: 'src-backup',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 10,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+      ],
+    });
+
+    await mkdir(join(mainRoot, 'blocks'), { recursive: true });
+    await writeFile(join(mainRoot, 'blocks', `${blockHash}.bin`), 'block-data', 'utf8');
+    await mkdir(join(mainRoot, 'channels', keyHex), { recursive: true });
+    await writeFile(
+      join(mainRoot, 'channels', keyHex, 'event.bin'),
+      JSON.stringify({
+        payload: {
+          type: 'CREATE_FILE',
+          hash: blockHash,
+        },
+      }),
+      'utf8'
+    );
+    await writeFile(join(backupRoot, 'Nearbytes.html'), 'stale marker\n', 'utf8');
+    await writeFile(join(backupRoot, 'Nearbytes.json'), '{"legacy":true}\n', 'utf8');
+
+    const storage = new MultiRootStorageBackend(config);
+    const resolved = await storage.resolveSourceConflicts({
+      sourceIds: ['src-backup'],
+    });
+
+    expect(resolved.sourceIds).toEqual(['src-backup']);
+    expect(resolved.rewrittenMarkers).toBe(1);
+    expect(resolved.removedLegacyMetadata).toBe(1);
+    expect(resolved.clearedSources).toBe(0);
+    expect(await readFile(join(backupRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('block-data');
+    expect(await readFile(join(backupRoot, 'channels', keyHex, 'event.bin'), 'utf8')).toContain(blockHash);
+    expect(await readFile(join(backupRoot, 'Nearbytes.html'), 'utf8')).toContain('Nearbytes storage location');
+    await expect(readFile(join(backupRoot, 'Nearbytes.json'), 'utf8')).rejects.toThrow();
 
     await rm(dir, { recursive: true, force: true });
   });

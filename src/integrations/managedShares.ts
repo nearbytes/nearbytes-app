@@ -9,7 +9,7 @@ import {
   type SourceConfigEntry,
   type VolumeDestinationConfig,
 } from '../config/roots.js';
-import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
+import { ensureNearbytesMarkers, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
@@ -84,6 +84,7 @@ export class ManagedShareService {
   private readonly runtime: IntegrationRuntime;
   private readonly syncBootstrapTasks = new Map<string, Promise<void>>();
   private readonly autoRepairCooldowns = new Map<string, number>();
+  private readonly pendingMarkerRefreshes = new Set<string>();
 
   constructor(private readonly options: ManagedShareServiceOptions) {
     this.runtime = createIntegrationRuntime({
@@ -268,10 +269,18 @@ export class ManagedShareService {
     const repairableShares = summaries.filter((summary) => this.shouldAutoRepairManagedShare(summary));
 
     if (repairableShares.length > 0) {
-      await Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary.share.id)));
+      await Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary)));
       const repairedState = await this.loadState();
       const repairedVisibleShares = repairedState.managedShares.filter((share) => isProviderEnabled(share.provider));
       summaries = await Promise.all(repairedVisibleShares.map((share) => this.buildManagedShareSummary(share)));
+    }
+
+    const markerRefreshableShares = summaries.filter((summary) => this.shouldRefreshManagedShareMarker(summary));
+    if (markerRefreshableShares.length > 0) {
+      await Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
+      const refreshedState = await this.loadState();
+      const refreshedVisibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
+      summaries = await Promise.all(refreshedVisibleShares.map((share) => this.buildManagedShareSummary(share)));
     }
 
     return {
@@ -280,40 +289,7 @@ export class ManagedShareService {
   }
 
   async repairManagedShare(shareId: string): Promise<ManagedShareSummary> {
-    const state = await this.loadState();
-    const share = state.managedShares.find((entry) => entry.id === shareId);
-    if (!share) {
-      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
-    }
-
-    const adapter = this.adapters.get(normalizeProvider(share.provider));
-    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
-    const localPath = path.resolve(share.localPath);
-    await ensureMirrorFolder(localPath);
-
-    const currentConfig = cloneConfig(this.options.storage.getRootsConfig());
-    const currentConfigSignature = JSON.stringify(currentConfig);
-    const { config: repairedConfig, sourceId } = ensureManagedShareSource(currentConfig, share, localPath);
-    const repairedConfigSignature = JSON.stringify(repairedConfig);
-    const nextShare =
-      share.sourceId === sourceId
-        ? share
-        : {
-            ...share,
-            sourceId,
-            updatedAt: Date.now(),
-          };
-
-    if (repairedConfigSignature !== currentConfigSignature) {
-      await this.persistRootsConfig(repairedConfig);
-    }
-    if (nextShare !== share) {
-      await this.saveState({
-        ...state,
-        managedShares: state.managedShares.map((entry) => (entry.id === shareId ? nextShare : entry)),
-      });
-    }
-
+    const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
     if (account?.state === 'connected') {
       await adapter?.ensureSync?.(nextShare, account);
     }
@@ -620,13 +596,64 @@ export class ManagedShareService {
     return Date.now() - lastAttemptAt >= 30_000;
   }
 
-  private async autoRepairManagedShare(shareId: string): Promise<void> {
-    this.autoRepairCooldowns.set(shareId, Date.now());
+  private async autoRepairManagedShare(summary: ManagedShareSummary): Promise<void> {
+    this.autoRepairCooldowns.set(summary.share.id, Date.now());
     try {
-      await this.repairManagedShare(shareId);
+      if (this.isSourceConflictState(summary.state)) {
+        await this.resolveManagedShareSourceConflict(summary.share.id);
+        return;
+      }
+      await this.repairManagedShare(summary.share.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.runtime.logger.warn(`Managed share auto-repair failed for ${shareId}: ${message}`);
+      this.runtime.logger.warn(`Managed share auto-repair failed for ${summary.share.id}: ${message}`);
+    }
+  }
+
+  private isSourceConflictState(state: TransportState): boolean {
+    const code = state.diagnostic?.code?.trim().toLowerCase() ?? '';
+    if (code.includes('conflict')) {
+      return true;
+    }
+
+    const detail = [state.detail, state.diagnostic?.summary, state.diagnostic?.detail]
+      .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+      .join(' ')
+      .toLowerCase();
+    return /conflict|conflicting cop(?:y|ies)/i.test(detail);
+  }
+
+  private async resolveManagedShareSourceConflict(shareId: string): Promise<void> {
+    const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
+    await this.options.storage.resolveSourceConflicts({
+      sourceIds: nextShare.sourceId ? [nextShare.sourceId] : undefined,
+      resetTargets: true,
+      ensureMarker: false,
+      rewriteMarker: false,
+    });
+    this.pendingMarkerRefreshes.add(shareId);
+    if (account?.state === 'connected') {
+      await adapter?.ensureSync?.(nextShare, account);
+    }
+  }
+
+  private shouldRefreshManagedShareMarker(summary: ManagedShareSummary): boolean {
+    return this.pendingMarkerRefreshes.has(summary.share.id) && summary.state.status === 'ready';
+  }
+
+  private async refreshManagedShareMarker(shareId: string): Promise<void> {
+    try {
+      const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
+      await normalizeNearbytesRoot(nextShare.localPath, {
+        rewriteMarker: true,
+      });
+      if (account?.state === 'connected') {
+        await adapter?.ensureSync?.(nextShare, account);
+      }
+      this.pendingMarkerRefreshes.delete(shareId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share marker refresh failed for ${shareId}: ${message}`);
     }
   }
 
@@ -1111,6 +1138,56 @@ export class ManagedShareService {
 
   private async loadState(): Promise<IntegrationStateSnapshot> {
     return loadIntegrationState(this.integrationStatePath);
+  }
+
+  private async prepareManagedShareForSync(shareId: string): Promise<{
+    state: IntegrationStateSnapshot;
+    share: ManagedShare;
+    nextShare: ManagedShare;
+    account: ProviderAccount | null;
+    adapter: TransportAdapter | undefined;
+  }> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    const localPath = path.resolve(share.localPath);
+    await ensureMirrorFolder(localPath);
+
+    const currentConfig = cloneConfig(this.options.storage.getRootsConfig());
+    const currentConfigSignature = JSON.stringify(currentConfig);
+    const { config: nextConfig, sourceId } = ensureManagedShareSource(currentConfig, share, localPath);
+    const nextConfigSignature = JSON.stringify(nextConfig);
+    const nextShare =
+      share.sourceId === sourceId
+        ? share
+        : {
+            ...share,
+            sourceId,
+            updatedAt: this.runtime.now(),
+          };
+
+    if (nextConfigSignature !== currentConfigSignature) {
+      await this.persistRootsConfig(nextConfig);
+    }
+    if (nextShare !== share) {
+      await this.saveState({
+        ...state,
+        managedShares: state.managedShares.map((entry) => (entry.id === shareId ? nextShare : entry)),
+      });
+    }
+
+    return {
+      state,
+      share,
+      nextShare,
+      account,
+      adapter,
+    };
   }
 
   private async saveState(snapshot: IntegrationStateSnapshot): Promise<void> {

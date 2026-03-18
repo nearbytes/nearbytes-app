@@ -7,7 +7,11 @@ import {
   type SourceConfigEntry,
   type VolumeDestinationConfig,
 } from '../config/roots.js';
-import { ensureNearbytesMarker, NEARBYTES_MARKER_FILES } from '../config/sourceDiscovery.js';
+import {
+  ensureNearbytesMarker,
+  normalizeNearbytesRoot,
+  NEARBYTES_IGNORED_ROOT_FILES,
+} from '../config/sourceDiscovery.js';
 import { StorageError } from '../types/errors.js';
 import type { StorageBackend } from '../types/storage.js';
 import { FilesystemStorageBackend } from './filesystem.js';
@@ -111,6 +115,13 @@ export interface RootConsolidationResult {
   readonly skippedExisting: number;
   readonly bytesTransferred: number;
   readonly sameDevice: boolean;
+}
+
+export interface SourceConflictResolutionResult {
+  readonly sourceIds: string[];
+  readonly rewrittenMarkers: number;
+  readonly removedLegacyMetadata: number;
+  readonly clearedSources: number;
 }
 
 interface RootState {
@@ -495,6 +506,56 @@ export class MultiRootStorageBackend implements StorageBackend {
         bytesTransferred: transferResult.bytesTransferred,
         sameDevice: transferResult.sameDevice,
       },
+    };
+  }
+
+  async resolveSourceConflicts(options: {
+    readonly sourceIds?: readonly string[];
+    readonly resetTargets?: boolean;
+    readonly rewriteMarker?: boolean;
+    readonly ensureMarker?: boolean;
+  } = {}): Promise<SourceConflictResolutionResult> {
+    const targetedStates =
+      options.sourceIds && options.sourceIds.length > 0
+        ? options.sourceIds
+            .map((sourceId) => this.getRootStateById(sourceId))
+            .filter((state): state is RootState => Boolean(state))
+        : this.rootStates;
+    const uniqueStates = Array.from(
+      new Map(targetedStates.map((state) => [state.config.id, state])).values()
+    );
+    await this.reconcileConfiguredVolumes();
+
+    let clearedSources = 0;
+    if (options.resetTargets) {
+      for (const state of uniqueStates) {
+        if (await clearNearbytesSourceData(state.config.path)) {
+          clearedSources += 1;
+        }
+      }
+    }
+
+    let rewrittenMarkers = 0;
+    let removedLegacyMetadata = 0;
+
+    for (const state of uniqueStates) {
+      const normalized = await normalizeNearbytesRoot(state.config.path, {
+        rewriteMarker: options.rewriteMarker ?? true,
+        ensureMarker: options.ensureMarker,
+      });
+      if (normalized.createdMarker || normalized.rewroteMarker) {
+        rewrittenMarkers += 1;
+      }
+      if (normalized.removedLegacyMetadata) {
+        removedLegacyMetadata += 1;
+      }
+    }
+
+    return {
+      sourceIds: uniqueStates.map((state) => state.config.id),
+      rewrittenMarkers,
+      removedLegacyMetadata,
+      clearedSources,
     };
   }
 
@@ -1184,7 +1245,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     const historyByVolume = new Map<string, { bytes: number; files: number }>();
 
     for (const file of files) {
-      if (NEARBYTES_MARKER_FILES.includes(file.relativePath as (typeof NEARBYTES_MARKER_FILES)[number])) {
+      if (NEARBYTES_IGNORED_ROOT_FILES.includes(file.relativePath as (typeof NEARBYTES_IGNORED_ROOT_FILES)[number])) {
         continue;
       }
       totalBytes += file.size;
@@ -1447,7 +1508,7 @@ async function listRootFiles(rootPath: string): Promise<RootFileEntry[]> {
     }
 
     for (const entry of entries) {
-      if (NEARBYTES_MARKER_FILES.includes(entry.name as (typeof NEARBYTES_MARKER_FILES)[number])) {
+      if (NEARBYTES_IGNORED_ROOT_FILES.includes(entry.name as (typeof NEARBYTES_IGNORED_ROOT_FILES)[number])) {
         continue;
       }
 
@@ -1559,6 +1620,20 @@ async function executeTransfer(options: {
     bytesTransferred,
     sameDevice,
   };
+}
+
+async function clearNearbytesSourceData(rootPath: string): Promise<boolean> {
+  const blocksPath = join(rootPath, 'blocks');
+  const channelsPath = join(rootPath, 'channels');
+  const hadBlocks = Boolean(await safeStat(blocksPath));
+  const hadChannels = Boolean(await safeStat(channelsPath));
+  const markerPaths = NEARBYTES_IGNORED_ROOT_FILES.map((name) => join(rootPath, name));
+
+  await fs.rm(blocksPath, { recursive: true, force: true });
+  await fs.rm(channelsPath, { recursive: true, force: true });
+  await Promise.all(markerPaths.map((targetPath) => fs.rm(targetPath, { force: true })));
+
+  return hadBlocks || hadChannels;
 }
 
 async function removeEmptyDirectories(rootPath: string): Promise<void> {
