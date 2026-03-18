@@ -236,20 +236,23 @@ export async function normalizeNearbytesRoot(
   rootPath: string,
   options: {
     readonly rewriteMarker?: boolean;
+    readonly ensureMarker?: boolean;
   } = {}
 ): Promise<NearbytesRootNormalizationResult> {
   const markerPath = path.join(rootPath, NEARBYTES_MARKER_FILE);
   await fs.mkdir(rootPath, { recursive: true });
-  const createdMarker = !(await hasNamedMarkerFile(rootPath, NEARBYTES_MARKER_FILE));
+  const ensureMarker = options.ensureMarker ?? true;
+  const hasMarker = await hasNamedMarkerFile(rootPath, NEARBYTES_MARKER_FILE);
+  const createdMarker = !hasMarker && ensureMarker;
   const removedLegacyMetadata = await removeLegacyNearbytesMetadata(rootPath);
 
-  if (createdMarker || options.rewriteMarker) {
+  if ((createdMarker || options.rewriteMarker) && ensureMarker) {
     await fs.writeFile(markerPath, buildNearbytesMarkerHtml(), 'utf8');
   }
 
   return {
     createdMarker,
-    rewroteMarker: !createdMarker && Boolean(options.rewriteMarker),
+    rewroteMarker: hasMarker && ensureMarker && Boolean(options.rewriteMarker),
     removedLegacyMetadata,
   };
 }
