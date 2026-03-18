@@ -83,6 +83,10 @@ class FakeTransportAdapter implements TransportAdapter {
       capabilities: ['mirror', 'read', 'write', 'invite'],
     };
   }
+
+  async listManagedShareMirrors(): Promise<ManagedShareMirrorEntry[]> {
+    return [];
+  }
 }
 
 class LocalPathOverrideAdapter extends FakeTransportAdapter {

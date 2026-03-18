@@ -774,14 +774,6 @@ export class MegaTransportAdapter {
       .find((record) => normalizeComparableRemotePath(record.remotePath ?? '') === target) ?? null;
   }
 
-  private async findSyncRecord(
-    predicate: (record: MegaSyncRecord) => boolean,
-    accountId: string
-  ): Promise<MegaSyncRecord | null> {
-    const records = await this.listSyncRecords(accountId);
-    return records.find((record) => predicate(record)) ?? null;
-  }
-
   private async listSyncRecords(accountId: string): Promise<MegaSyncRecord[]> {
     await this.ensureLoggedIn(accountId);
     const result = await this.runMega('sync', [
