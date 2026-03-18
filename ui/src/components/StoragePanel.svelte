@@ -1149,12 +1149,63 @@
     return summary.storage?.sourcePath?.trim() || summary.share.localPath;
   }
 
+  function managedShareAccountEmail(summary: ManagedShareSummary): string | null {
+    const account = providerAccounts.find((entry) => entry.id === summary.share.accountId);
+    const email = typeof account?.email === 'string' ? account.email.trim() : '';
+    return email || null;
+  }
+
+  function managedShareOwnerEmail(summary: ManagedShareSummary): string | null {
+    const ownerEmail = typeof summary.share.remoteDescriptor.ownerEmail === 'string'
+      ? summary.share.remoteDescriptor.ownerEmail.trim()
+      : '';
+    return ownerEmail || null;
+  }
+
+  function managedShareRemoteName(summary: ManagedShareSummary): string | null {
+    const shareName = typeof summary.share.remoteDescriptor.shareName === 'string'
+      ? summary.share.remoteDescriptor.shareName.trim()
+      : '';
+    return shareName || null;
+  }
+
+  function managedShareTitle(summary: ManagedShareSummary): string {
+    if (summary.share.provider === 'mega') {
+      const remoteName = managedShareRemoteName(summary) ?? summary.share.label;
+      if (summary.share.role === 'recipient') {
+        const ownerEmail = managedShareOwnerEmail(summary);
+        if (ownerEmail && remoteName) {
+          return `${ownerEmail}/${remoteName}`;
+        }
+      } else {
+        const accountEmail = managedShareAccountEmail(summary);
+        if (accountEmail && remoteName) {
+          return `${accountEmail}/${remoteName}`;
+        }
+      }
+    }
+    return summary.share.label;
+  }
+
   function managedShareRoleLabel(summary: ManagedShareSummary): string {
-    return summary.share.role === 'owner' ? 'You own this live location' : 'Received from someone else';
+    if (summary.share.role === 'owner') {
+      return 'You own this live location';
+    }
+    const ownerEmail = managedShareOwnerEmail(summary);
+    return ownerEmail ? `Received from ${ownerEmail}` : 'Received from someone else';
   }
 
   function managedShareNarrative(summary: ManagedShareSummary): string {
     if (summary.state.status === 'ready') {
+      if (summary.share.provider === 'mega' && summary.share.role === 'owner') {
+        return 'This is the local mirror of your own MEGA location. The folder below should stay in sync with your provider copy.';
+      }
+      if (summary.share.provider === 'mega' && summary.share.role === 'recipient') {
+        const ownerEmail = managedShareOwnerEmail(summary);
+        return ownerEmail
+          ? `This is the local mirror of the MEGA location shared with you by ${ownerEmail}. The folder below should stay in sync with the provider copy.`
+          : 'This is the local mirror of a MEGA location shared with you. The folder below should stay in sync with the provider copy.';
+      }
       return 'This live location is ready. The folder below is the local mirror that should stay in sync with the provider copy.';
     }
     if (summary.state.status === 'attention') {
@@ -1361,7 +1412,7 @@
     const keepFullCopy = keepsFullCopy(defaultDestination);
     return {
       provider: summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider === 'github' ? 'GitHub' : summary.share.provider,
-      title: summary.share.label,
+      title: managedShareTitle(summary),
       copy: managedShareNarrative(summary),
       active: summary.state.status === 'ready',
       statusBadges: shareCardBadgesForManaged(summary),
@@ -1423,6 +1474,21 @@
 
   function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
     return volumeId ? `Use ${providerLabelForIncoming(offer.provider)} in this hub` : 'Add storage location';
+  }
+
+  function incomingManagedShareTitle(offer: IncomingManagedShareOffer): string {
+    if (offer.provider === 'mega') {
+      const ownerEmail = typeof offer.remoteDescriptor.ownerEmail === 'string'
+        ? offer.remoteDescriptor.ownerEmail.trim()
+        : '';
+      const shareName = typeof offer.remoteDescriptor.shareName === 'string'
+        ? offer.remoteDescriptor.shareName.trim()
+        : offer.label;
+      if (ownerEmail && shareName) {
+        return `${ownerEmail}/${shareName}`;
+      }
+    }
+    return offer.label;
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -3305,7 +3371,7 @@
     {#snippet incomingManagedShareCard(offer: IncomingManagedShareOffer)}
       <ShareCard
         provider={providerLabelForIncoming(offer.provider)}
-        title={offer.label}
+        title={incomingManagedShareTitle(offer)}
         copy={offer.detail}
         statusBadges={[{ label: 'Incoming storage', tone: 'muted' }]}
         meta={[
