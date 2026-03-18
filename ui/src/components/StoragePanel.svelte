@@ -1776,6 +1776,17 @@
     };
     configDraft = {
       ...configDraft,
+      sources:
+        mode === 'off'
+          ? configDraft.sources
+          : configDraft.sources.map((source) =>
+              source.id === sourceId
+                ? {
+                    ...source,
+                    enabled: true,
+                  }
+                : source
+            ),
       volumes: nextVolumes,
     };
   }
