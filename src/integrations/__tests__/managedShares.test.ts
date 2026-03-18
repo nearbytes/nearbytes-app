@@ -638,6 +638,235 @@ describe('ManagedShareService', () => {
     expect(shares.shares.filter((entry) => entry.share.remoteDescriptor.remotePath === '/nearbytes')).toHaveLength(1);
   });
 
+  it('repairs accepted MEGA shares that were incorrectly stored on the account base folder', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-recipient-repair-'));
+    tempDirs.add(tempDir);
+    const managedRoot = path.join(tempDir, 'managed-root');
+    const localRoot = path.join(tempDir, 'local-root');
+    const ownerRoot = path.join(managedRoot, 'mega', 'owner-example-com');
+    const repairedRecipientRoot = path.join(ownerRoot, 'nearbytes 5a184f');
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+
+    await fs.mkdir(localRoot, { recursive: true });
+    await fs.mkdir(ownerRoot, { recursive: true });
+    await fs.writeFile(
+      rootsConfigPath,
+      `${JSON.stringify({
+        version: 2,
+        sources: [
+          {
+            id: 'src-local',
+            provider: 'local',
+            path: localRoot,
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+          },
+          {
+            id: 'src-mega-managed',
+            provider: 'mega',
+            path: ownerRoot,
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+            integration: {
+              kind: 'provider-managed',
+              provider: 'mega',
+              managedShareId: 'share-mega-3-5a184f',
+            },
+          },
+        ],
+        defaultVolume: { destinations: [] },
+        volumes: [],
+      }, null, 2)}\n`,
+      'utf8'
+    );
+
+    const storage = new MultiRootStorageBackend({
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-mega-managed',
+          provider: 'mega',
+          path: ownerRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'mega',
+            managedShareId: 'share-mega-3-5a184f',
+          },
+        },
+      ],
+      defaultVolume: { destinations: [] },
+      volumes: [],
+    });
+    const service = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      integrationStatePath,
+      mirrorRoot: managedRoot,
+      adapters: [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+      runtime: {
+        mega: {
+          remoteBasePath: '/nearbytes',
+        },
+      },
+    });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'owner@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-2-58f427',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'recipient',
+            localPath: ownerRoot,
+            sourceId: 'src-mega-managed',
+            syncMode: 'mirror',
+            remoteDescriptor: {
+              remotePath: 'friend@example.com:nearbytes',
+              shareName: 'nearbytes',
+              ownerEmail: 'friend@example.com',
+              managedShareId: 'share-mega-2-58f427',
+            },
+            capabilities: ['mirror', 'read', 'write', 'accept'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          {
+            id: 'share-mega-3-5a184f',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'recipient',
+            localPath: ownerRoot,
+            sourceId: 'src-mega-managed',
+            syncMode: 'mirror',
+            remoteDescriptor: {
+              remotePath: 'friend@example.com:nearbytes',
+              shareName: 'nearbytes',
+              ownerEmail: 'friend@example.com',
+              managedShareId: 'share-mega-3-5a184f',
+            },
+            capabilities: ['mirror', 'read', 'write', 'accept'],
+            invitationEmails: [],
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const shares = await service.listManagedShares();
+    const recipientShare = shares.shares.find((entry) => entry.share.role === 'recipient');
+    const ownerShare = shares.shares.find((entry) => entry.share.role === 'owner');
+
+    expect(shares.shares).toHaveLength(2);
+    expect(recipientShare?.share.id).toBe('share-mega-3-5a184f');
+    expect(recipientShare?.share.localPath).toBe(path.resolve(repairedRecipientRoot));
+    expect(recipientShare?.share.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
+    expect(ownerShare?.share.localPath).toBe(path.resolve(ownerRoot));
+    expect(ownerShare?.share.remoteDescriptor.remotePath).toBe('/nearbytes');
+
+    const config = storage.getRootsConfig();
+    expect(
+      config.sources.some(
+        (source) =>
+          source.integration?.managedShareId === recipientShare?.share.id &&
+          path.resolve(source.path) === path.resolve(repairedRecipientRoot)
+      )
+    ).toBe(true);
+    expect(
+      config.sources.some(
+        (source) =>
+          source.integration?.managedShareId === ownerShare?.share.id &&
+          path.resolve(source.path) === path.resolve(ownerRoot)
+      )
+    ).toBe(true);
+  });
+
+  it('repairs accepted incoming MEGA shares into read-only local copies', async () => {
+    const { integrationStatePath, service } = await createHarness();
+    const incomingLocalPath = path.join(path.dirname(integrationStatePath), 'incoming-mega-share');
+    await fs.mkdir(incomingLocalPath, { recursive: true });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'reader@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-readonly-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'recipient',
+            localPath: incomingLocalPath,
+            syncMode: 'mirror',
+            remoteDescriptor: {
+              remotePath: 'owner@example.com:nearbytes',
+              ownerEmail: 'owner@example.com',
+              shareName: 'nearbytes',
+            },
+            capabilities: ['mirror', 'read', 'write', 'accept'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const shares = await service.listManagedShares();
+    const recipientShare = shares.shares.find((entry) => entry.share.id === 'share-mega-readonly-1');
+    expect(recipientShare?.share.capabilities).toEqual(['mirror', 'read', 'accept']);
+    expect(recipientShare?.storage?.writable).toBe(false);
+  });
+
   it('persists the adapter-resolved local path when creating a managed share', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-localpath-'));
     tempDirs.add(tempDir);

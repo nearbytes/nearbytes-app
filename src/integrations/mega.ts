@@ -88,6 +88,7 @@ export class MegaTransportAdapter {
   private readonly authSessions = new Map<string, MegaAuthSession>();
   private readonly syncStates = new Map<string, TransportState>();
   private readonly syncTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pullTasks = new Map<string, Promise<void>>();
   private readonly installer: MegaHelperInstaller;
 
   constructor(
@@ -227,7 +228,10 @@ export class MegaTransportAdapter {
         ...(input.remoteDescriptor ?? {}),
         remotePath,
       },
-      capabilities: ['mirror', 'read', 'write', 'accept'],
+      capabilities: acceptedShareCapabilities({
+        ...(input.remoteDescriptor ?? {}),
+        remotePath,
+      }),
     };
   }
 
@@ -257,6 +261,7 @@ export class MegaTransportAdapter {
           remotePath: entry.remotePath,
           shareName: entry.shareName,
           ownerEmail: entry.ownerEmail,
+          accessLevel: entry.accessLevel,
         },
       };
     });
@@ -326,6 +331,10 @@ export class MegaTransportAdapter {
         }, this.runtime.now()),
       };
     }
+    const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath');
+    if (this.usesIncomingPullMirror(share, remotePath)) {
+      return this.readIncomingMirrorState(share);
+    }
     return this.readSyncState(share, account.id);
   }
 
@@ -387,6 +396,15 @@ export class MegaTransportAdapter {
     if (!remotePath) {
       throw new Error('MEGA share is missing remotePath.');
     }
+    if (this.usesIncomingPullMirror(share, remotePath)) {
+      await this.queueIncomingMirrorRefresh(share, account.id, remotePath);
+      const timer = setInterval(() => {
+        void this.queueIncomingMirrorRefresh(share, account.id, remotePath);
+      }, this.runtime.mega.syncIntervalMs);
+      timer.unref?.();
+      this.syncTimers.set(share.id, timer);
+      return;
+    }
     const matches = await this.findSyncMatches(share.localPath, remotePath, account.id);
     const localTarget = normalizeComparablePath(share.localPath);
     const remoteTarget = normalizeComparableRemotePath(remotePath);
@@ -447,6 +465,10 @@ export class MegaTransportAdapter {
     await this.ensureLoggedIn(account.id).catch(() => {
       // Ignore logout/broken-session cleanup issues here.
     });
+    const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath');
+    if (this.usesIncomingPullMirror(share, remotePath)) {
+      return;
+    }
     const syncRecord = await this.findSyncByLocalPath(share.localPath, account.id).catch(() => null);
     if (syncRecord?.id) {
       await this.runMega('sync', ['-d', syncRecord.id]).catch(() => {
@@ -881,6 +903,104 @@ export class MegaTransportAdapter {
       }
     }
   }
+
+  private usesIncomingPullMirror(share: ManagedShare, remotePath?: string): boolean {
+    return share.role === 'recipient' && isMegaIncomingRemotePath(remotePath ?? '');
+  }
+
+  private async readIncomingMirrorState(share: ManagedShare): Promise<TransportState> {
+    return (
+      this.syncStates.get(share.id) ?? {
+        status: 'syncing',
+        detail: 'Nearbytes is downloading this shared MEGA location locally.',
+        badges: ['Syncing'],
+      }
+    );
+  }
+
+  private async queueIncomingMirrorRefresh(
+    share: ManagedShare,
+    accountId: string,
+    remotePath: string
+  ): Promise<void> {
+    const existing = this.pullTasks.get(share.id);
+    if (existing) {
+      await existing;
+      return;
+    }
+
+    const task = this.refreshIncomingMirror(share, accountId, remotePath).finally(() => {
+      this.pullTasks.delete(share.id);
+    });
+    this.pullTasks.set(share.id, task);
+    await task;
+  }
+
+  private async refreshIncomingMirror(
+    share: ManagedShare,
+    accountId: string,
+    remotePath: string
+  ): Promise<void> {
+    await this.ensureLoggedIn(accountId);
+    const previous = this.syncStates.get(share.id);
+    this.syncStates.set(share.id, {
+      status: 'syncing',
+      detail: 'Nearbytes is refreshing this shared MEGA location locally.',
+      badges: ['Syncing'],
+      lastSyncAt: previous?.lastSyncAt,
+    });
+
+    try {
+      await this.pullIncomingShare(share.localPath, remotePath);
+      this.syncStates.set(share.id, {
+        status: 'ready',
+        detail: 'A local read-only copy of this shared MEGA location is available.',
+        badges: ['Connected'],
+        lastSyncAt: this.runtime.now(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const needsAuth = /login|session|auth|401/i.test(message);
+      this.syncStates.set(share.id, {
+        status: needsAuth ? 'needs-auth' : 'attention',
+        detail: message,
+        badges: [needsAuth ? 'Reconnect' : 'Repair'],
+        lastSyncAt: this.runtime.now(),
+        diagnostic: buildMegaDiagnostic(
+          {
+            code: needsAuth ? 'mega-auth-error' : 'mega-download-failed',
+            title: needsAuth ? 'Reconnect MEGA' : 'MEGA download failed',
+            summary: needsAuth
+              ? 'Reconnect MEGA so Nearbytes can refresh this shared location again.'
+              : 'Nearbytes could not refresh the local copy of this shared MEGA location.',
+            detail: message,
+            share,
+          },
+          this.runtime.now()
+        ),
+      });
+    }
+  }
+
+  private async pullIncomingShare(localPath: string, remotePath: string): Promise<void> {
+    await fs.mkdir(localPath, { recursive: true });
+    await this.cleanupIncomingMirrorMarkers(localPath);
+    await this.runMega('get', ['-m', remotePath, localPath], {
+      timeoutMs: 120_000,
+    });
+  }
+
+  private async cleanupIncomingMirrorMarkers(localPath: string): Promise<void> {
+    const entries = await fs.readdir(localPath, { withFileTypes: true }).catch(() => []);
+    await Promise.all(
+      entries
+        .filter(
+          (entry) =>
+            entry.isFile() && /^Nearbytes(?: \(\d+\))?\.(?:html|json)$/iu.test(entry.name)
+        )
+        .map((entry) => fs.rm(path.join(localPath, entry.name), { force: true }).catch(() => undefined))
+    );
+  }
 }
 
 function megaSessionSecretKey(accountId: string): string {
@@ -1163,15 +1283,20 @@ function mapMegaAccessLevel(accessLevel: string | undefined): string | undefined
   switch ((accessLevel ?? '').trim().toLowerCase()) {
     case '0':
     case 'read':
+    case 'read access':
     case 'ro':
       return 'reader';
     case '1':
     case 'readwrite':
+    case 'read/write':
+    case 'read-write':
+    case 'read-write access':
     case 'rw':
     case 'full':
       return 'writer';
     case '2':
     case 'fullaccess':
+    case 'full access':
       return 'full';
     case '3':
     case 'owner':
@@ -1179,6 +1304,19 @@ function mapMegaAccessLevel(accessLevel: string | undefined): string | undefined
     default:
       return accessLevel?.trim() || undefined;
   }
+}
+
+function acceptedShareCapabilities(descriptor: Record<string, unknown>): string[] {
+  const remotePath = getStringDescriptor(descriptor, 'remotePath') ?? '';
+  if (isMegaIncomingRemotePath(remotePath)) {
+    return ['mirror', 'read', 'accept'];
+  }
+  return ['mirror', 'read', 'write', 'accept'];
+}
+
+function isMegaIncomingRemotePath(value: string): boolean {
+  const normalized = value.trim();
+  return normalized !== '' && !normalized.startsWith('/') && normalized.includes(':');
 }
 
 function isCommandNotFound(error: unknown): boolean {

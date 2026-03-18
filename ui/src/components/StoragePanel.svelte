@@ -625,9 +625,7 @@
     if (draft.mode === 'signup') {
       return 'Create the MEGA account here, then finish the email confirmation step inside Nearbytes.';
     }
-    return mode === 'volume'
-      ? 'Sign in here so Nearbytes can create the live mirror, keep it synced, and send MEGA storage invites for this hub.'
-      : 'Sign in here so Nearbytes can create live mirror locations, keep them synced, and send MEGA storage invites.';
+    return 'Sign in here so Nearbytes can create live mirror locations, keep them synced, and send MEGA storage invites.';
   }
 
   async function submitMegaAction(provider: ProviderCatalogEntry): Promise<void> {
@@ -731,9 +729,9 @@
   function shareAttachmentSummary(summary: ManagedShareSummary): string {
     const count = summary.attachments.length;
     if (count === 0) {
-      return 'Not attached to any hub yet.';
+      return 'Not in use yet.';
     }
-    return `${countLabel(count, 'hub')} attached`;
+    return `Used in ${countLabel(count, 'place')}.`;
   }
 
   function expectedVolumeBytes(targetVolumeId: string): number {
@@ -776,7 +774,7 @@
         const usage = sourceVolumeUsage(sourceId, volume.volumeId);
         return {
           volumeId: volume.volumeId,
-          label: knownLabel ?? `Hub ${volume.volumeId.slice(0, 8)}`,
+          label: knownLabel ?? `Space ${volume.volumeId.slice(0, 8)}`,
           known: Boolean(knownLabel),
           usageBytes: usage.usageBytes,
           usagePercent: usage.usagePercent,
@@ -787,9 +785,9 @@
   function sourceAttachmentSummary(sourceId: string): string {
     const count = sourceAttachmentLabels(sourceId).length;
     if (count === 0) {
-      return 'Not attached to any hub yet.';
+      return 'Not in use yet.';
     }
-    return `${countLabel(count, 'hub')} attached`;
+    return `Used in ${countLabel(count, 'place')}.`;
   }
 
   function activeBackfillTargets(): Array<{ sourceId: string; volumeId: string; usagePercent: number }> {
@@ -876,7 +874,7 @@
       const usage = summary.share.sourceId ? sourceVolumeUsage(summary.share.sourceId, attachment.volumeId) : { usageBytes: 0, usagePercent: 0 };
       return {
         volumeId: attachment.volumeId,
-        label: knownLabel ?? `Hub ${attachment.volumeId.slice(0, 8)}`,
+        label: knownLabel ?? `Space ${attachment.volumeId.slice(0, 8)}`,
         known: Boolean(knownLabel),
         usageBytes: usage.usageBytes,
         usagePercent: usage.usagePercent,
@@ -912,7 +910,7 @@
 
   function knownVolumeLabel(targetVolumeId: string): string | null {
     if (currentVolumePresentation && currentVolumePresentation.volumeId === targetVolumeId) {
-      return currentVolumePresentation.label.trim() || 'Current hub';
+      return currentVolumePresentation.label.trim() || 'Current selection';
     }
     return knownVolumes.find((entry: { volumeId: string; label: string }) => entry.volumeId === targetVolumeId)?.label ?? null;
   }
@@ -965,25 +963,19 @@
     }
     if (entry.provider === 'github') {
       return entry.isConnected
-        ? mode === 'volume'
-          ? 'Use GitHub as a provider for storage locations for this hub.'
-          : 'Use GitHub as a provider for storage locations in Nearbytes.'
+        ? 'Use GitHub as a provider for storage locations in Nearbytes.'
         : entry.setup.status === 'needs-config'
           ? 'Add the GitHub app details once, then connect.'
           : 'Use GitHub as another storage location provider.';
     }
     if (entry.provider === 'gdrive') {
       return entry.isConnected
-        ? mode === 'volume'
-          ? 'Use Google Drive as a provider for storage locations for this hub.'
-          : 'Use Google Drive as a provider for storage locations in Nearbytes.'
+        ? 'Use Google Drive as a provider for storage locations in Nearbytes.'
         : 'Use Google Drive as another storage location provider.';
     }
     if (entry.provider === 'mega') {
       return entry.isConnected
-        ? mode === 'volume'
-          ? 'Use MEGA as a provider for storage locations for this hub.'
-          : 'Use MEGA as a provider for storage locations in Nearbytes.'
+        ? 'Use MEGA as a provider for storage locations in Nearbytes.'
         : 'Use MEGA as a storage location provider.';
     }
     return entry.setup.detail || entry.description;
@@ -1060,6 +1052,22 @@
 
   function providerVisibleShareCount(provider: string): number {
     return providerVisibleShares(provider).length;
+  }
+
+  function providerIncomingShareCount(provider: string): number {
+    return incomingManagedSharesForProvider(provider).length;
+  }
+
+  function providerTabCopy(entry: ProviderCatalogEntry): string {
+    if (!entry.isConnected) {
+      return providerCardStatus(entry);
+    }
+    const locationCopy = countLabel(providerVisibleShareCount(entry.provider), 'location');
+    const incomingShareCount = providerIncomingShareCount(entry.provider);
+    if (incomingShareCount === 0) {
+      return locationCopy;
+    }
+    return `${locationCopy} + ${incomingShareCount} shared`;
   }
 
   function providerAttachedShareCount(provider: string): number {
@@ -1142,6 +1150,9 @@
   }
 
   function managedShareAccessLabel(summary: ManagedShareSummary): string {
+    if (summary.storage?.writable === false) {
+      return 'Read only';
+    }
     return summary.share.capabilities.includes('write') ? 'Read and write' : 'Read only';
   }
 
@@ -1202,6 +1213,11 @@
       }
       if (summary.share.provider === 'mega' && summary.share.role === 'recipient') {
         const ownerEmail = managedShareOwnerEmail(summary);
+        if (!summary.share.capabilities.includes('write')) {
+          return ownerEmail
+            ? `This is a downloaded local copy of the MEGA location shared with you by ${ownerEmail}. Nearbytes can refresh it from MEGA, but local changes here stay on this device.`
+            : 'This is a downloaded local copy of a MEGA location shared with you. Nearbytes can refresh it from MEGA, but local changes here stay on this device.';
+        }
         return ownerEmail
           ? `This is the local mirror of the MEGA location shared with you by ${ownerEmail}. The folder below should stay in sync with the provider copy.`
           : 'This is the local mirror of a MEGA location shared with you. The folder below should stay in sync with the provider copy.';
@@ -1215,12 +1231,10 @@
       return 'Nearbytes cannot use this location until the provider account is connected again.';
     }
     if (summary.state.status === 'syncing') {
-      return 'Nearbytes is still waiting for the provider mirror to settle before treating this location as ready.';
+      return summary.state.detail || 'Nearbytes is still getting this location ready.';
     }
     if (summary.attachments.length === 0) {
-      return mode === 'volume'
-        ? 'This live location exists, but the current hub is not using it yet.'
-        : 'This live location exists in Nearbytes and is ready to attach when you need it.';
+      return 'This live location exists in Nearbytes and is ready when you need it.';
     }
     return summary.state.detail;
   }
@@ -1473,7 +1487,7 @@
   }
 
   function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
-    return volumeId ? `Use ${providerLabelForIncoming(offer.provider)} in this hub` : 'Add storage location';
+    return volumeId ? 'Use this location' : 'Add storage location';
   }
 
   function incomingManagedShareTitle(offer: IncomingManagedShareOffer): string {
@@ -1489,6 +1503,22 @@
       }
     }
     return offer.label;
+  }
+
+  function incomingItemsBannerCopy(
+    incomingShares: readonly IncomingManagedShareOffer[],
+    incomingInvites: readonly IncomingProviderContactInvite[]
+  ): string {
+    if (incomingInvites.length > 0 && incomingShares.length > 0) {
+      return `${countLabel(incomingInvites.length, 'contact request')} and ${countLabel(incomingShares.length, 'shared location')} are available here.`;
+    }
+    if (incomingInvites.length > 0) {
+      return `${countLabel(incomingInvites.length, 'contact request')} need attention before shared locations can appear here.`;
+    }
+    if (incomingShares.length === 1) {
+      return `Shared location available: ${incomingManagedShareTitle(incomingShares[0])}.`;
+    }
+    return `${countLabel(incomingShares.length, 'shared location')} are available here.`;
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -1859,14 +1889,14 @@
 
   function hubStorageHeading(targetVolumeId: string): string {
     return explicitVolumePolicy(targetVolumeId)
-      ? 'This hub uses custom storage locations'
-      : 'This hub uses the default storage locations';
+      ? 'Custom storage locations'
+      : 'Default storage locations';
   }
 
   function hubStorageIntro(targetVolumeId: string): string {
     return explicitVolumePolicy(targetVolumeId)
-      ? 'These choices apply only to this hub.'
-      : 'These choices come from your default storage locations. Change any location below if this hub should behave differently.';
+      ? 'These choices apply only here.'
+      : 'These choices come from your default storage locations. Change any location below if you want different behavior here.';
   }
 
   function hubAttachedSources(targetVolumeId: string): SourceConfigEntry[] {
@@ -1888,7 +1918,7 @@
   function addSourceToHub(targetVolumeId: string, sourceId: string): void {
     setHubLocationMode(targetVolumeId, sourceId, 'store');
     hubLocationDialogVolumeId = null;
-    successMessage = 'Storage location added to this hub.';
+    successMessage = 'Storage location added.';
   }
 
   function openStorageSetupFromHubDialog(): void {
@@ -2092,7 +2122,7 @@
       return 'Choose a folder to finish setting up this location.';
     }
     if (!source.enabled) {
-      return 'This location is disabled across Nearbytes. Turn it back on before any hub can use it.';
+      return 'This location is disabled across Nearbytes. Turn it back on before Nearbytes can use it.';
     }
     if (status?.exists === false) {
       return 'This folder is not available right now. Your choices stay stored, but Nearbytes cannot use this location.';
@@ -2127,12 +2157,12 @@
   function protectionHint(targetVolumeId: string | null): string {
     if (hasDurableDestination(targetVolumeId)) {
       return targetVolumeId
-        ? 'This hub already has at least one location keeping a full copy.'
-        : 'New hubs will start with at least one location keeping a full copy.';
+        ? 'This selection already has at least one location keeping a full copy.'
+        : 'New storage setups will start with at least one location keeping a full copy.';
     }
     return targetVolumeId
-      ? 'Choose at least one writable location below to keep a full copy of this hub.'
-      : 'Every new hub needs at least one writable location that keeps a full copy.';
+      ? 'Choose at least one writable location below to keep a full copy here.'
+      : 'Every new storage setup needs at least one writable location that keeps a full copy.';
   }
 
   function copyHelpText(targetVolumeId: string | null, source: SourceConfigEntry): string {
@@ -2140,14 +2170,14 @@
     const status = sourceStatus(source.id);
     if (!keepsFullCopy(destination)) {
       return targetVolumeId
-        ? 'This location is not keeping the whole hub.'
-        : 'New hubs will not keep a full copy here by default.';
+        ? 'This location is not keeping a full copy here.'
+        : 'New storage setups will not keep a full copy here by default.';
     }
     if (!source.enabled) {
-      return 'This location is chosen, but the location is disabled across Nearbytes right now. Turn it back on before this hub can keep a full copy here.';
+      return 'This location is chosen, but it is disabled across Nearbytes right now. Turn it back on before Nearbytes can keep a full copy here.';
     }
     if (!source.writable) {
-      return 'This location is chosen, but Nearbytes cannot store the whole hub here until writing is allowed.';
+      return 'This location is chosen, but Nearbytes cannot keep a full copy here until writing is allowed.';
     }
     if (status?.exists === false) {
       return 'This location is chosen, but the folder is not available right now.';
@@ -2158,7 +2188,7 @@
     if (canReuseOtherGuaranteedCopies(destination)) {
       return 'If this location runs low on room, Nearbytes may trim older data here, but only after another full copy already has it.';
     }
-    return 'This location keeps the whole hub.';
+    return 'This location keeps a full copy.';
   }
 
   function hubLocationNote(targetVolumeId: string, source: SourceConfigEntry): string | null {
@@ -2175,9 +2205,9 @@
     }
     if (!source.enabled) {
       return mode === 'store'
-        ? 'This hub is set to keep a full copy here, but the location is disabled across Nearbytes right now.'
+        ? 'This location is set to keep a full copy here, but it is disabled across Nearbytes right now.'
         : mode === 'publish'
-          ? 'This hub is set to publish updates here, but the location is disabled across Nearbytes right now.'
+          ? 'This location is set to receive updates here, but it is disabled across Nearbytes right now.'
           : 'This location is disabled across Nearbytes right now.';
     }
     if (status?.exists === false) {
@@ -2197,10 +2227,10 @@
         : 'Nearbytes cannot write to this folder right now, so it cannot publish updates yet.';
     }
     if (mode === 'publish') {
-      return 'This location will receive new updates for this hub, but it is not keeping the whole hub here.';
+      return 'This location will receive new updates here, but it is not keeping a full copy.';
     }
     if (mode === 'off') {
-      return 'This location is available, but this hub is not using it.';
+      return 'This location is available, but it is not in use here.';
     }
     return null;
   }
@@ -2683,7 +2713,7 @@
         volumeId,
         remoteDescriptor,
       });
-      successMessage = `${provider.label} location created for this hub.`;
+      successMessage = `${provider.label} location created.`;
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} location`;
@@ -2998,7 +3028,7 @@
         localPath: offer.suggestedLocalPath,
         remoteDescriptor: offer.remoteDescriptor,
       });
-      successMessage = `${offer.label} is ready in ${mode === 'volume' && volumeId ? 'this hub' : 'Nearbytes'}.`;
+      successMessage = `${offer.label} is ready in Nearbytes.`;
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to accept incoming storage location';
@@ -3138,7 +3168,7 @@
                   <button
                     type="button"
                     class="mini-pill mini-pill-button"
-                    title={`${attachment.label}: ${attachment.usagePercent}% of this hub is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                    title={`${attachment.label}: ${attachment.usagePercent}% of this content is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
                     onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
                   >
                     <span>{attachment.label}</span>
@@ -3147,7 +3177,7 @@
                 {:else}
                   <span
                     class="mini-pill"
-                    title={`${attachment.label}: ${attachment.usagePercent}% of this hub is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                    title={`${attachment.label}: ${attachment.usagePercent}% of this content is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
                   >
                     <span>{attachment.label}</span>
                     <span class="mini-pill-metric">{attachment.usagePercent}%</span>
@@ -3325,7 +3355,7 @@
                     <button
                       type="button"
                       class="mini-pill mini-pill-button"
-                        title={`${attachment.label}: ${attachment.usagePercent}% of this hub is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                        title={`${attachment.label}: ${attachment.usagePercent}% of this content is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
                       onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
                     >
                         <span>{attachment.label}</span>
@@ -3334,7 +3364,7 @@
                   {:else}
                       <span
                         class="mini-pill"
-                        title={`${attachment.label}: ${attachment.usagePercent}% of this hub is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                        title={`${attachment.label}: ${attachment.usagePercent}% of this content is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
                       >
                         <span>{attachment.label}</span>
                         <span class="mini-pill-metric">{attachment.usagePercent}%</span>
@@ -3376,7 +3406,7 @@
         statusBadges={[{ label: 'Incoming storage', tone: 'muted' }]}
         meta={[
           `Shared by ${offer.ownerLabel}`,
-          volumeId ? 'Will attach to this hub' : 'Saved as a storage location',
+          volumeId ? 'Ready to add' : 'Saved as a storage location',
         ]}
       >
         {#snippet details()}
@@ -3453,9 +3483,7 @@
             onclick={() => (selectedGlobalProvider = provider.provider)}
           >
             <span class="provider-tab-label">{provider.label}</span>
-            <span class="provider-tab-copy">
-              {provider.isConnected ? countLabel(providerVisibleShareCount(provider.provider), 'location') : providerCardStatus(provider)}
-            </span>
+            <span class="provider-tab-copy">{providerTabCopy(provider)}</span>
           </button>
         {/each}
       </div>
@@ -3626,6 +3654,13 @@
                 {/if}
               </div>
             </div>
+
+            {#if incomingInvites.length > 0 || incomingShares.length > 0}
+              <div class="flow-note-card onboarding-note-card">
+                <p class="subheading">Shared with you</p>
+                <p class="managed-share-invite-copy">{incomingItemsBannerCopy(incomingShares, incomingInvites)}</p>
+              </div>
+            {/if}
 
             {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
               <div class="inline-progress" aria-label="Installing provider helper">
@@ -3931,7 +3966,7 @@
       {/if}
 
       {#if !volumeId}
-        <p class="storage-message">Open this hub first, then choose the places that should keep everything.</p>
+        <p class="storage-message">Open something first, then choose the places that should keep everything.</p>
       {:else}
         {#if discoveryError}
           <p class="warning-copy">{discoveryError}</p>
@@ -3964,7 +3999,7 @@
           <div class="rule-grid">
             {#if hubAttachedSources(volumeId).length === 0}
               <article class="rule-card">
-                <p class="card-copy">This hub is not using any storage location yet. Add one of your saved locations here, or open storage setup to create another.</p>
+                <p class="card-copy">Nothing is using a storage location here yet. Add one of your saved locations here, or open storage setup to create another.</p>
                 <div class="button-row inline-dialog-actions">
                   <button type="button" class="panel-btn subtle compact" onclick={() => openHubLocationDialog(volumeId)}>
                     <Plus size={14} strokeWidth={2} />
@@ -4002,8 +4037,8 @@
                       onchange={() => setHubLocationMode(volumeId, source.id, 'store')}
                     />
                     <div>
-                      <span class="toggle-title">Store this hub here</span>
-                      <span class="toggle-copy">Keep a full copy of this hub in this location.</span>
+                      <span class="toggle-title">Store everything here</span>
+                      <span class="toggle-copy">Keep a full copy in this location.</span>
                     </div>
                   </label>
                   <label class="inline-toggle compact-toggle-line">
@@ -4014,7 +4049,7 @@
                       onchange={() => setHubLocationMode(volumeId, source.id, 'publish')}
                     />
                     <div>
-                      <span class="toggle-title">Publish new hub updates here</span>
+                      <span class="toggle-title">Write new updates here</span>
                       <span class="toggle-copy">Write new updates here without keeping a full copy in this location.</span>
                     </div>
                   </label>
@@ -4074,8 +4109,8 @@
                       text=""
                       armed={true}
                       autoDisarmMs={3000}
-                      title="Stop using this location for this hub"
-                      ariaLabel="Stop using this location for this hub"
+                      title="Stop using this location here"
+                      ariaLabel="Stop using this location here"
                       onPress={() => setHubLocationMode(volumeId, source.id, 'off')}
                     />
                     <button
@@ -4122,10 +4157,10 @@
         {#if hubLocationDialogVolumeId === volumeId}
           {@const availableSources = hubAvailableSources(volumeId)}
           <div class="provider-dialog-backdrop" role="presentation" onclick={closeHubLocationDialog}></div>
-          <div class="provider-dialog" role="dialog" aria-modal="true" aria-label="Add storage location to this hub">
+          <div class="provider-dialog" role="dialog" aria-modal="true" aria-label="Add storage location">
             <div class="section-head compact provider-dialog-head">
               <div>
-                <p class="section-step">Hub storage</p>
+                <p class="section-step">Storage</p>
                 <h3>Add another location</h3>
               </div>
               <button type="button" class="panel-btn subtle compact" onclick={closeHubLocationDialog}>
@@ -4133,7 +4168,7 @@
               </button>
             </div>
 
-            <p class="section-copy">Choose one of your saved storage locations. Nearbytes will add it as a full copy for this hub, and you can fine-tune it right after.</p>
+            <p class="section-copy">Choose one of your saved storage locations. Nearbytes will add it as a full copy here, and you can fine-tune it right after.</p>
 
             {#if availableSources.length > 0}
               <div class="rule-grid dialog-rule-grid">
@@ -4167,7 +4202,7 @@
               </div>
             {:else}
               <article class="rule-card active">
-                <p class="card-copy">You do not have any saved storage locations left to add to this hub.</p>
+                <p class="card-copy">You do not have any saved storage locations left to add here.</p>
                 <div class="button-row inline-dialog-actions">
                   <button type="button" class="panel-btn subtle compact" onclick={closeHubLocationDialog}>
                     <span>Not now</span>
@@ -4228,9 +4263,9 @@
           {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
             <p class="panel-error">
               {#if dialogDisconnectImpact.inaccessibleSpaces.length > 0}
-                Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'hub')} not accessible until you reconnect it.
+                Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'space')} not accessible until you reconnect it.
               {:else}
-                Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'location')} from {countLabel(dialogDisconnectImpact.spaces, 'hub')}, but those hubs will stay accessible.
+                Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'location')} from {countLabel(dialogDisconnectImpact.spaces, 'space')}, but those spaces will stay accessible.
               {/if}
             </p>
           {/if}
