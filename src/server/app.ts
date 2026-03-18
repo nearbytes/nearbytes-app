@@ -13,6 +13,7 @@ import {
   type SecretSessionStore,
 } from './secretSessions.js';
 import type { ManagedShareService, ManagedShareServiceOptions } from '../integrations/managedShares.js';
+import type { UiDebugExecutor } from './uiDebug.js';
 
 /**
  * Dependencies required to construct the API app.
@@ -38,6 +39,8 @@ export interface AppDependencies {
   readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
   /** Optional pre-built managed share service. */
   readonly managedShareService?: ManagedShareService;
+  /** Optional desktop-only UI automation/debugging bridge. */
+  readonly uiDebugExecutor?: UiDebugExecutor;
 }
 
 /**

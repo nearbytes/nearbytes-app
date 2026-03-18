@@ -183,6 +183,67 @@ export const openJoinLinkBodySchema = parseJoinLinkBodySchema.extend({
     .optional(),
 });
 
+const uiDebugActionSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('inspect'),
+  }),
+  z.object({
+    type: z.literal('navigate'),
+    path: z.string().trim().min(1).optional(),
+    url: z.string().trim().url('UI debug URL must be a valid URL').optional(),
+    waitForLoad: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('waitFor'),
+    selector: z.string().trim().min(1, 'UI debug selector is required'),
+    state: z.enum(['present', 'visible', 'hidden']).optional(),
+    timeoutMs: z.number().int().positive().max(120_000).optional(),
+    pollIntervalMs: z.number().int().positive().max(5_000).optional(),
+  }),
+  z.object({
+    type: z.literal('click'),
+    selector: z.string().trim().min(1, 'UI debug selector is required'),
+  }),
+  z.object({
+    type: z.literal('type'),
+    selector: z.string().trim().min(1, 'UI debug selector is required'),
+    value: z.string(),
+    clear: z.boolean().optional(),
+    submit: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('pressKey'),
+    key: z.string().trim().min(1, 'UI debug key is required'),
+    alt: z.boolean().optional(),
+    control: z.boolean().optional(),
+    meta: z.boolean().optional(),
+    shift: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('read'),
+    selector: z.string().trim().min(1, 'UI debug selector is required'),
+    field: z.enum(['text', 'html', 'outerHtml', 'value']).optional(),
+    attribute: z.string().trim().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal('screenshot'),
+    path: z.string().trim().min(1).optional(),
+    selector: z.string().trim().min(1).optional(),
+    fullPage: z.boolean().optional(),
+  }),
+]);
+
+export const runUiDebugActionsBodySchema = z.object({
+  actions: z.array(uiDebugActionSchema).min(1, 'At least one UI debug action is required'),
+  stopOnError: z.boolean().optional().default(true),
+});
+
+export const uiDebugScreenshotBodySchema = z.object({
+  path: z.string().trim().min(1).optional(),
+  selector: z.string().trim().min(1).optional(),
+  fullPage: z.boolean().optional().default(false),
+});
+
 /**
  * Parses and validates input using a Zod schema.
  */

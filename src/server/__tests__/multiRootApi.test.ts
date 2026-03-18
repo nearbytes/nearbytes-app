@@ -120,6 +120,12 @@ interface ManagedShareMutationResponseBody {
   summary: ManagedShareSummaryBody;
 }
 
+interface UiDebugCapabilitiesBody {
+  available: boolean;
+  screenshot: boolean;
+  actions: string[];
+}
+
 interface JoinLinkParseResponseBody {
   plan: {
     attachments: Array<{
@@ -754,6 +760,15 @@ describe('Nearbytes API (multi-root)', () => {
     expect(openLinkBody.volumeId).toBe(openBody.volumeId);
     expect(openLinkBody.actions[0]?.status).toBe('attached');
     expect(openLinkBody.actions[0]?.shareId).toBe(createShareBody.summary.share.id);
+  });
+
+  it('reports unavailable desktop UI debug capabilities when no executor is wired', async () => {
+    const response = await request(app).get('/__debug/ui').expect(200);
+    expect(typedBody<UiDebugCapabilitiesBody>(response)).toEqual({
+      available: false,
+      screenshot: false,
+      actions: [],
+    });
   });
 
   it('recreates Nearbytes.html marker after deletion for configured sources', async () => {

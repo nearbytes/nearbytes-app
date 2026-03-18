@@ -278,6 +278,13 @@ export class MegaTransportAdapter {
         status: 'needs-auth',
         detail: 'Reconnect MEGA to resume this share.',
         badges: ['Reconnect'],
+        diagnostic: buildMegaDiagnostic({
+          code: 'mega-auth-required',
+          title: 'Reconnect MEGA',
+          summary: 'This Nearbytes location cannot sync until the MEGA session is connected again.',
+          detail: 'Reconnect MEGA to resume this share.',
+          share,
+        }, this.runtime.now()),
       };
     }
     return this.readSyncState(share, account.id);
@@ -288,7 +295,13 @@ export class MegaTransportAdapter {
       return undefined;
     }
     await this.ensureLoggedIn(account.id);
-    const quota = await this.readStorageQuota();
+    const quota = await this.readStorageQuota().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isMegaDfTemporarilyUnavailableError(message)) {
+        return null;
+      }
+      throw error;
+    });
     if (!quota) {
       return undefined;
     }
@@ -523,11 +536,19 @@ export class MegaTransportAdapter {
       this.syncStates.set(share.id, state);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const needsAuth = /login|session|auth|401/i.test(message);
       this.syncStates.set(share.id, {
-        status: /login|session|auth|401/i.test(message) ? 'needs-auth' : 'attention',
+        status: needsAuth ? 'needs-auth' : 'attention',
         detail: message,
-        badges: ['Repair'],
+        badges: [needsAuth ? 'Reconnect' : 'Repair'],
         lastSyncAt: this.runtime.now(),
+        diagnostic: buildMegaDiagnostic({
+          code: needsAuth ? 'mega-auth-error' : 'mega-sync-refresh-failed',
+          title: needsAuth ? 'Reconnect MEGA' : 'MEGA sync check failed',
+          summary: summarizeMegaDiagnostic(message, needsAuth),
+          detail: message,
+          share,
+        }, this.runtime.now()),
       });
     }
   }
@@ -540,14 +561,30 @@ export class MegaTransportAdapter {
         status: 'attention',
         detail: 'MEGA sync is not running for this share.',
         badges: ['Repair'],
+        diagnostic: buildMegaDiagnostic({
+          code: 'mega-sync-missing',
+          title: 'MEGA sync missing',
+          summary: 'Nearbytes cannot find an active MEGA sync for this local mirror.',
+          detail: 'MEGA sync is not running for this share.',
+          share,
+        }, this.runtime.now()),
       };
     }
     if (syncRecord.error?.trim()) {
+      const detail = syncRecord.error.trim();
       return {
         status: 'attention',
-        detail: syncRecord.error.trim(),
+        detail,
         badges: ['Repair'],
         lastSyncAt: this.runtime.now(),
+        diagnostic: buildMegaDiagnostic({
+          code: 'mega-sync-error',
+          title: 'MEGA reported a sync error',
+          summary: summarizeMegaDiagnostic(detail, false),
+          detail,
+          share,
+          syncRecord,
+        }, this.runtime.now()),
       };
     }
     const runState = (syncRecord.runState ?? '').trim().toLowerCase();
@@ -560,11 +597,20 @@ export class MegaTransportAdapter {
         lastSyncAt: this.runtime.now(),
       };
     }
+    const detail = syncRecord.status?.trim() || 'MEGA sync is starting.';
     return {
       status: 'syncing',
-      detail: syncRecord.status?.trim() || 'MEGA sync is starting.',
+      detail,
       badges: ['Syncing'],
       lastSyncAt: this.runtime.now(),
+      diagnostic: buildMegaDiagnostic({
+        code: 'mega-sync-progress',
+        title: 'MEGA sync in progress',
+        summary: summarizeMegaStatus(detail),
+        detail,
+        share,
+        syncRecord,
+      }, this.runtime.now()),
     };
   }
 
@@ -779,6 +825,10 @@ function isMegaMountTemporarilyUnavailableError(message: string): boolean {
   return /command not valid while login in:\s*mount/i.test(message);
 }
 
+function isMegaDfTemporarilyUnavailableError(message: string): boolean {
+  return /command not valid while login in:\s*df/i.test(message);
+}
+
 function isMegaMissingSharedPathError(message: string): boolean {
   return /no shared found for given path/i.test(message);
 }
@@ -924,6 +974,67 @@ function isCommandNotFound(error: unknown): boolean {
       'code' in error &&
       ((error as { code?: string }).code === 'ENOENT' || (error as { message?: string }).message?.includes('ENOENT'))
   );
+}
+
+function buildMegaDiagnostic(
+  input: {
+    code: string;
+    title: string;
+    summary: string;
+    detail?: string;
+    share: ManagedShare;
+    syncRecord?: MegaSyncRecord | null;
+  },
+  capturedAt: number
+): NonNullable<TransportState['diagnostic']> {
+  const facts = [
+    { label: 'Share', value: input.share.label.trim() || 'Unnamed location' },
+    { label: 'Local path', value: input.share.localPath },
+    getStringDescriptor(input.share.remoteDescriptor, 'remotePath')
+      ? { label: 'Remote path', value: getStringDescriptor(input.share.remoteDescriptor, 'remotePath')! }
+      : null,
+    input.syncRecord?.runState ? { label: 'Run state', value: input.syncRecord.runState } : null,
+    input.syncRecord?.status ? { label: 'MEGA status', value: input.syncRecord.status } : null,
+    { label: 'Captured', value: new Date(capturedAt).toISOString() },
+  ].filter((entry): entry is { label: string; value: string } => Boolean(entry));
+  return {
+    code: input.code,
+    title: input.title,
+    summary: input.summary,
+    detail: input.detail,
+    facts,
+  };
+}
+
+function summarizeMegaDiagnostic(detail: string, needsAuth: boolean): string {
+  const normalized = detail.trim();
+  if (!normalized) {
+    return needsAuth ? 'The MEGA session needs to be connected again.' : 'MEGA reported a sync problem for this location.';
+  }
+  if (/quota|storage full|overquota/i.test(normalized)) {
+    return 'The MEGA account appears to be out of space.';
+  }
+  if (/login|session|auth|401|expired/i.test(normalized)) {
+    return 'The MEGA session appears to have expired and needs to be connected again.';
+  }
+  if (/not running|stopped|pause/i.test(normalized)) {
+    return 'The MEGA sync appears to be stopped for this location.';
+  }
+  if (/permission|access denied|cannot write|read-only/i.test(normalized)) {
+    return 'Nearbytes cannot write to the local MEGA mirror path.';
+  }
+  return normalized;
+}
+
+function summarizeMegaStatus(detail: string): string {
+  const normalized = detail.trim();
+  if (!normalized) {
+    return 'MEGA is still checking this location.';
+  }
+  if (/sync|scan|index|pending|start/i.test(normalized)) {
+    return normalized;
+  }
+  return `MEGA reported: ${normalized}`;
 }
 
 function toPublicAuthSession(session: MegaAuthSession): ProviderAuthSession {

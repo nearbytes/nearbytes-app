@@ -9,6 +9,7 @@ import { generateDesktopApiToken } from './security.js';
 import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
 import { debugTriggerUpdateInstall, getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
 import { APP_CONFIG } from '../src/config/appConfig.js';
+import type { UiDebugAction, UiDebugActionResult, UiDebugExecutor, UiDebugRunRequest, UiDebugRunResponse } from '../src/server/uiDebug.js';
 
 interface RuntimeHandle {
   readonly port: number;
@@ -33,6 +34,7 @@ interface RuntimeModule {
         openExternalUrl?: (url: string) => Promise<void>;
       };
     };
+    uiDebugExecutor?: UiDebugExecutor;
   }): Promise<RuntimeHandle>;
 }
 
@@ -52,9 +54,27 @@ interface DiagnosticsState {
   isShuttingDown: boolean;
 }
 
+interface DesktopElementState {
+  readonly found: boolean;
+  readonly visible: boolean;
+  readonly text?: string;
+  readonly value?: string;
+  readonly html?: string;
+  readonly outerHtml?: string;
+  readonly attribute?: string | null;
+  readonly rect?: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
+}
+
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEEP_LINK_PROTOCOL = 'nearbytes';
 const execFileAsync = promisify(execFile);
+
+applyDebugFlagFromArgv(process.argv);
 
 const initialDeepLinkUrls = extractDeepLinkUrls(process.argv);
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -168,6 +188,7 @@ async function startDesktop(): Promise<void> {
         },
       },
     },
+    uiDebugExecutor: isDesktopDebugEnabled() ? createDesktopUiDebugExecutor() : undefined,
   });
   state.runtime = runtime;
 
@@ -227,6 +248,357 @@ function createDesktopSecretStore(): {
       await writeSecretEntries(filePath, entries);
     },
   };
+}
+
+function createDesktopUiDebugExecutor(): UiDebugExecutor {
+  return {
+    async getCapabilities() {
+      return {
+        available: true,
+        actions: ['inspect', 'navigate', 'waitFor', 'click', 'type', 'pressKey', 'read', 'screenshot'],
+        screenshot: true,
+        title: requireDesktopWindow().getTitle(),
+        url: requireDesktopWindow().webContents.getURL(),
+      };
+    },
+    async run(request: UiDebugRunRequest): Promise<UiDebugRunResponse> {
+      const results: UiDebugActionResult[] = [];
+      const stopOnError = request.stopOnError !== false;
+      for (const action of request.actions) {
+        const startedAt = Date.now();
+        try {
+          const result = await runDesktopUiDebugAction(action);
+          results.push({
+            type: action.type,
+            ok: true,
+            durationMs: Date.now() - startedAt,
+            result,
+          });
+        } catch (error) {
+          results.push({
+            type: action.type,
+            ok: false,
+            durationMs: Date.now() - startedAt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (stopOnError) {
+            break;
+          }
+        }
+      }
+      return {
+        ok: results.every((entry) => entry.ok),
+        actionCount: request.actions.length,
+        results,
+      };
+    },
+  };
+}
+
+async function runDesktopUiDebugAction(action: UiDebugAction): Promise<Record<string, unknown>> {
+  switch (action.type) {
+    case 'inspect':
+      return inspectDesktopDocument();
+    case 'navigate':
+      return navigateDesktopWindow(action);
+    case 'waitFor':
+      return waitForDesktopSelector(action.selector, action.state, action.timeoutMs, action.pollIntervalMs);
+    case 'click':
+      return clickDesktopSelector(action.selector);
+    case 'type':
+      return typeIntoDesktopSelector(action.selector, action.value, action.clear, action.submit);
+    case 'pressKey':
+      return pressDesktopKey(action);
+    case 'read':
+      return readDesktopSelector(action.selector, action.field, action.attribute);
+    case 'screenshot':
+      return captureDesktopScreenshot(action);
+    default:
+      throw new Error(`Unsupported UI debug action: ${(action as { type?: string }).type ?? 'unknown'}`);
+  }
+}
+
+function requireDesktopWindow(): BrowserWindow {
+  if (!state.window || state.window.isDestroyed()) {
+    throw new Error('Nearbytes desktop window is not available.');
+  }
+  return state.window;
+}
+
+async function inspectDesktopDocument(): Promise<Record<string, unknown>> {
+  const snapshot = await evaluateInDesktopWindow<{
+    title: string;
+    url: string;
+    readyState: string;
+  }>(`(() => ({
+    title: document.title,
+    url: window.location.href,
+    readyState: document.readyState,
+  }))()`);
+  return snapshot;
+}
+
+async function navigateDesktopWindow(action: Extract<UiDebugAction, { type: 'navigate' }>): Promise<Record<string, unknown>> {
+  const window = requireDesktopWindow();
+  const currentUrl = window.webContents.getURL();
+  const targetUrl = action.url?.trim()
+    ? action.url.trim()
+    : action.path?.trim()
+      ? new URL(action.path.trim(), currentUrl).toString()
+      : currentUrl;
+  await window.loadURL(targetUrl);
+  if (action.waitForLoad !== false) {
+    await waitForDesktopReadyState('complete', 10_000);
+  }
+  return {
+    url: window.webContents.getURL(),
+    title: window.getTitle(),
+  };
+}
+
+async function waitForDesktopReadyState(expectedState: 'interactive' | 'complete', timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const stateValue = await evaluateInDesktopWindow<string>('document.readyState');
+    if (stateValue === expectedState || (expectedState === 'interactive' && stateValue === 'complete')) {
+      return;
+    }
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for document.readyState=${expectedState}.`);
+}
+
+async function waitForDesktopSelector(
+  selector: string,
+  stateName: 'present' | 'visible' | 'hidden' = 'visible',
+  timeoutMs = 10_000,
+  pollIntervalMs = 100
+): Promise<Record<string, unknown>> {
+  const trimmedSelector = selector.trim();
+  if (!trimmedSelector) {
+    throw new Error('UI debug selector is required.');
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const entry = await readDesktopElementState(trimmedSelector);
+    if (
+      (stateName === 'present' && entry.found) ||
+      (stateName === 'visible' && entry.found && entry.visible) ||
+      (stateName === 'hidden' && (!entry.found || !entry.visible))
+    ) {
+      return {
+        selector: trimmedSelector,
+        state: stateName,
+        found: entry.found,
+        visible: entry.visible,
+      };
+    }
+    await delay(pollIntervalMs);
+  }
+  throw new Error(`Timed out waiting for selector "${trimmedSelector}" to become ${stateName}.`);
+}
+
+async function clickDesktopSelector(selector: string): Promise<Record<string, unknown>> {
+  const trimmedSelector = selector.trim();
+  const entry = await readDesktopElementState(trimmedSelector);
+  if (!entry.found) {
+    throw new Error(`Selector not found: ${trimmedSelector}`);
+  }
+  if (!entry.visible) {
+    throw new Error(`Selector is not visible: ${trimmedSelector}`);
+  }
+  await evaluateInDesktopWindow<boolean>(buildSelectorScript(trimmedSelector, `
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+    element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
+    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
+    if (typeof element.click === 'function') {
+      element.click();
+    } else {
+      element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    }
+    return true;
+  `));
+  return {
+    selector: trimmedSelector,
+    clicked: true,
+  };
+}
+
+async function typeIntoDesktopSelector(
+  selector: string,
+  value: string,
+  clear = true,
+  submit = false
+): Promise<Record<string, unknown>> {
+  const trimmedSelector = selector.trim();
+  const entry = await readDesktopElementState(trimmedSelector);
+  if (!entry.found) {
+    throw new Error(`Selector not found: ${trimmedSelector}`);
+  }
+  await evaluateInDesktopWindow<boolean>(buildSelectorScript(trimmedSelector, `
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+      throw new Error('Target element is not a text input.');
+    }
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+    element.focus();
+    ${clear ? `element.value = '';` : ''}
+    element.value = ${JSON.stringify(value)};
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    ${submit ? `element.form?.requestSubmit?.();` : ''}
+    return true;
+  `));
+  return {
+    selector: trimmedSelector,
+    valueLength: value.length,
+    submitted: submit,
+  };
+}
+
+async function pressDesktopKey(
+  action: Extract<UiDebugAction, { type: 'pressKey' }>
+): Promise<Record<string, unknown>> {
+  const window = requireDesktopWindow();
+  const modifiers: Array<'alt' | 'control' | 'meta' | 'shift'> = [];
+  if (action.alt) modifiers.push('alt');
+  if (action.control) modifiers.push('control');
+  if (action.meta) modifiers.push('meta');
+  if (action.shift) modifiers.push('shift');
+  window.webContents.sendInputEvent({
+    type: 'keyDown',
+    keyCode: action.key,
+    modifiers,
+  });
+  if (action.key.length === 1) {
+    window.webContents.sendInputEvent({
+      type: 'char',
+      keyCode: action.key,
+      modifiers,
+    });
+  }
+  window.webContents.sendInputEvent({
+    type: 'keyUp',
+    keyCode: action.key,
+    modifiers,
+  });
+  return {
+    key: action.key,
+    modifiers,
+  };
+}
+
+async function readDesktopSelector(
+  selector: string,
+  field: 'text' | 'html' | 'outerHtml' | 'value' = 'text',
+  attribute?: string
+): Promise<Record<string, unknown>> {
+  const trimmedSelector = selector.trim();
+  const entry = await readDesktopElementState(trimmedSelector, attribute?.trim() || undefined);
+  if (!entry.found) {
+    throw new Error(`Selector not found: ${trimmedSelector}`);
+  }
+  const value =
+    field === 'html'
+      ? entry.html
+      : field === 'outerHtml'
+        ? entry.outerHtml
+        : field === 'value'
+          ? entry.value
+          : entry.text;
+  return {
+    selector: trimmedSelector,
+    field,
+    value: value ?? '',
+    attribute: attribute?.trim() ? entry.attribute ?? null : undefined,
+  };
+}
+
+async function captureDesktopScreenshot(
+  action: Extract<UiDebugAction, { type: 'screenshot' }>
+): Promise<Record<string, unknown>> {
+  const window = requireDesktopWindow();
+  const targetPath = await resolveDesktopScreenshotPath(action.path);
+  const rect = action.selector?.trim()
+    ? await readDesktopElementState(action.selector.trim()).then((entry) => {
+        if (!entry.found || !entry.rect) {
+          throw new Error(`Selector not found for screenshot: ${action.selector}`);
+        }
+        return {
+          x: Math.max(0, Math.floor(entry.rect.x)),
+          y: Math.max(0, Math.floor(entry.rect.y)),
+          width: Math.max(1, Math.ceil(entry.rect.width)),
+          height: Math.max(1, Math.ceil(entry.rect.height)),
+        };
+      })
+    : undefined;
+  const image = rect && action.fullPage !== true
+    ? await window.webContents.capturePage(rect)
+    : await window.webContents.capturePage();
+  const png = image.toPNG();
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(targetPath, png);
+  return {
+    path: targetPath,
+    selector: action.selector?.trim() || undefined,
+    width: image.getSize().width,
+    height: image.getSize().height,
+  };
+}
+
+async function resolveDesktopScreenshotPath(rawPath: string | undefined): Promise<string> {
+  if (rawPath?.trim()) {
+    return path.resolve(rawPath.trim());
+  }
+  const diagnosticsDir = path.join(app.getPath('userData'), 'diagnostics', 'screenshots');
+  await fs.mkdir(diagnosticsDir, { recursive: true });
+  return path.join(diagnosticsDir, `nearbytes-ui-${Date.now()}.png`);
+}
+
+async function readDesktopElementState(selector: string, attribute?: string): Promise<DesktopElementState> {
+  return evaluateInDesktopWindow<DesktopElementState>(buildSelectorScript(selector, `
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      found: true,
+      visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
+      text: element.textContent ?? '',
+      value: 'value' in element ? String(element.value ?? '') : undefined,
+      html: element instanceof HTMLElement ? element.innerHTML : undefined,
+      outerHtml: element instanceof HTMLElement ? element.outerHTML : undefined,
+      attribute: ${attribute ? `element.getAttribute(${JSON.stringify(attribute)})` : 'undefined'},
+      rect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      },
+    };
+  `, `
+    return {
+      found: false,
+      visible: false,
+    };
+  `));
+}
+
+function buildSelectorScript(selector: string, onFound: string, onMissing?: string): string {
+  return `(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) {
+      ${onMissing ?? `throw new Error(${JSON.stringify(`Selector not found: ${selector}`)});`}
+    }
+    ${onFound}
+  })()`;
+}
+
+async function evaluateInDesktopWindow<T>(source: string): Promise<T> {
+  const window = requireDesktopWindow();
+  return window.webContents.executeJavaScript(source, true) as Promise<T>;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function registerIpc(): void {
@@ -1131,6 +1503,36 @@ function isDesktopDebugEnabled(scope?: string): boolean {
     }
     return normalized === normalizedScope || normalized === `nearbytes:${normalizedScope}`;
   });
+}
+
+function applyDebugFlagFromArgv(argv: readonly string[]): void {
+  const debugValue = readDebugFlagFromArgv(argv);
+  if (!debugValue) {
+    return;
+  }
+  const existing = process.env.DEBUG?.trim();
+  process.env.DEBUG = existing ? `${existing},${debugValue}` : debugValue;
+}
+
+function readDebugFlagFromArgv(argv: readonly string[]): string | null {
+  for (let index = 0; index < argv.length; index += 1) {
+    const entry = argv[index]?.trim();
+    if (!entry) {
+      continue;
+    }
+    if (entry === '--debug') {
+      const next = argv[index + 1]?.trim();
+      if (next && !next.startsWith('-')) {
+        return next;
+      }
+      return 'nearbytes';
+    }
+    if (entry.startsWith('--debug=')) {
+      const value = entry.slice('--debug='.length).trim();
+      return value || 'nearbytes';
+    }
+  }
+  return null;
 }
 
 async function startRendererCpuProfile(window: BrowserWindow): Promise<void> {

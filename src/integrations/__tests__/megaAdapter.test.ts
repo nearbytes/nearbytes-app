@@ -36,6 +36,7 @@ function createFakeMegaExecutor(state: {
   signupCommands?: string[][];
   confirmCommands?: string[][];
   dfStdout?: string;
+  dfError?: string;
   loginMode?: 'ok' | 'already-logged-in';
   requireExistingLocalSyncDir?: boolean;
   mkdirAlreadyExistsPaths?: Set<string>;
@@ -157,6 +158,13 @@ function createFakeMegaExecutor(state: {
         return { stdout: '', stderr: '', exitCode: 0 };
       }
       if (command === 'mega-df') {
+        if (state.dfError) {
+          return {
+            stdout: '',
+            stderr: state.dfError,
+            exitCode: 1,
+          };
+        }
         return {
           stdout: state.dfStdout ?? 'USED STORAGE: 1048576 bytes of 1073741824 bytes\n',
           stderr: '',
@@ -383,6 +391,87 @@ describe('MegaTransportAdapter', () => {
     expect(state.status).toBe('ready');
   });
 
+  it('exposes structured diagnostics when MEGA reports a sync error', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [
+        {
+          id: '1',
+          localPath: '/tmp/alpha-mirror',
+          remotePath: '/nearbytes/alpha',
+          runState: 'Running',
+          status: 'Paused',
+          error: 'Local path is not writable',
+        },
+      ],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Alpha Mirror',
+      role: 'owner',
+      localPath: '/tmp/alpha-mirror',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes/alpha',
+        shareName: 'alpha',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('attention');
+    expect(state.diagnostic?.title).toBe('MEGA reported a sync error');
+    expect(state.diagnostic?.summary).toContain('not writable');
+    expect(state.diagnostic?.facts).toEqual(
+      expect.arrayContaining([
+        { label: 'Local path', value: '/tmp/alpha-mirror' },
+        { label: 'Remote path', value: '/nearbytes/alpha' },
+      ])
+    );
+  });
+
   it('treats transient mount/login races as no incoming shares instead of failing', async () => {
     const megaState = {
       sessionToken: 'mega-session-token',
@@ -426,6 +515,51 @@ describe('MegaTransportAdapter', () => {
     } as const;
 
     await expect(adapter.listIncomingShares(account)).resolves.toEqual([]);
+  });
+
+  it('treats transient df/login races as unavailable metrics instead of failing', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      dfError: 'Command not valid while login in: df',
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    await expect(adapter.getShareStorageMetrics({} as ManagedShare, account)).resolves.toBeUndefined();
   });
 
   it('treats missing remote share paths as no collaborators instead of failing', async () => {

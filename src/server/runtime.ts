@@ -12,6 +12,7 @@ import type { ManagedShareServiceOptions } from '../integrations/managedShares.j
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { StorageError } from '../types/errors.js';
 import { createApp } from './app.js';
+import type { UiDebugExecutor } from './uiDebug.js';
 
 export interface RuntimeLogger {
   readonly log: (...args: unknown[]) => void;
@@ -30,6 +31,7 @@ export interface ApiRuntimeOptions {
   readonly uiDistPath?: string;
   readonly logger?: RuntimeLogger;
   readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
+  readonly uiDebugExecutor?: UiDebugExecutor;
 }
 
 export interface ApiRuntimeHandle {
@@ -108,6 +110,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     desktopApiToken: options.desktopApiToken,
     uiDistPath: options.uiDistPath,
     integrationOptions: options.integrationOptions,
+    uiDebugExecutor: options.uiDebugExecutor,
   });
 
   const server = await listen(app, host, port);

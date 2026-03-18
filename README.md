@@ -35,11 +35,21 @@ You can run these with `yarn <script>` or `npm run <script>`:
 - Desktop runtime binds API to `127.0.0.1` on a random port.
 - API requires a runtime desktop token via `x-nearbytes-desktop-token`.
 - Session `{port, token, expiresAt, pid}` is written locally with `0600` permissions.
+- Desktop UI automation/debug endpoints are disabled unless `DEBUG` is set.
+- Passing `--debug` to the desktop executable or CLI sets `DEBUG=nearbytes` automatically.
 - Local trusted tools can discover current API runtime with:
 
 ```bash
 nearbytes desktop api-info --json
 ```
+
+When `DEBUG` is enabled, the desktop runtime also exposes debug-only UI automation endpoints:
+
+- `GET /__debug/ui`
+- `POST /__debug/ui/actions/run`
+- `POST /__debug/ui/screenshot`
+
+Without `DEBUG`, those endpoints stay unavailable.
 
 ### Desktop Environment Variables
 

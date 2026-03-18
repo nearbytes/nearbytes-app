@@ -22,6 +22,7 @@ This document describes the desktop runtime architecture and security model.
 - API routes require `x-nearbytes-desktop-token` in desktop mode.
 - `/health` is allowed without desktop token for local boot probes.
 - Existing `/config/*` local-only checks remain active.
+- Desktop UI automation/debug routes are only wired when `DEBUG` is set.
 - Session file is written with `0600` permissions.
 - BrowserWindow hardening:
   - `contextIsolation: true`
@@ -55,3 +56,21 @@ nearbytes desktop api-info --json
 
 Returns runtime API URL + desktop token + expiration metadata.
 
+## Debug-Only UI Automation API
+
+The desktop runtime can expose a protected UI automation/debug API, but only when
+debugging is explicitly enabled.
+
+Enable it by either:
+
+- setting `DEBUG=nearbytes`
+- passing `--debug` to the CLI or desktop executable
+- passing `--debug=<scope1,scope2>` if you want custom DEBUG scopes
+
+When enabled, these routes become available behind the normal desktop token:
+
+- `GET /__debug/ui`
+- `POST /__debug/ui/actions/run`
+- `POST /__debug/ui/screenshot`
+
+When `DEBUG` is not set, those routes stay unavailable.

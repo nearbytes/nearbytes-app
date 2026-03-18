@@ -31,6 +31,7 @@ import {
   getStorageDiagnostics,
   getChannelDiagnostics,
 } from './storageDiagnostics.js';
+import type { UiDebugExecutor } from './uiDebug.js';
 import {
   consolidateRootBodySchema,
   consolidateRootParamSchema,
@@ -59,6 +60,8 @@ import {
   reconcileDiscoveredSourcesBodySchema,
   renameFileBodySchema,
   renameFolderBodySchema,
+  runUiDebugActionsBodySchema,
+  uiDebugScreenshotBodySchema,
   sendChatMessageBodySchema,
   uploadFieldsSchema,
 } from './validation.js';
@@ -84,6 +87,8 @@ export interface RouteDependencies {
   readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
   /** Optional pre-built service, mainly for tests. */
   readonly managedShareService?: ManagedShareService;
+  /** Optional desktop-only UI automation/debugging bridge. */
+  readonly uiDebugExecutor?: UiDebugExecutor;
 }
 
 /**
@@ -507,6 +512,46 @@ export function createRoutes(deps: RouteDependencies): Router {
       res.json(result);
     }));
   }
+
+  router.get('/__debug/ui', asyncHandler(async (_req, res) => {
+    if (!deps.uiDebugExecutor) {
+      res.json({
+        available: false,
+        actions: [],
+        screenshot: false,
+      });
+      return;
+    }
+    res.json(await deps.uiDebugExecutor.getCapabilities());
+  }));
+
+  router.post('/__debug/ui/actions/run', asyncHandler(async (req, res) => {
+    if (!deps.uiDebugExecutor) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Desktop UI debugging is not available in this runtime.');
+    }
+    const input = parseWithSchema(runUiDebugActionsBodySchema, req.body);
+    res.json(await deps.uiDebugExecutor.run(input));
+  }));
+
+  router.post('/__debug/ui/screenshot', asyncHandler(async (req, res) => {
+    if (!deps.uiDebugExecutor) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Desktop UI screenshots are not available in this runtime.');
+    }
+    const input = parseWithSchema(uiDebugScreenshotBodySchema, req.body);
+    res.json(
+      await deps.uiDebugExecutor.run({
+        actions: [
+          {
+            type: 'screenshot',
+            path: input.path,
+            selector: input.selector,
+            fullPage: input.fullPage,
+          },
+        ],
+        stopOnError: true,
+      })
+    );
+  }));
 
   router.post(
     '/open',

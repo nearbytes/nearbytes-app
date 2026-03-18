@@ -449,6 +449,16 @@ export interface TransportState {
   detail: string;
   badges: string[];
   lastSyncAt?: number;
+  diagnostic?: {
+    code: string;
+    title: string;
+    summary: string;
+    detail?: string;
+    facts?: Array<{
+      label: string;
+      value: string;
+    }>;
+  };
 }
 
 export interface ManagedShareSummary {
@@ -805,6 +815,36 @@ interface NearbytesDesktopBridge {
   getDesktopToken?: () => Promise<string>;
   chooseDirectory?: (initialPath?: string) => Promise<string | null>;
   isDesktop?: (() => boolean) | boolean;
+}
+
+export interface UiDebugCapabilities {
+  available: boolean;
+  actions: Array<'inspect' | 'navigate' | 'waitFor' | 'click' | 'type' | 'pressKey' | 'read' | 'screenshot'>;
+  screenshot: boolean;
+  title?: string;
+  url?: string;
+}
+
+export type UiDebugAction =
+  | { type: 'inspect' }
+  | { type: 'navigate'; path?: string; url?: string; waitForLoad?: boolean }
+  | { type: 'waitFor'; selector: string; state?: 'present' | 'visible' | 'hidden'; timeoutMs?: number; pollIntervalMs?: number }
+  | { type: 'click'; selector: string }
+  | { type: 'type'; selector: string; value: string; clear?: boolean; submit?: boolean }
+  | { type: 'pressKey'; key: string; alt?: boolean; control?: boolean; meta?: boolean; shift?: boolean }
+  | { type: 'read'; selector: string; field?: 'text' | 'html' | 'outerHtml' | 'value'; attribute?: string }
+  | { type: 'screenshot'; path?: string; selector?: string; fullPage?: boolean };
+
+export interface UiDebugRunResponse {
+  ok: boolean;
+  actionCount: number;
+  results: Array<{
+    type: UiDebugAction['type'];
+    ok: boolean;
+    durationMs: number;
+    result?: Record<string, unknown>;
+    error?: string;
+  }>;
 }
 
 const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
@@ -1426,6 +1466,36 @@ export async function getManagedShareState(shareId: string): Promise<ManagedShar
   const encoded = encodeURIComponent(shareId);
   return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/state`, {
     method: 'GET',
+  });
+}
+
+export async function getUiDebugCapabilities(): Promise<UiDebugCapabilities> {
+  return apiRequest<UiDebugCapabilities>('/__debug/ui', {
+    method: 'GET',
+  });
+}
+
+export async function runUiDebugActions(
+  actions: UiDebugAction[],
+  options: { stopOnError?: boolean } = {}
+): Promise<UiDebugRunResponse> {
+  return apiRequest<UiDebugRunResponse>('/__debug/ui/actions/run', {
+    method: 'POST',
+    body: JSON.stringify({
+      actions,
+      stopOnError: options.stopOnError ?? true,
+    }),
+  });
+}
+
+export async function captureUiDebugScreenshot(input: {
+  path?: string;
+  selector?: string;
+  fullPage?: boolean;
+} = {}): Promise<UiDebugRunResponse> {
+  return apiRequest<UiDebugRunResponse>('/__debug/ui/screenshot', {
+    method: 'POST',
+    body: JSON.stringify(input),
   });
 }
 

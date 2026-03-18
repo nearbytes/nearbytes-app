@@ -131,6 +131,16 @@ export interface TransportState {
   readonly detail: string;
   readonly badges: string[];
   readonly lastSyncAt?: number;
+  readonly diagnostic?: {
+    readonly code: string;
+    readonly title: string;
+    readonly summary: string;
+    readonly detail?: string;
+    readonly facts?: ReadonlyArray<{
+      readonly label: string;
+      readonly value: string;
+    }>;
+  };
 }
 
 export interface ProviderSetupState {
