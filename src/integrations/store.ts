@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -94,7 +95,7 @@ export async function saveIntegrationState(
   await fs.mkdir(dir, { recursive: true });
 
   const normalized = integrationStateSchema.parse(snapshot);
-  const tempPath = `${resolvedPath}.${process.pid}.tmp`;
+  const tempPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
   await fs.rename(tempPath, resolvedPath);
 }

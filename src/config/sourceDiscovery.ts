@@ -195,6 +195,16 @@ export async function ensureNearbytesMarkers(sources: readonly SourceConfigEntry
 
   for (const source of sources) {
     const markerFile = path.join(source.path, NEARBYTES_MARKER_FILE);
+    if (source.writable === false) {
+      results.push({
+        rootId: source.id,
+        path: source.path,
+        markerFile,
+        created: false,
+        ok: true,
+      });
+      continue;
+    }
     try {
       const { created } = await ensureNearbytesMarker(source.path);
       results.push({

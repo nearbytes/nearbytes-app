@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -281,7 +282,7 @@ export async function saveRootsConfig(configPath: string, config: RootsConfig): 
   const dir = path.dirname(resolvedPath);
   await fs.mkdir(dir, { recursive: true });
 
-  const tempPath = `${resolvedPath}.${process.pid}.tmp`;
+  const tempPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
   const payload = `${JSON.stringify(validated, null, 2)}\n`;
   await fs.writeFile(tempPath, payload, 'utf8');
   await fs.rename(tempPath, resolvedPath);

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, type OpenDialogOptions } from 'electron';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'crypto';
 import { existsSync, promises as fs } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -1132,7 +1133,7 @@ async function readSecretEntries(filePath: string): Promise<Record<string, strin
 
 async function writeSecretEntries(filePath: string, entries: Record<string, string>): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(
     tempPath,
     `${JSON.stringify({ version: 1, entries }, null, 2)}\n`,
