@@ -173,7 +173,7 @@ MEGA **never** sees:
 - **No MEGA API**: Nearbytes does not use MEGA API. It relies entirely on desktop sync folder.
 - **Sync delay**: Files sync asynchronously. There may be a delay before files appear on other machines.
 - **Storage quota**: Subject to your MEGA storage quota limits.
-- **No conflict resolution**: If two machines write simultaneously, MEGA handles conflicts at the file level.
+- **Nearbytes conflict repair**: When a Nearbytes storage root conflicts, the app resolves it by merging `blocks/` and `channels/`, rewriting `Nearbytes.html`, and deleting obsolete `Nearbytes.json`.
 
 ## See Also
 

@@ -29,7 +29,6 @@ export interface ReconciledDiscoveredSourceItem {
   readonly provider: RootProvider;
   readonly path: string;
   readonly markerFile: string;
-  readonly rootMetaId?: string;
   readonly classification: 'marker' | 'layout';
   readonly hasMarker: boolean;
   readonly hasBlocks: boolean;
@@ -142,7 +141,6 @@ export async function reconcileDiscoveredSources(options: {
       provider: discoveredSource.provider,
       path: discoveredSource.path,
       markerFile: discoveredSource.markerFile,
-      rootMetaId: discoveredSource.rootMetaId,
       classification: discoveredSource.sourceType,
       hasMarker: discoveredSource.hasMarker,
       hasBlocks: discoveredSource.hasBlocks,

@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { promises as fs, type Dirent, type Stats } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -8,7 +7,6 @@ export interface DiscoveredNearbytesSource {
   readonly provider: RootProvider;
   readonly path: string;
   readonly markerFile: string;
-  readonly rootMetaId?: string;
   readonly autoUpdate: boolean;
   readonly sourceType: 'marker' | 'layout' | 'suggested';
 }
@@ -21,7 +19,6 @@ export interface NearbytesScanRoot {
 export interface NearbytesRootInspection {
   readonly path: string;
   readonly markerFile: string;
-  readonly rootMetaId?: string;
   readonly hasMarker: boolean;
   readonly hasBlocks: boolean;
   readonly hasChannels: boolean;
@@ -38,15 +35,15 @@ export interface MarkerEnsureResult {
   readonly rootId: string;
   readonly path: string;
   readonly markerFile: string;
-  readonly rootMetaId?: string;
   readonly created: boolean;
   readonly ok: boolean;
   readonly error?: string;
 }
 
-interface NearbytesRootMetadata {
-  readonly p: typeof NEARBYTES_ROOT_META_KIND;
-  readonly rootId: string;
+export interface NearbytesRootNormalizationResult {
+  readonly createdMarker: boolean;
+  readonly rewroteMarker: boolean;
+  readonly removedLegacyMetadata: boolean;
 }
 
 interface ScanCandidate {
@@ -77,13 +74,16 @@ const DEFAULT_PROVIDER_MAX_DIRECTORIES: Readonly<Partial<Record<RootProvider, nu
 };
 const CHANNEL_DIRECTORY_REGEX = /^[a-f0-9]{64,200}$/i;
 export const NEARBYTES_MARKER_FILE = 'Nearbytes.html';
-export const NEARBYTES_ROOT_META_FILE = 'Nearbytes.json';
+export const NEARBYTES_LEGACY_METADATA_FILE = 'Nearbytes.json';
 export const NEARBYTES_LEGACY_MARKER_FILE = '.nearbytes';
 export const NEARBYTES_MARKER_FILES = [NEARBYTES_MARKER_FILE, NEARBYTES_LEGACY_MARKER_FILE] as const;
-export const NEARBYTES_ROOT_META_KIND = 'nb.root.meta.v1';
+export const NEARBYTES_IGNORED_ROOT_FILES = [
+  NEARBYTES_MARKER_FILE,
+  NEARBYTES_LEGACY_MARKER_FILE,
+  NEARBYTES_LEGACY_METADATA_FILE,
+] as const;
 export const NEARBYTES_HOME_URL = 'https://anymatix.github.io/nearbytes/';
 const DEFAULT_NEARBYTES_DIRECTORY = 'nearbytes';
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SKIP_DIRECTORY_NAMES = new Set([
   '.git',
   '.idea',
@@ -196,12 +196,11 @@ export async function ensureNearbytesMarkers(sources: readonly SourceConfigEntry
   for (const source of sources) {
     const markerFile = path.join(source.path, NEARBYTES_MARKER_FILE);
     try {
-      const { created, rootMetaId } = await ensureNearbytesMarker(source.path);
+      const { created } = await ensureNearbytesMarker(source.path);
       results.push({
         rootId: source.id,
         path: source.path,
         markerFile,
-        rootMetaId,
         created,
         ok: true,
       });
@@ -226,23 +225,32 @@ export async function ensureNearbytesMarkers(sources: readonly SourceConfigEntry
  */
 export async function ensureNearbytesMarker(rootPath: string): Promise<{
   readonly created: boolean;
-  readonly rootMetaId: string;
 }> {
+  const { createdMarker } = await normalizeNearbytesRoot(rootPath);
+  return {
+    created: createdMarker,
+  };
+}
+
+export async function normalizeNearbytesRoot(
+  rootPath: string,
+  options: {
+    readonly rewriteMarker?: boolean;
+  } = {}
+): Promise<NearbytesRootNormalizationResult> {
   const markerPath = path.join(rootPath, NEARBYTES_MARKER_FILE);
   await fs.mkdir(rootPath, { recursive: true });
-  const rootMetadata = await ensureNearbytesRootMetadata(rootPath);
+  const createdMarker = !(await hasNamedMarkerFile(rootPath, NEARBYTES_MARKER_FILE));
+  const removedLegacyMetadata = await removeLegacyNearbytesMetadata(rootPath);
 
-  if (await hasNamedMarkerFile(rootPath, NEARBYTES_MARKER_FILE)) {
-    return {
-      created: false,
-      rootMetaId: rootMetadata.rootId,
-    };
+  if (createdMarker || options.rewriteMarker) {
+    await fs.writeFile(markerPath, buildNearbytesMarkerHtml(), 'utf8');
   }
 
-  await fs.writeFile(markerPath, buildNearbytesMarkerHtml(), 'utf8');
   return {
-    created: true,
-    rootMetaId: rootMetadata.rootId,
+    createdMarker,
+    rewroteMarker: !createdMarker && Boolean(options.rewriteMarker),
+    removedLegacyMetadata,
   };
 }
 
@@ -256,7 +264,6 @@ export async function inspectNearbytesRoot(rootPath: string): Promise<NearbytesR
   const channelsPath = path.join(resolvedRoot, 'channels');
   const blocksPath = path.join(resolvedRoot, 'blocks');
   const markerFile = (await resolveMarkerFile(resolvedRoot)) ?? path.join(resolvedRoot, NEARBYTES_MARKER_FILE);
-  const rootMetadata = await readNearbytesRootMetadata(resolvedRoot);
   const hasMarker = await hasMarkerFile(resolvedRoot);
   const hasChannels = await isDirectory(channelsPath);
   const hasBlocks = await isDirectory(blocksPath);
@@ -267,7 +274,6 @@ export async function inspectNearbytesRoot(rootPath: string): Promise<NearbytesR
   return {
     path: resolvedRoot,
     markerFile,
-    rootMetaId: rootMetadata?.rootId,
     hasMarker,
     hasBlocks,
     hasChannels,
@@ -437,51 +443,16 @@ async function resolveMarkerFile(dirPath: string): Promise<string | null> {
   return null;
 }
 
-async function ensureNearbytesRootMetadata(rootPath: string): Promise<NearbytesRootMetadata> {
-  const existing = await readNearbytesRootMetadata(rootPath);
-  if (existing) {
-    return existing;
+async function removeLegacyNearbytesMetadata(rootPath: string): Promise<boolean> {
+  const metadataPath = path.join(rootPath, NEARBYTES_LEGACY_METADATA_FILE);
+  if (!(await hasNamedMarkerFile(rootPath, NEARBYTES_LEGACY_METADATA_FILE))) {
+    return false;
   }
-
-  const metadata = buildNearbytesRootMetadata();
-  await fs.writeFile(path.join(rootPath, NEARBYTES_ROOT_META_FILE), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
-  return metadata;
-}
-
-async function readNearbytesRootMetadata(rootPath: string): Promise<NearbytesRootMetadata | null> {
   try {
-    const raw = await fs.readFile(path.join(rootPath, NEARBYTES_ROOT_META_FILE), 'utf8');
-    return parseNearbytesRootMetadata(raw);
+    await fs.rm(metadataPath, { force: true });
+    return true;
   } catch {
-    return null;
-  }
-}
-
-function buildNearbytesRootMetadata(): NearbytesRootMetadata {
-  return {
-    p: NEARBYTES_ROOT_META_KIND,
-    rootId: randomUUID(),
-  };
-}
-
-function parseNearbytesRootMetadata(raw: string): NearbytesRootMetadata | null {
-  try {
-    const parsed = JSON.parse(raw) as {
-      p?: unknown;
-      rootId?: unknown;
-    };
-    if (parsed.p !== NEARBYTES_ROOT_META_KIND) {
-      return null;
-    }
-    if (typeof parsed.rootId !== 'string' || !UUID_REGEX.test(parsed.rootId.trim())) {
-      return null;
-    }
-    return {
-      p: NEARBYTES_ROOT_META_KIND,
-      rootId: parsed.rootId.trim(),
-    };
-  } catch {
-    return null;
+    return false;
   }
 }
 

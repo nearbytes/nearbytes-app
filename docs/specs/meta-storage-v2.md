@@ -61,6 +61,7 @@ Within each source path, Nearbytes uses a conventional on-disk layout:
 
 ```
 <source>/
+  Nearbytes.html            # optional discovery marker, rewritten by the running app
   blocks/
     <block-hash>.bin
   channels/
@@ -76,6 +77,8 @@ Normative rules:
 3. `channels/` MUST contain one directory per volume, named by `volumeId`.
 4. `<eventHash>` MUST be lowercase 64-hex (event hash).
 5. Readers MUST ignore non-`.bin` files when enumerating event logs; `snapshot.latest.json` is optional and not part of the log.
+6. `Nearbytes.html`, when present, is a discovery marker only and MUST NOT be treated as durable data.
+7. `Nearbytes.json` is obsolete metadata and MUST be ignored and removed if found.
 
 Each source has:
 
@@ -93,6 +96,18 @@ Normative rules:
 2. Source discovery is advisory and separate from volume policy editing.
 3. A source may exist without being a destination for any volume.
 4. A source may also be used as a destination for one or more volumes.
+
+### 4.2 Source Conflict Resolution
+
+Nearbytes storage roots are monotonic: encrypted blocks and event-log files are content-addressed and append-only at the path layer.
+
+Normative rules:
+
+1. When Nearbytes detects a provider or source conflict for a storage root, it MUST resolve the conflict by merging source contents rather than choosing one side as authoritative.
+2. Merge means taking the union of `blocks/` and `channels/` across configured sources using canonical Nearbytes paths.
+3. After merge, Nearbytes MUST rewrite `Nearbytes.html` in the repaired root with the running app's current marker content.
+4. After merge, Nearbytes MUST delete any `Nearbytes.json` file found in the repaired root.
+5. Conflict repair MUST preserve all valid `blocks/<hash>.bin` and `channels/<volumeId>/<eventHash>.bin` files; it MUST NOT treat these as destructive conflicts.
 
 ## 5. Volume-Centric Model
 
