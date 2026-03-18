@@ -8,7 +8,8 @@ import process from 'node:process';
 const repoRoot = process.cwd();
 const args = process.argv.slice(2);
 const killFirst = args.includes('--kill');
-const forwardedArgs = args.filter((arg) => arg !== '--kill');
+const { debugValue, passthroughArgs } = extractDebugFlag(args.filter((arg) => arg !== '--kill'));
+const forwardedArgs = passthroughArgs;
 const devSessionPath = path.join(repoRoot, '.nearbytes-dev-run.json');
 const desktopSessionPath =
   process.env.NEARBYTES_DESKTOP_SESSION_FILE && process.env.NEARBYTES_DESKTOP_SESSION_FILE.trim().length > 0
@@ -24,6 +25,16 @@ async function main() {
 
   const child = spawn('yarn', ['dev-run:raw', ...forwardedArgs], {
     cwd: repoRoot,
+    env: {
+      ...process.env,
+      ...(debugValue
+        ? {
+            DEBUG: process.env.DEBUG && process.env.DEBUG.trim().length > 0
+              ? `${process.env.DEBUG.trim()},${debugValue}`
+              : debugValue,
+          }
+        : {}),
+    },
     stdio: 'inherit',
     shell: process.platform === 'win32',
   });
@@ -132,4 +143,33 @@ function isFileNotFound(error) {
     'code' in error &&
     error.code === 'ENOENT'
   );
+}
+
+function extractDebugFlag(rawArgs) {
+  const passthroughArgs = [];
+  let debugValue = null;
+
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const entry = rawArgs[index];
+    if (entry === '--debug') {
+      const next = rawArgs[index + 1];
+      if (next && !next.startsWith('-')) {
+        debugValue = next.trim() || 'nearbytes';
+        index += 1;
+      } else {
+        debugValue = 'nearbytes';
+      }
+      continue;
+    }
+    if (entry.startsWith('--debug=')) {
+      debugValue = entry.slice('--debug='.length).trim() || 'nearbytes';
+      continue;
+    }
+    passthroughArgs.push(entry);
+  }
+
+  return {
+    debugValue,
+    passthroughArgs,
+  };
 }
