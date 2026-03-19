@@ -1021,4 +1021,32 @@ describe('MultiRootStorageBackend', () => {
 
     await rm(dir, { recursive: true, force: true });
   });
+
+  it('audits and deletes spurious or invalid files from a storage location', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    await mkdir(join(mainRoot, 'blocks'), { recursive: true });
+    await mkdir(join(mainRoot, 'channels'), { recursive: true });
+    await writeFile(join(mainRoot, 'rogue.txt'), 'rogue', 'utf8');
+    await writeFile(join(mainRoot, 'blocks', 'not-a-hash.bin'), 'bad', 'utf8');
+    await writeFile(join(mainRoot, 'blocks', `${'a'.repeat(64)}.bin`), 'wrong-data', 'utf8');
+
+    const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot }));
+    const report = await storage.inspectStorageLocation('src-main');
+
+    expect(report.issueCount).toBe(3);
+    expect(report.issues.map((issue) => issue.code).sort()).toEqual([
+      'block-hash-mismatch',
+      'invalid-block-file-name',
+      'unexpected-top-level-entry',
+    ]);
+
+    const result = await storage.repairStorageLocation('src-main', 'delete');
+    expect(result.removedCount).toBe(3);
+    await expect(readFile(join(mainRoot, 'rogue.txt'), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(mainRoot, 'blocks', 'not-a-hash.bin'), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(mainRoot, 'blocks', `${'a'.repeat(64)}.bin`), 'utf8')).rejects.toThrow();
+
+    await rm(dir, { recursive: true, force: true });
+  });
 });

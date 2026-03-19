@@ -1,16 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm } from 'fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createCryptoOperations } from '../../crypto/index.js';
 import type { RootsConfig } from '../../config/roots.js';
 import { storeData } from '../../domain/operations.js';
-import { serializeEventPayload } from '../../storage/serialization.js';
+import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
 import { ChannelStorage } from '../../storage/channel.js';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import { loadEventLog, openVolume } from '../../domain/volume.js';
-import { createEncryptedData, EventType } from '../../types/events.js';
+import { createEncryptedData, createSignature, EventType } from '../../types/events.js';
 import { createSecret } from '../../types/keys.js';
 import { defaultPathMapper } from '../../types/storage.js';
 import { createFileService } from '../fileService.js';
@@ -36,6 +36,65 @@ describe('FileService', () => {
     expect(files[0].createdAt).toBe(START_TIME);
 
     await cleanup();
+  });
+
+  it('removes corrupt block and event replicas while reading from multi-root storage', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-files-'));
+    const mainRoot = join(dir, 'main');
+    const backupRoot = join(dir, 'backup');
+    await mkdir(mainRoot, { recursive: true });
+    await mkdir(backupRoot, { recursive: true });
+
+    const crypto = createCryptoOperations();
+    const secret = createSecret('test:secret:repair-read');
+    const keyPair = await crypto.deriveKeys(secret);
+    const volumeId = Buffer.from(keyPair.publicKey).toString('hex');
+    const storage = new MultiRootStorageBackend(createMultiRootConfig(mainRoot, backupRoot, [volumeId]));
+    const channelStorage = new ChannelStorage(storage, defaultPathMapper);
+    const backupStorage = new FilesystemStorageBackend(backupRoot);
+    const backupChannelStorage = new ChannelStorage(backupStorage, defaultPathMapper);
+
+    const plaintext = Buffer.from('validated payload');
+    const symmetricKey = await crypto.deriveSymKey(keyPair.privateKey);
+    const encryptedData = await crypto.encryptSym(plaintext, symmetricKey);
+    const blobHash = await crypto.computeHash(encryptedData);
+    await backupChannelStorage.storeEncryptedData(blobHash, encryptedData, false, keyPair.publicKey);
+
+    const payload = {
+      type: EventType.CREATE_FILE,
+      fileName: 'validated.txt',
+      hash: blobHash,
+      encryptedKey: createEncryptedData(new Uint8Array(0)),
+      size: plaintext.length,
+      createdAt: START_TIME,
+    } as const;
+    const signature = await crypto.signPR(serializeEventPayload(payload), keyPair.privateKey);
+    const eventHash = await crypto.computeHash(serializeEventPayload(payload));
+    await backupChannelStorage.storeEvent(keyPair.publicKey, { payload, signature });
+
+    const channelPath = defaultPathMapper(keyPair.publicKey);
+    await mkdir(join(mainRoot, 'blocks'), { recursive: true });
+    await mkdir(join(mainRoot, channelPath), { recursive: true });
+    await writeFile(join(mainRoot, 'blocks', `${blobHash}.bin`), 'corrupt-block', 'utf8');
+    await writeFile(
+      join(mainRoot, channelPath, `${eventHash}.bin`),
+      JSON.stringify(serializeEvent({ payload, signature: createSignature(new Uint8Array(signature.length)) })),
+      'utf8'
+    );
+
+    await expect(channelStorage.retrieveEncryptedData(blobHash, keyPair.publicKey)).resolves.toEqual(encryptedData);
+    await expect(channelStorage.retrieveEvent(keyPair.publicKey, eventHash)).resolves.toMatchObject({
+      payload: {
+        fileName: 'validated.txt',
+      },
+    });
+
+    await expect(readFile(join(mainRoot, 'blocks', `${blobHash}.bin`), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(mainRoot, channelPath, `${eventHash}.bin`), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(backupRoot, 'blocks', `${blobHash}.bin`))).resolves.toBeDefined();
+    await expect(readFile(join(backupRoot, channelPath, `${eventHash}.bin`), 'utf8')).resolves.toContain('validated.txt');
+
+    await rm(dir, { recursive: true, force: true });
   });
 
   it('deletes a file and it disappears from the list', async () => {

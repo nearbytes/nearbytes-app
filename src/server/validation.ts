@@ -73,6 +73,14 @@ export const openRootInFileManagerBodySchema = z.object({
   rootId: z.string().trim().min(1, 'Root id is required'),
 });
 
+export const sourceIdParamSchema = z.object({
+  sourceId: z.string().trim().min(1, 'Source id is required'),
+});
+
+export const repairStorageLocationBodySchema = z.object({
+  action: z.enum(['trash', 'delete']).default('trash'),
+});
+
 export const reconcileDiscoveredSourcesBodySchema = z.object({
   knownVolumeIds: z
     .array(

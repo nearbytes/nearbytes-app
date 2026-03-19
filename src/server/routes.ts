@@ -50,6 +50,7 @@ import {
   importSourceReferencesBodySchema,
   managedShareIdParamSchema,
   openRootInFileManagerBodySchema,
+  repairStorageLocationBodySchema,
   openJoinLinkBodySchema,
   openBodySchema,
   parseWithSchema,
@@ -61,6 +62,7 @@ import {
   renameFileBodySchema,
   renameFolderBodySchema,
   runUiDebugActionsBodySchema,
+  sourceIdParamSchema,
   uiDebugScreenshotBodySchema,
   sendChatMessageBodySchema,
   uploadFieldsSchema,
@@ -237,6 +239,27 @@ export function createRoutes(deps: RouteDependencies): Router {
   });
   router.post('/config/roots/open-file-manager', openRootInFileManagerHandler);
   router.post('/config/open-file-manager', openRootInFileManagerHandler);
+
+  router.get('/config/roots/sources/:sourceId/repair', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const { sourceId } = parseWithSchema(sourceIdParamSchema, req.params);
+    res.json({
+      report: await multiRootStorage.inspectStorageLocation(sourceId),
+    });
+  }));
+
+  router.post('/config/roots/sources/:sourceId/repair', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const { sourceId } = parseWithSchema(sourceIdParamSchema, req.params);
+    const { action } = parseWithSchema(repairStorageLocationBodySchema, req.body);
+    const result = await multiRootStorage.repairStorageLocation(sourceId, action);
+    res.json({
+      result,
+      report: await multiRootStorage.inspectStorageLocation(sourceId),
+    });
+  }));
 
   router.get('/sources/discover', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);

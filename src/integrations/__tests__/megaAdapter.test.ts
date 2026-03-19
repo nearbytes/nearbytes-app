@@ -26,6 +26,7 @@ function createFakeMegaExecutor(state: {
   sessionToken: string;
   syncs: Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>;
   downloads?: string[][];
+  downloadSetup?: (destination: string, args: string[]) => Promise<void>;
   invitedEmails: string[];
   shareCommands: string[][];
   shareListings?: Map<string, string[]>;
@@ -164,6 +165,7 @@ function createFakeMegaExecutor(state: {
         if (destination) {
           await fs.mkdir(destination, { recursive: true });
           await fs.writeFile(path.join(destination, 'Nearbytes.json'), '{}\n', 'utf8');
+          await state.downloadSetup?.(destination, args);
         }
         return { stdout: 'Download finished\n', stderr: '', exitCode: 0 };
       }
@@ -802,6 +804,85 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
     const state = await adapter.getState(share, account);
     expect(state.status).toBe('ready');
     expect(state.detail).toContain('local read-only copy');
+
+    await adapter.detachManagedShare(share, account);
+    await fs.rm(share.localPath, { recursive: true, force: true });
+  });
+
+  it('normalizes duplicated nested incoming share roots into a readable mirror root', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      downloads: [] as string[][],
+      downloadSetup: async (destination: string) => {
+        const staleRoot = path.join(destination, 'nearbytes');
+        const duplicatedRoot = path.join(destination, 'nearbytes bce944');
+        await fs.mkdir(path.join(staleRoot, 'nearbytes'), { recursive: true });
+        await fs.mkdir(path.join(duplicatedRoot, 'blocks', 'aa'), { recursive: true });
+        await fs.mkdir(path.join(duplicatedRoot, 'channels', 'bb'), { recursive: true });
+        await fs.writeFile(path.join(duplicatedRoot, 'blocks', 'aa', 'one.bin'), 'block-data', 'utf8');
+        await fs.writeFile(path.join(duplicatedRoot, 'channels', 'bb', 'two.json'), '{"ok":true}\n', 'utf8');
+      },
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      mountStdout: 'INSHARE on //from/owner@mega.example:nearbytes (read access)\n',
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'reader@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const [offer] = await adapter.listIncomingShares(account);
+    const share: ManagedShare = {
+      id: 'share-mega-recipient-nested-1',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'recipient',
+      localPath: path.join(os.tmpdir(), `nearbytes-incoming-nested-${Date.now()}`),
+      sourceId: 'src-mega-recipient-nested-1',
+      syncMode: 'mirror',
+      remoteDescriptor: offer!.remoteDescriptor,
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await adapter.ensureSync(share, account);
+
+    await expect(fs.readFile(path.join(share.localPath, 'blocks', 'aa', 'one.bin'), 'utf8')).resolves.toBe('block-data');
+    await expect(fs.readFile(path.join(share.localPath, 'channels', 'bb', 'two.json'), 'utf8')).resolves.toContain('"ok":true');
+    await expect(fs.access(path.join(share.localPath, 'nearbytes bce944'))).rejects.toThrow();
 
     await adapter.detachManagedShare(share, account);
     await fs.rm(share.localPath, { recursive: true, force: true });
