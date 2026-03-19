@@ -2050,6 +2050,12 @@ export class ManagedShareService {
     for (const entry of entries) {
       const entryPath = path.join(canonicalRoot, entry.name);
       if (!CANONICAL_MEGA_BASE_SHARE_ENTRY_NAMES.has(entry.name)) {
+        if (entry.isDirectory()) {
+          const drainedNestedRoot = await this.cleanupNestedMegaBaseShareRoot(containerRoot, canonicalRoot, entryPath);
+          if (drainedNestedRoot) {
+            continue;
+          }
+        }
         await this.quarantineManagedSharePath(containerRoot, entryPath, 'stale-base-share');
         continue;
       }
@@ -2067,6 +2073,46 @@ export class ManagedShareService {
         await this.quarantineManagedSharePath(containerRoot, entryPath, 'invalid-base-share-entry');
       }
     }
+  }
+
+  private async cleanupNestedMegaBaseShareRoot(
+    containerRoot: string,
+    canonicalRoot: string,
+    entryPath: string
+  ): Promise<boolean> {
+    const stats = await safeLstat(entryPath);
+    if (!stats || !stats.isDirectory() || stats.isSymbolicLink()) {
+      return false;
+    }
+
+    const entryName = path.basename(entryPath);
+    const nestedEntries = await safeReadDir(entryPath);
+    const nestedEntryNames = new Set(nestedEntries.map((entry) => entry.name));
+    const looksLikeNestedManagedShareRoot =
+      entryName.toLowerCase().startsWith('nearbytes') ||
+      Array.from(CANONICAL_MEGA_BASE_SHARE_ENTRY_NAMES).some((name) => nestedEntryNames.has(name));
+    if (!looksLikeNestedManagedShareRoot) {
+      return false;
+    }
+
+    for (const entryName of CANONICAL_MEGA_BASE_SHARE_ENTRY_NAMES) {
+      await this.mergeManagedShareEntryIntoCanonicalPath(
+        containerRoot,
+        path.join(entryPath, entryName),
+        path.join(canonicalRoot, entryName)
+      );
+    }
+
+    const remainingEntries = await safeReadDir(entryPath);
+    for (const remainingEntry of remainingEntries) {
+      await this.quarantineManagedSharePath(
+        containerRoot,
+        path.join(entryPath, remainingEntry.name),
+        `stale-nested-base-share ${path.basename(entryPath)}`
+      );
+    }
+    await removeEmptyManagedShareDirectories(containerRoot, entryPath);
+    return true;
   }
 
   private async getValidatedMegaManagedShareContainerRoot(account: ProviderAccount): Promise<string | null> {
@@ -2161,7 +2207,52 @@ export class ManagedShareService {
     const relative = path.relative(containerRoot, sourcePath).replace(/\\/g, '/');
     const sanitized = sanitizeManagedFolderLabel(`${reason} ${relative.replace(/\//g, ' ')}`) || 'debris';
     const targetPath = await resolveUniqueManagedShareDebrisPath(debrisDir, sanitized);
-    await secureRenameWithinContainer(containerRoot, sourcePath, targetPath);
+    try {
+      await secureRenameWithinContainer(containerRoot, sourcePath, targetPath);
+    } catch (error) {
+      const code = extractFsErrorCode(error);
+      if ((code === 'EPERM' || code === 'EACCES') && sourceStats.isDirectory()) {
+        await this.drainManagedShareDirectoryToDebris(containerRoot, sourcePath, targetPath);
+        return;
+      }
+      if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
+        this.runtime.logger.warn(`Skipping busy managed-share cleanup for ${sourcePath}: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async drainManagedShareDirectoryToDebris(
+    containerRoot: string,
+    sourcePath: string,
+    targetPath: string
+  ): Promise<void> {
+    await ensureSecureManagedShareDirectory(containerRoot, targetPath);
+    const entries = await safeReadDir(sourcePath);
+    for (const entry of entries) {
+      const childSource = path.join(sourcePath, entry.name);
+      const childTarget = await resolveUniqueManagedShareDebrisPath(targetPath, entry.name);
+      const childStats = await safeLstat(childSource);
+      if (!childStats) {
+        continue;
+      }
+      try {
+        await secureRenameWithinContainer(containerRoot, childSource, childTarget);
+      } catch (error) {
+        const code = extractFsErrorCode(error);
+        if ((code === 'EPERM' || code === 'EACCES') && childStats.isDirectory()) {
+          await this.drainManagedShareDirectoryToDebris(containerRoot, childSource, childTarget);
+          continue;
+        }
+        if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
+          this.runtime.logger.warn(`Skipping busy managed-share cleanup for ${childSource}: ${error instanceof Error ? error.message : String(error)}`);
+          continue;
+        }
+        throw error;
+      }
+    }
+    await removeEmptyManagedShareDirectories(containerRoot, sourcePath);
   }
 
   private async relocateMegaRecipientShareIfNeeded(

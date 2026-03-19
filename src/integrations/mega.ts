@@ -470,7 +470,7 @@ export class MegaTransportAdapter {
     const exactSamePathError = Boolean(matches.exact?.error && /same path/i.test(matches.exact.error));
 
     if (exactSamePathError && matches.exact?.id) {
-      await this.runMega('sync', ['-d', matches.exact.id], {
+      await this.runMega('sync', megaSyncDeleteArgs(matches.exact), {
         timeoutMs: 60_000,
       });
       matches.exact = null;
@@ -481,7 +481,7 @@ export class MegaTransportAdapter {
       matches.local.id !== matches.exact?.id &&
       normalizeComparableRemotePath(matches.local.remotePath ?? '') !== remoteTarget
     ) {
-      await this.runMega('sync', ['-d', matches.local.id], {
+      await this.runMega('sync', megaSyncDeleteArgs(matches.local), {
         timeoutMs: 60_000,
       });
       matches.local = null;
@@ -493,7 +493,7 @@ export class MegaTransportAdapter {
       matches.remote.id !== matches.local?.id &&
       normalizeComparablePath(matches.remote.localPath ?? '') !== localTarget
     ) {
-      await this.runMega('sync', ['-d', matches.remote.id], {
+      await this.runMega('sync', megaSyncDeleteArgs(matches.remote), {
         timeoutMs: 60_000,
       });
       matches.remote = null;
@@ -523,7 +523,7 @@ export class MegaTransportAdapter {
     }
     const syncRecord = await this.findSyncByLocalPath(share.localPath, account.id).catch(() => null);
     if (syncRecord?.id) {
-      await this.runMega('sync', ['-d', syncRecord.id]).catch(() => {
+      await this.runMega('sync', megaSyncDeleteArgs(syncRecord)).catch(() => {
         // Ignore failed sync teardown.
       });
     }
@@ -1279,21 +1279,39 @@ function firstMeaningfulLine(value: string): string | null {
 }
 
 function parseMegaSyncTable(stdout: string): MegaSyncRecord[] {
-  return stdout
+  const lines = stdout
     .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line && !/^ID\tLOCALPATH/i.test(line))
-    .map((line) => {
-      const [id, localPath, remotePath, runState, status, error] = line.split('\t');
-      return {
-        id: normalizeMegaCell(id),
-        localPath: normalizeMegaCell(localPath),
-        remotePath: normalizeMegaCell(remotePath),
-        runState: normalizeMegaCell(runState),
-        status: normalizeMegaCell(status),
-        error: normalizeMegaCell(error),
-      } satisfies MegaSyncRecord;
-    });
+    .map((line) => line.replace(/\r$/u, ''))
+    .filter((line) => line.trim() !== '');
+  if (lines.length === 0) {
+    return [];
+  }
+
+  const header = lines.find((line) => /\bID\b/u.test(line) && /\bLOCALPATH\b/u.test(line) && /\bREMOTEPATH\b/u.test(line));
+  const dataLines = lines.filter((line) => line !== header);
+  if (!header) {
+    return dataLines.map(parseMegaSyncLineWithWhitespaceColumns).filter((record): record is MegaSyncRecord => record !== null);
+  }
+
+  if (header.includes('\t')) {
+    return dataLines
+      .filter((line) => !/^ID\tLOCALPATH/i.test(line.trim()))
+      .map((line) => {
+        const [id, localPath, remotePath, runState, status, error] = line.split('\t');
+        return {
+          id: normalizeMegaCell(id),
+          localPath: normalizeMegaCell(localPath),
+          remotePath: normalizeMegaCell(remotePath),
+          runState: normalizeMegaCell(runState),
+          status: normalizeMegaCell(status),
+          error: normalizeMegaCell(error),
+        } satisfies MegaSyncRecord;
+      });
+  }
+
+  return dataLines
+    .map(parseMegaSyncLineWithWhitespaceColumns)
+    .filter((record): record is MegaSyncRecord => record !== null);
 }
 
 function parseMegaSyncIssueCount(detail: string): number | null {
@@ -1344,6 +1362,73 @@ function normalizeMegaCell(value: string | undefined): string | undefined {
     return undefined;
   }
   return trimmed;
+}
+
+function parseMegaSyncLineWithWhitespaceColumns(line: string): MegaSyncRecord | null {
+
+function looksLikeMegaRemotePathToken(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (/^[A-Za-z]:[\\/]/u.test(trimmed)) {
+    return false;
+  }
+  return trimmed.startsWith('/') || trimmed.startsWith('<CLOUD>') || /^[^\s@]+@[^\s:]+:.+/u.test(trimmed);
+}
+  const trimmedLine = line.trim();
+  if (!trimmedLine || /^ID\s+LOCALPATH/i.test(trimmedLine)) {
+    return null;
+  }
+
+  const tokens = trimmedLine.split(/\s+/u);
+  if (tokens.length < 4) {
+    return null;
+  }
+
+  const id = tokens[0] ?? '';
+  const remotePathIndex = tokens.findIndex((token, index) => index > 0 && looksLikeMegaRemotePathToken(token));
+  if (remotePathIndex <= 1 || remotePathIndex === -1) {
+    return toMegaSyncRecord(trimmedLine.split(/\s{2,}/u));
+  }
+
+  const runStateIndex = remotePathIndex + 1;
+  if (runStateIndex >= tokens.length) {
+    return null;
+  }
+
+  const localPath = tokens.slice(1, remotePathIndex).join(' ');
+  const remotePath = tokens[remotePathIndex] ?? '';
+  const runState = tokens[runStateIndex] ?? '';
+  const remaining = tokens.slice(runStateIndex + 1);
+  const status = remaining[0] ?? '';
+  const error = remaining.slice(1).join(' ');
+  const values = [id, localPath, remotePath, runState, status, error];
+  return toMegaSyncRecord(values);
+}
+
+function toMegaSyncRecord(values: readonly string[]): MegaSyncRecord | null {
+  const [id, localPath, remotePath, runState, status, error] = values;
+  if (!id && !localPath && !remotePath) {
+    return null;
+  }
+  return {
+    id: normalizeMegaCell(id),
+    localPath: normalizeMegaCell(localPath),
+    remotePath: normalizeMegaCell(remotePath),
+    runState: normalizeMegaCell(runState),
+    status: normalizeMegaCell(status),
+    error: normalizeMegaCell(error),
+  } satisfies MegaSyncRecord;
+}
+
+function megaSyncDeleteArgs(syncRecord: Pick<MegaSyncRecord, 'id' | 'localPath'>): string[] {
+  const localPath = syncRecord.localPath?.trim();
+  if (localPath) {
+    return ['-d', localPath];
+  }
+  const syncId = syncRecord.id?.trim() ?? '';
+  return ['-d', syncId];
 }
 
 function normalizeComparablePath(value: string): string {
@@ -1398,11 +1483,11 @@ function scoreMegaSyncRecord(record: MegaSyncRecord): number {
 }
 
 function isMegaMountTemporarilyUnavailableError(message: string): boolean {
-  return /command not valid while login in:\s*mount/i.test(message);
+  return /command not valid while login in:\s*mount/i.test(message) || /session is not ready for this command yet/i.test(message);
 }
 
 function isMegaDfTemporarilyUnavailableError(message: string): boolean {
-  return /command not valid while login in:\s*df/i.test(message);
+  return /command not valid while login in:\s*df/i.test(message) || /session is not ready for this command yet/i.test(message);
 }
 
 function isMegaMissingSharedPathError(message: string): boolean {

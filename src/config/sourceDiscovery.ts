@@ -82,8 +82,10 @@ export const NEARBYTES_IGNORED_ROOT_FILES = [
   NEARBYTES_LEGACY_MARKER_FILE,
   NEARBYTES_LEGACY_METADATA_FILE,
 ] as const;
+export const NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES = ['.debris', '.megaignore', 'Rubbish'] as const;
 export const NEARBYTES_HOME_URL = 'https://anymatix.github.io/nearbytes/';
 const DEFAULT_NEARBYTES_DIRECTORY = 'nearbytes';
+const WATCH_IGNORED_TOP_LEVEL_ENTRY_NAMES = ['.Trash', ...NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES] as const;
 const SKIP_DIRECTORY_NAMES = new Set([
   '.git',
   '.idea',
@@ -92,7 +94,15 @@ const SKIP_DIRECTORY_NAMES = new Set([
   'node_modules',
   '.Trash',
   '.cache',
+  'Rubbish',
 ]);
+const NEARBYTES_IGNORED_ROOT_FILE_SET = new Set(NEARBYTES_IGNORED_ROOT_FILES.map((entry) => entry.toLowerCase()));
+const NEARBYTES_HOUSEKEEPING_ROOT_ENTRY_SET = new Set(
+  NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES.map((entry) => entry.toLowerCase())
+);
+const WATCH_IGNORED_TOP_LEVEL_ENTRY_SET = new Set(
+  WATCH_IGNORED_TOP_LEVEL_ENTRY_NAMES.map((entry) => entry.toLowerCase())
+);
 
 export async function discoverNearbytesScanRoots(options?: {
   readonly includeDefaultRoots?: boolean;
@@ -428,6 +438,29 @@ export function getProviderScanLimits(provider: RootProvider): {
   };
 }
 
+export function isNearbytesIgnoredTopLevelEntryName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return (
+    NEARBYTES_IGNORED_ROOT_FILE_SET.has(normalized) || NEARBYTES_HOUSEKEEPING_ROOT_ENTRY_SET.has(normalized)
+  );
+}
+
+export function isNearbytesWatchIgnoredPath(targetPath: string, watchRoots: readonly string[]): boolean {
+  const normalizedTarget = normalizeComparablePath(targetPath);
+  for (const watchRoot of watchRoots) {
+    const normalizedRoot = normalizeComparablePath(watchRoot);
+    if (normalizedTarget === normalizedRoot || !normalizedTarget.startsWith(`${normalizedRoot}/`)) {
+      continue;
+    }
+    const relativePath = normalizedTarget.slice(normalizedRoot.length + 1);
+    const firstSegment = relativePath.split('/')[0]?.trim().toLowerCase();
+    if (firstSegment && WATCH_IGNORED_TOP_LEVEL_ENTRY_SET.has(firstSegment)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function hasMarkerFile(dirPath: string): Promise<boolean> {
   for (const markerFile of NEARBYTES_MARKER_FILES) {
     if (await hasNamedMarkerFile(dirPath, markerFile)) {
@@ -567,6 +600,10 @@ function toCanonicalPathKey(targetPath: string): string {
     return normalized.toLowerCase();
   }
   return normalized;
+}
+
+function normalizeComparablePath(targetPath: string): string {
+  return toCanonicalPathKey(path.resolve(targetPath));
 }
 
 export function classifyNearbytesProviderName(entryName: string): RootProvider | null {

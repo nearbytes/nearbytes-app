@@ -9,6 +9,8 @@ import {
   ensureNearbytesMarker,
   getProviderScanLimits,
   inspectNearbytesRoot,
+  isNearbytesIgnoredTopLevelEntryName,
+  isNearbytesWatchIgnoredPath,
   NEARBYTES_LEGACY_METADATA_FILE,
   NEARBYTES_LEGACY_MARKER_FILE,
   NEARBYTES_MARKER_FILE,
@@ -162,6 +164,20 @@ describe('source discovery', () => {
       maxDepth: 2,
       maxDirectories: 600,
     });
+  });
+
+  it('treats provider housekeeping paths as ignored top-level entries', () => {
+    expect(isNearbytesIgnoredTopLevelEntryName('Rubbish')).toBe(true);
+    expect(isNearbytesIgnoredTopLevelEntryName('.debris')).toBe(true);
+    expect(isNearbytesIgnoredTopLevelEntryName('blocks')).toBe(false);
+  });
+
+  it('ignores watcher paths under housekeeping roots only at the top level', () => {
+    const root = path.join(tmpdir(), 'nearbytes-watch-root');
+    expect(isNearbytesWatchIgnoredPath(path.join(root, 'Rubbish'), [root])).toBe(true);
+    expect(isNearbytesWatchIgnoredPath(path.join(root, 'Rubbish', '2026-03-19'), [root])).toBe(true);
+    expect(isNearbytesWatchIgnoredPath(path.join(root, '.debris', 'entry-1'), [root])).toBe(true);
+    expect(isNearbytesWatchIgnoredPath(path.join(root, 'channels', 'abc', 'Rubbish'), [root])).toBe(false);
   });
 });
 

@@ -129,10 +129,10 @@ function createFakeMegaExecutor(state: {
             .join('\n');
           return { stdout: `${header}${rows}\n`, stderr: '', exitCode: 0 };
         }
-        if (args[0] === '-d') {
-          const syncId = args[1] ?? '';
-          state.deletedSyncIds.push(syncId);
-          state.syncs = state.syncs.filter((sync) => sync.id !== syncId);
+        if (args[0] === '-d' || args[0]?.startsWith('-d=')) {
+          const syncSelector = args[0] === '-d' ? (args[1] ?? '') : args[0].slice(3);
+          state.deletedSyncIds.push(syncSelector);
+          state.syncs = state.syncs.filter((sync) => sync.id !== syncSelector && sync.localPath !== syncSelector);
           return { stdout: '', stderr: '', exitCode: 0 };
         }
         const [localPath, remotePath] = args;
@@ -333,7 +333,7 @@ describe('MegaTransportAdapter', () => {
     expect(megaState.syncs).toHaveLength(1);
 
     await adapter.detachManagedShare(share, account);
-    expect(megaState.deletedSyncIds).toContain('1');
+    expect(megaState.deletedSyncIds).toContain('/tmp/alpha-mirror');
 
     await adapter.disconnect(account);
   });
@@ -411,6 +411,130 @@ describe('MegaTransportAdapter', () => {
 
     const state = await adapter.getState(share, account);
     expect(state.status).toBe('ready');
+  });
+
+  it('parses fixed-width sync listings and safely deletes dash-prefixed sync ids', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [
+        {
+          id: '-SU0OM_fglg',
+          localPath: 'C:/Users/Vincenzo Ciancia/nearbytes/mega/vincenzoml-02-gmail-com',
+          remotePath: '/nearbytes',
+          runState: 'Unknown',
+          status: 'Processing',
+          error: 'Active sync same path',
+        },
+      ],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: {
+        async run(invocation) {
+          const rawCommand = basename(invocation.command);
+          const args = [...(invocation.args ?? [])];
+          const command = rawCommand === 'MegaClient.exe' ? `mega-${args.shift() ?? ''}` : rawCommand;
+          if (command === 'mega-login') {
+            return { stdout: 'OK\n', stderr: '', exitCode: 0 };
+          }
+          if (command === 'mega-session') {
+            return { stdout: `${megaState.sessionToken}\n`, stderr: '', exitCode: 0 };
+          }
+          if (command === 'mega-sync' && args[0] === '--path-display-size=0') {
+            return {
+              stdout: [
+                'ID          LOCALPATH                                                   REMOTEPATH RUN_STATE STATUS     ERROR',
+                '-SU0OM_fglg C:/Users/Vincenzo Ciancia/nearbytes/mega/vincenzoml-02-gmail-com /nearbytes Unknown   Processing Active sync same path',
+                '',
+              ].join('\n'),
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          if (command === 'mega-sync' && (args[0] === '-d' || args[0]?.startsWith('-d='))) {
+            const syncSelector = args[0] === '-d' ? (args[1] ?? '') : args[0].slice(3);
+            megaState.deletedSyncIds.push(syncSelector);
+            megaState.syncs = megaState.syncs.filter((sync) => sync.id !== syncSelector && sync.localPath !== syncSelector);
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          if (command === 'mega-sync') {
+            const [localPath, remotePath] = args;
+            megaState.syncs.push({
+              id: 'replacement-sync',
+              localPath: localPath ?? '',
+              remotePath: remotePath ?? '',
+              runState: 'Running',
+              status: 'Synced',
+              error: '',
+            });
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          throw new Error(`Unhandled MEGA command in test: ${command}`);
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: 'C:/Users/Vincenzo Ciancia/nearbytes/local',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    await adapter.ensureSync(share, account);
+
+    expect(megaState.deletedSyncIds).toEqual(['C:/Users/Vincenzo Ciancia/nearbytes/mega/vincenzoml-02-gmail-com']);
+    expect(megaState.syncs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'replacement-sync',
+          localPath: 'C:/Users/Vincenzo Ciancia/nearbytes/local',
+          remotePath: '/nearbytes',
+        }),
+      ])
+    );
   });
 
   it('exposes structured diagnostics when MEGA reports a sync error', async () => {
@@ -1155,7 +1279,7 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
     );
 
     expect(created.localPath).toBe('/tmp/requested-nearbytes');
-    expect(megaState.deletedSyncIds).toContain('1');
+    expect(megaState.deletedSyncIds).toContain('/tmp/existing-nearbytes');
     expect(megaState.syncs).toHaveLength(1);
     expect(megaState.syncs[0]?.localPath).toBe('/tmp/requested-nearbytes');
   });
@@ -1237,7 +1361,7 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
 
     await adapter.ensureSync(share, account);
 
-    expect(megaState.deletedSyncIds).toContain('1');
+    expect(megaState.deletedSyncIds).toContain('/tmp/old-nearbytes');
     expect(megaState.syncs).toHaveLength(1);
     expect(megaState.syncs[0]?.localPath).toBe('/tmp/new-nearbytes');
     expect(megaState.syncs[0]?.remotePath).toBe('/nearbytes');
@@ -1395,7 +1519,7 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
 
     await adapter.ensureSync(share, account);
 
-    expect(megaState.deletedSyncIds).toContain('legacy-sync');
+    expect(megaState.deletedSyncIds).toContain('/tmp/nearbytes');
     expect(megaState.syncs).toHaveLength(1);
     expect(megaState.syncs[0]).toMatchObject({
       localPath: '/tmp/nearbytes',
