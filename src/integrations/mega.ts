@@ -335,6 +335,29 @@ export class MegaTransportAdapter {
     }
     const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath');
     if (this.usesIncomingPullMirror(share, remotePath)) {
+      try {
+        await this.ensureLoggedIn(account.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const needsAuth = /login|session|auth|401|not connected/i.test(message);
+        return {
+          status: needsAuth ? 'needs-auth' : 'attention',
+          detail: message,
+          badges: [needsAuth ? 'Reconnect' : 'Repair'],
+          diagnostic: buildMegaDiagnostic(
+            {
+              code: needsAuth ? 'mega-auth-required' : 'mega-download-check-failed',
+              title: needsAuth ? 'Reconnect MEGA' : 'MEGA check failed',
+              summary: needsAuth
+                ? 'Reconnect MEGA so Nearbytes can refresh this shared location.'
+                : 'Nearbytes could not check this shared MEGA location.',
+              detail: message,
+              share,
+            },
+            this.runtime.now()
+          ),
+        };
+      }
       return this.readIncomingMirrorState(share);
     }
     return this.readSyncState(share, account.id);
@@ -393,12 +416,36 @@ export class MegaTransportAdapter {
     if (this.syncTimers.has(share.id)) {
       return;
     }
-    await this.ensureLoggedIn(account.id);
     const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath');
     if (!remotePath) {
       throw new Error('MEGA share is missing remotePath.');
     }
     if (this.usesIncomingPullMirror(share, remotePath)) {
+      try {
+        await this.ensureLoggedIn(account.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const needsAuth = /login|session|auth|401|not connected/i.test(message);
+        this.syncStates.set(share.id, {
+          status: needsAuth ? 'needs-auth' : 'attention',
+          detail: message,
+          badges: [needsAuth ? 'Reconnect' : 'Repair'],
+          lastSyncAt: this.runtime.now(),
+          diagnostic: buildMegaDiagnostic(
+            {
+              code: needsAuth ? 'mega-auth-required' : 'mega-download-check-failed',
+              title: needsAuth ? 'Reconnect MEGA' : 'MEGA check failed',
+              summary: needsAuth
+                ? 'Reconnect MEGA so Nearbytes can refresh this shared location.'
+                : 'Nearbytes could not check this shared MEGA location.',
+              detail: message,
+              share,
+            },
+            this.runtime.now()
+          ),
+        });
+        return;
+      }
       await this.queueIncomingMirrorRefresh(share, account.id, remotePath);
       const timer = setInterval(() => {
         void this.queueIncomingMirrorRefresh(share, account.id, remotePath);
@@ -407,6 +454,7 @@ export class MegaTransportAdapter {
       this.syncTimers.set(share.id, timer);
       return;
     }
+    await this.ensureLoggedIn(account.id);
     await this.ensureSyncBinding(share.localPath, remotePath, account.id);
     await this.refreshSyncState(share, account.id);
     const timer = setInterval(() => {
@@ -744,11 +792,26 @@ export class MegaTransportAdapter {
   }
 
   private async ensureLoggedIn(accountId: string): Promise<void> {
-    const secret = await this.runtime.secretStore.get<MegaSessionSecret>(megaSessionSecretKey(accountId));
-    if (!secret) {
+    let secret = await this.runtime.secretStore.get<MegaSessionSecret>(megaSessionSecretKey(accountId));
+    if (!secret?.sessionToken?.trim()) {
+      secret = await this.recoverSessionSecret(accountId);
+    }
+    if (!secret?.sessionToken?.trim()) {
       throw new Error('MEGA is not connected for this account.');
     }
-    await this.runMega('login', [secret.sessionToken], {
+    try {
+      await this.loginWithSessionToken(secret.sessionToken);
+    } catch (error) {
+      const recovered = await this.recoverSessionSecret(accountId);
+      if (!recovered?.sessionToken?.trim() || recovered.sessionToken === secret.sessionToken) {
+        throw error;
+      }
+      await this.loginWithSessionToken(recovered.sessionToken);
+    }
+  }
+
+  private async loginWithSessionToken(sessionToken: string): Promise<void> {
+    await this.runMega('login', [sessionToken], {
       timeoutMs: 60_000,
     }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -757,6 +820,32 @@ export class MegaTransportAdapter {
       }
       throw error;
     });
+  }
+
+  private async recoverSessionSecret(accountId: string): Promise<MegaSessionSecret | null> {
+    const sessionToken = await this.readSessionToken().catch(() => null);
+    if (!sessionToken) {
+      return null;
+    }
+    const email = await this.readCurrentAccountEmail().catch(() => `account-${accountId}`);
+    const recovered: MegaSessionSecret = {
+      email,
+      sessionToken,
+    };
+    await this.runtime.secretStore.set(megaSessionSecretKey(accountId), recovered);
+    return recovered;
+  }
+
+  private async readCurrentAccountEmail(): Promise<string> {
+    const result = await this.runMega('whoami', [], {
+      timeoutMs: 15_000,
+    });
+    const firstLine = firstMeaningfulLine(result.stdout);
+    const match = firstLine?.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu);
+    if (match?.[0]) {
+      return match[0].toLowerCase();
+    }
+    return firstLine?.trim() || 'unknown@mega.local';
   }
 
   private async readSessionToken(): Promise<string> {
@@ -876,23 +965,32 @@ export class MegaTransportAdapter {
     options: { timeoutMs?: number } = {}
   ): Promise<{ stdout: string; stderr: string }> {
     let installAttempted = false;
+    let restartAttempted = false;
     while (true) {
       const commandDirectory = await this.installer.getCommandDirectory();
       const invocation = resolveMegaInvocation(commandDirectory, subcommand, args);
+      const commandEnv = commandDirectory
+        ? {
+            PATH: `${commandDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
+          }
+        : undefined;
       try {
         const result = await this.runtime.commandExecutor.run({
           command: invocation.command,
           args: invocation.args,
           cwd: commandDirectory || undefined,
-          env: commandDirectory
-            ? {
-                PATH: `${commandDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
-              }
-            : undefined,
+          env: commandEnv,
           timeoutMs: options.timeoutMs ?? 30_000,
         });
         if (result.exitCode !== 0) {
-          throw new Error(extractMegaError(result.stderr || result.stdout || `${subcommand} failed`));
+          const rawOutput = result.stderr || result.stdout || `${subcommand} failed`;
+          if (!restartAttempted && isMegaServerAccessError(rawOutput)) {
+            restartAttempted = await this.restartMegaServer(commandDirectory);
+            if (restartAttempted) {
+              continue;
+            }
+          }
+          throw new Error(extractMegaError(rawOutput));
         }
         return {
           stdout: result.stdout,
@@ -904,11 +1002,55 @@ export class MegaTransportAdapter {
           await this.installer.install();
           continue;
         }
+        const message = error instanceof Error ? error.message : String(error);
+        if (!restartAttempted && isMegaServerAccessError(message)) {
+          restartAttempted = await this.restartMegaServer(commandDirectory);
+          if (restartAttempted) {
+            continue;
+          }
+        }
         if (isCommandNotFound(error)) {
           throw new Error('MEGA CLI was not found. Install MEGAcmd or set NEARBYTES_MEGACMD_DIR.');
         }
         throw error;
       }
+    }
+  }
+
+  private async restartMegaServer(commandDirectory: string | undefined): Promise<boolean> {
+    if (process.platform !== 'win32') {
+      return false;
+    }
+    const commandEnv = commandDirectory
+      ? {
+          PATH: `${commandDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
+        }
+      : undefined;
+    try {
+      await this.runtime.commandExecutor.run({
+        command: 'taskkill',
+        args: ['/IM', 'MEGAcmdServer.exe', '/F'],
+        timeoutMs: 10_000,
+      }).catch(() => {
+        // Ignore if there is no running MEGAcmdServer process.
+      });
+
+      const serverCommand = resolveMegaServerCommand(commandDirectory, process.platform);
+      await this.runtime.commandExecutor.run({
+        command: serverCommand,
+        args: [],
+        cwd: commandDirectory || undefined,
+        env: commandEnv,
+        timeoutMs: 20_000,
+      });
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 1200);
+      });
+      return true;
+    } catch (error) {
+      this.runtime.logger.warn('Failed to restart MEGAcmdServer after MEGA server access error.', error);
+      return false;
     }
   }
 
@@ -1224,7 +1366,50 @@ function isMegaHiddenShareName(value: string): boolean {
 }
 
 function extractMegaError(value: string): string {
-  return firstMeaningfulLine(value) ?? 'MEGA command failed.';
+  const firstLine = firstMeaningfulLine(value);
+  if (!firstLine) {
+    return 'MEGA command failed.';
+  }
+
+  const failedToAccessServer = firstLine.match(/failed to access server:\s*(\d+)/i);
+  if (failedToAccessServer?.[1] === '231') {
+    return 'MEGA network error 231: MEGAcmd could not reach MEGA (Failed to access server: 231). Reproduce on this machine with: mega-whoami and mega-sync --path-display-size=1024. Nearbytes keeps the raw error and capture timestamp in MEGA diagnostics so you can compare outputs.';
+  }
+  if (failedToAccessServer) {
+    return `MEGA network error ${failedToAccessServer[1]}: MEGAcmd could not reach MEGA. Reproduce locally with mega-whoami and mega-sync --path-display-size=1024, then compare with the diagnostics captured by Nearbytes.`;
+  }
+
+  if (/command not valid while login in:\s*\w+/i.test(firstLine)) {
+    return 'MEGA CLI session is not ready for this command yet. Retry in a few seconds.';
+  }
+  if (/not logged in|login required|session expired|invalid session|auth/i.test(firstLine)) {
+    return 'MEGA session is invalid or expired. Reconnect your MEGA account in Nearbytes.';
+  }
+
+  return firstLine;
+}
+
+function isMegaServerAccessError(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+  return /failed to access server:\s*231/i.test(normalized);
+}
+
+function resolveMegaServerCommand(
+  commandDirectory: string | undefined,
+  platform: NodeJS.Platform = process.platform
+): string {
+  const filename = platform === 'win32' ? 'MEGAcmdServer.exe' : 'mega-cmd-server';
+  if (!commandDirectory) {
+    return filename;
+  }
+  const normalizedDirectory = commandDirectory.trim().replace(/[\\/]+$/u, '');
+  if (normalizedDirectory === '') {
+    return filename;
+  }
+  return `${normalizedDirectory}/${filename}`;
 }
 
 function getStringDescriptor(descriptor: Record<string, unknown>, key: string): string | undefined {
@@ -1421,6 +1606,12 @@ function summarizeMegaDiagnostic(detail: string, needsAuth: boolean): string {
   const normalized = detail.trim();
   if (!normalized) {
     return needsAuth ? 'The MEGA session needs to be connected again.' : 'MEGA reported a sync problem for this location.';
+  }
+  if (/network error 231|failed to access server:\s*231/i.test(normalized)) {
+    return 'MEGA network error 231: MEGAcmd could not reach MEGA. Run mega-whoami and mega-sync --path-display-size=1024 on this machine and compare with the diagnostics facts (captured time, local path, remote path).';
+  }
+  if (/network error \d+|failed to access server:\s*\d+/i.test(normalized)) {
+    return 'MEGA network access failed from this device. Reproduce with mega-whoami and mega-sync --path-display-size=1024, then use captured diagnostics to isolate where connectivity breaks.';
   }
   if (/quota|storage full|overquota/i.test(normalized)) {
     return 'The MEGA account appears to be out of space.';

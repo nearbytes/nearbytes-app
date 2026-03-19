@@ -82,10 +82,18 @@
 
   type StatusTone = 'good' | 'warn' | 'muted';
   type HubLocationMode = 'store' | 'publish' | 'off';
-  type ProviderFlowStep = {
+
+  type ProviderTabLoadingState = {
     label: string;
     detail: string;
-    state: 'done' | 'active' | 'pending';
+  };
+
+  type MegaDiagnosticView = {
+    id: string;
+    title: string;
+    summary: string;
+    detail: string;
+    facts: Array<{ label: string; value: string }>;
   };
 
   type CollaboratorView = {
@@ -120,10 +128,16 @@
   let dismissedDiscoveries = $state<string[]>(loadDismissedDiscoveries());
   let movingSourceId = $state<string | null>(null);
   let providerAccounts = $state<ProviderAccount[]>([]);
-  let providerCatalog = $state<ProviderCatalogEntry[]>([]);
+  let providerCatalog = $state<ProviderCatalogEntry[]>(defaultProviderCatalogEntries());
   let managedShares = $state<ManagedShareSummary[]>([]);
   let incomingManagedShareOffers = $state<IncomingManagedShareOffer[]>([]);
   let incomingProviderContactInvites = $state<IncomingProviderContactInvite[]>([]);
+  let providersLoading = $state(false);
+  let sharesLoading = $state(false);
+  let incomingLoading = $state(false);
+  let providerLoadError = $state('');
+  let shareLoadError = $state('');
+  let incomingLoadError = $state('');
   let integrationBusyKey = $state<string | null>(null);
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
   let providerFlowStates = $state<Record<string, ProviderFlowState>>({});
@@ -938,6 +952,8 @@
   }
 
   function providerCardStatus(entry: ProviderCatalogEntry): string {
+    if (providersLoading) return 'Loading';
+    if (entry.provider === 'mega' && sharesLoading) return 'Syncing';
     const pending = pendingSessionForProvider(entry.provider);
     if (pending?.status === 'pending') return 'Almost ready';
     if (pending?.status === 'failed') return 'Try again';
@@ -951,6 +967,12 @@
   }
 
   function providerCardDetail(entry: ProviderCatalogEntry): string {
+    if (entry.provider === 'mega' && shareLoadError) {
+      return shareLoadError;
+    }
+    if ((entry.provider === 'mega' || entry.provider === 'github') && providerLoadError) {
+      return providerLoadError;
+    }
     const pending = pendingSessionForProvider(entry.provider);
     if (pending) {
       return pending.detail;
@@ -1012,6 +1034,45 @@
     });
   }
 
+  function providerPlaceholder(provider: 'mega' | 'github'): ProviderCatalogEntry {
+    return {
+      provider,
+      label: provider === 'mega' ? 'MEGA' : 'GitHub',
+      description:
+        provider === 'mega'
+          ? 'Managed folders and provider shares backed by MEGA CLI sync.'
+          : 'Managed repo-backed shares synced through a configurable nearbytes subdirectory.',
+      badges: provider === 'github' ? ['Device flow'] : [],
+      isConnected: false,
+      connectionState: 'available',
+      setup: {
+        status: 'ready',
+        detail: provider === 'mega' ? 'MEGA CLI is ready to use.' : 'GitHub is available to connect.',
+      },
+    };
+  }
+
+  function defaultProviderCatalogEntries(): ProviderCatalogEntry[] {
+    return sortProviders([
+      providerPlaceholder('mega'),
+      providerPlaceholder('github'),
+    ]);
+  }
+
+  function mergeProviderCatalogEntries(nextEntries: readonly ProviderCatalogEntry[]): ProviderCatalogEntry[] {
+    const merged = new Map<string, ProviderCatalogEntry>();
+    for (const fallback of defaultProviderCatalogEntries()) {
+      merged.set(fallback.provider, fallback);
+    }
+    for (const existing of providerCatalog) {
+      merged.set(existing.provider, existing);
+    }
+    for (const next of nextEntries) {
+      merged.set(next.provider, next);
+    }
+    return sortProviders(Array.from(merged.values()));
+  }
+
   function sortManagedShareSummaries(entries: readonly ManagedShareSummary[]): ManagedShareSummary[] {
     return [...entries].sort((left, right) => {
       const attachedOrder = right.attachments.length - left.attachments.length;
@@ -1058,7 +1119,33 @@
     return incomingManagedSharesForProvider(provider).length;
   }
 
+  function providerTabLoadingState(entry: ProviderCatalogEntry): ProviderTabLoadingState | null {
+    if (providersLoading) {
+      return {
+        label: 'Loading',
+        detail: 'Checking account',
+      };
+    }
+    if (entry.provider === 'mega' && sharesLoading) {
+      return {
+        label: 'Sync check',
+        detail: 'Checking mirrors',
+      };
+    }
+    if (entry.provider === 'mega' && incomingLoading) {
+      return {
+        label: 'Incoming',
+        detail: 'Checking shared',
+      };
+    }
+    return null;
+  }
+
   function providerTabCopy(entry: ProviderCatalogEntry): string {
+    const loadingState = providerTabLoadingState(entry);
+    if (loadingState) {
+      return loadingState.detail;
+    }
     if (!entry.isConnected) {
       return providerCardStatus(entry);
     }
@@ -1120,6 +1207,103 @@
       facts.push(entry.setup.status === 'needs-install' ? 'Needs local helper' : 'Uses local mirror folder');
     }
     return facts.filter((value, index, values) => value && values.indexOf(value) === index);
+  }
+
+  function summarizeMegaStateDetail(detail: string): string {
+    const normalized = detail.trim();
+    if (!normalized) {
+      return 'MEGA is still checking this location.';
+    }
+    const compact = compactShareStatusDetail(normalized);
+    return compact ?? normalized;
+  }
+
+  function megaDiagnostics(limit = 3): MegaDiagnosticView[] {
+    const ranked: Array<{
+      summary: ManagedShareSummary;
+      severity: number;
+      title: string;
+      code: string | undefined;
+      summaryText: string;
+      detail: string;
+      facts: Array<{ label: string; value: string }>;
+    }> = [];
+
+    for (const summary of providerShares('mega')) {
+      const diagnostic = summary.state.diagnostic;
+      const detail = diagnostic?.detail?.trim() || summary.state.detail.trim();
+      if (!detail) {
+        continue;
+      }
+      const severity = summary.state.status === 'needs-auth' || summary.state.status === 'attention'
+        ? 3
+        : summary.state.status === 'syncing'
+          ? 2
+          : 1;
+      ranked.push({
+        summary,
+        severity,
+        title: diagnostic?.title || managedShareTitle(summary),
+        code: diagnostic?.code,
+        summaryText: diagnostic?.summary || summarizeMegaStateDetail(detail),
+        detail,
+        facts: diagnostic?.facts ?? [],
+      });
+    }
+
+    const topRanked = ranked
+      .sort((left, right) => {
+        if (right.severity !== left.severity) {
+          return right.severity - left.severity;
+        }
+        const leftSync = left.summary.state.lastSyncAt ?? 0;
+        const rightSync = right.summary.state.lastSyncAt ?? 0;
+        return rightSync - leftSync;
+      })
+      .slice(0, Math.max(1, limit));
+
+    return topRanked.map((entry) => ({
+      id: entry.summary.share.id,
+      title: entry.code ? `${entry.title} (${entry.code})` : entry.title,
+      summary: entry.summaryText,
+      detail: entry.detail,
+      facts: entry.facts,
+    }));
+  }
+
+  function megaCurrentStatusMessage(): string {
+    if (providersLoading || sharesLoading || incomingLoading) {
+      return 'Checking account session, live locations, and incoming shares.';
+    }
+    if (shareLoadError) {
+      return shareLoadError;
+    }
+    if (providerLoadError) {
+      return providerLoadError;
+    }
+    if (incomingLoadError) {
+      return incomingLoadError;
+    }
+    const latestDiagnostic = megaDiagnostics(1)[0];
+    if (latestDiagnostic) {
+      return latestDiagnostic.summary;
+    }
+    const visibleCount = providerVisibleShareCount('mega');
+    if (visibleCount > 0) {
+      return `${countLabel(visibleCount, 'live location')} ready to use.`;
+    }
+    return 'No MEGA locations are visible yet.';
+  }
+
+  function megaCurrentStatusDetail(): string {
+    const latestDiagnostic = megaDiagnostics(1)[0];
+    if (!latestDiagnostic) {
+      return '';
+    }
+    if (latestDiagnostic.detail.trim() === latestDiagnostic.summary.trim()) {
+      return '';
+    }
+    return latestDiagnostic.detail;
   }
 
   function localMachineShareCount(): number {
@@ -2293,7 +2477,7 @@
     incomingInvites: IncomingProviderContactInvite[];
   }): void {
     providerAccounts = input.accounts;
-    providerCatalog = sortProviders(input.providers);
+    providerCatalog = mergeProviderCatalogEntries(input.providers);
     managedShares = sortManagedShareSummaries(input.shares);
     incomingManagedShareOffers = sortIncomingManagedShareOffers(input.incomingShares);
     incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(input.incomingInvites);
@@ -2329,38 +2513,86 @@
       const rootsResponse = await getRootsConfig();
       applyRootsResponse(rootsResponse);
 
-      const [accountsResult, sharesResult, incomingSharesResult, incomingInvitesResult] = await Promise.allSettled([
-        listProviderAccounts(),
-        listManagedShares(),
-        listIncomingManagedShares(),
-        listIncomingProviderContactInvites(),
-      ]);
+      providersLoading = true;
+      sharesLoading = true;
+      incomingLoading = true;
+      providerLoadError = '';
+      shareLoadError = '';
+      incomingLoadError = '';
 
-      const accountsResponse =
-        accountsResult.status === 'fulfilled'
-          ? accountsResult.value
-          : { accounts: [], providers: [], preferredProviders: [] };
-      const sharesResponse = sharesResult.status === 'fulfilled' ? sharesResult.value : { shares: [] };
-      const incomingSharesResponse =
-        incomingSharesResult.status === 'fulfilled' ? incomingSharesResult.value : { shares: [] };
-      const incomingInvitesResponse =
-        incomingInvitesResult.status === 'fulfilled' ? incomingInvitesResult.value : { invites: [] };
+      const accountsPromise = listProviderAccounts()
+        .then((accountsResponse) => {
+          providerAccounts = accountsResponse.accounts;
+          providerCatalog = mergeProviderCatalogEntries(accountsResponse.providers);
+          providerSetupDrafts = {
+            ...providerSetupDrafts,
+            ...Object.fromEntries(
+              accountsResponse.providers.map((provider) => [
+                provider.provider,
+                {
+                  clientId:
+                    provider.provider === 'gdrive' || provider.provider === 'github'
+                      ? provider.setup.config?.clientId ?? providerSetupDraft(provider.provider).clientId
+                      : providerSetupDraft(provider.provider).clientId,
+                },
+              ])
+            ),
+          };
+          for (const account of accountsResponse.accounts) {
+            if (account.state === 'connected') {
+              clearProviderSession(account.provider);
+            }
+          }
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          providerLoadError = `Provider discovery is delayed: ${detail}`;
+        })
+        .finally(() => {
+          providersLoading = false;
+        });
 
-      applyIntegrationsResponse({
-        accounts: accountsResponse.accounts,
-        providers: accountsResponse.providers,
-        shares: sharesResponse.shares,
-        incomingShares: incomingSharesResponse.shares,
-        incomingInvites: incomingInvitesResponse.invites,
-      });
+      const sharesPromise = listManagedShares()
+        .then((sharesResponse) => {
+          managedShares = sortManagedShareSummaries(sharesResponse.shares);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          shareLoadError = `Live locations are still syncing: ${detail}`;
+        })
+        .finally(() => {
+          sharesLoading = false;
+        });
 
-      const integrationFailures = [accountsResult, sharesResult, incomingSharesResult, incomingInvitesResult].filter(
-        (result) => result.status === 'rejected'
-      );
-      if (integrationFailures.length > 0) {
-        const firstFailure = integrationFailures[0] as PromiseRejectedResult;
-        const detail = firstFailure.reason instanceof Error ? firstFailure.reason.message : String(firstFailure.reason);
-        errorMessage = `Some sharing data could not be loaded yet: ${detail}`;
+      const incomingSharesPromise = listIncomingManagedShares()
+        .then((incomingSharesResponse) => {
+          incomingManagedShareOffers = sortIncomingManagedShareOffers(incomingSharesResponse.shares);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          incomingLoadError = `Incoming shares are delayed: ${detail}`;
+        })
+        .finally(() => {
+          incomingLoading = false;
+        });
+
+      const incomingInvitesPromise = listIncomingProviderContactInvites()
+        .then((incomingInvitesResponse) => {
+          incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(incomingInvitesResponse.invites);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          incomingLoadError = incomingLoadError || `Incoming invites are delayed: ${detail}`;
+        })
+        .finally(() => {
+          incomingLoading = false;
+        });
+
+      await Promise.allSettled([accountsPromise, sharesPromise, incomingSharesPromise, incomingInvitesPromise]);
+
+      const delayedMessages = [providerLoadError, shareLoadError, incomingLoadError].filter((value) => value.trim() !== '');
+      if (delayedMessages.length > 0) {
+        errorMessage = delayedMessages[0]!;
       }
 
       autosaveStatus = 'idle';
@@ -3509,13 +3741,22 @@
           <span class="provider-tab-copy">{countLabel(localMachineShareCount(), 'location')}</span>
         </button>
         {#each providerCatalog as provider (provider.provider)}
+          {@const tabLoadingState = providerTabLoadingState(provider)}
           <button
             type="button"
             class="provider-tab"
             class:active={selectedGlobalProvider === provider.provider}
             onclick={() => (selectedGlobalProvider = provider.provider)}
           >
-            <span class="provider-tab-label">{provider.label}</span>
+            <span class="provider-tab-heading">
+              <span class="provider-tab-label">{provider.label}</span>
+              {#if tabLoadingState}
+                <span class="provider-tab-loading" aria-live="polite">
+                  <span class="provider-tab-spinner" aria-hidden="true"></span>
+                  <span>{tabLoadingState.label}</span>
+                </span>
+              {/if}
+            </span>
             <span class="provider-tab-copy">{providerTabCopy(provider)}</span>
           </button>
         {/each}
@@ -3693,6 +3934,50 @@
                 <p class="subheading">Shared with you</p>
                 <p class="managed-share-invite-copy">{incomingItemsBannerCopy(incomingShares, incomingInvites)}</p>
               </div>
+            {/if}
+
+            {#if provider.provider === 'mega'}
+              {@const megaDiagnosticRows = megaDiagnostics()}
+              <div class="provider-story-card compact-provider-card">
+                <p class="subheading">Current status</p>
+                <p class="managed-share-invite-copy">{megaCurrentStatusMessage()}</p>
+                {#if megaCurrentStatusDetail()}
+                  <p class="provider-step-detail">{megaCurrentStatusDetail()}</p>
+                {/if}
+                <div class="button-row">
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void loadPanel({ background: configDraft !== null })}
+                    disabled={sharesLoading || providersLoading}
+                  >
+                    <RefreshCw size={14} strokeWidth={2} />
+                    <span>{sharesLoading ? 'Checking...' : 'Refresh MEGA status'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {#if megaDiagnosticRows.length > 0}
+                <div class="provider-story-card compact-provider-card">
+                  <p class="subheading">Latest MEGA diagnostics</p>
+                  <div class="provider-fact-list">
+                    {#each megaDiagnosticRows as diagnostic (diagnostic.id)}
+                      <div class="provider-path-card mega-diagnostic-card">
+                        <p class="provider-step-title">{diagnostic.title}</p>
+                        <p class="provider-step-detail">{diagnostic.summary}</p>
+                        <p class="provider-path-copy">{diagnostic.detail}</p>
+                        {#if diagnostic.facts.length > 0}
+                          <div class="provider-fact-list">
+                            {#each diagnostic.facts as fact}
+                              <p class="provider-story-copy"><strong>{fact.label}:</strong> {fact.value}</p>
+                            {/each}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
             {/if}
 
             {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
@@ -4437,6 +4722,38 @@
     font-size: 0.84rem;
     font-weight: 600;
     line-height: 1.2;
+  }
+
+  .provider-tab-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.42rem;
+  }
+
+  .provider-tab-loading {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    min-height: 20px;
+    padding: 0.08rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
+    color: var(--text-soft);
+    font-size: 0.67rem;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: 0.01em;
+  }
+
+  .provider-tab-spinner {
+    width: 0.72rem;
+    height: 0.72rem;
+    border-radius: 999px;
+    border: 2px solid color-mix(in srgb, var(--nb-accent, #d27a54) 28%, transparent);
+    border-top-color: color-mix(in srgb, var(--nb-accent, #d27a54) 82%, var(--text-main));
+    animation: provider-tab-spin 0.72s linear infinite;
   }
 
   .provider-tab-copy {
@@ -5230,32 +5547,15 @@
     gap: 0.24rem;
   }
 
-  .provider-step-list {
-    display: grid;
-    gap: 0.55rem;
-  }
-
-  .provider-step {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 0.65rem;
-    align-items: start;
-  }
-
-  .provider-step-marker {
-    width: 0.7rem;
-    height: 0.7rem;
-    border-radius: 999px;
-    margin-top: 0.28rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, var(--nb-accent, #d27a54) 10%);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(248, 243, 239, 0.92));
-  }
-
   .provider-step-title {
     margin: 0;
     font-size: 0.81rem;
     font-weight: 700;
     color: var(--text);
+  }
+
+  .mega-diagnostic-card {
+    gap: 0.45rem;
   }
 
   .provider-path-card {
@@ -5459,6 +5759,15 @@
     }
     100% {
       transform: translateX(320%);
+    }
+  }
+
+  @keyframes provider-tab-spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
     }
   }
 

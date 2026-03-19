@@ -122,6 +122,22 @@ export class ManagedShareService {
     this.mirrorRoot = path.resolve(options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig()));
   }
 
+  private isOperationalAccount(account: ProviderAccount): boolean {
+    const provider = normalizeProvider(account.provider);
+    return account.state === 'connected' || (provider === 'mega' && account.state === 'attention');
+  }
+
+  private presentationAccount(account: ProviderAccount): ProviderAccount {
+    if (normalizeProvider(account.provider) === 'mega' && account.state === 'attention') {
+      return {
+        ...account,
+        state: 'connected',
+        detail: account.detail ?? 'Nearbytes is recovering the local MEGA session.',
+      };
+    }
+    return account;
+  }
+
   async listAccounts(): Promise<{
     accounts: ProviderAccount[];
     providers: ProviderCatalogEntry[];
@@ -134,10 +150,12 @@ export class ManagedShareService {
     this.scheduleManagedShareSyncs(refreshedState);
     const setupStates = await this.getProviderSetupStates();
     const settledState = await this.loadState();
-    const accounts = settledState.accounts.filter((account) => isProviderEnabled(account.provider));
+    const accounts = settledState.accounts
+      .filter((account) => isProviderEnabled(account.provider))
+      .map((account) => this.presentationAccount(account));
     return {
       accounts,
-      providers: createProviderCatalog(Array.from(this.adapters.values()), settledState.accounts, setupStates),
+      providers: createProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
       preferredProviders: settledState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
     };
   }
@@ -318,7 +336,7 @@ export class ManagedShareService {
 
   async repairManagedShare(shareId: string): Promise<ManagedShareSummary> {
     const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
-    if (account?.state === 'connected') {
+    if (account && this.isOperationalAccount(account)) {
       await adapter?.ensureSync?.(nextShare, account);
     }
 
@@ -331,7 +349,7 @@ export class ManagedShareService {
     const attachedKeys = buildAttachedShareKeys(repairedState.managedShares);
     const offers = await Promise.all(
       repairedState.accounts
-        .filter((account) => account.state === 'connected' && isProviderEnabled(account.provider))
+        .filter((account) => this.isOperationalAccount(account) && isProviderEnabled(account.provider))
         .map(async (account) => {
           const adapter = this.adapters.get(normalizeProvider(account.provider));
           if (!adapter?.listIncomingShares) {
@@ -364,7 +382,7 @@ export class ManagedShareService {
     const state = await this.loadState();
     const invites = await Promise.all(
       state.accounts
-        .filter((account) => account.state === 'connected' && isProviderEnabled(account.provider))
+        .filter((account) => this.isOperationalAccount(account) && isProviderEnabled(account.provider))
         .map(async (account) => {
           const adapter = this.adapters.get(normalizeProvider(account.provider));
           if (!adapter?.listIncomingContactInvites) {
@@ -617,7 +635,7 @@ export class ManagedShareService {
     const provider = normalizeProvider(providerInput);
     const state = await this.loadState();
     const connectedAccounts = state.accounts.filter(
-      (account) => normalizeProvider(account.provider) === provider && account.state === 'connected'
+      (account) => normalizeProvider(account.provider) === provider && this.isOperationalAccount(account)
     );
 
     let workingState = state;
@@ -660,7 +678,7 @@ export class ManagedShareService {
     stateSnapshot: IntegrationStateSnapshot
   ): Promise<IntegrationStateSnapshot> {
     let state = stateSnapshot;
-    for (const account of state.accounts.filter((entry) => entry.state === 'connected')) {
+    for (const account of state.accounts.filter((entry) => this.isOperationalAccount(entry))) {
       const provider = normalizeProvider(account.provider);
       const adapter = this.adapters.get(provider);
       if (!adapter?.listManagedShareMirrors) {
@@ -977,7 +995,7 @@ export class ManagedShareService {
     await Promise.all(
       state.managedShares.map(async (share) => {
         const account = state.accounts.find((entry) => entry.id === share.accountId);
-        if (!account || account.state !== 'connected') {
+        if (!account || !this.isOperationalAccount(account)) {
           return;
         }
         await this.adapters.get(normalizeProvider(share.provider))?.ensureSync?.(share, account).catch((error) => {
@@ -1035,7 +1053,7 @@ export class ManagedShareService {
       rewriteMarker: false,
     });
     this.pendingMarkerRefreshes.add(shareId);
-    if (account?.state === 'connected') {
+    if (account && this.isOperationalAccount(account)) {
       await adapter?.ensureSync?.(nextShare, account);
     }
   }
@@ -1050,7 +1068,7 @@ export class ManagedShareService {
       await normalizeNearbytesRoot(nextShare.localPath, {
         rewriteMarker: true,
       });
-      if (account?.state === 'connected') {
+      if (account && this.isOperationalAccount(account)) {
         await adapter?.ensureSync?.(nextShare, account);
       }
       this.pendingMarkerRefreshes.delete(shareId);
@@ -1063,7 +1081,7 @@ export class ManagedShareService {
   private scheduleManagedShareSyncs(state: IntegrationStateSnapshot): void {
     for (const share of state.managedShares) {
       const account = state.accounts.find((entry) => entry.id === share.accountId);
-      if (!account || account.state !== 'connected' || this.syncBootstrapTasks.has(share.id)) {
+      if (!account || !this.isOperationalAccount(account) || this.syncBootstrapTasks.has(share.id)) {
         continue;
       }
       const task = this.adapters
@@ -1155,7 +1173,7 @@ export class ManagedShareService {
     } = {}
   ): Promise<void> {
     for (const account of state.accounts) {
-      if (account.state !== 'connected') {
+      if (!this.isOperationalAccount(account)) {
         continue;
       }
       await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account, {
@@ -1188,7 +1206,7 @@ export class ManagedShareService {
     const context = createPlannerContext({
       attachedShareKeys: buildAttachedShareKeys(state.managedShares),
       connectedProviders: state.accounts
-        .filter((account) => account.state === 'connected')
+        .filter((account) => this.isOperationalAccount(account))
         .map((account) => account.provider),
       preferredProviders: input.preferredProviders ?? state.preferredProviders,
       supportedProviders: Array.from(this.adapters.keys()),
@@ -1266,7 +1284,7 @@ export class ManagedShareService {
       const provider = normalizeProvider(endpoint.provider ?? '');
       const suggestedLocalPath = resolveJoinLinkSuggestedLocalPath(endpoint);
       let account = workingAccounts.find(
-        (entry) => normalizeProvider(entry.provider) === provider && entry.state === 'connected'
+        (entry) => normalizeProvider(entry.provider) === provider && this.isOperationalAccount(entry)
       );
       let usedCredentialBootstrap = false;
 
@@ -1812,7 +1830,7 @@ export class ManagedShareService {
     await this.cleanupMegaBaseShareRoot(account, relocatedShare);
 
     if (
-      account.state === 'connected' &&
+      this.isOperationalAccount(account) &&
       normalizeComparablePath(share.localPath) !== normalizeComparablePath(relocatedShare.localPath)
     ) {
       await this.adapters.get(normalizeProvider(share.provider))?.ensureSync?.(relocatedShare, account).catch(() => {
@@ -2111,7 +2129,7 @@ export class ManagedShareService {
     await this.persistRootsConfig(nextConfig);
     await this.saveState(nextState);
 
-    if (account.state === 'connected') {
+    if (this.isOperationalAccount(account)) {
       await this.adapters.get(normalizeProvider(share.provider))?.ensureSync?.(relocatedShare, account).catch(() => {
         // Ignore sync relocation failures here; the repaired local path is still persisted.
       });
@@ -2338,16 +2356,28 @@ function resolveManagedShareLocalPath(
   remoteDescriptor?: Record<string, unknown>,
   role: ManagedShare['role'] = 'owner'
 ): string {
-  const providerRoot = resolveProviderManagedShareRoot(managedShareBaseRoot, provider, account);
+  const providerRoot = resolveProviderManagedShareRoot(managedShareBaseRoot, provider, account, remoteDescriptor, role);
   if (isProviderBaseShare(label, remoteDescriptor, role)) {
     return path.join(providerRoot, MEGA_BASE_SHARE_FOLDER_NAME);
   }
   return path.join(providerRoot, createMirrorFolderName(provider, label, shareId));
 }
 
-function resolveProviderManagedShareRoot(managedShareBaseRoot: string, provider: string, account: ProviderAccount): string {
+function resolveProviderManagedShareRoot(
+  managedShareBaseRoot: string,
+  provider: string,
+  account: ProviderAccount,
+  remoteDescriptor?: Record<string, unknown>,
+  role: ManagedShare['role'] = 'owner'
+): string {
   const providerRoot = path.join(managedShareBaseRoot, getProviderStorageFolderName(provider));
   if (provider === 'mega') {
+    if (role === 'recipient') {
+      const ownerEmail = typeof remoteDescriptor?.ownerEmail === 'string' ? remoteDescriptor.ownerEmail.trim() : '';
+      if (ownerEmail) {
+        return path.join(providerRoot, createManagedShareIdentityFolderName(ownerEmail));
+      }
+    }
     return path.join(providerRoot, createManagedShareAccountFolderName(account));
   }
   return providerRoot;
@@ -2363,6 +2393,11 @@ function getPreferredManagedShareFolderNames(provider: string, account: Provider
 function createManagedShareAccountFolderName(account: ProviderAccount): string {
   const candidate = sanitizeManagedFolderLabel(account.email?.trim() || account.id.trim() || account.label?.trim()).toLowerCase();
   return candidate.replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '') || account.id.trim().toLowerCase();
+}
+
+function createManagedShareIdentityFolderName(value: string): string {
+  const candidate = sanitizeManagedFolderLabel(value.trim()).toLowerCase();
+  return candidate.replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '') || 'mega-account';
 }
 
 function isProviderBaseShare(
