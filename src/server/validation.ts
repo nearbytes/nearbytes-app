@@ -73,6 +73,10 @@ export const openRootInFileManagerBodySchema = z.object({
   rootId: z.string().trim().min(1, 'Root id is required'),
 });
 
+export const openPathInFileManagerBodySchema = z.object({
+  path: z.string().trim().min(1, 'Path is required'),
+});
+
 export const reconcileDiscoveredSourcesBodySchema = z.object({
   knownVolumeIds: z
     .array(

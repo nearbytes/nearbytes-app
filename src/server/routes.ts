@@ -2,7 +2,8 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { Router } from 'express';
 import { spawn } from 'child_process';
 import { timingSafeEqual } from 'crypto';
-import { promises as fs } from 'fs';
+import { promises as fs, constants as fsConstants } from 'fs';
+import { join } from 'path';
 import os from 'os';
 import multer from 'multer';
 import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
@@ -49,6 +50,7 @@ import {
   importRecipientReferencesBodySchema,
   importSourceReferencesBodySchema,
   managedShareIdParamSchema,
+  openPathInFileManagerBodySchema,
   openRootInFileManagerBodySchema,
   openJoinLinkBodySchema,
   openBodySchema,
@@ -237,6 +239,16 @@ export function createRoutes(deps: RouteDependencies): Router {
   });
   router.post('/config/roots/open-file-manager', openRootInFileManagerHandler);
   router.post('/config/open-file-manager', openRootInFileManagerHandler);
+
+  router.post('/config/open-path-in-file-manager', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const { path: targetPath } = parseWithSchema(openPathInFileManagerBodySchema, req.body);
+    await openInFileManager(targetPath);
+    res.json({
+      ok: true,
+      path: targetPath,
+    });
+  }));
 
   router.get('/sources/discover', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
@@ -693,6 +705,66 @@ export function createRoutes(deps: RouteDependencies): Router {
     })
   );
 
+  router.get(
+    '/events/:hash/storage-locations',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { hash } = parseWithSchema(fileHashParamSchema, req.params);
+      const secret = res.locals.secret as string;
+      const detail = await deps.fileService.getEvent(secret, hash);
+      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+
+      const expectedEventRelativePath = join('channels', volumeId, `${hash}.bin`);
+      const payloadHash = detail.event.payload.hash?.trim() ?? '';
+      const expectedDataRelativePath =
+        /^[a-f0-9]{64}$/i.test(payloadHash) && !/^0+$/i.test(payloadHash)
+          ? join('blocks', `${payloadHash}.bin`)
+          : null;
+
+      const sourceEntries = isMultiRootStorageBackend(deps.storage)
+        ? getMultiRootStorageOrThrow(deps.storage).getRootsConfig().sources.map((source) => ({
+            rootId: source.id,
+            provider: source.provider,
+            path: source.path,
+          }))
+        : deps.resolvedStorageDir
+          ? [
+              {
+                rootId: null,
+                provider: 'local',
+                path: deps.resolvedStorageDir,
+              },
+            ]
+          : [];
+
+      const locations = await Promise.all(
+        sourceEntries.map(async (source) => {
+          const eventPath = join(source.path, expectedEventRelativePath);
+          const dataPath = expectedDataRelativePath ? join(source.path, expectedDataRelativePath) : null;
+          const hasEventFile = await pathExists(eventPath);
+          const hasDataBlock = dataPath ? await pathExists(dataPath) : false;
+          return {
+            rootId: source.rootId,
+            provider: source.provider,
+            rootPath: source.path,
+            eventPath,
+            dataPath,
+            hasEventFile,
+            hasDataBlock,
+          };
+        })
+      );
+
+      res.json({
+        eventHash: hash,
+        volumeId,
+        expectedEventRelativePath,
+        expectedDataRelativePath,
+        locations,
+      });
+    })
+  );
+
   router.post(
     '/snapshot',
     requireSecret(deps),
@@ -957,6 +1029,15 @@ async function safeUnlink(path: string): Promise<void> {
     await fs.unlink(path);
   } catch {
     // Ignore cleanup errors for temp files.
+  }
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -10,6 +10,8 @@
     listFiles,
     getTimeline,
     getEventDetail,
+    getEventStorageLocations,
+    openPathInFileManager,
     uploadFiles,
     deleteFile,
     downloadFile,
@@ -27,6 +29,7 @@
     type SourceFileReference,
     type RecipientFileReference,
     type ReconcileSourcesResponse,
+    type EventStorageLocationsResponse,
     type SourceReferenceBundle,
     type SourceProvider,
     type TimelineEvent,
@@ -206,6 +209,7 @@
     createdAt?: number;
     ref: SourceFileReference | RecipientFileReference;
   };
+  type TimelineStorageLocationView = EventStorageLocationsResponse['locations'][number];
   type SpecDoc = {
     id: string;
     title: string;
@@ -1400,6 +1404,9 @@
   let timelineDetailAppSignatureSource = $state('');
   let timelineDetailReferences = $state<EventReference[]>([]);
   let timelineDetailEventRefs = $state<string[]>([]);
+  let timelineDetailStorage = $state<EventStorageLocationsResponse | null>(null);
+  let timelineDetailStorageError = $state('');
+  let timelineDetailRevealBusyPath = $state('');
   let timelineDetailRequestId = 0;
   let specModalOpen = $state(false);
   let specModalDoc = $state<SpecDoc | null>(null);
@@ -4260,6 +4267,9 @@
     timelineDetailAppSignatureSource = '';
     timelineDetailReferences = [];
     timelineDetailEventRefs = [];
+    timelineDetailStorage = null;
+    timelineDetailStorageError = '';
+    timelineDetailRevealBusyPath = '';
     timelineDetailError = '';
     timelineDetailLoading = false;
     timelineDetailRequestId += 1;
@@ -4285,15 +4295,41 @@
     timelineDetailAppSignatureSource = '';
     timelineDetailReferences = [];
     timelineDetailEventRefs = [];
+    timelineDetailStorage = null;
+    timelineDetailStorageError = '';
+    timelineDetailRevealBusyPath = '';
     timelineDetailEvent = seedEvent ?? timelineEvents.find((entry) => entry.eventHash === eventHash) ?? null;
 
     const requestId = (timelineDetailRequestId += 1);
     try {
-      const detail = await getEventDetail(auth, eventHash);
+      const [detailResult, storageResult] = await Promise.allSettled([
+        getEventDetail(auth, eventHash),
+        getEventStorageLocations(auth, eventHash),
+      ]);
+
+      if (detailResult.status !== 'fulfilled') {
+        throw detailResult.reason;
+      }
+      const detail = detailResult.value;
       if (requestId !== timelineDetailRequestId) return;
       timelineDetailPayload = detail.event;
       timelineDetailHash = detail.eventHash;
       timelineDetailEncoded = JSON.stringify(detail.event, null, 2);
+
+      if (storageResult.status === 'fulfilled') {
+        timelineDetailStorage = storageResult.value;
+      } else {
+        const message =
+          storageResult.reason instanceof Error
+            ? storageResult.reason.message
+            : String(storageResult.reason);
+        if (/route not found/i.test(message)) {
+          timelineDetailStorageError =
+            'Storage location debug info unavailable: this desktop backend is running an older API build. Restart Nearbytes desktop to load the storage debug route.';
+        } else {
+          timelineDetailStorageError = `Storage location debug info unavailable: ${message}`;
+        }
+      }
 
       const recordParse = tryParseJson(detail.event.payload.record);
       if (recordParse.value !== undefined) {
@@ -4354,6 +4390,80 @@
 
   async function openTimelineDetails(event: TimelineEvent) {
     await openTimelineDetailsByHash(event.eventHash, event);
+  }
+
+  function timelineExpectedEventPath(): string {
+    if (timelineDetailStorage?.expectedEventRelativePath) {
+      return timelineDetailStorage.expectedEventRelativePath;
+    }
+    const resolvedVolumeId =
+      timelineDetailStorage?.volumeId?.trim() || volumeId?.trim() || activeMount?.volumeId?.trim() || '';
+    const eventHash = timelineDetailHash.trim();
+    if (resolvedVolumeId) {
+      return `channels/${resolvedVolumeId}/${eventHash || '<event-hash>'}.bin`;
+    }
+    if (!eventHash) {
+      return 'channels/<volume-id>/<event-hash>.bin';
+    }
+    return `channels/<volume-id>/${eventHash}.bin`;
+  }
+
+  function timelineExpectedBlockPath(): string | null {
+    const fromStorage = timelineDetailStorage?.expectedDataRelativePath;
+    if (typeof fromStorage === 'string' && fromStorage.trim() !== '') {
+      return fromStorage;
+    }
+    const hash = timelineDetailPayload?.payload.hash?.trim() ?? '';
+    if (!/^[a-f0-9]{64}$/i.test(hash) || /^0+$/i.test(hash)) {
+      return null;
+    }
+    return `blocks/${hash}.bin`;
+  }
+
+  function timelineStorageHits(): TimelineStorageLocationView[] {
+    if (!timelineDetailStorage) {
+      return [];
+    }
+    return timelineDetailStorage.locations.filter((location) => location.hasEventFile || location.hasDataBlock);
+  }
+
+  function timelineStorageLocationLabel(location: TimelineStorageLocationView): string {
+    if (location.rootId) {
+      return `${String(location.provider).toUpperCase()} • ${location.rootId}`;
+    }
+    return `${String(location.provider).toUpperCase()} • default storage`;
+  }
+
+  function timelineStorageLocationPath(location: TimelineStorageLocationView): string {
+    if (location.hasDataBlock && location.dataPath) {
+      return location.dataPath;
+    }
+    return location.eventPath;
+  }
+
+  function timelineStoragePresenceBadges(location: TimelineStorageLocationView): string {
+    const parts: string[] = [];
+    parts.push(location.hasEventFile ? 'event file' : 'event missing');
+    if (location.dataPath) {
+      parts.push(location.hasDataBlock ? 'block present' : 'block missing');
+    }
+    return parts.join(' • ');
+  }
+
+  async function revealTimelineStorageLocation(location: TimelineStorageLocationView): Promise<void> {
+    const targetPath = timelineStorageLocationPath(location);
+    if (!targetPath) {
+      return;
+    }
+    timelineDetailStorageError = '';
+    timelineDetailRevealBusyPath = targetPath;
+    try {
+      await openPathInFileManager(targetPath);
+    } catch (error) {
+      timelineDetailStorageError = error instanceof Error ? error.message : 'Failed to reveal storage location';
+    } finally {
+      timelineDetailRevealBusyPath = '';
+    }
   }
 
   function findPreviewFileForPayload(payload: SerializedEvent['payload']): FileMetadata | null {
@@ -6538,6 +6648,58 @@
                 Event hash = SHA-256 of the serialized payload bytes (signature not included).
               </p>
             {/if}
+
+            <div class="tm-details-section tm-details-debug-section">
+              <p class="tm-details-section-title">Protocol storage</p>
+              <p class="tm-details-section-note">
+                Expected nearbytes-root paths for this event.
+              </p>
+              <div class="tm-details-path-shell">
+                <div class="tm-details-path-row">
+                  <span class="tm-details-label">event file</span>
+                  <span class="tm-details-value mono">{timelineExpectedEventPath()}</span>
+                </div>
+                {#if timelineExpectedBlockPath()}
+                  <div class="tm-details-path-row">
+                    <span class="tm-details-label">data block</span>
+                    <span class="tm-details-value mono">{timelineExpectedBlockPath()}</span>
+                  </div>
+                {/if}
+              </div>
+
+              {#if timelineDetailStorageError}
+                <p class="tm-details-error">{timelineDetailStorageError}</p>
+              {/if}
+
+              {#if timelineStorageHits().length > 0}
+                <div class="tm-details-hit-list">
+                  {#each timelineStorageHits() as location}
+                    {@const targetPath = timelineStorageLocationPath(location)}
+                    <div class="tm-details-hit-row">
+                      <div class="tm-details-hit-copy">
+                        <p class="tm-details-hit-title">{timelineStorageLocationLabel(location)}</p>
+                        <p class="tm-details-hit-meta">{timelineStoragePresenceBadges(location)}</p>
+                        <p class="tm-details-hit-path mono">{targetPath}</p>
+                      </div>
+                      <div class="tm-details-hit-actions">
+                        <button
+                          type="button"
+                          class="tm-details-ref-btn"
+                          onclick={() => void revealTimelineStorageLocation(location)}
+                          disabled={timelineDetailRevealBusyPath === targetPath}
+                        >
+                          {timelineDetailRevealBusyPath === targetPath ? 'Opening…' : 'Reveal in folder'}
+                        </button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="tm-details-section-note">
+                  No configured storage location currently reports this event path.
+                </p>
+              {/if}
+            </div>
 
             <div class="tm-details-section">
               <p class="tm-details-section-title">Summary</p>
@@ -10909,6 +11071,77 @@
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
+  }
+
+  .tm-details-debug-section {
+    padding: 0.75rem 0.8rem;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--nb-accent, rgba(125, 211, 252, 0.75)) 22%, var(--nb-border, rgba(148, 163, 184, 0.2)));
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 14, 28, 0.7)) 96%, rgba(14, 116, 144, 0.18));
+  }
+
+  .tm-details-path-shell {
+    display: grid;
+    gap: 0.36rem;
+    padding: 0.6rem 0.66rem;
+    border-radius: 12px;
+    border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.18));
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(9, 16, 30, 0.7)) 94%, rgba(56, 189, 248, 0.08));
+  }
+
+  .tm-details-path-row {
+    display: grid;
+    grid-template-columns: minmax(96px, 120px) minmax(0, 1fr);
+    gap: 0.55rem;
+    align-items: start;
+  }
+
+  .tm-details-hit-list {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .tm-details-hit-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.65rem;
+    align-items: start;
+    padding: 0.62rem 0.68rem;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    background: rgba(9, 16, 30, 0.68);
+  }
+
+  .tm-details-hit-copy {
+    display: grid;
+    gap: 0.24rem;
+    min-width: 0;
+  }
+
+  .tm-details-hit-title {
+    margin: 0;
+    font-size: 0.76rem;
+    font-weight: 620;
+    color: rgba(226, 232, 240, 0.95);
+  }
+
+  .tm-details-hit-meta {
+    margin: 0;
+    font-size: 0.67rem;
+    color: rgba(148, 163, 184, 0.86);
+  }
+
+  .tm-details-hit-path {
+    margin: 0;
+    font-size: 0.68rem;
+    color: rgba(191, 219, 254, 0.9);
+    word-break: break-all;
+  }
+
+  .tm-details-hit-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
   }
 
   .tm-details-section-title {
