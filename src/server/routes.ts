@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { spawn } from 'child_process';
 import { timingSafeEqual } from 'crypto';
 import { promises as fs, constants as fsConstants } from 'fs';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
 import os from 'os';
 import multer from 'multer';
 import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
@@ -243,10 +243,19 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.post('/config/open-path-in-file-manager', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const { path: targetPath } = parseWithSchema(openPathInFileManagerBodySchema, req.body);
-    await openInFileManager(targetPath);
+    const resolvedTargetPath = resolve(targetPath);
+    const allowedRoots = getAllowedFileManagerRoots(deps);
+    if (allowedRoots.length > 0 && !allowedRoots.some((root) => isPathInsideRoot(root, resolvedTargetPath))) {
+      throw new ApiError(
+        400,
+        'INVALID_REQUEST',
+        'Path is outside configured Nearbytes storage roots and cannot be revealed.'
+      );
+    }
+    await openInFileManager(resolvedTargetPath);
     res.json({
       ok: true,
-      path: targetPath,
+      path: resolvedTargetPath,
     });
   }));
 
@@ -1177,12 +1186,28 @@ function isDesktopProtectedApiPath(pathname: string): boolean {
 }
 
 async function openInFileManager(targetPath: string): Promise<void> {
+  const resolvedTargetPath = resolve(targetPath);
+  const existingStat = await fs.stat(resolvedTargetPath).catch(() => null);
+  const fallbackDirectory = existingStat
+    ? existingStat.isDirectory()
+      ? resolvedTargetPath
+      : dirname(resolvedTargetPath)
+    : await findNearestExistingDirectory(resolvedTargetPath);
+
+  if (!fallbackDirectory) {
+    throw new ApiError(404, 'NOT_FOUND', 'Target path does not exist and no parent directory could be opened.');
+  }
+
   const launcher =
     process.platform === 'darwin'
-      ? { command: 'open', args: [targetPath] }
+      ? existingStat?.isFile()
+        ? { command: 'open', args: ['-R', resolvedTargetPath] }
+        : { command: 'open', args: [fallbackDirectory] }
       : process.platform === 'win32'
-        ? { command: 'explorer', args: [targetPath] }
-        : { command: 'xdg-open', args: [targetPath] };
+        ? existingStat?.isFile()
+          ? { command: 'explorer', args: ['/select,', resolvedTargetPath] }
+          : { command: 'explorer', args: [fallbackDirectory] }
+        : { command: 'xdg-open', args: [fallbackDirectory] };
 
   await new Promise<void>((resolve, reject) => {
     const child = spawn(launcher.command, launcher.args, {
@@ -1199,4 +1224,47 @@ async function openInFileManager(targetPath: string): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     throw new ApiError(500, 'INTERNAL_ERROR', `Failed to open file manager: ${message}`);
   });
+}
+
+function getAllowedFileManagerRoots(deps: RouteDependencies): string[] {
+  if (isMultiRootStorageBackend(deps.storage)) {
+    return getMultiRootStorageOrThrow(deps.storage)
+      .getRootsConfig()
+      .sources
+      .map((source) => resolve(source.path));
+  }
+  if (deps.resolvedStorageDir) {
+    return [resolve(deps.resolvedStorageDir)];
+  }
+  return [];
+}
+
+function normalizeComparablePath(value: string): string {
+  const normalized = resolve(value).replace(/\\/g, '/').replace(/\/+$/u, '');
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
+  const normalizedRoot = normalizeComparablePath(rootPath);
+  const normalizedTarget = normalizeComparablePath(targetPath);
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+}
+
+async function findNearestExistingDirectory(targetPath: string): Promise<string | null> {
+  let current = resolve(targetPath);
+
+  while (true) {
+    const stat = await fs.stat(current).catch(() => null);
+    if (stat) {
+      return stat.isDirectory() ? current : dirname(current);
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
 }
