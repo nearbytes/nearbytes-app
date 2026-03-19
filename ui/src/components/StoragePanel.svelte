@@ -210,6 +210,8 @@
     meta: string[];
     readable: boolean;
     writable: boolean;
+    writableDisabled?: boolean;
+    writableTitle?: string;
     defaultEnabled: boolean;
     reservePercent: number;
     reserveKey: string;
@@ -754,7 +756,7 @@
   function shareAttachmentSummary(summary: ManagedShareSummary): string {
     const count = summary.attachments.length;
     if (count === 0) {
-      return 'Not in use yet.';
+      return 'Not attached to a hub yet.';
     }
     return `Used in ${countLabel(count, 'place')}.`;
   }
@@ -810,7 +812,7 @@
   function sourceAttachmentSummary(sourceId: string): string {
     const count = sourceAttachmentLabels(sourceId).length;
     if (count === 0) {
-      return 'Not in use yet.';
+      return 'Not attached to a hub yet.';
     }
     return `Used in ${countLabel(count, 'place')}.`;
   }
@@ -1496,8 +1498,8 @@
         const ownerEmail = managedShareOwnerEmail(summary);
         if (!summary.share.capabilities.includes('write')) {
           return ownerEmail
-            ? `This is a downloaded local copy of the MEGA location shared with you by ${ownerEmail}. Nearbytes can refresh it from MEGA, but local changes here stay on this device.`
-            : 'This is a downloaded local copy of a MEGA location shared with you. Nearbytes can refresh it from MEGA, but local changes here stay on this device.';
+            ? `This is an automatic local read-only copy of the MEGA location shared with you by ${ownerEmail}. Nearbytes refreshes it from MEGA automatically, but it does not upload changes from this folder back to MEGA.`
+            : 'This is an automatic local read-only copy of a MEGA location shared with you. Nearbytes refreshes it from MEGA automatically, but it does not upload changes from this folder back to MEGA.';
         }
         return ownerEmail
           ? `This is the local mirror of the MEGA location shared with you by ${ownerEmail}. The folder below should stay in sync with the provider copy.`
@@ -1728,6 +1730,10 @@
       ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
+      writableDisabled: summary.storage?.writable === false,
+      writableTitle: summary.storage?.writable === false
+        ? 'This shared location is read-only here. Nearbytes refreshes it from the provider but does not upload changes from this folder.'
+        : undefined,
       defaultEnabled: keepFullCopy,
       reservePercent: Number.isFinite(defaultDestination?.reservePercent)
         ? defaultDestination!.reservePercent
@@ -3371,7 +3377,7 @@
     errorMessage = '';
     successMessage = '';
     try {
-      await acceptManagedShare({
+      const response = await acceptManagedShare({
         provider: offer.provider,
         accountId: offer.accountId,
         label: offer.label,
@@ -3379,7 +3385,9 @@
         localPath: offer.suggestedLocalPath,
         remoteDescriptor: offer.remoteDescriptor,
       });
-      successMessage = `${offer.label} is ready in Nearbytes.`;
+      successMessage = response.summary.attachments.length > 0
+        ? `${offer.label} is attached and ready in this hub.`
+        : `${offer.label} is connected as a read-only mirror. Attach it to a hub before Nearbytes can use it.`;
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to accept incoming storage location';
@@ -3455,7 +3463,13 @@
             </label>
             <label class="setting-row">
               <span>Store here</span>
-              <input type="checkbox" checked={view.writable} onchange={view.onToggleWritable} />
+              <input
+                type="checkbox"
+                checked={view.writable}
+                onchange={view.onToggleWritable}
+                disabled={view.writableDisabled}
+                title={view.writableTitle}
+              />
             </label>
             <label class="setting-row">
               <span>Default full copy</span>
@@ -3586,7 +3600,13 @@
               </label>
               <label class="setting-row">
                 <span>Store here</span>
-                <input type="checkbox" checked={view.writable} onchange={view.onToggleWritable} />
+                <input
+                  type="checkbox"
+                  checked={view.writable}
+                  onchange={view.onToggleWritable}
+                  disabled={view.writableDisabled}
+                  title={view.writableTitle}
+                />
               </label>
               <label class="setting-row">
                 <span>Default full copy</span>
