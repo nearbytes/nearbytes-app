@@ -1,0 +1,3 @@
+[submodule "vendor/MEGAcmd"]
+	path = vendor/MEGAcmd
+	url = https://github.com/meganz/MEGAcmd.git

@@ -1151,39 +1151,89 @@ export class MegaTransportAdapter {
 
     const remoteSegments = normalizeComparableRemotePath(remotePath).split('/').filter(Boolean);
     const remoteLeaf = remoteSegments.length > 0 ? remoteSegments[remoteSegments.length - 1]!.toLowerCase() : '';
-    const nestedDirectories = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    let nestedFolderName = remoteLeaf
-      ? nestedDirectories.find((name) => name.toLowerCase() === remoteLeaf) ?? ''
-      : '';
-    if (!nestedFolderName && nestedDirectories.length === 1) {
-      nestedFolderName = nestedDirectories[0]!;
-    }
-    if (!nestedFolderName) {
+    const nestedRoots = await this.findIncomingMirrorNestedRoots(localPath, remoteLeaf);
+    if (nestedRoots.length === 0) {
       return;
     }
 
-    const nestedPath = path.join(localPath, nestedFolderName);
-    const nestedEntries = await fs.readdir(nestedPath, { withFileTypes: true }).catch(() => []);
-    const hasNestedData = nestedEntries.some((entry) =>
-      entry.isDirectory() && (entry.name === 'blocks' || entry.name === 'channels')
-    );
-    if (!hasNestedData) {
-      return;
+    for (const nestedPath of nestedRoots) {
+      await this.mergeIncomingMirrorDirectory(nestedPath, localPath);
     }
+  }
 
-    for (const entry of nestedEntries) {
-      const fromPath = path.join(nestedPath, entry.name);
-      const toPath = path.join(localPath, entry.name);
-      const targetExists = await fs.lstat(toPath).then(() => true).catch(() => false);
-      if (targetExists) {
+  private async findIncomingMirrorNestedRoots(localPath: string, remoteLeaf: string): Promise<string[]> {
+    const queue = [{ directory: localPath, depth: 0 }];
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
         continue;
       }
-      await fs.rename(fromPath, toPath).catch(() => undefined);
+      const entries = await fs.readdir(current.directory, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        if (entry.name === 'blocks' || entry.name === 'channels') {
+          continue;
+        }
+        const nestedPath = path.join(current.directory, entry.name);
+        if (seen.has(nestedPath)) {
+          continue;
+        }
+        seen.add(nestedPath);
+
+        const nestedEntries = await fs.readdir(nestedPath, { withFileTypes: true }).catch(() => []);
+        const hasNestedData = nestedEntries.some((nestedEntry) =>
+          nestedEntry.isDirectory() && (nestedEntry.name === 'blocks' || nestedEntry.name === 'channels')
+        );
+        if (hasNestedData) {
+          candidates.push(nestedPath);
+          continue;
+        }
+
+        if (current.depth >= 2) {
+          continue;
+        }
+
+        const normalizedName = entry.name.trim().toLowerCase();
+        const shouldDescend =
+          current.directory === localPath ||
+          normalizedName === remoteLeaf ||
+          normalizedName.startsWith(`${remoteLeaf} `) ||
+          nestedEntries.some((nestedEntry) => nestedEntry.isDirectory());
+        if (shouldDescend) {
+          queue.push({ directory: nestedPath, depth: current.depth + 1 });
+        }
+      }
     }
 
-    const remainingEntries = await fs.readdir(nestedPath).catch(() => []);
+    return candidates;
+  }
+
+  private async mergeIncomingMirrorDirectory(fromDirectory: string, targetDirectory: string): Promise<void> {
+    const entries = await fs.readdir(fromDirectory, { withFileTypes: true }).catch(() => []);
+
+    for (const entry of entries) {
+      const fromPath = path.join(fromDirectory, entry.name);
+      const toPath = path.join(targetDirectory, entry.name);
+      const targetStats = await fs.lstat(toPath).catch(() => null);
+
+      if (!targetStats) {
+        await fs.rename(fromPath, toPath).catch(() => undefined);
+        continue;
+      }
+
+      if (entry.isDirectory() && targetStats.isDirectory()) {
+        await this.mergeIncomingMirrorDirectory(fromPath, toPath);
+      }
+    }
+
+    const remainingEntries = await fs.readdir(fromDirectory).catch(() => []);
     if (remainingEntries.length === 0) {
-      await fs.rm(nestedPath, { recursive: true, force: true }).catch(() => undefined);
+      await fs.rm(fromDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 

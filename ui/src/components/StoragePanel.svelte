@@ -11,6 +11,7 @@
     consolidateRoot,
     disconnectProviderAccount,
     discoverSources,
+    getStorageLocationRepairReport,
     getRootsConfig,
     hasDesktopDirectoryPicker,
     installProviderHelper,
@@ -20,6 +21,7 @@
     listManagedShares,
     listProviderAccounts,
     openRootInFileManager,
+    repairStorageLocation,
     removeManagedShare,
     watchSources,
     type DiscoveredNearbytesSource,
@@ -34,6 +36,7 @@
     type RootsRuntimeSnapshot,
     type SourceConfigEntry,
     type SourceProvider,
+    type StorageLocationRepairReport,
     type StorageFullPolicy,
     type VolumeDestinationConfig,
     type VolumePolicyEntry,
@@ -137,6 +140,7 @@
   let discoveredSources = $state<DiscoveredNearbytesSource[]>([]);
   let dismissedDiscoveries = $state<string[]>(loadDismissedDiscoveries());
   let movingSourceId = $state<string | null>(null);
+  let repairingSourceId = $state<string | null>(null);
   let providerAccounts = $state<ProviderAccount[]>([]);
   let providerCatalog = $state<ProviderCatalogEntry[]>(defaultProviderCatalogEntries());
   let managedShares = $state<ManagedShareSummary[]>([]);
@@ -168,6 +172,7 @@
   let megaIssueLogExpanded = $state<Record<string, boolean>>({});
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let providerConnectionDialog = $state<string | null>(null);
+  let sourceRepairReports = $state<Record<string, StorageLocationRepairReport>>({});
   let hubLocationDialogVolumeId = $state<string | null>(null);
   let selectedGlobalProvider = $state('local');
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
@@ -216,6 +221,8 @@
     reservePercent: number;
     reserveKey: string;
     warning?: string;
+    repairSummary?: string;
+    repairDetails?: string[];
     attachments: ShareAttachmentChip[];
     onToggleReadable: () => void;
     onToggleWritable: () => void;
@@ -224,6 +231,9 @@
     onOpen?: () => void;
     openDisabled?: boolean;
     openTitle?: string;
+    onTrashIssues?: () => void;
+    onDeleteIssues?: () => void;
+    repairBusy?: boolean;
     onMove?: () => void;
     moveDisabled?: boolean;
     moveLabel?: string;
@@ -756,7 +766,7 @@
   function shareAttachmentSummary(summary: ManagedShareSummary): string {
     const count = summary.attachments.length;
     if (count === 0) {
-      return 'Not attached to a hub yet.';
+      return 'Readable now. Not selected for hub writes.';
     }
     return `Used in ${countLabel(count, 'place')}.`;
   }
@@ -812,9 +822,64 @@
   function sourceAttachmentSummary(sourceId: string): string {
     const count = sourceAttachmentLabels(sourceId).length;
     if (count === 0) {
-      return 'Not attached to a hub yet.';
+      return 'Readable now. Not selected for hub writes.';
     }
     return `Used in ${countLabel(count, 'place')}.`;
+  }
+
+  function sourceRepairReport(sourceId: string): StorageLocationRepairReport | null {
+    return sourceRepairReports[sourceId] ?? null;
+  }
+
+  function sourceRepairSummary(sourceId: string): string | null {
+    const report = sourceRepairReport(sourceId);
+    if (!report || report.issueCount === 0) {
+      return null;
+    }
+    return report.issueCount === 1
+      ? '1 issue found. Review and clean up this location.'
+      : `${report.issueCount} issues found. Review and clean up this location.`;
+  }
+
+  async function loadSourceRepairReports(sourceIds: string[]): Promise<void> {
+    const reports = await Promise.all(
+      sourceIds.map(async (sourceId) => {
+        try {
+          const response = await getStorageLocationRepairReport(sourceId);
+          return [sourceId, response.report] as const;
+        } catch {
+          return [sourceId, null] as const;
+        }
+      })
+    );
+
+    sourceRepairReports = {
+      ...sourceRepairReports,
+      ...Object.fromEntries(reports.filter((entry): entry is readonly [string, StorageLocationRepairReport] => entry[1] !== null)),
+    };
+  }
+
+  async function runSourceRepair(sourceId: string, action: 'trash' | 'delete'): Promise<void> {
+    repairingSourceId = sourceId;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      const response = await repairStorageLocation(sourceId, action);
+      sourceRepairReports = {
+        ...sourceRepairReports,
+        [sourceId]: response.report,
+      };
+      successMessage = response.result.removedCount === 0
+        ? 'Nothing needed cleanup.'
+        : action === 'trash'
+          ? `Moved ${countLabel(response.result.removedCount, 'issue')} to the system trash.`
+          : `Deleted ${countLabel(response.result.removedCount, 'issue')}.`;
+      scheduleRuntimeRefresh();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to repair storage location';
+    } finally {
+      repairingSourceId = null;
+    }
   }
 
   function activeBackfillTargets(): Array<{ sourceId: string; volumeId: string; usagePercent: number }> {
@@ -1659,6 +1724,8 @@
     const status = sourceStatus(source.id);
     const defaultDestination = destinationFor(null, source.id);
     const attachments = sourceAttachmentLabels(source.id);
+    const repairSummary = sourceRepairSummary(source.id);
+    const repairReport = sourceRepairReport(source.id);
     return {
       provider: formatProvider(source.provider),
       title: compactPath(source.path),
@@ -1680,6 +1747,8 @@
           : DEFAULT_RESERVE_PERCENT,
       reserveKey: `source:${source.id}`,
       warning: status?.lastWriteFailure?.message,
+      repairSummary: repairSummary ?? undefined,
+      repairDetails: repairReport?.issues.slice(0, 3).map((issue) => issue.detail) ?? [],
       attachments,
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
@@ -1691,6 +1760,9 @@
       onOpen: hasSourcePath(source) ? () => openSourceFolder(source.id) : undefined,
       openDisabled: !hasSourcePath(source),
       openTitle: source.path || 'Open folder',
+      onTrashIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'trash') : undefined,
+      onDeleteIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'delete') : undefined,
+      repairBusy: repairingSourceId === source.id,
       onMove: () => void (hasSourcePath(source) ? moveSourceFolder(source.id) : chooseSourceFolder(source.id)),
       moveDisabled: movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id),
       moveLabel: movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move' : 'Choose folder',
@@ -1707,6 +1779,8 @@
     }
     const defaultDestination = destinationFor(null, source.id);
     const keepFullCopy = keepsFullCopy(defaultDestination);
+    const repairSummary = sourceRepairSummary(source.id);
+    const repairReport = sourceRepairReport(source.id);
     return {
       provider: summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider === 'github' ? 'GitHub' : summary.share.provider,
       title: managedShareTitle(summary),
@@ -1742,6 +1816,8 @@
           : DEFAULT_RESERVE_PERCENT,
       reserveKey: `managed:${summary.share.id}`,
       warning: summary.storage?.lastWriteFailureMessage,
+      repairSummary: repairSummary ?? undefined,
+      repairDetails: repairReport?.issues.slice(0, 3).map((issue) => issue.detail) ?? [],
       attachments: shareAttachmentLabels(summary),
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
@@ -1753,6 +1829,9 @@
       onOpen: summary.share.sourceId ? () => openSourceFolder(summary.share.sourceId!) : undefined,
       openDisabled: !summary.share.sourceId,
       openTitle: source.path || summary.share.localPath,
+      onTrashIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'trash') : undefined,
+      onDeleteIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'delete') : undefined,
+      repairBusy: repairingSourceId === source.id,
       onRemove: () => void removeManagedShareSummary(summary),
       canRemove: true,
       removeResetKey: `managed:${summary.share.id}:${summary.share.label}:${summary.attachments.length}`,
@@ -2532,6 +2611,7 @@
     runtime = response.runtime;
     lastSavedSignature = serializeConfig(cloneConfig(response.config));
     updateBackfillPolling();
+    void loadSourceRepairReports(response.config.sources.map((source) => source.id));
   }
 
   async function refreshRuntimeSnapshot(): Promise<void> {
@@ -3387,7 +3467,7 @@
       });
       successMessage = response.summary.attachments.length > 0
         ? `${offer.label} is attached and ready in this hub.`
-        : `${offer.label} is connected as a read-only mirror. Attach it to a hub before Nearbytes can use it.`;
+        : `${offer.label} is connected as a read-only mirror. Nearbytes can read from it now.`;
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to accept incoming storage location';
@@ -3507,6 +3587,29 @@
             </div>
 
             <div class="button-row storage-card-actions-right">
+              {#if view.onTrashIssues}
+                <button
+                  type="button"
+                  class="panel-btn subtle compact"
+                  onclick={view.onTrashIssues}
+                  disabled={view.repairBusy}
+                  title="Move unexpected or invalid files to the system trash"
+                >
+                  <Trash2 size={14} strokeWidth={2} />
+                  <span>{view.repairBusy ? 'Cleaning...' : 'Trash issues'}</span>
+                </button>
+              {/if}
+              {#if view.onDeleteIssues}
+                <button
+                  type="button"
+                  class="panel-btn subtle compact danger"
+                  onclick={view.onDeleteIssues}
+                  disabled={view.repairBusy}
+                  title="Permanently delete unexpected or invalid files"
+                >
+                  <span>Delete issues</span>
+                </button>
+              {/if}
               {#if view.onOpen}
                 <button
                   type="button"
@@ -3525,6 +3628,18 @@
         {#snippet footer()}
           {#if view.warning}
             <p class="warning-copy">Last write problem: {view.warning}</p>
+          {/if}
+          {#if view.repairSummary}
+            <p class="warning-copy">{view.repairSummary}</p>
+          {/if}
+          {#if view.repairDetails && view.repairDetails.length > 0}
+            <div class="fact-row share-volume-row">
+              {#each view.repairDetails as detail}
+                <span class="mini-pill" title={detail}>
+                  <span>{detail}</span>
+                </span>
+              {/each}
+            </div>
           {/if}
           {#if view.attachments.length > 0}
             <div class="fact-row share-volume-row">

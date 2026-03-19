@@ -15,6 +15,7 @@ import {
 import { StorageError } from '../types/errors.js';
 import type { StorageBackend } from '../types/storage.js';
 import { FilesystemStorageBackend } from './filesystem.js';
+import { validateBlockBytes, validateEventBytes, type IntegrityValidationResult } from './integrity.js';
 
 const CHANNEL_PATH_REGEX = /^channels\/([a-f0-9]{64,200})(?:\/|$)/i;
 const BLOCK_PATH_REGEX = /^blocks\/([a-f0-9]{64})(?:\.bin)?$/i;
@@ -115,6 +116,38 @@ export interface RootConsolidationResult {
   readonly skippedExisting: number;
   readonly bytesTransferred: number;
   readonly sameDevice: boolean;
+}
+
+export interface StorageLocationIssue {
+  readonly code:
+    | 'unexpected-top-level-entry'
+    | 'invalid-block-file-name'
+    | 'invalid-channel-directory'
+    | 'invalid-event-file-name'
+    | 'block-hash-mismatch'
+    | 'event-deserialize-failed'
+    | 'event-hash-mismatch'
+    | 'event-signature-invalid';
+  readonly severity: 'warn' | 'error';
+  readonly relativePath: string;
+  readonly absolutePath: string;
+  readonly detail: string;
+}
+
+export interface StorageLocationRepairReport {
+  readonly sourceId: string;
+  readonly path: string;
+  readonly issueCount: number;
+  readonly cleanupCandidateCount: number;
+  readonly issues: StorageLocationIssue[];
+}
+
+export interface StorageLocationRepairResult {
+  readonly sourceId: string;
+  readonly removedCount: number;
+  readonly issueCount: number;
+  readonly cleanupCandidateCount: number;
+  readonly action: 'delete' | 'trash';
 }
 
 export interface SourceConflictResolutionResult {
@@ -589,6 +622,16 @@ export class MultiRootStorageBackend implements StorageBackend {
     return this.readFileFromRoots(relativePath, prioritized);
   }
 
+  async readValidatedFileForChannel(
+    relativePath: string,
+    channelKeyHex: string,
+    validate: (data: Uint8Array) => Promise<IntegrityValidationResult>
+  ): Promise<Uint8Array> {
+    const normalizedChannel = channelKeyHex.toLowerCase();
+    const prioritized = this.prioritizeRootsForChannel(normalizedChannel);
+    return this.readValidatedFileFromRoots(relativePath, prioritized, validate);
+  }
+
   async existsForChannel(relativePath: string, channelKeyHex: string): Promise<boolean> {
     const normalizedChannel = channelKeyHex.toLowerCase();
     const prioritized = this.prioritizeRootsForChannel(normalizedChannel);
@@ -616,6 +659,13 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   async readFile(relativePath: string): Promise<Uint8Array> {
     return this.readFileFromRoots(relativePath, this.getEnabledRootStates());
+  }
+
+  async readValidatedFile(
+    relativePath: string,
+    validate: (data: Uint8Array) => Promise<IntegrityValidationResult>
+  ): Promise<Uint8Array> {
+    return this.readValidatedFileFromRoots(relativePath, this.getEnabledRootStates(), validate);
   }
 
   async listFiles(directory: string): Promise<string[]> {
@@ -666,6 +716,39 @@ export class MultiRootStorageBackend implements StorageBackend {
     );
   }
 
+  async inspectStorageLocation(sourceId: string): Promise<StorageLocationRepairReport> {
+    const state = this.getRootStateById(sourceId);
+    if (!state) {
+      throw new StorageError(`Source not found: ${sourceId}`);
+    }
+    const issues: StorageLocationIssue[] = [];
+    await this.auditTopLevelEntries(state, issues);
+    await this.auditBlocks(state, issues);
+    await this.auditChannels(state, issues);
+    return {
+      sourceId,
+      path: state.config.path,
+      issueCount: issues.length,
+      cleanupCandidateCount: issues.length,
+      issues: issues.sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
+    };
+  }
+
+  async repairStorageLocation(sourceId: string, action: 'delete' | 'trash'): Promise<StorageLocationRepairResult> {
+    const report = await this.inspectStorageLocation(sourceId);
+    const uniquePaths = Array.from(new Set(report.issues.map((issue) => issue.absolutePath))).sort();
+    for (const targetPath of uniquePaths) {
+      await removeIssuePath(targetPath, action);
+    }
+    return {
+      sourceId,
+      removedCount: uniquePaths.length,
+      issueCount: report.issueCount,
+      cleanupCandidateCount: report.cleanupCandidateCount,
+      action,
+    };
+  }
+
   private async readFileFromRoots(relativePath: string, states: RootState[]): Promise<Uint8Array> {
     let lastError: Error | undefined;
     for (const state of states) {
@@ -683,6 +766,143 @@ export class MultiRootStorageBackend implements StorageBackend {
       throw new StorageError(`Failed to read ${relativePath}: ${lastError.message}`, lastError);
     }
     throw new StorageError(`File not found in any root: ${relativePath}`);
+  }
+
+  private async readValidatedFileFromRoots(
+    relativePath: string,
+    states: RootState[],
+    validate: (data: Uint8Array) => Promise<IntegrityValidationResult>
+  ): Promise<Uint8Array> {
+    let lastError: Error | undefined;
+    for (const state of states) {
+      try {
+        const data = await state.backend.readFile(relativePath);
+        const result = await validate(data);
+        if (result.ok) {
+          return data;
+        }
+        await state.backend.deleteFile(relativePath).catch(() => undefined);
+        lastError = new StorageError(
+          `Rejected invalid copy of ${relativePath} from ${state.config.id}${result.detail ? `: ${result.detail}` : ''}`
+        );
+      } catch (error) {
+        if (isFileNotFoundError(error)) {
+          continue;
+        }
+        lastError = asError(error);
+      }
+    }
+
+    if (lastError) {
+      throw new StorageError(`Failed to read ${relativePath}: ${lastError.message}`, lastError);
+    }
+    throw new StorageError(`File not found in any root: ${relativePath}`);
+  }
+
+  private async auditTopLevelEntries(state: RootState, issues: StorageLocationIssue[]): Promise<void> {
+    const entries = await safeReadDir(state.config.path);
+    const allowedNames = new Set([...NEARBYTES_IGNORED_ROOT_FILES, 'blocks', 'channels', '.debris']);
+    for (const entry of entries) {
+      if (allowedNames.has(entry.name)) {
+        continue;
+      }
+      issues.push({
+        code: 'unexpected-top-level-entry',
+        severity: 'warn',
+        relativePath: entry.name,
+        absolutePath: join(state.config.path, entry.name),
+        detail: `Unexpected top-level entry: ${entry.name}`,
+      });
+    }
+  }
+
+  private async auditBlocks(state: RootState, issues: StorageLocationIssue[]): Promise<void> {
+    const blocksPath = join(state.config.path, 'blocks');
+    const entries = await safeReadDir(blocksPath);
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      const relativePath = normalizeRelativePath(join('blocks', entry.name));
+      const blockMatch = entry.name.match(/^([a-f0-9]{64})\.bin$/i);
+      if (!blockMatch) {
+        issues.push({
+          code: 'invalid-block-file-name',
+          severity: 'error',
+          relativePath,
+          absolutePath: join(blocksPath, entry.name),
+          detail: `Invalid block filename: ${entry.name}`,
+        });
+        continue;
+      }
+      const bytes = await fs.readFile(join(blocksPath, entry.name)).then((buffer) => new Uint8Array(buffer)).catch(() => null);
+      if (!bytes) {
+        continue;
+      }
+      const result = await validateBlockBytes(blockMatch[1] ?? '', bytes);
+      if (!result.ok) {
+        issues.push({
+          code: 'block-hash-mismatch',
+          severity: 'error',
+          relativePath,
+          absolutePath: join(blocksPath, entry.name),
+          detail: result.detail ?? `Hash mismatch for ${entry.name}`,
+        });
+      }
+    }
+  }
+
+  private async auditChannels(state: RootState, issues: StorageLocationIssue[]): Promise<void> {
+    const channelsPath = join(state.config.path, 'channels');
+    const channelEntries = await safeReadDir(channelsPath);
+    for (const channelEntry of channelEntries) {
+      if (!channelEntry.isDirectory()) {
+        continue;
+      }
+      const channelAbsolute = join(channelsPath, channelEntry.name);
+      if (!/^[a-f0-9]{130}$/i.test(channelEntry.name)) {
+        issues.push({
+          code: 'invalid-channel-directory',
+          severity: 'error',
+          relativePath: normalizeRelativePath(join('channels', channelEntry.name)),
+          absolutePath: channelAbsolute,
+          detail: `Invalid channel directory: ${channelEntry.name}`,
+        });
+        continue;
+      }
+      const eventEntries = await safeReadDir(channelAbsolute);
+      for (const eventEntry of eventEntries) {
+        if (!eventEntry.isFile()) {
+          continue;
+        }
+        const relativePath = normalizeRelativePath(join('channels', channelEntry.name, eventEntry.name));
+        const eventMatch = eventEntry.name.match(/^([a-f0-9]{64})\.bin$/i);
+        if (!eventMatch) {
+          issues.push({
+            code: 'invalid-event-file-name',
+            severity: 'error',
+            relativePath,
+            absolutePath: join(channelAbsolute, eventEntry.name),
+            detail: `Invalid event filename: ${eventEntry.name}`,
+          });
+          continue;
+        }
+        const bytes = await fs.readFile(join(channelAbsolute, eventEntry.name)).then((buffer) => new Uint8Array(buffer)).catch(() => null);
+        if (!bytes) {
+          continue;
+        }
+        const result = await validateEventBytes(channelEntry.name, eventMatch[1] ?? '', bytes);
+        if (!result.ok) {
+          issues.push({
+            code: (result.code as StorageLocationIssue['code']) ?? 'event-deserialize-failed',
+            severity: 'error',
+            relativePath,
+            absolutePath: join(channelAbsolute, eventEntry.name),
+            detail: result.detail ?? `Invalid event file: ${eventEntry.name}`,
+          });
+        }
+      }
+    }
   }
 
   private async createDirectoryInTargets(relativePath: string, targets: RootState[]): Promise<void> {
@@ -1748,6 +1968,76 @@ async function safeUnlink(path: string): Promise<void> {
     }
     throw error;
   }
+}
+
+async function safeReadDir(directory: string): Promise<import('fs').Dirent[]> {
+  try {
+    return await fs.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    const code = extractFsErrorCode(error);
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function removeIssuePath(targetPath: string, action: 'delete' | 'trash'): Promise<void> {
+  if (action === 'trash') {
+    await movePathToTrash(targetPath).catch(() => fs.rm(targetPath, { recursive: true, force: true }));
+    return;
+  }
+  await fs.rm(targetPath, { recursive: true, force: true });
+}
+
+async function movePathToTrash(targetPath: string): Promise<void> {
+  const launcher =
+    process.platform === 'darwin'
+      ? {
+          command: 'osascript',
+          args: ['-e', `tell application "Finder" to delete POSIX file ${appleScriptString(targetPath)}`],
+        }
+      : process.platform === 'win32'
+        ? {
+            command: 'powershell',
+            args: [
+              '-NoProfile',
+              '-Command',
+              `Add-Type -AssemblyName Microsoft.VisualBasic; $path = ${powerShellString(targetPath)}; if (Test-Path -LiteralPath $path -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($path,'OnlyErrorDialogs','SendToRecycleBin') } else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($path,'OnlyErrorDialogs','SendToRecycleBin') }`,
+            ],
+          }
+        : {
+            command: 'gio',
+            args: ['trash', targetPath],
+          };
+
+  await new Promise<void>((resolve, reject) => {
+    const child = require('child_process').spawn(launcher.command, launcher.args, {
+      stdio: 'ignore',
+    });
+    child.once('error', reject);
+    child.once('exit', (code: number | null) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`Trash command exited with code ${code ?? -1}`));
+    });
+  });
+}
+
+function appleScriptString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function powerShellString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function extractFsErrorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+    ? (error as { code: string }).code
+    : undefined;
 }
 
 async function safeStat(path: string): Promise<Awaited<ReturnType<typeof fs.stat>> | null> {

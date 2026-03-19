@@ -6,6 +6,8 @@ import { StorageError } from '../types/errors.js';
 import { serializeEvent, deserializeEvent, serializeEventPayload } from './serialization.js';
 import { computeHash } from '../crypto/hash.js';
 import { isMultiRootStorageBackend } from './multiRoot.js';
+import { verifyPU } from '../crypto/asymmetric.js';
+import { validateBlockBytes } from './integrity.js';
 
 /**
  * Channel storage operations
@@ -85,11 +87,41 @@ export class ChannelStorage {
       const eventPath = this.getEventPath(publicKey, eventHash);
       const channelHex = publicKeyToHex(publicKey);
       const eventBytes = isMultiRootStorageBackend(this.storage)
-        ? await this.storage.readFileForChannel(eventPath, channelHex)
+        ? await this.storage.readValidatedFileForChannel(eventPath, channelHex, async (data) => {
+            const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(data)) as import('../types/events.js').SerializedEvent);
+            const payloadBytes = serializeEventPayload(parsed.payload);
+            const payloadHash = await computeHash(payloadBytes);
+            if (payloadHash !== eventHash) {
+              return {
+                ok: false,
+                code: 'event-hash-mismatch',
+                detail: `Expected event hash ${eventHash}, got ${payloadHash}`,
+              };
+            }
+            const valid = await verifyPU(payloadBytes, parsed.signature, publicKey).catch(() => false);
+            return valid
+              ? { ok: true }
+              : {
+                  ok: false,
+                  code: 'event-signature-invalid',
+                  detail: `Signature verification failed for event ${eventHash}`,
+                };
+          })
         : await this.storage.readFile(eventPath);
       const serialized = JSON.parse(new TextDecoder().decode(eventBytes)) as import('../types/events.js').SerializedEvent;
-
-      return deserializeEvent(serialized);
+      const event = deserializeEvent(serialized);
+      const payloadBytes = serializeEventPayload(event.payload);
+      const payloadHash = await computeHash(payloadBytes);
+      if (payloadHash !== eventHash) {
+        await this.storage.deleteFile(eventPath).catch(() => undefined);
+        throw new StorageError(`Failed to retrieve event: event hash mismatch for ${eventHash}`);
+      }
+      const valid = await verifyPU(payloadBytes, event.signature, publicKey).catch(() => false);
+      if (!valid) {
+        await this.storage.deleteFile(eventPath).catch(() => undefined);
+        throw new StorageError(`Failed to retrieve event: signature verification failed for ${eventHash}`);
+      }
+      return event;
     } catch (error) {
       if (error instanceof StorageError) {
         throw error;
@@ -180,8 +212,17 @@ export class ChannelStorage {
       const dataPath = this.getDataPath(dataHash);
       const channelHex = publicKey ? publicKeyToHex(publicKey) : undefined;
       const data = isMultiRootStorageBackend(this.storage) && channelHex
-        ? await this.storage.readFileForChannel(dataPath, channelHex)
-        : await this.storage.readFile(dataPath);
+        ? await this.storage.readValidatedFileForChannel(dataPath, channelHex, (bytes) => validateBlockBytes(dataHash, bytes))
+        : isMultiRootStorageBackend(this.storage)
+          ? await this.storage.readValidatedFile(dataPath, (bytes) => validateBlockBytes(dataHash, bytes))
+          : await this.storage.readFile(dataPath);
+      if (!isMultiRootStorageBackend(this.storage)) {
+        const validation = await validateBlockBytes(dataHash, data);
+        if (!validation.ok) {
+          await this.storage.deleteFile(dataPath).catch(() => undefined);
+          throw new StorageError(`Failed to retrieve encrypted data: ${validation.detail ?? 'block hash mismatch'}`);
+        }
+      }
       return data as EncryptedData;
     } catch (error) {
       if (error instanceof StorageError) {

@@ -647,6 +647,47 @@ export interface RootsRuntimeSnapshot {
   writeFailures: RootWriteFailure[];
 }
 
+export interface StorageLocationIssue {
+  code:
+    | 'unexpected-top-level-entry'
+    | 'invalid-block-file-name'
+    | 'invalid-channel-directory'
+    | 'invalid-event-file-name'
+    | 'block-hash-mismatch'
+    | 'event-deserialize-failed'
+    | 'event-hash-mismatch'
+    | 'event-signature-invalid';
+  severity: 'warn' | 'error';
+  relativePath: string;
+  absolutePath: string;
+  detail: string;
+}
+
+export interface StorageLocationRepairReport {
+  sourceId: string;
+  path: string;
+  issueCount: number;
+  cleanupCandidateCount: number;
+  issues: StorageLocationIssue[];
+}
+
+export interface StorageLocationRepairResult {
+  sourceId: string;
+  removedCount: number;
+  issueCount: number;
+  cleanupCandidateCount: number;
+  action: 'delete' | 'trash';
+}
+
+export interface StorageLocationRepairReportResponse {
+  report: StorageLocationRepairReport;
+}
+
+export interface StorageLocationRepairResponse {
+  result: StorageLocationRepairResult;
+  report: StorageLocationRepairReport;
+}
+
 export interface RootsConfigResponse {
   configPath: string | null;
   config: RootsConfig;
@@ -1316,6 +1357,24 @@ export async function openRootInFileManager(rootId: string): Promise<void> {
       body: JSON.stringify({ rootId }),
     });
   }
+}
+
+export async function getStorageLocationRepairReport(sourceId: string): Promise<StorageLocationRepairReportResponse> {
+  const encodedSourceId = encodeURIComponent(sourceId);
+  return apiRequest<StorageLocationRepairReportResponse>(`/config/roots/sources/${encodedSourceId}/repair`, {
+    method: 'GET',
+  });
+}
+
+export async function repairStorageLocation(
+  sourceId: string,
+  action: 'trash' | 'delete'
+): Promise<StorageLocationRepairResponse> {
+  const encodedSourceId = encodeURIComponent(sourceId);
+  return apiRequest<StorageLocationRepairResponse>(`/config/roots/sources/${encodedSourceId}/repair`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  });
 }
 
 /**
