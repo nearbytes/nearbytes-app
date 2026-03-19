@@ -2051,7 +2051,9 @@ export class ManagedShareService {
       const entryPath = path.join(canonicalRoot, entry.name);
       if (!CANONICAL_MEGA_BASE_SHARE_ENTRY_NAMES.has(entry.name)) {
         if (entry.isDirectory()) {
-          const drainedNestedRoot = await this.cleanupNestedMegaBaseShareRoot(containerRoot, canonicalRoot, entryPath);
+          const drainedNestedRoot = await this.cleanupNestedMegaBaseShareRoot(containerRoot, canonicalRoot, entryPath, {
+            forceDrain: entry.name.toLowerCase().startsWith('nearbytes'),
+          });
           if (drainedNestedRoot) {
             continue;
           }
@@ -2078,7 +2080,10 @@ export class ManagedShareService {
   private async cleanupNestedMegaBaseShareRoot(
     containerRoot: string,
     canonicalRoot: string,
-    entryPath: string
+    entryPath: string,
+    options: {
+      readonly forceDrain?: boolean;
+    } = {}
   ): Promise<boolean> {
     const stats = await safeLstat(entryPath);
     if (!stats || !stats.isDirectory() || stats.isSymbolicLink()) {
@@ -2091,7 +2096,7 @@ export class ManagedShareService {
     const looksLikeNestedManagedShareRoot =
       entryName.toLowerCase().startsWith('nearbytes') ||
       Array.from(CANONICAL_MEGA_BASE_SHARE_ENTRY_NAMES).some((name) => nestedEntryNames.has(name));
-    if (!looksLikeNestedManagedShareRoot) {
+    if (!looksLikeNestedManagedShareRoot && !options.forceDrain) {
       return false;
     }
 
@@ -2211,7 +2216,7 @@ export class ManagedShareService {
       await secureRenameWithinContainer(containerRoot, sourcePath, targetPath);
     } catch (error) {
       const code = extractFsErrorCode(error);
-      if ((code === 'EPERM' || code === 'EACCES') && sourceStats.isDirectory()) {
+      if ((code === 'EPERM' || code === 'EACCES' || code === 'EBUSY') && sourceStats.isDirectory()) {
         await this.drainManagedShareDirectoryToDebris(containerRoot, sourcePath, targetPath);
         return;
       }
@@ -2241,7 +2246,7 @@ export class ManagedShareService {
         await secureRenameWithinContainer(containerRoot, childSource, childTarget);
       } catch (error) {
         const code = extractFsErrorCode(error);
-        if ((code === 'EPERM' || code === 'EACCES') && childStats.isDirectory()) {
+        if ((code === 'EPERM' || code === 'EACCES' || code === 'EBUSY') && childStats.isDirectory()) {
           await this.drainManagedShareDirectoryToDebris(containerRoot, childSource, childTarget);
           continue;
         }

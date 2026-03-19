@@ -1858,6 +1858,113 @@ describe('ManagedShareService', () => {
     expect(debrisEntries.some((entry) => entry.includes('nearbytes bce944'))).toBe(true);
   });
 
+  it('force-drains nested nearbytes directories even when they do not contain canonical entries yet', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-force-drain-'));
+    tempDirs.add(tempDir);
+    const localRoot = path.join(tempDir, 'local-root');
+    const managedRoot = path.join(tempDir, 'managed-root');
+    const megaContainerRoot = path.join(managedRoot, 'mega', 'owner-example-com');
+    const canonicalMegaRoot = path.join(megaContainerRoot, 'nearbytes');
+    const nestedNearbytesRoot = path.join(canonicalMegaRoot, 'nearbytes');
+    await fs.mkdir(path.join(canonicalMegaRoot, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(canonicalMegaRoot, 'channels'), { recursive: true });
+    await fs.mkdir(path.join(nestedNearbytesRoot, 'scratch'), { recursive: true });
+    await fs.writeFile(path.join(canonicalMegaRoot, 'Nearbytes.html'), 'marker', 'utf8');
+    await fs.writeFile(path.join(nestedNearbytesRoot, 'scratch', 'note.txt'), 'stale', 'utf8');
+    await fs.mkdir(localRoot, { recursive: true });
+
+    const rootsConfig: RootsConfig = {
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-mega-root',
+          provider: 'mega',
+          path: canonicalMegaRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'mega',
+            managedShareId: 'share-mega-1',
+          },
+        },
+      ],
+      defaultVolume: {
+        destinations: [],
+      },
+      volumes: [],
+    };
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'owner@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'owner',
+            localPath: canonicalMegaRoot,
+            sourceId: 'src-mega-root',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes', shareName: 'nearbytes' },
+            capabilities: ['mirror', 'read', 'write', 'invite'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const storage = new MultiRootStorageBackend(rootsConfig);
+    const service = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      integrationStatePath,
+      mirrorRoot: managedRoot,
+      adapters: [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+      runtime: {
+        mega: {
+          remoteBasePath: '/nearbytes',
+        },
+      },
+    });
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(1);
+    await expect(fs.lstat(nestedNearbytesRoot)).rejects.toThrow();
+    const debrisEntries = await fs.readdir(path.join(megaContainerRoot, '.debris'));
+    expect(debrisEntries.some((entry) => entry.includes('stale-nested-base-share nearbytes scratch'))).toBe(true);
+  });
+
   it('bootstraps a provider account from a join link when explicitly allowed', async () => {
     const { service } = await createHarness();
 
