@@ -96,6 +96,16 @@
     facts: Array<{ label: string; value: string }>;
   };
 
+  type MegaStatusView = {
+    headline: string;
+    detail: string;
+    tone: 'good' | 'muted' | 'warn';
+    syncing: boolean;
+    progressPercent: number | null;
+    progressLabel: string;
+    selfRepairCopy: string;
+  };
+
   type CollaboratorView = {
     label: string;
     status: 'active' | 'invited';
@@ -155,6 +165,7 @@
   let providerLocationNameDrafts = $state<Record<string, string>>({});
   let providerCreateComposerOpen = $state<Record<string, boolean>>({});
   let managedShareInviteDrafts = $state<Record<string, string>>({});
+  let megaIssueLogExpanded = $state<Record<string, boolean>>({});
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let providerConnectionDialog = $state<string | null>(null);
   let hubLocationDialogVolumeId = $state<string | null>(null);
@@ -1214,11 +1225,45 @@
     if (!normalized) {
       return 'MEGA is still checking this location.';
     }
-    const compact = compactShareStatusDetail(normalized);
-    return compact ?? normalized;
+    return firstMegaDetailLine(normalized);
   }
 
-  function megaDiagnostics(limit = 3): MegaDiagnosticView[] {
+  function firstMegaDetailLine(detail: string): string {
+    const line = detail
+      .split(/\r?\n/u)
+      .map((entry) => entry.trim())
+      .find((entry) => entry !== '');
+    return line ?? '';
+  }
+
+  function isNoisyMegaLog(detail: string): boolean {
+    const normalized = detail.trim();
+    if (!normalized) {
+      return false;
+    }
+    if (normalized.includes('\n') || normalized.includes('\r')) {
+      return true;
+    }
+    return /(transfer|\|#{4,}|mb:\s*\d|kb:\s*\d|state change\)|\[[^\]]*%\])/i.test(normalized);
+  }
+
+  function conciseMegaDetail(detail: string): string {
+    const line = firstMegaDetailLine(detail);
+    if (!line || isNoisyMegaLog(detail)) {
+      return '';
+    }
+    return line.length > 140 ? `${line.slice(0, 137).trimEnd()}...` : line;
+  }
+
+  function toggleMegaIssueLog(issueId: string): void {
+    megaIssueLogExpanded = {
+      ...megaIssueLogExpanded,
+      [issueId]: !(megaIssueLogExpanded[issueId] ?? false),
+    };
+  }
+
+  function megaDiagnostics(limit = 3, options?: { onlyProblems?: boolean }): MegaDiagnosticView[] {
+    const onlyProblems = options?.onlyProblems === true;
     const ranked: Array<{
       summary: ManagedShareSummary;
       severity: number;
@@ -1230,6 +1275,9 @@
     }> = [];
 
     for (const summary of providerShares('mega')) {
+      if (onlyProblems && summary.state.status !== 'attention' && summary.state.status !== 'needs-auth') {
+        continue;
+      }
       const diagnostic = summary.state.diagnostic;
       const detail = diagnostic?.detail?.trim() || summary.state.detail.trim();
       if (!detail) {
@@ -1271,39 +1319,77 @@
     }));
   }
 
-  function megaCurrentStatusMessage(): string {
-    if (providersLoading || sharesLoading || incomingLoading) {
-      return 'Checking account session, live locations, and incoming shares.';
-    }
-    if (shareLoadError) {
-      return shareLoadError;
-    }
-    if (providerLoadError) {
-      return providerLoadError;
-    }
-    if (incomingLoadError) {
-      return incomingLoadError;
-    }
-    const latestDiagnostic = megaDiagnostics(1)[0];
-    if (latestDiagnostic) {
-      return latestDiagnostic.summary;
-    }
-    const visibleCount = providerVisibleShareCount('mega');
-    if (visibleCount > 0) {
-      return `${countLabel(visibleCount, 'live location')} ready to use.`;
-    }
-    return 'No MEGA locations are visible yet.';
-  }
+  function megaStatusView(): MegaStatusView {
+    const shares = providerShares('mega');
+    const total = shares.length;
+    const ready = shares.filter((summary) => summary.state.status === 'ready').length;
+    const syncing = shares.filter((summary) => summary.state.status === 'syncing' || summary.state.status === 'idle').length;
+    const issue = megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
+    const loading = providersLoading || sharesLoading || incomingLoading;
+    const hasBlockingError = shareLoadError || providerLoadError || incomingLoadError;
+    const inProgress = loading || syncing > 0;
+    const progressPercent = total > 0 && inProgress ? Math.max(6, Math.min(98, Math.round((ready / total) * 100))) : null;
 
-  function megaCurrentStatusDetail(): string {
-    const latestDiagnostic = megaDiagnostics(1)[0];
-    if (!latestDiagnostic) {
-      return '';
+    if (issue) {
+      const detail = conciseMegaDetail(issue.detail);
+      return {
+        headline: issue.summary,
+        detail,
+        tone: 'warn',
+        syncing: inProgress,
+        progressPercent,
+        progressLabel: total > 0 ? `${ready}/${total} locations ready` : 'Recovering MEGA status',
+        selfRepairCopy: 'Nearbytes auto-retries common MEGA command failures, including MEGAcmd server access issues.',
+      };
     }
-    if (latestDiagnostic.detail.trim() === latestDiagnostic.summary.trim()) {
-      return '';
+
+    if (hasBlockingError) {
+      return {
+        headline: hasBlockingError,
+        detail: '',
+        tone: 'warn',
+        syncing: false,
+        progressPercent: null,
+        progressLabel: 'Status unavailable',
+        selfRepairCopy: 'Nearbytes keeps retrying in the background. Use refresh if status does not recover quickly.',
+      };
     }
-    return latestDiagnostic.detail;
+
+    if (inProgress) {
+      return {
+        headline: 'Syncing with MEGA',
+        detail: loading
+          ? 'Checking account session and mirror health.'
+          : 'Fetching updates for shared locations.',
+        tone: 'muted',
+        syncing: true,
+        progressPercent,
+        progressLabel: total > 0 ? `${ready}/${total} locations ready` : 'Preparing locations',
+        selfRepairCopy: 'Nearbytes auto-repairs common MEGA transport failures during sync.',
+      };
+    }
+
+    if (total > 0) {
+      return {
+        headline: `${countLabel(total, 'live location')} ready`,
+        detail: 'All visible MEGA locations are healthy.',
+        tone: 'good',
+        syncing: false,
+        progressPercent: null,
+        progressLabel: '',
+        selfRepairCopy: 'Automatic MEGA recovery is enabled if command transport degrades.',
+      };
+    }
+
+    return {
+      headline: 'No MEGA locations yet',
+      detail: 'Create or accept a MEGA location to start syncing.',
+      tone: 'muted',
+      syncing: false,
+      progressPercent: null,
+      progressLabel: '',
+      selfRepairCopy: 'Automatic recovery is ready when MEGA sync starts.',
+    };
   }
 
   function localMachineShareCount(): number {
@@ -3937,13 +4023,32 @@
             {/if}
 
             {#if provider.provider === 'mega'}
-              {@const megaDiagnosticRows = megaDiagnostics()}
-              <div class="provider-story-card compact-provider-card">
+              {@const megaStatus = megaStatusView()}
+              {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}
+              <div class="provider-story-card compact-provider-card mega-status-card" data-tone={megaStatus.tone}>
                 <p class="subheading">Current status</p>
-                <p class="managed-share-invite-copy">{megaCurrentStatusMessage()}</p>
-                {#if megaCurrentStatusDetail()}
-                  <p class="provider-step-detail">{megaCurrentStatusDetail()}</p>
+                <p class="managed-share-invite-copy mega-status-headline">{megaStatus.headline}</p>
+                {#if megaStatus.detail}
+                  <p class="provider-step-detail">{megaStatus.detail}</p>
                 {/if}
+                {#if megaStatus.syncing}
+                  <div
+                    class="mega-sync-progress"
+                    role="progressbar"
+                    aria-label="MEGA sync progress"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={megaStatus.progressPercent ?? undefined}
+                  >
+                    <div
+                      class="mega-sync-progress-bar"
+                      class:indeterminate={megaStatus.progressPercent === null}
+                      style={megaStatus.progressPercent === null ? undefined : `width: ${megaStatus.progressPercent}%`}
+                    ></div>
+                  </div>
+                  <p class="mega-progress-copy">{megaStatus.progressLabel}</p>
+                {/if}
+                <p class="mega-self-repair-copy">{megaStatus.selfRepairCopy}</p>
                 <div class="button-row">
                   <button
                     type="button"
@@ -3957,24 +4062,35 @@
                 </div>
               </div>
 
-              {#if megaDiagnosticRows.length > 0}
+              {#if megaIssue}
                 <div class="provider-story-card compact-provider-card">
-                  <p class="subheading">Latest MEGA diagnostics</p>
+                  <p class="subheading">Needs attention</p>
                   <div class="provider-fact-list">
-                    {#each megaDiagnosticRows as diagnostic (diagnostic.id)}
-                      <div class="provider-path-card mega-diagnostic-card">
-                        <p class="provider-step-title">{diagnostic.title}</p>
-                        <p class="provider-step-detail">{diagnostic.summary}</p>
-                        <p class="provider-path-copy">{diagnostic.detail}</p>
-                        {#if diagnostic.facts.length > 0}
-                          <div class="provider-fact-list">
-                            {#each diagnostic.facts as fact}
-                              <p class="provider-story-copy"><strong>{fact.label}:</strong> {fact.value}</p>
-                            {/each}
-                          </div>
+                    <div class="provider-path-card mega-diagnostic-card">
+                      <p class="provider-step-title">{megaIssue.title}</p>
+                      <p class="provider-step-detail">{megaIssue.summary}</p>
+                      {#if megaIssue.detail.trim() !== ''}
+                        <div class="button-row">
+                          <button
+                            type="button"
+                            class="panel-btn subtle compact"
+                            onclick={() => toggleMegaIssueLog(megaIssue.id)}
+                          >
+                            <span>{megaIssueLogExpanded[megaIssue.id] ? 'Hide logs' : 'View logs'}</span>
+                          </button>
+                        </div>
+                        {#if megaIssueLogExpanded[megaIssue.id]}
+                          <pre class="mega-log-view">{megaIssue.detail}</pre>
                         {/if}
-                      </div>
-                    {/each}
+                      {/if}
+                      {#if megaIssue.facts.length > 0}
+                        <div class="provider-fact-list">
+                          {#each megaIssue.facts as fact}
+                            <p class="provider-story-copy"><strong>{fact.label}:</strong> {fact.value}</p>
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
                   </div>
                 </div>
               {/if}
@@ -5522,6 +5638,73 @@
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
   }
 
+  .mega-status-card {
+    gap: 0.52rem;
+  }
+
+  .mega-status-card[data-tone='good'] {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.9));
+  }
+
+  .mega-status-card[data-tone='warn'] {
+    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 30%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 80%, rgba(255, 250, 245, 0.97));
+  }
+
+  .mega-status-headline {
+    color: var(--text-main);
+    font-size: 0.84rem;
+    font-weight: 640;
+  }
+
+  .mega-sync-progress {
+    position: relative;
+    overflow: hidden;
+    height: 7px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 240, 234, 0.9));
+  }
+
+  .mega-sync-progress-bar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0%;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--nb-accent, #d27a54) 50%, rgba(255, 249, 246, 0.98));
+    transition: width 220ms ease;
+  }
+
+  .mega-sync-progress-bar.indeterminate {
+    width: 34%;
+    animation: mega-sync-indeterminate 1.1s ease-in-out infinite;
+  }
+
+  .mega-progress-copy,
+  .mega-self-repair-copy {
+    margin: 0;
+    color: var(--text-faint);
+    font-size: 0.73rem;
+    line-height: 1.35;
+  }
+
+  .mega-log-view {
+    margin: 0;
+    padding: 0.55rem 0.62rem;
+    border-radius: 0.62rem;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(248, 243, 239, 0.8));
+    color: var(--text-soft);
+    font-size: 0.71rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 180px;
+    overflow: auto;
+    font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  }
+
   .managed-share-story-card.compact {
     padding: 0.74rem 0.82rem;
   }
@@ -5754,6 +5937,15 @@
   }
 
   @keyframes provider-progress-slide {
+    0% {
+      transform: translateX(-110%);
+    }
+    100% {
+      transform: translateX(320%);
+    }
+  }
+
+  @keyframes mega-sync-indeterminate {
     0% {
       transform: translateX(-110%);
     }

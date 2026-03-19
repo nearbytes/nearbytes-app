@@ -984,7 +984,7 @@ export class MegaTransportAdapter {
         });
         if (result.exitCode !== 0) {
           const rawOutput = result.stderr || result.stdout || `${subcommand} failed`;
-          if (!restartAttempted && isMegaServerAccessError(rawOutput)) {
+          if (!restartAttempted && isMegaRecoverableCommandError(rawOutput)) {
             restartAttempted = await this.restartMegaServer(commandDirectory);
             if (restartAttempted) {
               continue;
@@ -1003,7 +1003,7 @@ export class MegaTransportAdapter {
           continue;
         }
         const message = error instanceof Error ? error.message : String(error);
-        if (!restartAttempted && isMegaServerAccessError(message)) {
+        if (!restartAttempted && isMegaRecoverableCommandError(message)) {
           restartAttempted = await this.restartMegaServer(commandDirectory);
           if (restartAttempted) {
             continue;
@@ -1395,6 +1395,18 @@ function isMegaServerAccessError(value: string): boolean {
     return false;
   }
   return /failed to access server:\s*231/i.test(normalized);
+}
+
+function isMegaRecoverableCommandError(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    isMegaServerAccessError(normalized) ||
+    /command timed out after\s*\d+ms/i.test(normalized) ||
+    /error reading output \(state change\):\s*109/i.test(normalized)
+  );
 }
 
 function resolveMegaServerCommand(
