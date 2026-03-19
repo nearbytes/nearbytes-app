@@ -1,5 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'path';
+import { isNearbytesWatchIgnoredPath } from '../config/sourceDiscovery.js';
 import type { RootProvider } from '../config/roots.js';
 import { isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { StorageBackend } from '../types/storage.js';
@@ -85,6 +86,7 @@ export class VolumeWatchHub {
     const watcher = chokidar.watch(plan.targets, {
       persistent: true,
       ignoreInitial: true,
+      ignored: (candidatePath) => isNearbytesWatchIgnoredPath(String(candidatePath), plan.targets),
       awaitWriteFinish: {
         stabilityThreshold: 120,
         pollInterval: 40,

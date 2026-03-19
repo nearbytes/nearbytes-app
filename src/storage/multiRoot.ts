@@ -9,6 +9,7 @@ import {
 } from '../config/roots.js';
 import {
   ensureNearbytesMarker,
+  isNearbytesIgnoredTopLevelEntryName,
   normalizeNearbytesRoot,
   NEARBYTES_IGNORED_ROOT_FILES,
 } from '../config/sourceDiscovery.js';
@@ -801,9 +802,8 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   private async auditTopLevelEntries(state: RootState, issues: StorageLocationIssue[]): Promise<void> {
     const entries = await safeReadDir(state.config.path);
-    const allowedNames = new Set([...NEARBYTES_IGNORED_ROOT_FILES, 'blocks', 'channels', '.debris']);
     for (const entry of entries) {
-      if (allowedNames.has(entry.name)) {
+      if (entry.name === 'blocks' || entry.name === 'channels' || isNearbytesIgnoredTopLevelEntryName(entry.name)) {
         continue;
       }
       issues.push({

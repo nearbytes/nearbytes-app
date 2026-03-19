@@ -2,6 +2,7 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'path';
 import {
   discoverNearbytesSources,
+  isNearbytesWatchIgnoredPath,
   type DiscoveredNearbytesSource,
 } from '../config/sourceDiscovery.js';
 import type { RootProvider } from '../config/roots.js';
@@ -90,6 +91,7 @@ export class SourceWatchHub {
     const watcher = chokidar.watch(plan.targets, {
       persistent: true,
       ignoreInitial: true,
+      ignored: (candidatePath) => isNearbytesWatchIgnoredPath(String(candidatePath), plan.targets),
       depth: this.watchDepth,
       awaitWriteFinish: {
         stabilityThreshold: 150,
