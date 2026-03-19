@@ -81,6 +81,10 @@ export const repairStorageLocationBodySchema = z.object({
   action: z.enum(['trash', 'delete']).default('trash'),
 });
 
+export const openPathInFileManagerBodySchema = z.object({
+  path: z.string().trim().min(1, 'Path is required'),
+});
+
 export const reconcileDiscoveredSourcesBodySchema = z.object({
   knownVolumeIds: z
     .array(

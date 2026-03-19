@@ -220,6 +220,24 @@ export interface EventDetailResponse {
   event: SerializedEvent;
 }
 
+export interface EventStorageLocationEntry {
+  rootId: string | null;
+  provider: SourceProvider | string;
+  rootPath: string;
+  eventPath: string;
+  dataPath: string | null;
+  hasEventFile: boolean;
+  hasDataBlock: boolean;
+}
+
+export interface EventStorageLocationsResponse {
+  eventHash: string;
+  volumeId: string;
+  expectedEventRelativePath: string;
+  expectedDataRelativePath: string | null;
+  locations: EventStorageLocationEntry[];
+}
+
 export interface RenameFolderSummary {
   fromFolder: string;
   toFolder: string;
@@ -1109,6 +1127,19 @@ export async function getEventDetail(auth: Auth, eventHash: string): Promise<Eve
 }
 
 /**
+ * Returns expected event/block paths and per-root presence for a specific event.
+ */
+export async function getEventStorageLocations(
+  auth: Auth,
+  eventHash: string
+): Promise<EventStorageLocationsResponse> {
+  return apiRequest<EventStorageLocationsResponse>(`/events/${eventHash}/storage-locations`, {
+    method: 'GET',
+    auth,
+  });
+}
+
+/**
  * Uploads one or more files using multipart/form-data.
  * Returns array of created file metadata.
  */
@@ -1343,6 +1374,16 @@ export async function repairStorageLocation(
   return apiRequest<StorageLocationRepairResponse>(`/config/roots/sources/${encodedSourceId}/repair`, {
     method: 'POST',
     body: JSON.stringify({ action }),
+  });
+}
+
+/**
+ * Opens an explicit path in the OS file manager.
+ */
+export async function openPathInFileManager(targetPath: string): Promise<void> {
+  await apiRequest('/config/open-path-in-file-manager', {
+    method: 'POST',
+    body: JSON.stringify({ path: targetPath }),
   });
 }
 

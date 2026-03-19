@@ -2,7 +2,8 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { Router } from 'express';
 import { spawn } from 'child_process';
 import { timingSafeEqual } from 'crypto';
-import { promises as fs } from 'fs';
+import { promises as fs, constants as fsConstants } from 'fs';
+import { dirname, join, resolve } from 'path';
 import os from 'os';
 import multer from 'multer';
 import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
@@ -49,6 +50,7 @@ import {
   importRecipientReferencesBodySchema,
   importSourceReferencesBodySchema,
   managedShareIdParamSchema,
+  openPathInFileManagerBodySchema,
   openRootInFileManagerBodySchema,
   repairStorageLocationBodySchema,
   openJoinLinkBodySchema,
@@ -258,6 +260,25 @@ export function createRoutes(deps: RouteDependencies): Router {
     res.json({
       result,
       report: await multiRootStorage.inspectStorageLocation(sourceId),
+    });
+  }));
+
+  router.post('/config/open-path-in-file-manager', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const { path: targetPath } = parseWithSchema(openPathInFileManagerBodySchema, req.body);
+    const resolvedTargetPath = resolve(targetPath);
+    const allowedRoots = getAllowedFileManagerRoots(deps);
+    if (allowedRoots.length > 0 && !allowedRoots.some((root) => isPathInsideRoot(root, resolvedTargetPath))) {
+      throw new ApiError(
+        400,
+        'INVALID_REQUEST',
+        'Path is outside configured Nearbytes storage roots and cannot be revealed.'
+      );
+    }
+    await openInFileManager(resolvedTargetPath);
+    res.json({
+      ok: true,
+      path: resolvedTargetPath,
     });
   }));
 
@@ -716,6 +737,66 @@ export function createRoutes(deps: RouteDependencies): Router {
     })
   );
 
+  router.get(
+    '/events/:hash/storage-locations',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { hash } = parseWithSchema(fileHashParamSchema, req.params);
+      const secret = res.locals.secret as string;
+      const detail = await deps.fileService.getEvent(secret, hash);
+      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+
+      const expectedEventRelativePath = join('channels', volumeId, `${hash}.bin`);
+      const payloadHash = detail.event.payload.hash?.trim() ?? '';
+      const expectedDataRelativePath =
+        /^[a-f0-9]{64}$/i.test(payloadHash) && !/^0+$/i.test(payloadHash)
+          ? join('blocks', `${payloadHash}.bin`)
+          : null;
+
+      const sourceEntries = isMultiRootStorageBackend(deps.storage)
+        ? getMultiRootStorageOrThrow(deps.storage).getRootsConfig().sources.map((source) => ({
+            rootId: source.id,
+            provider: source.provider,
+            path: source.path,
+          }))
+        : deps.resolvedStorageDir
+          ? [
+              {
+                rootId: null,
+                provider: 'local',
+                path: deps.resolvedStorageDir,
+              },
+            ]
+          : [];
+
+      const locations = await Promise.all(
+        sourceEntries.map(async (source) => {
+          const eventPath = join(source.path, expectedEventRelativePath);
+          const dataPath = expectedDataRelativePath ? join(source.path, expectedDataRelativePath) : null;
+          const hasEventFile = await pathExists(eventPath);
+          const hasDataBlock = dataPath ? await pathExists(dataPath) : false;
+          return {
+            rootId: source.rootId,
+            provider: source.provider,
+            rootPath: source.path,
+            eventPath,
+            dataPath,
+            hasEventFile,
+            hasDataBlock,
+          };
+        })
+      );
+
+      res.json({
+        eventHash: hash,
+        volumeId,
+        expectedEventRelativePath,
+        expectedDataRelativePath,
+        locations,
+      });
+    })
+  );
+
   router.post(
     '/snapshot',
     requireSecret(deps),
@@ -983,6 +1064,15 @@ async function safeUnlink(path: string): Promise<void> {
   }
 }
 
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function extractRootsConfigBody(value: unknown): unknown {
   if (!value || typeof value !== 'object' || !('config' in value)) {
     return value;
@@ -1119,12 +1209,28 @@ function isDesktopProtectedApiPath(pathname: string): boolean {
 }
 
 async function openInFileManager(targetPath: string): Promise<void> {
+  const resolvedTargetPath = resolve(targetPath);
+  const existingStat = await fs.stat(resolvedTargetPath).catch(() => null);
+  const fallbackDirectory = existingStat
+    ? existingStat.isDirectory()
+      ? resolvedTargetPath
+      : dirname(resolvedTargetPath)
+    : await findNearestExistingDirectory(resolvedTargetPath);
+
+  if (!fallbackDirectory) {
+    throw new ApiError(404, 'NOT_FOUND', 'Target path does not exist and no parent directory could be opened.');
+  }
+
   const launcher =
     process.platform === 'darwin'
-      ? { command: 'open', args: [targetPath] }
+      ? existingStat?.isFile()
+        ? { command: 'open', args: ['-R', resolvedTargetPath] }
+        : { command: 'open', args: [fallbackDirectory] }
       : process.platform === 'win32'
-        ? { command: 'explorer', args: [targetPath] }
-        : { command: 'xdg-open', args: [targetPath] };
+        ? existingStat?.isFile()
+          ? { command: 'explorer', args: [`/select,${resolvedTargetPath}`] }
+          : { command: 'explorer', args: [fallbackDirectory] }
+        : { command: 'xdg-open', args: [fallbackDirectory] };
 
   await new Promise<void>((resolve, reject) => {
     const child = spawn(launcher.command, launcher.args, {
@@ -1141,4 +1247,47 @@ async function openInFileManager(targetPath: string): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     throw new ApiError(500, 'INTERNAL_ERROR', `Failed to open file manager: ${message}`);
   });
+}
+
+function getAllowedFileManagerRoots(deps: RouteDependencies): string[] {
+  if (isMultiRootStorageBackend(deps.storage)) {
+    return getMultiRootStorageOrThrow(deps.storage)
+      .getRootsConfig()
+      .sources
+      .map((source) => resolve(source.path));
+  }
+  if (deps.resolvedStorageDir) {
+    return [resolve(deps.resolvedStorageDir)];
+  }
+  return [];
+}
+
+function normalizeComparablePath(value: string): string {
+  const normalized = resolve(value).replace(/\\/g, '/').replace(/\/+$/u, '');
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
+  const normalizedRoot = normalizeComparablePath(rootPath);
+  const normalizedTarget = normalizeComparablePath(targetPath);
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+}
+
+async function findNearestExistingDirectory(targetPath: string): Promise<string | null> {
+  let current = resolve(targetPath);
+
+  while (true) {
+    const stat = await fs.stat(current).catch(() => null);
+    if (stat) {
+      return stat.isDirectory() ? current : dirname(current);
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
 }
