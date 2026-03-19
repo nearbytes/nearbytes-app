@@ -615,7 +615,7 @@ export class ManagedShareService {
 
   async getManagedShareState(shareId: string): Promise<ManagedShareSummary> {
     const state = await this.loadState();
-    await this.ensureManagedShareSyncs(state);
+    this.scheduleManagedShareSyncs(state);
     const share = state.managedShares.find((entry) => entry.id === shareId);
     if (!share) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
@@ -989,21 +989,6 @@ export class ManagedShareService {
       return isManagedMirrorRemotePath(remotePath, this.runtime.mega.remoteBasePath);
     }
     return false;
-  }
-
-  private async ensureManagedShareSyncs(state: IntegrationStateSnapshot): Promise<void> {
-    await Promise.all(
-      state.managedShares.map(async (share) => {
-        const account = state.accounts.find((entry) => entry.id === share.accountId);
-        if (!account || !this.isOperationalAccount(account)) {
-          return;
-        }
-        await this.adapters.get(normalizeProvider(share.provider))?.ensureSync?.(share, account).catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
-        });
-      })
-    );
   }
 
   private shouldAutoRepairManagedShare(summary: ManagedShareSummary): boolean {

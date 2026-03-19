@@ -147,9 +147,26 @@ class MirrorInventoryAdapter extends FakeTransportAdapter {
   }
 }
 
+class BlockingEnsureSyncAdapter extends FakeTransportAdapter {
+  ensureSyncCalls = 0;
+
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  override async ensureSync(): Promise<void> {
+    this.ensureSyncCalls += 1;
+    await new Promise<void>(() => {
+      // Intentionally never resolves; the API should not block on this.
+    });
+  }
+}
+
 const tempDirs = new Set<string>();
 
-async function createHarness(): Promise<{
+async function createHarness(options?: {
+  adapters?: TransportAdapter[];
+}): Promise<{
   integrationStatePath: string;
   localRoot: string;
   rootsConfigPath: string;
@@ -198,7 +215,7 @@ async function createHarness(): Promise<{
     storage,
     rootsConfigPath,
     integrationStatePath,
-    adapters: [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+    adapters: options?.adapters ?? [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
   });
 
   return {
@@ -277,6 +294,61 @@ describe('ManagedShareService', () => {
     const shares = await service.listManagedShares();
     expect(shares.shares.every((summary) => summary.share.provider === 'mega')).toBe(true);
     expect(shares.shares.some((summary) => summary.share.remoteDescriptor.remotePath === '/nearbytes/MEGA share')).toBe(true);
+  });
+
+  it('returns managed share state without awaiting a long-running sync bootstrap', async () => {
+    const adapter = new BlockingEnsureSyncAdapter();
+    const { integrationStatePath, service } = await createHarness({ adapters: [adapter] });
+    const localPath = path.join(path.dirname(integrationStatePath), 'mega-share');
+    await fs.mkdir(localPath, { recursive: true });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'MEGA share',
+            role: 'owner',
+            localPath,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes/MEGA share' },
+            capabilities: ['mirror', 'read', 'write'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const result = await Promise.race([
+      service.getManagedShareState('share-mega-1').then((summary) => ({ kind: 'summary' as const, summary })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'timeout' }), 50);
+      }),
+    ]);
+
+    expect(result.kind).toBe('summary');
+    if (result.kind === 'summary') {
+      expect(result.summary.share.id).toBe('share-mega-1');
+    }
+    expect(adapter.ensureSyncCalls).toBe(1);
   });
 
   it('merges provider collaborators with pending Nearbytes invites', async () => {
