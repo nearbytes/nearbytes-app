@@ -4,6 +4,7 @@ import path from 'path';
 import { isProviderEnabled } from '../config/appConfig.js';
 import {
   getExplicitVolumePolicy,
+  resolveVolumeDestinations,
   saveRootsConfig,
   type RootProvider,
   type RootsConfig,
@@ -1685,6 +1686,7 @@ export class ManagedShareService {
     );
     if (existingManagedShare) {
       await this.relocateDefaultManagedShareIfNeeded(existingManagedShare, account, state);
+      await this.ensureMegaWritableDefaultCoverage(account);
       return;
     }
     if (options.createMissing === false) {
@@ -1726,6 +1728,7 @@ export class ManagedShareService {
           ...state,
           managedShares: [...state.managedShares, adoptedShare],
         });
+        await this.ensureMegaWritableDefaultCoverage(account);
         return;
       }
     }
@@ -1741,6 +1744,105 @@ export class ManagedShareService {
       },
     });
     await this.relocateDefaultManagedShareIfNeeded(created.share, account);
+    await this.ensureMegaWritableDefaultCoverage(account);
+  }
+
+  private async ensureMegaWritableDefaultCoverage(account: ProviderAccount): Promise<void> {
+    if (normalizeProvider(account.provider) !== 'mega') {
+      return;
+    }
+
+    const state = await this.loadState();
+    const candidateShares = state.managedShares.filter(
+      (share) =>
+        normalizeProvider(share.provider) === 'mega' &&
+        share.accountId === account.id &&
+        isProviderBaseShare(share.label, share.remoteDescriptor, share.role) &&
+        managedShareAllowsWrites(share) &&
+        typeof share.sourceId === 'string' &&
+        share.sourceId.trim() !== ''
+    );
+    if (candidateShares.length === 0) {
+      return;
+    }
+
+    const ownerShare = candidateShares.sort((left, right) => {
+      const leftHasSource = left.sourceId ? 1 : 0;
+      const rightHasSource = right.sourceId ? 1 : 0;
+      if (leftHasSource !== rightHasSource) {
+        return rightHasSource - leftHasSource;
+      }
+      return right.updatedAt - left.updatedAt;
+    })[0];
+    const ownerSourceId = ownerShare.sourceId;
+    if (!ownerSourceId) {
+      return;
+    }
+
+    let config = cloneConfig(this.options.storage.getRootsConfig());
+    const ownerSource = config.sources.find((source) => source.id === ownerSourceId);
+    if (!ownerSource || !ownerSource.enabled || !ownerSource.writable || ownerSource.provider !== 'mega') {
+      return;
+    }
+
+    let changed = false;
+    if (!config.defaultVolume.destinations.some((destination) => destination.sourceId === ownerSourceId)) {
+      config = {
+        ...config,
+        defaultVolume: {
+          destinations: [
+            ...config.defaultVolume.destinations,
+            {
+              ...DEFAULT_DESTINATION,
+              sourceId: ownerSourceId,
+            },
+          ],
+        },
+      };
+      changed = true;
+    }
+
+    const writableMegaSourceIds = new Set(
+      state.managedShares
+        .filter(
+          (share) =>
+            normalizeProvider(share.provider) === 'mega' &&
+            share.accountId === account.id &&
+            managedShareAllowsWrites(share) &&
+            typeof share.sourceId === 'string' &&
+            share.sourceId.trim() !== ''
+        )
+        .map((share) => share.sourceId!)
+    );
+
+    for (const volume of config.volumes) {
+      const hasWritableMegaDestination = resolveVolumeDestinations(config, volume.volumeId).some((destination) => {
+        if (!destination.enabled || !destination.storeEvents) {
+          return false;
+        }
+        if (!writableMegaSourceIds.has(destination.sourceId)) {
+          return false;
+        }
+        const source = config.sources.find((entry) => entry.id === destination.sourceId);
+        return Boolean(source && source.enabled && source.writable && source.provider === 'mega');
+      });
+
+      if (hasWritableMegaDestination) {
+        continue;
+      }
+
+      config = ensureVolumeAttachment(config, volume.volumeId, ownerSourceId);
+      changed = true;
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    await this.persistRootsConfig(config);
+    this.runtime.logger.log(
+      `MEGA self-repair attached writable owner share ${ownerShare.id} (${ownerSourceId}) as default destination for account ${account.id}.`
+    );
   }
 
   private async relocateDefaultManagedShareIfNeeded(

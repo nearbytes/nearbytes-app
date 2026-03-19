@@ -11,6 +11,8 @@ Two MEGA modes are now available:
 
 For the managed provider flow, the Nearbytes-owned MEGA share should be treated as a durable mirror of every attached volume, not as a "new writes only" outlet. The local MEGA sync folder is just the transport surface for MEGA; Nearbytes may still read missing blocks from any enabled local source, but the provider share itself must retain historical referenced blocks so new recipients can sync later.
 
+Nearbytes MEGA self-repair enforces this automatically: each connected MEGA account keeps one writable owner base share (the `/nearbytes` share), adds it to `defaultVolume` destinations, and auto-attaches it to existing hubs that currently lack any writable MEGA destination for that account. Recipient/read-only MEGA shares can still be attached for incoming sync, but they are never the only publish route after repair.
+
 The legacy path below still works and remains useful for manual setups. The provider-managed flow is the preferred desktop onboarding path when you want Nearbytes to control login, sharing, and sync startup.
 
 **Shared workflow:** The team uses a shared MEGA folder with structure **MEGA** (top level) → **NearbytesStorage** → **NearbytesStorage** → **blocks**, **channels**. Anyone who clones the repo and is a shared member of that MEGA folder should sync it locally to the standard path (or set `NEARBYTES_STORAGE_DIR`); with the shared secrets they can run the app and see the same photos; new channels and uploads sync via MEGA.

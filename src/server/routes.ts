@@ -1205,7 +1205,7 @@ async function openInFileManager(targetPath: string): Promise<void> {
         : { command: 'open', args: [fallbackDirectory] }
       : process.platform === 'win32'
         ? existingStat?.isFile()
-          ? { command: 'explorer', args: ['/select,', resolvedTargetPath] }
+          ? { command: 'explorer', args: [`/select,${resolvedTargetPath}`] }
           : { command: 'explorer', args: [fallbackDirectory] }
         : { command: 'xdg-open', args: [fallbackDirectory] };
 
