@@ -4428,10 +4428,15 @@
   }
 
   function timelineStorageLocationLabel(location: TimelineStorageLocationView): string {
-    if (location.rootId) {
-      return `${String(location.provider).toUpperCase()} • ${location.rootId}`;
+    const provider = String(location.provider).toUpperCase();
+    const normalizedPath = location.rootPath.replace(/\\/g, '/').replace(/\/+$/u, '');
+    const segments = normalizedPath.split('/').filter(Boolean);
+    const shareName = segments.length > 0 ? segments[segments.length - 1] : '';
+
+    if (shareName) {
+      return `${provider} • ${shareName}`;
     }
-    return `${String(location.provider).toUpperCase()} • default storage`;
+    return `${provider} • default storage`;
   }
 
   function timelineStorageLocationPath(location: TimelineStorageLocationView): string {
