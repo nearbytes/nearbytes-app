@@ -2052,7 +2052,7 @@ export class ManagedShareService {
       if (!CANONICAL_MEGA_BASE_SHARE_ENTRY_NAMES.has(entry.name)) {
         if (entry.isDirectory()) {
           const drainedNestedRoot = await this.cleanupNestedMegaBaseShareRoot(containerRoot, canonicalRoot, entryPath, {
-            forceDrain: entry.name.toLowerCase().startsWith('nearbytes'),
+            forceDrain: entry.name.toLowerCase() === MEGA_BASE_SHARE_FOLDER_NAME,
           });
           if (drainedNestedRoot) {
             continue;
