@@ -5,11 +5,13 @@ import { existsSync, promises as fs } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { promisify } from 'util';
+import { createDesktopCommandExecutor, type DisposableCommandExecutor } from './desktopCommandExecutor.js';
 import { clearPublishedDesktopSession, publishDesktopSession } from './session.js';
 import { generateDesktopApiToken } from './security.js';
 import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
 import { debugTriggerUpdateInstall, getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
 import { APP_CONFIG } from '../src/config/appConfig.js';
+import type { CommandExecutor } from '../src/integrations/runtime.js';
 import type { UiDebugAction, UiDebugActionResult, UiDebugExecutor, UiDebugRunRequest, UiDebugRunResponse } from '../src/server/uiDebug.js';
 
 interface RuntimeHandle {
@@ -32,6 +34,7 @@ interface RuntimeModule {
           set<T>(key: string, value: T): Promise<void>;
           delete(key: string): Promise<void>;
         };
+        commandExecutor?: CommandExecutor;
         openExternalUrl?: (url: string) => Promise<void>;
       };
     };
@@ -83,6 +86,7 @@ const singleInstanceLock = app.requestSingleInstanceLock();
 const state: {
   window: BrowserWindow | null;
   runtime: RuntimeHandle | null;
+  commandExecutor: DisposableCommandExecutor | null;
   config: DesktopRuntimeConfig | null;
   devUiProcess: ChildProcess | null;
   rendererProfile: RendererProfileState;
@@ -94,6 +98,7 @@ const state: {
 } = {
   window: null,
   runtime: null,
+  commandExecutor: null,
   config: null,
   devUiProcess: null,
   rendererProfile: {
@@ -172,25 +177,35 @@ async function startDesktop(): Promise<void> {
   applyDesktopIcon();
   registerDeepLinkProtocol();
   const runtimeModule = await loadRuntimeModule();
-  const runtime = await runtimeModule.startApiRuntime({
-    host: '127.0.0.1',
-    port: 0,
-    corsOrigin: isDev
-      ? ['http://127.0.0.1:5173', 'http://localhost:5173']
-      : false,
-    desktopApiToken: desktopToken,
-    uiDistPath: isDev ? undefined : resolveUiDistPath(),
-    maxUploadBytes,
-    integrationOptions: {
-      runtime: {
-        secretStore: createDesktopSecretStore(),
-        openExternalUrl: async (url: string) => {
-          await shell.openExternal(url);
+  const commandExecutor = createDesktopCommandExecutor(console);
+  state.commandExecutor = commandExecutor;
+  let runtime: RuntimeHandle;
+  try {
+    runtime = await runtimeModule.startApiRuntime({
+      host: '127.0.0.1',
+      port: 0,
+      corsOrigin: isDev
+        ? ['http://127.0.0.1:5173', 'http://localhost:5173']
+        : false,
+      desktopApiToken: desktopToken,
+      uiDistPath: isDev ? undefined : resolveUiDistPath(),
+      maxUploadBytes,
+      integrationOptions: {
+        runtime: {
+          secretStore: createDesktopSecretStore(),
+          commandExecutor,
+          openExternalUrl: async (url: string) => {
+            await shell.openExternal(url);
+          },
         },
       },
-    },
-    uiDebugExecutor: isDesktopDebugEnabled() ? createDesktopUiDebugExecutor() : undefined,
-  });
+      uiDebugExecutor: isDesktopDebugEnabled() ? createDesktopUiDebugExecutor() : undefined,
+    });
+  } catch (error) {
+    state.commandExecutor = null;
+    commandExecutor.dispose();
+    throw error;
+  }
   state.runtime = runtime;
 
   const apiBaseUrl = `http://127.0.0.1:${runtime.port}`;
@@ -989,6 +1004,10 @@ async function shutdown(): Promise<void> {
   if (state.runtime) {
     await state.runtime.stop();
     state.runtime = null;
+  }
+  if (state.commandExecutor) {
+    state.commandExecutor.dispose();
+    state.commandExecutor = null;
   }
   await stopDevUiServer();
   await clearPublishedDesktopSession();

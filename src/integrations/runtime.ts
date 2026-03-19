@@ -174,6 +174,11 @@ export function resolveMegaInvocation(
 
 class DefaultCommandExecutor implements CommandExecutor {
   async run(invocation: CommandInvocation): Promise<CommandResult> {
+    return runCommandInvocation(invocation);
+  }
+}
+
+export async function runCommandInvocation(invocation: CommandInvocation): Promise<CommandResult> {
     return new Promise<CommandResult>((resolve, reject) => {
       const child = spawn(invocation.command, [...(invocation.args ?? [])], {
         cwd: invocation.cwd,
@@ -231,7 +236,6 @@ class DefaultCommandExecutor implements CommandExecutor {
       child.stdin.end();
     });
   }
-}
 
 function normalizeEnv(env: Readonly<Record<string, string | undefined>> | undefined): Record<string, string> {
   if (!env) {
