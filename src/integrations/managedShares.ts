@@ -2135,10 +2135,17 @@ export class ManagedShareService {
       return stateSnapshot;
     }
 
+    const liveSyncIncomingShare = supportsLiveSyncForMegaIncomingShare(share);
     const nextCapabilities = uniqueStrings(
-      share.capabilities.filter((capability) => capability !== 'write' && capability !== 'invite')
+      share.capabilities.filter((capability) => capability !== 'invite' && (liveSyncIncomingShare || capability !== 'write'))
     );
-    const normalizedCapabilities = uniqueStrings(['mirror', 'read', 'accept', ...nextCapabilities]);
+    const normalizedCapabilities = uniqueStrings([
+      'mirror',
+      'read',
+      liveSyncIncomingShare ? 'write' : 'accept',
+      ...nextCapabilities,
+      ...(liveSyncIncomingShare ? ['accept'] : []),
+    ]);
     const capabilitiesChanged =
       normalizedCapabilities.length !== share.capabilities.length ||
       normalizedCapabilities.some((capability, index) => capability !== share.capabilities[index]);
@@ -2855,11 +2862,43 @@ function managedShareAllowsWrites(share: ManagedShare): boolean {
   if (
     normalizeProvider(share.provider) === 'mega' &&
     share.role === 'recipient' &&
-    isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor))
+    isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor)) &&
+    !supportsLiveSyncForMegaIncomingShare(share)
   ) {
     return false;
   }
   return true;
+}
+
+function supportsLiveSyncForMegaIncomingShare(share: ManagedShare): boolean {
+  if (normalizeProvider(share.provider) !== 'mega' || share.role !== 'recipient') {
+    return false;
+  }
+  const remotePath = getManagedShareRemotePath('mega', share.remoteDescriptor);
+  if (!isMegaIncomingRemotePath(remotePath)) {
+    return false;
+  }
+  return isMegaFullAccessLevel(getManagedShareAccessLevel(share.remoteDescriptor));
+}
+
+function getManagedShareAccessLevel(descriptor: Record<string, unknown>): string | undefined {
+  const value = descriptor.accessLevel;
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+function isMegaFullAccessLevel(accessLevel: string | undefined): boolean {
+  switch ((accessLevel ?? '').trim().toLowerCase()) {
+    case '2':
+    case 'full':
+    case 'fullaccess':
+    case 'full access':
+    case 'owner':
+    case 'owner access':
+    case '3':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function buildRemoteDescriptorMatchKeys(provider: string, descriptor: Record<string, unknown>): string[] {

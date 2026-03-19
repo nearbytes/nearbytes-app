@@ -333,8 +333,7 @@ export class MegaTransportAdapter {
         }, this.runtime.now()),
       };
     }
-    const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath');
-    if (this.usesIncomingPullMirror(share, remotePath)) {
+    if (this.usesIncomingPullMirror(share)) {
       try {
         await this.ensureLoggedIn(account.id);
       } catch (error) {
@@ -420,7 +419,7 @@ export class MegaTransportAdapter {
     if (!remotePath) {
       throw new Error('MEGA share is missing remotePath.');
     }
-    if (this.usesIncomingPullMirror(share, remotePath)) {
+    if (this.usesIncomingPullMirror(share)) {
       try {
         await this.ensureLoggedIn(account.id);
       } catch (error) {
@@ -519,8 +518,7 @@ export class MegaTransportAdapter {
     await this.ensureLoggedIn(account.id).catch(() => {
       // Ignore logout/broken-session cleanup issues here.
     });
-    const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath');
-    if (this.usesIncomingPullMirror(share, remotePath)) {
+    if (this.usesIncomingPullMirror(share)) {
       return;
     }
     const syncRecord = await this.findSyncByLocalPath(share.localPath, account.id).catch(() => null);
@@ -1054,8 +1052,9 @@ export class MegaTransportAdapter {
     }
   }
 
-  private usesIncomingPullMirror(share: ManagedShare, remotePath?: string): boolean {
-    return share.role === 'recipient' && isMegaIncomingRemotePath(remotePath ?? '');
+  private usesIncomingPullMirror(share: ManagedShare): boolean {
+    const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath') ?? '';
+    return share.role === 'recipient' && isMegaIncomingRemotePath(remotePath) && !incomingMegaShareSupportsLiveSync(share.remoteDescriptor);
   }
 
   private async readIncomingMirrorState(share: ManagedShare): Promise<TransportState> {
@@ -1561,10 +1560,36 @@ function mapMegaAccessLevel(accessLevel: string | undefined): string | undefined
 
 function acceptedShareCapabilities(descriptor: Record<string, unknown>): string[] {
   const remotePath = getStringDescriptor(descriptor, 'remotePath') ?? '';
+  if (incomingMegaShareSupportsLiveSync(descriptor)) {
+    return ['mirror', 'read', 'write', 'accept'];
+  }
   if (isMegaIncomingRemotePath(remotePath)) {
     return ['mirror', 'read', 'accept'];
   }
   return ['mirror', 'read', 'write', 'accept'];
+}
+
+function incomingMegaShareSupportsLiveSync(descriptor: Record<string, unknown>): boolean {
+  const remotePath = getStringDescriptor(descriptor, 'remotePath') ?? '';
+  if (!isMegaIncomingRemotePath(remotePath)) {
+    return false;
+  }
+  return isMegaFullAccessLevel(getStringDescriptor(descriptor, 'accessLevel'));
+}
+
+function isMegaFullAccessLevel(accessLevel: string | undefined): boolean {
+  switch ((accessLevel ?? '').trim().toLowerCase()) {
+    case '2':
+    case 'full':
+    case 'fullaccess':
+    case 'full access':
+    case 'owner':
+    case 'owner access':
+    case '3':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function isMegaIncomingRemotePath(value: string): boolean {

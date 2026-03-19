@@ -807,6 +807,93 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
     await fs.rm(share.localPath, { recursive: true, force: true });
   });
 
+  it('uses MEGA sync for incoming shares with full access', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      downloads: [] as string[][],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      mountStdout: 'INSHARE on //from/owner@mega.example:nearbytes (full access)\n',
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'reader@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const [offer] = await adapter.listIncomingShares(account);
+    expect(offer?.remoteDescriptor).toMatchObject({
+      remotePath: 'owner@mega.example:nearbytes',
+      accessLevel: 'full access',
+    });
+
+    const accepted = await adapter.acceptInvite({
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      remoteDescriptor: offer!.remoteDescriptor,
+    }, account);
+    expect(accepted.capabilities).toEqual(['mirror', 'read', 'write', 'accept']);
+
+    const share: ManagedShare = {
+      id: 'share-mega-recipient-full-1',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'recipient',
+      localPath: path.join(os.tmpdir(), `nearbytes-incoming-full-${Date.now()}`),
+      sourceId: 'src-mega-recipient-full-1',
+      syncMode: 'mirror',
+      remoteDescriptor: offer!.remoteDescriptor,
+      capabilities: accepted.capabilities ?? ['mirror', 'read', 'write', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await adapter.ensureSync(share, account);
+
+    expect(megaState.downloads).toEqual([]);
+    expect(megaState.syncs).toHaveLength(1);
+    expect(megaState.syncs[0]?.remotePath).toBe('owner@mega.example:nearbytes');
+
+    const state = await adapter.getState(share, account);
+    expect(state.status).toBe('ready');
+    expect(state.detail).toContain('MEGA sync is running');
+
+    await adapter.detachManagedShare(share, account);
+    await fs.rm(share.localPath, { recursive: true, force: true });
+  });
+
   it('treats transient df/login races as unavailable metrics instead of failing', async () => {
     const megaState = {
       sessionToken: 'mega-session-token',

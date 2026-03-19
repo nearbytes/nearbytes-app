@@ -175,7 +175,7 @@ MEGA **never** sees:
 
 - **No MEGA API**: Nearbytes does not use MEGA API. It relies entirely on desktop sync folder.
 - **Sync delay**: Files sync asynchronously. There may be a delay before files appear on other machines.
-- **Incoming managed shares are pull mirrors today**: recipient-side MEGA shares are refreshed by Nearbytes on a polling interval, not by a provider-pushed real-time stream. They are treated as read-only local mirrors and Nearbytes does not upload local edits from those folders back to the sender's MEGA share.
+- **Incoming managed shares depend on MEGA access level**: recipient-side shares with only read or read/write access fall back to a polling pull mirror, because MEGAcmd requires `full access` for true folder sync. When the incoming share has full access, Nearbytes can use MEGA's native sync instead of the polling mirror.
 - **Storage quota**: Subject to your MEGA storage quota limits.
 - **Nearbytes conflict repair**: When a Nearbytes storage root conflicts, the app resolves it by merging `blocks/` and `channels/`, rewriting `Nearbytes.html`, and deleting obsolete `Nearbytes.json`.
 
