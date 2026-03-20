@@ -11,6 +11,7 @@
     consolidateRoot,
     disconnectProviderAccount,
     discoverSources,
+    readDesktopRuntimeLogs,
     getStorageLocationRepairReport,
     getRootsConfig,
     hasDesktopDirectoryPicker,
@@ -25,6 +26,7 @@
     removeManagedShare,
     watchSources,
     type DiscoveredNearbytesSource,
+    type DesktopRuntimeLogEntry,
     type IncomingManagedShareOffer,
     type IncomingProviderContactInvite,
     type ManagedShareSummary,
@@ -125,6 +127,7 @@
   const DEFAULT_RESERVE_PERCENT = 5;
   const DISCOVERY_SCAN_MAX_DEPTH = 1;
   const DISCOVERY_SCAN_MAX_DIRECTORIES = 600;
+  const PANEL_REQUEST_TIMEOUT_MS = 8_000;
   const DEFAULT_DESTINATION: VolumeDestinationConfig = {
     sourceId: '',
     enabled: true,
@@ -176,6 +179,11 @@
   let providerCreateComposerOpen = $state<Record<string, boolean>>({});
   let managedShareInviteDrafts = $state<Record<string, string>>({});
   let megaIssueLogExpanded = $state<Record<string, boolean>>({});
+  let megaRuntimeLogsVisible = $state(false);
+  let megaRuntimeLogs = $state<DesktopRuntimeLogEntry[]>([]);
+  let megaRuntimeLogsLoading = $state(false);
+  let megaRuntimeLogsError = $state('');
+  let megaRuntimeLogsUpdatedAt = $state<number | null>(null);
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let providerConnectionDialog = $state<string | null>(null);
   let sourceRepairReports = $state<Record<string, StorageLocationRepairReport>>({});
@@ -259,6 +267,7 @@
 
   onMount(() => {
     void loadPanel();
+    void loadMegaRuntimeLogs();
 
     sourceWatchConnection = watchSources({
       onUpdate() {
@@ -1358,6 +1367,64 @@
       ...megaIssueLogExpanded,
       [issueId]: !(megaIssueLogExpanded[issueId] ?? false),
     };
+  }
+
+  function toggleMegaRuntimeLogs(): void {
+    megaRuntimeLogsVisible = !megaRuntimeLogsVisible;
+    if (megaRuntimeLogsVisible) {
+      void loadMegaRuntimeLogs();
+    }
+  }
+
+  function formatMegaRuntimeLogTimestamp(value: number | null): string {
+    if (!value || !Number.isFinite(value)) {
+      return 'Not written yet';
+    }
+    return new Date(value).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  }
+
+  async function loadMegaRuntimeLogs(): Promise<void> {
+    megaRuntimeLogsLoading = true;
+    megaRuntimeLogsError = '';
+    try {
+      const response = await readDesktopRuntimeLogs();
+      if (!response) {
+        megaRuntimeLogs = [];
+        megaRuntimeLogsUpdatedAt = null;
+        return;
+      }
+      megaRuntimeLogs = response.entries;
+      megaRuntimeLogsUpdatedAt = response.generatedAt;
+    } catch (error) {
+      megaRuntimeLogsError = error instanceof Error ? error.message : 'Failed to load runtime logs';
+    } finally {
+      megaRuntimeLogsLoading = false;
+    }
+  }
+
+  async function withPanelRequestTimeout<T>(
+    label: string,
+    run: (signal: AbortSignal) => Promise<T>,
+    timeoutMs = PANEL_REQUEST_TIMEOUT_MS
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+    try {
+      return await run(controller.signal);
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new Error(`${label} timed out after ${Math.ceil(timeoutMs / 1000)}s.`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function megaDiagnostics(limit = 3, options?: { onlyProblems?: boolean }): MegaDiagnosticView[] {
@@ -2769,7 +2836,7 @@
       successMessage = '';
     }
     try {
-      const rootsResponse = await getRootsConfig();
+      const rootsResponse = await withPanelRequestTimeout('Storage configuration', (signal) => getRootsConfig({ signal }));
       applyRootsResponse(rootsResponse);
 
       providersLoading = true;
@@ -2779,7 +2846,7 @@
       shareLoadError = '';
       incomingLoadError = '';
 
-      const accountsPromise = listProviderAccounts()
+      const accountsPromise = withPanelRequestTimeout('Provider discovery', (signal) => listProviderAccounts({ signal }))
         .then((accountsResponse) => {
           providerAccounts = accountsResponse.accounts;
           providerCatalog = mergeProviderCatalogEntries(accountsResponse.providers);
@@ -2811,7 +2878,7 @@
           providersLoading = false;
         });
 
-      const sharesPromise = listManagedShares()
+      const sharesPromise = withPanelRequestTimeout('MEGA and provider share status', (signal) => listManagedShares({ signal }))
         .then((sharesResponse) => {
           managedShares = sortManagedShareSummaries(sharesResponse.shares);
         })
@@ -2823,7 +2890,7 @@
           sharesLoading = false;
         });
 
-      const incomingSharesPromise = listIncomingManagedShares()
+      const incomingSharesPromise = withPanelRequestTimeout('Incoming share discovery', (signal) => listIncomingManagedShares({ signal }))
         .then((incomingSharesResponse) => {
           incomingManagedShareOffers = sortIncomingManagedShareOffers(incomingSharesResponse.shares);
         })
@@ -2835,7 +2902,10 @@
           incomingLoading = false;
         });
 
-      const incomingInvitesPromise = listIncomingProviderContactInvites()
+      const incomingInvitesPromise = withPanelRequestTimeout(
+        'Incoming contact discovery',
+        (signal) => listIncomingProviderContactInvites({ signal })
+      )
         .then((incomingInvitesResponse) => {
           incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(incomingInvitesResponse.invites);
         })
@@ -2855,6 +2925,9 @@
       }
 
       autosaveStatus = 'idle';
+      if (megaRuntimeLogsVisible) {
+        void loadMegaRuntimeLogs();
+      }
       void refreshDiscoverySuggestions();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to load storage locations';
@@ -4290,7 +4363,55 @@
                     <RefreshCw size={14} strokeWidth={2} />
                     <span>{sharesLoading ? 'Checking...' : 'Refresh MEGA status'}</span>
                   </button>
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => toggleMegaRuntimeLogs()}
+                  >
+                    <span>{megaRuntimeLogsVisible ? 'Hide logs' : 'Show logs'}</span>
+                  </button>
                 </div>
+                {#if megaRuntimeLogsVisible}
+                  <div class="provider-path-card mega-runtime-log-card">
+                    <div class="mega-runtime-log-header">
+                      <div>
+                        <p class="subheading">Runtime logs</p>
+                        <p class="provider-step-detail">
+                          {megaRuntimeLogsUpdatedAt
+                            ? `Updated ${formatMegaRuntimeLogTimestamp(megaRuntimeLogsUpdatedAt)}`
+                            : 'Reads the local desktop backend logs prepared for this workspace.'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        onclick={() => void loadMegaRuntimeLogs()}
+                        disabled={megaRuntimeLogsLoading}
+                      >
+                        <span>{megaRuntimeLogsLoading ? 'Loading...' : 'Refresh logs'}</span>
+                      </button>
+                    </div>
+                    {#if megaRuntimeLogsError}
+                      <p class="warning-copy">{megaRuntimeLogsError}</p>
+                    {:else if megaRuntimeLogs.length === 0}
+                      <p class="provider-step-detail">No desktop runtime logs are available yet.</p>
+                    {:else}
+                      <div class="mega-runtime-log-list">
+                        {#each megaRuntimeLogs as entry}
+                          <div class="provider-path-card mega-runtime-log-entry">
+                            <p class="provider-step-title">{entry.label}</p>
+                            <p class="provider-step-detail">
+                              {entry.exists
+                                ? `${compactPath(entry.path)} • ${formatSize(entry.size)} • ${formatMegaRuntimeLogTimestamp(entry.updatedAt)}`
+                                : `${compactPath(entry.path)} • waiting for the next write`}
+                            </p>
+                            <pre class="mega-log-view">{entry.exists && entry.content.trim() !== '' ? entry.content : 'No log content yet.'}</pre>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
               </div>
 
               {#if megaIssue}
@@ -5875,6 +5996,20 @@
 
   .mega-helper-card {
     gap: 0.32rem;
+  }
+
+  .mega-runtime-log-card,
+  .mega-runtime-log-entry,
+  .mega-runtime-log-list {
+    gap: 0.48rem;
+  }
+
+  .mega-runtime-log-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
   }
 
   .mega-status-card[data-tone='good'] {

@@ -145,19 +145,25 @@ export class ManagedShareService {
     preferredProviders: string[];
   }> {
     const state = await this.loadState();
-    const repairedState = await this.repairManagedShareState(state);
-    await this.ensureDefaultManagedShares(repairedState, { createMissing: true });
-    const refreshedState = await this.loadState();
-    this.scheduleManagedShareSyncs(refreshedState);
+    const preparedState = await this.withSoftTimeout(
+      (async () => {
+        const repairedState = await this.repairManagedShareState(state);
+        await this.ensureDefaultManagedShares(repairedState, { createMissing: true });
+        return this.loadState();
+      })(),
+      state,
+      2_500,
+      'Provider account refresh timed out; using the last known provider state.'
+    );
+    this.scheduleManagedShareSyncs(preparedState);
     const setupStates = await this.getProviderSetupStates();
-    const settledState = await this.loadState();
-    const accounts = settledState.accounts
+    const accounts = preparedState.accounts
       .filter((account) => isProviderEnabled(account.provider))
       .map((account) => this.presentationAccount(account));
     return {
       accounts,
       providers: createProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
-      preferredProviders: settledState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+      preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
     };
   }
 
@@ -305,13 +311,19 @@ export class ManagedShareService {
 
   async listManagedShares(): Promise<{ shares: ManagedShareSummary[] }> {
     const state = await this.loadState();
-    const repairedState = await this.repairManagedShareState(state);
-    const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
-    await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
-    const syncState = await this.loadState();
-    this.scheduleManagedShareSyncs(syncState);
-    const refreshedState = await this.loadState();
-    const visibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
+    const preparedState = await this.withSoftTimeout(
+      (async () => {
+        const repairedState = await this.repairManagedShareState(state);
+        const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
+        await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
+        return this.loadState();
+      })(),
+      state,
+      3_500,
+      'Managed share inventory refresh timed out; using the last known share state.'
+    );
+    this.scheduleManagedShareSyncs(preparedState);
+    const visibleShares = preparedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     let summaries = await Promise.all(visibleShares.map((share) => this.buildManagedShareSummary(share)));
     const repairableShares = summaries.filter((summary) => this.shouldAutoRepairManagedShare(summary));
 
@@ -346,7 +358,12 @@ export class ManagedShareService {
 
   async listIncomingManagedShares(): Promise<{ shares: IncomingManagedShareOffer[] }> {
     const state = await this.loadState();
-    const repairedState = await this.repairManagedShareState(state);
+    const repairedState = await this.withSoftTimeout(
+      this.repairManagedShareState(state),
+      state,
+      1_500,
+      'Incoming managed share refresh timed out; using the last known state.'
+    );
     const attachedKeys = buildAttachedShareKeys(repairedState.managedShares);
     const offers = await Promise.all(
       repairedState.accounts
@@ -357,7 +374,12 @@ export class ManagedShareService {
             return [] satisfies IncomingManagedShareOffer[];
           }
           try {
-            return await adapter.listIncomingShares(account);
+            return await this.withSoftTimeout(
+              adapter.listIncomingShares(account),
+              [] satisfies IncomingManagedShareOffer[],
+              1_500,
+              `Incoming managed share discovery timed out for ${account.provider}:${account.id}`
+            );
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.runtime.logger.warn(`Incoming managed share discovery failed for ${account.provider}:${account.id}: ${message}`);
@@ -390,7 +412,12 @@ export class ManagedShareService {
             return [] satisfies IncomingProviderContactInvite[];
           }
           try {
-            return await adapter.listIncomingContactInvites(account);
+            return await this.withSoftTimeout(
+              adapter.listIncomingContactInvites(account),
+              [] satisfies IncomingProviderContactInvite[],
+              1_500,
+              `Incoming contact invite lookup timed out for ${account.provider}:${account.id}`
+            );
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.runtime.logger.warn(`Incoming contact invite lookup failed for ${account.provider}:${account.id}: ${message}`);

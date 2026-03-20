@@ -84,6 +84,10 @@ async function ensureReleasedMegaCmd(rootDir, options) {
   const extractRoot = path.join(cacheRoot, 'extracted');
   const extractedCommandDirectory = path.join(extractRoot, `${options.platform}-${options.arch}`, 'bin');
 
+  if (await isExistingCommandDirectoryUsable(commandDirectory)) {
+    return commandDirectory;
+  }
+
   if (await isCachedAssetReady(manifestPath, extractedCommandDirectory, asset.id)) {
     await mirrorCachedCommandDirectory(extractedCommandDirectory, commandDirectory);
     return commandDirectory;
@@ -187,6 +191,9 @@ async function isCachedAssetReady(manifestPath, commandDirectory, assetId) {
 
 async function mirrorCachedCommandDirectory(sourceDir, targetDir) {
   await assertCommandDirectory(sourceDir);
+  if (await isExistingCommandDirectoryUsable(targetDir)) {
+    return;
+  }
   await fs.rm(targetDir, { recursive: true, force: true });
   await copyDirectory(sourceDir, targetDir);
 }
@@ -214,6 +221,15 @@ async function assertCommandDirectory(commandDirectory) {
     } catch (error) {
       throw new Error(`Missing staged MEGAcmd helper at ${commandDirectory}`, { cause: error });
     }
+  }
+}
+
+async function isExistingCommandDirectoryUsable(commandDirectory) {
+  try {
+    await assertCommandDirectory(commandDirectory);
+    return true;
+  } catch {
+    return false;
   }
 }
 

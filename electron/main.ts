@@ -76,6 +76,7 @@ interface DesktopElementState {
 
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEEP_LINK_PROTOCOL = 'nearbytes';
+const DESKTOP_RUNTIME_LOG_TAIL_BYTES = 64 * 1024;
 const execFileAsync = promisify(execFile);
 
 applyDebugFlagFromArgv(process.argv);
@@ -744,6 +745,9 @@ function registerIpc(): void {
     }
     return result.filePaths[0] ?? null;
   });
+  ipcMain.handle('nearbytes-desktop:read-runtime-logs', async () => {
+    return readDesktopRuntimeLogs();
+  });
 }
 
 function resolveThemePresetRegistryPath(): string {
@@ -776,6 +780,88 @@ function resolveProjectRoot(): string {
     }
   }
   return process.cwd();
+}
+
+async function readDesktopRuntimeLogs(): Promise<{
+  generatedAt: number;
+  entries: Array<{
+    id: string;
+    label: string;
+    path: string;
+    exists: boolean;
+    size: number;
+    updatedAt: number | null;
+    content: string;
+  }>;
+}> {
+  const entries = await Promise.all(
+    resolveDesktopRuntimeLogCandidates().map(async (entry) => {
+      try {
+        const stats = await fs.stat(entry.path);
+        if (!stats.isFile()) {
+          return {
+            ...entry,
+            exists: false,
+            size: 0,
+            updatedAt: null,
+            content: '',
+          };
+        }
+        const raw = await fs.readFile(entry.path, 'utf8');
+        const content = raw.length > DESKTOP_RUNTIME_LOG_TAIL_BYTES
+          ? raw.slice(-DESKTOP_RUNTIME_LOG_TAIL_BYTES)
+          : raw;
+        return {
+          ...entry,
+          exists: true,
+          size: stats.size,
+          updatedAt: stats.mtimeMs,
+          content,
+        };
+      } catch (error) {
+        if (isFileNotFound(error)) {
+          return {
+            ...entry,
+            exists: false,
+            size: 0,
+            updatedAt: null,
+            content: '',
+          };
+        }
+        throw error;
+      }
+    })
+  );
+
+  return {
+    generatedAt: Date.now(),
+    entries,
+  };
+}
+
+function resolveDesktopRuntimeLogCandidates(): Array<{
+  id: string;
+  label: string;
+  path: string;
+}> {
+  const projectRoot = resolveProjectRoot();
+  return [
+    {
+      id: 'server-stdout',
+      label: 'Backend stdout',
+      path: path.join(projectRoot, '.nearbytes-dev', 'server.stdout.log'),
+    },
+    {
+      id: 'server-stderr',
+      label: 'Backend stderr',
+      path: path.join(projectRoot, '.nearbytes-dev', 'server.stderr.log'),
+    },
+    {
+      id: 'mega-verify-runtime',
+      label: 'Last MEGA runtime check',
+      path: path.join(projectRoot, '.nearbytes-dev', 'verify-mega-runtime.json'),
+    },
+  ];
 }
 
 async function syncPackagedIconAssets(inputPath: string): Promise<{

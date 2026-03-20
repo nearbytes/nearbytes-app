@@ -27,6 +27,7 @@ export class MegaHelperInstaller {
       logger: IntegrationLogger;
       configuredCommandDirectory?: string;
       homeDir?: string;
+      currentWorkingDirectory?: string;
       fetchImpl?: typeof fetch;
       platform?: NodeJS.Platform;
       arch?: string;
@@ -132,15 +133,19 @@ export class MegaHelperInstaller {
 
   private async getWorkingCommandDirectory(): Promise<string | null> {
     const configured = await this.getConfiguredCommandDirectory();
-    if (configured && (await isMegaCommandDirectory(configured))) {
-      return configured;
+    if (configured) {
+      if (this.isLegacyWindowsSystemCommandDirectory(configured)) {
+        this.options.logger.warn(`Ignoring legacy system MEGAcmd directory: ${configured}`);
+      } else if (await isMegaCommandDirectory(configured)) {
+        return configured;
+      }
     }
-    for (const candidate of this.getPlatformCommandDirectoryCandidates()) {
+    for (const candidate of this.getNearbytesCommandDirectoryCandidates()) {
       if (await isMegaCommandDirectory(candidate)) {
         return candidate;
       }
     }
-    if (await this.isMegaAvailableOnPath()) {
+    if ((this.options.platform ?? process.platform) !== 'win32' && (await this.isMegaAvailableOnPath())) {
       return '';
     }
     return null;
@@ -157,7 +162,7 @@ export class MegaHelperInstaller {
   }
 
   private async findInstalledCommandDirectory(installRoot: string): Promise<string | null> {
-    const candidates = [installRoot, ...this.getPlatformCommandDirectoryCandidates()];
+    const candidates = [installRoot];
     const attempted = new Set<string>();
     for (const candidate of candidates) {
       const normalized = path.resolve(candidate);
@@ -190,6 +195,31 @@ export class MegaHelperInstaller {
       path.join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'MEGAcmd'),
     ];
     return Array.from(new Set(candidates.map((candidate) => path.resolve(candidate))));
+  }
+
+  private getNearbytesCommandDirectoryCandidates(): string[] {
+    const cwd = this.options.currentWorkingDirectory?.trim() || process.cwd().trim();
+    if (!cwd) {
+      return [];
+    }
+    const platform = this.options.platform ?? process.platform;
+    const arch = this.options.arch ?? process.arch;
+    const candidates = [
+      path.join(cwd, '.nearbytes-dev', 'megacmd', `${platform}-${arch}`, 'bin'),
+    ];
+    return Array.from(new Set(candidates.map((candidate) => path.resolve(candidate))));
+  }
+
+  private isLegacyWindowsSystemCommandDirectory(commandDirectory: string): boolean {
+    const platform = this.options.platform ?? process.platform;
+    if (platform !== 'win32') {
+      return false;
+    }
+    const normalized = path.resolve(commandDirectory).replace(/\\/g, '/').replace(/\/+$/u, '').toLowerCase();
+    return this.getPlatformCommandDirectoryCandidates().some((candidate) => {
+      const legacyRoot = path.resolve(candidate).replace(/\\/g, '/').replace(/\/+$/u, '').toLowerCase();
+      return normalized === legacyRoot || normalized.startsWith(`${legacyRoot}/`);
+    });
   }
 
   private async installWindows(tempDir: string, installRoot: string): Promise<void> {

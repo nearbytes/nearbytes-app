@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { MegaHelperInstaller } from './megaInstaller.js';
+import { MegaWindowsNamedPipeCommandClient, type MegaWindowsCommandClient } from './megaWindowsPipeClient.js';
 import type { ManagedShareMirrorEntry } from './adapters.js';
 import type {
   AcceptManagedShareInput,
@@ -20,7 +21,7 @@ import type {
   ShareStorageMetrics,
   TransportState,
 } from './types.js';
-import { resolveMegaInvocation, type IntegrationRuntime } from './runtime.js';
+import { resolveMegaInvocation, type CommandResult, type IntegrationRuntime } from './runtime.js';
 
 const MEGA_SESSION_SECRET_PREFIX = 'provider-account:mega:';
 
@@ -89,6 +90,8 @@ export class MegaTransportAdapter {
   private readonly syncStates = new Map<string, TransportState>();
   private readonly syncTimers = new Map<string, NodeJS.Timeout>();
   private readonly pullTasks = new Map<string, Promise<void>>();
+  private readonly activeSessionTokens = new Map<string, string>();
+  private readonly sessionLoginTasks = new Map<string, Promise<void>>();
   private readOnlySyncSupport:
     | {
         readonly commandDirectory: string | undefined;
@@ -96,10 +99,13 @@ export class MegaTransportAdapter {
       }
     | undefined;
   private readonly installer: MegaHelperInstaller;
+  private readonly windowsCommandClient: MegaWindowsCommandClient;
+  private preferredWindowsPipeCommandDirectory: string | undefined;
 
   constructor(
     private readonly runtime: IntegrationRuntime,
-    installer?: MegaHelperInstaller
+    installer?: MegaHelperInstaller,
+    windowsCommandClient?: MegaWindowsCommandClient
   ) {
     this.installer =
       installer ??
@@ -109,6 +115,7 @@ export class MegaTransportAdapter {
         logger: runtime.logger,
         configuredCommandDirectory: runtime.mega.commandDirectory,
       });
+    this.windowsCommandClient = windowsCommandClient ?? new MegaWindowsNamedPipeCommandClient(runtime.logger);
   }
 
   async probe(endpoint: import('./types.js').TransportEndpoint): Promise<TransportState> {
@@ -541,6 +548,8 @@ export class MegaTransportAdapter {
   }
 
   async disconnect(account: ProviderAccount): Promise<void> {
+    this.activeSessionTokens.delete(account.id);
+    this.sessionLoginTasks.delete(account.id);
     await this.ensureLoggedIn(account.id).catch(() => {
       // Ignore stale local MEGA sessions.
     });
@@ -663,6 +672,7 @@ export class MegaTransportAdapter {
       email: input.email,
       sessionToken,
     } satisfies MegaSessionSecret);
+    this.activeSessionTokens.set(input.accountId, sessionToken);
 
     return {
       status: 'connected',
@@ -808,14 +818,40 @@ export class MegaTransportAdapter {
     if (!secret?.sessionToken?.trim()) {
       throw new Error('MEGA is not connected for this account.');
     }
-    try {
-      await this.loginWithSessionToken(secret.sessionToken);
-    } catch (error) {
-      const recovered = await this.recoverSessionSecret(accountId);
-      if (!recovered?.sessionToken?.trim() || recovered.sessionToken === secret.sessionToken) {
-        throw error;
+
+    if (this.activeSessionTokens.get(accountId) === secret.sessionToken) {
+      return;
+    }
+
+    const existingTask = this.sessionLoginTasks.get(accountId);
+    if (existingTask) {
+      await existingTask;
+      if (this.activeSessionTokens.get(accountId) === secret.sessionToken) {
+        return;
       }
-      await this.loginWithSessionToken(recovered.sessionToken);
+    }
+
+    const loginTask = (async () => {
+      try {
+        await this.loginWithSessionToken(secret!.sessionToken);
+        this.activeSessionTokens.set(accountId, secret!.sessionToken);
+      } catch (error) {
+        const recovered = await this.recoverSessionSecret(accountId);
+        if (!recovered?.sessionToken?.trim() || recovered.sessionToken === secret!.sessionToken) {
+          this.activeSessionTokens.delete(accountId);
+          throw error;
+        }
+        await this.loginWithSessionToken(recovered.sessionToken);
+        this.activeSessionTokens.set(accountId, recovered.sessionToken);
+      }
+    })();
+    this.sessionLoginTasks.set(accountId, loginTask);
+    try {
+      await loginTask;
+    } finally {
+      if (this.sessionLoginTasks.get(accountId) === loginTask) {
+        this.sessionLoginTasks.delete(accountId);
+      }
     }
   }
 
@@ -859,7 +895,7 @@ export class MegaTransportAdapter {
 
   private async readSessionToken(): Promise<string> {
     const result = await this.runMega('session', []);
-    const token = firstMeaningfulLine(result.stdout);
+    const token = parseMegaSessionToken(result.stdout);
     if (!token) {
       throw new Error('MEGA did not return a session token.');
     }
@@ -980,6 +1016,21 @@ export class MegaTransportAdapter {
     let restartAttempted = false;
     while (true) {
       const commandDirectory = await this.installer.getCommandDirectory();
+      if (this.shouldPreferWindowsPipeClient(commandDirectory)) {
+        try {
+          const result = await this.runMegaWithWindowsPipeClient(commandDirectory, subcommand, args, options);
+          if (result.exitCode !== 0) {
+            throw new Error(extractMegaError(result.stderr || result.stdout || `${subcommand} failed`));
+          }
+          return {
+            stdout: result.stdout,
+            stderr: result.stderr,
+          };
+        } catch (error) {
+          this.clearWindowsPipeClientPreference(commandDirectory);
+          this.runtime.logger.warn('Falling back to the MEGA CLI client after a Windows named-pipe transport failure.', error);
+        }
+      }
       const invocation = resolveMegaInvocation(commandDirectory, subcommand, args);
       const commandEnv = commandDirectory
         ? {
@@ -996,6 +1047,16 @@ export class MegaTransportAdapter {
         });
         if (result.exitCode !== 0) {
           const rawOutput = result.stderr || result.stdout || `${subcommand} failed`;
+          const pipeFallback = await this.tryWindowsPipeFallback(commandDirectory, subcommand, args, options, rawOutput);
+          if (pipeFallback) {
+            if (pipeFallback.exitCode !== 0) {
+              throw new Error(extractMegaError(pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`));
+            }
+            return {
+              stdout: pipeFallback.stdout,
+              stderr: pipeFallback.stderr,
+            };
+          }
           if (!restartAttempted && isMegaRecoverableCommandError(rawOutput)) {
             restartAttempted = await this.restartMegaServer(commandDirectory);
             if (restartAttempted) {
@@ -1015,6 +1076,16 @@ export class MegaTransportAdapter {
           continue;
         }
         const message = error instanceof Error ? error.message : String(error);
+        const pipeFallback = await this.tryWindowsPipeFallback(commandDirectory, subcommand, args, options, message);
+        if (pipeFallback) {
+          if (pipeFallback.exitCode !== 0) {
+            throw new Error(extractMegaError(pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`));
+          }
+          return {
+            stdout: pipeFallback.stdout,
+            stderr: pipeFallback.stderr,
+          };
+        }
         if (!restartAttempted && isMegaRecoverableCommandError(message)) {
           restartAttempted = await this.restartMegaServer(commandDirectory);
           if (restartAttempted) {
@@ -1027,6 +1098,61 @@ export class MegaTransportAdapter {
         throw error;
       }
     }
+  }
+
+  private shouldPreferWindowsPipeClient(commandDirectory: string | undefined): boolean {
+    if (process.platform !== 'win32') {
+      return false;
+    }
+    if (!this.preferredWindowsPipeCommandDirectory) {
+      return true;
+    }
+    return normalizeMegaCommandDirectoryKey(commandDirectory) === this.preferredWindowsPipeCommandDirectory;
+  }
+
+  private clearWindowsPipeClientPreference(commandDirectory: string | undefined): void {
+    if (!this.shouldPreferWindowsPipeClient(commandDirectory)) {
+      return;
+    }
+    this.preferredWindowsPipeCommandDirectory = undefined;
+  }
+
+  private async tryWindowsPipeFallback(
+    commandDirectory: string | undefined,
+    subcommand: string,
+    args: readonly string[],
+    options: { timeoutMs?: number },
+    rawOutput: string
+  ): Promise<CommandResult | null> {
+    if (!shouldUseWindowsPipeFallback(rawOutput)) {
+      return null;
+    }
+    try {
+      return await this.runMegaWithWindowsPipeClient(commandDirectory, subcommand, args, options);
+    } catch (error) {
+      this.runtime.logger.warn('Failed to execute MEGA command through the Windows named-pipe transport.', error);
+      return null;
+    }
+  }
+
+  private async runMegaWithWindowsPipeClient(
+    commandDirectory: string | undefined,
+    subcommand: string,
+    args: readonly string[],
+    options: { timeoutMs?: number }
+  ): Promise<CommandResult> {
+    const result = await this.windowsCommandClient.execute({
+      commandDirectory,
+      subcommand,
+      args,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    });
+    this.preferredWindowsPipeCommandDirectory = normalizeMegaCommandDirectoryKey(commandDirectory);
+    return {
+      stdout: stripTrailingMegaNulls(result.stdout),
+      stderr: stripTrailingMegaNulls(result.stderr),
+      exitCode: result.exitCode,
+    };
   }
 
   private async restartMegaServer(commandDirectory: string | undefined): Promise<boolean> {
@@ -1102,6 +1228,9 @@ export class MegaTransportAdapter {
         timeoutMs: 15_000,
       });
       supported = /--down|--read-only/i.test(`${result.stdout}\n${result.stderr}`);
+      if (supported) {
+        supported = await this.probeIncomingReadOnlySyncSupport();
+      }
     } catch {
       supported = false;
     }
@@ -1111,6 +1240,21 @@ export class MegaTransportAdapter {
       supported,
     };
     return supported;
+  }
+
+  private async probeIncomingReadOnlySyncSupport(): Promise<boolean> {
+    try {
+      await this.runMega('sync', ['--down'], {
+        timeoutMs: 15_000,
+      });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/invalid argument:\s*(down|read-only)/i.test(message)) {
+        return false;
+      }
+      return true;
+    }
   }
 
   private async readIncomingMirrorState(share: ManagedShare): Promise<TransportState> {
@@ -1332,6 +1476,16 @@ function firstMeaningfulLine(value: string): string | null {
     }
   }
   return null;
+}
+
+function parseMegaSessionToken(value: string): string | null {
+  const line = firstMeaningfulLine(value);
+  if (!line) {
+    return null;
+  }
+  const prefixed = line.match(/^Your \(secret\) session is:\s*(.+)$/iu);
+  const token = (prefixed?.[1] ?? line).trim();
+  return token.length > 0 ? token : null;
 }
 
 function parseMegaSyncTable(stdout: string): MegaSyncRecord[] {
@@ -1612,6 +1766,34 @@ function resolveMegaServerCommand(
     return filename;
   }
   return `${normalizedDirectory}/${filename}`;
+}
+
+function normalizeMegaCommandDirectoryKey(commandDirectory: string | undefined): string {
+  if (!commandDirectory?.trim()) {
+    return 'path';
+  }
+  return path.resolve(commandDirectory).replace(/\\/g, '/').replace(/\/+$/u, '').toLowerCase();
+}
+
+function shouldUseWindowsPipeFallback(value: string): boolean {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /MEGAcmd Server not running\. Initiating in the background/i.test(normalized) ||
+    /Unable to execute: .*MEGAcmdServer\.exe/i.test(normalized) ||
+    /Unexpected failure to access server:\s*5/i.test(normalized) ||
+    /Failed to access server:\s*5/i.test(normalized) ||
+    /named pipe not valid/i.test(normalized)
+  );
+}
+
+function stripTrailingMegaNulls(value: string): string {
+  return value.replace(/\u0000+$/u, '');
 }
 
 function getStringDescriptor(descriptor: Record<string, unknown>, key: string): string | undefined {

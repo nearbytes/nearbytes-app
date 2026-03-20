@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('nearbytesDesktop', {
   saveThemeRegistry: (registry) => ipcRenderer.invoke('nearbytes-desktop:save-theme-registry', registry),
   exportLogoPng: (dataUrl) => ipcRenderer.invoke('nearbytes-desktop:export-logo-png', dataUrl),
   chooseDirectory: (initialPath) => ipcRenderer.invoke('nearbytes-desktop:choose-directory', initialPath),
+  readRuntimeLogs: () => ipcRenderer.invoke('nearbytes-desktop:read-runtime-logs'),
   getApiBaseUrl: async () => {
     const config = await ipcRenderer.invoke('nearbytes-desktop:get-runtime-config');
     return config.apiBaseUrl ?? '';

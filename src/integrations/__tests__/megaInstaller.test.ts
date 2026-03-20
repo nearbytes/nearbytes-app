@@ -89,11 +89,11 @@ describe('MegaHelperInstaller', () => {
     }
   });
 
-  it('detects the default Windows MEGAcmd install directory after silent install', async () => {
+  it('keeps the Windows helper inside the Nearbytes-managed install root after silent install', async () => {
     const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-win-default-'));
     tempDirs.push(homeDir);
+    const installRoot = path.join(homeDir, '.nearbytes', 'helpers', 'megacmd');
     const localAppDataDir = path.join(homeDir, 'AppData', 'Local');
-    const defaultInstallRoot = path.join(localAppDataDir, 'MEGAcmd');
 
     const previousLocalAppData = process.env.LOCALAPPDATA;
     process.env.LOCALAPPDATA = localAppDataDir;
@@ -107,9 +107,9 @@ describe('MegaHelperInstaller', () => {
             throw error;
           }
           if (invocation.args?.some((arg) => arg.startsWith('/D='))) {
-            await fs.mkdir(defaultInstallRoot, { recursive: true });
-            await fs.writeFile(path.join(defaultInstallRoot, 'MEGAclient.exe'), 'exe');
-            await fs.writeFile(path.join(defaultInstallRoot, 'mega-login.bat'), 'bat');
+            await fs.mkdir(installRoot, { recursive: true });
+            await fs.writeFile(path.join(installRoot, 'MEGAclient.exe'), 'exe');
+            await fs.writeFile(path.join(installRoot, 'mega-login.bat'), 'bat');
           }
           return { stdout: '', stderr: '', exitCode: 0 };
         },
@@ -127,8 +127,8 @@ describe('MegaHelperInstaller', () => {
 
       const after = await installer.install();
       expect(after.status).toBe('ready');
-      expect(after.config?.helperPath).toBe(defaultInstallRoot);
-      await fs.access(path.join(defaultInstallRoot, 'MEGAclient.exe'));
+      expect(after.config?.helperPath).toBe(installRoot);
+      await fs.access(path.join(installRoot, 'MEGAclient.exe'));
     } finally {
       if (previousLocalAppData === undefined) {
         delete process.env.LOCALAPPDATA;
@@ -255,5 +255,96 @@ describe('MegaHelperInstaller', () => {
     });
 
     await expect(installer.getCommandDirectory()).resolves.toBe(configuredDir);
+  });
+
+  it('prefers the staged Nearbytes dev helper over the default Windows install', async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-dev-helper-'));
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-dev-repo-'));
+    tempDirs.push(homeDir, repoRoot);
+    const localAppDataDir = path.join(homeDir, 'AppData', 'Local');
+    const defaultInstallRoot = path.join(localAppDataDir, 'MEGAcmd');
+    const devCommandDirectory = path.join(repoRoot, '.nearbytes-dev', 'megacmd', 'win32-x64', 'bin');
+    await fs.mkdir(defaultInstallRoot, { recursive: true });
+    await fs.mkdir(devCommandDirectory, { recursive: true });
+    await fs.writeFile(path.join(defaultInstallRoot, 'MEGAclient.exe'), 'official');
+    await fs.writeFile(path.join(defaultInstallRoot, 'mega-login.bat'), 'official');
+    await fs.writeFile(path.join(devCommandDirectory, 'MEGAclient.exe'), 'vendored');
+    await fs.writeFile(path.join(devCommandDirectory, 'mega-login.bat'), 'vendored');
+
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = localAppDataDir;
+
+    try {
+      const installer = new MegaHelperInstaller({
+        secretStore: createMemorySecretStore(),
+        commandExecutor: {
+          async run() {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          },
+        },
+        logger: { log() {}, warn() {} },
+        currentWorkingDirectory: repoRoot,
+        platform: 'win32',
+        arch: 'x64',
+        homeDir,
+        fetchImpl: fakeFetch(),
+      });
+
+      await expect(installer.getCommandDirectory()).resolves.toBe(devCommandDirectory);
+    } finally {
+      if (previousLocalAppData === undefined) {
+        delete process.env.LOCALAPPDATA;
+      } else {
+        process.env.LOCALAPPDATA = previousLocalAppData;
+      }
+    }
+  });
+
+  it('ignores a saved legacy Windows MEGAcmd directory in favor of the staged Nearbytes helper', async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-legacy-config-'));
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-legacy-repo-'));
+    tempDirs.push(homeDir, repoRoot);
+    const localAppDataDir = path.join(homeDir, 'AppData', 'Local');
+    const legacyInstallRoot = path.join(localAppDataDir, 'MEGAcmd');
+    const devCommandDirectory = path.join(repoRoot, '.nearbytes-dev', 'megacmd', 'win32-x64', 'bin');
+    await fs.mkdir(legacyInstallRoot, { recursive: true });
+    await fs.mkdir(devCommandDirectory, { recursive: true });
+    await fs.writeFile(path.join(legacyInstallRoot, 'MEGAclient.exe'), 'legacy');
+    await fs.writeFile(path.join(legacyInstallRoot, 'mega-login.bat'), 'legacy');
+    await fs.writeFile(path.join(devCommandDirectory, 'MEGAclient.exe'), 'vendored');
+    await fs.writeFile(path.join(devCommandDirectory, 'mega-login.bat'), 'vendored');
+
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = localAppDataDir;
+
+    try {
+      const secretStore = createMemorySecretStore();
+      await secretStore.set('provider-config:mega', {
+        commandDirectory: legacyInstallRoot,
+      });
+
+      const installer = new MegaHelperInstaller({
+        secretStore,
+        commandExecutor: {
+          async run() {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          },
+        },
+        logger: { log() {}, warn() {} },
+        currentWorkingDirectory: repoRoot,
+        platform: 'win32',
+        arch: 'x64',
+        homeDir,
+        fetchImpl: fakeFetch(),
+      });
+
+      await expect(installer.getCommandDirectory()).resolves.toBe(devCommandDirectory);
+    } finally {
+      if (previousLocalAppData === undefined) {
+        delete process.env.LOCALAPPDATA;
+      } else {
+        process.env.LOCALAPPDATA = previousLocalAppData;
+      }
+    }
   });
 });

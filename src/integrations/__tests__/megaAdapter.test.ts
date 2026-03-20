@@ -27,6 +27,7 @@ function createFakeMegaExecutor(state: {
   syncs: Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>;
   syncCommands?: string[][];
   syncHelpStdout?: string;
+  syncFlagRejected?: boolean;
   downloads?: string[][];
   downloadSetup?: (destination: string, args: string[]) => Promise<void>;
   invitedEmails: string[];
@@ -142,6 +143,20 @@ function createFakeMegaExecutor(state: {
             stdout: state.syncHelpStdout ?? 'Usage: sync [localpath dstremotepath| [-dpe] [ID|localpath]\n',
             stderr: '',
             exitCode: 0,
+          };
+        }
+        if (state.syncFlagRejected && (args[0] === '--down' || args[0] === '--read-only')) {
+          return {
+            stdout: '',
+            stderr: `Invalid argument: ${(args[0] ?? '').replace(/^--/u, '')}`,
+            exitCode: 1,
+          };
+        }
+        if ((args[0] === '--down' || args[0] === '--read-only') && args.length === 1) {
+          return {
+            stdout: 'Usage: sync [localpath dstremotepath| [-dpe] [ID|localpath]\n',
+            stderr: '',
+            exitCode: 1,
           };
         }
         state.syncCommands ??= [];
@@ -423,6 +438,212 @@ describe('MegaTransportAdapter', () => {
 
     const state = await adapter.getState(share, account);
     expect(state.status).toBe('ready');
+  });
+
+  it('stores only the raw session token when mega session includes a human-readable prefix', async () => {
+    const secretStore = createMemorySecretStore();
+    const megaState = {
+      sessionToken: 'Your (secret) session is: mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      signupCommands: [] as string[][],
+      confirmCommands: [] as string[][],
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+
+    const connected = await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+
+    expect(connected.status).toBe('connected');
+    await expect(secretStore.get<{ email: string; sessionToken: string }>('provider-account:mega:acct-mega-1')).resolves.toEqual({
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+  });
+
+  it('falls back to the Windows named-pipe transport when the CLI client cannot start the helper server', async () => {
+    const secretStore = createMemorySecretStore();
+    const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
+    tempDirs.push(commandDirectory);
+    await fs.writeFile(path.join(commandDirectory, 'MegaClient.exe'), '');
+
+    const attemptedSubcommands: string[] = [];
+    const fallbackSubcommands: string[] = [];
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: {
+        async run(invocation) {
+          const args = [...(invocation.args ?? [])];
+          if (basename(invocation.command).toLowerCase() === 'megaclient.exe') {
+            attemptedSubcommands.push(args[0] ?? '');
+          }
+          return {
+            stdout: '',
+            stderr: 'Unable to execute: C:\\Users\\Example\\AppData\\Local\\MEGAcmd\\MEGAcmdServer.exe errno = : 5\nMEGAcmd Server not running. Initiating in the background...\n',
+            exitCode: 1,
+          };
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+        commandDirectory,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(
+      runtime,
+      undefined,
+      {
+        async execute(request) {
+          fallbackSubcommands.push(request.subcommand);
+          if (request.subcommand === 'login') {
+            return { stdout: 'OK\n', stderr: '', exitCode: 0 };
+          }
+          if (request.subcommand === 'session') {
+            return {
+              stdout: 'Your (secret) session is: mega-session-token\n',
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          throw new Error(`Unexpected fallback command: ${request.subcommand}`);
+        },
+      }
+    );
+
+    const connected = await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+
+    expect(connected.status).toBe('connected');
+    expect(attemptedSubcommands).toEqual(['login', 'session']);
+    expect(fallbackSubcommands).toEqual(['login', 'session']);
+    await expect(secretStore.get<{ email: string; sessionToken: string }>('provider-account:mega:acct-mega-1')).resolves.toEqual({
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+  });
+
+  it('does not re-login on every state refresh once a MEGA session is attached', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [
+        {
+          id: '1',
+          localPath: '/tmp/nearbytes',
+          remotePath: '/nearbytes',
+          runState: 'Running',
+          status: 'Synced',
+          error: '',
+        },
+      ],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+    };
+
+    let loginCommandCount = 0;
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: {
+        async run(invocation) {
+          const rawCommand = basename(invocation.command);
+          const args = [...(invocation.args ?? [])];
+          const command = rawCommand === 'MegaClient.exe' ? `mega-${args.shift() ?? ''}` : rawCommand;
+          if (command === 'mega-login') {
+            loginCommandCount += 1;
+          }
+          return createFakeMegaExecutor(megaState).run(invocation);
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/tmp/nearbytes',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    await adapter.getState(share, account);
+    await adapter.getState(share, account);
+
+    expect(loginCommandCount).toBe(1);
   });
 
   it('parses fixed-width sync listings and safely deletes dash-prefixed sync ids', async () => {
@@ -1187,6 +1408,84 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
     const state = await adapter.getState(share, account);
     expect(state.status).toBe('ready');
     expect(state.detail).toContain('MEGA sync is running');
+
+    await adapter.detachManagedShare(share, account);
+    await fs.rm(share.localPath, { recursive: true, force: true });
+  });
+
+  it('falls back to pull mirroring when the helper advertises read-only sync but rejects the flag', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      syncCommands: [] as string[][],
+      syncHelpStdout:
+        'Usage: sync [localpath dstremotepath| [-dpe] [ID|localpath]\n --down | --read-only\twhen creating a sync, download remote changes without requiring full access.\n',
+      syncFlagRejected: true,
+      downloads: [] as string[][],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      mountStdout: 'INSHARE on //from/owner@mega.example:nearbytes (read access)\n',
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'reader@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const [offer] = await adapter.listIncomingShares(account);
+    const share: ManagedShare = {
+      id: 'share-mega-recipient-flag-reject-1',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'recipient',
+      localPath: path.join(os.tmpdir(), `nearbytes-incoming-flag-reject-${Date.now()}`),
+      sourceId: 'src-mega-recipient-flag-reject-1',
+      syncMode: 'mirror',
+      remoteDescriptor: offer!.remoteDescriptor,
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await adapter.ensureSync(share, account);
+
+    expect(megaState.downloads).toContainEqual([
+      '-m',
+      'owner@mega.example:nearbytes',
+      share.localPath,
+    ]);
+    expect(megaState.syncs).toHaveLength(0);
+    expect(megaState.syncCommands).not.toContainEqual(['--down', share.localPath, 'owner@mega.example:nearbytes']);
 
     await adapter.detachManagedShare(share, account);
     await fs.rm(share.localPath, { recursive: true, force: true });

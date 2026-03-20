@@ -878,6 +878,7 @@ interface NearbytesDesktopBridge {
   getApiBaseUrl?: () => Promise<string>;
   getDesktopToken?: () => Promise<string>;
   chooseDirectory?: (initialPath?: string) => Promise<string | null>;
+  readRuntimeLogs?: () => Promise<DesktopRuntimeLogsResponse>;
   isDesktop?: (() => boolean) | boolean;
 }
 
@@ -909,6 +910,21 @@ export interface UiDebugRunResponse {
     result?: Record<string, unknown>;
     error?: string;
   }>;
+}
+
+export interface DesktopRuntimeLogEntry {
+  id: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  size: number;
+  updatedAt: number | null;
+  content: string;
+}
+
+export interface DesktopRuntimeLogsResponse {
+  generatedAt: number;
+  entries: DesktopRuntimeLogEntry[];
 }
 
 const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
@@ -955,6 +971,14 @@ export async function chooseDirectoryPath(initialPath = ''): Promise<string | nu
     return null;
   }
   return bridge.chooseDirectory(initialPath);
+}
+
+export async function readDesktopRuntimeLogs(): Promise<DesktopRuntimeLogsResponse | null> {
+  const bridge = getDesktopBridge();
+  if (!bridge || typeof bridge.readRuntimeLogs !== 'function') {
+    return null;
+  }
+  return bridge.readRuntimeLogs();
 }
 
 function isElectronRenderer(): boolean {
@@ -1303,9 +1327,10 @@ export async function computeSnapshot(auth: Auth): Promise<SnapshotResponse> {
 /**
  * Reads local multi-root storage configuration.
  */
-export async function getRootsConfig(): Promise<RootsConfigResponse> {
+export async function getRootsConfig(options: { signal?: AbortSignal } = {}): Promise<RootsConfigResponse> {
   return apiRequest<RootsConfigResponse>('/config/roots', {
     method: 'GET',
+    signal: options.signal,
   });
 }
 
@@ -1418,9 +1443,10 @@ export async function reconcileDiscoveredSources(
   });
 }
 
-export async function listProviderAccounts(): Promise<ProviderAccountsResponse> {
+export async function listProviderAccounts(options: { signal?: AbortSignal } = {}): Promise<ProviderAccountsResponse> {
   return apiRequest<ProviderAccountsResponse>('/integrations/accounts', {
     method: 'GET',
+    signal: options.signal,
   });
 }
 
@@ -1489,21 +1515,28 @@ export async function reconcileProviderManagedShares(
   });
 }
 
-export async function listManagedShares(): Promise<ManagedSharesResponse> {
+export async function listManagedShares(options: { signal?: AbortSignal } = {}): Promise<ManagedSharesResponse> {
   return apiRequest<ManagedSharesResponse>('/integrations/shares', {
     method: 'GET',
+    signal: options.signal,
   });
 }
 
-export async function listIncomingManagedShares(): Promise<IncomingManagedSharesResponse> {
+export async function listIncomingManagedShares(
+  options: { signal?: AbortSignal } = {}
+): Promise<IncomingManagedSharesResponse> {
   return apiRequest<IncomingManagedSharesResponse>('/integrations/shares/incoming', {
     method: 'GET',
+    signal: options.signal,
   });
 }
 
-export async function listIncomingProviderContactInvites(): Promise<IncomingProviderContactInvitesResponse> {
+export async function listIncomingProviderContactInvites(
+  options: { signal?: AbortSignal } = {}
+): Promise<IncomingProviderContactInvitesResponse> {
   return apiRequest<IncomingProviderContactInvitesResponse>('/integrations/providers/contact-invites', {
     method: 'GET',
+    signal: options.signal,
   });
 }
 
