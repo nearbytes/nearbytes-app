@@ -109,6 +109,12 @@
     selfRepairCopy: string;
   };
 
+  type MegaHelperView = {
+    headline: string;
+    detail: string;
+    pathValue: string | null;
+  };
+
   type CollaboratorView = {
     label: string;
     status: 'active' | 'invited';
@@ -1456,6 +1462,62 @@
       progressPercent: null,
       progressLabel: '',
       selfRepairCopy: 'Automatic recovery is ready when MEGA sync starts.',
+    };
+  }
+
+  function megaHelperView(provider: ProviderCatalogEntry): MegaHelperView {
+    const helperPath = provider.setup.config?.helperPath?.trim() || '';
+    if (!helperPath) {
+      if (provider.setup.status === 'needs-install') {
+        return {
+          headline: 'MEGAcmd will be prepared when you first connect MEGA',
+          detail: 'Nearbytes can set up the local MEGA command helper automatically for this machine.',
+          pathValue: null,
+        };
+      }
+      if (provider.setup.status === 'installing') {
+        return {
+          headline: 'Preparing the local MEGAcmd helper',
+          detail: 'Nearbytes is downloading and staging the commands it needs for MEGA sync.',
+          pathValue: null,
+        };
+      }
+      return {
+        headline: 'MEGAcmd location not available yet',
+        detail: provider.setup.detail,
+        pathValue: null,
+      };
+    }
+
+    const normalizedPath = helperPath.replace(/\\/gu, '/').toLowerCase();
+    if (helperPath === 'PATH') {
+      return {
+        headline: 'Using the system MEGAcmd already installed on this machine',
+        detail: 'Nearbytes found MEGAcmd in your normal command-line tools, so no separate local helper folder is needed.',
+        pathValue: 'System PATH',
+      };
+    }
+
+    if (normalizedPath.includes('/.nearbytes-dev/megacmd/')) {
+      return {
+        headline: 'Using the project development build of MEGAcmd',
+        detail: 'Nearbytes is running the vendored helper prepared for local development in this repository.',
+        pathValue: helperPath,
+      };
+    }
+
+    if (normalizedPath.includes('/.nearbytes/helpers/megacmd')) {
+      return {
+        headline: 'Using a Nearbytes-managed local MEGAcmd helper',
+        detail: 'Nearbytes installed and maintains this local helper folder for MEGA sync on this machine.',
+        pathValue: helperPath,
+      };
+    }
+
+    return {
+      headline: 'Using a custom MEGAcmd location',
+      detail: 'Nearbytes is pointed at a specific MEGAcmd folder instead of the default local helper flow.',
+      pathValue: helperPath,
     };
   }
 
@@ -4159,6 +4221,7 @@
 
             {#if provider.provider === 'mega'}
               {@const megaStatus = megaStatusView()}
+              {@const megaHelper = megaHelperView(provider)}
               {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}
               <div class="provider-story-card compact-provider-card mega-status-card" data-tone={megaStatus.tone}>
                 <p class="subheading">Current status</p>
@@ -4166,6 +4229,14 @@
                 {#if megaStatus.detail}
                   <p class="provider-step-detail">{megaStatus.detail}</p>
                 {/if}
+                <div class="provider-path-card mega-helper-card">
+                  <p class="subheading">Active MEGAcmd</p>
+                  <p class="provider-step-title">{megaHelper.headline}</p>
+                  <p class="provider-step-detail">{megaHelper.detail}</p>
+                  {#if megaHelper.pathValue}
+                    <p class="provider-path-copy">{compactPath(megaHelper.pathValue)}</p>
+                  {/if}
+                </div>
                 {#if megaStatus.syncing}
                   <div
                     class="mega-sync-progress"
@@ -5775,6 +5846,10 @@
 
   .mega-status-card {
     gap: 0.52rem;
+  }
+
+  .mega-helper-card {
+    gap: 0.32rem;
   }
 
   .mega-status-card[data-tone='good'] {
