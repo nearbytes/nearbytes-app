@@ -184,6 +184,11 @@
   let megaRuntimeLogsLoading = $state(false);
   let megaRuntimeLogsError = $state('');
   let megaRuntimeLogsUpdatedAt = $state<number | null>(null);
+  let megaRuntimeLogSelection = $state<string | null>(null);
+  let megaRuntimeLogAutoRefresh = $state(true);
+  let megaRuntimeLogWrap = $state(true);
+  let megaRuntimeLogFilter = $state('');
+  let megaRuntimeLogCopyFeedback = $state('');
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let providerConnectionDialog = $state<string | null>(null);
   let sourceRepairReports = $state<Record<string, StorageLocationRepairReport>>({});
@@ -261,6 +266,7 @@
   let sourceWatchConnection: { close(): void } | null = null;
   let runtimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let backfillPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let megaRuntimeLogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let runtimeRefreshInFlight = false;
   let backfillPollIdleRounds = 0;
   let lastBackfillProgressSignature = '';
@@ -299,6 +305,10 @@
       clearTimeout(backfillPollTimer);
       backfillPollTimer = null;
     }
+    if (megaRuntimeLogRefreshTimer) {
+      clearTimeout(megaRuntimeLogRefreshTimer);
+      megaRuntimeLogRefreshTimer = null;
+    }
     sourceWatchConnection?.close();
     sourceWatchConnection = null;
   });
@@ -311,6 +321,36 @@
 
   $effect(() => {
     persistDismissedDiscoveries(dismissedDiscoveries);
+  });
+
+  $effect(() => {
+    if (megaRuntimeLogCopyFeedback === '') return;
+    const timer = setTimeout(() => {
+      megaRuntimeLogCopyFeedback = '';
+    }, 1800);
+    return () => {
+      clearTimeout(timer);
+    };
+  });
+
+  $effect(() => {
+    if (megaRuntimeLogRefreshTimer) {
+      clearTimeout(megaRuntimeLogRefreshTimer);
+      megaRuntimeLogRefreshTimer = null;
+    }
+    if (!megaRuntimeLogsVisible || !megaRuntimeLogAutoRefresh) {
+      return;
+    }
+    megaRuntimeLogRefreshTimer = setTimeout(() => {
+      megaRuntimeLogRefreshTimer = null;
+      void loadMegaRuntimeLogs();
+    }, 2500);
+    return () => {
+      if (megaRuntimeLogRefreshTimer) {
+        clearTimeout(megaRuntimeLogRefreshTimer);
+        megaRuntimeLogRefreshTimer = null;
+      }
+    };
   });
 
   $effect(() => {
@@ -1376,6 +1416,61 @@
     }
   }
 
+  function selectMegaRuntimeLog(entryId: string): void {
+    megaRuntimeLogSelection = entryId;
+  }
+
+  function normalizeMegaLogContent(raw: string, entryId: string): string {
+    if (raw.trim() === '') {
+      return '';
+    }
+    if (entryId.includes('verify-runtime')) {
+      try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+      } catch {
+        return raw;
+      }
+    }
+    return raw;
+  }
+
+  function visibleMegaRuntimeLogs(): DesktopRuntimeLogEntry[] {
+    const filter = megaRuntimeLogFilter.trim().toLowerCase();
+    if (filter === '') {
+      return megaRuntimeLogs;
+    }
+    return megaRuntimeLogs.filter((entry) => {
+      const haystack = `${entry.label}\n${entry.path}\n${normalizeMegaLogContent(entry.content, entry.id)}`.toLowerCase();
+      return haystack.includes(filter);
+    });
+  }
+
+  function activeMegaRuntimeLog(): DesktopRuntimeLogEntry | null {
+    const visible = visibleMegaRuntimeLogs();
+    if (visible.length === 0) {
+      return null;
+    }
+    const exact = megaRuntimeLogSelection
+      ? visible.find((entry) => entry.id === megaRuntimeLogSelection) ?? null
+      : null;
+    return exact ?? visible[0] ?? null;
+  }
+
+  function megaRuntimeLogContent(entry: DesktopRuntimeLogEntry | null): string {
+    if (!entry) {
+      return '';
+    }
+    return normalizeMegaLogContent(entry.content, entry.id);
+  }
+
+  function megaRuntimeLogLineCount(entry: DesktopRuntimeLogEntry | null): number {
+    const content = megaRuntimeLogContent(entry).trim();
+    if (content === '') {
+      return 0;
+    }
+    return content.split(/\r?\n/u).length;
+  }
+
   function formatMegaRuntimeLogTimestamp(value: number | null): string {
     if (!value || !Number.isFinite(value)) {
       return 'Not written yet';
@@ -1395,14 +1490,39 @@
       if (!response) {
         megaRuntimeLogs = [];
         megaRuntimeLogsUpdatedAt = null;
+        megaRuntimeLogSelection = null;
         return;
       }
       megaRuntimeLogs = response.entries;
       megaRuntimeLogsUpdatedAt = response.generatedAt;
+      if (
+        !megaRuntimeLogSelection ||
+        !response.entries.some((entry) => entry.id === megaRuntimeLogSelection)
+      ) {
+        megaRuntimeLogSelection = response.entries[0]?.id ?? null;
+      }
     } catch (error) {
       megaRuntimeLogsError = error instanceof Error ? error.message : 'Failed to load runtime logs';
     } finally {
       megaRuntimeLogsLoading = false;
+    }
+  }
+
+  async function copyMegaRuntimeLog(entry: DesktopRuntimeLogEntry | null): Promise<void> {
+    if (!entry) {
+      megaRuntimeLogCopyFeedback = 'Nothing to copy';
+      return;
+    }
+    const content = megaRuntimeLogContent(entry);
+    if (content.trim() === '') {
+      megaRuntimeLogCopyFeedback = 'Log is empty';
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(content);
+      megaRuntimeLogCopyFeedback = 'Copied';
+    } catch (error) {
+      megaRuntimeLogCopyFeedback = error instanceof Error ? error.message : 'Copy failed';
     }
   }
 
