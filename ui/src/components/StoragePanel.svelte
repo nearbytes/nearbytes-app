@@ -4492,6 +4492,8 @@
                   </button>
                 </div>
                 {#if megaRuntimeLogsVisible}
+                  {@const visibleRuntimeLogs = visibleMegaRuntimeLogs()}
+                  {@const activeRuntimeLog = activeMegaRuntimeLog()}
                   <div class="provider-path-card mega-runtime-log-card">
                     <div class="mega-runtime-log-header">
                       <div>
@@ -4511,23 +4513,92 @@
                         <span>{megaRuntimeLogsLoading ? 'Loading...' : 'Refresh logs'}</span>
                       </button>
                     </div>
+                    <div class="mega-runtime-log-toolbar">
+                      <label class="mega-runtime-log-search">
+                        <span class="subheading">Filter</span>
+                        <input
+                          class="panel-input"
+                          type="text"
+                          value={megaRuntimeLogFilter}
+                          placeholder="Search paths or log text"
+                          oninput={(event) => {
+                            megaRuntimeLogFilter = (event.currentTarget as HTMLInputElement).value;
+                          }}
+                        />
+                      </label>
+                      <div class="mega-runtime-log-toggle-row">
+                        <button
+                          type="button"
+                          class:primary={megaRuntimeLogAutoRefresh}
+                          class="panel-btn subtle compact"
+                          onclick={() => {
+                            megaRuntimeLogAutoRefresh = !megaRuntimeLogAutoRefresh;
+                          }}
+                        >
+                          <span>{megaRuntimeLogAutoRefresh ? 'Auto-refresh on' : 'Auto-refresh off'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          class:primary={megaRuntimeLogWrap}
+                          class="panel-btn subtle compact"
+                          onclick={() => {
+                            megaRuntimeLogWrap = !megaRuntimeLogWrap;
+                          }}
+                        >
+                          <span>{megaRuntimeLogWrap ? 'Wrap on' : 'Wrap off'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => void copyMegaRuntimeLog(activeRuntimeLog)}
+                          disabled={!activeRuntimeLog}
+                        >
+                          <span>{megaRuntimeLogCopyFeedback || 'Copy active log'}</span>
+                        </button>
+                      </div>
+                    </div>
                     {#if megaRuntimeLogsError}
                       <p class="warning-copy">{megaRuntimeLogsError}</p>
-                    {:else if megaRuntimeLogs.length === 0}
+                    {:else if visibleRuntimeLogs.length === 0}
                       <p class="provider-step-detail">No desktop runtime logs are available yet.</p>
                     {:else}
-                      <div class="mega-runtime-log-list">
-                        {#each megaRuntimeLogs as entry}
+                      <div class="mega-runtime-log-layout">
+                        <div class="mega-runtime-log-list">
+                          {#each visibleRuntimeLogs as entry}
+                            <button
+                              type="button"
+                              class="mega-runtime-log-tab"
+                              class:active={activeRuntimeLog?.id === entry.id}
+                              onclick={() => selectMegaRuntimeLog(entry.id)}
+                            >
+                              <span class="mega-runtime-log-tab-title">{entry.label}</span>
+                              <span class="mega-runtime-log-tab-meta">
+                                {entry.exists
+                                  ? `${compactPath(entry.path)} • ${formatSize(entry.size)}`
+                                  : `${compactPath(entry.path)} • waiting`}
+                              </span>
+                            </button>
+                          {/each}
+                        </div>
+                        {#if activeRuntimeLog}
                           <div class="provider-path-card mega-runtime-log-entry">
-                            <p class="provider-step-title">{entry.label}</p>
-                            <p class="provider-step-detail">
-                              {entry.exists
-                                ? `${compactPath(entry.path)} • ${formatSize(entry.size)} • ${formatMegaRuntimeLogTimestamp(entry.updatedAt)}`
-                                : `${compactPath(entry.path)} • waiting for the next write`}
-                            </p>
-                            <pre class="mega-log-view">{entry.exists && entry.content.trim() !== '' ? entry.content : 'No log content yet.'}</pre>
+                            <div class="mega-runtime-log-entry-head">
+                              <div>
+                                <p class="provider-step-title">{activeRuntimeLog.label}</p>
+                                <p class="provider-step-detail">{activeRuntimeLog.path}</p>
+                              </div>
+                              <div class="provider-fact-list">
+                                <p class="provider-step-detail">
+                                  {activeRuntimeLog.exists ? formatMegaRuntimeLogTimestamp(activeRuntimeLog.updatedAt) : 'Not written yet'}
+                                </p>
+                                <p class="provider-step-detail">
+                                  {countLabel(megaRuntimeLogLineCount(activeRuntimeLog), 'line')}
+                                </p>
+                              </div>
+                            </div>
+                            <pre class:wrap={megaRuntimeLogWrap} class="mega-log-view mega-log-view-large">{activeRuntimeLog.exists && megaRuntimeLogContent(activeRuntimeLog).trim() !== '' ? megaRuntimeLogContent(activeRuntimeLog) : 'No log content yet.'}</pre>
                           </div>
-                        {/each}
+                        {/if}
                       </div>
                     {/if}
                   </div>
@@ -6124,11 +6195,82 @@
     gap: 0.48rem;
   }
 
+  .mega-runtime-log-layout {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2fr);
+    align-items: start;
+  }
+
   .mega-runtime-log-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .mega-runtime-log-toolbar {
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .mega-runtime-log-search {
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .mega-runtime-log-toggle-row {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .mega-runtime-log-tab {
+    display: grid;
+    gap: 0.22rem;
+    width: 100%;
+    text-align: left;
+    padding: 0.65rem 0.72rem;
+    border-radius: 0.78rem;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.84));
+    cursor: pointer;
+    transition:
+      border-color 120ms ease,
+      transform 120ms ease,
+      background 120ms ease;
+  }
+
+  .mega-runtime-log-tab:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+  }
+
+  .mega-runtime-log-tab.active {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 22%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 236, 227, 0.92));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 12%, transparent);
+  }
+
+  .mega-runtime-log-tab-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text-main);
+  }
+
+  .mega-runtime-log-tab-meta {
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--text-faint);
+    word-break: break-word;
+  }
+
+  .mega-runtime-log-entry-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    align-items: flex-start;
     flex-wrap: wrap;
   }
 
@@ -6193,6 +6335,18 @@
     max-height: 180px;
     overflow: auto;
     font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  }
+
+  .mega-log-view.wrap {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .mega-log-view-large {
+    min-height: 280px;
+    max-height: 520px;
+    white-space: pre;
+    word-break: normal;
   }
 
   .managed-share-story-card.compact {
@@ -6266,6 +6420,10 @@
   }
 
   @media (max-width: 640px) {
+    .mega-runtime-log-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .provider-dialog {
       width: calc(100vw - 1rem);
       padding: 0.82rem;
