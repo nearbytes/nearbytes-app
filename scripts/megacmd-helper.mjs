@@ -273,6 +273,8 @@ async function ensureCmakeConfigured(sourceDir, buildDir, platform) {
     '-DUSE_FREEIMAGE=OFF',
     '-DENABLE_MEDIA_FILE_METADATA=OFF',
     '-DUSE_MEDIAINFO=OFF',
+    '-DUSE_LIBUV=OFF',
+    '-DWITH_FUSE=OFF',
   ];
   if (platform === 'darwin') {
     const sdkPath = (await captureCommand('xcrun', ['--show-sdk-path'], {
