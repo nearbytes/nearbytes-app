@@ -256,7 +256,19 @@ async function ensureCmakeConfigured(sourceDir, buildDir, platform) {
     // Fresh configure.
   }
 
-  const configureArgs = ['-S', sourceDir, '-B', buildDir, '-DCMAKE_BUILD_TYPE=Release'];
+  const configureArgs = [
+    '-S',
+    sourceDir,
+    '-B',
+    buildDir,
+    '-DCMAKE_BUILD_TYPE=Release',
+    '-DFULL_REQS=OFF',
+    '-DUSE_FFMPEG=OFF',
+    '-DUSE_PDFIUM=OFF',
+    '-DUSE_FREEIMAGE=OFF',
+    '-DENABLE_MEDIA_FILE_METADATA=OFF',
+    '-DUSE_MEDIAINFO=OFF',
+  ];
   if (platform === 'darwin') {
     const sdkPath = (await captureCommand('xcrun', ['--show-sdk-path'], {
       cwd: sourceDir,
