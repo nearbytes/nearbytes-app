@@ -20,6 +20,10 @@ on:
 permissions:
   contents: write
 
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\\.cache\\vcpkg\\bincache
+  VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\\.cache\\vcpkg\\bincache,readwrite
+
 jobs:
   build-helper:
     name: Build Windows helper
@@ -40,26 +44,32 @@ jobs:
       - name: Configure git for long paths
         run: git config --global core.longpaths true
 
-      - name: Reset vendored vcpkg checkout
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/vcpkg
+            vendor/MEGAcmd/build/build-cmake-Release
+            .cache/vcpkg/bincache
+          key: ${{ runner.os }}-megacmd-win32-x64-${{ hashFiles('vendor/MEGAcmd/CMakeLists.txt', 'vendor/MEGAcmd/vcpkg.json', 'vendor/MEGAcmd/build/cmake/modules/megacmd_options.cmake', 'vendor/MEGAcmd/sdk/CMakeLists.txt', 'vendor/MEGAcmd/sdk/vcpkg.json', 'vendor/MEGAcmd/sdk/cmake/modules/*.cmake', 'vendor/MEGAcmd/sdk/cmake/vcpkg_overlay_ports/**', 'vendor/MEGAcmd/sdk/cmake/vcpkg_overlay_triplets/**', '.github/workflows/windows-megacmd-release.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-megacmd-win32-x64-
+
+      - name: Prepare cache directories
         shell: pwsh
         run: |
-          if (Test-Path vendor/vcpkg) {
-            Remove-Item -Recurse -Force vendor/vcpkg
-          }
+          New-Item -ItemType Directory -Force -Path '.cache/vcpkg/bincache' | Out-Null
 
       - name: Configure vendored Windows helper
         shell: pwsh
         run: |
           $buildDir = Join-Path $PWD 'vendor/MEGAcmd/build/build-cmake-Release'
-          if (Test-Path $buildDir) {
-            Remove-Item -Recurse -Force $buildDir
-          }
           cmake -S vendor/MEGAcmd -B $buildDir -DCMAKE_BUILD_TYPE=Release -DFULL_REQS=OFF -DUSE_FFMPEG=OFF -DUSE_PDFIUM=OFF -DUSE_FREEIMAGE=OFF -DENABLE_MEDIA_FILE_METADATA=OFF -DUSE_MEDIAINFO=OFF
 
       - name: Build vendored Windows helper
         shell: pwsh
         run: |
-          cmake --build vendor/MEGAcmd/build/build-cmake-Release --config Release
+          cmake --build vendor/MEGAcmd/build/build-cmake-Release --config Release --target mega-exec mega-cmd-server -- /m
 
       - name: Stage helper bundle
         shell: pwsh
