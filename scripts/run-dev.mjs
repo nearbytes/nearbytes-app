@@ -23,7 +23,7 @@ async function main() {
     await killExistingDevProcesses();
   }
 
-  const child = spawn('yarn', ['dev-run:raw', ...forwardedArgs], {
+  const child = spawn(...buildSpawnInvocation('yarn', ['dev-run:raw', ...forwardedArgs]), {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -36,7 +36,7 @@ async function main() {
         : {}),
     },
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    shell: false,
   });
 
   await writeDevSession({
@@ -68,6 +68,28 @@ async function main() {
       process.exit(code ?? 0);
     });
   });
+}
+
+function buildSpawnInvocation(command, args) {
+  if (process.platform === 'win32') {
+    const resolved = `${command}.cmd`;
+    const commandLine = [quoteForWindowsCmd(resolved), ...args.map(quoteForWindowsCmd)].join(' ');
+    return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', commandLine]];
+  }
+
+  return [command, args];
+}
+
+function quoteForWindowsCmd(value) {
+  if (value.length === 0) {
+    return '""';
+  }
+
+  if (!/[\s"]/u.test(value)) {
+    return value;
+  }
+
+  return `"${value.replace(/"/gu, '""')}"`;
 }
 
 async function killExistingDevProcesses() {

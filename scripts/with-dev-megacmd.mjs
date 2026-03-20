@@ -25,7 +25,8 @@ process.exit(exitCode);
 
 async function runChildProcess(command, args, env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(resolveCommand(command), args, {
+    const resolvedCommand = resolveCommand(command);
+    const child = spawn(...buildSpawnInvocation(resolvedCommand, args), {
       cwd: repoRoot,
       env,
       stdio: 'inherit',
@@ -57,4 +58,30 @@ function resolveCommand(command) {
   }
 
   return `${command}.exe`;
+}
+
+function buildSpawnInvocation(command, args) {
+  if (process.platform === 'win32' && isWindowsCommandScript(command)) {
+    const commandLine = [quoteForWindowsCmd(command), ...args.map(quoteForWindowsCmd)].join(' ');
+    return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', commandLine]];
+  }
+
+  return [command, args];
+}
+
+function isWindowsCommandScript(command) {
+  const extension = path.extname(command).toLowerCase();
+  return extension === '.cmd' || extension === '.bat';
+}
+
+function quoteForWindowsCmd(value) {
+  if (value.length === 0) {
+    return '""';
+  }
+
+  if (!/[\s"]/u.test(value)) {
+    return value;
+  }
+
+  return `"${value.replace(/"/gu, '""')}"`;
 }
