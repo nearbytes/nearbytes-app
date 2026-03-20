@@ -391,9 +391,10 @@ async function stageUnixCommandDirectory(sourceDir, buildDir, commandDirectory, 
 }
 
 async function stageWindowsCommandDirectory(sourceDir, buildDir, commandDirectory) {
-  const builtClient = path.join(buildDir, 'MEGAclient.exe');
-  const builtServer = path.join(buildDir, 'MEGAcmdServer.exe');
-  const builtShell = path.join(buildDir, 'MEGAcmdShell.exe');
+  const outputDir = await resolveWindowsBuildOutputDir(buildDir);
+  const builtClient = path.join(outputDir, 'MEGAclient.exe');
+  const builtServer = path.join(outputDir, 'MEGAcmdServer.exe');
+  const builtShell = path.join(outputDir, 'MEGAcmdShell.exe');
 
   await copyRequiredFile(builtClient, path.join(commandDirectory, 'MEGAclient.exe'));
   await copyRequiredFile(builtClient, path.join(commandDirectory, 'MegaClient.exe'));
@@ -409,7 +410,7 @@ async function stageWindowsCommandDirectory(sourceDir, buildDir, commandDirector
     await fs.copyFile(path.join(clientScriptsDir, entry.name), path.join(commandDirectory, entry.name));
   }
 
-  const buildEntries = await fs.readdir(buildDir, { withFileTypes: true });
+  const buildEntries = await fs.readdir(outputDir, { withFileTypes: true });
   for (const entry of buildEntries) {
     if (!entry.isFile()) {
       continue;
@@ -417,7 +418,17 @@ async function stageWindowsCommandDirectory(sourceDir, buildDir, commandDirector
     if (!isWindowsRuntimeDependency(entry.name)) {
       continue;
     }
-    await fs.copyFile(path.join(buildDir, entry.name), path.join(commandDirectory, entry.name));
+    await fs.copyFile(path.join(outputDir, entry.name), path.join(commandDirectory, entry.name));
+  }
+}
+
+async function resolveWindowsBuildOutputDir(buildDir) {
+  const releaseDir = path.join(buildDir, 'Release');
+  try {
+    await fs.access(path.join(releaseDir, 'MEGAclient.exe'));
+    return releaseDir;
+  } catch {
+    return buildDir;
   }
 }
 
