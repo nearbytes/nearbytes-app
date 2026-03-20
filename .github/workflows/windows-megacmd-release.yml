@@ -89,6 +89,10 @@ jobs:
         run: |
           $repoRoot = (Get-Location).Path
           $buildDir = Join-Path $repoRoot 'vendor/MEGAcmd/build/build-cmake-Release'
+          $outputDir = Join-Path $buildDir 'Release'
+          if (-not (Test-Path (Join-Path $outputDir 'MEGAclient.exe'))) {
+            $outputDir = $buildDir
+          }
           $bundleRoot = Join-Path $repoRoot 'artifacts/megacmd-release/win32-x64'
           $binDir = Join-Path $bundleRoot 'bin'
 
@@ -97,11 +101,11 @@ jobs:
           }
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
-          Copy-Item (Join-Path $buildDir 'MEGAclient.exe') (Join-Path $binDir 'MEGAclient.exe')
-          Copy-Item (Join-Path $buildDir 'MEGAclient.exe') (Join-Path $binDir 'MegaClient.exe')
-          Copy-Item (Join-Path $buildDir 'MEGAcmdServer.exe') (Join-Path $binDir 'MEGAcmdServer.exe')
+          Copy-Item (Join-Path $outputDir 'MEGAclient.exe') (Join-Path $binDir 'MEGAclient.exe')
+          Copy-Item (Join-Path $outputDir 'MEGAclient.exe') (Join-Path $binDir 'MegaClient.exe')
+          Copy-Item (Join-Path $outputDir 'MEGAcmdServer.exe') (Join-Path $binDir 'MEGAcmdServer.exe')
 
-          $shellPath = Join-Path $buildDir 'MEGAcmdShell.exe'
+          $shellPath = Join-Path $outputDir 'MEGAcmdShell.exe'
           if (Test-Path $shellPath) {
             Copy-Item $shellPath (Join-Path $binDir 'MEGAcmdShell.exe')
           }
@@ -109,7 +113,7 @@ jobs:
           Get-ChildItem (Join-Path $repoRoot 'vendor/MEGAcmd/src/client/win') -Filter 'mega-*.bat' -File |
             ForEach-Object { Copy-Item $_.FullName $binDir }
 
-          Get-ChildItem $buildDir -File |
+          Get-ChildItem $outputDir -File |
             Where-Object { $_.Extension -in '.dll', '.manifest' } |
             ForEach-Object { Copy-Item $_.FullName $binDir }
 
