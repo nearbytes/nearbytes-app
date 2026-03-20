@@ -29,8 +29,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
+
+      - name: Initialize vendored MEGAcmd submodules
+        shell: pwsh
+        run: |
+          git submodule sync -- vendor/MEGAcmd
+          git submodule update --init --recursive vendor/MEGAcmd
 
       - name: Configure git for long paths
         run: git config --global core.longpaths true
