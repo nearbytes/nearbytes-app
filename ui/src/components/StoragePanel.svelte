@@ -770,9 +770,11 @@
   }
 
   function shareAttachmentSummary(summary: ManagedShareSummary): string {
-    const count = summary.attachments.length;
+    const count = shareAttachmentLabels(summary).length;
     if (count === 0) {
-      return 'Readable now. Not selected for hub writes.';
+      return summary.storage?.keepFullCopy
+        ? 'Ready for hub writes by default. No hub is using it yet.'
+        : 'Readable now. No hub is using it yet.';
     }
     return `Used in ${countLabel(count, 'place')}.`;
   }
@@ -794,6 +796,52 @@
     return historyBytes + fileBytes;
   }
 
+  function candidateAttachmentVolumeIds(sourceId: string | null): string[] {
+    if (!configDraft || !sourceId) {
+      return [];
+    }
+
+    const ids = new Set<string>();
+    for (const volume of knownVolumes) {
+      ids.add(volume.volumeId);
+    }
+    if (currentVolumePresentation?.volumeId) {
+      ids.add(currentVolumePresentation.volumeId);
+    }
+    for (const volume of configDraft.volumes) {
+      if (volume.destinations.some((destination) => destination.sourceId === sourceId)) {
+        ids.add(volume.volumeId);
+      }
+    }
+    return Array.from(ids.values());
+  }
+
+  function effectiveAttachmentLabels(sourceId: string | null, fallbackVolumeIds: string[] = []): ShareAttachmentChip[] {
+    if (!configDraft || !sourceId) {
+      return [];
+    }
+
+    const candidates = new Set<string>(candidateAttachmentVolumeIds(sourceId));
+    for (const volumeId of fallbackVolumeIds) {
+      candidates.add(volumeId);
+    }
+
+    return Array.from(candidates.values())
+      .filter((targetVolumeId) => effectiveDestinations(targetVolumeId).some((destination) => destination.sourceId === sourceId))
+      .map((targetVolumeId) => {
+        const knownLabel = knownVolumeLabel(targetVolumeId);
+        const usage = sourceVolumeUsage(sourceId, targetVolumeId);
+        return {
+          volumeId: targetVolumeId,
+          label: knownLabel ?? `Space ${targetVolumeId.slice(0, 8)}`,
+          known: Boolean(knownLabel),
+          usageBytes: usage.usageBytes,
+          usagePercent: usage.usagePercent,
+        };
+      })
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }
+
   function sourceVolumeUsage(sourceId: string, targetVolumeId: string): { usageBytes: number; usagePercent: number } {
     const usage = sourceStatus(sourceId)?.usage;
     const entry = usage?.volumeUsages.find((item) => item.volumeId === targetVolumeId);
@@ -807,28 +855,15 @@
   }
 
   function sourceAttachmentLabels(sourceId: string): ShareAttachmentChip[] {
-    if (!configDraft) {
-      return [];
-    }
-    return configDraft.volumes
-      .filter((volume) => volume.destinations.some((destination) => destination.sourceId === sourceId))
-      .map((volume) => {
-        const knownLabel = knownVolumeLabel(volume.volumeId);
-        const usage = sourceVolumeUsage(sourceId, volume.volumeId);
-        return {
-          volumeId: volume.volumeId,
-          label: knownLabel ?? `Space ${volume.volumeId.slice(0, 8)}`,
-          known: Boolean(knownLabel),
-          usageBytes: usage.usageBytes,
-          usagePercent: usage.usagePercent,
-        };
-      });
+    return effectiveAttachmentLabels(sourceId);
   }
 
   function sourceAttachmentSummary(sourceId: string): string {
     const count = sourceAttachmentLabels(sourceId).length;
     if (count === 0) {
-      return 'Readable now. Not selected for hub writes.';
+      return keepsFullCopy(destinationFor(null, sourceId))
+        ? 'Ready for hub writes by default. No hub is using it yet.'
+        : 'Readable now. No hub is using it yet.';
     }
     return `Used in ${countLabel(count, 'place')}.`;
   }
@@ -964,20 +999,10 @@
   }
 
   function shareAttachmentLabels(summary: ManagedShareSummary): ShareAttachmentChip[] {
-    if (summary.attachments.length === 0) {
-      return [];
-    }
-    return summary.attachments.map((attachment) => {
-      const knownLabel = knownVolumeLabel(attachment.volumeId);
-      const usage = summary.share.sourceId ? sourceVolumeUsage(summary.share.sourceId, attachment.volumeId) : { usageBytes: 0, usagePercent: 0 };
-      return {
-        volumeId: attachment.volumeId,
-        label: knownLabel ?? `Space ${attachment.volumeId.slice(0, 8)}`,
-        known: Boolean(knownLabel),
-        usageBytes: usage.usageBytes,
-        usagePercent: usage.usagePercent,
-      };
-    });
+    return effectiveAttachmentLabels(
+      summary.share.sourceId ?? null,
+      summary.attachments.map((attachment) => attachment.volumeId)
+    );
   }
 
   function providerDisconnectImpact(provider: string): {
