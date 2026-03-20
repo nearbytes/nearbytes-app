@@ -1,0 +1,108 @@
+name: Windows MEGAcmd Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub release tag that will receive the helper asset
+        required: true
+        default: megacmd-helper-win32-x64
+      release_title:
+        description: GitHub release title
+        required: true
+        default: Nearbytes Windows MEGAcmd Helper
+      prerelease:
+        description: Mark the release as a prerelease
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-helper:
+    name: Build Windows helper
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Configure git for long paths
+        run: git config --global core.longpaths true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable Corepack
+        run: |
+          corepack enable
+          corepack prepare yarn@4.10.3 --activate
+
+      - name: Install root dependencies
+        run: yarn install --immutable
+
+      - name: Build vendored Windows helper
+        shell: pwsh
+        run: |
+          if (Test-Path vendor/vcpkg) {
+            Remove-Item -Recurse -Force vendor/vcpkg
+          }
+          $bundleRoot = (node scripts/package-vendored-megacmd-release.mjs --output-dir artifacts/megacmd-release).Trim()
+          "BUNDLE_ROOT=$bundleRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Archive helper bundle
+        shell: pwsh
+        run: |
+          $assetName = "nearbytes-megacmd-win32-x64.zip"
+          $archivePath = Join-Path $PWD $assetName
+          if (Test-Path $archivePath) {
+            Remove-Item -Force $archivePath
+          }
+          Compress-Archive -Path $env:BUNDLE_ROOT -DestinationPath $archivePath
+          "ASSET_PATH=$archivePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ASSET_NAME=$assetName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nearbytes-megacmd-win32-x64
+          path: ${{ env.ASSET_PATH }}
+
+      - name: Create or update GitHub release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ inputs.release_tag }}'
+          $title = '${{ inputs.release_title }}'
+          $notesPath = Join-Path $env:RUNNER_TEMP 'megacmd-release-notes.md'
+          @"
+          Windows vendored MEGAcmd helper for Nearbytes.
+
+          Source commit: $env:GITHUB_SHA
+          Workflow run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          "@ | Out-File -FilePath $notesPath -Encoding utf8
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $releaseArgs = @('release', 'create', $tag, '--target', $env:GITHUB_SHA, '--title', $title, '--notes-file', $notesPath)
+            if ('${{ inputs.prerelease }}' -eq 'true') {
+              $releaseArgs += '--prerelease'
+            }
+            & gh @releaseArgs
+          } else {
+            $editArgs = @('release', 'edit', $tag, '--title', $title, '--notes-file', $notesPath)
+            if ('${{ inputs.prerelease }}' -eq 'true') {
+              $editArgs += '--prerelease'
+            }
+            & gh @editArgs
+          }
+
+          gh release upload $tag $env:ASSET_PATH --clobber
