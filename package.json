@@ -41,7 +41,8 @@
     "dev-build": "yarn build && yarn build:ui && yarn build:electron",
     "production-build": "yarn dev-build && node scripts/run-electron-builder.mjs --publish never",
     "production-build:publish": "yarn dev-build && node scripts/run-electron-builder.mjs --publish always",
-    "deploy": "node scripts/release-tag.mjs"
+    "deploy": "node scripts/release-tag.mjs",
+    "megacmd:package:windows": "node scripts/package-vendored-megacmd-release.mjs"
   },
   "keywords": [
     "cryptography",

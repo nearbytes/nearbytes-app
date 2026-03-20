@@ -92,10 +92,10 @@ yarn dev-run
 
 Important behavior:
 
-- `yarn dev`, `yarn desktop:run`, and `yarn dev-run` automatically configure, build, and stage the vendored MEGAcmd helper when needed.
-- The staged helper is placed under `.nearbytes-dev/megacmd/<platform>-<arch>/bin`.
+- On Windows, `yarn dev`, `yarn desktop:run`, and `yarn dev-run` fetch the cached Nearbytes MEGAcmd helper release asset from GitHub when needed and stage it under `.nearbytes-dev/megacmd/<platform>-<arch>/bin`.
+- On macOS and Linux, `yarn dev`, `yarn desktop:run`, and `yarn dev-run` still configure, build, and stage the vendored MEGAcmd helper from source when needed.
 - In normal dev usage you do not need a separate global MEGAcmd installation.
-- Always keep `vendor/MEGAcmd` and `vendor/MEGAcmd/sdk` initialized, because the dev bootstrap builds from those sources.
+- Always keep `vendor/MEGAcmd` and `vendor/MEGAcmd/sdk` initialized if you are building helper binaries from source or publishing the Windows helper release.
 
 ### Platform Prerequisites
 
@@ -156,8 +156,15 @@ corepack prepare yarn@4.10.3 --activate
 
 Notes:
 
-- The vendored SDK and MEGAcmd builds use the Visual Studio C++ toolchain on Windows.
+- Windows dev mode uses the cached GitHub release helper by default.
+- Set `NEARBYTES_MEGACMD_RELEASE_TAG` if you want to test a different published helper release.
 - Do not rely on a global MEGAcmd install for Nearbytes desktop development unless you intentionally override with `NEARBYTES_MEGACMD_DIR`.
+
+### Manual Windows Helper Release
+
+The repository includes a manual GitHub Actions workflow at `.github/workflows/windows-megacmd-release.yml`.
+
+Use it to build and publish the Windows vendored helper zip that `yarn dev` and `yarn dev-run` consume on Windows.
 
 #### Linux
 
