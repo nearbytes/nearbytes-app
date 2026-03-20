@@ -60,6 +60,19 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path '.cache/vcpkg/bincache' | Out-Null
 
+      - name: Validate vendored vcpkg checkout
+        shell: pwsh
+        run: |
+          $toolchainPath = Join-Path $PWD 'vendor/vcpkg/scripts/buildsystems/vcpkg.cmake'
+          if (-not (Test-Path $toolchainPath)) {
+            if (Test-Path 'vendor/vcpkg') {
+              Remove-Item -Recurse -Force 'vendor/vcpkg'
+            }
+            if (Test-Path 'vendor/MEGAcmd/build/build-cmake-Release') {
+              Remove-Item -Recurse -Force 'vendor/MEGAcmd/build/build-cmake-Release'
+            }
+          }
+
       - name: Configure vendored Windows helper
         shell: pwsh
         run: |
