@@ -45,7 +45,12 @@ export async function ensureBuiltMegaCmd(rootDir, options = {}) {
 
   await ensureVendoredVcpkgRoot(rootDir);
   await ensureCmakeConfigured(sourceDir, buildDir, targetPlatform);
-  await runCommand('cmake', ['--build', buildDir, '--config', 'Release'], {
+  const buildTargets =
+    targetPlatform === 'win32'
+      ? ['mega-exec', 'mega-cmd-server']
+      : ['mega-exec', 'mega-cmd', 'mega-cmd-server'];
+
+  await runCommand('cmake', ['--build', buildDir, '--config', 'Release', '--target', ...buildTargets], {
     cwd: rootDir,
     errorPrefix: 'Failed to build vendored MEGAcmd for dev mode',
   });
