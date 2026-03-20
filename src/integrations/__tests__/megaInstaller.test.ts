@@ -219,4 +219,41 @@ describe('MegaHelperInstaller', () => {
     expect(after.config?.helperPath).toBe(path.join(installRoot, 'usr', 'bin'));
     await fs.access(path.join(installRoot, 'usr', 'bin', 'mega-login'));
   });
+
+  it('prefers the explicit command directory over a saved helper path', async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-configured-'));
+    tempDirs.push(homeDir);
+    const savedDir = path.join(homeDir, 'saved-helper');
+    const configuredDir = path.join(homeDir, 'configured-helper');
+    await fs.mkdir(savedDir, { recursive: true });
+    await fs.mkdir(configuredDir, { recursive: true });
+    await fs.writeFile(path.join(savedDir, 'mega-login'), 'saved');
+    await fs.writeFile(path.join(configuredDir, 'mega-login'), 'configured');
+
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-config:mega', {
+      commandDirectory: savedDir,
+    });
+
+    const installer = new MegaHelperInstaller({
+      secretStore,
+      commandExecutor: {
+        async run() {
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      },
+      logger: { log() {}, warn() {} },
+      configuredCommandDirectory: configuredDir,
+      platform: 'linux',
+      arch: 'x64',
+      homeDir,
+      fetchImpl: fakeFetch(),
+      linuxRelease: {
+        id: 'ubuntu',
+        versionId: '24.04',
+      },
+    });
+
+    await expect(installer.getCommandDirectory()).resolves.toBe(configuredDir);
+  });
 });

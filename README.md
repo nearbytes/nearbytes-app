@@ -23,12 +23,207 @@ server-side and browser workflows.
 
 You can run these with `yarn <script>` or `npm run <script>`:
 
-- `dev-run`: run Electron desktop in dev mode (Vite UI + shared API runtime)
+- `dev-run`: run Electron desktop in dev mode (Vite UI + shared API runtime), automatically building and using the vendored MEGAcmd helper in supported desktop dev environments
+- `dev`: run the shared API runtime and Vite UI, automatically building and using the vendored MEGAcmd helper in supported desktop dev environments
+- `desktop:run`: run Electron desktop against the dev UI, automatically building and using the vendored MEGAcmd helper in supported desktop dev environments
 - `dev-test`: run shared tests + desktop smoke validation
 - `dev-build`: build server + UI + Electron runtime artifacts
 - `production-build`: build desktop installers (publish disabled)
 - `production-build:publish`: build and publish desktop installers (CI/tag use)
 - `deploy`: interactive tag helper that asks for version and pushes `v*` release tag
+
+### Supported Dev Platforms
+
+Nearbytes desktop development is supported on:
+
+- macOS
+- Windows
+- Linux
+
+The desktop dev flow depends on the vendored `vendor/MEGAcmd` fork and its vendored SDK. Do not remove or skip submodules.
+
+### Deterministic Setup
+
+Use this sequence for a fresh machine or CI-style bootstrap.
+
+1. Clone with submodules:
+
+```bash
+git clone --recursive <repo-url>
+cd nearbytes-app
+```
+
+If the repo is already cloned:
+
+```bash
+git submodule update --init --recursive
+```
+
+2. Install Node.js and Corepack.
+
+- Use Node.js 20 LTS or newer for development.
+- The repository minimum is Node.js 18, but Node.js 20 LTS is the recommended baseline.
+- Keep Yarn pinned to the repository version through Corepack.
+
+3. Enable the repository package manager:
+
+```bash
+corepack enable
+corepack prepare yarn@4.10.3 --activate
+```
+
+4. Install JavaScript dependencies:
+
+```bash
+yarn install
+```
+
+5. Start the desired dev target:
+
+```bash
+yarn dev
+```
+
+or:
+
+```bash
+yarn dev-run
+```
+
+Important behavior:
+
+- `yarn dev`, `yarn desktop:run`, and `yarn dev-run` automatically configure, build, and stage the vendored MEGAcmd helper when needed.
+- The staged helper is placed under `.nearbytes-dev/megacmd/<platform>-<arch>/bin`.
+- In normal dev usage you do not need a separate global MEGAcmd installation.
+- Always keep `vendor/MEGAcmd` and `vendor/MEGAcmd/sdk` initialized, because the dev bootstrap builds from those sources.
+
+### Platform Prerequisites
+
+Install the platform toolchain before running `yarn dev`, `yarn desktop:run`, or `yarn dev-run`.
+
+#### macOS
+
+Required:
+
+- Xcode Command Line Tools
+- Homebrew
+- Git
+- Node.js 20 LTS or newer
+- CMake
+- autotools pieces required by the vendored SDK and MEGAcmd build
+
+Recommended command sequence:
+
+```bash
+xcode-select --install
+brew install git node cmake ninja autoconf autoconf-archive automake pkg-config nasm libtool
+corepack enable
+corepack prepare yarn@4.10.3 --activate
+```
+
+Notes:
+
+- The vendored MEGAcmd build on macOS requires a valid Apple SDK from `xcrun`.
+- The Nearbytes dev bootstrap resolves the macOS SDK path automatically during CMake configure.
+
+#### Windows
+
+Required:
+
+- Git
+- Node.js 20 LTS or newer
+- CMake
+- Visual Studio 2022 Build Tools or Visual Studio 2022 Community
+- Windows C++ toolchain and SDK components
+
+Install Visual Studio 2022 with these components:
+
+- Desktop development with C++
+- MSVC build tools
+- MSVC v142 compatibility tools
+- Windows 10 or Windows 11 SDK
+
+Recommended package installs from an elevated PowerShell session:
+
+```powershell
+winget install --id Git.Git -e
+winget install --id OpenJS.NodeJS.LTS -e
+winget install --id Kitware.CMake -e
+winget install --id Ninja-build.Ninja -e
+corepack enable
+corepack prepare yarn@4.10.3 --activate
+```
+
+Notes:
+
+- The vendored SDK and MEGAcmd builds use the Visual Studio C++ toolchain on Windows.
+- Do not rely on a global MEGAcmd install for Nearbytes desktop development unless you intentionally override with `NEARBYTES_MEGACMD_DIR`.
+
+#### Linux
+
+The documented baseline is Debian or Ubuntu and other distributions with equivalent packages.
+
+Required:
+
+- Git
+- Node.js 20 LTS or newer
+- C/C++ build toolchain
+- CMake
+- pkg-config
+- autotools pieces required by the vendored SDK and MEGAcmd build
+
+Recommended command sequence for Debian or Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential git curl zip unzip cmake ninja-build autoconf autoconf-archive automake pkg-config nasm libtool-bin python3
+corepack enable
+corepack prepare yarn@4.10.3 --activate
+```
+
+If Node.js 20 is not already installed, install it before `yarn install` using your preferred package source. One deterministic option is:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+### Verification Checklist
+
+After prerequisites are installed, these checks should succeed:
+
+```bash
+node --version
+yarn --version
+cmake --version
+git submodule status --recursive
+```
+
+For a full desktop validation run:
+
+```bash
+yarn dev-run
+```
+
+Expected result:
+
+- the shared API runtime builds
+- the Electron runtime builds
+- the UI dev server starts
+- the vendored MEGAcmd helper is built or reused
+- Nearbytes launches with `NEARBYTES_MEGACMD_DIR` pointed at the staged local helper
+
+### Override Behavior
+
+The default development path is to use the vendored helper built from source.
+
+If you intentionally want to point Nearbytes at another MEGAcmd directory, set:
+
+```bash
+export NEARBYTES_MEGACMD_DIR=/absolute/path/to/megacmd/bin
+```
+
+Nearbytes will then use that explicit command directory instead of a saved helper path.
 
 ### Desktop Security Model
 
@@ -60,7 +255,7 @@ Without `DEBUG`, those endpoints stay unavailable.
 - Nearbytes ships with a built-in Google Drive Desktop app client ID for the default OAuth flow.
 - `NEARBYTES_GOOGLE_CLIENT_ID` - optional override if you want to use your own Google OAuth client instead
 - `NEARBYTES_GOOGLE_CLIENT_SECRET` - advanced local-only fallback for Google OAuth; not needed for the default Desktop app PKCE flow and should never be committed or shipped
-- `NEARBYTES_MEGACMD_DIR` - optional override if you want to point Nearbytes at an existing MEGAcmd install; otherwise the app can fetch the helper automatically
+- `NEARBYTES_MEGACMD_DIR` - optional override if you want to point Nearbytes at an existing MEGAcmd install; `yarn dev`, `yarn dev-run`, and `yarn desktop:run` now set this automatically to the vendored development build on supported platforms
 - `NEARBYTES_MEGA_REMOTE_BASE` (default: `/Nearbytes`) - remote MEGA folder prefix for Nearbytes-managed shares
 - `NEARBYTES_RELEASE_OWNER` / `NEARBYTES_RELEASE_REPO` - repository used by installer publishing and updater metadata
 

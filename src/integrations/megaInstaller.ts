@@ -148,7 +148,7 @@ export class MegaHelperInstaller {
 
   private async getConfiguredCommandDirectory(): Promise<string | undefined> {
     const secret = (await this.options.secretStore.get<MegaConfigSecret>(MEGA_CONFIG_SECRET_KEY)) ?? {};
-    return secret.commandDirectory?.trim() || this.options.configuredCommandDirectory?.trim() || undefined;
+    return this.options.configuredCommandDirectory?.trim() || secret.commandDirectory?.trim() || undefined;
   }
 
   private async resolveInstallRoot(): Promise<string> {

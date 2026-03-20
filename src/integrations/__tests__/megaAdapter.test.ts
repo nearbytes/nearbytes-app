@@ -25,6 +25,8 @@ function createMemorySecretStore(): ProviderSecretStore {
 function createFakeMegaExecutor(state: {
   sessionToken: string;
   syncs: Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>;
+  syncCommands?: string[][];
+  syncHelpStdout?: string;
   downloads?: string[][];
   downloadSetup?: (destination: string, args: string[]) => Promise<void>;
   invitedEmails: string[];
@@ -135,7 +137,17 @@ function createFakeMegaExecutor(state: {
           state.syncs = state.syncs.filter((sync) => sync.id !== syncSelector && sync.localPath !== syncSelector);
           return { stdout: '', stderr: '', exitCode: 0 };
         }
-        const [localPath, remotePath] = args;
+        if (args[0] === '--help') {
+          return {
+            stdout: state.syncHelpStdout ?? 'Usage: sync [localpath dstremotepath| [-dpe] [ID|localpath]\n',
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        state.syncCommands ??= [];
+        state.syncCommands.push(args);
+        const creationArgs = args[0] === '--down' || args[0] === '--read-only' ? args.slice(1) : args;
+        const [localPath, remotePath] = creationArgs;
         if (state.requireExistingLocalSyncDir && localPath) {
           try {
             const stats = await fs.stat(localPath);
@@ -855,6 +867,7 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
     const megaState = {
       sessionToken: 'mega-session-token',
       syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      syncCommands: [] as string[][],
       downloads: [] as string[][],
       invitedEmails: [] as string[],
       shareCommands: [] as string[][],
@@ -1016,6 +1029,7 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
     const megaState = {
       sessionToken: 'mega-session-token',
       syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      syncCommands: [] as string[][],
       downloads: [] as string[][],
       invitedEmails: [] as string[],
       shareCommands: [] as string[][],
@@ -1090,6 +1104,85 @@ PATH                PATH_ISSUE LAST_MODIFIED       UPLOADED            SIZE
     expect(megaState.downloads).toEqual([]);
     expect(megaState.syncs).toHaveLength(1);
     expect(megaState.syncs[0]?.remotePath).toBe('owner@mega.example:nearbytes');
+    expect(megaState.syncCommands).toContainEqual([share.localPath, 'owner@mega.example:nearbytes']);
+
+    const state = await adapter.getState(share, account);
+    expect(state.status).toBe('ready');
+    expect(state.detail).toContain('MEGA sync is running');
+
+    await adapter.detachManagedShare(share, account);
+    await fs.rm(share.localPath, { recursive: true, force: true });
+  });
+
+  it('prefers native read-only sync for incoming shares when the active MEGAcmd supports it', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [] as Array<{ id: string; localPath: string; remotePath: string; runState: string; status: string; error: string }>,
+      syncCommands: [] as string[][],
+      syncHelpStdout:
+        'Usage: sync [localpath dstremotepath| [-dpe] [ID|localpath]\n --down | --read-only\twhen creating a sync, download remote changes without requiring full access.\n',
+      downloads: [] as string[][],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+      mountStdout: 'INSHARE on //from/owner@mega.example:nearbytes (read access)\n',
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: createFakeMegaExecutor(megaState),
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'reader@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const [offer] = await adapter.listIncomingShares(account);
+    const share: ManagedShare = {
+      id: 'share-mega-recipient-down-1',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'recipient',
+      localPath: path.join(os.tmpdir(), `nearbytes-incoming-down-${Date.now()}`),
+      sourceId: 'src-mega-recipient-down-1',
+      syncMode: 'mirror',
+      remoteDescriptor: offer!.remoteDescriptor,
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await adapter.ensureSync(share, account);
+
+    expect(megaState.downloads).toEqual([]);
+    expect(megaState.syncs).toHaveLength(1);
+    expect(megaState.syncs[0]?.remotePath).toBe('owner@mega.example:nearbytes');
+    expect(megaState.syncCommands).toContainEqual(['--down', share.localPath, 'owner@mega.example:nearbytes']);
 
     const state = await adapter.getState(share, account);
     expect(state.status).toBe('ready');

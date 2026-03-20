@@ -89,6 +89,12 @@ export class MegaTransportAdapter {
   private readonly syncStates = new Map<string, TransportState>();
   private readonly syncTimers = new Map<string, NodeJS.Timeout>();
   private readonly pullTasks = new Map<string, Promise<void>>();
+  private readOnlySyncSupport:
+    | {
+        readonly commandDirectory: string | undefined;
+        readonly supported: boolean;
+      }
+    | undefined;
   private readonly installer: MegaHelperInstaller;
 
   constructor(
@@ -181,7 +187,7 @@ export class MegaTransportAdapter {
     if (requestedLocalPath && normalizeComparablePath(existingSync?.localPath ?? '') !== normalizeComparablePath(requestedLocalPath)) {
       await this.ensureSyncBinding(requestedLocalPath, remotePath, account.id);
     } else if (!existingSync) {
-      await this.ensureSyncTarget(resolvedLocalPath, remotePath);
+      await this.ensureSyncTarget(resolvedLocalPath, remotePath, null);
     }
 
     return {
@@ -333,7 +339,7 @@ export class MegaTransportAdapter {
         }, this.runtime.now()),
       };
     }
-    if (this.usesIncomingPullMirror(share)) {
+    if (await this.shouldUseIncomingPullMirror(share)) {
       try {
         await this.ensureLoggedIn(account.id);
       } catch (error) {
@@ -419,7 +425,7 @@ export class MegaTransportAdapter {
     if (!remotePath) {
       throw new Error('MEGA share is missing remotePath.');
     }
-    if (this.usesIncomingPullMirror(share)) {
+    if (await this.shouldUseIncomingPullMirror(share)) {
       try {
         await this.ensureLoggedIn(account.id);
       } catch (error) {
@@ -454,7 +460,7 @@ export class MegaTransportAdapter {
       return;
     }
     await this.ensureLoggedIn(account.id);
-    await this.ensureSyncBinding(share.localPath, remotePath, account.id);
+    await this.ensureSyncBinding(share.localPath, remotePath, account.id, share);
     await this.refreshSyncState(share, account.id);
     const timer = setInterval(() => {
       void this.refreshSyncState(share, account.id);
@@ -463,7 +469,12 @@ export class MegaTransportAdapter {
     this.syncTimers.set(share.id, timer);
   }
 
-  private async ensureSyncBinding(localPath: string, remotePath: string, accountId: string): Promise<void> {
+  private async ensureSyncBinding(
+    localPath: string,
+    remotePath: string,
+    accountId: string,
+    share: ManagedShare | null = null
+  ): Promise<void> {
     const matches = await this.findSyncMatches(localPath, remotePath, accountId);
     const localTarget = normalizeComparablePath(localPath);
     const remoteTarget = normalizeComparableRemotePath(remotePath);
@@ -500,7 +511,7 @@ export class MegaTransportAdapter {
     }
 
     if (!matches.exact) {
-      await this.ensureSyncTarget(localPath, remotePath);
+      await this.ensureSyncTarget(localPath, remotePath, share);
     }
   }
 
@@ -518,7 +529,7 @@ export class MegaTransportAdapter {
     await this.ensureLoggedIn(account.id).catch(() => {
       // Ignore logout/broken-session cleanup issues here.
     });
-    if (this.usesIncomingPullMirror(share)) {
+    if (await this.shouldUseIncomingPullMirror(share)) {
       return;
     }
     const syncRecord = await this.findSyncByLocalPath(share.localPath, account.id).catch(() => null);
@@ -855,12 +866,15 @@ export class MegaTransportAdapter {
     return token;
   }
 
-  private async ensureSyncTarget(localPath: string, remotePath: string): Promise<void> {
+  private async ensureSyncTarget(localPath: string, remotePath: string, share: ManagedShare | null): Promise<void> {
     if (!localPath.trim()) {
       throw new Error('Nearbytes share folder is missing.');
     }
     await fs.mkdir(localPath, { recursive: true });
-    await this.runMega('sync', [localPath, remotePath], {
+    const syncArgs = (await this.shouldCreateIncomingReadOnlySync(share, remotePath))
+      ? ['--down', localPath, remotePath]
+      : [localPath, remotePath];
+    await this.runMega('sync', syncArgs, {
       timeoutMs: 60_000,
     }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -1052,9 +1066,51 @@ export class MegaTransportAdapter {
     }
   }
 
-  private usesIncomingPullMirror(share: ManagedShare): boolean {
+  private async shouldUseIncomingPullMirror(share: ManagedShare): Promise<boolean> {
     const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath') ?? '';
-    return share.role === 'recipient' && isMegaIncomingRemotePath(remotePath) && !incomingMegaShareSupportsLiveSync(share.remoteDescriptor);
+    if (share.role !== 'recipient' || !isMegaIncomingRemotePath(remotePath)) {
+      return false;
+    }
+    if (incomingMegaShareSupportsLiveSync(share.remoteDescriptor)) {
+      return false;
+    }
+    return !(await this.supportsIncomingReadOnlySync());
+  }
+
+  private async shouldCreateIncomingReadOnlySync(
+    share: ManagedShare | null,
+    remotePath: string
+  ): Promise<boolean> {
+    if (!share || share.role !== 'recipient' || !isMegaIncomingRemotePath(remotePath)) {
+      return false;
+    }
+    if (incomingMegaShareSupportsLiveSync(share.remoteDescriptor)) {
+      return false;
+    }
+    return this.supportsIncomingReadOnlySync();
+  }
+
+  private async supportsIncomingReadOnlySync(): Promise<boolean> {
+    const commandDirectory = await this.installer.getCommandDirectory();
+    if (this.readOnlySyncSupport && this.readOnlySyncSupport.commandDirectory === commandDirectory) {
+      return this.readOnlySyncSupport.supported;
+    }
+
+    let supported = false;
+    try {
+      const result = await this.runMega('sync', ['--help'], {
+        timeoutMs: 15_000,
+      });
+      supported = /--down|--read-only/i.test(`${result.stdout}\n${result.stderr}`);
+    } catch {
+      supported = false;
+    }
+
+    this.readOnlySyncSupport = {
+      commandDirectory,
+      supported,
+    };
+    return supported;
   }
 
   private async readIncomingMirrorState(share: ManagedShare): Promise<TransportState> {
