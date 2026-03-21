@@ -144,12 +144,12 @@ export class ChannelStorage {
       const files = isMultiRootStorageBackend(this.storage)
         ? await this.storage.listFilesAcrossRoots(channelPath)
         : await this.storage.listFiles(channelPath);
-      
-      // Filter for .bin files and extract hashes
+
+      // Only treat canonical 64-hex `.bin` names as event files.
+      // Garbage files can exist in mirrored provider folders and must not break volume reads.
       const eventHashes = files
-        .filter((file) => file.endsWith('.bin'))
-        .map((file) => file.slice(0, -4)) // Remove .bin extension
-        .map((hash) => createHash(hash));
+        .map((file) => normalizeEventHashFromFileName(file))
+        .filter((hash): hash is HashType => hash !== null);
 
       return eventHashes;
     } catch (error) {
@@ -248,6 +248,15 @@ export class ChannelStorage {
     }
     return await this.storage.exists(dataPath);
   }
+}
+
+function normalizeEventHashFromFileName(fileName: string): HashType | null {
+  const normalized = fileName.trim();
+  const match = normalized.match(/^([a-f0-9]{64})\.bin$/i);
+  if (!match || !match[1]) {
+    return null;
+  }
+  return createHash(match[1]);
 }
 
 function publicKeyToHex(publicKey: PublicKey): string {

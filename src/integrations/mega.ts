@@ -1292,10 +1292,13 @@ export class MegaTransportAdapter {
   ): Promise<void> {
     await this.ensureLoggedIn(accountId);
     const previous = this.syncStates.get(share.id);
+    const hasLocalMirror = await this.hasIncomingMirrorData(share.localPath);
     this.syncStates.set(share.id, {
-      status: 'syncing',
-      detail: 'Nearbytes is refreshing this shared MEGA location locally.',
-      badges: ['Syncing'],
+      status: hasLocalMirror ? 'ready' : 'syncing',
+      detail: hasLocalMirror
+        ? 'A local read-only copy is available. Nearbytes is checking for newer MEGA data in the background.'
+        : 'Nearbytes is refreshing this shared MEGA location locally.',
+      badges: hasLocalMirror ? ['Connected', 'Refreshing'] : ['Syncing'],
       lastSyncAt: previous?.lastSyncAt,
     });
 
@@ -1329,6 +1332,14 @@ export class MegaTransportAdapter {
         ),
       });
     }
+  }
+
+  private async hasIncomingMirrorData(localPath: string): Promise<boolean> {
+    const [blocks, channels] = await Promise.all([
+      fs.stat(path.join(localPath, 'blocks')).catch(() => null),
+      fs.stat(path.join(localPath, 'channels')).catch(() => null),
+    ]);
+    return Boolean(blocks?.isDirectory() && channels?.isDirectory());
   }
 
   private async pullIncomingShare(localPath: string, remotePath: string): Promise<void> {

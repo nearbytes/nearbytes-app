@@ -57,11 +57,16 @@ export async function loadEventLog(
   // Load all events
   const entries: EventLogEntry[] = [];
   for (const eventHash of eventHashes) {
-    const signedEvent = await channelStorage.retrieveEvent(volume.publicKey, eventHash);
-    entries.push({
-      eventHash,
-      signedEvent,
-    });
+    try {
+      const signedEvent = await channelStorage.retrieveEvent(volume.publicKey, eventHash);
+      entries.push({
+        eventHash,
+        signedEvent,
+      });
+    } catch {
+      // Skip unreadable/corrupt event files so a single bad entry does not make the whole volume unreadable.
+      continue;
+    }
   }
 
   // Sort by event hash (deterministic ordering)
