@@ -128,6 +128,9 @@
   const DISCOVERY_SCAN_MAX_DEPTH = 1;
   const DISCOVERY_SCAN_MAX_DIRECTORIES = 600;
   const PANEL_REQUEST_TIMEOUT_MS = 8_000;
+  const INITIAL_ROOTS_REQUEST_TIMEOUT_MS = 2_500;
+  const INITIAL_ROOTS_REQUEST_RETRY_COUNT = 3;
+  const INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS = 350;
   const DEFAULT_DESTINATION: VolumeDestinationConfig = {
     sourceId: '',
     enabled: true,
@@ -926,9 +929,58 @@
     if (!report || report.issueCount === 0) {
       return null;
     }
+    const malformedFileCount = report.issues.filter(
+      (issue) => issue.code === 'invalid-event-file-name' || issue.code === 'invalid-block-file-name'
+    ).length;
+    if (malformedFileCount > 0) {
+      return malformedFileCount === 1
+        ? 'Nearbytes found 1 malformed event/block file or provider conflict copy. Reads ignore it, but you should clean up this location.'
+        : `Nearbytes found ${malformedFileCount} malformed event/block files or provider conflict copies. Reads ignore them, but you should clean up this location.`;
+    }
     return report.issueCount === 1
-      ? '1 issue found. Review and clean up this location.'
-      : `${report.issueCount} issues found. Review and clean up this location.`;
+      ? '1 storage issue found. Review and clean up this location.'
+      : `${report.issueCount} storage issues found. Review and clean up this location.`;
+  }
+
+  function sourceRepairDetails(sourceId: string): string[] {
+    const report = sourceRepairReport(sourceId);
+    if (!report || report.issueCount === 0) {
+      return [];
+    }
+
+    const counts = new Map<string, number>();
+    for (const issue of report.issues) {
+      counts.set(issue.code, (counts.get(issue.code) ?? 0) + 1);
+    }
+
+    const details: string[] = [];
+    const malformedEventFiles = counts.get('invalid-event-file-name') ?? 0;
+    const malformedBlockFiles = counts.get('invalid-block-file-name') ?? 0;
+    const invalidChannelDirectories = counts.get('invalid-channel-directory') ?? 0;
+    const corruptedFiles =
+      (counts.get('block-hash-mismatch') ?? 0) +
+      (counts.get('event-deserialize-failed') ?? 0) +
+      (counts.get('event-hash-mismatch') ?? 0) +
+      (counts.get('event-signature-invalid') ?? 0);
+
+    if (malformedEventFiles > 0) {
+      details.push(`${countLabel(malformedEventFiles, 'malformed event file')}`);
+    }
+    if (malformedBlockFiles > 0) {
+      details.push(`${countLabel(malformedBlockFiles, 'malformed block file')}`);
+    }
+    if (invalidChannelDirectories > 0) {
+      details.push(`${countLabel(invalidChannelDirectories, 'invalid channel folder')}`);
+    }
+    if (corruptedFiles > 0) {
+      details.push(`${countLabel(corruptedFiles, 'corrupted stored file')}`);
+    }
+
+    if (details.length > 0) {
+      return details;
+    }
+
+    return report.issues.slice(0, 3).map((issue) => issue.detail);
   }
 
   async function loadSourceRepairReports(sourceIds: string[]): Promise<void> {
@@ -959,6 +1011,7 @@
         ...sourceRepairReports,
         [sourceId]: response.report,
       };
+      void loadSourceRepairReports([sourceId]);
       successMessage = response.result.removedCount === 0
         ? 'Nothing needed cleanup.'
         : action === 'trash'
@@ -2164,7 +2217,7 @@
       reserveKey: `source:${source.id}`,
       warning: status?.lastWriteFailure?.message,
       repairSummary: repairSummary ?? undefined,
-      repairDetails: repairReport?.issues.slice(0, 3).map((issue) => issue.detail) ?? [],
+      repairDetails: sourceRepairDetails(source.id),
       attachments,
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
@@ -2233,7 +2286,7 @@
       reserveKey: `managed:${summary.share.id}`,
       warning: summary.storage?.lastWriteFailureMessage,
       repairSummary: repairSummary ?? undefined,
-      repairDetails: repairReport?.issues.slice(0, 3).map((issue) => issue.detail) ?? [],
+      repairDetails: sourceRepairDetails(source.id),
       attachments: shareAttachmentLabels(summary),
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
@@ -3098,7 +3151,7 @@
       successMessage = '';
     }
     try {
-      const rootsResponse = await withPanelRequestTimeout('Storage configuration', (signal) => getRootsConfig({ signal }));
+      const rootsResponse = await loadRootsConfigWithRetry({ keepVisible });
       applyRootsResponse(rootsResponse);
 
       providersLoading = true;
@@ -3198,6 +3251,32 @@
         loading = false;
       }
     }
+  }
+
+  async function loadRootsConfigWithRetry(options: { keepVisible: boolean }) {
+    const attempts = options.keepVisible ? 1 : INITIAL_ROOTS_REQUEST_RETRY_COUNT;
+    const timeoutMs = options.keepVisible ? PANEL_REQUEST_TIMEOUT_MS : INITIAL_ROOTS_REQUEST_TIMEOUT_MS;
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await withPanelRequestTimeout('Storage configuration', (signal) => getRootsConfig({ signal }), timeoutMs);
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts) {
+          break;
+        }
+        await wait(INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS);
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Failed to load storage configuration');
+  }
+
+  function wait(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, timeoutMs);
+    });
   }
 
   async function autosavePanel(expectedSignature: string) {
@@ -3919,6 +3998,22 @@
 {#if loading && !configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
     <p class="storage-message">Loading storage locations...</p>
+    {#if errorMessage}
+      <p class="panel-error">{errorMessage}</p>
+    {/if}
+  </section>
+{:else if !configDraft}
+  <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
+    <p class="storage-message">Storage locations are not ready yet.</p>
+    {#if errorMessage}
+      <p class="panel-error">{errorMessage}</p>
+    {/if}
+    <div class="button-row">
+      <button type="button" class="panel-btn subtle" onclick={() => void loadPanel()}>
+        <RefreshCw size={14} strokeWidth={2} />
+        <span>Retry</span>
+      </button>
+    </div>
   </section>
 {:else if configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>

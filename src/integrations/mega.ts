@@ -1105,7 +1105,7 @@ export class MegaTransportAdapter {
       return false;
     }
     if (!this.preferredWindowsPipeCommandDirectory) {
-      return true;
+      return false;
     }
     return normalizeMegaCommandDirectoryKey(commandDirectory) === this.preferredWindowsPipeCommandDirectory;
   }
@@ -1147,7 +1147,6 @@ export class MegaTransportAdapter {
       args,
       timeoutMs: options.timeoutMs ?? 30_000,
     });
-    this.preferredWindowsPipeCommandDirectory = normalizeMegaCommandDirectoryKey(commandDirectory);
     return {
       stdout: stripTrailingMegaNulls(result.stdout),
       stderr: stripTrailingMegaNulls(result.stderr),

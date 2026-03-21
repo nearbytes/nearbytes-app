@@ -151,6 +151,14 @@ export interface StorageLocationRepairResult {
   readonly action: 'delete' | 'trash';
 }
 
+interface StorageLocationInspectOptions {
+  readonly validateContents?: boolean;
+}
+
+interface StorageLocationRepairOptions {
+  readonly structuralOnly?: boolean;
+}
+
 export interface SourceConflictResolutionResult {
   readonly sourceIds: string[];
   readonly rewrittenMarkers: number;
@@ -717,15 +725,15 @@ export class MultiRootStorageBackend implements StorageBackend {
     );
   }
 
-  async inspectStorageLocation(sourceId: string): Promise<StorageLocationRepairReport> {
+  async inspectStorageLocation(
+    sourceId: string,
+    options: StorageLocationInspectOptions = {}
+  ): Promise<StorageLocationRepairReport> {
     const state = this.getRootStateById(sourceId);
     if (!state) {
       throw new StorageError(`Source not found: ${sourceId}`);
     }
-    const issues: StorageLocationIssue[] = [];
-    await this.auditTopLevelEntries(state, issues);
-    await this.auditBlocks(state, issues);
-    await this.auditChannels(state, issues);
+    const issues = await this.inspectStorageLocationIssues(state, options);
     return {
       sourceId,
       path: state.config.path,
@@ -735,8 +743,14 @@ export class MultiRootStorageBackend implements StorageBackend {
     };
   }
 
-  async repairStorageLocation(sourceId: string, action: 'delete' | 'trash'): Promise<StorageLocationRepairResult> {
-    const report = await this.inspectStorageLocation(sourceId);
+  async repairStorageLocation(
+    sourceId: string,
+    action: 'delete' | 'trash',
+    options: StorageLocationRepairOptions = {}
+  ): Promise<StorageLocationRepairResult> {
+    const report = await this.inspectStorageLocation(sourceId, {
+      validateContents: options.structuralOnly !== true,
+    });
     const uniquePaths = Array.from(new Set(report.issues.map((issue) => issue.absolutePath))).sort();
     for (const targetPath of uniquePaths) {
       await removeIssuePath(targetPath, action);
@@ -748,6 +762,18 @@ export class MultiRootStorageBackend implements StorageBackend {
       cleanupCandidateCount: report.cleanupCandidateCount,
       action,
     };
+  }
+
+  private async inspectStorageLocationIssues(
+    state: RootState,
+    options: StorageLocationInspectOptions = {}
+  ): Promise<StorageLocationIssue[]> {
+    const issues: StorageLocationIssue[] = [];
+    const validateContents = options.validateContents !== false;
+    await this.auditTopLevelEntries(state, issues);
+    await this.auditBlocks(state, issues, validateContents);
+    await this.auditChannels(state, issues, validateContents);
+    return issues;
   }
 
   private async readFileFromRoots(relativePath: string, states: RootState[]): Promise<Uint8Array> {
@@ -816,26 +842,51 @@ export class MultiRootStorageBackend implements StorageBackend {
     }
   }
 
-  private async auditBlocks(state: RootState, issues: StorageLocationIssue[]): Promise<void> {
+  private async auditBlocks(
+    state: RootState,
+    issues: StorageLocationIssue[],
+    validateContents: boolean
+  ): Promise<void> {
     const blocksPath = join(state.config.path, 'blocks');
     const entries = await safeReadDir(blocksPath);
     for (const entry of entries) {
-      if (!entry.isFile()) {
+      const relativePath = normalizeRelativePath(join('blocks', entry.name));
+      const absolutePath = join(blocksPath, entry.name);
+      if (entry.isDirectory()) {
+        issues.push({
+          code: 'invalid-block-file-name',
+          severity: 'error',
+          relativePath,
+          absolutePath,
+          detail: `Unexpected directory inside blocks: ${entry.name}`,
+        });
         continue;
       }
-      const relativePath = normalizeRelativePath(join('blocks', entry.name));
+      if (!entry.isFile()) {
+        issues.push({
+          code: 'invalid-block-file-name',
+          severity: 'error',
+          relativePath,
+          absolutePath,
+          detail: `Unexpected entry inside blocks: ${entry.name}`,
+        });
+        continue;
+      }
       const blockMatch = entry.name.match(/^([a-f0-9]{64})\.bin$/i);
       if (!blockMatch) {
         issues.push({
           code: 'invalid-block-file-name',
           severity: 'error',
           relativePath,
-          absolutePath: join(blocksPath, entry.name),
+          absolutePath,
           detail: `Invalid block filename: ${entry.name}`,
         });
         continue;
       }
-      const bytes = await fs.readFile(join(blocksPath, entry.name)).then((buffer) => new Uint8Array(buffer)).catch(() => null);
+      if (!validateContents) {
+        continue;
+      }
+      const bytes = await fs.readFile(absolutePath).then((buffer) => new Uint8Array(buffer)).catch(() => null);
       if (!bytes) {
         continue;
       }
@@ -845,26 +896,38 @@ export class MultiRootStorageBackend implements StorageBackend {
           code: 'block-hash-mismatch',
           severity: 'error',
           relativePath,
-          absolutePath: join(blocksPath, entry.name),
+          absolutePath,
           detail: result.detail ?? `Hash mismatch for ${entry.name}`,
         });
       }
     }
   }
 
-  private async auditChannels(state: RootState, issues: StorageLocationIssue[]): Promise<void> {
+  private async auditChannels(
+    state: RootState,
+    issues: StorageLocationIssue[],
+    validateContents: boolean
+  ): Promise<void> {
     const channelsPath = join(state.config.path, 'channels');
     const channelEntries = await safeReadDir(channelsPath);
     for (const channelEntry of channelEntries) {
+      const channelRelativePath = normalizeRelativePath(join('channels', channelEntry.name));
+      const channelAbsolute = join(channelsPath, channelEntry.name);
       if (!channelEntry.isDirectory()) {
+        issues.push({
+          code: 'invalid-channel-directory',
+          severity: 'error',
+          relativePath: channelRelativePath,
+          absolutePath: channelAbsolute,
+          detail: `Unexpected entry inside channels: ${channelEntry.name}`,
+        });
         continue;
       }
-      const channelAbsolute = join(channelsPath, channelEntry.name);
       if (!/^[a-f0-9]{130}$/i.test(channelEntry.name)) {
         issues.push({
           code: 'invalid-channel-directory',
           severity: 'error',
-          relativePath: normalizeRelativePath(join('channels', channelEntry.name)),
+          relativePath: channelRelativePath,
           absolutePath: channelAbsolute,
           detail: `Invalid channel directory: ${channelEntry.name}`,
         });
@@ -872,22 +935,43 @@ export class MultiRootStorageBackend implements StorageBackend {
       }
       const eventEntries = await safeReadDir(channelAbsolute);
       for (const eventEntry of eventEntries) {
-        if (!eventEntry.isFile()) {
+        const relativePath = normalizeRelativePath(join('channels', channelEntry.name, eventEntry.name));
+        const absolutePath = join(channelAbsolute, eventEntry.name);
+        if (eventEntry.isDirectory()) {
+          issues.push({
+            code: 'invalid-event-file-name',
+            severity: 'error',
+            relativePath,
+            absolutePath,
+            detail: `Unexpected directory inside channel: ${eventEntry.name}`,
+          });
           continue;
         }
-        const relativePath = normalizeRelativePath(join('channels', channelEntry.name, eventEntry.name));
+        if (!eventEntry.isFile()) {
+          issues.push({
+            code: 'invalid-event-file-name',
+            severity: 'error',
+            relativePath,
+            absolutePath,
+            detail: `Unexpected entry inside channel: ${eventEntry.name}`,
+          });
+          continue;
+        }
         const eventMatch = eventEntry.name.match(/^([a-f0-9]{64})\.bin$/i);
         if (!eventMatch) {
           issues.push({
             code: 'invalid-event-file-name',
             severity: 'error',
             relativePath,
-            absolutePath: join(channelAbsolute, eventEntry.name),
+            absolutePath,
             detail: `Invalid event filename: ${eventEntry.name}`,
           });
           continue;
         }
-        const bytes = await fs.readFile(join(channelAbsolute, eventEntry.name)).then((buffer) => new Uint8Array(buffer)).catch(() => null);
+        if (!validateContents) {
+          continue;
+        }
+        const bytes = await fs.readFile(absolutePath).then((buffer) => new Uint8Array(buffer)).catch(() => null);
         if (!bytes) {
           continue;
         }
@@ -897,7 +981,7 @@ export class MultiRootStorageBackend implements StorageBackend {
             code: (result.code as StorageLocationIssue['code']) ?? 'event-deserialize-failed',
             severity: 'error',
             relativePath,
-            absolutePath: join(channelAbsolute, eventEntry.name),
+            absolutePath,
             detail: result.detail ?? `Invalid event file: ${eventEntry.name}`,
           });
         }

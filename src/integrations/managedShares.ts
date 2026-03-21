@@ -319,27 +319,45 @@ export class ManagedShareService {
         return this.loadState();
       })(),
       state,
-      3_500,
+      1_500,
       'Managed share inventory refresh timed out; using the last known share state.'
     );
     this.scheduleManagedShareSyncs(preparedState);
     const visibleShares = preparedState.managedShares.filter((share) => isProviderEnabled(share.provider));
-    let summaries = await Promise.all(visibleShares.map((share) => this.buildManagedShareSummary(share)));
+    const config = this.options.storage.getRootsConfig();
+    const runtime = await this.withSoftTimeout(
+      this.options.storage.getRuntimeSnapshot(),
+      {
+        sources: [],
+        writeFailures: [],
+      },
+      500,
+      'Managed share runtime snapshot timed out; using fallback runtime state.'
+    );
+    const summaries = await Promise.all(
+      visibleShares.map((share) =>
+        this.withSoftTimeout(
+          this.buildManagedShareSummary(share, {
+            config,
+            runtime,
+            state: preparedState,
+            preferFastRemoteDetails: true,
+          }),
+          this.fallbackManagedShareSummary(share, config, runtime, preparedState),
+          1_500,
+          `Managed share summary timed out for ${share.id}`
+        )
+      )
+    );
     const repairableShares = summaries.filter((summary) => this.shouldAutoRepairManagedShare(summary));
 
     if (repairableShares.length > 0) {
-      await Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary)));
-      const repairedState = await this.loadState();
-      const repairedVisibleShares = repairedState.managedShares.filter((share) => isProviderEnabled(share.provider));
-      summaries = await Promise.all(repairedVisibleShares.map((share) => this.buildManagedShareSummary(share)));
+      void Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary)));
     }
 
     const markerRefreshableShares = summaries.filter((summary) => this.shouldRefreshManagedShareMarker(summary));
     if (markerRefreshableShares.length > 0) {
-      await Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
-      const refreshedState = await this.loadState();
-      const refreshedVisibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
-      summaries = await Promise.all(refreshedVisibleShares.map((share) => this.buildManagedShareSummary(share)));
+      void Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
     }
 
     return {
@@ -1156,6 +1174,22 @@ export class ManagedShareService {
     }));
   }
 
+  private fallbackManagedShareSummary(
+    share: ManagedShare,
+    config: RootsConfig,
+    runtime: MultiRootRuntimeSnapshot,
+    stateSnapshot: IntegrationStateSnapshot
+  ): ManagedShareSummary {
+    const account = stateSnapshot.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    return {
+      share,
+      attachments: computeManagedShareAttachments(config, share),
+      state: this.fallbackTransportState(share, runtime, account),
+      collaborators: this.fallbackCollaborators(share),
+      storage: summarizeManagedShareStorage(config, runtime, share, undefined),
+    };
+  }
+
   private async withSoftTimeout<T>(
     promise: Promise<T>,
     fallback: T,
@@ -1439,32 +1473,46 @@ export class ManagedShareService {
     throw new ManagedShareServiceError(400, 'INVALID_JOIN_LINK', 'Join link payload is required');
   }
 
-  private async buildManagedShareSummary(share: ManagedShare): Promise<ManagedShareSummary> {
-    const config = this.options.storage.getRootsConfig();
-    const runtime = await this.options.storage.getRuntimeSnapshot();
-    const state = await this.loadState();
+  private async buildManagedShareSummary(
+    share: ManagedShare,
+    options: {
+      readonly config?: RootsConfig;
+      readonly runtime?: MultiRootRuntimeSnapshot;
+      readonly state?: IntegrationStateSnapshot;
+      readonly preferFastRemoteDetails?: boolean;
+    } = {}
+  ): Promise<ManagedShareSummary> {
+    const config = options.config ?? this.options.storage.getRootsConfig();
+    const runtime = options.runtime ?? (await this.options.storage.getRuntimeSnapshot());
+    const state = options.state ?? (await this.loadState());
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
     const fallbackState = this.fallbackTransportState(share, runtime, account);
     const fallbackCollaborators = this.fallbackCollaborators(share);
+    const preferFastRemoteDetails = options.preferFastRemoteDetails === true;
+    const transportStateTimeoutMs = preferFastRemoteDetails ? 750 : 1_500;
     const [remoteMetrics, transportState, collaborators] = await Promise.all([
-      this.withSoftTimeout(
-        this.resolveShareStorageMetrics(share),
-        undefined,
-        1_500,
-        `Managed share metrics timed out for ${share.id}`
-      ),
+      preferFastRemoteDetails
+        ? Promise.resolve(undefined)
+        : this.withSoftTimeout(
+            this.resolveShareStorageMetrics(share),
+            undefined,
+            1_500,
+            `Managed share metrics timed out for ${share.id}`
+          ),
       this.withSoftTimeout(
         this.resolveTransportState(share, runtime, state),
         fallbackState,
-        1_500,
+        transportStateTimeoutMs,
         `Managed share state timed out for ${share.id}`
       ),
-      this.withSoftTimeout(
-        this.resolveShareCollaborators(share, state),
-        fallbackCollaborators,
-        1_500,
-        `Managed share collaborators timed out for ${share.id}`
-      ),
+      preferFastRemoteDetails
+        ? Promise.resolve(fallbackCollaborators)
+        : this.withSoftTimeout(
+            this.resolveShareCollaborators(share, state),
+            fallbackCollaborators,
+            1_500,
+            `Managed share collaborators timed out for ${share.id}`
+          ),
     ]);
     return {
       share,

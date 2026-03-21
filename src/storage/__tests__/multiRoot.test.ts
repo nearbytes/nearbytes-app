@@ -1049,4 +1049,37 @@ describe('MultiRootStorageBackend', () => {
 
     await rm(dir, { recursive: true, force: true });
   });
+
+  it('audits and deletes malformed provider conflict copies from blocks and channels', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    const volumeId = 'b'.repeat(130);
+    const validEventName = `${'c'.repeat(64)}.bin`;
+    await mkdir(join(mainRoot, 'blocks', 'conflicts'), { recursive: true });
+    await mkdir(join(mainRoot, 'channels', volumeId, 'duplicates'), { recursive: true });
+    await writeFile(join(mainRoot, 'blocks', `${'a'.repeat(64)} (1).bin`), 'duplicate', 'utf8');
+    await writeFile(join(mainRoot, 'channels', volumeId, `${'d'.repeat(64)} (1).bin`), 'duplicate', 'utf8');
+    await writeFile(join(mainRoot, 'channels', volumeId, validEventName), 'not-a-real-event', 'utf8');
+
+    const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot }));
+    const report = await storage.inspectStorageLocation('src-main');
+
+    expect(report.issues.map((issue) => issue.detail)).toEqual(
+      expect.arrayContaining([
+        `Invalid block filename: ${'a'.repeat(64)} (1).bin`,
+        'Unexpected directory inside blocks: conflicts',
+        `Invalid event filename: ${'d'.repeat(64)} (1).bin`,
+        'Unexpected directory inside channel: duplicates',
+      ])
+    );
+
+    const result = await storage.repairStorageLocation('src-main', 'delete');
+    expect(result.removedCount).toBeGreaterThanOrEqual(4);
+    await expect(readFile(join(mainRoot, 'blocks', `${'a'.repeat(64)} (1).bin`), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(mainRoot, 'blocks', 'conflicts'), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(mainRoot, 'channels', volumeId, `${'d'.repeat(64)} (1).bin`), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(mainRoot, 'channels', volumeId, 'duplicates'), 'utf8')).rejects.toThrow();
+
+    await rm(dir, { recursive: true, force: true });
+  });
 });

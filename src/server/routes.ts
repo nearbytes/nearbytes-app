@@ -256,10 +256,14 @@ export function createRoutes(deps: RouteDependencies): Router {
     const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
     const { sourceId } = parseWithSchema(sourceIdParamSchema, req.params);
     const { action } = parseWithSchema(repairStorageLocationBodySchema, req.body);
-    const result = await multiRootStorage.repairStorageLocation(sourceId, action);
+    const result = await multiRootStorage.repairStorageLocation(sourceId, action, {
+      structuralOnly: true,
+    });
     res.json({
       result,
-      report: await multiRootStorage.inspectStorageLocation(sourceId),
+      report: await multiRootStorage.inspectStorageLocation(sourceId, {
+        validateContents: false,
+      }),
     });
   }));
 
