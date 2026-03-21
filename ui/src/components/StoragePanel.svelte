@@ -1181,9 +1181,6 @@
     if (entry.provider === 'mega' && shareLoadError) {
       return shareLoadError;
     }
-    if ((entry.provider === 'mega' || entry.provider === 'github') && providerLoadError) {
-      return providerLoadError;
-    }
     const pending = pendingSessionForProvider(entry.provider);
     if (pending) {
       return pending.detail;
@@ -1806,7 +1803,7 @@
     const syncing = shares.filter((summary) => summary.state.status === 'syncing' || summary.state.status === 'idle').length;
     const issue = megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
     const loading = providersLoading || sharesLoading || incomingLoading;
-    const hasBlockingError = shareLoadError || providerLoadError || incomingLoadError;
+    const hasBlockingError = shareLoadError || incomingLoadError;
     const inProgress = loading || syncing > 0;
     const progressPercent = total > 0 && inProgress ? Math.max(6, Math.min(98, Math.round((ready / total) * 100))) : null;
 
@@ -3194,7 +3191,7 @@
           if (keepVisible && hadProviderData) {
             return;
           }
-          providerLoadError = `Provider discovery is delayed: ${detail}`;
+          providerLoadError = '';
         })
         .finally(() => {
           providersLoading = false;
@@ -3247,7 +3244,7 @@
 
       await Promise.allSettled([accountsPromise, sharesPromise, incomingSharesPromise, incomingInvitesPromise]);
 
-      const delayedMessages = [providerLoadError, shareLoadError, incomingLoadError].filter((value) => value.trim() !== '');
+      const delayedMessages = [shareLoadError, incomingLoadError].filter((value) => value.trim() !== '');
       if (delayedMessages.length > 0) {
         errorMessage = delayedMessages[0]!;
       }
