@@ -1434,6 +1434,144 @@
     return raw;
   }
 
+  function escapeLogHtml(value: string): string {
+    return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function stripUnsupportedControlChars(value: string): string {
+    return value.replaceAll(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, '');
+  }
+
+  function ansiCodeToClass(code: number): string | null {
+    if (code === 1) return 'ansi-bold';
+    if (code === 2) return 'ansi-dim';
+    if (code >= 30 && code <= 37) return `ansi-fg-${code - 30}`;
+    if (code >= 40 && code <= 47) return `ansi-bg-${code - 40}`;
+    if (code >= 90 && code <= 97) return `ansi-fg-bright-${code - 90}`;
+    if (code >= 100 && code <= 107) return `ansi-bg-bright-${code - 100}`;
+    return null;
+  }
+
+  function ansiStateClass(state: {
+    bold: boolean;
+    dim: boolean;
+    fg: number | null;
+    fgBright: boolean;
+    bg: number | null;
+    bgBright: boolean;
+  }): string {
+    const classes: string[] = [];
+    if (state.bold) classes.push('ansi-bold');
+    if (state.dim) classes.push('ansi-dim');
+    if (state.fg !== null) {
+      classes.push(state.fgBright ? `ansi-fg-bright-${state.fg}` : `ansi-fg-${state.fg}`);
+    }
+    if (state.bg !== null) {
+      classes.push(state.bgBright ? `ansi-bg-bright-${state.bg}` : `ansi-bg-${state.bg}`);
+    }
+    return classes.join(' ');
+  }
+
+  function renderAnsiLogHtml(value: string): string {
+    const input = stripUnsupportedControlChars(value);
+    const pattern = /\u001b\[([0-9;]*)m/gu;
+    const state = {
+      bold: false,
+      dim: false,
+      fg: null as number | null,
+      fgBright: false,
+      bg: null as number | null,
+      bgBright: false,
+    };
+
+    let result = '';
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+
+    const appendChunk = (chunk: string) => {
+      if (chunk === '') return;
+      const escaped = escapeLogHtml(chunk);
+      const classes = ansiStateClass(state);
+      result += classes ? `<span class="${classes}">${escaped}</span>` : escaped;
+    };
+
+    while ((match = pattern.exec(input)) !== null) {
+      appendChunk(input.slice(cursor, match.index));
+      cursor = match.index + match[0].length;
+
+      const rawCodes = match[1]?.trim() ?? '';
+      const codes = rawCodes === '' ? [0] : rawCodes.split(';').map((entry) => Number.parseInt(entry, 10));
+      for (const code of codes) {
+        if (!Number.isFinite(code)) {
+          continue;
+        }
+        if (code === 0) {
+          state.bold = false;
+          state.dim = false;
+          state.fg = null;
+          state.fgBright = false;
+          state.bg = null;
+          state.bgBright = false;
+          continue;
+        }
+        if (code === 22) {
+          state.bold = false;
+          state.dim = false;
+          continue;
+        }
+        if (code === 39) {
+          state.fg = null;
+          state.fgBright = false;
+          continue;
+        }
+        if (code === 49) {
+          state.bg = null;
+          state.bgBright = false;
+          continue;
+        }
+        if (code === 1) {
+          state.bold = true;
+          continue;
+        }
+        if (code === 2) {
+          state.dim = true;
+          continue;
+        }
+        const className = ansiCodeToClass(code);
+        if (!className) {
+          continue;
+        }
+        if (code >= 30 && code <= 37) {
+          state.fg = code - 30;
+          state.fgBright = false;
+          continue;
+        }
+        if (code >= 40 && code <= 47) {
+          state.bg = code - 40;
+          state.bgBright = false;
+          continue;
+        }
+        if (code >= 90 && code <= 97) {
+          state.fg = code - 90;
+          state.fgBright = true;
+          continue;
+        }
+        if (code >= 100 && code <= 107) {
+          state.bg = code - 100;
+          state.bgBright = true;
+        }
+      }
+    }
+
+    appendChunk(input.slice(cursor));
+    return result;
+  }
+
   function visibleMegaRuntimeLogs(): DesktopRuntimeLogEntry[] {
     const filter = megaRuntimeLogFilter.trim().toLowerCase();
     if (filter === '') {
@@ -1461,6 +1599,10 @@
       return '';
     }
     return normalizeMegaLogContent(entry.content, entry.id);
+  }
+
+  function megaRuntimeLogHtml(entry: DesktopRuntimeLogEntry | null): string {
+    return renderAnsiLogHtml(megaRuntimeLogContent(entry));
   }
 
   function megaRuntimeLogLineCount(entry: DesktopRuntimeLogEntry | null): number {
@@ -4596,7 +4738,7 @@
                                 </p>
                               </div>
                             </div>
-                            <pre class:wrap={megaRuntimeLogWrap} class="mega-log-view mega-log-view-large">{activeRuntimeLog.exists && megaRuntimeLogContent(activeRuntimeLog).trim() !== '' ? megaRuntimeLogContent(activeRuntimeLog) : 'No log content yet.'}</pre>
+                            <pre class:wrap={megaRuntimeLogWrap} class="mega-log-view mega-log-view-large">{#if activeRuntimeLog.exists && megaRuntimeLogContent(activeRuntimeLog).trim() !== ''}{@html megaRuntimeLogHtml(activeRuntimeLog)}{:else}No log content yet.{/if}</pre>
                           </div>
                         {/if}
                       </div>
@@ -6348,6 +6490,50 @@
     white-space: pre;
     word-break: normal;
   }
+
+  .mega-log-view :global(.ansi-bold) {
+    font-weight: 700;
+  }
+
+  .mega-log-view :global(.ansi-dim) {
+    opacity: 0.72;
+  }
+
+  .mega-log-view :global(.ansi-fg-0) { color: #1f2937; }
+  .mega-log-view :global(.ansi-fg-1) { color: #b42318; }
+  .mega-log-view :global(.ansi-fg-2) { color: #18794e; }
+  .mega-log-view :global(.ansi-fg-3) { color: #9a6700; }
+  .mega-log-view :global(.ansi-fg-4) { color: #175cd3; }
+  .mega-log-view :global(.ansi-fg-5) { color: #a23dad; }
+  .mega-log-view :global(.ansi-fg-6) { color: #0f766e; }
+  .mega-log-view :global(.ansi-fg-7) { color: #6b7280; }
+
+  .mega-log-view :global(.ansi-fg-bright-0) { color: #4b5563; }
+  .mega-log-view :global(.ansi-fg-bright-1) { color: #dc2626; }
+  .mega-log-view :global(.ansi-fg-bright-2) { color: #16a34a; }
+  .mega-log-view :global(.ansi-fg-bright-3) { color: #ca8a04; }
+  .mega-log-view :global(.ansi-fg-bright-4) { color: #2563eb; }
+  .mega-log-view :global(.ansi-fg-bright-5) { color: #c026d3; }
+  .mega-log-view :global(.ansi-fg-bright-6) { color: #0891b2; }
+  .mega-log-view :global(.ansi-fg-bright-7) { color: #9ca3af; }
+
+  .mega-log-view :global(.ansi-bg-0) { background: rgba(31, 41, 55, 0.12); }
+  .mega-log-view :global(.ansi-bg-1) { background: rgba(180, 35, 24, 0.12); }
+  .mega-log-view :global(.ansi-bg-2) { background: rgba(24, 121, 78, 0.12); }
+  .mega-log-view :global(.ansi-bg-3) { background: rgba(154, 103, 0, 0.12); }
+  .mega-log-view :global(.ansi-bg-4) { background: rgba(23, 92, 211, 0.12); }
+  .mega-log-view :global(.ansi-bg-5) { background: rgba(162, 61, 173, 0.12); }
+  .mega-log-view :global(.ansi-bg-6) { background: rgba(15, 118, 110, 0.12); }
+  .mega-log-view :global(.ansi-bg-7) { background: rgba(107, 114, 128, 0.12); }
+
+  .mega-log-view :global(.ansi-bg-bright-0) { background: rgba(75, 85, 99, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-1) { background: rgba(220, 38, 38, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-2) { background: rgba(22, 163, 74, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-3) { background: rgba(202, 138, 4, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-4) { background: rgba(37, 99, 235, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-5) { background: rgba(192, 38, 211, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-6) { background: rgba(8, 145, 178, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-7) { background: rgba(156, 163, 175, 0.12); }
 
   .managed-share-story-card.compact {
     padding: 0.74rem 0.82rem;
