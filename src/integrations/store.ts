@@ -5,11 +5,19 @@ import path from 'path';
 import { z } from 'zod';
 import type { ManagedShare, ProviderAccount } from './types.js';
 
+export interface IntegrationMaintenanceSnapshot {
+  readonly mode: 'background';
+  readonly schemaVersion: number;
+  readonly signature: string;
+  readonly completedAt: number;
+}
+
 export interface IntegrationStateSnapshot {
   readonly version: 1;
   readonly preferredProviders: string[];
   readonly accounts: ProviderAccount[];
   readonly managedShares: ManagedShare[];
+  readonly maintenance?: IntegrationMaintenanceSnapshot;
 }
 
 const INTEGRATION_STATE_VERSION = 1 as const;
@@ -40,11 +48,19 @@ const managedShareSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
 });
 
+const integrationMaintenanceSchema = z.object({
+  mode: z.literal('background'),
+  schemaVersion: z.number().int().positive(),
+  signature: z.string().trim().min(1),
+  completedAt: z.number().int().nonnegative(),
+});
+
 const integrationStateSchema = z.object({
   version: z.literal(INTEGRATION_STATE_VERSION),
   preferredProviders: z.array(z.string().trim().min(1)).default([]),
   accounts: z.array(providerAccountSchema).default([]),
   managedShares: z.array(managedShareSchema).default([]),
+  maintenance: integrationMaintenanceSchema.optional(),
 });
 
 export function resolveIntegrationStatePath(customPath?: string): string {
@@ -77,6 +93,7 @@ export async function loadIntegrationState(customPath?: string): Promise<Integra
         invitationEmails: uniqueStrings(share.invitationEmails),
         remoteDescriptor: share.remoteDescriptor as Record<string, unknown>,
       })),
+      maintenance: parsed.maintenance,
     };
   } catch (error) {
     if (isFileNotFound(error)) {
@@ -106,6 +123,7 @@ export function createDefaultIntegrationState(): IntegrationStateSnapshot {
     preferredProviders: [],
     accounts: [],
     managedShares: [],
+    maintenance: undefined,
   };
 }
 

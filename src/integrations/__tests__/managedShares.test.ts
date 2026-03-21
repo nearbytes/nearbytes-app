@@ -6,7 +6,7 @@ import type { RootsConfig } from '../../config/roots.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import type { ManagedShareMirrorEntry, TransportAdapter } from '../adapters.js';
 import { ManagedShareService } from '../managedShares.js';
-import { saveIntegrationState } from '../store.js';
+import { loadIntegrationState, saveIntegrationState } from '../store.js';
 import type {
   ConnectProviderAccountInput,
   ConnectProviderAccountResult,
@@ -175,6 +175,19 @@ class BlockingMirrorInventoryAdapter extends FakeTransportAdapter {
       // Intentionally never resolves; list endpoints should not block on background reconciliation.
     });
     return [];
+  }
+}
+
+class CountingMirrorInventoryAdapter extends FakeTransportAdapter {
+  inventoryCalls = 0;
+
+  constructor(private readonly mirrors: ManagedShareMirrorEntry[]) {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  override async listManagedShareMirrors(): Promise<ManagedShareMirrorEntry[]> {
+    this.inventoryCalls += 1;
+    return this.mirrors;
   }
 }
 
@@ -430,6 +443,108 @@ describe('ManagedShareService', () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(adapter.inventoryCalls).toBe(1);
+  });
+
+  it('skips background maintenance on a fresh service when the persisted stamp is still valid', async () => {
+    const { integrationStatePath, localRoot, rootsConfigPath } = await createHarness();
+
+    await fs.mkdir(path.join(localRoot, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(localRoot, 'channels'), { recursive: true });
+    const rootsConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    const firstRootsConfig: RootsConfig = {
+      ...rootsConfig,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'mega',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'mega',
+            managedShareId: 'share-mega-1',
+          },
+        },
+      ],
+    };
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(firstRootsConfig, null, 2)}\n`, 'utf8');
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'owner',
+            localPath: localRoot,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes', shareName: 'nearbytes' },
+            capabilities: ['mirror', 'read', 'write'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const firstAdapter = new CountingMirrorInventoryAdapter([
+      { label: 'nearbytes', localPath: localRoot, remotePath: '/nearbytes' },
+    ]);
+    const firstService = new ManagedShareService({
+      storage: new MultiRootStorageBackend(firstRootsConfig),
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [firstAdapter],
+      readMaintenanceMode: 'background',
+    });
+
+    await firstService.listManagedShares();
+    await firstService.waitForBackgroundMaintenance();
+
+    const stampedState = await loadIntegrationState(integrationStatePath);
+    expect(stampedState.maintenance).toBeTruthy();
+    const stampedShare = stampedState.managedShares.find((share) => share.id === 'share-mega-1');
+    expect(stampedShare).toBeTruthy();
+
+    const secondAdapter = new CountingMirrorInventoryAdapter([
+      {
+        label: stampedShare?.label ?? 'nearbytes',
+        localPath: stampedShare?.localPath ?? localRoot,
+        remotePath: String(stampedShare?.remoteDescriptor.remotePath ?? '/nearbytes'),
+      },
+    ]);
+    const secondService = new ManagedShareService({
+      storage: new MultiRootStorageBackend(JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig),
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [secondAdapter],
+      readMaintenanceMode: 'background',
+    });
+
+    await secondService.listManagedShares();
+    await secondService.waitForBackgroundMaintenance();
+
+    expect(secondAdapter.inventoryCalls).toBe(0);
   });
 
   it('merges provider collaborators with pending Nearbytes invites', async () => {

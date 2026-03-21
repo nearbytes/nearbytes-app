@@ -29,6 +29,7 @@ import {
   loadIntegrationState,
   resolveIntegrationStatePath,
   saveIntegrationState,
+  type IntegrationMaintenanceSnapshot,
   type IntegrationStateSnapshot,
 } from './store.js';
 import type {
@@ -75,6 +76,8 @@ const MANAGED_SHARE_TOP_LEVEL_ENTRY_NAMES = [
 const CANONICAL_MEGA_BASE_SHARE_ENTRY_NAMES = new Set<string>(['Nearbytes.html', 'blocks', 'channels']);
 const MANAGED_SHARE_CONTAINER_RESERVED_NAMES = new Set<string>(['.debris', MEGA_BASE_SHARE_FOLDER_NAME]);
 const MANAGED_SHARE_DEBRIS_ROOT_NAME = '.debris';
+const BACKGROUND_MAINTENANCE_SCHEMA_VERSION = 1;
+const BACKGROUND_MAINTENANCE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export class ManagedShareServiceError extends Error {
   constructor(
@@ -172,7 +175,7 @@ export class ManagedShareService {
         preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
       };
     }
-    this.requestBackgroundMaintenance('listAccounts');
+    this.requestBackgroundMaintenance('listAccounts', state);
     this.scheduleManagedShareSyncs(state);
     const setupStates = await this.getProviderSetupStates();
     const accounts = state.accounts
@@ -345,7 +348,7 @@ export class ManagedShareService {
           )
         : state;
     if (this.readMaintenanceMode === 'background') {
-      this.requestBackgroundMaintenance('listManagedShares');
+      this.requestBackgroundMaintenance('listManagedShares', preparedState);
     }
     this.scheduleManagedShareSyncs(preparedState);
     const visibleShares = preparedState.managedShares.filter((share) => isProviderEnabled(share.provider));
@@ -411,7 +414,7 @@ export class ManagedShareService {
           )
         : state;
     if (this.readMaintenanceMode === 'background') {
-      this.requestBackgroundMaintenance('listIncomingManagedShares');
+      this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState);
     }
     const attachedKeys = buildAttachedShareKeys(preparedState.managedShares);
     const offers = await Promise.all(
@@ -1244,7 +1247,10 @@ export class ManagedShareService {
     }
   }
 
-  private requestBackgroundMaintenance(reason: string): void {
+  private requestBackgroundMaintenance(reason: string, stateSnapshot: IntegrationStateSnapshot): void {
+    if (!this.shouldRunBackgroundMaintenance(stateSnapshot)) {
+      return;
+    }
     this.maintenanceRequested = true;
     if (this.maintenanceTask) {
       return;
@@ -1257,7 +1263,14 @@ export class ManagedShareService {
       .finally(() => {
         this.maintenanceTask = null;
         if (this.maintenanceRequested) {
-          this.requestBackgroundMaintenance('follow-up');
+          void this.loadState()
+            .then((latestState) => {
+              this.requestBackgroundMaintenance('follow-up', latestState);
+            })
+            .catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              this.runtime.logger.warn(`Managed share maintenance follow-up scheduling failed: ${message}`);
+            });
         }
       });
   }
@@ -1272,13 +1285,97 @@ export class ManagedShareService {
         const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
         await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
         const refreshedState = await this.loadState();
-        this.scheduleManagedShareSyncs(refreshedState);
+        const stampedState = await this.persistBackgroundMaintenanceSnapshot(refreshedState);
+        this.scheduleManagedShareSyncs(stampedState);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.runtime.logger.warn(`Managed share maintenance pass failed after ${reason}: ${message}`);
       }
       reason = 'queued maintenance';
     }
+  }
+
+  async waitForBackgroundMaintenance(): Promise<void> {
+    while (this.maintenanceTask) {
+      await this.maintenanceTask;
+    }
+  }
+
+  private shouldRunBackgroundMaintenance(stateSnapshot: IntegrationStateSnapshot): boolean {
+    const signature = this.computeBackgroundMaintenanceSignature(stateSnapshot);
+    return !this.hasFreshBackgroundMaintenance(stateSnapshot, signature);
+  }
+
+  private hasFreshBackgroundMaintenance(stateSnapshot: IntegrationStateSnapshot, signature: string): boolean {
+    const maintenance = stateSnapshot.maintenance;
+    if (!maintenance) {
+      return false;
+    }
+    if (maintenance.mode !== 'background' || maintenance.schemaVersion !== BACKGROUND_MAINTENANCE_SCHEMA_VERSION) {
+      return false;
+    }
+    if (maintenance.signature !== signature) {
+      return false;
+    }
+    return this.runtime.now() - maintenance.completedAt < BACKGROUND_MAINTENANCE_MAX_AGE_MS;
+  }
+
+  private computeBackgroundMaintenanceSignature(stateSnapshot: IntegrationStateSnapshot): string {
+    return JSON.stringify({
+      schemaVersion: BACKGROUND_MAINTENANCE_SCHEMA_VERSION,
+      roots: this.options.storage.getRootsConfig().sources.map((source) => ({
+        id: source.id,
+        provider: source.provider,
+        path: path.resolve(source.path),
+        enabled: source.enabled,
+        writable: source.writable,
+        integration: source.integration
+          ? {
+              kind: source.integration.kind,
+              provider: source.integration.provider,
+              managedShareId: source.integration.managedShareId,
+            }
+          : null,
+      })),
+      accounts: stateSnapshot.accounts.map((account) => ({
+        id: account.id,
+        provider: normalizeProvider(account.provider),
+        email: account.email ?? null,
+        state: account.state,
+      })),
+      managedShares: stateSnapshot.managedShares.map((share) => ({
+        id: share.id,
+        provider: normalizeProvider(share.provider),
+        accountId: share.accountId,
+        role: share.role,
+        localPath: path.resolve(share.localPath),
+        sourceId: share.sourceId ?? null,
+        remoteDescriptor: share.remoteDescriptor,
+        capabilities: [...share.capabilities],
+        invitationEmails: [...share.invitationEmails],
+      })),
+    });
+  }
+
+  private async persistBackgroundMaintenanceSnapshot(
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    const signature = this.computeBackgroundMaintenanceSignature(stateSnapshot);
+    if (this.hasFreshBackgroundMaintenance(stateSnapshot, signature)) {
+      return stateSnapshot;
+    }
+    const maintenance: IntegrationMaintenanceSnapshot = {
+      mode: 'background',
+      schemaVersion: BACKGROUND_MAINTENANCE_SCHEMA_VERSION,
+      signature,
+      completedAt: this.runtime.now(),
+    };
+    const nextState: IntegrationStateSnapshot = {
+      ...stateSnapshot,
+      maintenance,
+    };
+    await this.saveState(nextState);
+    return nextState;
   }
 
   private async ensureDefaultManagedShares(
