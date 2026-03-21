@@ -100,6 +100,10 @@ export interface ManagedShareServiceOptions {
   readonly readMaintenanceMode?: 'background' | 'inline';
 }
 
+interface IntegrationReadOptions {
+  readonly fast?: boolean;
+}
+
 export class ManagedShareService {
   private readonly adapters: Map<string, TransportAdapter>;
   private readonly integrationStatePath: string;
@@ -156,7 +160,7 @@ export class ManagedShareService {
     return account;
   }
 
-  async listAccounts(): Promise<{
+  async listAccounts(options: IntegrationReadOptions = {}): Promise<{
     accounts: ProviderAccount[];
     providers: ProviderCatalogEntry[];
     preferredProviders: string[];
@@ -186,7 +190,14 @@ export class ManagedShareService {
     }
     this.requestBackgroundMaintenance('listAccounts', state);
     this.scheduleManagedShareSyncs(state);
-    const setupStates = await this.getProviderSetupStates();
+    const setupStates = options.fast
+      ? this.fallbackProviderSetupStates()
+      : await this.withSoftTimeout(
+          this.getProviderSetupStates(),
+          this.fallbackProviderSetupStates(),
+          500,
+          'Provider setup discovery timed out; using the last known provider setup state.'
+        );
     const accounts = state.accounts
       .filter((account) => isProviderEnabled(account.provider))
       .map((account) => this.presentationAccount(account));
@@ -339,9 +350,10 @@ export class ManagedShareService {
     });
   }
 
-  async listManagedShares(): Promise<{ shares: ManagedShareSummary[] }> {
+  async listManagedShares(options: IntegrationReadOptions = {}): Promise<{ shares: ManagedShareSummary[] }> {
     const state = await this.loadState();
-    const preferFastRemoteDetails = this.readMaintenanceMode === 'background';
+    const preferFastRemoteDetails = options.fast === true;
+    const skipAncillaryRemoteDetails = this.readMaintenanceMode === 'background' || options.fast === true;
     const preparedState =
       this.readMaintenanceMode === 'inline'
         ? await this.withSoftTimeout(
@@ -363,12 +375,12 @@ export class ManagedShareService {
     const visibleShares = preparedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     const config = this.options.storage.getRootsConfig();
     const runtime = await this.withSoftTimeout(
-      this.options.storage.getRuntimeSnapshot(),
+      this.options.storage.getRuntimeSnapshot({ includeUsage: false }),
       {
         sources: [],
         writeFailures: [],
       },
-      500,
+      2_500,
       'Managed share runtime snapshot timed out; using fallback runtime state.'
     );
     const summaries = await Promise.all(
@@ -379,6 +391,8 @@ export class ManagedShareService {
             runtime,
             state: preparedState,
             preferFastRemoteDetails,
+            skipAncillaryRemoteDetails,
+            skipRemoteChecks: options.fast === true,
           }),
           this.fallbackManagedShareSummary(share, config, runtime, preparedState),
           1_500,
@@ -411,7 +425,7 @@ export class ManagedShareService {
     return this.buildManagedShareSummary(nextShare);
   }
 
-  async listIncomingManagedShares(): Promise<{ shares: IncomingManagedShareOffer[] }> {
+  async listIncomingManagedShares(options: IntegrationReadOptions = {}): Promise<{ shares: IncomingManagedShareOffer[] }> {
     const state = await this.loadState();
     const preparedState =
       this.readMaintenanceMode === 'inline'
@@ -424,6 +438,11 @@ export class ManagedShareService {
         : state;
     if (this.readMaintenanceMode === 'background') {
       this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState);
+    }
+    if (options.fast === true) {
+      return {
+        shares: [],
+      };
     }
     const attachedKeys = buildAttachedShareKeys(preparedState.managedShares);
     const offers = await Promise.all(
@@ -462,8 +481,15 @@ export class ManagedShareService {
     };
   }
 
-  async listIncomingProviderContactInvites(): Promise<{ invites: IncomingProviderContactInvite[] }> {
+  async listIncomingProviderContactInvites(
+    options: IntegrationReadOptions = {}
+  ): Promise<{ invites: IncomingProviderContactInvite[] }> {
     const state = await this.loadState();
+    if (options.fast === true) {
+      return {
+        invites: [],
+      };
+    }
     const invites = await Promise.all(
       state.accounts
         .filter((account) => this.isOperationalAccount(account) && isProviderEnabled(account.provider))
@@ -1417,6 +1443,18 @@ export class ManagedShareService {
     return new Map(entries);
   }
 
+  private fallbackProviderSetupStates(): Map<string, ProviderSetupState> {
+    return new Map(
+      Array.from(this.adapters.values()).map((adapter) => [
+        adapter.provider,
+        {
+          status: 'ready',
+          detail: adapter.description,
+        } satisfies ProviderSetupState,
+      ])
+    );
+  }
+
   async parseJoinLink(input: {
     serialized?: string;
     link?: unknown;
@@ -1654,18 +1692,31 @@ export class ManagedShareService {
       readonly runtime?: MultiRootRuntimeSnapshot;
       readonly state?: IntegrationStateSnapshot;
       readonly preferFastRemoteDetails?: boolean;
+      readonly skipAncillaryRemoteDetails?: boolean;
+      readonly skipRemoteChecks?: boolean;
     } = {}
   ): Promise<ManagedShareSummary> {
     const config = options.config ?? this.options.storage.getRootsConfig();
-    const runtime = options.runtime ?? (await this.options.storage.getRuntimeSnapshot());
+    const runtime = options.runtime ?? (await this.options.storage.getRuntimeSnapshot({ includeUsage: false }));
     const state = options.state ?? (await this.loadState());
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
     const fallbackState = this.fallbackTransportState(share, runtime, account);
     const fallbackCollaborators = this.fallbackCollaborators(share);
     const preferFastRemoteDetails = options.preferFastRemoteDetails === true;
-    const transportStateTimeoutMs = preferFastRemoteDetails ? 750 : 1_500;
+    const skipAncillaryRemoteDetails = options.skipAncillaryRemoteDetails === true;
+    const skipRemoteChecks = options.skipRemoteChecks === true;
+    const transportStateTimeoutMs = preferFastRemoteDetails ? 750 : 6_000;
+    if (skipRemoteChecks) {
+      return {
+        share,
+        attachments: computeManagedShareAttachments(config, share),
+        state: fallbackState,
+        collaborators: fallbackCollaborators,
+        storage: summarizeManagedShareStorage(config, runtime, share, undefined),
+      };
+    }
     const [remoteMetrics, transportState, collaborators] = await Promise.all([
-      preferFastRemoteDetails
+      skipAncillaryRemoteDetails
         ? Promise.resolve(undefined)
         : this.withSoftTimeout(
             this.resolveShareStorageMetrics(share),
@@ -1679,7 +1730,7 @@ export class ManagedShareService {
         transportStateTimeoutMs,
         `Managed share state timed out for ${share.id}`
       ),
-      preferFastRemoteDetails
+      skipAncillaryRemoteDetails
         ? Promise.resolve(fallbackCollaborators)
         : this.withSoftTimeout(
             this.resolveShareCollaborators(share, state),
@@ -1702,7 +1753,7 @@ export class ManagedShareService {
     runtime?: MultiRootRuntimeSnapshot,
     stateSnapshot?: IntegrationStateSnapshot
   ): Promise<TransportState> {
-    const snapshot = runtime ?? (await this.options.storage.getRuntimeSnapshot());
+    const snapshot = runtime ?? (await this.options.storage.getRuntimeSnapshot({ includeUsage: false }));
     const status = share.sourceId ? snapshot.sources.find((entry) => entry.id === share.sourceId) : undefined;
     const adapter = this.adapters.get(normalizeProvider(share.provider));
     const state = stateSnapshot ?? (await this.loadState());

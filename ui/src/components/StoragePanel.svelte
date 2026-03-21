@@ -3145,6 +3145,7 @@
 
   async function loadPanel(options?: { background?: boolean }) {
     const keepVisible = options?.background === true && configDraft !== null;
+    const hadProviderData = providerCatalog.length > 0 || providerAccounts.length > 0;
     if (!keepVisible) {
       loading = true;
       errorMessage = '';
@@ -3161,7 +3162,10 @@
       shareLoadError = '';
       incomingLoadError = '';
 
-      const accountsPromise = withPanelRequestTimeout('Provider discovery', (signal) => listProviderAccounts({ signal }))
+      const accountsPromise = withPanelRequestTimeout(
+        'Provider discovery',
+        (signal) => listProviderAccounts({ signal, fast: true })
+      )
         .then((accountsResponse) => {
           providerAccounts = accountsResponse.accounts;
           providerCatalog = mergeProviderCatalogEntries(accountsResponse.providers);
@@ -3187,13 +3191,19 @@
         })
         .catch((error) => {
           const detail = error instanceof Error ? error.message : String(error);
+          if (keepVisible && hadProviderData) {
+            return;
+          }
           providerLoadError = `Provider discovery is delayed: ${detail}`;
         })
         .finally(() => {
           providersLoading = false;
         });
 
-      const sharesPromise = withPanelRequestTimeout('MEGA and provider share status', (signal) => listManagedShares({ signal }))
+      const sharesPromise = withPanelRequestTimeout(
+        'MEGA and provider share status',
+        (signal) => listManagedShares({ signal, fast: !keepVisible })
+      )
         .then((sharesResponse) => {
           managedShares = sortManagedShareSummaries(sharesResponse.shares);
         })
@@ -3205,7 +3215,10 @@
           sharesLoading = false;
         });
 
-      const incomingSharesPromise = withPanelRequestTimeout('Incoming share discovery', (signal) => listIncomingManagedShares({ signal }))
+      const incomingSharesPromise = withPanelRequestTimeout(
+        'Incoming share discovery',
+        (signal) => listIncomingManagedShares({ signal, fast: !keepVisible })
+      )
         .then((incomingSharesResponse) => {
           incomingManagedShareOffers = sortIncomingManagedShareOffers(incomingSharesResponse.shares);
         })
@@ -3219,7 +3232,7 @@
 
       const incomingInvitesPromise = withPanelRequestTimeout(
         'Incoming contact discovery',
-        (signal) => listIncomingProviderContactInvites({ signal })
+        (signal) => listIncomingProviderContactInvites({ signal, fast: !keepVisible })
       )
         .then((incomingInvitesResponse) => {
           incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(incomingInvitesResponse.invites);
@@ -3237,6 +3250,12 @@
       const delayedMessages = [providerLoadError, shareLoadError, incomingLoadError].filter((value) => value.trim() !== '');
       if (delayedMessages.length > 0) {
         errorMessage = delayedMessages[0]!;
+      }
+
+      if (!keepVisible) {
+        setTimeout(() => {
+          void loadPanel({ background: true });
+        }, 250);
       }
 
       autosaveStatus = 'idle';

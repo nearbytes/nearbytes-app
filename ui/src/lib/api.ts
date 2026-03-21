@@ -1444,8 +1444,11 @@ export async function reconcileDiscoveredSources(
   });
 }
 
-export async function listProviderAccounts(options: { signal?: AbortSignal } = {}): Promise<ProviderAccountsResponse> {
-  return apiRequest<ProviderAccountsResponse>('/integrations/accounts', {
+export async function listProviderAccounts(
+  options: { signal?: AbortSignal; fast?: boolean } = {}
+): Promise<ProviderAccountsResponse> {
+  const endpoint = options.fast ? '/integrations/accounts?fast=1' : '/integrations/accounts';
+  return apiRequest<ProviderAccountsResponse>(endpoint, {
     method: 'GET',
     signal: options.signal,
   });
@@ -1516,26 +1519,33 @@ export async function reconcileProviderManagedShares(
   });
 }
 
-export async function listManagedShares(options: { signal?: AbortSignal } = {}): Promise<ManagedSharesResponse> {
-  return apiRequest<ManagedSharesResponse>('/integrations/shares', {
+export async function listManagedShares(
+  options: { signal?: AbortSignal; fast?: boolean } = {}
+): Promise<ManagedSharesResponse> {
+  const endpoint = options.fast ? '/integrations/shares?fast=1' : '/integrations/shares';
+  return apiRequest<ManagedSharesResponse>(endpoint, {
     method: 'GET',
     signal: options.signal,
   });
 }
 
 export async function listIncomingManagedShares(
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; fast?: boolean } = {}
 ): Promise<IncomingManagedSharesResponse> {
-  return apiRequest<IncomingManagedSharesResponse>('/integrations/shares/incoming', {
+  const endpoint = options.fast ? '/integrations/shares/incoming?fast=1' : '/integrations/shares/incoming';
+  return apiRequest<IncomingManagedSharesResponse>(endpoint, {
     method: 'GET',
     signal: options.signal,
   });
 }
 
 export async function listIncomingProviderContactInvites(
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; fast?: boolean } = {}
 ): Promise<IncomingProviderContactInvitesResponse> {
-  return apiRequest<IncomingProviderContactInvitesResponse>('/integrations/providers/contact-invites', {
+  const endpoint = options.fast
+    ? '/integrations/providers/contact-invites?fast=1'
+    : '/integrations/providers/contact-invites';
+  return apiRequest<IncomingProviderContactInvitesResponse>(endpoint, {
     method: 'GET',
     signal: options.signal,
   });

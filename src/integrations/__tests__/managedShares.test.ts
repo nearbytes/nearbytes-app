@@ -178,6 +178,53 @@ class BlockingMirrorInventoryAdapter extends FakeTransportAdapter {
   }
 }
 
+class BlockingSetupAdapter extends FakeTransportAdapter {
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  async getSetupState() {
+    await new Promise<void>(() => {
+      // Intentionally never resolves; fast account reads should fall back immediately.
+    });
+    return {
+      status: 'ready' as const,
+      detail: this.description,
+    };
+  }
+}
+
+class BlockingRemoteDetailsAdapter extends FakeTransportAdapter {
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  override async getState(): Promise<TransportState> {
+    await new Promise<void>(() => {
+      // Intentionally never resolves; fast share reads should use fallback state.
+    });
+    return {
+      status: 'ready',
+      detail: 'MEGA is ready.',
+      badges: ['Connected'],
+    };
+  }
+
+  override async getCollaborators(): Promise<ManagedShareCollaborator[]> {
+    await new Promise<void>(() => {
+      // Intentionally never resolves; fast share reads should skip collaborator lookups.
+    });
+    return [];
+  }
+
+  async getShareStorageMetrics(): Promise<undefined> {
+    await new Promise<void>(() => {
+      // Intentionally never resolves; fast share reads should skip remote quota lookups.
+    });
+    return undefined;
+  }
+}
+
 class CountingMirrorInventoryAdapter extends FakeTransportAdapter {
   inventoryCalls = 0;
 
@@ -443,6 +490,83 @@ describe('ManagedShareService', () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(adapter.inventoryCalls).toBe(1);
+  });
+
+  it('returns provider accounts without awaiting a long-running setup probe in fast mode', async () => {
+    const adapter = new BlockingSetupAdapter();
+    const { service } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+
+    const result = await Promise.race([
+      service.listAccounts({ fast: true }).then((accounts) => ({ kind: 'accounts' as const, accounts })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'timeout' }), 50);
+      }),
+    ]);
+
+    expect(result.kind).toBe('accounts');
+    if (result.kind === 'accounts') {
+      expect(result.accounts.providers[0]?.provider).toBe('mega');
+      expect(result.accounts.providers[0]?.setup.status).toBe('ready');
+    }
+  });
+
+  it('returns managed shares without awaiting live remote state checks in fast mode', async () => {
+    const adapter = new BlockingRemoteDetailsAdapter();
+    const { integrationStatePath, service, localRoot } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'MEGA share',
+            role: 'owner',
+            localPath: localRoot,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes/MEGA share' },
+            capabilities: ['mirror', 'read', 'write'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const result = await Promise.race([
+      service.listManagedShares({ fast: true }).then((shares) => ({ kind: 'shares' as const, shares })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'timeout' }), 50);
+      }),
+    ]);
+
+    expect(result.kind).toBe('shares');
+    if (result.kind === 'shares') {
+      expect(result.shares.shares[0]?.share.id).toBe('share-mega-1');
+      expect(result.shares.shares[0]?.state.status).toBe('idle');
+    }
   });
 
   it('skips background maintenance on a fresh service when the persisted stamp is still valid', async () => {

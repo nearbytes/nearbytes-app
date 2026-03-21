@@ -307,7 +307,7 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/integrations/accounts', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
-    res.json(await service.listAccounts());
+    res.json(await service.listAccounts({ fast: req.query.fast === '1' }));
   }));
 
   router.post('/integrations/accounts/connect', asyncHandler(async (req, res) => {
@@ -358,19 +358,19 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/integrations/shares', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
-    res.json(await service.listManagedShares());
+    res.json(await service.listManagedShares({ fast: req.query.fast === '1' }));
   }));
 
   router.get('/integrations/shares/incoming', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
-    res.json(await service.listIncomingManagedShares());
+    res.json(await service.listIncomingManagedShares({ fast: req.query.fast === '1' }));
   }));
 
   router.get('/integrations/providers/contact-invites', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
-    res.json(await service.listIncomingProviderContactInvites());
+    res.json(await service.listIncomingProviderContactInvites({ fast: req.query.fast === '1' }));
   }));
 
   router.post('/integrations/providers/contact-invites/accept', asyncHandler(async (req, res) => {

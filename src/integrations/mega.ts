@@ -838,6 +838,12 @@ export class MegaTransportAdapter {
       return;
     }
 
+    const currentSessionToken = await this.readSessionToken().catch(() => null);
+    if (currentSessionToken && currentSessionToken === secret.sessionToken) {
+      this.activeSessionTokens.set(accountId, secret.sessionToken);
+      return;
+    }
+
     const existingTask = this.sessionLoginTasks.get(accountId);
     if (existingTask) {
       await existingTask;

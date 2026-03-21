@@ -657,7 +657,91 @@ describe('MegaTransportAdapter', () => {
     await adapter.getState(share, account);
     await adapter.getState(share, account);
 
-    expect(loginCommandCount).toBe(1);
+    expect(loginCommandCount).toBe(0);
+  });
+
+  it('reuses the current local MEGA session after process restart when the stored token already matches', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [
+        {
+          id: '1',
+          localPath: '/tmp/nearbytes',
+          remotePath: '/nearbytes',
+          runState: 'Running',
+          status: 'Synced',
+          error: '',
+        },
+      ],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+    };
+
+    let loginCommandCount = 0;
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: {
+        async run(invocation) {
+          const rawCommand = basename(invocation.command);
+          const args = [...(invocation.args ?? [])];
+          const command = rawCommand === 'MegaClient.exe' ? `mega-${args.shift() ?? ''}` : rawCommand;
+          if (command === 'mega-login') {
+            loginCommandCount += 1;
+          }
+          return createFakeMegaExecutor(megaState).run(invocation);
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime);
+    await runtime.secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/tmp/nearbytes',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    await adapter.getState(share, account);
+
+    expect(loginCommandCount).toBe(0);
   });
 
   it('parses fixed-width sync listings and safely deletes dash-prefixed sync ids', async () => {
