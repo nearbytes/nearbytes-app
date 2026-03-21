@@ -2956,15 +2956,22 @@
       successMessage = '';
     }
     try {
-      const rootsResponse = await withPanelRequestTimeout('Storage configuration', (signal) => getRootsConfig({ signal }));
-      applyRootsResponse(rootsResponse);
-
       providersLoading = true;
       sharesLoading = true;
       incomingLoading = true;
       providerLoadError = '';
       shareLoadError = '';
       incomingLoadError = '';
+
+      let rootsLoadError: unknown = null;
+
+      const rootsPromise = withPanelRequestTimeout('Storage configuration', (signal) => getRootsConfig({ signal }))
+        .then((rootsResponse) => {
+          applyRootsResponse(rootsResponse);
+        })
+        .catch((error) => {
+          rootsLoadError = error;
+        });
 
       const accountsPromise = withPanelRequestTimeout('Provider discovery', (signal) => listProviderAccounts({ signal }))
         .then((accountsResponse) => {
@@ -3037,7 +3044,11 @@
           incomingLoading = false;
         });
 
-      await Promise.allSettled([accountsPromise, sharesPromise, incomingSharesPromise, incomingInvitesPromise]);
+      await Promise.allSettled([rootsPromise, accountsPromise, sharesPromise, incomingSharesPromise, incomingInvitesPromise]);
+
+      if (rootsLoadError) {
+        throw rootsLoadError;
+      }
 
       const delayedMessages = [providerLoadError, shareLoadError, incomingLoadError].filter((value) => value.trim() !== '');
       if (delayedMessages.length > 0) {

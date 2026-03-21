@@ -251,6 +251,47 @@ describe('MultiRootStorageBackend', () => {
     }
   });
 
+  it('deduplicates concurrent runtime snapshot work', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    await mkdir(mainRoot, { recursive: true });
+
+    const volumeId = 'a'.repeat(130);
+    const blockHash = 'b'.repeat(64);
+    await mkdir(join(mainRoot, 'channels', volumeId), { recursive: true });
+    await writeFile(
+      join(mainRoot, 'channels', volumeId, 'event.bin'),
+      JSON.stringify({
+        payload: {
+          type: 'CREATE_FILE',
+          hash: blockHash,
+        },
+      }),
+      'utf8'
+    );
+    await mkdir(join(mainRoot, 'blocks'), { recursive: true });
+    await writeFile(join(mainRoot, 'blocks', `${blockHash}.bin`), 'block-data', 'utf8');
+
+    const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot })) as MultiRootStorageBackend & {
+      getReferencedBlockHashIndex: () => Promise<Map<string, Set<string>>>;
+    };
+    const originalGetReferencedBlockHashIndex = storage.getReferencedBlockHashIndex.bind(storage);
+    let calls = 0;
+
+    storage.getReferencedBlockHashIndex = vi.fn(async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return originalGetReferencedBlockHashIndex();
+    });
+
+    const [first, second] = await Promise.all([storage.getRuntimeSnapshot(), storage.getRuntimeSnapshot()]);
+
+    expect(calls).toBe(1);
+    expect(second).toEqual(first);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it('writes channel files to the default durable source and explicit volume destinations', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
     const mainRoot = join(dir, 'main');

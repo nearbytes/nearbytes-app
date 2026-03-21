@@ -177,6 +177,7 @@ export class MultiRootStorageBackend implements StorageBackend {
   private rootStates: RootState[];
   private readonly lastWriteFailures = new Map<string, RootWriteFailure>();
   private reconcileInFlight: Promise<void> | null = null;
+  private runtimeSnapshotInFlight: Promise<MultiRootRuntimeSnapshot> | null = null;
   private reconcileQueued = false;
   private repairMonitorTimer: ReturnType<typeof setTimeout> | null = null;
   private repairMonitorRunning = false;
@@ -199,6 +200,7 @@ export class MultiRootStorageBackend implements StorageBackend {
   updateRootsConfig(nextConfig: RootsConfig): void {
     this.config = nextConfig;
     this.rootStates = this.buildRootStates(nextConfig);
+    this.runtimeSnapshotInFlight = null;
 
     // Drop failures for roots that no longer exist.
     const rootIds = new Set(this.rootStates.map((state) => state.config.id));
@@ -358,15 +360,30 @@ export class MultiRootStorageBackend implements StorageBackend {
   }
 
   async getRuntimeSnapshot(): Promise<MultiRootRuntimeSnapshot> {
-    const referencedByVolume = await this.getReferencedBlockHashIndex();
-    const statuses = await Promise.all(
-      this.rootStates.map((state) => this.getRootRuntimeStatus(state, referencedByVolume))
-    );
-    const writeFailures = Array.from(this.lastWriteFailures.values()).sort((left, right) => right.at - left.at);
-    return {
-      sources: statuses,
-      writeFailures,
-    };
+    if (this.runtimeSnapshotInFlight) {
+      return this.runtimeSnapshotInFlight;
+    }
+
+    const snapshotTask = (async (): Promise<MultiRootRuntimeSnapshot> => {
+      const referencedByVolume = await this.getReferencedBlockHashIndex();
+      const statuses = await Promise.all(
+        this.rootStates.map((state) => this.getRootRuntimeStatus(state, referencedByVolume))
+      );
+      const writeFailures = Array.from(this.lastWriteFailures.values()).sort((left, right) => right.at - left.at);
+      return {
+        sources: statuses,
+        writeFailures,
+      };
+    })();
+
+    this.runtimeSnapshotInFlight = snapshotTask;
+    try {
+      return await snapshotTask;
+    } finally {
+      if (this.runtimeSnapshotInFlight === snapshotTask) {
+        this.runtimeSnapshotInFlight = null;
+      }
+    }
   }
 
   async getConsolidationPlan(sourceId: string): Promise<RootConsolidationPlan> {
