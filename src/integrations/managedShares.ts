@@ -131,6 +131,15 @@ export class ManagedShareService {
     this.readMaintenanceMode = options.readMaintenanceMode ?? 'inline';
   }
 
+  async dispose(): Promise<void> {
+    this.maintenanceRequested = false;
+    await Promise.all(
+      Array.from(this.adapters.values(), async (adapter) => {
+        await adapter.dispose?.();
+      })
+    );
+  }
+
   private isOperationalAccount(account: ProviderAccount): boolean {
     const provider = normalizeProvider(account.provider);
     return account.state === 'connected' || (provider === 'mega' && account.state === 'attention');

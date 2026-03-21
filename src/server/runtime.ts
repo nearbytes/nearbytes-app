@@ -8,6 +8,7 @@ import { createFileService } from '../domain/fileService.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../config/roots.js';
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
+import { ManagedShareService } from '../integrations/managedShares.js';
 import type { ManagedShareServiceOptions } from '../integrations/managedShares.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { StorageError } from '../types/errors.js';
@@ -97,6 +98,13 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
   await storage.reconcileConfiguredVolumes();
   storage.startRepairMonitor();
 
+  const managedShareService = new ManagedShareService({
+    storage,
+    rootsConfigPath: loaded.configPath,
+    readMaintenanceMode: 'background',
+    ...options.integrationOptions,
+  });
+
   const app = createApp({
     fileService,
     chatService,
@@ -110,14 +118,16 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     desktopApiToken: options.desktopApiToken,
     uiDistPath: options.uiDistPath,
     integrationOptions: options.integrationOptions,
+    managedShareService,
     uiDebugExecutor: options.uiDebugExecutor,
   });
 
   const server = await listen(app, host, port);
   const bound = getBoundPort(server);
 
-  const stop = createStop(server, () => {
+  const stop = createStop(server, async () => {
     storage.stopRepairMonitor();
+    await managedShareService.dispose();
   });
   latestStop = stop;
 
@@ -253,15 +263,15 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-function createStop(server: Server, onStop?: () => void): () => Promise<void> {
+function createStop(server: Server, onStop?: () => Promise<void> | void): () => Promise<void> {
   let stopped = false;
   const stopFn = async () => {
     if (stopped) {
       return;
     }
     stopped = true;
-    onStop?.();
     await closeServer(server);
+    await onStop?.();
     if (latestStop === stopFn) {
       latestStop = null;
     }

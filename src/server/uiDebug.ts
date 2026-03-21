@@ -3,6 +3,9 @@ export type UiDebugAction =
       type: 'inspect';
     }
   | {
+      type: 'quitApp';
+    }
+  | {
       type: 'navigate';
       path?: string;
       url?: string;

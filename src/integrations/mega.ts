@@ -118,6 +118,21 @@ export class MegaTransportAdapter {
     this.windowsCommandClient = windowsCommandClient ?? new MegaWindowsNamedPipeCommandClient(runtime.logger);
   }
 
+  async dispose(): Promise<void> {
+    for (const timer of this.syncTimers.values()) {
+      clearInterval(timer);
+    }
+    this.syncTimers.clear();
+    this.syncStates.clear();
+    this.pullTasks.clear();
+    this.activeSessionTokens.clear();
+    this.sessionLoginTasks.clear();
+    this.authSessions.clear();
+    this.readOnlySyncSupport = undefined;
+    this.preferredWindowsPipeCommandDirectory = undefined;
+    await this.windowsCommandClient.dispose?.();
+  }
+
   async probe(endpoint: import('./types.js').TransportEndpoint): Promise<TransportState> {
     if (endpoint.transport === 'provider-share' && endpoint.provider?.trim().toLowerCase() === this.provider) {
       return {

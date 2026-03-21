@@ -29,6 +29,7 @@ interface ManagedMegaServer {
 
 export interface MegaWindowsCommandClient {
   execute(request: MegaWindowsCommandRequest): Promise<CommandResult>;
+  dispose?(): Promise<void>;
 }
 
 export class MegaWindowsNamedPipeCommandClient implements MegaWindowsCommandClient {
@@ -47,6 +48,13 @@ export class MegaWindowsNamedPipeCommandClient implements MegaWindowsCommandClie
       server = await this.restartServer(key, request.commandDirectory);
       return this.executeOnce(server, request);
     }
+  }
+
+  async dispose(): Promise<void> {
+    for (const server of this.servers.values()) {
+      this.killServer(server);
+    }
+    this.servers.clear();
   }
 
   private async ensureServer(key: string, commandDirectory?: string): Promise<ManagedMegaServer> {
@@ -226,7 +234,9 @@ export class MegaWindowsNamedPipeCommandClient implements MegaWindowsCommandClie
       return;
     }
     try {
-      server.child?.kill();
+      if (server.child && !server.child.killed) {
+        server.child.kill();
+      }
     } catch {
       // Ignore shutdown failures; we only need a best-effort restart.
     }

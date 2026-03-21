@@ -56,6 +56,8 @@ interface RendererProfileState {
 interface DiagnosticsState {
   metricsTimer: ReturnType<typeof setInterval> | null;
   isShuttingDown: boolean;
+  shutdownPromise: Promise<void> | null;
+  quitAllowed: boolean;
 }
 
 interface DesktopElementState {
@@ -109,6 +111,8 @@ const state: {
   diagnostics: {
     metricsTimer: null,
     isShuttingDown: false,
+    shutdownPromise: null,
+    quitAllowed: false,
   },
   deepLinks: {
     pendingUrls: [],
@@ -123,6 +127,7 @@ if (!singleInstanceLock) {
 const desktopToken = generateDesktopApiToken();
 const devUiUrl = process.env.NEARBYTES_ELECTRON_DEV_SERVER_URL?.trim() ?? '';
 const isDev = devUiUrl.length > 0;
+const hasExternalDevUiServer = process.env.NEARBYTES_EXTERNAL_DEV_SERVER === '1';
 const enableRendererCpuProfile = process.env.NEARBYTES_RENDERER_PROFILE === '1';
 const enableAutoUpdater = !isDev && process.env.NEARBYTES_DISABLE_AUTO_UPDATE !== '1';
 const maxUploadBytes = parseMaxUploadBytes(process.env.NEARBYTES_MAX_UPLOAD_MB);
@@ -132,7 +137,7 @@ const sessionTtlMs = parsePositiveInt(
 );
 
 app.on('window-all-closed', () => {
-  app.quit();
+  void requestAppQuit('window-all-closed');
 });
 
 app.on('second-instance', (_event, argv) => {
@@ -145,9 +150,12 @@ app.on('open-url', (event, url) => {
   void enqueueDeepLinkUrls([url]);
 });
 
-app.on('before-quit', () => {
-  void prepareDiagnosticsShutdown('before-quit');
-  void shutdown();
+app.on('before-quit', (event) => {
+  if (state.diagnostics.quitAllowed) {
+    return;
+  }
+  event.preventDefault();
+  void requestAppQuit('before-quit');
 });
 
 app.on('activate', () => {
@@ -160,8 +168,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox('Nearbytes desktop startup failed', message);
-    await shutdown();
-    app.quit();
+    await requestAppQuit('startup-failed', 1);
   }
 });
 
@@ -272,7 +279,7 @@ function createDesktopUiDebugExecutor(): UiDebugExecutor {
     async getCapabilities() {
       return {
         available: true,
-        actions: ['inspect', 'navigate', 'waitFor', 'click', 'type', 'pressKey', 'read', 'screenshot'],
+        actions: ['inspect', 'quitApp', 'navigate', 'waitFor', 'click', 'type', 'pressKey', 'read', 'screenshot'],
         screenshot: true,
         title: requireDesktopWindow().getTitle(),
         url: requireDesktopWindow().webContents.getURL(),
@@ -316,6 +323,8 @@ async function runDesktopUiDebugAction(action: UiDebugAction): Promise<Record<st
   switch (action.type) {
     case 'inspect':
       return inspectDesktopDocument();
+    case 'quitApp':
+      return quitDesktopApp();
     case 'navigate':
       return navigateDesktopWindow(action);
     case 'waitFor':
@@ -333,6 +342,15 @@ async function runDesktopUiDebugAction(action: UiDebugAction): Promise<Record<st
     default:
       throw new Error(`Unsupported UI debug action: ${(action as { type?: string }).type ?? 'unknown'}`);
   }
+}
+
+async function quitDesktopApp(): Promise<Record<string, unknown>> {
+  queueMicrotask(() => {
+    void requestAppQuit('ui-debug');
+  });
+  return {
+    quitting: true,
+  };
 }
 
 function requireDesktopWindow(): BrowserWindow {
@@ -1087,16 +1105,62 @@ function resolveDesktopIconPath(): string | null {
 
 async function shutdown(): Promise<void> {
   stopMetricsSampling();
-  if (state.runtime) {
-    await state.runtime.stop();
-    state.runtime = null;
+  const errors: unknown[] = [];
+
+  try {
+    await clearPublishedDesktopSession();
+  } catch (error) {
+    errors.push(error);
   }
-  if (state.commandExecutor) {
-    state.commandExecutor.dispose();
-    state.commandExecutor = null;
+
+  const runtime = state.runtime;
+  state.runtime = null;
+  if (runtime) {
+    try {
+      await runtime.stop();
+    } catch (error) {
+      errors.push(error);
+    }
   }
-  await stopDevUiServer();
-  await clearPublishedDesktopSession();
+
+  const commandExecutor = state.commandExecutor;
+  state.commandExecutor = null;
+  if (commandExecutor) {
+    try {
+      commandExecutor.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  try {
+    await stopDevUiServer();
+  } catch (error) {
+    errors.push(error);
+  }
+
+  if (errors.length > 0) {
+    throw errors[0];
+  }
+}
+
+async function requestAppQuit(reason: string, exitCode = 0): Promise<void> {
+  try {
+    await ensureAppShutdown(reason);
+  } finally {
+    state.diagnostics.quitAllowed = true;
+    app.exit(exitCode);
+  }
+}
+
+function ensureAppShutdown(reason: string): Promise<void> {
+  if (!state.diagnostics.shutdownPromise) {
+    state.diagnostics.shutdownPromise = (async () => {
+      await prepareDiagnosticsShutdown(reason);
+      await shutdown();
+    })();
+  }
+  return state.diagnostics.shutdownPromise;
 }
 
 async function loadRuntimeModule(): Promise<RuntimeModule> {
@@ -1203,6 +1267,9 @@ async function waitForDevUiServer(info: DevUiServerInfo, timeoutMs = 20000): Pro
 async function ensureDevUiServer(): Promise<void> {
   const info = parseDevUiInfo();
   if (!info) {
+    return;
+  }
+  if (hasExternalDevUiServer) {
     return;
   }
   if (await isDevUiReachable(info.url)) {
@@ -1752,9 +1819,5 @@ async function prepareDiagnosticsShutdown(reason: string): Promise<void> {
 
 async function handleTerminationSignal(signal: 'SIGINT' | 'SIGTERM', exitCode: number): Promise<void> {
   console.log(`[desktop] received ${signal}, flushing diagnostics`);
-  try {
-    await prepareDiagnosticsShutdown(signal.toLowerCase());
-  } finally {
-    process.exit(exitCode);
-  }
+  await requestAppQuit(signal.toLowerCase(), exitCode);
 }

@@ -44,6 +44,7 @@ export interface TransportAdapter {
   readonly label: string;
   readonly description: string;
   readonly supportsAccountConnection: boolean;
+  dispose?(): Promise<void>;
   getSetupState?(): Promise<ProviderSetupState>;
   configure?(input: ConfigureProviderInput): Promise<ProviderSetupState>;
   install?(): Promise<ProviderSetupState>;
