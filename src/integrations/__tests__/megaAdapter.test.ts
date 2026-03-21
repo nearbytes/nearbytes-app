@@ -487,7 +487,7 @@ describe('MegaTransportAdapter', () => {
     });
   });
 
-  it('falls back to the Windows named-pipe transport when the CLI client cannot start the helper server', async () => {
+  it('sticks to the Windows named-pipe transport after the CLI helper start fails once', async () => {
     const secretStore = createMemorySecretStore();
     const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
     tempDirs.push(commandDirectory);
@@ -553,8 +553,22 @@ describe('MegaTransportAdapter', () => {
     });
 
     expect(connected.status).toBe('connected');
-    expect(attemptedSubcommands).toEqual(['login', 'session']);
+    expect(attemptedSubcommands).toEqual(['login']);
     expect(fallbackSubcommands).toEqual(['login', 'session']);
+
+    const connectedAgain = await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+
+    expect(connectedAgain.status).toBe('connected');
+    expect(attemptedSubcommands).toEqual(['login']);
+    expect(fallbackSubcommands).toEqual(['login', 'session', 'login', 'session']);
     await expect(secretStore.get<{ email: string; sessionToken: string }>('provider-account:mega:acct-mega-1')).resolves.toEqual({
       email: 'owner@mega.example',
       sessionToken: 'mega-session-token',

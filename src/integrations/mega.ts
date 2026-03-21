@@ -1110,6 +1110,13 @@ export class MegaTransportAdapter {
     return normalizeMegaCommandDirectoryKey(commandDirectory) === this.preferredWindowsPipeCommandDirectory;
   }
 
+  private preferWindowsPipeClient(commandDirectory: string | undefined): void {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    this.preferredWindowsPipeCommandDirectory = normalizeMegaCommandDirectoryKey(commandDirectory);
+  }
+
   private clearWindowsPipeClientPreference(commandDirectory: string | undefined): void {
     if (!this.shouldPreferWindowsPipeClient(commandDirectory)) {
       return;
@@ -1128,7 +1135,9 @@ export class MegaTransportAdapter {
       return null;
     }
     try {
-      return await this.runMegaWithWindowsPipeClient(commandDirectory, subcommand, args, options);
+      const result = await this.runMegaWithWindowsPipeClient(commandDirectory, subcommand, args, options);
+      this.preferWindowsPipeClient(commandDirectory);
+      return result;
     } catch (error) {
       this.runtime.logger.warn('Failed to execute MEGA command through the Windows named-pipe transport.', error);
       return null;
