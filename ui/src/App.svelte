@@ -115,7 +115,8 @@
   const PARKED_MOUNT_WIDTH = 46;
   const isDevThemeStudio = import.meta.env.DEV;
   const SPEC_DOC_CONTENTS = import.meta.glob('../../docs/specs/*.md', {
-    as: 'raw',
+    query: '?raw',
+    import: 'default',
     eager: true,
   }) as Record<string, string>;
   const SPEC_CONTENT_BY_FILE = new Map<string, string>();

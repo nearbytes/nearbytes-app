@@ -95,8 +95,11 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
       .find((source) => source?.enabled)?.path ?? defaultStorageDir;
 
   await ensureBootstrapDirectories(storage, logger);
-  await storage.reconcileConfiguredVolumes();
   storage.startRepairMonitor();
+  void storage.reconcileConfiguredVolumes().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`Warning: background storage reconcile failed during startup: ${message}`);
+  });
 
   const managedShareService = new ManagedShareService({
     storage,

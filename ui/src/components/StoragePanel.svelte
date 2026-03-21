@@ -129,8 +129,8 @@
   const DISCOVERY_SCAN_MAX_DIRECTORIES = 600;
   const PANEL_REQUEST_TIMEOUT_MS = 8_000;
   const INITIAL_ROOTS_REQUEST_TIMEOUT_MS = 2_500;
-  const INITIAL_ROOTS_REQUEST_RETRY_COUNT = 3;
-  const INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS = 350;
+  const INITIAL_ROOTS_REQUEST_MAX_WAIT_MS = 20_000;
+  const INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS = 500;
   const DEFAULT_DESTINATION: VolumeDestinationConfig = {
     sourceId: '',
     enabled: true,
@@ -3089,7 +3089,7 @@
     }
     runtimeRefreshInFlight = true;
     try {
-      const response = await getRootsConfig();
+      const response = await getRootsConfig({ includeUsage: true });
       configPath = response.configPath;
       runtime = response.runtime;
     } catch {
@@ -3254,23 +3254,42 @@
   }
 
   async function loadRootsConfigWithRetry(options: { keepVisible: boolean }) {
-    const attempts = options.keepVisible ? 1 : INITIAL_ROOTS_REQUEST_RETRY_COUNT;
     const timeoutMs = options.keepVisible ? PANEL_REQUEST_TIMEOUT_MS : INITIAL_ROOTS_REQUEST_TIMEOUT_MS;
+    const maxWaitMs = options.keepVisible ? timeoutMs : INITIAL_ROOTS_REQUEST_MAX_WAIT_MS;
+    const startedAt = Date.now();
     let lastError: unknown = null;
 
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    while (Date.now() - startedAt < maxWaitMs) {
       try {
-        return await withPanelRequestTimeout('Storage configuration', (signal) => getRootsConfig({ signal }), timeoutMs);
+        return await withPanelRequestTimeout(
+          'Storage configuration',
+          (signal) => getRootsConfig({ signal, includeUsage: options.keepVisible }),
+          timeoutMs
+        );
       } catch (error) {
         lastError = error;
-        if (attempt >= attempts) {
+        if (!isRetriableStorageStartupError(error) || options.keepVisible) {
           break;
         }
         await wait(INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS);
       }
     }
 
+    if (!options.keepVisible && isRetriableStorageStartupError(lastError)) {
+      throw new Error('Storage configuration is still starting. It should appear automatically in a few seconds.');
+    }
+
     throw lastError instanceof Error ? lastError : new Error('Failed to load storage configuration');
+  }
+
+  function isRetriableStorageStartupError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    return (
+      /timed out/i.test(message) ||
+      /failed to fetch/i.test(message) ||
+      /networkerror/i.test(message) ||
+      /load failed/i.test(message)
+    );
   }
 
   function wait(timeoutMs: number): Promise<void> {

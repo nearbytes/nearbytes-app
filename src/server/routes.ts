@@ -154,8 +154,9 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/config/roots', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
-    await ensureNearbytesMarkers(multiRootStorage.getRootsConfig().sources);
-    const runtime = await multiRootStorage.getRuntimeSnapshot();
+    const includeUsage = req.query.includeUsage === '1';
+    void ensureNearbytesMarkers(multiRootStorage.getRootsConfig().sources).catch(() => undefined);
+    const runtime = await multiRootStorage.getRuntimeSnapshot({ includeUsage });
     res.json({
       configPath: deps.rootsConfigPath ?? null,
       config: multiRootStorage.getRootsConfig(),

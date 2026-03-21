@@ -56,6 +56,7 @@ async function main() {
   await waitForHttpEndpoint(devUiUrl, 30_000, uiChild, 'renderer dev server');
 
   console.log('[dev-run] starting desktop runtime');
+  const desktopStartedAt = Date.now();
   const desktopChild = spawn(...buildSpawnInvocation('yarn', ['desktop:run', ...forwardedArgs]), {
     cwd: repoRoot,
     env: {
@@ -73,6 +74,9 @@ async function main() {
     uiPid: uiChild?.pid ?? null,
     createdAt: Date.now(),
   });
+
+  const desktopSession = await waitForDesktopSession(desktopSessionPath, desktopStartedAt, 30_000, desktopChild);
+  console.log(`[dev-run] desktop API ready on http://127.0.0.1:${desktopSession.port}`);
 
   let cleanupPromise = null;
   const cleanup = async () => {
@@ -183,6 +187,29 @@ async function waitForHttpEndpoint(url, timeoutMs, child, label) {
     await delay(250);
   }
   throw new Error(`${label} did not become ready within ${Math.ceil(timeoutMs / 1000)} seconds at ${url}.`);
+}
+
+async function waitForDesktopSession(sessionPath, startedAt, timeoutMs, child) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (child && child.exitCode !== null) {
+      throw new Error(`desktop runtime exited before publishing a desktop session (exit code ${child.exitCode}).`);
+    }
+    const session = await readJsonFile(sessionPath);
+    if (
+      session &&
+      isPositiveInteger(session.pid) &&
+      isPositiveInteger(session.port) &&
+      typeof session.token === 'string' &&
+      session.token.trim().length > 0 &&
+      isPositiveInteger(session.createdAt) &&
+      session.createdAt >= startedAt
+    ) {
+      return session;
+    }
+    await delay(250);
+  }
+  throw new Error(`desktop runtime did not publish a session within ${Math.ceil(timeoutMs / 1000)} seconds.`);
 }
 
 async function isHttpEndpointReady(url, timeoutMs) {

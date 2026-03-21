@@ -1327,8 +1327,9 @@ export async function computeSnapshot(auth: Auth): Promise<SnapshotResponse> {
 /**
  * Reads local multi-root storage configuration.
  */
-export async function getRootsConfig(options: { signal?: AbortSignal } = {}): Promise<RootsConfigResponse> {
-  return apiRequest<RootsConfigResponse>('/config/roots', {
+export async function getRootsConfig(options: { signal?: AbortSignal; includeUsage?: boolean } = {}): Promise<RootsConfigResponse> {
+  const query = options.includeUsage === true ? '?includeUsage=1' : '';
+  return apiRequest<RootsConfigResponse>(`/config/roots${query}`, {
     method: 'GET',
     signal: options.signal,
   });

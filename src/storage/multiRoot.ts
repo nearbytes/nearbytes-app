@@ -72,6 +72,10 @@ export interface MultiRootRuntimeSnapshot {
   readonly writeFailures: RootWriteFailure[];
 }
 
+interface RuntimeSnapshotOptions {
+  readonly includeUsage?: boolean;
+}
+
 interface RepairMonitorOptions {
   readonly repairableDelayMs: number;
   readonly blockedDelayMs: number;
@@ -365,10 +369,11 @@ export class MultiRootStorageBackend implements StorageBackend {
     return 'healthy';
   }
 
-  async getRuntimeSnapshot(): Promise<MultiRootRuntimeSnapshot> {
-    const referencedByVolume = await this.getReferencedBlockHashIndex();
+  async getRuntimeSnapshot(options: RuntimeSnapshotOptions = {}): Promise<MultiRootRuntimeSnapshot> {
+    const includeUsage = options.includeUsage !== false;
+    const referencedByVolume = includeUsage ? await this.getReferencedBlockHashIndex() : new Map<string, Set<string>>();
     const statuses = await Promise.all(
-      this.rootStates.map((state) => this.getRootRuntimeStatus(state, referencedByVolume))
+      this.rootStates.map((state) => this.getRootRuntimeStatus(state, referencedByVolume, { includeUsage }))
     );
     const writeFailures = Array.from(this.lastWriteFailures.values()).sort((left, right) => right.at - left.at);
     return {
@@ -1683,8 +1688,10 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   private async getRootRuntimeStatus(
     state: RootState,
-    referencedByVolume: ReadonlyMap<string, Set<string>>
+    referencedByVolume: ReadonlyMap<string, Set<string>>,
+    options: RuntimeSnapshotOptions = {}
   ): Promise<RootRuntimeStatus> {
+    const includeUsage = options.includeUsage !== false;
     const lastWriteFailure = this.lastWriteFailures.get(state.config.id);
 
     let exists = false;
@@ -1726,7 +1733,9 @@ export class MultiRootStorageBackend implements StorageBackend {
         // Leave undefined when statfs is unavailable.
       }
 
-      usage = await this.collectSourceUsageSummary(state, referencedByVolume);
+      if (includeUsage) {
+        usage = await this.collectSourceUsageSummary(state, referencedByVolume);
+      }
     }
 
     return {

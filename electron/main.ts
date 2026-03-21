@@ -184,6 +184,7 @@ async function startDesktop(): Promise<void> {
   app.setName('Nearbytes');
   applyDesktopIcon();
   registerDeepLinkProtocol();
+  console.log('[desktop] starting API runtime');
   const runtimeModule = await loadRuntimeModule();
   const commandExecutor = createDesktopCommandExecutor(console);
   state.commandExecutor = commandExecutor;
@@ -215,6 +216,7 @@ async function startDesktop(): Promise<void> {
     throw error;
   }
   state.runtime = runtime;
+  console.log(`[desktop] API runtime ready on http://127.0.0.1:${runtime.port}`);
 
   const apiBaseUrl = `http://127.0.0.1:${runtime.port}`;
   state.config = {
@@ -231,6 +233,7 @@ async function startDesktop(): Promise<void> {
     expiresAt: Date.now() + sessionTtlMs,
     createdAt: Date.now(),
   });
+  console.log('[desktop] desktop session published');
 
   registerIpc();
   startMetricsSampling();
