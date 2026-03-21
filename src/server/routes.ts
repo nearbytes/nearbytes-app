@@ -108,6 +108,7 @@ export function createRoutes(deps: RouteDependencies): Router {
       ? new ManagedShareService({
           storage: deps.storage,
           rootsConfigPath: deps.rootsConfigPath,
+          readMaintenanceMode: 'background',
           ...deps.integrationOptions,
         })
       : null);

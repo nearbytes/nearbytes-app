@@ -94,6 +94,7 @@ export interface ManagedShareServiceOptions {
   readonly mirrorRoot?: string;
   readonly adapters?: readonly TransportAdapter[];
   readonly runtime?: Partial<IntegrationRuntimeOptions>;
+  readonly readMaintenanceMode?: 'background' | 'inline';
 }
 
 export class ManagedShareService {
@@ -101,9 +102,12 @@ export class ManagedShareService {
   private readonly integrationStatePath: string;
   private readonly mirrorRoot: string;
   private readonly runtime: IntegrationRuntime;
+  private readonly readMaintenanceMode: 'background' | 'inline';
   private readonly syncBootstrapTasks = new Map<string, Promise<void>>();
   private readonly autoRepairCooldowns = new Map<string, number>();
   private readonly pendingMarkerRefreshes = new Set<string>();
+  private maintenanceRequested = false;
+  private maintenanceTask: Promise<void> | null = null;
 
   constructor(private readonly options: ManagedShareServiceOptions) {
     this.runtime = createIntegrationRuntime({
@@ -121,6 +125,7 @@ export class ManagedShareService {
       options.integrationStatePath ?? path.join(path.dirname(options.rootsConfigPath), 'integrations.json')
     );
     this.mirrorRoot = path.resolve(options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig()));
+    this.readMaintenanceMode = options.readMaintenanceMode ?? 'inline';
   }
 
   private isOperationalAccount(account: ProviderAccount): boolean {
@@ -145,25 +150,38 @@ export class ManagedShareService {
     preferredProviders: string[];
   }> {
     const state = await this.loadState();
-    const preparedState = await this.withSoftTimeout(
-      (async () => {
-        const repairedState = await this.repairManagedShareState(state);
-        await this.ensureDefaultManagedShares(repairedState, { createMissing: true });
-        return this.loadState();
-      })(),
-      state,
-      2_500,
-      'Provider account refresh timed out; using the last known provider state.'
-    );
-    this.scheduleManagedShareSyncs(preparedState);
+    if (this.readMaintenanceMode === 'inline') {
+      const preparedState = await this.withSoftTimeout(
+        (async () => {
+          const repairedState = await this.repairManagedShareState(state);
+          await this.ensureDefaultManagedShares(repairedState, { createMissing: true });
+          return this.loadState();
+        })(),
+        state,
+        2_500,
+        'Provider account refresh timed out; using the last known provider state.'
+      );
+      this.scheduleManagedShareSyncs(preparedState);
+      const setupStates = await this.getProviderSetupStates();
+      const accounts = preparedState.accounts
+        .filter((account) => isProviderEnabled(account.provider))
+        .map((account) => this.presentationAccount(account));
+      return {
+        accounts,
+        providers: createProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
+        preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+      };
+    }
+    this.requestBackgroundMaintenance('listAccounts');
+    this.scheduleManagedShareSyncs(state);
     const setupStates = await this.getProviderSetupStates();
-    const accounts = preparedState.accounts
+    const accounts = state.accounts
       .filter((account) => isProviderEnabled(account.provider))
       .map((account) => this.presentationAccount(account));
     return {
       accounts,
       providers: createProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
-      preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+      preferredProviders: state.preferredProviders.filter((provider) => isProviderEnabled(provider)),
     };
   }
 
@@ -311,17 +329,24 @@ export class ManagedShareService {
 
   async listManagedShares(): Promise<{ shares: ManagedShareSummary[] }> {
     const state = await this.loadState();
-    const preparedState = await this.withSoftTimeout(
-      (async () => {
-        const repairedState = await this.repairManagedShareState(state);
-        const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
-        await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
-        return this.loadState();
-      })(),
-      state,
-      1_500,
-      'Managed share inventory refresh timed out; using the last known share state.'
-    );
+    const preferFastRemoteDetails = this.readMaintenanceMode === 'background';
+    const preparedState =
+      this.readMaintenanceMode === 'inline'
+        ? await this.withSoftTimeout(
+            (async () => {
+              const repairedState = await this.repairManagedShareState(state);
+              const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
+              await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
+              return this.loadState();
+            })(),
+            state,
+            1_500,
+            'Managed share inventory refresh timed out; using the last known share state.'
+          )
+        : state;
+    if (this.readMaintenanceMode === 'background') {
+      this.requestBackgroundMaintenance('listManagedShares');
+    }
     this.scheduleManagedShareSyncs(preparedState);
     const visibleShares = preparedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     const config = this.options.storage.getRootsConfig();
@@ -341,7 +366,7 @@ export class ManagedShareService {
             config,
             runtime,
             state: preparedState,
-            preferFastRemoteDetails: true,
+            preferFastRemoteDetails,
           }),
           this.fallbackManagedShareSummary(share, config, runtime, preparedState),
           1_500,
@@ -376,15 +401,21 @@ export class ManagedShareService {
 
   async listIncomingManagedShares(): Promise<{ shares: IncomingManagedShareOffer[] }> {
     const state = await this.loadState();
-    const repairedState = await this.withSoftTimeout(
-      this.repairManagedShareState(state),
-      state,
-      1_500,
-      'Incoming managed share refresh timed out; using the last known state.'
-    );
-    const attachedKeys = buildAttachedShareKeys(repairedState.managedShares);
+    const preparedState =
+      this.readMaintenanceMode === 'inline'
+        ? await this.withSoftTimeout(
+            this.repairManagedShareState(state),
+            state,
+            1_500,
+            'Incoming managed share refresh timed out; using the last known state.'
+          )
+        : state;
+    if (this.readMaintenanceMode === 'background') {
+      this.requestBackgroundMaintenance('listIncomingManagedShares');
+    }
+    const attachedKeys = buildAttachedShareKeys(preparedState.managedShares);
     const offers = await Promise.all(
-      repairedState.accounts
+      preparedState.accounts
         .filter((account) => this.isOperationalAccount(account) && isProviderEnabled(account.provider))
         .map(async (account) => {
           const adapter = this.adapters.get(normalizeProvider(account.provider));
@@ -1210,6 +1241,43 @@ export class ManagedShareService {
       if (timer) {
         clearTimeout(timer);
       }
+    }
+  }
+
+  private requestBackgroundMaintenance(reason: string): void {
+    this.maintenanceRequested = true;
+    if (this.maintenanceTask) {
+      return;
+    }
+    this.maintenanceTask = this.runBackgroundMaintenanceLoop(reason)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share maintenance failed after ${reason}: ${message}`);
+      })
+      .finally(() => {
+        this.maintenanceTask = null;
+        if (this.maintenanceRequested) {
+          this.requestBackgroundMaintenance('follow-up');
+        }
+      });
+  }
+
+  private async runBackgroundMaintenanceLoop(initialReason: string): Promise<void> {
+    let reason = initialReason;
+    while (this.maintenanceRequested) {
+      this.maintenanceRequested = false;
+      try {
+        const state = await this.loadState();
+        const repairedState = await this.repairManagedShareState(state);
+        const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
+        await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
+        const refreshedState = await this.loadState();
+        this.scheduleManagedShareSyncs(refreshedState);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share maintenance pass failed after ${reason}: ${message}`);
+      }
+      reason = 'queued maintenance';
     }
   }
 

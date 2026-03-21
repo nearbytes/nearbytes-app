@@ -162,10 +162,27 @@ class BlockingEnsureSyncAdapter extends FakeTransportAdapter {
   }
 }
 
+class BlockingMirrorInventoryAdapter extends FakeTransportAdapter {
+  inventoryCalls = 0;
+
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  override async listManagedShareMirrors(): Promise<ManagedShareMirrorEntry[]> {
+    this.inventoryCalls += 1;
+    await new Promise<void>(() => {
+      // Intentionally never resolves; list endpoints should not block on background reconciliation.
+    });
+    return [];
+  }
+}
+
 const tempDirs = new Set<string>();
 
 async function createHarness(options?: {
   adapters?: TransportAdapter[];
+  readMaintenanceMode?: 'background' | 'inline';
 }): Promise<{
   integrationStatePath: string;
   localRoot: string;
@@ -216,6 +233,7 @@ async function createHarness(options?: {
     rootsConfigPath,
     integrationStatePath,
     adapters: options?.adapters ?? [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+    readMaintenanceMode: options?.readMaintenanceMode ?? 'inline',
   });
 
   return {
@@ -229,7 +247,11 @@ async function createHarness(options?: {
 afterEach(async () => {
   await Promise.all(
     Array.from(tempDirs, async (tempDir) => {
-      await fs.rm(tempDir, { recursive: true, force: true });
+      try {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      } catch {
+        // Background maintenance can still be unwinding in Windows tests; temp cleanup must stay best-effort.
+      }
       tempDirs.delete(tempDir);
     })
   );
@@ -351,6 +373,65 @@ describe('ManagedShareService', () => {
     expect(adapter.ensureSyncCalls).toBe(1);
   });
 
+  it('returns managed shares without awaiting a long-running mirror inventory refresh', async () => {
+    const adapter = new BlockingMirrorInventoryAdapter();
+    const { integrationStatePath, service } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+    const localPath = path.join(path.dirname(integrationStatePath), 'mega-share');
+    await fs.mkdir(localPath, { recursive: true });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'MEGA share',
+            role: 'owner',
+            localPath,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes/MEGA share' },
+            capabilities: ['mirror', 'read', 'write'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const result = await Promise.race([
+      service.listManagedShares().then((shares) => ({ kind: 'shares' as const, shares })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'timeout' }), 50);
+      }),
+    ]);
+
+    expect(result.kind).toBe('shares');
+    if (result.kind === 'shares') {
+      expect(result.shares.shares[0]?.share.id).toBe('share-mega-1');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(adapter.inventoryCalls).toBe(1);
+  });
+
   it('merges provider collaborators with pending Nearbytes invites', async () => {
     const { integrationStatePath, service } = await createHarness();
 
@@ -389,7 +470,8 @@ describe('ManagedShareService', () => {
     );
 
     const shares = await service.listManagedShares();
-    expect(shares.shares[0]?.collaborators).toEqual([
+    const targetShare = shares.shares.find((entry) => entry.share.id === 'share-mega-1');
+    expect(targetShare?.collaborators).toEqual([
       {
         label: 'active@example.com',
         email: 'active@example.com',
@@ -719,8 +801,9 @@ describe('ManagedShareService', () => {
     const managedRoot = path.join(tempDir, 'managed-root');
     const localRoot = path.join(tempDir, 'local-root');
     const ownerRoot = path.join(managedRoot, 'mega', 'owner-example-com');
+    const canonicalRecipientContainer = path.join(managedRoot, 'mega', 'friend-example-com');
     const canonicalOwnerRoot = path.join(ownerRoot, 'nearbytes');
-    const repairedRecipientRoot = path.join(ownerRoot, 'nearbytes 5a184f');
+    const repairedRecipientRoot = path.join(canonicalRecipientContainer, 'nearbytes 5a184f');
     const rootsConfigPath = path.join(tempDir, 'roots.json');
     const integrationStatePath = path.join(tempDir, 'integrations.json');
 
