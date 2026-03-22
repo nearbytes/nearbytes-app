@@ -48,6 +48,11 @@ export type UiDebugAction =
       path?: string;
       selector?: string;
       fullPage?: boolean;
+    }
+  | {
+      type: 'snapshotDom';
+      selector?: string;
+      maxLength?: number;
     };
 
 export interface UiDebugRunRequest {

@@ -133,6 +133,17 @@ interface UiDebugCapabilitiesBody {
   actions: string[];
 }
 
+interface UiDebugRunResponseBody {
+  ok: boolean;
+  actionCount: number;
+  results: Array<{
+    type: string;
+    ok: boolean;
+    result?: Record<string, unknown>;
+    error?: string;
+  }>;
+}
+
 interface JoinLinkParseResponseBody {
   plan: {
     attachments: Array<{
@@ -400,7 +411,7 @@ describe('Nearbytes API (multi-root)', () => {
 
   afterAll(async () => {
     process.env.HOME = previousHome;
-    await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('allows local root config access and blocks forwarded non-loopback requests', async () => {
@@ -786,6 +797,19 @@ describe('Nearbytes API (multi-root)', () => {
       available: false,
       screenshot: false,
       actions: [],
+    });
+  });
+
+  it('rejects DOM snapshot requests when no desktop UI debug executor is wired', async () => {
+    const response = await request(app)
+      .post('/__debug/ui/dom')
+      .send({ maxLength: 1024 })
+      .expect(501);
+
+    expect(typedBody<UiDebugRunResponseBody | { error?: { code?: string; message?: string } }>(response)).toMatchObject({
+      error: {
+        code: 'NOT_IMPLEMENTED',
+      },
     });
   });
 

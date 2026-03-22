@@ -1,9 +1,14 @@
-import { spawn, type ChildProcess } from 'child_process';
+import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import { createHash } from 'crypto';
 import net from 'net';
 import os from 'os';
 import path from 'path';
-import type { CommandResult, IntegrationLogger } from './runtime.js';
+import {
+  buildManagedMegaServerCleanupEnv,
+  buildManagedMegaServerCleanupPowerShell,
+  supportsManagedMegaServerProcessControl,
+} from './megaWindowsProcessManager.js';
+import { runCommandInvocation, type CommandResult, type IntegrationLogger } from './runtime.js';
 
 const MCMD_REQCONFIRM = -60;
 const MCMD_REQSTRING = -61;
@@ -21,15 +26,25 @@ interface ManagedMegaServer {
   readonly key: string;
   readonly commandDirectory?: string;
   readonly pipeSuffix: string;
-  readonly child: ChildProcess | null;
+  child: ChildProcess | null;
   startPromise: Promise<void>;
   ready: boolean;
   exited: boolean;
 }
 
+const EXISTING_PIPE_CONNECT_TIMEOUT_MS = 500;
+const STARTUP_PIPE_CONNECT_TIMEOUT_MS = 250;
+const SERVER_START_TIMEOUT_MS = 12_000;
+const SERVER_START_POLL_INTERVAL_MS = 150;
+const SERVER_RECOVERY_PIPE_TIMEOUT_MS = 1_500;
+
 export interface MegaWindowsCommandClient {
   execute(request: MegaWindowsCommandRequest): Promise<CommandResult>;
   dispose?(): Promise<void>;
+}
+
+interface CleanupMegaServersOptions {
+  readonly currentServerCommand?: string;
 }
 
 export class MegaWindowsNamedPipeCommandClient implements MegaWindowsCommandClient {
@@ -44,8 +59,11 @@ export class MegaWindowsNamedPipeCommandClient implements MegaWindowsCommandClie
     try {
       return await this.executeOnce(server, request);
     } catch (error) {
+      if (!isMegaPipeTransportError(error)) {
+        throw error;
+      }
       this.logger.warn('Retrying MEGAcmd Windows pipe command after transport failure.', error);
-      server = await this.restartServer(key, request.commandDirectory);
+      server = await this.recoverServerAfterTransportError(key, server, request.commandDirectory);
       return this.executeOnce(server, request);
     }
   }
@@ -75,77 +93,70 @@ export class MegaWindowsNamedPipeCommandClient implements MegaWindowsCommandClie
     return this.startServer(key, commandDirectory);
   }
 
+  private async recoverServerAfterTransportError(
+    key: string,
+    server: ManagedMegaServer,
+    commandDirectory?: string
+  ): Promise<ManagedMegaServer> {
+    const pipeName = resolveMegaPipeName(this.username, server.pipeSuffix);
+    if (!server.exited && await canConnectToPipe(pipeName, SERVER_RECOVERY_PIPE_TIMEOUT_MS)) {
+      return server;
+    }
+    if (!server.child) {
+      this.servers.delete(key);
+      return this.ensureServer(key, commandDirectory);
+    }
+    return this.restartServer(key, commandDirectory);
+  }
+
   private async startServer(key: string, commandDirectory?: string): Promise<ManagedMegaServer> {
     const pipeSuffix = createStablePipeSuffix(key);
     const pipeName = resolveMegaPipeName(this.username, pipeSuffix);
-    if (await canConnectToPipe(pipeName, 500)) {
-      const existingServer: ManagedMegaServer = {
-        key,
-        commandDirectory,
-        pipeSuffix,
-        child: null,
-        ready: true,
-        exited: false,
-        startPromise: Promise.resolve(),
-      };
-      this.servers.set(key, existingServer);
-      return existingServer;
+    const existing = this.servers.get(key);
+    if (existing && !existing.exited) {
+      await existing.startPromise;
+      return existing;
     }
-
-    const serverCommand = resolveMegaServerCommand(commandDirectory);
-    const env = buildMegaServerEnvironment(commandDirectory, pipeSuffix);
-    const child = spawn(serverCommand, [], {
-      cwd: commandDirectory || undefined,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
 
     const server: ManagedMegaServer = {
       key,
       commandDirectory,
       pipeSuffix,
-      child,
+      child: null,
       ready: false,
       exited: false,
       startPromise: Promise.resolve(),
     };
+    this.servers.set(key, server);
 
-    server.startPromise = new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const startDeadline = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
+    if (await canConnectToPipe(pipeName, EXISTING_PIPE_CONNECT_TIMEOUT_MS)) {
+      server.ready = true;
+      server.startPromise = Promise.resolve();
+      return server;
+    }
+
+    const serverCommand = resolveMegaServerCommand(commandDirectory);
+    let startupFailure: Error | null = null;
+
+    server.startPromise = (async () => {
+      if (await canConnectToPipe(pipeName, EXISTING_PIPE_CONNECT_TIMEOUT_MS)) {
         server.ready = true;
-        resolve();
-      }, 2_000);
-      startDeadline.unref?.();
+        return;
+      }
 
-      const finishReady = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(startDeadline);
-        server.ready = true;
-        resolve();
-      };
-
-      const finishError = (error: Error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(startDeadline);
-        reject(error);
-      };
+      const env = buildMegaServerEnvironment(commandDirectory, pipeSuffix);
+      const child = spawn(serverCommand, ['--skip-lock-check'], {
+        cwd: commandDirectory || undefined,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      server.child = child;
 
       child.stdout?.on('data', (chunk: Buffer | string) => {
         const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
         if (/Listening to petitions/i.test(text)) {
-          finishReady();
+          server.ready = true;
         }
       });
 
@@ -157,27 +168,31 @@ export class MegaWindowsNamedPipeCommandClient implements MegaWindowsCommandClie
       });
 
       child.once('error', (error) => {
-        server.exited = true;
-        this.servers.delete(key);
-        finishError(error instanceof Error ? error : new Error(String(error)));
+        startupFailure = error instanceof Error ? error : new Error(String(error));
+        server.child = null;
       });
 
       child.once('exit', (code, signal) => {
-        server.exited = true;
-        server.ready = false;
-        this.servers.delete(key);
-        if (!settled) {
-          finishError(
-            new Error(`MEGAcmdServer exited before becoming ready (code=${code ?? 'null'}, signal=${signal ?? 'null'}).`)
+        server.child = null;
+        if (!server.ready) {
+          startupFailure = new Error(
+            `MEGAcmdServer exited before the pipe became ready (code=${code ?? 'null'}, signal=${signal ?? 'null'}).`
           );
           return;
         }
         const detail = `MEGAcmdServer exited (code=${code ?? 'null'}, signal=${signal ?? 'null'}).`;
         this.logger.warn(detail);
       });
-    });
 
-    this.servers.set(key, server);
+      try {
+        await waitForMegaPipeReady(pipeName, SERVER_START_TIMEOUT_MS);
+        server.ready = true;
+      } catch (error) {
+        server.exited = true;
+        this.servers.delete(key);
+        throw startupFailure ?? (error instanceof Error ? error : new Error(String(error)));
+      }
+    })();
     await server.startPromise;
     return server;
   }
@@ -386,6 +401,26 @@ async function canConnectToPipe(pipePath: string, timeoutMs: number): Promise<bo
   }
 }
 
+async function waitForMegaPipeReady(pipePath: string, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now();
+  let lastError: Error | null = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    try {
+      const socket = await connectToPipeOnce(
+        pipePath,
+        Math.max(50, Math.min(STARTUP_PIPE_CONNECT_TIMEOUT_MS, remainingMs))
+      );
+      socket.destroy();
+      return;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      await delay(Math.min(SERVER_START_POLL_INTERVAL_MS, Math.max(25, remainingMs)));
+    }
+  }
+  throw new Error(`Timed out waiting for MEGAcmd pipe ${pipePath}: ${lastError?.message ?? 'unknown error'}`);
+}
+
 async function connectToPipeOnce(pipePath: string, timeoutMs: number): Promise<net.Socket> {
   return new Promise<net.Socket>((resolve, reject) => {
     const socket = net.connect(pipePath);
@@ -463,6 +498,68 @@ function resolveWindowsMegaUsername(): string {
   return os.userInfo().username || process.env.USERNAME?.trim() || 'unknown';
 }
 
+export async function cleanupNearbytesManagedMegaServers(
+  logger: IntegrationLogger,
+  options: CleanupMegaServersOptions = {}
+): Promise<void> {
+  if (!supportsManagedMegaServerProcessControl()) {
+    return;
+  }
+
+  try {
+    const result = await runCommandInvocation({
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-NonInteractive', '-Command', buildCleanupMegaServersPowerShell()],
+      env: buildCleanupMegaServersEnv(options),
+      timeoutMs: 15_000,
+    });
+    const detail = result.stdout.trim();
+    if (detail) {
+      logger.warn(`[MEGAcmdServer] terminated Nearbytes-managed daemons:\n${detail}`);
+    }
+  } catch (error) {
+    logger.warn('[MEGAcmdServer] failed to terminate Nearbytes-managed daemons.', error);
+  }
+}
+
+export function cleanupNearbytesManagedMegaServersSync(
+  logger: IntegrationLogger,
+  options: CleanupMegaServersOptions = {}
+): void {
+  if (!supportsManagedMegaServerProcessControl()) {
+    return;
+  }
+  try {
+    const stdout = execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', buildCleanupMegaServersPowerShell()],
+      {
+        env: {
+          ...process.env,
+          ...buildCleanupMegaServersEnv(options),
+        },
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15_000,
+      }
+    );
+    const detail = stdout.trim();
+    if (detail) {
+      logger.warn(`[MEGAcmdServer] terminated Nearbytes-managed daemons during process exit:\n${detail}`);
+    }
+  } catch (error) {
+    logger.warn('[MEGAcmdServer] failed to terminate Nearbytes-managed daemons during process exit.', error);
+  }
+}
+
+function buildCleanupMegaServersPowerShell(): string {
+  return buildManagedMegaServerCleanupPowerShell();
+}
+
+function buildCleanupMegaServersEnv(options: CleanupMegaServersOptions): Record<string, string> {
+  return buildManagedMegaServerCleanupEnv(options);
+}
+
 function delay(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
@@ -473,4 +570,15 @@ function delay(timeoutMs: number): Promise<void> {
 function isIgnorablePipeTerminationError(error: Error): boolean {
   const withCode = error as Error & { code?: string };
   return withCode.code === 'EPIPE' || withCode.code === 'ECONNRESET';
+}
+
+function isMegaPipeTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const withCode = error as Error & { code?: string };
+  if (withCode.code === 'EPIPE' || withCode.code === 'ECONNRESET' || withCode.code === 'ENOENT') {
+    return true;
+  }
+  return /MEGAcmd pipe|pipe closed|MEGAcmdServer exited before the pipe became ready/i.test(error.message);
 }

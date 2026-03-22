@@ -206,6 +206,9 @@ const uiDebugActionSchema = z.discriminatedUnion('type', [
     waitForLoad: z.boolean().optional(),
   }),
   z.object({
+    type: z.literal('quitApp'),
+  }),
+  z.object({
     type: z.literal('waitFor'),
     selector: z.string().trim().min(1, 'UI debug selector is required'),
     state: z.enum(['present', 'visible', 'hidden']).optional(),
@@ -243,6 +246,11 @@ const uiDebugActionSchema = z.discriminatedUnion('type', [
     selector: z.string().trim().min(1).optional(),
     fullPage: z.boolean().optional(),
   }),
+  z.object({
+    type: z.literal('snapshotDom'),
+    selector: z.string().trim().min(1).optional(),
+    maxLength: z.number().int().positive().max(2_000_000).optional(),
+  }),
 ]);
 
 export const runUiDebugActionsBodySchema = z.object({
@@ -254,6 +262,11 @@ export const uiDebugScreenshotBodySchema = z.object({
   path: z.string().trim().min(1).optional(),
   selector: z.string().trim().min(1).optional(),
   fullPage: z.boolean().optional().default(false),
+});
+
+export const uiDebugDomSnapshotBodySchema = z.object({
+  selector: z.string().trim().min(1).optional(),
+  maxLength: z.number().int().positive().max(2_000_000).optional(),
 });
 
 /**

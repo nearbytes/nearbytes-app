@@ -575,6 +575,410 @@ describe('MegaTransportAdapter', () => {
     });
   });
 
+  it('keeps the Windows named-pipe transport preference when login is still settling', async () => {
+    const secretStore = createMemorySecretStore();
+    const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
+    tempDirs.push(commandDirectory);
+    await fs.writeFile(path.join(commandDirectory, 'MegaClient.exe'), '');
+
+    const attemptedSubcommands: string[] = [];
+    const fallbackSubcommands: string[] = [];
+    let pipeLoginCount = 0;
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: {
+        async run(invocation) {
+          const args = [...(invocation.args ?? [])];
+          if (basename(invocation.command).toLowerCase() === 'megaclient.exe') {
+            attemptedSubcommands.push(args[0] ?? '');
+          }
+          return {
+            stdout: '',
+            stderr: 'Unable to execute: C:\\Users\\Example\\AppData\\Local\\MEGAcmd\\MEGAcmdServer.exe errno = : 5\nMEGAcmd Server not running. Initiating in the background...\n',
+            exitCode: 1,
+          };
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+        commandDirectory,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(
+      runtime,
+      undefined,
+      {
+        async execute(request) {
+          fallbackSubcommands.push(request.subcommand);
+          if (request.subcommand === 'login') {
+            pipeLoginCount += 1;
+            if (pipeLoginCount > 1) {
+              return {
+                stdout: '',
+                stderr: 'command not valid while login in: login\n',
+                exitCode: 1,
+              };
+            }
+            return { stdout: 'OK\n', stderr: '', exitCode: 0 };
+          }
+          if (request.subcommand === 'session') {
+            return {
+              stdout: 'Your (secret) session is: mega-session-token\n',
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          throw new Error(`Unexpected fallback command: ${request.subcommand}`);
+        },
+      }
+    );
+
+    const connected = await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+
+    expect(connected.status).toBe('connected');
+
+    const connectedAgain = await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+
+    expect(connectedAgain.status).toBe('connected');
+    expect(attemptedSubcommands).toEqual(['login']);
+    expect(fallbackSubcommands).toEqual(['login', 'session', 'login', 'login', 'login', 'login', 'session']);
+  });
+
+  it('retries transient MEGAcmd startup failures before surfacing a sync-state error', async () => {
+    const secretStore = createMemorySecretStore();
+    const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
+    tempDirs.push(commandDirectory);
+    await fs.writeFile(path.join(commandDirectory, 'MegaClient.exe'), '');
+
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [
+        {
+          id: '1',
+          localPath: '/tmp/nearbytes',
+          remotePath: '/nearbytes',
+          runState: 'Running',
+          status: 'Synced',
+          error: '',
+        },
+      ],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+    };
+
+    let sessionAttempts = 0;
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: {
+        async run(invocation) {
+          const args = [...(invocation.args ?? [])];
+          if (basename(invocation.command).toLowerCase() === 'megaclient.exe' && args[0] === 'session' && sessionAttempts < 2) {
+            sessionAttempts += 1;
+            return {
+              stdout: '',
+              stderr: 'Unable to execute: C:\\Users\\Example\\AppData\\Local\\MEGAcmd\\MEGAcmdServer.exe errno = : 5\nMEGAcmd Server not running. Initiating in the background...\n',
+              exitCode: 1,
+            };
+          }
+          return createFakeMegaExecutor(megaState).run(invocation);
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+        commandDirectory,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, undefined, {
+      async execute(request) {
+        if (request.subcommand === 'sync') {
+          return {
+            stdout: 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n1\t/tmp/nearbytes\t/nearbytes\tRunning\tSynced\t\n',
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        return {
+          stdout: '',
+          stderr: 'command not valid while login in: session\n',
+          exitCode: 1,
+        };
+      },
+    });
+
+    await secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/tmp/nearbytes',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('ready');
+    expect(sessionAttempts).toBe(1);
+  });
+
+  it('reports MEGA share recovery as syncing while the local helper is still starting', async () => {
+    const secretStore = createMemorySecretStore();
+    const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
+    tempDirs.push(commandDirectory);
+    await fs.writeFile(path.join(commandDirectory, 'MegaClient.exe'), '');
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: {
+        async run() {
+          return {
+            stdout: '',
+            stderr: 'Unable to execute: C:\\Users\\Example\\AppData\\Local\\MEGAcmd\\MEGAcmdServer.exe errno = : 5\nMEGAcmd Server not running. Initiating in the background...\n',
+            exitCode: 1,
+          };
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+        commandDirectory,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, undefined, {
+      async execute() {
+        return {
+          stdout: '',
+          stderr: 'command not valid while login in: session\n',
+          exitCode: 1,
+        };
+      },
+    });
+
+    await secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'recipient',
+      localPath: '/tmp/nearbytes',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: 'owner@example.com:nearbytes',
+        shareName: 'nearbytes',
+        ownerEmail: 'owner@example.com',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('syncing');
+    expect(state.detail).not.toContain('MEGAcmd Server not running');
+  });
+
+  it('temporarily disables the Windows named-pipe fallback after a transport failure', async () => {
+    const megaState = {
+      sessionToken: 'mega-session-token',
+      syncs: [
+        {
+          id: '1',
+          localPath: '/tmp/nearbytes',
+          remotePath: '/nearbytes',
+          runState: 'Running',
+          status: 'Synced',
+          error: '',
+        },
+      ],
+      invitedEmails: [] as string[],
+      shareCommands: [] as string[][],
+      acceptedOwners: [] as string[],
+      createdFolders: [] as string[],
+      deletedSyncIds: [] as string[],
+      findResults: new Map<string, string>(),
+      observedPaths: [] as string[],
+    };
+
+    let pipePrimed = false;
+    let pipeSyncCalls = 0;
+    const attemptedSubcommands: string[] = [];
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: {
+        async run(invocation) {
+          const args = [...(invocation.args ?? [])];
+          const rawCommand = basename(invocation.command);
+          if (rawCommand === 'MegaClient.exe') {
+            attemptedSubcommands.push(args[0] ?? '');
+            if (!pipePrimed && args[0] === 'login') {
+              return {
+                stdout: '',
+                stderr: 'Unable to execute: C:\\Users\\Example\\AppData\\Local\\MEGAcmd\\MEGAcmdServer.exe errno = : 5\nMEGAcmd Server not running. Initiating in the background...\n',
+                exitCode: 1,
+              };
+            }
+          }
+          return createFakeMegaExecutor(megaState).run(invocation);
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(
+      runtime,
+      undefined,
+      {
+        async execute(request) {
+          if (request.subcommand === 'login') {
+            return { stdout: 'OK\n', stderr: '', exitCode: 0 };
+          }
+          if (request.subcommand === 'session') {
+            pipePrimed = true;
+            return {
+              stdout: 'Your (secret) session is: mega-session-token\n',
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          if (request.subcommand === 'sync') {
+            pipeSyncCalls += 1;
+            throw new Error('Timed out connecting to MEGAcmd pipe \\\\.\\pipe\\megacmdpipe_test: Timed out connecting to pipe \\\\.\\pipe\\megacmdpipe_test.');
+          }
+          throw new Error(`Unexpected fallback command: ${request.subcommand}`);
+        },
+      }
+    );
+
+    await adapter.connect({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'Main MEGA',
+      credentials: {
+        email: 'owner@mega.example',
+        password: 'secret-password',
+      },
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/tmp/nearbytes',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    await adapter.getState(share, account);
+    await adapter.getState(share, account);
+
+    expect(pipeSyncCalls).toBe(1);
+    expect(attemptedSubcommands).toContain('sync');
+  });
+
   it('does not re-login on every state refresh once a MEGA session is attached', async () => {
     const megaState = {
       sessionToken: 'mega-session-token',

@@ -78,6 +78,10 @@ const MANAGED_SHARE_CONTAINER_RESERVED_NAMES = new Set<string>(['.debris', MEGA_
 const MANAGED_SHARE_DEBRIS_ROOT_NAME = '.debris';
 const BACKGROUND_MAINTENANCE_SCHEMA_VERSION = 1;
 const BACKGROUND_MAINTENANCE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 750;
+const FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 6_000;
+const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
+const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
 
 export class ManagedShareServiceError extends Error {
   constructor(
@@ -188,8 +192,10 @@ export class ManagedShareService {
         preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
       };
     }
-    this.requestBackgroundMaintenance('listAccounts', state);
-    this.scheduleManagedShareSyncs(state);
+    if (options.fast !== true) {
+      this.requestBackgroundMaintenance('listAccounts', state);
+      this.scheduleManagedShareSyncs(state);
+    }
     const setupStates = options.fast
       ? this.fallbackProviderSetupStates()
       : await this.withSoftTimeout(
@@ -368,10 +374,12 @@ export class ManagedShareService {
             'Managed share inventory refresh timed out; using the last known share state.'
           )
         : state;
-    if (this.readMaintenanceMode === 'background') {
+    if (this.readMaintenanceMode === 'background' && options.fast !== true) {
       this.requestBackgroundMaintenance('listManagedShares', preparedState);
     }
-    this.scheduleManagedShareSyncs(preparedState);
+    if (options.fast !== true) {
+      this.scheduleManagedShareSyncs(preparedState);
+    }
     const visibleShares = preparedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     const config = this.options.storage.getRootsConfig();
     const runtime = await this.withSoftTimeout(
@@ -383,6 +391,9 @@ export class ManagedShareService {
       2_500,
       'Managed share runtime snapshot timed out; using fallback runtime state.'
     );
+    const summaryTimeoutMs = preferFastRemoteDetails
+      ? FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS
+      : FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS;
     const summaries = await Promise.all(
       visibleShares.map((share) =>
         this.withSoftTimeout(
@@ -395,7 +406,7 @@ export class ManagedShareService {
             skipRemoteChecks: options.fast === true,
           }),
           this.fallbackManagedShareSummary(share, config, runtime, preparedState),
-          1_500,
+          summaryTimeoutMs,
           `Managed share summary timed out for ${share.id}`
         )
       )
@@ -436,14 +447,14 @@ export class ManagedShareService {
             'Incoming managed share refresh timed out; using the last known state.'
           )
         : state;
-    if (this.readMaintenanceMode === 'background') {
-      this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState);
-    }
     if (options.fast === true) {
       return {
         shares: [],
       };
     }
+      if (this.readMaintenanceMode === 'background') {
+        this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState);
+      }
     const attachedKeys = buildAttachedShareKeys(preparedState.managedShares);
     const offers = await Promise.all(
       preparedState.accounts
@@ -1234,6 +1245,14 @@ export class ManagedShareService {
     };
   }
 
+  private buildSyncBootstrapState(share: ManagedShare): TransportState {
+    return {
+      status: 'syncing',
+      detail: `Nearbytes is preparing this ${defaultProviderLabel(normalizeProvider(share.provider))} shared location locally.`,
+      badges: ['Syncing'],
+    };
+  }
+
   private fallbackCollaborators(share: ManagedShare): ManagedShareCollaborator[] {
     return uniqueStrings(share.invitationEmails).map((email) => ({
       label: email,
@@ -1705,7 +1724,9 @@ export class ManagedShareService {
     const preferFastRemoteDetails = options.preferFastRemoteDetails === true;
     const skipAncillaryRemoteDetails = options.skipAncillaryRemoteDetails === true;
     const skipRemoteChecks = options.skipRemoteChecks === true;
-    const transportStateTimeoutMs = preferFastRemoteDetails ? 750 : 6_000;
+    const transportStateTimeoutMs = preferFastRemoteDetails
+      ? FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS
+      : FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS;
     if (skipRemoteChecks) {
       return {
         share,
@@ -1771,6 +1792,9 @@ export class ManagedShareService {
         detail: 'The local share folder is missing or invalid.',
         badges: ['Repair'],
       };
+    }
+    if (this.syncBootstrapTasks.has(share.id)) {
+      return this.buildSyncBootstrapState(share);
     }
     if (adapter?.getState) {
       try {

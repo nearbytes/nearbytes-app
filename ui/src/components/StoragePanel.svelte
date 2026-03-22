@@ -129,6 +129,7 @@
   const DISCOVERY_SCAN_MAX_DIRECTORIES = 600;
   const PANEL_REQUEST_TIMEOUT_MS = 8_000;
   const INITIAL_ROOTS_REQUEST_TIMEOUT_MS = 2_500;
+  const BACKGROUND_ROOTS_FALLBACK_TIMEOUT_MS = 2_500;
   const INITIAL_ROOTS_REQUEST_MAX_WAIT_MS = 20_000;
   const INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS = 500;
   const DEFAULT_DESTINATION: VolumeDestinationConfig = {
@@ -147,6 +148,7 @@
   let loading = $state(true);
   let errorMessage = $state('');
   let successMessage = $state('');
+  let startupRecoveryMessage = $state('');
   let discoveryLoading = $state(false);
   let discoveryError = $state('');
   let discoveredSources = $state<DiscoveredNearbytesSource[]>([]);
@@ -270,6 +272,7 @@
   let runtimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let backfillPollTimer: ReturnType<typeof setTimeout> | null = null;
   let megaRuntimeLogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let startupLoadRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let runtimeRefreshInFlight = false;
   let backfillPollIdleRounds = 0;
   let lastBackfillProgressSignature = '';
@@ -311,6 +314,10 @@
     if (megaRuntimeLogRefreshTimer) {
       clearTimeout(megaRuntimeLogRefreshTimer);
       megaRuntimeLogRefreshTimer = null;
+    }
+    if (startupLoadRetryTimer) {
+      clearTimeout(startupLoadRetryTimer);
+      startupLoadRetryTimer = null;
     }
     sourceWatchConnection?.close();
     sourceWatchConnection = null;
@@ -3143,6 +3150,11 @@
   async function loadPanel(options?: { background?: boolean }) {
     const keepVisible = options?.background === true && configDraft !== null;
     const hadProviderData = providerCatalog.length > 0 || providerAccounts.length > 0;
+    let preserveLoadingState = false;
+    if (startupLoadRetryTimer) {
+      clearTimeout(startupLoadRetryTimer);
+      startupLoadRetryTimer = null;
+    }
     if (!keepVisible) {
       loading = true;
       errorMessage = '';
@@ -3150,6 +3162,7 @@
     }
     try {
       const rootsResponse = await loadRootsConfigWithRetry({ keepVisible });
+      startupRecoveryMessage = '';
       applyRootsResponse(rootsResponse);
 
       providersLoading = true;
@@ -3244,11 +3257,6 @@
 
       await Promise.allSettled([accountsPromise, sharesPromise, incomingSharesPromise, incomingInvitesPromise]);
 
-      const delayedMessages = [shareLoadError, incomingLoadError].filter((value) => value.trim() !== '');
-      if (delayedMessages.length > 0) {
-        errorMessage = delayedMessages[0]!;
-      }
-
       if (!keepVisible) {
         setTimeout(() => {
           void loadPanel({ background: true });
@@ -3261,12 +3269,41 @@
       }
       void refreshDiscoverySuggestions();
     } catch (error) {
+      if (keepVisible && isRetriableStorageStartupError(error)) {
+        return;
+      }
+      if (!keepVisible && isRetriableStorageStartupError(error)) {
+        preserveLoadingState = true;
+        errorMessage = '';
+        startupRecoveryMessage = 'Nearbytes is still preparing your storage locations. It will keep retrying automatically.';
+        scheduleStartupLoadRetry();
+        return;
+      }
       errorMessage = error instanceof Error ? error.message : 'Failed to load storage locations';
+      startupRecoveryMessage = '';
     } finally {
       if (!keepVisible) {
-        loading = false;
+        loading = preserveLoadingState;
       }
     }
+  }
+
+  function scheduleStartupLoadRetry(delayMs = 1_500): void {
+    if (startupLoadRetryTimer) {
+      clearTimeout(startupLoadRetryTimer);
+    }
+    startupLoadRetryTimer = setTimeout(() => {
+      startupLoadRetryTimer = null;
+      void loadPanel();
+    }, delayMs);
+  }
+
+  async function requestRootsConfig(includeUsage: boolean, timeoutMs: number) {
+    return withPanelRequestTimeout(
+      'Storage configuration',
+      (signal) => getRootsConfig({ signal, includeUsage }),
+      timeoutMs
+    );
   }
 
   async function loadRootsConfigWithRetry(options: { keepVisible: boolean }) {
@@ -3277,13 +3314,16 @@
 
     while (Date.now() - startedAt < maxWaitMs) {
       try {
-        return await withPanelRequestTimeout(
-          'Storage configuration',
-          (signal) => getRootsConfig({ signal, includeUsage: options.keepVisible }),
-          timeoutMs
-        );
+        return await requestRootsConfig(options.keepVisible, timeoutMs);
       } catch (error) {
         lastError = error;
+        if (options.keepVisible && isRetriableStorageStartupError(error)) {
+          try {
+            return await requestRootsConfig(false, BACKGROUND_ROOTS_FALLBACK_TIMEOUT_MS);
+          } catch (fallbackError) {
+            lastError = fallbackError;
+          }
+        }
         if (!isRetriableStorageStartupError(error) || options.keepVisible) {
           break;
         }
@@ -4033,6 +4073,9 @@
 {#if loading && !configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
     <p class="storage-message">Loading storage locations...</p>
+    {#if startupRecoveryMessage}
+      <p class="storage-message">{startupRecoveryMessage}</p>
+    {/if}
     {#if errorMessage}
       <p class="panel-error">{errorMessage}</p>
     {/if}

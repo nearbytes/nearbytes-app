@@ -65,6 +65,7 @@ import {
   renameFolderBodySchema,
   runUiDebugActionsBodySchema,
   sourceIdParamSchema,
+  uiDebugDomSnapshotBodySchema,
   uiDebugScreenshotBodySchema,
   sendChatMessageBodySchema,
   uploadFieldsSchema,
@@ -603,6 +604,25 @@ export function createRoutes(deps: RouteDependencies): Router {
             path: input.path,
             selector: input.selector,
             fullPage: input.fullPage,
+          },
+        ],
+        stopOnError: true,
+      })
+    );
+  }));
+
+  router.post('/__debug/ui/dom', asyncHandler(async (req, res) => {
+    if (!deps.uiDebugExecutor) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Desktop UI DOM snapshots are not available in this runtime.');
+    }
+    const input = parseWithSchema(uiDebugDomSnapshotBodySchema, req.body);
+    res.json(
+      await deps.uiDebugExecutor.run({
+        actions: [
+          {
+            type: 'snapshotDom',
+            selector: input.selector,
+            maxLength: input.maxLength,
           },
         ],
         stopOnError: true,

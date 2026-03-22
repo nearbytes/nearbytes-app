@@ -79,6 +79,8 @@ interface MegaAuthSession extends ProviderAuthSession {
 }
 
 const MEGA_AUTH_SESSION_TTL_MS = 1000 * 60 * 30;
+const MEGA_TRANSIENT_STARTUP_RETRY_LIMIT = 3;
+const MEGA_TRANSIENT_STARTUP_RETRY_DELAY_MS = 250;
 
 export class MegaTransportAdapter {
   readonly provider = 'mega';
@@ -92,6 +94,7 @@ export class MegaTransportAdapter {
   private readonly pullTasks = new Map<string, Promise<void>>();
   private readonly activeSessionTokens = new Map<string, string>();
   private readonly sessionLoginTasks = new Map<string, Promise<void>>();
+  private readonly windowsPipeDisabledUntil = new Map<string, number>();
   private readOnlySyncSupport:
     | {
         readonly commandDirectory: string | undefined;
@@ -128,6 +131,7 @@ export class MegaTransportAdapter {
     this.activeSessionTokens.clear();
     this.sessionLoginTasks.clear();
     this.authSessions.clear();
+    this.windowsPipeDisabledUntil.clear();
     this.readOnlySyncSupport = undefined;
     this.preferredWindowsPipeCommandDirectory = undefined;
     await this.windowsCommandClient.dispose?.();
@@ -366,6 +370,9 @@ export class MegaTransportAdapter {
         await this.ensureLoggedIn(account.id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (isMegaTransientStartupError(message)) {
+          return buildMegaTransientStartupState(share, this.runtime.now());
+        }
         const needsAuth = /login|session|auth|401|not connected/i.test(message);
         return {
           status: needsAuth ? 'needs-auth' : 'attention',
@@ -452,6 +459,10 @@ export class MegaTransportAdapter {
         await this.ensureLoggedIn(account.id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (isMegaTransientStartupError(message)) {
+          this.syncStates.set(share.id, buildMegaTransientStartupState(share, this.runtime.now()));
+          return;
+        }
         const needsAuth = /login|session|auth|401|not connected/i.test(message);
         this.syncStates.set(share.id, {
           status: needsAuth ? 'needs-auth' : 'attention',
@@ -681,6 +692,12 @@ export class MegaTransportAdapter {
       : [input.email, input.password];
     await this.runMega('login', loginArgs, {
       timeoutMs: 60_000,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already logged in|command not valid while login in: login|session is not ready for this command yet/i.test(message)) {
+        return;
+      }
+      throw error;
     });
     const sessionToken = await this.readSessionToken();
     await this.runtime.secretStore.set(megaSessionSecretKey(input.accountId), {
@@ -710,6 +727,10 @@ export class MegaTransportAdapter {
       this.syncStates.set(share.id, state);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (isMegaTransientStartupError(message)) {
+        this.syncStates.set(share.id, buildMegaTransientStartupState(share, this.runtime.now()));
+        return;
+      }
       const needsAuth = /login|session|auth|401/i.test(message);
       this.syncStates.set(share.id, {
         status: needsAuth ? 'needs-auth' : 'attention',
@@ -881,7 +902,7 @@ export class MegaTransportAdapter {
       timeoutMs: 60_000,
     }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      if (/already logged in|command not valid while login in: login/i.test(message)) {
+      if (/already logged in|command not valid while login in: login|session is not ready for this command yet/i.test(message)) {
         return;
       }
       throw error;
@@ -1035,20 +1056,34 @@ export class MegaTransportAdapter {
   ): Promise<{ stdout: string; stderr: string }> {
     let installAttempted = false;
     let restartAttempted = false;
+    let transientStartupRetryCount = 0;
     while (true) {
       const commandDirectory = await this.installer.getCommandDirectory();
       if (this.shouldPreferWindowsPipeClient(commandDirectory)) {
         try {
           const result = await this.runMegaWithWindowsPipeClient(commandDirectory, subcommand, args, options);
           if (result.exitCode !== 0) {
-            throw new Error(extractMegaError(result.stderr || result.stdout || `${subcommand} failed`));
+            const rawOutput = result.stderr || result.stdout || `${subcommand} failed`;
+            if (
+              transientStartupRetryCount < MEGA_TRANSIENT_STARTUP_RETRY_LIMIT &&
+              isMegaTransientStartupError(rawOutput)
+            ) {
+              transientStartupRetryCount += 1;
+              await delay(MEGA_TRANSIENT_STARTUP_RETRY_DELAY_MS);
+              continue;
+            }
+            throw new Error(extractMegaError(rawOutput));
           }
           return {
             stdout: result.stdout,
             stderr: result.stderr,
           };
         } catch (error) {
+          if (!isMegaWindowsPipeTransportFailure(error)) {
+            throw error;
+          }
           this.clearWindowsPipeClientPreference(commandDirectory);
+          this.disableWindowsPipeClient(commandDirectory);
           this.runtime.logger.warn('Falling back to the MEGA CLI client after a Windows named-pipe transport failure.', error);
         }
       }
@@ -1070,13 +1105,30 @@ export class MegaTransportAdapter {
           const rawOutput = result.stderr || result.stdout || `${subcommand} failed`;
           const pipeFallback = await this.tryWindowsPipeFallback(commandDirectory, subcommand, args, options, rawOutput);
           if (pipeFallback) {
+            const pipeOutput = pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`;
             if (pipeFallback.exitCode !== 0) {
-              throw new Error(extractMegaError(pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`));
+              if (
+                transientStartupRetryCount < MEGA_TRANSIENT_STARTUP_RETRY_LIMIT &&
+                isMegaTransientStartupError(pipeOutput)
+              ) {
+                transientStartupRetryCount += 1;
+                await delay(MEGA_TRANSIENT_STARTUP_RETRY_DELAY_MS);
+                continue;
+              }
+              throw new Error(extractMegaError(pipeOutput));
             }
             return {
               stdout: pipeFallback.stdout,
               stderr: pipeFallback.stderr,
             };
+          }
+          if (
+            transientStartupRetryCount < MEGA_TRANSIENT_STARTUP_RETRY_LIMIT &&
+            isMegaTransientStartupError(rawOutput)
+          ) {
+            transientStartupRetryCount += 1;
+            await delay(MEGA_TRANSIENT_STARTUP_RETRY_DELAY_MS);
+            continue;
           }
           if (!restartAttempted && isMegaRecoverableCommandError(rawOutput)) {
             restartAttempted = await this.restartMegaServer(commandDirectory);
@@ -1099,13 +1151,30 @@ export class MegaTransportAdapter {
         const message = error instanceof Error ? error.message : String(error);
         const pipeFallback = await this.tryWindowsPipeFallback(commandDirectory, subcommand, args, options, message);
         if (pipeFallback) {
+          const pipeOutput = pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`;
           if (pipeFallback.exitCode !== 0) {
-            throw new Error(extractMegaError(pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`));
+            if (
+              transientStartupRetryCount < MEGA_TRANSIENT_STARTUP_RETRY_LIMIT &&
+              isMegaTransientStartupError(pipeOutput)
+            ) {
+              transientStartupRetryCount += 1;
+              await delay(MEGA_TRANSIENT_STARTUP_RETRY_DELAY_MS);
+              continue;
+            }
+            throw new Error(extractMegaError(pipeOutput));
           }
           return {
             stdout: pipeFallback.stdout,
             stderr: pipeFallback.stderr,
           };
+        }
+        if (
+          transientStartupRetryCount < MEGA_TRANSIENT_STARTUP_RETRY_LIMIT &&
+          isMegaTransientStartupError(message)
+        ) {
+          transientStartupRetryCount += 1;
+          await delay(MEGA_TRANSIENT_STARTUP_RETRY_DELAY_MS);
+          continue;
         }
         if (!restartAttempted && isMegaRecoverableCommandError(message)) {
           restartAttempted = await this.restartMegaServer(commandDirectory);
@@ -1125,6 +1194,9 @@ export class MegaTransportAdapter {
     if (process.platform !== 'win32') {
       return false;
     }
+    if (!this.canUseWindowsPipeClient(commandDirectory)) {
+      return false;
+    }
     if (!this.preferredWindowsPipeCommandDirectory) {
       return false;
     }
@@ -1135,6 +1207,7 @@ export class MegaTransportAdapter {
     if (process.platform !== 'win32') {
       return;
     }
+    this.windowsPipeDisabledUntil.delete(normalizeMegaCommandDirectoryKey(commandDirectory));
     this.preferredWindowsPipeCommandDirectory = normalizeMegaCommandDirectoryKey(commandDirectory);
   }
 
@@ -1143,6 +1216,24 @@ export class MegaTransportAdapter {
       return;
     }
     this.preferredWindowsPipeCommandDirectory = undefined;
+  }
+
+  private canUseWindowsPipeClient(commandDirectory: string | undefined): boolean {
+    if (process.platform !== 'win32') {
+      return false;
+    }
+    const disabledUntil = this.windowsPipeDisabledUntil.get(normalizeMegaCommandDirectoryKey(commandDirectory)) ?? 0;
+    return disabledUntil <= this.runtime.now();
+  }
+
+  private disableWindowsPipeClient(commandDirectory: string | undefined): void {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    this.windowsPipeDisabledUntil.set(
+      normalizeMegaCommandDirectoryKey(commandDirectory),
+      this.runtime.now() + 60_000
+    );
   }
 
   private async tryWindowsPipeFallback(
@@ -1155,11 +1246,17 @@ export class MegaTransportAdapter {
     if (!shouldUseWindowsPipeFallback(rawOutput)) {
       return null;
     }
+    if (!this.canUseWindowsPipeClient(commandDirectory)) {
+      return null;
+    }
     try {
       const result = await this.runMegaWithWindowsPipeClient(commandDirectory, subcommand, args, options);
       this.preferWindowsPipeClient(commandDirectory);
       return result;
     } catch (error) {
+      if (isMegaWindowsPipeTransportFailure(error)) {
+        this.disableWindowsPipeClient(commandDirectory);
+      }
       this.runtime.logger.warn('Failed to execute MEGA command through the Windows named-pipe transport.', error);
       return null;
     }
@@ -1793,6 +1890,43 @@ function isMegaRecoverableCommandError(value: string): boolean {
   );
 }
 
+function isMegaTransientStartupError(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /MEGAcmd Server not running\. Initiating in the background/i.test(normalized) ||
+    /Unable to execute: .*MEGAcmdServer\.exe/i.test(normalized) ||
+    /command not valid while login in:\s*\w+/i.test(normalized) ||
+    /session is not ready for this command yet/i.test(normalized)
+  );
+}
+
+function buildMegaTransientStartupState(share: ManagedShare, capturedAt: number): TransportState {
+  const detail = 'Nearbytes is starting the local MEGA helper and recovering the session.';
+  return {
+    status: 'syncing',
+    detail,
+    badges: ['Syncing'],
+    lastSyncAt: capturedAt,
+    diagnostic: buildMegaDiagnostic({
+      code: 'mega-starting',
+      title: 'Starting local MEGA helper',
+      summary: 'Nearbytes is bringing the local MEGAcmd session online for this shared location.',
+      detail,
+      share,
+    }, capturedAt),
+  };
+}
+
+function delay(timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+  });
+}
+
 function resolveMegaServerCommand(
   commandDirectory: string | undefined,
   platform: NodeJS.Platform = process.platform
@@ -1830,6 +1964,13 @@ function shouldUseWindowsPipeFallback(value: string): boolean {
     /Failed to access server:\s*5/i.test(normalized) ||
     /named pipe not valid/i.test(normalized)
   );
+}
+
+function isMegaWindowsPipeTransportFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /MEGAcmd pipe|MEGAcmdServer exited before the pipe became ready|named-pipe transport/i.test(error.message);
 }
 
 function stripTrailingMegaNulls(value: string): string {

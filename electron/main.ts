@@ -11,6 +11,14 @@ import { generateDesktopApiToken } from './security.js';
 import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
 import { debugTriggerUpdateInstall, getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
 import { APP_CONFIG } from '../src/config/appConfig.js';
+import {
+  buildManagedMegaServerWatchdogPowerShell,
+  supportsManagedMegaServerProcessControl,
+} from '../src/integrations/megaWindowsProcessManager.js';
+import {
+  cleanupNearbytesManagedMegaServers,
+  cleanupNearbytesManagedMegaServersSync,
+} from '../src/integrations/megaWindowsPipeClient.js';
 import type { CommandExecutor } from '../src/integrations/runtime.js';
 import type { UiDebugAction, UiDebugActionResult, UiDebugExecutor, UiDebugRunRequest, UiDebugRunResponse } from '../src/server/uiDebug.js';
 
@@ -79,6 +87,7 @@ interface DesktopElementState {
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEEP_LINK_PROTOCOL = 'nearbytes';
 const DESKTOP_RUNTIME_LOG_TAIL_BYTES = 64 * 1024;
+const DESKTOP_FORCE_EXIT_TIMEOUT_MS = 5_000;
 const execFileAsync = promisify(execFile);
 
 applyDebugFlagFromArgv(process.argv);
@@ -180,10 +189,15 @@ process.once('SIGTERM', () => {
   void handleTerminationSignal('SIGTERM', 143);
 });
 
+process.once('exit', () => {
+  cleanupNearbytesManagedMegaServersSync(console);
+});
+
 async function startDesktop(): Promise<void> {
   app.setName('Nearbytes');
   applyDesktopIcon();
   registerDeepLinkProtocol();
+  await cleanupNearbytesManagedMegaServers(console);
   console.log('[desktop] starting API runtime');
   const runtimeModule = await loadRuntimeModule();
   const commandExecutor = createDesktopCommandExecutor(console);
@@ -282,7 +296,7 @@ function createDesktopUiDebugExecutor(): UiDebugExecutor {
     async getCapabilities() {
       return {
         available: true,
-        actions: ['inspect', 'quitApp', 'navigate', 'waitFor', 'click', 'type', 'pressKey', 'read', 'screenshot'],
+        actions: ['inspect', 'quitApp', 'navigate', 'waitFor', 'click', 'type', 'pressKey', 'read', 'screenshot', 'snapshotDom'],
         screenshot: true,
         title: requireDesktopWindow().getTitle(),
         url: requireDesktopWindow().webContents.getURL(),
@@ -342,15 +356,22 @@ async function runDesktopUiDebugAction(action: UiDebugAction): Promise<Record<st
       return readDesktopSelector(action.selector, action.field, action.attribute);
     case 'screenshot':
       return captureDesktopScreenshot(action);
+    case 'snapshotDom':
+      return captureDesktopDomSnapshot(action);
     default:
       throw new Error(`Unsupported UI debug action: ${(action as { type?: string }).type ?? 'unknown'}`);
   }
 }
 
 async function quitDesktopApp(): Promise<Record<string, unknown>> {
-  queueMicrotask(() => {
+  setTimeout(() => {
     void requestAppQuit('ui-debug');
-  });
+  }, 0);
+  setTimeout(() => {
+    cleanupNearbytesManagedMegaServersSync(console);
+    state.diagnostics.quitAllowed = true;
+    process.exit(0);
+  }, DESKTOP_FORCE_EXIT_TIMEOUT_MS);
   return {
     quitting: true,
   };
@@ -582,6 +603,72 @@ async function captureDesktopScreenshot(
     width: image.getSize().width,
     height: image.getSize().height,
   };
+}
+
+async function captureDesktopDomSnapshot(
+  action: Extract<UiDebugAction, { type: 'snapshotDom' }>
+): Promise<Record<string, unknown>> {
+  const selector = action.selector?.trim() || undefined;
+  const maxLength = clampUiDebugDomLength(action.maxLength);
+  if (selector) {
+    const entry = await readDesktopElementState(selector);
+    if (!entry.found) {
+      throw new Error(`Selector not found: ${selector}`);
+    }
+    const html = entry.outerHtml ?? '';
+    const text = entry.text ?? '';
+    return {
+      selector,
+      title: requireDesktopWindow().getTitle(),
+      url: requireDesktopWindow().webContents.getURL(),
+      html: truncateUiDebugDom(html, maxLength),
+      htmlLength: html.length,
+      text: truncateUiDebugDom(text, maxLength),
+      textLength: text.length,
+      truncated: html.length > maxLength || text.length > maxLength,
+      visible: entry.visible,
+    };
+  }
+
+  const snapshot = await evaluateInDesktopWindow<{
+    title: string;
+    url: string;
+    readyState: string;
+    html: string;
+    text: string;
+  }>(`(() => ({
+    title: document.title,
+    url: window.location.href,
+    readyState: document.readyState,
+    html: document.documentElement?.outerHTML ?? '',
+    text: document.body?.innerText ?? '',
+  }))()`);
+
+  return {
+    selector: null,
+    title: snapshot.title,
+    url: snapshot.url,
+    readyState: snapshot.readyState,
+    html: truncateUiDebugDom(snapshot.html, maxLength),
+    htmlLength: snapshot.html.length,
+    text: truncateUiDebugDom(snapshot.text, maxLength),
+    textLength: snapshot.text.length,
+    truncated: snapshot.html.length > maxLength || snapshot.text.length > maxLength,
+  };
+}
+
+function clampUiDebugDomLength(maxLength: number | undefined): number {
+  if (!Number.isFinite(maxLength) || maxLength === undefined) {
+    return 200_000;
+  }
+  return Math.max(1_000, Math.min(2_000_000, Math.floor(maxLength)));
+}
+
+function truncateUiDebugDom(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength)}\n<!-- truncated -->`;
 }
 
 async function resolveDesktopScreenshotPath(rawPath: string | undefined): Promise<string> {
@@ -1137,6 +1224,12 @@ async function shutdown(): Promise<void> {
   }
 
   try {
+    await cleanupNearbytesManagedMegaServers(console);
+  } catch (error) {
+    errors.push(error);
+  }
+
+  try {
     await stopDevUiServer();
   } catch (error) {
     errors.push(error);
@@ -1148,12 +1241,50 @@ async function shutdown(): Promise<void> {
 }
 
 async function requestAppQuit(reason: string, exitCode = 0): Promise<void> {
+  const externalWatchdog = armExternalShutdownWatchdog(exitCode);
+  const forceExitTimer = setTimeout(() => {
+    try {
+      cleanupNearbytesManagedMegaServersSync(console);
+    } finally {
+      state.diagnostics.quitAllowed = true;
+      process.exit(exitCode);
+    }
+  }, DESKTOP_FORCE_EXIT_TIMEOUT_MS);
+
   try {
     await ensureAppShutdown(reason);
   } finally {
+    clearTimeout(forceExitTimer);
+    externalWatchdog.cancel();
     state.diagnostics.quitAllowed = true;
     app.exit(exitCode);
   }
+}
+
+function armExternalShutdownWatchdog(_exitCode: number): { cancel(): void } {
+  if (!supportsManagedMegaServerProcessControl()) {
+    return { cancel() {} };
+  }
+
+  const script = buildManagedMegaServerWatchdogPowerShell(process.pid, DESKTOP_FORCE_EXIT_TIMEOUT_MS);
+
+  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+  return {
+    cancel() {
+      try {
+        if (!child.killed) {
+          child.kill();
+        }
+      } catch {
+        // Best-effort only.
+      }
+    },
+  };
 }
 
 function ensureAppShutdown(reason: string): Promise<void> {

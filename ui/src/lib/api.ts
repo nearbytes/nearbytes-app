@@ -884,7 +884,7 @@ interface NearbytesDesktopBridge {
 
 export interface UiDebugCapabilities {
   available: boolean;
-  actions: Array<'inspect' | 'navigate' | 'waitFor' | 'click' | 'type' | 'pressKey' | 'read' | 'screenshot'>;
+  actions: Array<'inspect' | 'quitApp' | 'navigate' | 'waitFor' | 'click' | 'type' | 'pressKey' | 'read' | 'screenshot' | 'snapshotDom'>;
   screenshot: boolean;
   title?: string;
   url?: string;
@@ -892,13 +892,15 @@ export interface UiDebugCapabilities {
 
 export type UiDebugAction =
   | { type: 'inspect' }
+  | { type: 'quitApp' }
   | { type: 'navigate'; path?: string; url?: string; waitForLoad?: boolean }
   | { type: 'waitFor'; selector: string; state?: 'present' | 'visible' | 'hidden'; timeoutMs?: number; pollIntervalMs?: number }
   | { type: 'click'; selector: string }
   | { type: 'type'; selector: string; value: string; clear?: boolean; submit?: boolean }
   | { type: 'pressKey'; key: string; alt?: boolean; control?: boolean; meta?: boolean; shift?: boolean }
   | { type: 'read'; selector: string; field?: 'text' | 'html' | 'outerHtml' | 'value'; attribute?: string }
-  | { type: 'screenshot'; path?: string; selector?: string; fullPage?: boolean };
+  | { type: 'screenshot'; path?: string; selector?: string; fullPage?: boolean }
+  | { type: 'snapshotDom'; selector?: string; maxLength?: number };
 
 export interface UiDebugRunResponse {
   ok: boolean;
@@ -1654,6 +1656,16 @@ export async function captureUiDebugScreenshot(input: {
   fullPage?: boolean;
 } = {}): Promise<UiDebugRunResponse> {
   return apiRequest<UiDebugRunResponse>('/__debug/ui/screenshot', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function captureUiDebugDomSnapshot(input: {
+  selector?: string;
+  maxLength?: number;
+} = {}): Promise<UiDebugRunResponse> {
+  return apiRequest<UiDebugRunResponse>('/__debug/ui/dom', {
     method: 'POST',
     body: JSON.stringify(input),
   });
