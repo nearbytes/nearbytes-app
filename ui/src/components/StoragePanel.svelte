@@ -3161,16 +3161,23 @@
       successMessage = '';
     }
     try {
-      const rootsResponse = await loadRootsConfigWithRetry({ keepVisible });
-      startupRecoveryMessage = '';
-      applyRootsResponse(rootsResponse);
-
       providersLoading = true;
       sharesLoading = true;
       incomingLoading = true;
       providerLoadError = '';
       shareLoadError = '';
       incomingLoadError = '';
+
+      let rootsLoadError: unknown = null;
+
+      const rootsPromise = loadRootsConfigWithRetry({ keepVisible })
+        .then((rootsResponse) => {
+          startupRecoveryMessage = '';
+          applyRootsResponse(rootsResponse);
+        })
+        .catch((error) => {
+          rootsLoadError = error;
+        });
 
       const accountsPromise = withPanelRequestTimeout(
         'Provider discovery',
@@ -3255,7 +3262,11 @@
           incomingLoading = false;
         });
 
-      await Promise.allSettled([accountsPromise, sharesPromise, incomingSharesPromise, incomingInvitesPromise]);
+      await Promise.allSettled([rootsPromise, accountsPromise, sharesPromise, incomingSharesPromise, incomingInvitesPromise]);
+
+      if (rootsLoadError) {
+        throw rootsLoadError;
+      }
 
       if (!keepVisible) {
         setTimeout(() => {
