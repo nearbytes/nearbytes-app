@@ -11,6 +11,8 @@ Two MEGA modes are now available:
 
 For the managed provider flow, the Nearbytes-owned MEGA share should be treated as a durable mirror of every attached volume, not as a "new writes only" outlet. The local MEGA sync folder is just the transport surface for MEGA; Nearbytes may still read missing blocks from any enabled local source, but the provider share itself must retain historical referenced blocks so new recipients can sync later.
 
+Nearbytes also supports a native readonly MEGA public-link mirror path for desktop-managed shares. When a MEGA share is represented as a public folder or file link, Nearbytes can fetch and decrypt that link directly from Node without invoking `mega-get`, then materialize the local mirror under the managed share root.
+
 Nearbytes MEGA self-repair enforces this automatically: each connected MEGA account keeps one writable owner base share (the `/nearbytes` share), adds it to `defaultVolume` destinations, and auto-attaches it to existing hubs that currently lack any writable MEGA destination for that account. Recipient/read-only MEGA shares can still be attached for incoming sync, but they are never the only publish route after repair.
 
 The legacy path below still works and remains useful for manual setups. The provider-managed flow is the preferred desktop onboarding path when you want Nearbytes to control login, sharing, and sync startup.
@@ -175,7 +177,7 @@ MEGA **never** sees:
 
 ## Limitations
 
-- **No MEGA API**: Nearbytes does not use MEGA API. It relies entirely on desktop sync folder.
+- **Partial native MEGA API usage**: owner and account-managed sync still rely on MEGAcmd today, but readonly MEGA public links can now be fetched natively by Nearbytes without the CLI helper.
 - **Sync delay**: Files sync asynchronously. There may be a delay before files appear on other machines.
 - **Incoming managed shares depend on MEGA access level**: recipient-side shares with only read or read/write access fall back to a polling pull mirror, because MEGAcmd requires `full access` for true folder sync. The current fallback polls every 5 seconds. When the incoming share has full access, Nearbytes can use MEGA's native sync instead of the polling mirror.
 - **Storage quota**: Subject to your MEGA storage quota limits.

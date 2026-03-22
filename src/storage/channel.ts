@@ -8,6 +8,13 @@ import { computeHash } from '../crypto/hash.js';
 import { isMultiRootStorageBackend } from './multiRoot.js';
 import { verifyPU } from '../crypto/asymmetric.js';
 import { validateBlockBytes } from './integrity.js';
+import {
+  NEARBYTES_SYNC_INDEX_PATH,
+  createNearbytesSyncEventRecord,
+  getNearbytesSyncChannelManifestPath,
+  type NearbytesSyncChannelManifest,
+  type NearbytesSyncIndex,
+} from './syncManifest.js';
 
 /**
  * Channel storage operations
@@ -66,6 +73,8 @@ export class ChannelStorage {
       } else {
         await this.storage.writeFile(eventPath, eventBytes);
       }
+
+      await this.updateSyncManifest(channelHex, eventHash, event);
 
       return eventHash;
     } catch (error) {
@@ -247,6 +256,67 @@ export class ChannelStorage {
       return await this.storage.existsForChannel(dataPath, channelHex);
     }
     return await this.storage.exists(dataPath);
+  }
+
+  private async updateSyncManifest(channelHex: string, eventHash: HashType, event: SignedEvent): Promise<void> {
+    const manifestPath = getNearbytesSyncChannelManifestPath(channelHex);
+    const existingManifest = await this.readSyncJson<NearbytesSyncChannelManifest>(manifestPath, channelHex);
+    const currentEvents = existingManifest?.events ?? [];
+    const alreadyPresent = currentEvents.some((entry) => entry.eventHash === eventHash);
+    const nextManifest: NearbytesSyncChannelManifest = alreadyPresent
+      ? {
+          version: 1,
+          channelId: channelHex,
+          revision: existingManifest?.revision ?? 1,
+          updatedAt: existingManifest?.updatedAt ?? Date.now(),
+          events: currentEvents,
+        }
+      : {
+          version: 1,
+          channelId: channelHex,
+          revision: (existingManifest?.revision ?? 0) + 1,
+          updatedAt: Date.now(),
+          events: [...currentEvents, createNearbytesSyncEventRecord(channelHex, eventHash, event.payload)],
+        };
+
+    await this.writeSyncJson(manifestPath, channelHex, nextManifest);
+
+    const existingIndex = await this.readSyncJson<NearbytesSyncIndex>(NEARBYTES_SYNC_INDEX_PATH, channelHex);
+    const nextIndex: NearbytesSyncIndex = {
+      version: 1,
+      generatedAt: Date.now(),
+      channels: {
+        ...(existingIndex?.channels ?? {}),
+        [channelHex]: {
+          manifestPath,
+          revision: nextManifest.revision,
+          eventCount: nextManifest.events.length,
+          updatedAt: nextManifest.updatedAt,
+        },
+      },
+    };
+
+    await this.writeSyncJson(NEARBYTES_SYNC_INDEX_PATH, channelHex, nextIndex);
+  }
+
+  private async readSyncJson<T>(relativePath: string, channelHex: string): Promise<T | null> {
+    try {
+      const bytes = isMultiRootStorageBackend(this.storage)
+        ? await this.storage.readFileForChannel(relativePath, channelHex)
+        : await this.storage.readFile(relativePath);
+      return JSON.parse(new TextDecoder().decode(bytes)) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  private async writeSyncJson(relativePath: string, channelHex: string, value: unknown): Promise<void> {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    if (isMultiRootStorageBackend(this.storage)) {
+      await this.storage.writeFileForChannel(relativePath, bytes, channelHex);
+      return;
+    }
+    await this.storage.writeFile(relativePath, bytes);
   }
 }
 

@@ -124,6 +124,45 @@ describe('FileService', () => {
     await cleanup();
   });
 
+  it('writes a sync manifest alongside stored channel events', async () => {
+    const secret = 'test:secret:sync-manifest';
+    const { service, dir, cleanup } = await createTestService(START_TIME);
+
+    await service.addFile(secret, 'hello.txt', Buffer.from('hello manifest'), 'text/plain');
+
+    const volumeId = await getVolumeId(dir, secret);
+    const index = JSON.parse(await readFile(join(dir, '.nearbytes-sync', 'index.json'), 'utf8')) as {
+      channels: Record<string, { manifestPath: string; eventCount: number; revision: number }>;
+    };
+    const channelEntry = index.channels[volumeId];
+    expect(channelEntry).toMatchObject({
+      manifestPath: `.nearbytes-sync/channels/${volumeId}.json`,
+      eventCount: 1,
+      revision: 1,
+    });
+
+    const manifest = JSON.parse(
+      await readFile(join(dir, '.nearbytes-sync', 'channels', `${volumeId}.json`), 'utf8')
+    ) as {
+      events: Array<{
+        eventHash: string;
+        eventPath: string;
+        fileName: string;
+        blockPath?: string;
+        mimeType?: string;
+      }>;
+    };
+    expect(manifest.events).toHaveLength(1);
+    expect(manifest.events[0]).toMatchObject({
+      fileName: 'hello.txt',
+      eventPath: `channels/${volumeId}/${manifest.events[0]!.eventHash}.bin`,
+      mimeType: 'text/plain',
+    });
+    expect(manifest.events[0]?.blockPath).toMatch(/^blocks\/[0-9a-f]{64}\.bin$/u);
+
+    await cleanup();
+  });
+
   it('rebuilds state from the event log', async () => {
     const { service, dir, cleanup } = await createTestService(START_TIME);
 

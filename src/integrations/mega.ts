@@ -2,6 +2,11 @@ import { randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { MegaHelperInstaller } from './megaInstaller.js';
+import {
+  mirrorMegaPublicLink,
+  normalizeMegaPublicLinkDescriptor,
+  resolveMegaPublicLinkTarget,
+} from './megaPublicLink.js';
 import { MegaWindowsNamedPipeCommandClient, type MegaWindowsCommandClient } from './megaWindowsPipeClient.js';
 import type { ManagedShareMirrorEntry } from './adapters.js';
 import type {
@@ -193,6 +198,14 @@ export class MegaTransportAdapter {
     input: CreateManagedShareInput,
     account: ProviderAccount
   ): Promise<Partial<ManagedShare>> {
+    const publicLinkDescriptor = normalizeMegaPublicLinkDescriptor(input.remoteDescriptor ?? {});
+    if (input.role === 'link' && publicLinkDescriptor) {
+      return {
+        remoteDescriptor: publicLinkDescriptor,
+        capabilities: ['mirror', 'read'],
+      };
+    }
+
     await this.ensureLoggedIn(account.id);
     const remoteBasePath = this.runtime.mega.remoteBasePath;
     const explicitRemotePath = getStringDescriptor(input.remoteDescriptor ?? {}, 'remotePath');
@@ -351,6 +364,9 @@ export class MegaTransportAdapter {
     if (cached) {
       return cached;
     }
+    if (this.usesNativePublicLinkMirror(share)) {
+      return this.readIncomingMirrorState(share);
+    }
     if (!account) {
       return {
         status: 'needs-auth',
@@ -479,6 +495,15 @@ export class MegaTransportAdapter {
     if (!remotePath) {
       throw new Error('MEGA share is missing remotePath.');
     }
+    if (this.usesNativePublicLinkMirror(share)) {
+      await this.queueIncomingMirrorRefresh(share, account.id, remotePath);
+      const timer = setInterval(() => {
+        void this.queueIncomingMirrorRefresh(share, account.id, remotePath);
+      }, this.runtime.mega.syncIntervalMs);
+      timer.unref?.();
+      this.syncTimers.set(share.id, timer);
+      return;
+    }
     if (await this.shouldUseIncomingPullMirror(share)) {
       try {
         await this.ensureLoggedIn(account.id);
@@ -582,6 +607,9 @@ export class MegaTransportAdapter {
     this.syncStates.delete(share.id);
 
     if (!account) {
+      return;
+    }
+    if (this.usesNativePublicLinkMirror(share)) {
       return;
     }
     await this.ensureLoggedIn(account.id).catch(() => {
@@ -1456,7 +1484,10 @@ export class MegaTransportAdapter {
     accountId: string,
     remotePath: string
   ): Promise<void> {
-    await this.ensureLoggedIn(accountId);
+    const usesNativePublicLinkMirror = this.usesNativePublicLinkMirror(share);
+    if (!usesNativePublicLinkMirror) {
+      await this.ensureLoggedIn(accountId);
+    }
     const previous = this.syncStates.get(share.id);
     const hasLocalMirror = await this.hasIncomingMirrorData(share.localPath);
     this.syncStates.set(share.id, {
@@ -1469,7 +1500,7 @@ export class MegaTransportAdapter {
     });
 
     try {
-      await this.pullIncomingShare(share.localPath, remotePath);
+      await this.pullIncomingShare(share.localPath, remotePath, share.remoteDescriptor);
       this.syncStates.set(share.id, {
         status: 'ready',
         detail: 'A local read-only copy of this shared MEGA location is available.',
@@ -1508,7 +1539,22 @@ export class MegaTransportAdapter {
     return Boolean(blocks?.isDirectory() && channels?.isDirectory());
   }
 
-  private async pullIncomingShare(localPath: string, remotePath: string): Promise<void> {
+  private async pullIncomingShare(
+    localPath: string,
+    remotePath: string,
+    descriptor: Record<string, unknown> = {}
+  ): Promise<void> {
+    const publicLinkDescriptor = normalizeMegaPublicLinkDescriptor({
+      ...descriptor,
+      remotePath,
+    });
+    if (publicLinkDescriptor) {
+      await mirrorMegaPublicLink({
+        descriptor: publicLinkDescriptor,
+        localPath,
+      });
+      return;
+    }
     await fs.mkdir(localPath, { recursive: true });
     await this.cleanupIncomingMirrorMarkers(localPath);
     await this.runMega('get', ['-m', remotePath, localPath], {
@@ -1624,6 +1670,13 @@ export class MegaTransportAdapter {
         )
         .map((entry) => fs.rm(path.join(localPath, entry.name), { force: true }).catch(() => undefined))
     );
+  }
+
+  private usesNativePublicLinkMirror(share: ManagedShare): boolean {
+    if (share.role === 'owner') {
+      return false;
+    }
+    return resolveMegaPublicLinkTarget(share.remoteDescriptor) !== null;
   }
 }
 
