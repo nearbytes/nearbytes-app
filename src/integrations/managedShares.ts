@@ -80,6 +80,7 @@ const BACKGROUND_MAINTENANCE_SCHEMA_VERSION = 1;
 const BACKGROUND_MAINTENANCE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 750;
 const FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 6_000;
+const FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 2_500;
 const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
 const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
 
@@ -377,9 +378,6 @@ export class ManagedShareService {
     if (this.readMaintenanceMode === 'background' && options.fast !== true) {
       this.requestBackgroundMaintenance('listManagedShares', preparedState);
     }
-    if (options.fast !== true) {
-      this.scheduleManagedShareSyncs(preparedState);
-    }
     const visibleShares = preparedState.managedShares.filter((share) => isProviderEnabled(share.provider));
     const config = this.options.storage.getRootsConfig();
     const runtime = await this.withSoftTimeout(
@@ -420,6 +418,9 @@ export class ManagedShareService {
     const markerRefreshableShares = summaries.filter((summary) => this.shouldRefreshManagedShareMarker(summary));
     if (markerRefreshableShares.length > 0) {
       void Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
+    }
+    if (options.fast !== true) {
+      this.scheduleManagedShareSyncs(preparedState);
     }
 
     return {
@@ -1253,6 +1254,17 @@ export class ManagedShareService {
     };
   }
 
+  private buildTimedOutTransportState(share: ManagedShare, fallbackState: TransportState): TransportState {
+    if (normalizeProvider(share.provider) !== 'mega') {
+      return fallbackState;
+    }
+    return {
+      status: 'attention',
+      detail: 'Nearbytes could not reach the local MEGA helper in time. Local MEGA sync is currently unavailable.',
+      badges: ['Repair'],
+    };
+  }
+
   private fallbackCollaborators(share: ManagedShare): ManagedShareCollaborator[] {
     return uniqueStrings(share.invitationEmails).map((email) => ({
       label: email,
@@ -1726,7 +1738,9 @@ export class ManagedShareService {
     const skipRemoteChecks = options.skipRemoteChecks === true;
     const transportStateTimeoutMs = preferFastRemoteDetails
       ? FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS
-      : FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS;
+      : normalizeProvider(share.provider) === 'mega'
+        ? FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS
+        : FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS;
     if (skipRemoteChecks) {
       return {
         share,
@@ -1747,7 +1761,7 @@ export class ManagedShareService {
           ),
       this.withSoftTimeout(
         this.resolveTransportState(share, runtime, state),
-        fallbackState,
+        this.buildTimedOutTransportState(share, fallbackState),
         transportStateTimeoutMs,
         `Managed share state timed out for ${share.id}`
       ),

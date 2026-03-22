@@ -394,7 +394,32 @@ export class MegaTransportAdapter {
       }
       return this.readIncomingMirrorState(share);
     }
-    return this.readSyncState(share, account.id);
+    try {
+      return await this.readSyncState(share, account.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isMegaTransientStartupError(message)) {
+        return buildMegaTransientStartupState(share, this.runtime.now());
+      }
+      const needsAuth = /login|session|auth|401|not connected/i.test(message);
+      return {
+        status: needsAuth ? 'needs-auth' : 'attention',
+        detail: message,
+        badges: [needsAuth ? 'Reconnect' : 'Repair'],
+        diagnostic: buildMegaDiagnostic(
+          {
+            code: needsAuth ? 'mega-auth-required' : 'mega-sync-check-failed',
+            title: needsAuth ? 'Reconnect MEGA' : 'MEGA sync check failed',
+            summary: needsAuth
+              ? 'Reconnect MEGA so Nearbytes can refresh this shared location.'
+              : 'Nearbytes could not confirm the local MEGA sync state for this location.',
+            detail: message,
+            share,
+          },
+          this.runtime.now()
+        ),
+      };
+    }
   }
 
   async getShareStorageMetrics(_share: ManagedShare, account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined> {
@@ -1063,7 +1088,10 @@ export class MegaTransportAdapter {
         try {
           const result = await this.runMegaWithWindowsPipeClient(commandDirectory, subcommand, args, options);
           if (result.exitCode !== 0) {
-            const rawOutput = result.stderr || result.stdout || `${subcommand} failed`;
+            const rawOutput = rewriteMegaHelperResolutionError(
+              result.stderr || result.stdout || `${subcommand} failed`,
+              commandDirectory
+            );
             if (
               transientStartupRetryCount < MEGA_TRANSIENT_STARTUP_RETRY_LIMIT &&
               isMegaTransientStartupError(rawOutput)
@@ -1102,10 +1130,16 @@ export class MegaTransportAdapter {
           timeoutMs: options.timeoutMs ?? 30_000,
         });
         if (result.exitCode !== 0) {
-          const rawOutput = result.stderr || result.stdout || `${subcommand} failed`;
+          const rawOutput = rewriteMegaHelperResolutionError(
+            result.stderr || result.stdout || `${subcommand} failed`,
+            commandDirectory
+          );
           const pipeFallback = await this.tryWindowsPipeFallback(commandDirectory, subcommand, args, options, rawOutput);
           if (pipeFallback) {
-            const pipeOutput = pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`;
+            const pipeOutput = rewriteMegaHelperResolutionError(
+              pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`,
+              commandDirectory
+            );
             if (pipeFallback.exitCode !== 0) {
               if (
                 transientStartupRetryCount < MEGA_TRANSIENT_STARTUP_RETRY_LIMIT &&
@@ -1148,10 +1182,16 @@ export class MegaTransportAdapter {
           await this.installer.install();
           continue;
         }
-        const message = error instanceof Error ? error.message : String(error);
+        const message = rewriteMegaHelperResolutionError(
+          error instanceof Error ? error.message : String(error),
+          commandDirectory
+        );
         const pipeFallback = await this.tryWindowsPipeFallback(commandDirectory, subcommand, args, options, message);
         if (pipeFallback) {
-          const pipeOutput = pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`;
+          const pipeOutput = rewriteMegaHelperResolutionError(
+            pipeFallback.stderr || pipeFallback.stdout || `${subcommand} failed`,
+            commandDirectory
+          );
           if (pipeFallback.exitCode !== 0) {
             if (
               transientStartupRetryCount < MEGA_TRANSIENT_STARTUP_RETRY_LIMIT &&
@@ -1901,6 +1941,42 @@ function isMegaTransientStartupError(value: string): boolean {
     /command not valid while login in:\s*\w+/i.test(normalized) ||
     /session is not ready for this command yet/i.test(normalized)
   );
+}
+
+function rewriteMegaHelperResolutionError(value: string, commandDirectory: string | undefined): string {
+  const normalized = value.trim();
+  if (!normalized || !commandDirectory || process.platform !== 'win32') {
+    return value;
+  }
+  const expectedRoot = normalizeWindowsMegaPath(commandDirectory);
+  if (!expectedRoot) {
+    return value;
+  }
+  const appDataServerPath = extractMegaServerPathFromError(normalized);
+  if (!appDataServerPath) {
+    return value;
+  }
+  const normalizedServerPath = normalizeWindowsMegaPath(appDataServerPath);
+  if (!normalizedServerPath || normalizedServerPath.startsWith(expectedRoot)) {
+    return value;
+  }
+  if (!/appdata\\local\\megacmd\\megacmdserver\.exe$/i.test(normalizedServerPath)) {
+    return value;
+  }
+  return [
+    'Nearbytes could not talk to the vendored MEGAcmd helper.',
+    `The MEGAcmd client is targeting ${appDataServerPath} instead of ${commandDirectory}.`,
+    'Local MEGA sync cannot start until the helper runtime is aligned.',
+  ].join(' ');
+}
+
+function extractMegaServerPathFromError(value: string): string | null {
+  const match = value.match(/Unable to execute:\s*([^\r\n]+MEGAcmdServer\.exe)/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function normalizeWindowsMegaPath(value: string): string {
+  return value.trim().replace(/[\/]+/gu, '\\').replace(/\\+$/u, '').toLowerCase();
 }
 
 function buildMegaTransientStartupState(share: ManagedShare, capturedAt: number): TransportState {

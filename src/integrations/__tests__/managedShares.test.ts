@@ -225,29 +225,6 @@ class BlockingRemoteDetailsAdapter extends FakeTransportAdapter {
   }
 }
 
-class BlockingBootstrapAndStateAdapter extends FakeTransportAdapter {
-  constructor() {
-    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
-  }
-
-  override async ensureSync(): Promise<void> {
-    await new Promise<void>(() => {
-      // Intentionally never resolves; list reads should surface a syncing state instead of blocking.
-    });
-  }
-
-  override async getState(): Promise<TransportState> {
-    await new Promise<void>(() => {
-      // Intentionally never resolves; bootstrap state should short-circuit the live state read.
-    });
-    return {
-      status: 'ready',
-      detail: 'MEGA is ready.',
-      badges: ['Connected'],
-    };
-  }
-}
-
 class SlowTransportStateAdapter extends FakeTransportAdapter {
   constructor(private readonly delayMs: number) {
     super('mega', 'MEGA', 'Managed folders backed by MEGA.');
@@ -707,8 +684,8 @@ describe('ManagedShareService', () => {
     expect(shares.shares[0]?.state.detail).toBe('MEGA is ready.');
   });
 
-  it('surfaces syncing state immediately while managed-share bootstrap is still running', async () => {
-    const adapter = new BlockingBootstrapAndStateAdapter();
+  it('returns shares before post-summary bootstrap completes', async () => {
+    const adapter = new BlockingEnsureSyncAdapter();
     const { integrationStatePath, service, localRoot } = await createHarness({
       adapters: [adapter],
       readMaintenanceMode: 'background',
@@ -758,8 +735,8 @@ describe('ManagedShareService', () => {
 
     expect(result.kind).toBe('shares');
     if (result.kind === 'shares') {
-      expect(result.shares.shares[0]?.state.status).toBe('syncing');
-      expect(result.shares.shares[0]?.state.detail).toContain('preparing this MEGA shared location locally');
+      expect(result.shares.shares[0]?.state.status).toBe('ready');
+      expect(result.shares.shares[0]?.state.detail).toContain('MEGA is ready.');
     }
   });
 

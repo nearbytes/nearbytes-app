@@ -855,6 +855,78 @@ describe('MegaTransportAdapter', () => {
     expect(state.detail).not.toContain('MEGAcmd Server not running');
   });
 
+  it('reports a concrete helper error when the vendored client targets the global AppData server', async () => {
+    const secretStore = createMemorySecretStore();
+    const commandDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-megacmd-path-'));
+    tempDirs.push(commandDirectory);
+    await fs.writeFile(path.join(commandDirectory, 'MegaClient.exe'), '');
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: {
+        async run() {
+          return {
+            stdout: '',
+            stderr:
+              'MEGAcmd Server not running. Initiating in the background...\n' +
+              'Unable to execute: C:\\Users\\Example\\AppData\\Local\\MEGAcmd\\MEGAcmdServer.exe errno = : 0\n',
+            exitCode: 1,
+          };
+        },
+      },
+      mega: {
+        syncIntervalMs: 60_000,
+        remoteBasePath: '/nearbytes',
+        commandDirectory,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime);
+
+    await secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@mega.example',
+      sessionToken: 'mega-session-token',
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/tmp/nearbytes',
+      sourceId: 'src-mega-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const account = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@mega.example',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as const;
+
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('attention');
+    expect(state.detail).toContain('vendored MEGAcmd helper');
+    expect(state.detail).toContain('AppData\\Local\\MEGAcmd\\MEGAcmdServer.exe');
+  });
+
   it('temporarily disables the Windows named-pipe fallback after a transport failure', async () => {
     const megaState = {
       sessionToken: 'mega-session-token',
