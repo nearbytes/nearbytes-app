@@ -363,6 +363,69 @@ describe('MegaTransportAdapter', () => {
     await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toBeNull();
   });
 
+  it('requires reconnect when MEGA revokes the saved session instead of silently logging in again', async () => {
+    const email = 'reader@example.com';
+    const password = 'correct horse battery staple';
+    const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
+    const passwordKey = await deriveV2MasterKey(password, salt);
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const encryptedMasterKey = encryptAesEcb(masterKey, passwordKey);
+    const tsidLeft = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
+    const userHandle = 'usrhandle01';
+    let preloginCount = 0;
+    let loginCount = 0;
+    let currentUserCount = 0;
+
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'us0':
+          preloginCount += 1;
+          return new Response(JSON.stringify([{ v: 2, s: salt }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'us':
+          loginCount += 1;
+          return new Response(
+            JSON.stringify([{ k: encodeMegaBase64Url(encryptedMasterKey), u: userHandle, tsid }]),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        case 'ug':
+          currentUserCount += 1;
+          return new Response(JSON.stringify([-15]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const connected = await adapter.connect({
+      provider: 'mega',
+      label: 'MEGA',
+      credentials: { email, password },
+    });
+
+    await expect(adapter.listIncomingShares(connected.account as ProviderAccount)).rejects.toThrow(
+      'Reconnect MEGA to resume syncing.'
+    );
+    expect(preloginCount).toBe(1);
+    expect(loginCount).toBe(1);
+    expect(currentUserCount).toBe(1);
+  });
+
   it('treats recovered legacy local MEGA folders as locally attached shares', async () => {
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),

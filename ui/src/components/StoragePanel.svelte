@@ -1171,6 +1171,7 @@
 
   function providerCardStatus(entry: ProviderCatalogEntry): string {
     if (providersLoading) return 'Loading';
+    if (entry.provider === 'mega' && megaProviderReconnectIssue()) return 'Sign-in needed';
     if (entry.provider === 'mega' && sharesLoading) return 'Syncing';
     const pending = pendingSessionForProvider(entry.provider);
     if (pending?.status === 'pending') return 'Almost ready';
@@ -1187,6 +1188,12 @@
   function providerCardDetail(entry: ProviderCatalogEntry): string {
     if (entry.provider === 'mega' && shareLoadError) {
       return shareLoadError;
+    }
+    if (entry.provider === 'mega') {
+      const reconnectIssue = megaProviderReconnectIssue();
+      if (reconnectIssue) {
+        return 'MEGA rejected the saved session. Disconnect and reconnect this account to resume incoming-share mirroring.';
+      }
     }
     const pending = pendingSessionForProvider(entry.provider);
     if (pending) {
@@ -1212,7 +1219,9 @@
     }
     if (entry.provider === 'mega') {
       return entry.isConnected
-        ? 'Mirror incoming MEGA shares and public links in Nearbytes. Owner-side MEGA folders are not listed here yet.'
+        ? megaProviderReconnectIssue()
+          ? 'Nearbytes can see the MEGA account, but MEGA requires account recovery before incoming-share mirroring can resume.'
+          : 'Mirror incoming MEGA shares and public links in Nearbytes. Owner-side MEGA folders are not listed here yet.'
         : 'Mirror incoming MEGA shares and public links in Nearbytes.';
     }
     return entry.setup.detail || entry.description;
@@ -1494,6 +1503,96 @@
       return '';
     }
     return line.length > 140 ? `${line.slice(0, 137).trimEnd()}...` : line;
+  }
+
+  function megaRuntimeReconnectLine(detail: string): string | null {
+    const lines = detail
+      .split(/\r?\n/u)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (/MEGA API error -15/i.test(line)) {
+        return line;
+      }
+      if (
+        /incoming managed share discovery failed/i.test(line) &&
+        /(session|auth|login|reconnect|expired|invalid)/i.test(line)
+      ) {
+        return line;
+      }
+    }
+    return null;
+  }
+
+  function megaProviderReconnectIssue(): { diagnostic: MegaDiagnosticView; updatedAt: number } | null {
+    const account = connectedAccountForProvider('mega');
+    if (account?.state === 'attention') {
+      return {
+        diagnostic: {
+          id: 'mega-provider-reconnect',
+          title: 'MEGA account needs recovery',
+          summary: 'Incoming MEGA shares are unavailable until the MEGA account is recovered and reconnected.',
+          detail: account.detail?.trim() || 'Recover the MEGA account on mega.io, then reconnect it here.',
+          facts: [
+            account.email?.trim() ? { label: 'Account', value: account.email.trim() } : null,
+            { label: 'Last change', value: formatMegaRuntimeLogTimestamp(account.updatedAt) },
+          ].filter((value): value is { label: string; value: string } => value !== null),
+        },
+        updatedAt: account.updatedAt,
+      };
+    }
+
+    if (!account || account.state !== 'connected') {
+      return null;
+    }
+
+    let bestMatch:
+      | {
+          entry: DesktopRuntimeLogEntry;
+          line: string;
+          updatedAt: number;
+        }
+      | null = null;
+
+    for (const entry of megaRuntimeLogs) {
+      if (!entry.exists) {
+        continue;
+      }
+      const line = megaRuntimeReconnectLine(normalizeMegaLogContent(entry.content, entry.id));
+      if (!line) {
+        continue;
+      }
+      const updatedAt = entry.updatedAt ?? 0;
+      if (!bestMatch || updatedAt >= bestMatch.updatedAt) {
+        bestMatch = {
+          entry,
+          line,
+          updatedAt,
+        };
+      }
+    }
+
+    if (!bestMatch) {
+      return null;
+    }
+
+    const facts = [
+      account.email?.trim() ? { label: 'Account', value: account.email.trim() } : null,
+      { label: 'Runtime log', value: bestMatch.entry.label },
+      bestMatch.updatedAt > 0 ? { label: 'Observed', value: formatMegaRuntimeLogTimestamp(bestMatch.updatedAt) } : null,
+    ].filter((value): value is { label: string; value: string } => value !== null);
+
+    return {
+      diagnostic: {
+        id: 'mega-provider-reconnect',
+        title: 'MEGA account needs recovery',
+        summary: 'Incoming MEGA shares are unavailable until the MEGA account is recovered and reconnected.',
+        detail: bestMatch.line,
+        facts,
+      },
+      updatedAt: bestMatch.updatedAt,
+    };
   }
 
   function toggleMegaIssueLog(issueId: string): void {
@@ -1786,14 +1885,29 @@
   function megaDiagnostics(limit = 3, options?: { onlyProblems?: boolean }): MegaDiagnosticView[] {
     const onlyProblems = options?.onlyProblems === true;
     const ranked: Array<{
-      summary: ManagedShareSummary;
+      id: string;
       severity: number;
       title: string;
       code: string | undefined;
       summaryText: string;
       detail: string;
       facts: Array<{ label: string; value: string }>;
+      updatedAt: number;
     }> = [];
+
+    const providerReconnectIssue = megaProviderReconnectIssue();
+    if (providerReconnectIssue) {
+      ranked.push({
+        id: providerReconnectIssue.diagnostic.id,
+        severity: 4,
+        title: providerReconnectIssue.diagnostic.title,
+        code: undefined,
+        summaryText: providerReconnectIssue.diagnostic.summary,
+        detail: providerReconnectIssue.diagnostic.detail,
+        facts: providerReconnectIssue.diagnostic.facts,
+        updatedAt: providerReconnectIssue.updatedAt,
+      });
+    }
 
     for (const summary of providerShares('mega')) {
       if (onlyProblems && summary.state.status !== 'attention' && summary.state.status !== 'needs-auth') {
@@ -1810,13 +1924,14 @@
           ? 2
           : 1;
       ranked.push({
-        summary,
+        id: summary.share.id,
         severity,
         title: diagnostic?.title || managedShareTitle(summary),
         code: diagnostic?.code,
         summaryText: diagnostic?.summary || summarizeMegaStateDetail(detail),
         detail,
         facts: diagnostic?.facts ?? [],
+        updatedAt: summary.state.lastSyncAt ?? 0,
       });
     }
 
@@ -1825,14 +1940,12 @@
         if (right.severity !== left.severity) {
           return right.severity - left.severity;
         }
-        const leftSync = left.summary.state.lastSyncAt ?? 0;
-        const rightSync = right.summary.state.lastSyncAt ?? 0;
-        return rightSync - leftSync;
+        return right.updatedAt - left.updatedAt;
       })
       .slice(0, Math.max(1, limit));
 
     return topRanked.map((entry) => ({
-      id: entry.summary.share.id,
+      id: entry.id,
       title: entry.code ? `${entry.title} (${entry.code})` : entry.title,
       summary: entry.summaryText,
       detail: entry.detail,
@@ -1847,10 +1960,23 @@
     const syncing = shares.filter((summary) => summary.state.status === 'syncing').length;
     const checking = shares.filter((summary) => summary.state.status === 'idle').length;
     const issue = megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
+    const reconnectIssue = megaProviderReconnectIssue();
     const loading = providersLoading || sharesLoading || incomingLoading;
     const hasBlockingError = shareLoadError || incomingLoadError;
     const inProgress = loading || syncing > 0;
     const progressPercent = total > 0 && inProgress ? Math.max(6, Math.min(98, Math.round((ready / total) * 100))) : null;
+
+    if (reconnectIssue) {
+      return {
+        headline: 'Finish MEGA account recovery',
+        detail: conciseMegaDetail(reconnectIssue.diagnostic.detail),
+        tone: 'warn',
+        syncing: false,
+        progressPercent: null,
+        progressLabel: 'Recovery required',
+        selfRepairCopy: 'Nearbytes retried the saved MEGA session and it is no longer valid. If MEGA locked the account, unlock it and complete the password change on mega.io, then reconnect this account here.',
+      };
+    }
 
     if (issue) {
       const detail = conciseMegaDetail(issue.detail);
@@ -3180,7 +3306,7 @@
       ),
     };
     for (const account of input.accounts) {
-      if (account.state === 'connected') {
+      if (account.state === 'connected' || account.state === 'attention') {
         clearProviderSession(account.provider);
       }
     }
@@ -3240,7 +3366,7 @@
             ),
           };
           for (const account of accountsResponse.accounts) {
-            if (account.state === 'connected') {
+            if (account.state === 'connected' || account.state === 'attention') {
               clearProviderSession(account.provider);
             }
           }
@@ -4810,6 +4936,7 @@
               {@const megaStatus = megaStatusView()}
               {@const megaHelper = megaHelperView(provider)}
               {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}
+              {@const megaReconnectIssue = megaProviderReconnectIssue()}
               <div class="provider-story-card compact-provider-card mega-status-card" data-tone={megaStatus.tone}>
                 <p class="subheading">Current status</p>
                 <p class="managed-share-invite-copy mega-status-headline">{megaStatus.headline}</p>
@@ -4843,6 +4970,15 @@
                 {/if}
                 <p class="mega-self-repair-copy">{megaStatus.selfRepairCopy}</p>
                 <div class="button-row">
+                  {#if megaReconnectIssue}
+                    <button
+                      type="button"
+                      class="panel-btn primary compact"
+                      onclick={() => openProviderConnectionDialog(provider.provider)}
+                    >
+                      <span>Reconnect account</span>
+                    </button>
+                  {/if}
                   <button
                     type="button"
                     class="panel-btn subtle compact"
@@ -5567,6 +5703,7 @@
       {@const dialogDisconnectImpact = dialogProvider ? providerDisconnectImpact(dialogProvider.provider) : { shares: 0, spaces: 0, inaccessibleSpaces: [] }}
       {@const dialogAccount = dialogProvider ? connectedAccountForProvider(dialogProvider.provider) : null}
       {#if dialogProvider}
+        {@const dialogMegaReconnectIssue = dialogProvider.provider === 'mega' ? megaProviderReconnectIssue() : null}
         <div class="provider-dialog-backdrop" role="presentation" onclick={closeProviderConnectionDialog}></div>
         <div class="provider-dialog" role="dialog" aria-modal="true" aria-label={`${dialogProvider.label} connection`}>
           <div class="section-head compact provider-dialog-head">
@@ -5605,6 +5742,12 @@
                 </div>
               {/each}
             </div>
+          {/if}
+
+          {#if dialogMegaReconnectIssue}
+            <p class="panel-error">
+              Nearbytes cannot discover incoming MEGA shares until this MEGA account is recovered. If MEGA locked it, finish the unlock and password-change flow on mega.io first, then disconnect it here and reconnect it with the new credentials.
+            </p>
           {/if}
 
           {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
@@ -5652,7 +5795,9 @@
                 ? 'Disconnecting...'
                 : providerDisconnectArmed[dialogProvider.provider]
                   ? 'Confirm disconnect'
-                  : 'Disconnect'}
+                  : dialogMegaReconnectIssue
+                    ? 'Disconnect to recover'
+                    : 'Disconnect'}
             </button>
           </div>
         </div>

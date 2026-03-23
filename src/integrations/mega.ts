@@ -47,6 +47,8 @@ import type { IntegrationRuntime } from './runtime.js';
 
 const MEGA_SECRET_PREFIX = 'provider-account:mega:';
 const MEGA_MANIFEST_PREFIX = 'provider-share:mega:manifest:';
+const MEGA_RECONNECT_REQUIRED_MESSAGE =
+  'Reconnect MEGA to resume syncing. If MEGA asked you to unlock the account or change the password first, complete that on mega.io and then reconnect here.';
 const ZERO_IV = Buffer.alloc(16, 0);
 const READONLY_BADGES = ['Readonly'];
 
@@ -323,7 +325,7 @@ export class MegaTransportAdapter {
     if (!account) {
       return {
         status: 'needs-auth',
-        detail: 'Reconnect MEGA to resume this readonly mirror.',
+        detail: 'Reconnect MEGA to resume this readonly mirror. If MEGA asked you to unlock the account or change the password first, complete that on mega.io and then reconnect here.',
         badges: ['Reconnect'],
       };
     }
@@ -495,11 +497,11 @@ export class MegaTransportAdapter {
   private async getAccountSession(account: ProviderAccount): Promise<MegaSession> {
     const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
     if (!secret) {
-      throw new Error('Reconnect MEGA to resume syncing.');
+      throw new Error(MEGA_RECONNECT_REQUIRED_MESSAGE);
     }
     if (!isStoredMegaAccountSecret(secret)) {
       await this.runtime.secretStore.delete(secretKey(account.id));
-      throw new Error('Reconnect MEGA to resume syncing.');
+      throw new Error(MEGA_RECONNECT_REQUIRED_MESSAGE);
     }
 
     const session = deserializeSession(secret, account.email ?? account.label);
@@ -507,19 +509,10 @@ export class MegaTransportAdapter {
       await this.fetchCurrentUser(session);
       return session;
     } catch (error) {
-      if (!secret.password) {
-        throw error;
+      if (isMegaSessionInvalid(error)) {
+        throw createMegaReconnectRequiredError(error);
       }
-      const refreshed = await this.loginWithPassword(secret.email, secret.password, secret.mfaCode);
-      await this.runtime.secretStore.set(secretKey(account.id), {
-        ...secret,
-        sid: refreshed.sid,
-        masterKey: encodeMegaBase64Url(refreshed.masterKey),
-        userHandle: refreshed.userHandle,
-        accountVersion: refreshed.accountVersion,
-        accountSalt: refreshed.accountSalt,
-      } satisfies MegaAccountSecret);
-      return refreshed;
+      throw error;
     }
   }
 
@@ -531,36 +524,11 @@ export class MegaTransportAdapter {
     try {
       return await operation(session);
     } catch (error) {
-      if (!shouldRefreshMegaSession(error)) {
-        throw error;
+      if (isMegaSessionInvalid(error)) {
+        throw createMegaReconnectRequiredError(error);
       }
-      const refreshed = await this.refreshAccountSession(account);
-      return operation(refreshed);
+      throw error;
     }
-  }
-
-  private async refreshAccountSession(account: ProviderAccount): Promise<MegaSession> {
-    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
-    if (!secret || !isStoredMegaAccountSecret(secret)) {
-      throw new Error('Reconnect MEGA to resume syncing.');
-    }
-    const email = (typeof secret.email === 'string' && secret.email.trim() !== '' ? secret.email : account.email ?? '').trim();
-    const password = typeof secret.password === 'string' ? secret.password : '';
-    if (!email || !password) {
-      throw new Error('Reconnect MEGA to resume syncing.');
-    }
-
-    const refreshed = await this.loginWithPassword(email, password, secret.mfaCode);
-    await this.runtime.secretStore.set(secretKey(account.id), {
-      ...secret,
-      email,
-      sid: refreshed.sid,
-      masterKey: encodeMegaBase64Url(refreshed.masterKey),
-      userHandle: refreshed.userHandle,
-      accountVersion: refreshed.accountVersion,
-      accountSalt: refreshed.accountSalt,
-    } satisfies MegaAccountSecret);
-    return refreshed;
   }
 
   private async loginWithPassword(email: string, password: string, mfaCode?: string): Promise<MegaSession> {
@@ -769,13 +737,19 @@ function incomingShareMatches(candidate: Record<string, unknown>, target: Record
   );
 }
 
-function shouldRefreshMegaSession(error: unknown): boolean {
+function isMegaSessionInvalid(error: unknown): boolean {
   const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
   if (code === -15) {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);
   return /MEGA API error -15|session|auth|login/i.test(message);
+}
+
+function createMegaReconnectRequiredError(error: unknown): Error {
+  const reason = error instanceof Error ? error.message.trim() : String(error).trim();
+  const suffix = reason ? ` ${reason}` : '';
+  return new Error(`${MEGA_RECONNECT_REQUIRED_MESSAGE}${suffix}`);
 }
 
 function isLegacyMegaLocalMirror(share: ManagedShare): boolean {

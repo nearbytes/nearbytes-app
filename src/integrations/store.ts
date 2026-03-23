@@ -28,6 +28,7 @@ const providerAccountSchema = z.object({
   label: z.string().trim().min(1),
   email: z.string().trim().optional(),
   state: z.enum(['connected', 'attention', 'unsupported']),
+  detail: z.string().trim().optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });

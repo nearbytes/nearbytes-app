@@ -98,6 +98,7 @@ export function createProviderCatalog(
 
   return adapters.map((adapter) => {
     const account = accountByProvider.get(adapter.provider);
+    const isActiveAccount = account?.state === 'connected' || account?.state === 'attention';
     return {
       provider: adapter.provider,
       label: adapter.label,
@@ -111,9 +112,9 @@ export function createProviderCatalog(
             : adapter.provider === 'github'
               ? ['Device flow']
               : ['Available'],
-      isConnected: account?.state === 'connected',
+      isConnected: isActiveAccount,
       connectionState:
-        account?.state === 'connected' ? 'connected' : adapter.supportsAccountConnection ? 'available' : 'setup',
+        isActiveAccount ? 'connected' : adapter.supportsAccountConnection ? 'available' : 'setup',
       accountId: account?.id,
       setup:
         setupStates.get(adapter.provider) ?? {

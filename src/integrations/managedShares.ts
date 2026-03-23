@@ -143,13 +143,6 @@ export class ManagedShareService {
   }
 
   private presentationAccount(account: ProviderAccount): ProviderAccount {
-    if (normalizeProvider(account.provider) === 'mega' && account.state === 'attention') {
-      return {
-        ...account,
-        state: 'connected',
-        detail: account.detail ?? 'Nearbytes is recovering the local MEGA session.',
-      };
-    }
     return account;
   }
 
@@ -453,25 +446,56 @@ export class ManagedShareService {
         .map(async (account) => {
           const adapter = this.adapters.get(normalizeProvider(account.provider));
           if (!adapter?.listIncomingShares) {
-            return [] satisfies IncomingManagedShareOffer[];
+            return {
+              account,
+              offers: [] satisfies IncomingManagedShareOffer[],
+              errorDetail: null,
+            };
           }
           try {
-            return await this.withSoftTimeout(
+            const discovered = await this.withSoftTimeout(
               adapter.listIncomingShares(account),
               [] satisfies IncomingManagedShareOffer[],
               1_500,
               `Incoming managed share discovery timed out for ${account.provider}:${account.id}`
             );
+            return {
+              account,
+              offers: discovered,
+              errorDetail: null,
+            };
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.runtime.logger.warn(`Incoming managed share discovery failed for ${account.provider}:${account.id}: ${message}`);
-            return [] satisfies IncomingManagedShareOffer[];
+            return {
+              account,
+              offers: [] satisfies IncomingManagedShareOffer[],
+              errorDetail: normalizeProvider(account.provider) === 'mega'
+                ? describeMegaAccountRecovery(message)
+                : null,
+            };
           }
         })
     );
+
+    let nextState = preparedState;
+    for (const result of offers) {
+      if (normalizeProvider(result.account.provider) !== 'mega') {
+        continue;
+      }
+      if (result.errorDetail) {
+        nextState = this.withAccountPresentationState(nextState, result.account.id, 'attention', result.errorDetail);
+        continue;
+      }
+      nextState = this.withAccountPresentationState(nextState, result.account.id, 'connected');
+    }
+    if (nextState !== preparedState) {
+      await this.saveState(nextState);
+    }
+
     return {
       shares: offers
-        .flat()
+        .flatMap((entry) => entry.offers)
         .filter((offer) => !buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key)))
         .sort((left, right) => {
           const providerOrder = left.provider.localeCompare(right.provider);
@@ -2291,10 +2315,56 @@ export class ManagedShareService {
         : [...state.accounts, nextAccount],
     };
   }
+
+  private withAccountPresentationState(
+    state: IntegrationStateSnapshot,
+    accountId: string,
+    nextPresentationState: ProviderAccount['state'],
+    detail?: string
+  ): IntegrationStateSnapshot {
+    let changed = false;
+    const accounts = state.accounts.map((account) => {
+      if (account.id !== accountId) {
+        return account;
+      }
+      const nextDetail =
+        nextPresentationState === 'attention'
+          ? detail?.trim() || account.detail
+          : detail?.trim() || (account.state === 'attention' ? `${defaultProviderLabel(account.provider)} is connected.` : account.detail);
+      if (account.state === nextPresentationState && (account.detail ?? '') === (nextDetail ?? '')) {
+        return account;
+      }
+      changed = true;
+      return {
+        ...account,
+        state: nextPresentationState,
+        detail: nextDetail,
+        updatedAt: this.runtime.now(),
+      };
+    });
+    if (!changed) {
+      return state;
+    }
+    return {
+      ...state,
+      accounts,
+    };
+  }
 }
 
 function normalizeProvider(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function describeMegaAccountRecovery(message: string): string {
+  const normalized = message.trim();
+  if (/MEGA API error -16|blocked|account locked|credential stuffing/i.test(normalized)) {
+    return `MEGA says this account is locked. Unlock it on mega.io, complete the password-change flow, then reconnect it in Nearbytes. ${normalized}`.trim();
+  }
+  if (/MEGA API error -15|bad session|session id/i.test(normalized)) {
+    return `MEGA revoked the saved session. If the account was security-locked, finish the unlock and password-change flow on mega.io, then reconnect it in Nearbytes. ${normalized}`.trim();
+  }
+  return `Reconnect this MEGA account to resume incoming-share discovery. ${normalized}`.trim();
 }
 
 function dedupeManagedShareMirrors(
