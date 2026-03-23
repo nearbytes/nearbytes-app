@@ -62,6 +62,7 @@
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
   import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
+  import EventFlowPanel from './components/EventFlowPanel.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
@@ -89,6 +90,7 @@
     FileVideo,
     GripVertical,
     HardDrive,
+    Activity,
     History,
     Image as ImageIcon,
     LayoutGrid,
@@ -1441,6 +1443,7 @@
   let showTimeMachinePanel = $state(false);
   let showSourcesPanel = $state(false);
   let showVolumeStoragePanel = $state(false);
+  let showEventFlowPanel = $state(false);
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
   let isRefreshing = $state(false);
@@ -2111,7 +2114,7 @@
   });
 
   $effect(() => {
-    const storagePanelOpen = showSourcesPanel || showVolumeStoragePanel;
+    const storagePanelOpen = showSourcesPanel || showVolumeStoragePanel || showEventFlowPanel;
     if (storagePanelOpen && !lastStoragePanelOpen) {
       scheduleSourceDiscovery(0);
     }
@@ -3658,6 +3661,7 @@
     sourceDiscoveryPanelFocus = null;
     if (showVolumeStoragePanel) {
       showSourcesPanel = false;
+      showEventFlowPanel = false;
     }
   }
 
@@ -3666,6 +3670,7 @@
     sourceDiscoveryPanelFocus = null;
     if (showSourcesPanel) {
       showVolumeStoragePanel = false;
+      showEventFlowPanel = false;
     }
   }
 
@@ -5976,13 +5981,20 @@
   <!-- Main file area -->
   <main
     class="file-area"
-    class:volume-workspace-active={!showSourcesPanel && !showVolumeStoragePanel && address.trim() !== ''}
+    class:volume-workspace-active={!showSourcesPanel && !showVolumeStoragePanel && !showEventFlowPanel && address.trim() !== ''}
     class:dragging={isDragging}
     ondragover={handleDragOver}
     ondragleave={handleDragLeave}
     ondrop={handleDrop}
   >
-    {#if showSourcesPanel}
+    {#if showEventFlowPanel}
+      <div class="workspace-panel-view">
+        <EventFlowPanel
+          auth={auth}
+          volumeId={shareableVolumeId}
+        />
+      </div>
+    {:else if showSourcesPanel}
       <div class="workspace-panel-view">
         <StoragePanel
           mode="global"
@@ -6202,6 +6214,22 @@
               >
                 <History class="button-icon" size={15} strokeWidth={2} />
                 <span>Timeline</span>
+              </button>
+              <button
+                type="button"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showEventFlowPanel}
+                onclick={() => {
+                  showEventFlowPanel = !showEventFlowPanel;
+                  if (showEventFlowPanel) {
+                    showSourcesPanel = false;
+                    showVolumeStoragePanel = false;
+                  }
+                }}
+                title="Event flow visualization"
+              >
+                <Activity class="button-icon" size={15} strokeWidth={2} />
+                <span>Flow</span>
               </button>
             </div>
             {#if showFilesWorkspace}

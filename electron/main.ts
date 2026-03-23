@@ -82,31 +82,7 @@ const DESKTOP_RUNTIME_LOG_TAIL_BYTES = 64 * 1024;
 const DESKTOP_FORCE_EXIT_TIMEOUT_MS = 5_000;
 const execFileAsync = promisify(execFile);
 
-function supportsManagedMegaServerProcessControl(): boolean {
-  return process.platform === 'win32';
-}
 
-function buildManagedMegaServerWatchdogPowerShell(pid: number, timeoutMs: number): string {
-  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
-  return [
-    `$pidToWatch = ${pid}`,
-    `$timeoutSeconds = ${timeoutSeconds}`,
-    'Start-Sleep -Seconds $timeoutSeconds',
-    'try {',
-    '  $target = Get-Process -Id $pidToWatch -ErrorAction Stop',
-    '  Stop-Process -Id $target.Id -Force -ErrorAction SilentlyContinue',
-    '} catch {',
-    '}',
-  ].join('; ');
-}
-
-async function cleanupNearbytesManagedMegaServers(_logger: Console): Promise<void> {
-  return;
-}
-
-function cleanupNearbytesManagedMegaServersSync(_logger: Console): void {
-  return;
-}
 
 applyDebugFlagFromArgv(process.argv);
 
@@ -207,15 +183,12 @@ process.once('SIGTERM', () => {
   void handleTerminationSignal('SIGTERM', 143);
 });
 
-process.once('exit', () => {
-  cleanupNearbytesManagedMegaServersSync(console);
-});
+
 
 async function startDesktop(): Promise<void> {
   app.setName('Nearbytes');
   applyDesktopIcon();
   registerDeepLinkProtocol();
-  await cleanupNearbytesManagedMegaServers(console);
   console.log('[desktop] starting API runtime');
   const runtimeModule = await loadRuntimeModule();
   const commandExecutor = createDesktopCommandExecutor(console);
@@ -386,7 +359,6 @@ async function quitDesktopApp(): Promise<Record<string, unknown>> {
     void requestAppQuit('ui-debug');
   }, 0);
   setTimeout(() => {
-    cleanupNearbytesManagedMegaServersSync(console);
     state.diagnostics.quitAllowed = true;
     process.exit(0);
   }, DESKTOP_FORCE_EXIT_TIMEOUT_MS);
@@ -1242,12 +1214,6 @@ async function shutdown(): Promise<void> {
   }
 
   try {
-    await cleanupNearbytesManagedMegaServers(console);
-  } catch (error) {
-    errors.push(error);
-  }
-
-  try {
     await stopDevUiServer();
   } catch (error) {
     errors.push(error);
@@ -1259,50 +1225,18 @@ async function shutdown(): Promise<void> {
 }
 
 async function requestAppQuit(reason: string, exitCode = 0): Promise<void> {
-  const externalWatchdog = armExternalShutdownWatchdog(exitCode);
   const forceExitTimer = setTimeout(() => {
-    try {
-      cleanupNearbytesManagedMegaServersSync(console);
-    } finally {
-      state.diagnostics.quitAllowed = true;
-      process.exit(exitCode);
-    }
+    state.diagnostics.quitAllowed = true;
+    process.exit(exitCode);
   }, DESKTOP_FORCE_EXIT_TIMEOUT_MS);
 
   try {
     await ensureAppShutdown(reason);
   } finally {
     clearTimeout(forceExitTimer);
-    externalWatchdog.cancel();
     state.diagnostics.quitAllowed = true;
     app.exit(exitCode);
   }
-}
-
-function armExternalShutdownWatchdog(_exitCode: number): { cancel(): void } {
-  if (!supportsManagedMegaServerProcessControl()) {
-    return { cancel() {} };
-  }
-
-  const script = buildManagedMegaServerWatchdogPowerShell(process.pid, DESKTOP_FORCE_EXIT_TIMEOUT_MS);
-
-  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  child.unref();
-  return {
-    cancel() {
-      try {
-        if (!child.killed) {
-          child.kill();
-        }
-      } catch {
-        // Best-effort only.
-      }
-    },
-  };
 }
 
 function ensureAppShutdown(reason: string): Promise<void> {
