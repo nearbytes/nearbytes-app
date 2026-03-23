@@ -79,15 +79,14 @@ function proxyApiRequest(req, res, session, allowRetry) {
       return;
     }
 
+    if (session && shouldInvalidateDesktopSession(error)) {
+      invalidateDesktopSession(session);
+    }
+
     const canRetry = allowRetry && (req.method === 'GET' || req.method === 'HEAD');
     if (canRetry) {
-      const refreshedSession = readDesktopSession();
-      const sessionChanged =
-        refreshedSession && (!session || refreshedSession.port !== session.port || refreshedSession.token !== session.token);
-      if (sessionChanged) {
-        proxyApiRequest(req, res, refreshedSession, false);
-        return;
-      }
+      retryProxyRequest(req, res, session);
+      return;
     }
 
     res.statusCode = 502;
@@ -108,6 +107,38 @@ function proxyApiRequest(req, res, session, allowRetry) {
   }
 
   req.pipe(proxyReq);
+}
+
+function retryProxyRequest(req, res, previousSession) {
+  setTimeout(() => {
+    if (res.headersSent || res.writableEnded) {
+      return;
+    }
+    const refreshedSession = readDesktopSession();
+    const sessionChanged = hasDesktopSessionChanged(previousSession, refreshedSession);
+    if (sessionChanged) {
+      proxyApiRequest(req, res, refreshedSession, false);
+      return;
+    }
+
+    res.statusCode = 502;
+    res.setHeader('Content-Type', 'application/json');
+    const targetUrl = new URL(
+      refreshedSession ? `http://127.0.0.1:${refreshedSession.port}` : DEFAULT_SERVER_PROXY_TARGET
+    );
+    res.end(
+      JSON.stringify({
+        error: {
+          code: 'BAD_GATEWAY',
+          message: buildProxyErrorMessage(
+            new Error('desktop runtime unavailable after auto-repair attempt'),
+            targetUrl,
+            refreshedSession
+          ),
+        },
+      })
+    );
+  }, 150);
 }
 
 function buildProxyErrorMessage(error, targetUrl, session) {
@@ -144,6 +175,7 @@ function readDesktopSession() {
       parsed.expiresAt <= Date.now() ||
       !isProcessAlive(parsed.pid)
     ) {
+      invalidateDesktopSession();
       return null;
     }
     return {
@@ -153,6 +185,57 @@ function readDesktopSession() {
     };
   } catch {
     return null;
+  }
+}
+
+function shouldInvalidateDesktopSession(error) {
+  const code = typeof error?.code === 'string' ? error.code : '';
+  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'EPIPE' || code === 'ETIMEDOUT';
+}
+
+function hasDesktopSessionChanged(previousSession, nextSession) {
+  if (!previousSession && !nextSession) {
+    return false;
+  }
+  if (!previousSession || !nextSession) {
+    return true;
+  }
+  return (
+    previousSession.pid !== nextSession.pid ||
+    previousSession.port !== nextSession.port ||
+    previousSession.token !== nextSession.token
+  );
+}
+
+function invalidateDesktopSession(expectedSession) {
+  try {
+    if (!fs.existsSync(DESKTOP_SESSION_PATH)) {
+      return;
+    }
+
+    if (expectedSession) {
+      const raw = fs.readFileSync(DESKTOP_SESSION_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        parsed.pid === expectedSession.pid &&
+        parsed.port === expectedSession.port &&
+        parsed.token === expectedSession.token
+      ) {
+        fs.unlinkSync(DESKTOP_SESSION_PATH);
+      }
+      return;
+    }
+
+    fs.unlinkSync(DESKTOP_SESSION_PATH);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error) {
+      const code = error.code;
+      if (code === 'ENOENT') {
+        return;
+      }
+    }
   }
 }
 
