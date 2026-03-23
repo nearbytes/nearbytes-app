@@ -107,7 +107,7 @@ export function createProviderCatalog(
         : adapter.provider === 'gdrive'
           ? ['OAuth']
           : adapter.provider === 'mega'
-            ? ['CLI']
+            ? ['Native']
             : adapter.provider === 'github'
               ? ['Device flow']
               : ['Available'],

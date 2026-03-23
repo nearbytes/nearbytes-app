@@ -1255,14 +1255,14 @@
       label: provider === 'mega' ? 'MEGA' : 'GitHub',
       description:
         provider === 'mega'
-          ? 'Managed folders and provider shares backed by MEGA CLI sync.'
+          ? 'Native MEGA readonly mirroring for public links and incoming shares.'
           : 'Managed repo-backed shares synced through a configurable nearbytes subdirectory.',
       badges: provider === 'github' ? ['Device flow'] : [],
       isConnected: false,
       connectionState: 'available',
       setup: {
         status: 'ready',
-        detail: provider === 'mega' ? 'MEGA CLI is ready to use.' : 'GitHub is available to connect.',
+        detail: provider === 'mega' ? 'MEGA native sync is ready to use.' : 'GitHub is available to connect.',
       },
     };
   }
@@ -1879,23 +1879,9 @@
   function megaHelperView(provider: ProviderCatalogEntry): MegaHelperView {
     const helperPath = provider.setup.config?.helperPath?.trim() || '';
     if (!helperPath) {
-      if (provider.setup.status === 'needs-install') {
-        return {
-          headline: 'MEGAcmd will be prepared when you first connect MEGA',
-          detail: 'Nearbytes can set up the local MEGA command helper automatically for this machine.',
-          pathValue: null,
-        };
-      }
-      if (provider.setup.status === 'installing') {
-        return {
-          headline: 'Preparing the local MEGAcmd helper',
-          detail: 'Nearbytes is downloading and staging the commands it needs for MEGA sync.',
-          pathValue: null,
-        };
-      }
       return {
-        headline: 'MEGAcmd location not available yet',
-        detail: provider.setup.detail,
+        headline: 'Using the built-in MEGA runtime',
+        detail: provider.setup.detail || 'Nearbytes talks to MEGA directly and keeps incoming shares read-only.',
         pathValue: null,
       };
     }
@@ -1903,31 +1889,31 @@
     const normalizedPath = helperPath.replace(/\\/gu, '/').toLowerCase();
     if (helperPath === 'PATH') {
       return {
-        headline: 'Using the system MEGAcmd already installed on this machine',
-        detail: 'Nearbytes found MEGAcmd in your normal command-line tools, so no separate local helper folder is needed.',
+        headline: 'Using a configured MEGA runtime path',
+        detail: 'This machine still exposes a legacy MEGA runtime path, but Nearbytes no longer depends on a local command helper.',
         pathValue: 'System PATH',
       };
     }
 
     if (normalizedPath.includes('/.nearbytes-dev/megacmd/')) {
       return {
-        headline: 'Using the project development build of MEGAcmd',
-        detail: 'Nearbytes is running the vendored helper prepared for local development in this repository.',
+        headline: 'Legacy MEGA development path detected',
+        detail: 'A development-era MEGA command path is still configured, but Nearbytes now uses the native adapter instead.',
         pathValue: helperPath,
       };
     }
 
     if (normalizedPath.includes('/.nearbytes/helpers/megacmd')) {
       return {
-        headline: 'Using a Nearbytes-managed local MEGAcmd helper',
-        detail: 'Nearbytes installed and maintains this local helper folder for MEGA sync on this machine.',
+        headline: 'Legacy helper path detected',
+        detail: 'A previous helper install is still present on disk, but Nearbytes no longer requires it for MEGA mirroring.',
         pathValue: helperPath,
       };
     }
 
     return {
-      headline: 'Using a custom MEGAcmd location',
-      detail: 'Nearbytes is pointed at a specific MEGAcmd folder instead of the default local helper flow.',
+      headline: 'Custom legacy MEGA path detected',
+      detail: 'A custom MEGA command path is configured, but the current adapter uses direct API access instead.',
       pathValue: helperPath,
     };
   }
@@ -3537,7 +3523,7 @@
       title: provider.provider === 'mega' ? 'Preparing MEGA connection' : `Connecting ${provider.label}`,
       detail:
         provider.provider === 'mega'
-          ? 'Checking whether the local helper is ready before sending your credentials.'
+          ? 'Connecting directly to MEGA with the built-in native adapter.'
           : `Starting the ${provider.label} sign-in flow.`,
       canCancel: true,
       canReset: true,
@@ -4774,7 +4760,7 @@
                   <p class="provider-step-detail">{megaStatus.detail}</p>
                 {/if}
                 <div class="provider-path-card mega-helper-card">
-                  <p class="subheading">Active MEGAcmd</p>
+                  <p class="subheading">MEGA runtime</p>
                   <p class="provider-step-title">{megaHelper.headline}</p>
                   <p class="provider-step-detail">{megaHelper.detail}</p>
                   {#if megaHelper.pathValue}

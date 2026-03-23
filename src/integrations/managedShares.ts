@@ -2015,74 +2015,8 @@ export class ManagedShareService {
       return;
     }
 
-    const state = options.stateSnapshot ?? (await this.loadState());
-    const existingManagedShare = state.managedShares.find(
-      (share) =>
-        normalizeProvider(share.provider) === provider &&
-        share.accountId === account.id &&
-        isProviderBaseShare(share.label, share.remoteDescriptor, share.role)
-    );
-    if (existingManagedShare) {
-      await this.relocateDefaultManagedShareIfNeeded(existingManagedShare, account, state);
-      await this.ensureMegaWritableDefaultCoverage(account);
-      return;
-    }
-    if (options.createMissing === false) {
-      return;
-    }
-
-    const localPath = this.findDefaultProviderSharePath(provider, account);
-    if (localPath) {
-      const config = cloneConfig(this.options.storage.getRootsConfig());
-      const existingSource = config.sources.find((source) => path.resolve(source.path) === path.resolve(localPath));
-      if (existingSource) {
-        const shareId = createId('share', provider, state.managedShares.length + 1);
-        const adoptedShare: ManagedShare = {
-          id: shareId,
-          provider,
-          accountId: account.id,
-          label: 'nearbytes',
-          role: 'owner',
-          localPath: path.resolve(localPath),
-          sourceId: existingSource.id,
-          syncMode: 'mirror',
-          remoteDescriptor: {
-            remotePath: this.runtime.mega.remoteBasePath,
-            shareName: 'nearbytes',
-            managedShareId: shareId,
-          },
-          capabilities: ['mirror', 'read', 'write', 'invite'],
-          invitationEmails: [],
-          createdAt: this.runtime.now(),
-          updatedAt: this.runtime.now(),
-        };
-        const { config: nextConfig } = ensureManagedShareSource(config, adoptedShare, adoptedShare.localPath);
-        await this.persistRootsConfig(nextConfig);
-        await this.saveState({
-          ...state,
-          managedShares: [...state.managedShares, adoptedShare],
-        });
-        await this.relocateDefaultManagedShareIfNeeded(adoptedShare, account, {
-          ...state,
-          managedShares: [...state.managedShares, adoptedShare],
-        });
-        await this.ensureMegaWritableDefaultCoverage(account);
-        return;
-      }
-    }
-
-    const created = await this.createManagedShare({
-      provider,
-      accountId: account.id,
-      label: 'nearbytes',
-      localPath,
-      remoteDescriptor: {
-        remotePath: this.runtime.mega.remoteBasePath,
-        shareName: 'nearbytes',
-      },
-    });
-    await this.relocateDefaultManagedShareIfNeeded(created.share, account);
-    await this.ensureMegaWritableDefaultCoverage(account);
+    // Native MEGA support is readonly-first and no longer provisions a writable base share automatically.
+    return;
   }
 
   private async ensureMegaWritableDefaultCoverage(account: ProviderAccount): Promise<void> {
@@ -3407,14 +3341,7 @@ function managedShareAllowsWrites(share: ManagedShare): boolean {
 }
 
 function supportsLiveSyncForMegaIncomingShare(share: ManagedShare): boolean {
-  if (normalizeProvider(share.provider) !== 'mega' || share.role !== 'recipient') {
-    return false;
-  }
-  const remotePath = getManagedShareRemotePath('mega', share.remoteDescriptor);
-  if (!isMegaIncomingRemotePath(remotePath)) {
-    return false;
-  }
-  return isMegaFullAccessLevel(getManagedShareAccessLevel(share.remoteDescriptor));
+  return false;
 }
 
 function getManagedShareAccessLevel(descriptor: Record<string, unknown>): string | undefined {

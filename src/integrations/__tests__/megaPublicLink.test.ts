@@ -251,7 +251,7 @@ describe('Mega public link mirroring', () => {
 
     const state = await adapter.getState(share, null);
     expect(state.status).toBe('ready');
-    expect(state.detail).toContain('local read-only copy');
+    expect(state.detail).toContain('up to date');
 
     await adapter.detachManagedShare(share, account);
   });

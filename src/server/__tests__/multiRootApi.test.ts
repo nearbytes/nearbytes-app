@@ -403,7 +403,7 @@ describe('Nearbytes API (multi-root)', () => {
       integrationOptions: {
         adapters: [
           new FakeProviderAdapter('gdrive', 'Google Drive', 'Managed folders backed by Google Drive.'),
-          new FakeProviderAdapter('mega', 'MEGA', 'Managed folders backed by MEGA CLI.'),
+          new FakeProviderAdapter('mega', 'MEGA', 'Native MEGA readonly mirroring for public links and incoming shares.'),
         ],
       },
     });
