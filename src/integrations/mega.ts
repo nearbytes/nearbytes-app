@@ -252,7 +252,7 @@ export class MegaTransportAdapter {
   }
 
   async listIncomingShares(account: ProviderAccount): Promise<IncomingManagedShareOffer[]> {
-    const session = await this.getAccountSession(account.id);
+    const session = await this.getAccountSession(account);
     const snapshot = await this.fetchNodesSnapshot(session);
     const tree = decryptMegaTree(snapshot, session);
     const offers: IncomingManagedShareOffer[] = [];
@@ -300,6 +300,13 @@ export class MegaTransportAdapter {
   }
 
   async getState(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState> {
+    if (isLegacyMegaLocalMirror(share)) {
+      return {
+        status: 'ready',
+        detail: 'This legacy MEGA Nearbytes folder is attached locally. Nearbytes is preserving the local location after reconnect.',
+        badges: ['Local'],
+      };
+    }
     const cached = this.syncStates.get(share.id);
     if (cached) {
       return cached;
@@ -346,6 +353,9 @@ export class MegaTransportAdapter {
   }
 
   async ensureSync(share: ManagedShare, account: ProviderAccount): Promise<void> {
+    if (isLegacyMegaLocalMirror(share)) {
+      return;
+    }
     if (this.usesPublicLinkMirror(share)) {
       this.syncStates.set(share.id, {
         status: 'syncing',
@@ -416,7 +426,7 @@ export class MegaTransportAdapter {
     });
 
     try {
-      const session = await this.getAccountSession(account.id);
+      const session = await this.getAccountSession(account);
       const descriptor = await this.resolveIncomingShareDescriptor(account, share.remoteDescriptor);
       const rootHandle = getStringDescriptor(descriptor, 'rootHandle') ?? getStringDescriptor(descriptor, 'shareHandle');
       if (!rootHandle) {
@@ -477,17 +487,17 @@ export class MegaTransportAdapter {
     }
   }
 
-  private async getAccountSession(accountId: string): Promise<MegaSession> {
-    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(accountId));
+  private async getAccountSession(account: ProviderAccount): Promise<MegaSession> {
+    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
     if (!secret) {
       throw new Error('Reconnect MEGA to resume syncing.');
     }
     if (!isStoredMegaAccountSecret(secret)) {
-      await this.runtime.secretStore.delete(secretKey(accountId));
+      await this.runtime.secretStore.delete(secretKey(account.id));
       throw new Error('Reconnect MEGA to resume syncing.');
     }
 
-    const session = deserializeSession(secret);
+    const session = deserializeSession(secret, account.email ?? account.label);
     try {
       await this.fetchCurrentUser(session);
       return session;
@@ -496,7 +506,7 @@ export class MegaTransportAdapter {
         throw error;
       }
       const refreshed = await this.loginWithPassword(secret.email, secret.password, secret.mfaCode);
-      await this.runtime.secretStore.set(secretKey(accountId), {
+      await this.runtime.secretStore.set(secretKey(account.id), {
         ...secret,
         sid: refreshed.sid,
         masterKey: encodeMegaBase64Url(refreshed.masterKey),
@@ -664,9 +674,9 @@ function createOpaqueId(prefix: string): string {
   return `${prefix}-${randomBytes(6).toString('hex')}`;
 }
 
-function deserializeSession(secret: MegaAccountSecret): MegaSession {
+function deserializeSession(secret: MegaAccountSecret, fallbackEmail = ''): MegaSession {
   return {
-    email: secret.email,
+    email: typeof secret.email === 'string' && secret.email.trim() !== '' ? secret.email : fallbackEmail,
     password: secret.password,
     mfaCode: secret.mfaCode,
     sid: secret.sid,
@@ -683,8 +693,6 @@ function isStoredMegaAccountSecret(secret: unknown): secret is MegaAccountSecret
   }
   const candidate = secret as Partial<MegaAccountSecret>;
   return (
-    typeof candidate.email === 'string' &&
-    candidate.email.trim() !== '' &&
     typeof candidate.sid === 'string' &&
     candidate.sid.trim() !== '' &&
     typeof candidate.masterKey === 'string' &&
@@ -714,6 +722,10 @@ function incomingShareMatches(candidate: Record<string, unknown>, target: Record
     getStringDescriptor(candidate, 'remotePath') === getStringDescriptor(target, 'remotePath') &&
     getStringDescriptor(candidate, 'ownerEmail') === getStringDescriptor(target, 'ownerEmail')
   );
+}
+
+function isLegacyMegaLocalMirror(share: ManagedShare): boolean {
+  return share.remoteDescriptor?.legacyLocalMirror === true && getStringDescriptor(share.remoteDescriptor, 'remotePath') === '/nearbytes';
 }
 
 function assertString(value: unknown, message: string): string {

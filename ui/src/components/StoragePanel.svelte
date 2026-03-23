@@ -1212,8 +1212,8 @@
     }
     if (entry.provider === 'mega') {
       return entry.isConnected
-        ? 'Use MEGA as a provider for storage locations in Nearbytes.'
-        : 'Use MEGA as a storage location provider.';
+        ? 'Mirror incoming MEGA shares and public links in Nearbytes. Owner-side MEGA folders are not listed here yet.'
+        : 'Mirror incoming MEGA shares and public links in Nearbytes.';
     }
     return entry.setup.detail || entry.description;
   }
@@ -1364,12 +1364,19 @@
     if (!entry.isConnected) {
       return providerCardStatus(entry);
     }
-    const locationCopy = countLabel(providerVisibleShareCount(entry.provider), 'location');
+    const locationCopy = countLabel(
+      providerVisibleShareCount(entry.provider),
+      entry.provider === 'mega' ? 'mirror' : 'location'
+    );
     const incomingShareCount = providerIncomingShareCount(entry.provider);
     if (incomingShareCount === 0) {
       return locationCopy;
     }
     return `${locationCopy} + ${incomingShareCount} shared`;
+  }
+
+  function providerSupportsCreateAction(provider: string): boolean {
+    return provider !== 'mega';
   }
 
   function providerAttachedShareCount(provider: string): number {
@@ -1399,13 +1406,37 @@
     return Array.from(unique.values());
   }
 
+  function providerMirrorPathEntries(entry: ProviderCatalogEntry): Array<{
+    heading: string;
+    title: string;
+    path: string;
+  }> {
+    const unique = new Map<string, { heading: string; title: string; path: string }>();
+    for (const share of providerShares(entry.provider)) {
+      const resolved = summarySourcePath(share).trim();
+      if (!resolved || unique.has(resolved)) {
+        continue;
+      }
+      unique.set(resolved, {
+        heading: share.share.role === 'recipient' ? 'Mirror folder for shared location' : 'Local mirror folder',
+        title: managedShareTitle(share),
+        path: resolved,
+      });
+    }
+    return Array.from(unique.values());
+  }
+
   function providerTransparencyFacts(entry: ProviderCatalogEntry): string[] {
     const shareCount = providerVisibleShareCount(entry.provider);
     const attachedCount = providerAttachedShareCount(entry.provider);
-    const account = connectedAccountForProvider(entry.provider);
+    const providerSharesForEntry = providerShares(entry.provider);
+    const recipientCount = providerSharesForEntry.filter((summary) => summary.share.role === 'recipient').length;
+    const ownerCount = providerSharesForEntry.filter((summary) => summary.share.role === 'owner').length;
     const facts = [
-      entry.isConnected ? account?.email || account?.label || 'Account connected' : 'No account connected',
-      countLabel(shareCount, 'live location'),
+      countLabel(
+        shareCount,
+        entry.provider === 'mega' ? 'mirrored location' : 'live location'
+      ),
     ];
     const incomingInviteCount = incomingProviderInvitesForProvider(entry.provider).length;
     const incomingShareCount = incomingManagedSharesForProvider(entry.provider).length;
@@ -1419,7 +1450,13 @@
       facts.push(countLabel(attachedCount, 'attached location'));
     }
     if (entry.provider === 'mega') {
-      facts.push(entry.setup.status === 'needs-install' ? 'Needs local helper' : 'Uses local mirror folder');
+      if (recipientCount > 0) {
+        facts.push(countLabel(recipientCount, 'incoming mirror'));
+      }
+      if (ownerCount > 0) {
+        facts.push(countLabel(ownerCount, 'owner mirror'));
+      }
+      facts.push('Connected account identifies remote shares; mirror folders belong to those shared locations');
     }
     return facts.filter((value, index, values) => value && values.indexOf(value) === index);
   }
@@ -1807,7 +1844,8 @@
     const shares = providerShares('mega');
     const total = shares.length;
     const ready = shares.filter((summary) => summary.state.status === 'ready').length;
-    const syncing = shares.filter((summary) => summary.state.status === 'syncing' || summary.state.status === 'idle').length;
+    const syncing = shares.filter((summary) => summary.state.status === 'syncing').length;
+    const checking = shares.filter((summary) => summary.state.status === 'idle').length;
     const issue = megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
     const loading = providersLoading || sharesLoading || incomingLoading;
     const hasBlockingError = shareLoadError || incomingLoadError;
@@ -1836,6 +1874,21 @@
         progressPercent: null,
         progressLabel: 'Status unavailable',
         selfRepairCopy: 'Nearbytes keeps retrying in the background. Use refresh if status does not recover quickly.',
+      };
+    }
+
+    if (checking > 0) {
+      return {
+        headline: 'MEGA mirrors connected',
+        detail:
+          total > 0
+            ? `Nearbytes is verifying ${countLabel(total, 'shared location')} in the background.`
+            : 'Nearbytes is verifying the connected MEGA account in the background.',
+        tone: 'muted',
+        syncing: false,
+        progressPercent: null,
+        progressLabel: '',
+        selfRepairCopy: 'Nearbytes keeps checking shared-location health and will retry transient MEGA issues automatically.',
       };
     }
 
@@ -2155,7 +2208,7 @@
       return `Connect ${provider.label} first, then Nearbytes will manage its shares here.`;
     }
     if (provider.provider === 'mega') {
-      return 'Nearbytes should create or adopt the default nearbytes share automatically. If it does not appear, use Add a location.';
+      return 'Accepted incoming MEGA shares appear here as local mirrors. Your own MEGA account folders are not shown in this section yet.';
     }
     return 'Create a storage location here to make it available in Nearbytes.';
   }
@@ -3759,6 +3812,10 @@
   }
 
   function handleProviderAddLocation(provider: ProviderCatalogEntry): void {
+    if (!providerSupportsCreateAction(provider.provider)) {
+      errorMessage = 'Nearbytes cannot create owner-side MEGA locations yet. Accept an incoming share or use a public link instead.';
+      return;
+    }
     if (isInlineLocationComposerProvider(provider.provider)) {
       openProviderCreateComposer(provider.provider);
       return;
@@ -4659,7 +4716,7 @@
                 <p class="section-copy">{providerCardDetail(provider)}</p>
               </div>
               <div class="button-row compact-panel-actions">
-                {#if provider.isConnected}
+                {#if provider.isConnected && providerSupportsCreateAction(provider.provider)}
                   {#if isInlineLocationComposerProvider(provider.provider) && isProviderCreateComposerOpen(provider.provider)}
                     {@render addLocationComposer(provider)}
                   {:else}
@@ -5538,12 +5595,13 @@
             </div>
           </div>
 
-          {#if providerMirrorPaths(dialogProvider).length > 0}
+          {#if providerMirrorPathEntries(dialogProvider).length > 0}
             <div class="provider-dialog-path-list">
-              {#each providerMirrorPaths(dialogProvider) as mirrorPath}
+              {#each providerMirrorPathEntries(dialogProvider) as mirrorEntry}
                 <div class="provider-path-card">
-                  <p class="subheading">Local mirror folder</p>
-                  <p class="provider-path-copy">{mirrorPath}</p>
+                  <p class="subheading">{mirrorEntry.heading}</p>
+                  <p class="provider-step-title">{mirrorEntry.title}</p>
+                  <p class="provider-path-copy">{mirrorEntry.path}</p>
                 </div>
               {/each}
             </div>

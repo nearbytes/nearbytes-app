@@ -331,7 +331,6 @@ describe('MegaTransportAdapter', () => {
   it('rejects malformed stored account secrets with a reconnect error instead of crashing', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-bad', {
-      sid: 'broken-session',
       masterKey: 'broken-master-key',
       userHandle: 'broken-user',
       accountVersion: 2,
@@ -362,5 +361,54 @@ describe('MegaTransportAdapter', () => {
     ).rejects.toThrow('Reconnect MEGA to resume syncing.');
 
     await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toBeNull();
+  });
+
+  it('treats recovered legacy local MEGA folders as locally attached shares', async () => {
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, {
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+
+    const share: ManagedShare = {
+      id: 'share-mega-legacy-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: path.join(os.tmpdir(), 'nearbytes-mega-legacy-local'),
+      sourceId: 'src-mega-legacy-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+        legacyLocalMirror: true,
+      },
+      capabilities: ['mirror', 'read', 'write'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(
+      adapter.ensureSync(share, {
+        id: 'acct-mega-1',
+        provider: 'mega',
+        label: 'MEGA',
+        state: 'connected',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+    ).resolves.toBeUndefined();
+
+    await expect(adapter.getState(share, null)).resolves.toMatchObject({
+      status: 'ready',
+      badges: ['Local'],
+    });
   });
 });

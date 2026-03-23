@@ -1140,6 +1140,82 @@ describe('ManagedShareService', () => {
     ).toBe(true);
   });
 
+  it('recovers a legacy local MEGA nearbytes folder on reconnect when the persisted share state is gone', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-mega-recover-'));
+    tempDirs.add(tempDir);
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+    const managedRoot = path.join(tempDir, 'managed-root');
+    const localRoot = path.join(tempDir, 'local-root');
+    const legacyMegaRoot = path.join(managedRoot, 'mega', 'owner-example-com', 'nearbytes');
+    await fs.mkdir(path.join(localRoot, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(legacyMegaRoot, 'blocks'), { recursive: true });
+    await fs.writeFile(path.join(legacyMegaRoot, 'Nearbytes.html'), 'marker\n', 'utf8');
+    await fs.writeFile(
+      rootsConfigPath,
+      `${JSON.stringify({
+        version: 2,
+        sources: [
+          {
+            id: 'src-local',
+            provider: 'local',
+            path: localRoot,
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+          },
+        ],
+        defaultVolume: { destinations: [] },
+        volumes: [],
+      }, null, 2)}\n`,
+      'utf8'
+    );
+
+    const storage = new MultiRootStorageBackend({
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      defaultVolume: { destinations: [] },
+      volumes: [],
+    });
+    const service = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      integrationStatePath,
+      mirrorRoot: managedRoot,
+      adapters: [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+    });
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      credentials: {
+        email: 'owner@example.com',
+        password: 'secret',
+      },
+    });
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(1);
+    expect(shares.shares[0]?.share.localPath).toBe(path.resolve(legacyMegaRoot));
+    expect(shares.shares[0]?.share.remoteDescriptor).toMatchObject({
+      remotePath: '/nearbytes',
+      legacyLocalMirror: true,
+    });
+  });
+
   it('adopts active MEGA sync mirrors on connect without duplicating the default base share', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-inventory-'));
     tempDirs.add(tempDir);

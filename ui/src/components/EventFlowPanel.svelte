@@ -555,34 +555,20 @@
   }
 
   function handleCanvasMouseLeave(): void {
-    hoveredNode = undefined ?? null;
+    hoveredNode = null;
   }
-
-  /* ── Demo particles for visual appeal when idle ── */
-  function spawnIdleParticle(): void {
-    if (storageNodes.length < 2) return;
-    if (particles.length > 20) return;
-    const from = storageNodes[Math.floor(Math.random() * storageNodes.length)];
-    let to = storageNodes[Math.floor(Math.random() * storageNodes.length)];
-    if (to.id === from.id) to = storageNodes[(storageNodes.indexOf(from) + 1) % storageNodes.length];
-    const kinds: Particle['kind'][] = ['event', 'block', 'sync'];
-    spawnParticle(from.id, to.id, kinds[Math.floor(Math.random() * kinds.length)], 'idle');
-  }
-
-  let idleTimer: ReturnType<typeof setInterval> | null = null;
 
   /* ── Lifecycle ── */
-  onMount(async () => {
-    await loadStorageState();
-    updateCanvasSize();
-    animFrameId = requestAnimationFrame(drawFrame);
-    connectWatchers();
-
+  onMount(() => {
     const resizeObserver = new ResizeObserver(() => updateCanvasSize());
-    if (container) resizeObserver.observe(container);
 
-    // Spawn subtle idle particles every few seconds for visual life
-    idleTimer = setInterval(spawnIdleParticle, 2500);
+    void (async () => {
+      await loadStorageState();
+      updateCanvasSize();
+      animFrameId = requestAnimationFrame(drawFrame);
+      connectWatchers();
+      if (container) resizeObserver.observe(container);
+    })();
 
     return () => {
       resizeObserver.disconnect();
@@ -592,7 +578,6 @@
   onDestroy(() => {
     if (animFrameId !== null) cancelAnimationFrame(animFrameId);
     disconnectWatchers();
-    if (idleTimer) clearInterval(idleTimer);
   });
 
   /* ── Formatting ── */
@@ -670,7 +655,7 @@
     <h3 class="ef-activity-title">Activity Stream</h3>
     <div class="ef-activity-list">
       {#if activityLog.length === 0}
-        <div class="ef-activity-empty">Watching for events… particles will appear as data flows between storage nodes.</div>
+        <div class="ef-activity-empty">Watching for real events… particles appear only when the source or volume watchers observe storage activity.</div>
       {/if}
       {#each activityLog as entry (entry.id)}
         <div class="ef-activity-entry" style="border-left-color:{entry.color}">

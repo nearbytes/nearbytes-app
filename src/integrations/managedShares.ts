@@ -9,7 +9,7 @@ import {
   type SourceConfigEntry,
   type VolumeDestinationConfig,
 } from '../config/roots.js';
-import { ensureNearbytesMarkers, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
+import { ensureNearbytesMarkers, inspectNearbytesRoot, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
@@ -1998,8 +1998,8 @@ export class ManagedShareService {
 
   private async ensureDefaultManagedShare(
     provider: string,
-    _account: ProviderAccount,
-    _options: {
+    account: ProviderAccount,
+    options: {
       readonly stateSnapshot?: IntegrationStateSnapshot;
       readonly createMissing?: boolean;
     } = {}
@@ -2008,8 +2008,70 @@ export class ManagedShareService {
       return;
     }
 
-    // Native MEGA support is readonly-first and no longer provisions a writable base share automatically.
-    return;
+    const state = options.stateSnapshot ?? (await this.loadState());
+    const existing = state.managedShares.find((share) =>
+      normalizeProvider(share.provider) === 'mega' &&
+      share.accountId === account.id &&
+      isLegacyMegaLocalBaseShare(share)
+    );
+    if (existing) {
+      return;
+    }
+    if (options.createMissing !== true) {
+      return;
+    }
+
+    const localPath = path.resolve(
+      resolveManagedShareLocalPath(
+        this.mirrorRoot,
+        'mega',
+        account,
+        'nearbytes',
+        'share-mega-legacy-placeholder',
+        {
+          remotePath: '/nearbytes',
+          shareName: 'nearbytes',
+          legacyLocalMirror: true,
+        },
+        'owner'
+      )
+    );
+    const inspection = await inspectNearbytesRoot(localPath);
+    if (!inspection) {
+      return;
+    }
+
+    const shareId = createId('share', 'mega', state.managedShares.length + 1);
+    const recoveredShare: ManagedShare = {
+      id: shareId,
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath,
+      sourceId: undefined,
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+        legacyLocalMirror: true,
+      },
+      capabilities: ['mirror', 'read', 'write'],
+      invitationEmails: [],
+      createdAt: this.runtime.now(),
+      updatedAt: this.runtime.now(),
+    };
+
+    const { config, sourceId } = ensureManagedShareSource(
+      cloneConfig(this.options.storage.getRootsConfig()),
+      recoveredShare,
+      localPath
+    );
+    await this.persistRootsConfig(config);
+    await this.saveState({
+      ...state,
+      managedShares: [...state.managedShares, { ...recoveredShare, sourceId }],
+    });
   }
 
   private async relocateMegaRecipientShareIfNeeded(
@@ -2336,6 +2398,16 @@ function isProviderBaseShare(
     return false;
   }
   return normalizedLabel === 'nearbytes' || shareName === 'nearbytes';
+}
+
+function isLegacyMegaLocalBaseShare(share: ManagedShare): boolean {
+  if (normalizeProvider(share.provider) !== 'mega' || share.role !== 'owner') {
+    return false;
+  }
+  if (share.remoteDescriptor?.legacyLocalMirror !== true) {
+    return false;
+  }
+  return getManagedShareRemotePath('mega', share.remoteDescriptor) === '/nearbytes';
 }
 
 function sanitizeManagedFolderLabel(value: string): string {
