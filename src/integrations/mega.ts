@@ -20,6 +20,12 @@ import {
   resolveMegaPublicLinkTarget,
 } from './megaPublicLink.js';
 import type { ManagedShareMirrorEntry } from './adapters.js';
+import {
+  ProviderRefreshWorker,
+  type ProviderRefreshManifestEntry,
+  type ProviderRefreshRemoteAdapter,
+  type ProviderRefreshRemoteEntry,
+} from './providerRefreshWorker.js';
 import type {
   AcceptManagedShareInput,
   ConnectProviderAccountInput,
@@ -70,19 +76,11 @@ interface MegaSession {
   readonly accountSalt?: string;
 }
 
-interface MegaManifestEntry {
-  readonly fingerprint: string;
-  readonly kind: 'file' | 'folder';
-  readonly size?: number;
-  readonly handle: string;
-  readonly parentHandle?: string;
-}
-
 interface MegaMirrorManifest {
   readonly rootHandle?: string;
   readonly lastScsn?: string;
   readonly knownHandles?: readonly string[];
-  readonly entries: Record<string, MegaManifestEntry>;
+  readonly entries: Record<string, ProviderRefreshManifestEntry>;
 }
 
 interface MegaFetchedTree {
@@ -132,6 +130,7 @@ export class MegaTransportAdapter {
   private readonly syncStates = new Map<string, TransportState>();
   private readonly syncTimers = new Map<string, NodeJS.Timeout>();
   private readonly syncTasks = new Map<string, Promise<void>>();
+  private readonly refreshWorker = new ProviderRefreshWorker();
 
   constructor(
     private readonly runtime: IntegrationRuntime,
@@ -447,10 +446,20 @@ export class MegaTransportAdapter {
       }
 
       const fetched = await this.fetchPartialTreeWithSnapshot(session, rootHandle);
-      await this.materializeTree(share.id, share.localPath, fetched.tree, session, fetched.snapshot.scsn);
+      const refreshResult = await this.refreshWorker.refresh(
+        share.localPath,
+        new MegaReadonlyRemoteAdapter(this.fetchImpl, this.apiClient, session, fetched.tree),
+        { entries: manifest.entries }
+      );
+      await this.runtime.secretStore.set(mirrorManifestKey(share.id), {
+        rootHandle: fetched.tree.root.handle,
+        lastScsn: fetched.snapshot.scsn?.trim() || manifest.lastScsn,
+        knownHandles: collectTreeHandles(fetched.tree),
+        entries: refreshResult.manifest.entries,
+      } satisfies MegaMirrorManifest);
       this.syncStates.set(share.id, {
         status: 'ready',
-        detail: 'MEGA readonly mirror is up to date.',
+        detail: summarizeRefreshResult('MEGA readonly mirror is up to date.', refreshResult),
         badges: READONLY_BADGES,
         lastSyncAt: this.runtime.now(),
       });
@@ -557,14 +566,6 @@ export class MegaTransportAdapter {
     return parseMegaFetchNodesSnapshot(response);
   }
 
-  private async fetchPartialTree(session: MegaSession, rootHandle: string): Promise<DecryptedMegaTree> {
-    const response = await this.apiCommand<Record<string, unknown>>(
-      buildMegaFetchNodesCommand({ partialRoot: rootHandle }),
-      session
-    );
-    return decryptMegaTree(parseMegaFetchNodesSnapshot(response), session, rootHandle);
-  }
-
   private async fetchPartialTreeWithSnapshot(session: MegaSession, rootHandle: string): Promise<MegaFetchedTree> {
     const response = await this.apiCommand<Record<string, unknown>>(
       buildMegaFetchNodesCommand({ partialRoot: rootHandle }),
@@ -611,55 +612,6 @@ export class MegaTransportAdapter {
       throw new Error('The requested MEGA incoming share is no longer available.');
     }
     return match.remoteDescriptor;
-  }
-
-  private async materializeTree(
-    shareId: string,
-    localPath: string,
-    tree: DecryptedMegaTree,
-    session: MegaSession,
-    scsn?: string
-  ): Promise<void> {
-    const manifest = await this.loadManifest(shareId);
-    const desiredPaths = new Set<string>();
-    const nextEntries = new Map<string, MegaManifestEntry>();
-    const knownHandles = new Set<string>([tree.root.handle]);
-
-    await fs.mkdir(localPath, { recursive: true });
-    await visitTree(tree, async (relativePath, node) => {
-      desiredPaths.add(relativePath);
-      knownHandles.add(node.handle);
-      const fingerprint = createNodeFingerprint(node);
-      nextEntries.set(relativePath, {
-        fingerprint,
-        kind: node.isFolder ? 'folder' : 'file',
-        size: node.isFolder ? undefined : node.size,
-        handle: node.handle,
-        parentHandle: node.parentHandle,
-      });
-
-      const targetPath = path.join(localPath, relativePath);
-      if (node.isFolder) {
-        await fs.mkdir(targetPath, { recursive: true });
-        return;
-      }
-
-      const previous = manifest.entries[relativePath];
-      const stats = await fs.stat(targetPath).catch(() => null);
-      if (previous?.fingerprint === fingerprint && stats?.isFile() && stats.size === node.size) {
-        return;
-      }
-
-      await downloadAuthenticatedMegaFile(this.fetchImpl, this.apiClient, session, node.handle, node.nodeKey, targetPath, node.size);
-    });
-
-    await removeObsoleteEntries(localPath, manifest.entries, desiredPaths);
-    await this.runtime.secretStore.set(mirrorManifestKey(shareId), {
-      rootHandle: tree.root.handle,
-      lastScsn: scsn?.trim() || manifest.lastScsn,
-      knownHandles: [...knownHandles].sort(),
-      entries: Object.fromEntries(nextEntries.entries()),
-    } satisfies MegaMirrorManifest);
   }
 
   private async loadManifest(shareId: string): Promise<MegaMirrorManifest> {
@@ -988,6 +940,19 @@ async function downloadAuthenticatedMegaFile(
   destinationPath: string,
   expectedSize: number
 ): Promise<void> {
+  const plaintext = await downloadAuthenticatedMegaFileContent(fetchImpl, apiClient, session, handle, nodeKey, expectedSize);
+  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+  await fs.writeFile(destinationPath, plaintext);
+}
+
+async function downloadAuthenticatedMegaFileContent(
+  fetchImpl: typeof fetch,
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  handle: string,
+  nodeKey: Buffer,
+  expectedSize: number
+): Promise<Uint8Array> {
   const response = await apiClient.requestSingle<Record<string, unknown> | number>({ a: 'g', g: 1, n: handle }, { sessionId: session.sid });
   if (typeof response === 'number') {
     throw new Error(`MEGA API error ${response}.`);
@@ -1002,8 +967,7 @@ async function downloadAuthenticatedMegaFile(
   if (expectedSize > 0 && plaintext.length !== expectedSize) {
     throw new Error(`MEGA file download size mismatch for ${path.basename(destinationPath)}.`);
   }
-  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-  await fs.writeFile(destinationPath, plaintext);
+  return plaintext;
 }
 
 function decryptFileCiphertext(ciphertext: Buffer, nodeKey: Buffer): Buffer {
@@ -1030,19 +994,6 @@ async function visitTree(
     }
   };
   await walk(tree.root.handle);
-}
-
-async function removeObsoleteEntries(
-  localPath: string,
-  previousEntries: Record<string, MegaManifestEntry>,
-  desiredPaths: ReadonlySet<string>
-): Promise<void> {
-  const obsolete = Object.keys(previousEntries)
-    .filter((entry) => !desiredPaths.has(entry))
-    .sort((left, right) => right.length - left.length);
-  for (const entry of obsolete) {
-    await fs.rm(path.join(localPath, entry), { recursive: true, force: true }).catch(() => undefined);
-  }
 }
 
 function actionPacketBatchTouchesShare(
@@ -1115,6 +1066,71 @@ function createNodeFingerprint(node: DecryptedMegaNode): string {
   hash.update('\n');
   hash.update(node.encodedKey ?? '');
   return hash.digest('hex');
+}
+
+function collectTreeHandles(tree: DecryptedMegaTree): string[] {
+  return [...tree.nodesByHandle.keys()].sort();
+}
+
+function normalizeRelativePath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function summarizeRefreshResult(
+  prefix: string,
+  result: { downloaded: string[]; removed: string[] }
+): string {
+  const changes: string[] = [];
+  if (result.downloaded.length > 0) {
+    changes.push(`${result.downloaded.length} downloaded`);
+  }
+  if (result.removed.length > 0) {
+    changes.push(`${result.removed.length} removed`);
+  }
+  return changes.length > 0 ? `${prefix} ${changes.join(', ')}.` : prefix;
+}
+
+class MegaReadonlyRemoteAdapter implements ProviderRefreshRemoteAdapter {
+  private readonly nodesByPath = new Map<string, DecryptedMegaNode>();
+
+  constructor(
+    private readonly fetchImpl: typeof fetch,
+    private readonly apiClient: MegaApiClient,
+    private readonly session: MegaSession,
+    private readonly tree: DecryptedMegaTree
+  ) {}
+
+  async list(): Promise<readonly ProviderRefreshRemoteEntry[]> {
+    this.nodesByPath.clear();
+    const entries: ProviderRefreshRemoteEntry[] = [];
+    await visitTree(this.tree, async (relativePath, node) => {
+      const normalizedPath = normalizeRelativePath(relativePath);
+      this.nodesByPath.set(normalizedPath, node);
+      entries.push({
+        path: normalizedPath,
+        kind: node.isFolder ? 'folder' : 'file',
+        fingerprint: createNodeFingerprint(node),
+        size: node.isFolder ? undefined : node.size,
+      });
+    });
+    return entries;
+  }
+
+  async download(relativePath: string): Promise<Uint8Array> {
+    const normalizedPath = normalizeRelativePath(relativePath);
+    const node = this.nodesByPath.get(normalizedPath);
+    if (!node || node.isFolder) {
+      throw new Error(`MEGA mirror entry not found: ${normalizedPath}`);
+    }
+    return downloadAuthenticatedMegaFileContent(
+      this.fetchImpl,
+      this.apiClient,
+      this.session,
+      node.handle,
+      node.nodeKey,
+      node.size
+    );
+  }
 }
 
 function validateTemporarySessionId(sessionId: string, masterKey: Buffer): void {
