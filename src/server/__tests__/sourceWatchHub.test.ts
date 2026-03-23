@@ -100,6 +100,46 @@ describe('SourceWatchHub', () => {
     expect(updates.some((update) => update.changedPaths.some((value) => value.includes('share-b')))).toBe(true);
     expect(updates.some((update) => update.changedPaths.some((value) => value.includes('Rubbish')))).toBe(false);
   });
+
+  it('ignores payload descendants inside blocks and channels trees', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nearbytes-source-watch-payloads-'));
+    cleanups.push(root);
+
+    await mkdir(path.join(root, 'blocks'), { recursive: true });
+    await mkdir(path.join(root, 'channels', 'c'.repeat(64)), { recursive: true });
+
+    const hub = new SourceWatchHub({
+      debounceMs: 120,
+      watchDepth: 4,
+      sourcesResolver: async () => [
+        {
+          provider: 'local',
+          path: root,
+          markerFile: path.join(root, 'Nearbytes.html'),
+          autoUpdate: true,
+          sourceType: 'marker',
+        },
+      ],
+    });
+
+    const updates: Array<{ changedPaths: string[] }> = [];
+    const errors: Error[] = [];
+    const subscription = await hub.subscribe(
+      (update) => updates.push({ changedPaths: update.changedPaths }),
+      (error) => errors.push(error)
+    );
+
+    await delay(200);
+
+    await writeFile(path.join(root, 'blocks', 'blob.bin'), 'ciphertext', 'utf8');
+    await writeFile(path.join(root, 'channels', 'c'.repeat(64), 'event.bin'), 'payload', 'utf8');
+    await delay(450);
+
+    subscription.unsubscribe();
+
+    expect(errors).toEqual([]);
+    expect(updates).toEqual([]);
+  });
 });
 
 function delay(ms: number): Promise<void> {

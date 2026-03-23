@@ -3,6 +3,7 @@ import path from 'path';
 import {
   discoverNearbytesSources,
   isNearbytesWatchIgnoredPath,
+  NEARBYTES_MARKER_FILES,
   type DiscoveredNearbytesSource,
 } from '../config/sourceDiscovery.js';
 import type { RootProvider } from '../config/roots.js';
@@ -42,6 +43,9 @@ interface WatchEntry {
 }
 
 let nextSourceWatchEntryId = 1;
+const DEFAULT_SOURCE_WATCH_DEPTH = 2;
+const SOURCE_PAYLOAD_TREE_SEGMENT_SET = new Set(['blocks', 'channels']);
+const SOURCE_MARKER_FILE_SET = new Set(NEARBYTES_MARKER_FILES.map((value) => value.toLowerCase()));
 
 export class SourceWatchHub {
   private readonly sourcesResolver: () => Promise<DiscoveredNearbytesSource[]>;
@@ -57,7 +61,7 @@ export class SourceWatchHub {
   }) {
     this.sourcesResolver = options?.sourcesResolver ?? (() => discoverNearbytesSources());
     this.debounceMs = options?.debounceMs ?? 300;
-    this.watchDepth = options?.watchDepth ?? 3;
+    this.watchDepth = options?.watchDepth ?? DEFAULT_SOURCE_WATCH_DEPTH;
     this.quietWindowMs = Math.max(this.debounceMs, 200);
   }
 
@@ -91,7 +95,7 @@ export class SourceWatchHub {
     const watcher = chokidar.watch(plan.targets, {
       persistent: true,
       ignoreInitial: true,
-      ignored: (candidatePath) => isNearbytesWatchIgnoredPath(String(candidatePath), plan.targets),
+      ignored: (candidatePath) => isSourceWatchIgnoredPath(String(candidatePath), plan.targets),
       depth: this.watchDepth,
       awaitWriteFinish: {
         stabilityThreshold: 150,
@@ -226,4 +230,33 @@ function uniquePaths(values: string[]): string[] {
 
 function uniqueProviders(values: RootProvider[]): RootProvider[] {
   return Array.from(new Set(values)).sort((left, right) => left.localeCompare(right));
+}
+
+function isSourceWatchIgnoredPath(targetPath: string, watchRoots: readonly string[]): boolean {
+  if (isNearbytesWatchIgnoredPath(targetPath, watchRoots)) {
+    return true;
+  }
+
+  const normalizedTarget = normalizePath(targetPath);
+  for (const watchRoot of watchRoots) {
+    const normalizedRoot = normalizePath(watchRoot);
+    if (normalizedTarget === normalizedRoot || !normalizedTarget.startsWith(`${normalizedRoot}/`)) {
+      continue;
+    }
+
+    const relativeSegments = normalizedTarget.slice(normalizedRoot.length + 1).split('/');
+    const payloadTreeIndex = relativeSegments.findIndex((segment) =>
+      SOURCE_PAYLOAD_TREE_SEGMENT_SET.has(segment.trim().toLowerCase())
+    );
+    if (payloadTreeIndex >= 0 && payloadTreeIndex < relativeSegments.length - 1) {
+      return true;
+    }
+
+    const leafName = relativeSegments.at(-1)?.trim().toLowerCase() ?? '';
+    if (leafName.includes('.') && !SOURCE_MARKER_FILE_SET.has(leafName)) {
+      return true;
+    }
+  }
+
+  return false;
 }

@@ -30,6 +30,8 @@ describe('VolumeWatchHub', () => {
 
     await mkdir(path.join(root, 'Rubbish', '2026-03-19'), { recursive: true });
     await writeFile(path.join(root, 'Rubbish', '2026-03-19', 'ignored.txt'), 'x', 'utf8');
+  await mkdir(path.join(root, 'blocks'), { recursive: true });
+  await writeFile(path.join(root, 'blocks', 'immutable.bin'), 'ciphertext', 'utf8');
     await mkdir(path.join(root, 'channels', volumeId), { recursive: true });
     await writeFile(path.join(root, 'channels', volumeId, 'event.bin'), 'payload', 'utf8');
     await delay(450);
@@ -39,6 +41,33 @@ describe('VolumeWatchHub', () => {
     expect(errors).toEqual([]);
     expect(updates.some((value) => value.includes(`channels${path.sep}${volumeId}`))).toBe(true);
     expect(updates.some((value) => value.includes('Rubbish'))).toBe(false);
+    expect(updates.some((value) => value.includes(`blocks${path.sep}`))).toBe(false);
+  });
+
+  it('reports creation of the watched channel directory itself', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nearbytes-volume-watch-'));
+    cleanups.push(root);
+    const volumeId = 'b'.repeat(64);
+    const hub = new VolumeWatchHub({} as never, root);
+
+    const updates: string[] = [];
+    const errors: Error[] = [];
+    const subscription = hub.subscribe(
+      volumeId,
+      (update) => updates.push(update.path),
+      (error) => errors.push(error)
+    );
+
+    expect(subscription.ready.autoUpdate).toBe(true);
+    await delay(200);
+
+    await mkdir(path.join(root, 'channels', volumeId), { recursive: true });
+    await delay(450);
+
+    subscription.unsubscribe();
+
+    expect(errors).toEqual([]);
+    expect(updates.some((value) => value.endsWith(`${path.sep}channels${path.sep}${volumeId}`))).toBe(true);
   });
 });
 
