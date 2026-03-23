@@ -110,7 +110,7 @@ interface DecryptedMegaTree {
 }
 
 interface MegaApiError extends Error {
-  readonly code: number;
+  code: number;
 }
 
 interface MegaPrivateKey {
@@ -931,20 +931,6 @@ function deriveAttributeKey(nodeKey: Buffer): Buffer {
   return nodeKey.subarray(0, 16);
 }
 
-async function downloadAuthenticatedMegaFile(
-  fetchImpl: typeof fetch,
-  apiClient: MegaApiClient,
-  session: MegaSession,
-  handle: string,
-  nodeKey: Buffer,
-  destinationPath: string,
-  expectedSize: number
-): Promise<void> {
-  const plaintext = await downloadAuthenticatedMegaFileContent(fetchImpl, apiClient, session, handle, nodeKey, expectedSize);
-  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-  await fs.writeFile(destinationPath, plaintext);
-}
-
 async function downloadAuthenticatedMegaFileContent(
   fetchImpl: typeof fetch,
   apiClient: MegaApiClient,
@@ -965,7 +951,7 @@ async function downloadAuthenticatedMegaFileContent(
   const ciphertext = Buffer.from(await download.arrayBuffer());
   const plaintext = decryptFileCiphertext(ciphertext, nodeKey);
   if (expectedSize > 0 && plaintext.length !== expectedSize) {
-    throw new Error(`MEGA file download size mismatch for ${path.basename(destinationPath)}.`);
+    throw new Error(`MEGA file download size mismatch for handle ${handle}.`);
   }
   return plaintext;
 }

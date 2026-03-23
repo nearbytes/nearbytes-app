@@ -11,14 +11,6 @@ import { generateDesktopApiToken } from './security.js';
 import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
 import { debugTriggerUpdateInstall, getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
 import { APP_CONFIG } from '../src/config/appConfig.js';
-import {
-  buildManagedMegaServerWatchdogPowerShell,
-  supportsManagedMegaServerProcessControl,
-} from '../src/integrations/megaWindowsProcessManager.js';
-import {
-  cleanupNearbytesManagedMegaServers,
-  cleanupNearbytesManagedMegaServersSync,
-} from '../src/integrations/megaWindowsPipeClient.js';
 import type { CommandExecutor } from '../src/integrations/runtime.js';
 import type { UiDebugAction, UiDebugActionResult, UiDebugExecutor, UiDebugRunRequest, UiDebugRunResponse } from '../src/server/uiDebug.js';
 
@@ -89,6 +81,32 @@ const DEEP_LINK_PROTOCOL = 'nearbytes';
 const DESKTOP_RUNTIME_LOG_TAIL_BYTES = 64 * 1024;
 const DESKTOP_FORCE_EXIT_TIMEOUT_MS = 5_000;
 const execFileAsync = promisify(execFile);
+
+function supportsManagedMegaServerProcessControl(): boolean {
+  return process.platform === 'win32';
+}
+
+function buildManagedMegaServerWatchdogPowerShell(pid: number, timeoutMs: number): string {
+  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  return [
+    `$pidToWatch = ${pid}`,
+    `$timeoutSeconds = ${timeoutSeconds}`,
+    'Start-Sleep -Seconds $timeoutSeconds',
+    'try {',
+    '  $target = Get-Process -Id $pidToWatch -ErrorAction Stop',
+    '  Stop-Process -Id $target.Id -Force -ErrorAction SilentlyContinue',
+    '} catch {',
+    '}',
+  ].join('; ');
+}
+
+async function cleanupNearbytesManagedMegaServers(_logger: Console): Promise<void> {
+  return;
+}
+
+function cleanupNearbytesManagedMegaServersSync(_logger: Console): void {
+  return;
+}
 
 applyDebugFlagFromArgv(process.argv);
 

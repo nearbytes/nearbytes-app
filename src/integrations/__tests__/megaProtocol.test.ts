@@ -128,9 +128,9 @@ describe('megaProtocol', () => {
           'content-type': 'application/json',
         },
       });
-    }) as typeof fetch;
+    });
     const client = new MegaApiClient({
-      fetchImpl,
+      fetchImpl: fetchImpl as typeof fetch,
       initialRequestId: 12,
     });
     const sid = encodeMegaBase64Url(randomBytes(43));
