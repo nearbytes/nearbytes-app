@@ -40,56 +40,82 @@ function nearbytesDevApiProxy() {
           return;
         }
 
-        const session = readDesktopSession();
-        const targetUrl = new URL(
-          session ? `http://127.0.0.1:${session.port}` : DEFAULT_SERVER_PROXY_TARGET
-        );
-        const headers = { ...req.headers, host: targetUrl.host };
-        if (session?.token && !headers['x-nearbytes-desktop-token']) {
-          headers['x-nearbytes-desktop-token'] = session.token;
-        }
-
-        const proxyReq = http.request(
-          {
-            protocol: targetUrl.protocol,
-            hostname: targetUrl.hostname,
-            port: targetUrl.port,
-            method: req.method,
-            path: req.url,
-            headers,
-          },
-          (proxyRes) => {
-            res.statusCode = proxyRes.statusCode ?? 502;
-            Object.entries(proxyRes.headers).forEach(([key, value]) => {
-              if (value !== undefined) {
-                res.setHeader(key, value);
-              }
-            });
-            proxyRes.pipe(res);
-          }
-        );
-
-        proxyReq.on('error', (error) => {
-          if (res.headersSent) {
-            res.end();
-            return;
-          }
-          res.statusCode = 502;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(
-            JSON.stringify({
-              error: {
-                code: 'BAD_GATEWAY',
-                message: `Nearbytes dev proxy error: ${error.message}`,
-              },
-            })
-          );
-        });
-
-        req.pipe(proxyReq);
+        proxyApiRequest(req, res, readDesktopSession(), true);
       });
     },
   };
+}
+
+function proxyApiRequest(req, res, session, allowRetry) {
+  const targetUrl = new URL(session ? `http://127.0.0.1:${session.port}` : DEFAULT_SERVER_PROXY_TARGET);
+  const headers = { ...req.headers, host: targetUrl.host };
+  if (session?.token && !headers['x-nearbytes-desktop-token']) {
+    headers['x-nearbytes-desktop-token'] = session.token;
+  }
+
+  const proxyReq = http.request(
+    {
+      protocol: targetUrl.protocol,
+      hostname: targetUrl.hostname,
+      port: targetUrl.port,
+      method: req.method,
+      path: req.url,
+      headers,
+    },
+    (proxyRes) => {
+      res.statusCode = proxyRes.statusCode ?? 502;
+      Object.entries(proxyRes.headers).forEach(([key, value]) => {
+        if (value !== undefined) {
+          res.setHeader(key, value);
+        }
+      });
+      proxyRes.pipe(res);
+    }
+  );
+
+  proxyReq.on('error', (error) => {
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
+
+    const canRetry = allowRetry && (req.method === 'GET' || req.method === 'HEAD');
+    if (canRetry) {
+      const refreshedSession = readDesktopSession();
+      const sessionChanged =
+        refreshedSession && (!session || refreshedSession.port !== session.port || refreshedSession.token !== session.token);
+      if (sessionChanged) {
+        proxyApiRequest(req, res, refreshedSession, false);
+        return;
+      }
+    }
+
+    res.statusCode = 502;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify({
+        error: {
+          code: 'BAD_GATEWAY',
+          message: buildProxyErrorMessage(error, targetUrl, session),
+        },
+      })
+    );
+  });
+
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    proxyReq.end();
+    return;
+  }
+
+  req.pipe(proxyReq);
+}
+
+function buildProxyErrorMessage(error, targetUrl, session) {
+  const targetLabel = `${targetUrl.hostname}:${targetUrl.port}`;
+  if (session) {
+    return `Nearbytes dev proxy could not reach the desktop runtime at ${targetLabel}. Restart with \"yarn dev-run\" or remove ${DESKTOP_SESSION_PATH}. Original error: ${error.message}`;
+  }
+  return `Nearbytes dev proxy could not reach the API target at ${targetLabel}. Start the desktop runtime with \"yarn dev-run\" or the standalone server on port 3000. Original error: ${error.message}`;
 }
 
 function isApiRequest(url) {
@@ -105,20 +131,37 @@ function readDesktopSession() {
     if (
       typeof parsed !== 'object' ||
       parsed === null ||
+      typeof parsed.pid !== 'number' ||
+      !Number.isFinite(parsed.pid) ||
+      parsed.pid <= 0 ||
       typeof parsed.port !== 'number' ||
       !Number.isFinite(parsed.port) ||
       parsed.port <= 0 ||
       typeof parsed.token !== 'string' ||
-      parsed.token.trim().length === 0
+      parsed.token.trim().length === 0 ||
+      typeof parsed.expiresAt !== 'number' ||
+      !Number.isFinite(parsed.expiresAt) ||
+      parsed.expiresAt <= Date.now() ||
+      !isProcessAlive(parsed.pid)
     ) {
       return null;
     }
     return {
+      pid: parsed.pid,
       port: parsed.port,
       token: parsed.token,
     };
   } catch {
     return null;
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
