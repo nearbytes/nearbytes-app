@@ -327,4 +327,40 @@ describe('MegaTransportAdapter', () => {
     await adapter.detachManagedShare(share, account);
     await adapter.dispose();
   });
+
+  it('rejects malformed stored account secrets with a reconnect error instead of crashing', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-bad', {
+      sid: 'broken-session',
+      masterKey: 'broken-master-key',
+      userHandle: 'broken-user',
+      accountVersion: 2,
+      password: 'secret',
+    });
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, {
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+
+    await expect(
+      adapter.listIncomingShares({
+        id: 'acct-mega-bad',
+        provider: 'mega',
+        label: 'MEGA',
+        state: 'connected',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+    ).rejects.toThrow('Reconnect MEGA to resume syncing.');
+
+    await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toBeNull();
+  });
 });

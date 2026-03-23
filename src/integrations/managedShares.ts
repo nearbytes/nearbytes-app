@@ -594,7 +594,10 @@ export class ManagedShareService {
       id: shareId,
       provider,
       accountId: input.accountId,
-      label: providerOverlay.label?.trim() || input.label.trim(),
+      label:
+        (typeof providerOverlay.label === 'string' ? providerOverlay.label.trim() : '') ||
+        (typeof input.label === 'string' ? input.label.trim() : '') ||
+        defaultProviderLabel(provider),
       role: input.role ?? 'owner',
       localPath,
       sourceId: undefined,
@@ -929,7 +932,10 @@ export class ManagedShareService {
       id: shareId,
       provider,
       accountId: account.id,
-      label: existing?.label?.trim() || mirror.label.trim() || defaultProviderMirrorLabel(provider, mirror.remotePath),
+      label:
+        existing?.label?.trim() ||
+        (typeof mirror.label === 'string' ? mirror.label.trim() : '') ||
+        defaultProviderMirrorLabel(provider, mirror.remotePath),
       role: existing?.role ?? 'owner',
       localPath: path.resolve(mirror.localPath),
       sourceId: existing?.sourceId,
@@ -1842,7 +1848,9 @@ export class ManagedShareService {
     if (adapter?.getCollaborators) {
       try {
         for (const collaborator of await adapter.getCollaborators(share, account)) {
-          const key = collaborator.email?.trim().toLowerCase() || collaborator.label.trim().toLowerCase();
+          const key =
+            collaborator.email?.trim().toLowerCase() ||
+            (typeof collaborator.label === 'string' ? collaborator.label.trim().toLowerCase() : '');
           if (key) {
             byKey.set(key, collaborator);
           }
@@ -2175,7 +2183,7 @@ function dedupeManagedShareMirrors(
       continue;
     }
     unique.set(remotePath, {
-      label: mirror.label.trim(),
+      label: typeof mirror.label === 'string' ? mirror.label.trim() : '',
       localPath: path.resolve(mirror.localPath),
       remotePath,
     });
@@ -2217,7 +2225,9 @@ function mergeManagedShareMirrorDescriptor(
     managedShareId: shareId,
   };
   if (provider === 'mega') {
-    descriptor.shareName = mirror.label.trim() || defaultProviderMirrorLabel(provider, mirror.remotePath);
+    descriptor.shareName =
+      (typeof mirror.label === 'string' ? mirror.label.trim() : '') ||
+      defaultProviderMirrorLabel(provider, mirror.remotePath);
   }
   return descriptor;
 }

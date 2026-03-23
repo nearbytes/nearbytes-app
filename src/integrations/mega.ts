@@ -261,19 +261,21 @@ export class MegaTransportAdapter {
       if (!node.isFolder || !node.ownerHandle || node.shareHandle !== node.handle) {
         continue;
       }
-      const ownerEmail = node.ownerEmail || node.ownerHandle;
-      const remotePath = `${ownerEmail}:${node.name}`;
+      const shareName = normalizeMegaIncomingShareName(node.name, node.handle);
+      const ownerIdentity = normalizeMegaIncomingOwnerIdentity(node.ownerEmail, node.ownerHandle);
+      const ownerLabel = normalizeMegaIncomingOwnerLabel(node.ownerEmail, node.ownerHandle);
+      const remotePath = `${ownerIdentity}:${shareName}`;
       offers.push({
         id: `mega:incoming:${node.handle}`,
         provider: this.provider,
         accountId: account.id,
-        label: node.name,
-        ownerLabel: ownerEmail,
-        detail: `${ownerEmail} shared this MEGA location${node.accessLevel ? ` with ${node.accessLevel}` : ''}.`,
+        label: shareName,
+        ownerLabel,
+        detail: `${ownerLabel} shared this MEGA location${node.accessLevel ? ` with ${node.accessLevel}` : ''}.`,
         remoteDescriptor: {
           remotePath,
-          shareName: node.name,
-          ownerEmail,
+          shareName,
+          ownerEmail: ownerIdentity,
           accessLevel: node.accessLevel ?? 'read',
           shareHandle: node.handle,
           rootHandle: node.handle,
@@ -480,6 +482,10 @@ export class MegaTransportAdapter {
     if (!secret) {
       throw new Error('Reconnect MEGA to resume syncing.');
     }
+    if (!isStoredMegaAccountSecret(secret)) {
+      await this.runtime.secretStore.delete(secretKey(accountId));
+      throw new Error('Reconnect MEGA to resume syncing.');
+    }
 
     const session = deserializeSession(secret);
     try {
@@ -671,6 +677,25 @@ function deserializeSession(secret: MegaAccountSecret): MegaSession {
   };
 }
 
+function isStoredMegaAccountSecret(secret: unknown): secret is MegaAccountSecret {
+  if (!secret || typeof secret !== 'object') {
+    return false;
+  }
+  const candidate = secret as Partial<MegaAccountSecret>;
+  return (
+    typeof candidate.email === 'string' &&
+    candidate.email.trim() !== '' &&
+    typeof candidate.sid === 'string' &&
+    candidate.sid.trim() !== '' &&
+    typeof candidate.masterKey === 'string' &&
+    candidate.masterKey.trim() !== '' &&
+    typeof candidate.userHandle === 'string' &&
+    candidate.userHandle.trim() !== '' &&
+    typeof candidate.accountVersion === 'number' &&
+    Number.isFinite(candidate.accountVersion)
+  );
+}
+
 function acceptedShareCapabilities(descriptor: Record<string, unknown>): string[] {
   const accessLevel = (getStringDescriptor(descriptor, 'accessLevel') ?? '').trim().toLowerCase();
   if (accessLevel === '2' || accessLevel === '3' || accessLevel === 'full' || accessLevel === 'full access' || accessLevel === 'owner') {
@@ -701,6 +726,25 @@ function assertString(value: unknown, message: string): string {
 function getStringDescriptor(descriptor: Record<string, unknown>, key: string): string | undefined {
   const value = descriptor[key];
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+function normalizeMegaIncomingShareName(name: string | undefined, handle: string): string {
+  const normalized = typeof name === 'string' ? name.trim() : '';
+  return normalized || `MEGA share ${handle.slice(-6)}`;
+}
+
+function normalizeMegaIncomingOwnerIdentity(ownerEmail: string | undefined, ownerHandle: string | undefined): string {
+  const email = typeof ownerEmail === 'string' ? ownerEmail.trim() : '';
+  if (email) {
+    return email;
+  }
+  const handle = typeof ownerHandle === 'string' ? ownerHandle.trim() : '';
+  return handle || 'unknown-owner';
+}
+
+function normalizeMegaIncomingOwnerLabel(ownerEmail: string | undefined, ownerHandle: string | undefined): string {
+  const identity = normalizeMegaIncomingOwnerIdentity(ownerEmail, ownerHandle);
+  return identity === 'unknown-owner' ? 'Unknown MEGA owner' : identity;
 }
 
 function decryptMegaTree(

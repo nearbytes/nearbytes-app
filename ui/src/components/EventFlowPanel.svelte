@@ -441,18 +441,15 @@
       // Pulse glow
       if (node.pulse > 0) {
         const pulseRadius = node.radius + node.pulse * 20;
-        const pulseGrad = ctx.createRadialGradient(node.x, node.y, node.radius, node.x, node.y, pulseRadius);
-        pulseGrad.addColorStop(0, color.replace(')', `, ${0.3 * node.pulse})`).replace('#', ''));
-        // Use hex-to-rgba for the glow
         const r = parseInt(color.slice(1, 3), 16);
         const g = parseInt(color.slice(3, 5), 16);
         const b = parseInt(color.slice(5, 7), 16);
-        const pulseGrad2 = ctx.createRadialGradient(node.x, node.y, node.radius, node.x, node.y, pulseRadius);
-        pulseGrad2.addColorStop(0, `rgba(${r},${g},${b},${0.3 * node.pulse})`);
-        pulseGrad2.addColorStop(1, `rgba(${r},${g},${b},0)`);
+          const pulseGrad = ctx.createRadialGradient(node.x, node.y, node.radius, node.x, node.y, pulseRadius);
+          pulseGrad.addColorStop(0, `rgba(${r},${g},${b},${0.3 * node.pulse})`);
+          pulseGrad.addColorStop(1, `rgba(${r},${g},${b},0)`);
         ctx.beginPath();
         ctx.arc(node.x, node.y, pulseRadius, 0, Math.PI * 2);
-        ctx.fillStyle = pulseGrad2;
+          ctx.fillStyle = pulseGrad;
         ctx.fill();
         node.pulse = Math.max(0, node.pulse - 0.015);
       }

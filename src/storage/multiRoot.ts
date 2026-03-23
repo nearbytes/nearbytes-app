@@ -22,6 +22,8 @@ const CHANNEL_PATH_REGEX = /^channels\/([a-f0-9]{64,200})(?:\/|$)/i;
 const BLOCK_PATH_REGEX = /^blocks\/([a-f0-9]{64})(?:\.bin)?$/i;
 const RESOURCE_EXHAUSTED_CODES = new Set(['ENOSPC', 'EDQUOT']);
 const UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOTDIR', 'EIO']);
+const RUNTIME_USAGE_CACHE_TTL_MS = 15_000;
+const RUNTIME_USAGE_WARM_WAIT_MS = 250;
 
 export interface RootWriteFailure {
   readonly rootId: string;
@@ -190,6 +192,9 @@ export class MultiRootStorageBackend implements StorageBackend {
   private readonly lastWriteFailures = new Map<string, RootWriteFailure>();
   private reconcileInFlight: Promise<void> | null = null;
   private runtimeSnapshotInFlight: Promise<MultiRootRuntimeSnapshot> | null = null;
+  private runtimeUsageSnapshotCache:
+    | { readonly value: MultiRootRuntimeSnapshot; readonly cachedAt: number }
+    | null = null;
   private reconcileQueued = false;
   private repairMonitorTimer: ReturnType<typeof setTimeout> | null = null;
   private repairMonitorRunning = false;
@@ -213,6 +218,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     this.config = nextConfig;
     this.rootStates = this.buildRootStates(nextConfig);
     this.runtimeSnapshotInFlight = null;
+    this.runtimeUsageSnapshotCache = null;
 
     // Drop failures for roots that no longer exist.
     const rootIds = new Set(this.rootStates.map((state) => state.config.id));
@@ -373,10 +379,10 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   async getRuntimeSnapshot(options: RuntimeSnapshotOptions = {}): Promise<MultiRootRuntimeSnapshot> {
     const includeUsage = options.includeUsage !== false;
-    const buildSnapshot = async (): Promise<MultiRootRuntimeSnapshot> => {
-      const referencedByVolume = includeUsage ? await this.getReferencedBlockHashIndex() : new Map<string, Set<string>>();
+    const buildSnapshot = async (includeUsageValue: boolean): Promise<MultiRootRuntimeSnapshot> => {
+      const referencedByVolume = includeUsageValue ? await this.getReferencedBlockHashIndex() : new Map<string, Set<string>>();
       const statuses = await Promise.all(
-        this.rootStates.map((state) => this.getRootRuntimeStatus(state, referencedByVolume, { includeUsage }))
+        this.rootStates.map((state) => this.getRootRuntimeStatus(state, referencedByVolume, { includeUsage: includeUsageValue }))
       );
       const writeFailures = Array.from(this.lastWriteFailures.values()).sort((left, right) => right.at - left.at);
       return {
@@ -386,22 +392,46 @@ export class MultiRootStorageBackend implements StorageBackend {
     };
 
     if (!includeUsage) {
-      return buildSnapshot();
+      return buildSnapshot(false);
     }
 
-    if (this.runtimeSnapshotInFlight) {
-      return this.runtimeSnapshotInFlight;
+    const cachedSnapshot = this.runtimeUsageSnapshotCache;
+    const cacheIsFresh =
+      cachedSnapshot !== null && Date.now() - cachedSnapshot.cachedAt <= RUNTIME_USAGE_CACHE_TTL_MS;
+    if (cacheIsFresh) {
+      return cachedSnapshot.value;
     }
 
-    const snapshotTask = buildSnapshot();
-    this.runtimeSnapshotInFlight = snapshotTask;
-    try {
-      return await snapshotTask;
-    } finally {
-      if (this.runtimeSnapshotInFlight === snapshotTask) {
-        this.runtimeSnapshotInFlight = null;
-      }
+    if (!this.runtimeSnapshotInFlight) {
+      const snapshotTask = buildSnapshot(true);
+      this.runtimeSnapshotInFlight = snapshotTask;
+      void snapshotTask
+        .then((snapshot) => {
+          this.runtimeUsageSnapshotCache = {
+            value: snapshot,
+            cachedAt: Date.now(),
+          };
+        })
+        .finally(() => {
+          if (this.runtimeSnapshotInFlight === snapshotTask) {
+            this.runtimeSnapshotInFlight = null;
+          }
+        });
     }
+
+    if (cachedSnapshot) {
+      return cachedSnapshot.value;
+    }
+
+    const warmed = await Promise.race([
+      this.runtimeSnapshotInFlight,
+      waitForRuntimeUsageWarmBudget(RUNTIME_USAGE_WARM_WAIT_MS),
+    ]);
+    if (warmed) {
+      return warmed;
+    }
+
+    return buildSnapshot(false);
   }
 
   async getConsolidationPlan(sourceId: string): Promise<RootConsolidationPlan> {
@@ -1807,6 +1837,13 @@ export class MultiRootStorageBackend implements StorageBackend {
     }
     return Array.from(files);
   }
+}
+
+async function waitForRuntimeUsageWarmBudget(timeoutMs: number): Promise<MultiRootRuntimeSnapshot | null> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, timeoutMs);
+  });
+  return null;
 }
 
 interface RootFileEntry {

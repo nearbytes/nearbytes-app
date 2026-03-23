@@ -1,6 +1,5 @@
-import { existsSync, statSync, watch as fsWatch, type FSWatcher } from 'fs';
+import { statSync } from 'fs';
 import path from 'path';
-import { isNearbytesWatchIgnoredPath } from '../config/sourceDiscovery.js';
 import type { RootProvider } from '../config/roots.js';
 import { isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { StorageBackend } from '../types/storage.js';
@@ -27,35 +26,36 @@ export interface VolumeWatchSubscription {
   unsubscribe(): void;
 }
 
-interface WatchPlan {
-  readonly ready: VolumeWatchReady;
-  readonly targets: WatchTargetPlan[];
-}
-
 interface WatchTargetPlan {
   readonly rootPath: string;
   readonly channelRoot: string;
   readonly volumeRoot: string;
 }
 
-interface WatchEntry {
-  readonly id: number;
-  readonly targetWatchers: Map<string, ActiveTargetWatcher>;
-  readonly subscribers: Set<(update: VolumeWatchUpdate) => void>;
-  readonly errorSubscribers: Set<(error: Error) => void>;
+interface WatchPlan {
+  readonly ready: VolumeWatchReady;
+  readonly targets: WatchTargetPlan[];
 }
 
-interface ActiveTargetWatcher {
-  readonly mode: 'storage-root' | 'channel-root' | 'volume-root';
-  readonly plan: WatchTargetPlan;
-  readonly watcher: FSWatcher;
+interface TargetState {
+  channelRootExists: boolean;
+  volumeRootExists: boolean;
+  volumeRootMtimeMs: number | null;
+}
+
+interface WatchEntry {
+  readonly id: number;
+  readonly targets: WatchTargetPlan[];
+  readonly subscribers: Set<(update: VolumeWatchUpdate) => void>;
+  readonly errorSubscribers: Set<(error: Error) => void>;
+  readonly targetStates: Map<string, TargetState>;
+  pollTimer: ReturnType<typeof setInterval> | null;
+  pollInFlight: boolean;
 }
 
 let nextVolumeWatchEntryId = 1;
+const VOLUME_WATCH_POLL_MS = 450;
 
-/**
- * Shared hub that broadcasts per-volume filesystem updates to active subscribers.
- */
 export class VolumeWatchHub {
   private readonly entries = new Map<string, WatchEntry>();
 
@@ -95,28 +95,106 @@ export class VolumeWatchHub {
 
     const entry: WatchEntry = {
       id: nextVolumeWatchEntryId++,
-      targetWatchers: new Map(),
+      targets: plan.targets,
       subscribers: new Set([onUpdate]),
       errorSubscribers: new Set([onError]),
+      targetStates: new Map(),
+      pollTimer: null,
+      pollInFlight: false,
     };
+
+    for (const target of plan.targets) {
+      entry.targetStates.set(target.volumeRoot, captureTargetState(target));
+    }
 
     debugServerLog(
       'watchers',
       `[volume-watch] created watcher #${entry.id} for volume=${volumeId}; targets=${JSON.stringify(plan.targets)}`
     );
 
-    for (const target of plan.targets) {
-      this.openTargetWatcher(entry, volumeId, target);
-    }
-
-    debugServerLog('watchers', `[volume-watch] watcher #${entry.id} ready for volume=${volumeId}`);
+    entry.pollTimer = setInterval(() => {
+      void this.pollEntry(volumeId, entry);
+    }, VOLUME_WATCH_POLL_MS);
 
     this.entries.set(volumeId, entry);
+    debugServerLog('watchers', `[volume-watch] watcher #${entry.id} ready for volume=${volumeId}`);
 
     return {
       ready: plan.ready,
       unsubscribe: () => this.unsubscribe(volumeId, onUpdate, onError),
     };
+  }
+
+  private async pollEntry(volumeId: string, entry: WatchEntry): Promise<void> {
+    if (entry.pollInFlight) {
+      return;
+    }
+    entry.pollInFlight = true;
+    try {
+      for (const target of entry.targets) {
+        const previous = entry.targetStates.get(target.volumeRoot) ?? captureTargetState(target);
+        const next = captureTargetState(target);
+        entry.targetStates.set(target.volumeRoot, next);
+        this.publishTargetDiff(entry, volumeId, target, previous, next);
+      }
+    } catch (error) {
+      const asError = error instanceof Error ? error : new Error(String(error));
+      console.warn(`[volume-watch] watcher #${entry.id} error for volume=${volumeId}: ${asError.message}`);
+      for (const subscriber of entry.errorSubscribers) {
+        subscriber(asError);
+      }
+    } finally {
+      entry.pollInFlight = false;
+    }
+  }
+
+  private publishTargetDiff(
+    entry: WatchEntry,
+    volumeId: string,
+    target: WatchTargetPlan,
+    previous: TargetState,
+    next: TargetState
+  ): void {
+    if (!previous.volumeRootExists && next.volumeRootExists) {
+      this.publishUpdate(entry, volumeId, 'addDir', target.volumeRoot);
+      return;
+    }
+
+    if (previous.volumeRootExists && !next.volumeRootExists) {
+      this.publishUpdate(entry, volumeId, 'unlinkDir', target.volumeRoot);
+      return;
+    }
+
+    if (
+      next.volumeRootExists &&
+      previous.volumeRootMtimeMs !== null &&
+      next.volumeRootMtimeMs !== null &&
+      previous.volumeRootMtimeMs !== next.volumeRootMtimeMs
+    ) {
+      this.publishUpdate(entry, volumeId, 'change', target.volumeRoot);
+      return;
+    }
+
+    if (!previous.channelRootExists && next.channelRootExists && next.volumeRootExists) {
+      this.publishUpdate(entry, volumeId, 'addDir', target.volumeRoot);
+    }
+  }
+
+  private publishUpdate(
+    entry: WatchEntry,
+    volumeId: string,
+    change: VolumeChangeType,
+    changedPath: string
+  ): void {
+    const update: VolumeWatchUpdate = {
+      volumeId,
+      change,
+      path: changedPath,
+      timestamp: Date.now(),
+    };
+    for (const subscriber of entry.subscribers) {
+      subscriber(update);
+    }
   }
 
   private unsubscribe(
@@ -140,11 +218,10 @@ export class VolumeWatchHub {
     }
 
     this.entries.delete(volumeId);
-    debugServerLog('watchers', `[volume-watch] closing watcher #${entry.id} for volume=${volumeId}`);
-    for (const targetWatcher of entry.targetWatchers.values()) {
-      targetWatcher.watcher.close();
+    if (entry.pollTimer) {
+      clearInterval(entry.pollTimer);
+      entry.pollTimer = null;
     }
-    entry.targetWatchers.clear();
     debugServerLog('watchers', `[volume-watch] closed watcher #${entry.id} for volume=${volumeId}`);
   }
 
@@ -214,106 +291,27 @@ export class VolumeWatchHub {
       ]),
     };
   }
+}
 
-  private openTargetWatcher(entry: WatchEntry, volumeId: string, target: WatchTargetPlan): void {
-    const activeWatcher = this.createTargetWatcher(entry, volumeId, target);
-    entry.targetWatchers.set(target.volumeRoot, activeWatcher);
-  }
+function captureTargetState(target: WatchTargetPlan): TargetState {
+  const channelRootStat = safeDirectoryStat(target.channelRoot);
+  const volumeRootStat = safeDirectoryStat(target.volumeRoot);
+  return {
+    channelRootExists: channelRootStat !== null,
+    volumeRootExists: volumeRootStat !== null,
+    volumeRootMtimeMs: volumeRootStat?.mtimeMs ?? null,
+  };
+}
 
-  private replaceTargetWatcher(entry: WatchEntry, volumeId: string, target: WatchTargetPlan): void {
-    entry.targetWatchers.get(target.volumeRoot)?.watcher.close();
-    this.openTargetWatcher(entry, volumeId, target);
-  }
-
-  private createTargetWatcher(
-    entry: WatchEntry,
-    volumeId: string,
-    target: WatchTargetPlan
-  ): ActiveTargetWatcher {
-    const mode = resolveWatchMode(target);
-    const watchPath = getWatchPath(target, mode);
-    const watcher = fsWatch(watchPath, { persistent: true }, (eventType, filename) => {
-      this.handleTargetEvent(entry, volumeId, target, mode, eventType, filename?.toString() ?? '');
-    });
-
-    watcher.on('error', (error) => {
-      const asError = error instanceof Error ? error : new Error(String(error));
-      console.warn(`[volume-watch] watcher #${entry.id} error for volume=${volumeId}: ${asError.message}`);
-      for (const subscriber of entry.errorSubscribers) {
-        subscriber(asError);
-      }
-    });
-
-    debugServerLog(
-      'watchers',
-      `[volume-watch] watcher #${entry.id} target=${watchPath} mode=${mode} for volume=${volumeId}`
-    );
-
-    return {
-      mode,
-      plan: target,
-      watcher,
-    };
-  }
-
-  private handleTargetEvent(
-    entry: WatchEntry,
-    volumeId: string,
-    target: WatchTargetPlan,
-    mode: ActiveTargetWatcher['mode'],
-    eventType: 'rename' | 'change',
-    filename: string
-  ): void {
-    if (mode === 'storage-root') {
-      if (filename && filename !== 'channels') {
-        return;
-      }
-      const nextPath = existsSync(target.volumeRoot) && isDirectory(target.volumeRoot)
-        ? target.volumeRoot
-        : target.channelRoot;
-      this.publishUpdate(entry, volumeId, classifyWatchEvent(nextPath, eventType), nextPath);
-      if (existsSync(target.channelRoot) && isDirectory(target.channelRoot)) {
-        this.replaceTargetWatcher(entry, volumeId, target);
-      }
-      return;
+function safeDirectoryStat(targetPath: string): { mtimeMs: number } | null {
+  try {
+    const stats = statSync(targetPath);
+    if (!stats.isDirectory()) {
+      return null;
     }
-
-    if (mode === 'channel-root') {
-      const watchedVolumeName = path.basename(target.volumeRoot);
-      if (filename && filename !== watchedVolumeName) {
-        return;
-      }
-      const nextPath = existsSync(target.volumeRoot) && isDirectory(target.volumeRoot)
-        ? target.volumeRoot
-        : target.channelRoot;
-      this.publishUpdate(entry, volumeId, classifyWatchEvent(nextPath, eventType), nextPath);
-      if (existsSync(target.volumeRoot) && isDirectory(target.volumeRoot)) {
-        this.replaceTargetWatcher(entry, volumeId, target);
-      }
-      return;
-    }
-
-    const changedPath = filename ? path.join(target.volumeRoot, filename) : target.volumeRoot;
-    if (isNearbytesWatchIgnoredPath(changedPath, [target.rootPath])) {
-      return;
-    }
-    this.publishUpdate(entry, volumeId, classifyWatchEvent(changedPath, eventType), changedPath);
-    if (!existsSync(target.volumeRoot)) {
-      this.replaceTargetWatcher(entry, volumeId, target);
-    }
-  }
-
-  private publishUpdate(entry: WatchEntry, volumeId: string, change: VolumeChangeType, changedPath: string): void {
-    const update: VolumeWatchUpdate = {
-      volumeId,
-      change,
-      path: changedPath,
-      timestamp: Date.now(),
-    };
-
-    for (const subscriber of entry.subscribers) {
-      subscriber(update);
-    }
+    return { mtimeMs: stats.mtimeMs };
+  } catch {
+    return null;
   }
 }
 
@@ -336,47 +334,6 @@ function uniqueTargetPlans(values: WatchTargetPlan[]): WatchTargetPlan[] {
     plans.set(normalizedValue.volumeRoot, normalizedValue);
   }
   return Array.from(plans.values());
-}
-
-function resolveWatchMode(target: WatchTargetPlan): ActiveTargetWatcher['mode'] {
-  if (existsSync(target.volumeRoot) && isDirectory(target.volumeRoot)) {
-    return 'volume-root';
-  }
-  if (existsSync(target.channelRoot) && isDirectory(target.channelRoot)) {
-    return 'channel-root';
-  }
-  return 'storage-root';
-}
-
-function getWatchPath(target: WatchTargetPlan, mode: ActiveTargetWatcher['mode']): string {
-  if (mode === 'volume-root') {
-    return target.volumeRoot;
-  }
-  if (mode === 'channel-root') {
-    return target.channelRoot;
-  }
-  return target.rootPath;
-}
-
-function classifyWatchEvent(changedPath: string, eventType: 'rename' | 'change'): VolumeChangeType {
-  const exists = existsSync(changedPath);
-  if (!exists) {
-    return changedPath === path.dirname(changedPath) ? 'unlinkDir' : 'unlink';
-  }
-
-  if (eventType === 'change') {
-    return 'change';
-  }
-
-  return isDirectory(changedPath) ? 'addDir' : 'add';
-}
-
-function isDirectory(targetPath: string): boolean {
-  try {
-    return statSync(targetPath).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 function uniqueProviders(values: RootProvider[]): RootProvider[] {

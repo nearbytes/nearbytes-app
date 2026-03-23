@@ -2853,7 +2853,7 @@
 
   async function ensureMountRuntimeLoaded(
     mount: VolumeMount,
-    options: { activateIfCurrent?: boolean } = {}
+      options: { activateIfCurrent?: boolean; preloadTimeline?: boolean } = {}
   ): Promise<void> {
     const secret = buildMountSecret(mount);
     const label = mountLabel(mount);
@@ -2886,6 +2886,7 @@
         12000,
         'Opening this hub timed out. Check the storage locations and try again.'
       );
+      const shouldLoadTimeline = options.preloadTimeline ?? options.activateIfCurrent === true;
       const nextAuth =
         response.token
           ? ({ type: 'token', token: response.token } as const)
@@ -2893,12 +2894,14 @@
       let nextTimelineEvents: TimelineEvent[] = [];
       let nextTimelinePosition = 0;
       let nextErrorMessage = response.storageHint ?? '';
-      try {
-        const timeline = await getTimeline(nextAuth);
-        nextTimelineEvents = timeline.events;
-        nextTimelinePosition = timeline.events.length;
-      } catch (error) {
-        nextErrorMessage = nextErrorMessage || (error instanceof Error ? error.message : 'Failed to load timeline');
+      if (shouldLoadTimeline) {
+        try {
+          const timeline = await getTimeline(nextAuth);
+          nextTimelineEvents = timeline.events;
+          nextTimelinePosition = timeline.events.length;
+        } catch (error) {
+          nextErrorMessage = nextErrorMessage || (error instanceof Error ? error.message : 'Failed to load timeline');
+        }
       }
 
       mounts = mounts.map((entry) =>
@@ -3012,7 +3015,10 @@
         continue;
       }
       if (!matchingMountRuntime(mount) && !mountWarmPromises.has(mount.id)) {
-        void ensureMountRuntimeLoaded(mount, { activateIfCurrent: mount.id === activeMountId });
+        void ensureMountRuntimeLoaded(mount, {
+          activateIfCurrent: mount.id === activeMountId,
+          preloadTimeline: mount.id === activeMountId,
+        });
       }
     }
     if (Object.keys(mountRuntimeById).some((mountId) => !nextKnownIds.has(mountId))) {
