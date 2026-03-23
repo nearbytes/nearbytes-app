@@ -185,6 +185,7 @@ MEGA **never** sees:
 
 ## See Also
 
+- [MEGA Protocol Notes](mega-protocol.md) - Source-linked notes for the native Node reimplementation
 - [Verification Checklist](verify-mega.md) - Step-by-step verification steps
 - [API Server Documentation](api-server.md) - Server configuration details
 - [File System Model](file-system.md) - Storage structure details
