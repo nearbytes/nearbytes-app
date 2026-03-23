@@ -3,16 +3,10 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
-import {
-  NEARBYTES_SYNC_DIR,
-  NEARBYTES_SYNC_INDEX_PATH,
-  type NearbytesSyncChannelManifest,
-  type NearbytesSyncIndex,
-} from '../storage/syncManifest.js';
 
 const MEGA_PUBLIC_API_URL = 'https://g.api.mega.co.nz/cs';
 const ZERO_IV = Buffer.alloc(16, 0);
-const LOCAL_PUBLIC_LINK_CACHE_FILE = 'mega-public-link-cache.json';
+const LEGACY_SIDECAR_DIR = '.nearbytes-sync';
 
 interface MegaFolderTreeResponse {
   readonly f?: readonly MegaFolderNodeRecord[];
@@ -40,26 +34,6 @@ interface MegaDecryptedNode {
   readonly size: number;
   readonly name: string;
   readonly nodeKey: Buffer;
-  readonly encodedKey: string;
-}
-
-interface MegaCachedNodeRef {
-  readonly handle: string;
-  readonly key: string;
-  readonly size: number;
-}
-
-interface MegaPublicLinkCache {
-  readonly version: 1;
-  readonly publicHandle: string;
-  readonly nodesByPath: Record<string, MegaCachedNodeRef>;
-  readonly channelRevisions: Record<string, number>;
-}
-
-interface MegaPublicFolderTree {
-  readonly rootNode: MegaDecryptedNode;
-  readonly childrenByParent: ReadonlyMap<string, readonly MegaDecryptedNode[]>;
-  readonly fileNodesByPath: ReadonlyMap<string, MegaDecryptedNode>;
 }
 
 export interface MegaPublicLinkTarget {
@@ -106,6 +80,7 @@ export async function mirrorMegaPublicLink(options: {
   }
 
   await fs.mkdir(options.localPath, { recursive: true });
+  await removeLegacyPublicLinkArtifacts(options.localPath);
 
   if (target.kind === 'file') {
     await mirrorPublicFileLink(fetchImpl, target, options.localPath);
@@ -169,86 +144,39 @@ async function mirrorPublicFileLink(fetchImpl: typeof fetch, target: MegaPublicL
 }
 
 async function mirrorPublicFolderLink(fetchImpl: typeof fetch, target: MegaPublicLinkTarget, localPath: string): Promise<void> {
-  const cached = await readMegaPublicLinkCache(localPath, target.publicHandle);
-  const appliedFromCache = cached
-    ? await applyNearbytesSyncIndex(fetchImpl, target, localPath, cached, (relativePath) =>
-        cached.nodesByPath[relativePath] ?? null
-      ).catch(() => null)
-    : null;
-  if (appliedFromCache) {
-    await writeMegaPublicLinkCache(localPath, appliedFromCache);
+  const folderKey = decodeMegaBase64Url(target.key);
+  const response = await megaApiRequest<MegaFolderTreeResponse>(fetchImpl, { a: 'f', c: 1, r: 1 }, target.publicHandle);
+  const decryptedNodes = decryptMegaFolderNodes(response.f ?? [], target.publicHandle, folderKey);
+  const nodesByHandle = new Map(decryptedNodes.map((node) => [node.handle, node]));
+  const childrenByParent = new Map<string, MegaDecryptedNode[]>();
+
+  for (const node of decryptedNodes) {
+    if (!node.parentHandle) {
+      continue;
+    }
+    const siblings = childrenByParent.get(node.parentHandle) ?? [];
+    siblings.push(node);
+    childrenByParent.set(node.parentHandle, siblings);
+  }
+
+  const rootHandle = target.objectHandle ?? target.publicHandle;
+  const rootNode = nodesByHandle.get(rootHandle);
+  if (!rootNode) {
+    throw new Error('MEGA public folder link does not contain the requested node.');
+  }
+
+  if (!rootNode.isFolder) {
+    await mirrorFolderFileNode(fetchImpl, target, rootNode, localPath);
     return;
   }
 
-  const tree = await loadMegaPublicFolderTree(fetchImpl, target);
-  const nextCache = buildMegaPublicLinkCache(target, tree, cached);
-  const appliedFromTree = await applyNearbytesSyncIndex(fetchImpl, target, localPath, nextCache, (relativePath) =>
-    nextCache.nodesByPath[relativePath] ?? null
-  ).catch(() => null);
-  if (appliedFromTree) {
-    await writeMegaPublicLinkCache(localPath, appliedFromTree);
-    return;
-  }
-
-  const rootChildren = tree.childrenByParent.get(tree.rootNode.handle) ?? [];
+  const rootChildren = childrenByParent.get(rootNode.handle) ?? [];
   for (const child of rootChildren) {
     if (isInternalSyncNode(child.name)) {
       continue;
     }
-    await mirrorFolderNode(fetchImpl, target, child, localPath, tree.childrenByParent);
+    await mirrorFolderNode(fetchImpl, target, child, localPath, childrenByParent);
   }
-
-  await writeMegaPublicLinkCache(localPath, nextCache);
-}
-
-async function applyNearbytesSyncIndex(
-  fetchImpl: typeof fetch,
-  target: MegaPublicLinkTarget,
-  localPath: string,
-  cache: MegaPublicLinkCache,
-  resolveNodeRef: (relativePath: string) => MegaCachedNodeRef | null
-): Promise<MegaPublicLinkCache | null> {
-  const indexRef = resolveNodeRef(NEARBYTES_SYNC_INDEX_PATH);
-  if (!indexRef) {
-    return null;
-  }
-
-  const index = await downloadFolderJson<NearbytesSyncIndex>(fetchImpl, target, indexRef);
-  if (!index || index.version !== 1) {
-    return null;
-  }
-
-  const nextRevisions = { ...cache.channelRevisions };
-  for (const [channelId, channelRef] of Object.entries(index.channels ?? {})) {
-    const manifestRef = resolveNodeRef(channelRef.manifestPath);
-    if (!manifestRef) {
-      return null;
-    }
-    const manifest = await downloadFolderJson<NearbytesSyncChannelManifest>(fetchImpl, target, manifestRef);
-    if (!manifest || manifest.version !== 1) {
-      return null;
-    }
-    if ((cache.channelRevisions[channelId] ?? 0) === manifest.revision) {
-      nextRevisions[channelId] = manifest.revision;
-      continue;
-    }
-
-    for (const eventRecord of manifest.events) {
-      await ensureMirrorFile(fetchImpl, target, localPath, eventRecord.eventPath, resolveNodeRef);
-      if (eventRecord.blockPath) {
-        await ensureMirrorFile(fetchImpl, target, localPath, eventRecord.blockPath, resolveNodeRef);
-      }
-    }
-
-    nextRevisions[channelId] = manifest.revision;
-  }
-
-  return {
-    version: 1,
-    publicHandle: target.publicHandle,
-    nodesByPath: cache.nodesByPath,
-    channelRevisions: nextRevisions,
-  };
 }
 
 async function mirrorFolderNode(
@@ -329,206 +257,18 @@ function decryptMegaFolderNodes(
       size: Number(node.s ?? 0) || 0,
       name,
       nodeKey,
-      encodedKey: encodeMegaBase64Url(nodeKey),
     });
   }
 
   return decryptedNodes;
 }
 
-async function loadMegaPublicFolderTree(fetchImpl: typeof fetch, target: MegaPublicLinkTarget): Promise<MegaPublicFolderTree> {
-  const folderKey = decodeMegaBase64Url(target.key);
-  const response = await megaApiRequest<MegaFolderTreeResponse>(fetchImpl, { a: 'f', c: 1, r: 1 }, target.publicHandle);
-  const decryptedNodes = decryptMegaFolderNodes(response.f ?? [], target.publicHandle, folderKey);
-  const nodesByHandle = new Map(decryptedNodes.map((node) => [node.handle, node]));
-  const childrenByParent = new Map<string, MegaDecryptedNode[]>();
-
-  for (const node of decryptedNodes) {
-    if (!node.parentHandle) {
-      continue;
-    }
-    const siblings = childrenByParent.get(node.parentHandle) ?? [];
-    siblings.push(node);
-    childrenByParent.set(node.parentHandle, siblings);
-  }
-
-  const rootHandle = target.objectHandle ?? target.publicHandle;
-  const rootNode = nodesByHandle.get(rootHandle);
-  if (!rootNode) {
-    throw new Error('MEGA public folder link does not contain the requested node.');
-  }
-
-  const fileNodesByPath = new Map<string, MegaDecryptedNode>();
-  if (rootNode.isFolder) {
-    collectFileNodes(rootNode.handle, '', childrenByParent, fileNodesByPath);
-  } else {
-    fileNodesByPath.set(sanitizeRelativePath(rootNode.name), rootNode);
-  }
-
-  return {
-    rootNode,
-    childrenByParent,
-    fileNodesByPath,
-  };
-}
-
-function collectFileNodes(
-  parentHandle: string,
-  parentPath: string,
-  childrenByParent: ReadonlyMap<string, readonly MegaDecryptedNode[]>,
-  fileNodesByPath: Map<string, MegaDecryptedNode>
-): void {
-  const children = childrenByParent.get(parentHandle) ?? [];
-  for (const child of children) {
-    const relativePath = parentPath ? `${parentPath}/${sanitizeRelativePath(child.name)}` : sanitizeRelativePath(child.name);
-    if (child.isFolder) {
-      collectFileNodes(child.handle, relativePath, childrenByParent, fileNodesByPath);
-      continue;
-    }
-    fileNodesByPath.set(relativePath, child);
-  }
-}
-
-function buildMegaPublicLinkCache(
-  target: MegaPublicLinkTarget,
-  tree: MegaPublicFolderTree,
-  existing: MegaPublicLinkCache | null
-): MegaPublicLinkCache {
-  const nodesByPath: Record<string, MegaCachedNodeRef> = {};
-  for (const [relativePath, node] of tree.fileNodesByPath) {
-    nodesByPath[relativePath] = {
-      handle: node.handle,
-      key: node.encodedKey,
-      size: node.size,
-    };
-  }
-
-  return {
-    version: 1,
-    publicHandle: target.publicHandle,
-    nodesByPath,
-    channelRevisions: existing?.publicHandle === target.publicHandle ? existing.channelRevisions : {},
-  };
-}
-
-async function ensureMirrorFile(
-  fetchImpl: typeof fetch,
-  target: MegaPublicLinkTarget,
-  localPath: string,
-  relativePath: string,
-  resolveNodeRef: (relativePath: string) => MegaCachedNodeRef | null
-): Promise<void> {
-  const normalizedPath = sanitizeRelativePath(relativePath);
-  const ref = resolveNodeRef(normalizedPath);
-  if (!ref) {
-    throw new Error(`Missing cached MEGA node for ${normalizedPath}.`);
-  }
-
-  const destinationPath = path.join(localPath, ...normalizedPath.split('/'));
-  const existing = await fs.stat(destinationPath).catch(() => null);
-  if (existing?.isFile() && existing.size === ref.size) {
-    return;
-  }
-
-  await downloadMegaNodeToPath(fetchImpl, target, ref, destinationPath);
-}
-
-async function downloadFolderJson<T>(
-  fetchImpl: typeof fetch,
-  target: MegaPublicLinkTarget,
-  ref: MegaCachedNodeRef
-): Promise<T | null> {
-  const bytes = await downloadMegaNodeToBuffer(fetchImpl, target, ref);
-  try {
-    return JSON.parse(bytes.toString('utf8')) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function downloadMegaNodeToPath(
-  fetchImpl: typeof fetch,
-  target: MegaPublicLinkTarget,
-  ref: MegaCachedNodeRef,
-  destinationPath: string
-): Promise<void> {
-  const ticket = await megaApiRequest<MegaDownloadTicketResponse>(
-    fetchImpl,
-    { a: 'g', g: 1, n: ref.handle },
-    target.publicHandle
-  );
-  if (!ticket.g) {
-    throw new Error(`MEGA public folder child ${ref.handle} did not return a download URL.`);
-  }
-  await downloadMegaFile(fetchImpl, ticket.g, decodeMegaBase64Url(ref.key), destinationPath, ref.size);
-}
-
-async function downloadMegaNodeToBuffer(
-  fetchImpl: typeof fetch,
-  target: MegaPublicLinkTarget,
-  ref: MegaCachedNodeRef
-): Promise<Buffer> {
-  const ticket = await megaApiRequest<MegaDownloadTicketResponse>(
-    fetchImpl,
-    { a: 'g', g: 1, n: ref.handle },
-    target.publicHandle
-  );
-  if (!ticket.g) {
-    throw new Error(`MEGA public folder child ${ref.handle} did not return a download URL.`);
-  }
-
-  const response = await fetchImpl(ticket.g);
-  if (!response.ok) {
-    throw new Error(`MEGA file download failed with HTTP ${response.status}.`);
-  }
-
-  const encrypted = Buffer.from(await response.arrayBuffer());
-  const nodeKey = decodeMegaBase64Url(ref.key);
-  const decipher = createDecipheriv('aes-128-ctr', deriveContentKey(nodeKey), deriveContentIv(nodeKey));
-  const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-  if (ref.size > 0 && decrypted.length !== ref.size) {
-    throw new Error(`MEGA file download size mismatch for ${ref.handle}.`);
-  }
-  return decrypted;
-}
-
-async function readMegaPublicLinkCache(localPath: string, publicHandle: string): Promise<MegaPublicLinkCache | null> {
-  const cachePath = path.join(localPath, NEARBYTES_SYNC_DIR, LOCAL_PUBLIC_LINK_CACHE_FILE);
-  try {
-    const raw = await fs.readFile(cachePath, 'utf8');
-    const parsed = JSON.parse(raw) as MegaPublicLinkCache;
-    if (parsed.version !== 1 || parsed.publicHandle !== publicHandle) {
-      return null;
-    }
-    return {
-      version: 1,
-      publicHandle: parsed.publicHandle,
-      nodesByPath: parsed.nodesByPath ?? {},
-      channelRevisions: parsed.channelRevisions ?? {},
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function writeMegaPublicLinkCache(localPath: string, cache: MegaPublicLinkCache): Promise<void> {
-  const cacheDir = path.join(localPath, NEARBYTES_SYNC_DIR);
-  await fs.mkdir(cacheDir, { recursive: true });
-  const cachePath = path.join(cacheDir, LOCAL_PUBLIC_LINK_CACHE_FILE);
-  await fs.writeFile(cachePath, JSON.stringify(cache), 'utf8');
-}
-
 function isInternalSyncNode(name: string): boolean {
-  return name.trim() === NEARBYTES_SYNC_DIR;
+  return name.trim() === LEGACY_SIDECAR_DIR;
 }
 
-function sanitizeRelativePath(value: string): string {
-  return value
-    .replace(/\\/g, '/')
-    .split('/')
-    .filter((segment) => segment.trim() !== '')
-    .map((segment) => sanitizePathSegment(segment))
-    .join('/');
+async function removeLegacyPublicLinkArtifacts(localPath: string): Promise<void> {
+  await fs.rm(path.join(localPath, LEGACY_SIDECAR_DIR), { recursive: true, force: true }).catch(() => undefined);
 }
 
 function decryptNodeKey(value: string | undefined, shareKey: Buffer, rootHandle: string): Buffer | null {
@@ -701,14 +441,6 @@ function decodeMegaBase64Url(value: string): Buffer {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
   return Buffer.from(padded, 'base64');
-}
-
-function encodeMegaBase64Url(value: Buffer): string {
-  return value
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/u, '');
 }
 
 function xorBuffers(left: Buffer, right: Buffer): Buffer {
