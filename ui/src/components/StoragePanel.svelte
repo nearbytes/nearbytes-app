@@ -1823,7 +1823,7 @@
         syncing: inProgress,
         progressPercent,
         progressLabel: total > 0 ? `${ready}/${total} locations ready` : 'Recovering MEGA status',
-        selfRepairCopy: 'Nearbytes auto-retries common MEGA command failures, including MEGAcmd server access issues.',
+        selfRepairCopy: 'Nearbytes auto-retries common MEGA API and mirror state failures.',
       };
     }
 
@@ -1861,7 +1861,7 @@
         syncing: false,
         progressPercent: null,
         progressLabel: '',
-        selfRepairCopy: 'Automatic MEGA recovery is enabled if command transport degrades.',
+        selfRepairCopy: 'Automatic MEGA recovery is enabled if native mirror state degrades.',
       };
     }
 
@@ -1889,31 +1889,31 @@
     const normalizedPath = helperPath.replace(/\\/gu, '/').toLowerCase();
     if (helperPath === 'PATH') {
       return {
-        headline: 'Using a configured MEGA runtime path',
-        detail: 'This machine still exposes a legacy MEGA runtime path, but Nearbytes no longer depends on a local command helper.',
+        headline: 'External MEGA tools are on PATH',
+        detail: 'Nearbytes uses its built-in native runtime. External MEGA tools on this machine are ignored.',
         pathValue: 'System PATH',
       };
     }
 
-    if (normalizedPath.includes('/.nearbytes-dev/megacmd/')) {
+    if (/\/\.nearbytes-dev\/.*mega.*\//u.test(normalizedPath)) {
       return {
         headline: 'Legacy MEGA development path detected',
-        detail: 'A development-era MEGA command path is still configured, but Nearbytes now uses the native adapter instead.',
+        detail: 'A development-era MEGA tool path is still configured, but Nearbytes uses the native adapter instead.',
         pathValue: helperPath,
       };
     }
 
-    if (normalizedPath.includes('/.nearbytes/helpers/megacmd')) {
+    if (/\/\.nearbytes\/helpers\/.*mega/u.test(normalizedPath)) {
       return {
-        headline: 'Legacy helper path detected',
-        detail: 'A previous helper install is still present on disk, but Nearbytes no longer requires it for MEGA mirroring.',
+        headline: 'Legacy MEGA tool path detected',
+        detail: 'A previous local MEGA tool install is still present on disk, but Nearbytes no longer requires it for MEGA mirroring.',
         pathValue: helperPath,
       };
     }
 
     return {
-      headline: 'Custom legacy MEGA path detected',
-      detail: 'A custom MEGA command path is configured, but the current adapter uses direct API access instead.',
+      headline: 'Custom external MEGA path detected',
+      detail: 'A custom MEGA tool path is configured, but the current adapter uses direct API access instead.',
       pathValue: helperPath,
     };
   }
@@ -3535,7 +3535,7 @@
           title: `Installing ${provider.label} helper`,
           detail:
             provider.provider === 'mega'
-              ? 'Downloading and installing the local MEGAcmd helper. This can take a few seconds.'
+              ? 'Preparing the MEGA provider flow. The native runtime is already built in.'
               : `Installing the ${provider.label} helper.`,
           canCancel: true,
           canReset: true,

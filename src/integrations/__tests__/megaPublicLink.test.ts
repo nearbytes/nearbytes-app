@@ -89,7 +89,7 @@ describe('Mega public link mirroring', () => {
     tempDirs.length = 0;
   });
 
-  it('mirrors a MEGA public folder link without invoking the MEGAcmd CLI', async () => {
+  it('mirrors a MEGA public folder link without invoking external MEGA commands', async () => {
     const rootHandle = 'R00T0001';
     const blocksHandle = 'BL0CK001';
     const channelsHandle = 'CHAN0001';
@@ -183,7 +183,7 @@ describe('Mega public link mirroring', () => {
       commandExecutor: {
         async run(invocation) {
           cliInvocations.push(`${invocation.command} ${(invocation.args ?? []).join(' ')}`.trim());
-          throw new Error('Unexpected MEGAcmd invocation while mirroring a public link.');
+          throw new Error('Unexpected external MEGA command while mirroring a public link.');
         },
       },
       mega: {

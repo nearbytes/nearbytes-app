@@ -7,7 +7,7 @@ This guide explains how Nearbytes integrates with MEGA for cloud-backed encrypte
 Two MEGA modes are now available:
 
 - Legacy folder mode: Nearbytes writes directly into a local MEGA-synced folder controlled by `NEARBYTES_STORAGE_DIR`.
-- Managed provider mode: the desktop app can control MEGAcmd directly for provider-managed shares. Set `NEARBYTES_MEGACMD_DIR` if the MEGAcmd binaries are not already on `PATH`.
+- Managed provider mode: the desktop app talks to the MEGA API directly for readonly provider-managed shares and public links. No local MEGA CLI or helper path is required.
 
 For the managed provider flow, the Nearbytes-owned MEGA share should be treated as a durable mirror of every attached volume, not as a "new writes only" outlet. The local MEGA sync folder is just the transport surface for MEGA; Nearbytes may still read missing blocks from any enabled local source, but the provider share itself must retain historical referenced blocks so new recipients can sync later.
 
@@ -177,9 +177,9 @@ MEGA **never** sees:
 
 ## Limitations
 
-- **Partial native MEGA API usage**: owner and account-managed sync still rely on MEGAcmd today, but readonly MEGA public links can now be fetched natively by Nearbytes without the CLI helper.
+- **Managed provider mode is currently readonly**: incoming shares and public links mirror into a local Nearbytes root, but writable MEGA share management is not implemented in the native adapter yet.
 - **Sync delay**: Files sync asynchronously. There may be a delay before files appear on other machines.
-- **Incoming managed shares depend on MEGA access level**: recipient-side shares with only read or read/write access fall back to a polling pull mirror, because MEGAcmd requires `full access` for true folder sync. The current fallback polls every 5 seconds. When the incoming share has full access, Nearbytes can use MEGA's native sync instead of the polling mirror.
+- **Readonly mirrors still refresh through MEGA account cursors**: Nearbytes now persists `sn` cursors and uses action packets to avoid unnecessary subtree fetches, but it still refetches the mounted subtree when an incoming packet touches that share.
 - **Storage quota**: Subject to your MEGA storage quota limits.
 - **Nearbytes conflict repair**: When a Nearbytes storage root conflicts, the app resolves it by merging `blocks/` and `channels/`, rewriting `Nearbytes.html`, and deleting obsolete `Nearbytes.json`.
 

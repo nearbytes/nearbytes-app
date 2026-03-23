@@ -2,11 +2,14 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, webcrypto } 
 import { promises as fs } from 'fs';
 import path from 'path';
 import {
+  buildMegaScChannelUrl,
   buildMegaFetchNodesCommand,
   decodeMegaBase64Url,
   encodeMegaBase64Url,
   MegaApiClient,
+  parseMegaActionPacketBatch,
   parseMegaFetchNodesSnapshot,
+  type MegaActionPacketBatch,
   type MegaFetchNodesSnapshot,
   type MegaNodeRecord,
   type MegaUserRecord,
@@ -71,10 +74,20 @@ interface MegaManifestEntry {
   readonly fingerprint: string;
   readonly kind: 'file' | 'folder';
   readonly size?: number;
+  readonly handle: string;
+  readonly parentHandle?: string;
 }
 
 interface MegaMirrorManifest {
+  readonly rootHandle?: string;
+  readonly lastScsn?: string;
+  readonly knownHandles?: readonly string[];
   readonly entries: Record<string, MegaManifestEntry>;
+}
+
+interface MegaFetchedTree {
+  readonly snapshot: MegaFetchNodesSnapshot;
+  readonly tree: DecryptedMegaTree;
 }
 
 interface DecryptedMegaNode {
@@ -409,8 +422,32 @@ export class MegaTransportAdapter {
         throw new Error('MEGA share descriptor is missing a root handle.');
       }
 
-      const tree = await this.fetchPartialTree(session, rootHandle);
-      await this.materializeTree(share.id, share.localPath, tree, session);
+      const manifest = await this.loadManifest(share.id);
+      const incrementalScsn = manifest.rootHandle === rootHandle ? manifest.lastScsn?.trim() : undefined;
+      if (incrementalScsn) {
+        try {
+          const actionBatch = await this.fetchActionPackets(session, incrementalScsn);
+          if (actionBatch.scsn) {
+            await this.updateManifestCursor(share.id, actionBatch.scsn);
+          }
+          if (!actionPacketBatchTouchesShare(actionBatch.packets, rootHandle, manifest)) {
+            this.syncStates.set(share.id, {
+              status: 'ready',
+              detail: 'MEGA readonly mirror is up to date.',
+              badges: READONLY_BADGES,
+              lastSyncAt: this.runtime.now(),
+            });
+            return;
+          }
+        } catch (error) {
+          if (!shouldResetScCursor(error)) {
+            throw error;
+          }
+        }
+      }
+
+      const fetched = await this.fetchPartialTreeWithSnapshot(session, rootHandle);
+      await this.materializeTree(share.id, share.localPath, fetched.tree, session, fetched.snapshot.scsn);
       this.syncStates.set(share.id, {
         status: 'ready',
         detail: 'MEGA readonly mirror is up to date.',
@@ -528,6 +565,37 @@ export class MegaTransportAdapter {
     return decryptMegaTree(parseMegaFetchNodesSnapshot(response), session, rootHandle);
   }
 
+  private async fetchPartialTreeWithSnapshot(session: MegaSession, rootHandle: string): Promise<MegaFetchedTree> {
+    const response = await this.apiCommand<Record<string, unknown>>(
+      buildMegaFetchNodesCommand({ partialRoot: rootHandle }),
+      session
+    );
+    const snapshot = parseMegaFetchNodesSnapshot(response);
+    return {
+      snapshot,
+      tree: decryptMegaTree(snapshot, session, rootHandle),
+    };
+  }
+
+  private async fetchActionPackets(session: MegaSession, scsn: string): Promise<MegaActionPacketBatch> {
+    const response = await this.fetchImpl(buildMegaScChannelUrl({ scsn, sessionId: session.sid }), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`MEGA action-packet request failed with HTTP ${response.status}.`);
+    }
+    const payload = (await response.json()) as unknown;
+    if (typeof payload === 'number') {
+      const error = new Error(`MEGA API error ${payload}.`) as MegaApiError;
+      error.code = payload;
+      throw error;
+    }
+    return parseMegaActionPacketBatch(payload);
+  }
+
   private async resolveIncomingShareDescriptor(
     account: ProviderAccount,
     descriptor: Record<string, unknown>
@@ -549,20 +617,25 @@ export class MegaTransportAdapter {
     shareId: string,
     localPath: string,
     tree: DecryptedMegaTree,
-    session: MegaSession
+    session: MegaSession,
+    scsn?: string
   ): Promise<void> {
     const manifest = await this.loadManifest(shareId);
     const desiredPaths = new Set<string>();
     const nextEntries = new Map<string, MegaManifestEntry>();
+    const knownHandles = new Set<string>([tree.root.handle]);
 
     await fs.mkdir(localPath, { recursive: true });
     await visitTree(tree, async (relativePath, node) => {
       desiredPaths.add(relativePath);
+      knownHandles.add(node.handle);
       const fingerprint = createNodeFingerprint(node);
       nextEntries.set(relativePath, {
         fingerprint,
         kind: node.isFolder ? 'folder' : 'file',
         size: node.isFolder ? undefined : node.size,
+        handle: node.handle,
+        parentHandle: node.parentHandle,
       });
 
       const targetPath = path.join(localPath, relativePath);
@@ -582,12 +655,23 @@ export class MegaTransportAdapter {
 
     await removeObsoleteEntries(localPath, manifest.entries, desiredPaths);
     await this.runtime.secretStore.set(mirrorManifestKey(shareId), {
+      rootHandle: tree.root.handle,
+      lastScsn: scsn?.trim() || manifest.lastScsn,
+      knownHandles: [...knownHandles].sort(),
       entries: Object.fromEntries(nextEntries.entries()),
     } satisfies MegaMirrorManifest);
   }
 
   private async loadManifest(shareId: string): Promise<MegaMirrorManifest> {
     return (await this.runtime.secretStore.get<MegaMirrorManifest>(mirrorManifestKey(shareId))) ?? { entries: {} };
+  }
+
+  private async updateManifestCursor(shareId: string, scsn: string): Promise<void> {
+    const manifest = await this.loadManifest(shareId);
+    await this.runtime.secretStore.set(mirrorManifestKey(shareId), {
+      ...manifest,
+      lastScsn: scsn.trim(),
+    } satisfies MegaMirrorManifest);
   }
 
   private async apiCommand<T = Record<string, unknown>>(
@@ -960,6 +1044,61 @@ async function removeObsoleteEntries(
     await fs.rm(path.join(localPath, entry), { recursive: true, force: true }).catch(() => undefined);
   }
 }
+
+function actionPacketBatchTouchesShare(
+  packets: readonly Record<string, unknown>[],
+  rootHandle: string,
+  manifest: MegaMirrorManifest
+): boolean {
+  if (!packets.length) {
+    return false;
+  }
+  const relevantHandles = new Set<string>(manifest.knownHandles ?? []);
+  relevantHandles.add(rootHandle);
+  return packets.some((packet) => actionPacketTouchesShare(packet, relevantHandles));
+}
+
+function actionPacketTouchesShare(packet: Record<string, unknown>, relevantHandles: ReadonlySet<string>): boolean {
+  const handles = collectActionPacketHandles(packet);
+  if (handles.some((handle) => relevantHandles.has(handle))) {
+    return true;
+  }
+  const action = typeof packet.a === 'string' ? packet.a.trim() : '';
+  return action === 't' && !handles.length;
+}
+
+function collectActionPacketHandles(packet: Record<string, unknown>): string[] {
+  const result = new Set<string>();
+  collectPacketHandlesRecursive(packet, result);
+  return [...result];
+}
+
+function collectPacketHandlesRecursive(value: unknown, result: Set<string>, key?: string): void {
+  if (typeof value === 'string') {
+    if (key && ACTION_PACKET_HANDLE_KEYS.has(key) && value.trim()) {
+      result.add(value.trim());
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectPacketHandlesRecursive(entry, result, key);
+    }
+    return;
+  }
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    collectPacketHandlesRecursive(entryValue, result, entryKey);
+  }
+}
+
+function shouldResetScCursor(error: unknown): boolean {
+  return typeof (error as MegaApiError | undefined)?.code === 'number' && (error as MegaApiError).code === -6;
+}
+
+const ACTION_PACKET_HANDLE_KEYS = new Set(['h', 'n', 'p', 'ph', 'sh']);
 
 function sanitizePathSegment(value: string): string {
   const cleaned = value.replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, ' ').trim();

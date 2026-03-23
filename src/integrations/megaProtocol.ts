@@ -53,6 +53,13 @@ export interface MegaFetchNodesSnapshot {
   readonly sequenceTag?: string;
 }
 
+export interface MegaActionPacketBatch {
+  readonly packets: readonly Record<string, unknown>[];
+  readonly scsn?: string;
+  readonly sequenceTag?: string;
+  readonly waitUrl?: string;
+}
+
 export type MegaAccountSessionDump =
   | {
       readonly version: 0;
@@ -194,6 +201,16 @@ export function parseMegaFetchNodesSnapshot(response: unknown): MegaFetchNodesSn
     publicLinks: asRecordArray(object.ph),
     scsn: typeof object.sn === 'string' ? object.sn : undefined,
     sequenceTag: typeof object.st === 'string' ? object.st : undefined,
+  };
+}
+
+export function parseMegaActionPacketBatch(response: unknown): MegaActionPacketBatch {
+  const object = asRecord(response, 'MEGA action-packet response');
+  return {
+    packets: asRecordArray(object.a),
+    scsn: typeof object.sn === 'string' ? object.sn.trim() || undefined : undefined,
+    sequenceTag: typeof object.st === 'string' ? object.st.trim() || undefined : undefined,
+    waitUrl: typeof object.w === 'string' ? object.w.trim() || undefined : undefined,
   };
 }
 

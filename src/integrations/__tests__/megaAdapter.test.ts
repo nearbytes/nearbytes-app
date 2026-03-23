@@ -119,8 +119,12 @@ describe('MegaTransportAdapter', () => {
     const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
     const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
     const filePlaintext = Buffer.from('native-mega-share-data', 'utf8');
+    const updatedPlaintext = Buffer.from('native-mega-share-data-v2', 'utf8');
     const fileCiphertext = encryptFileContent(filePlaintext, fileNodeKey);
+    const updatedCiphertext = encryptFileContent(updatedPlaintext, fileNodeKey);
     const commandInvocations: string[] = [];
+    let partialFetchCount = 0;
+    let downloadVersion = 0;
 
     const fullSnapshot = {
       f: [
@@ -155,6 +159,20 @@ describe('MegaTransportAdapter', () => {
     const partialSnapshot = {
       f: fullSnapshot.f,
       u: fullSnapshot.u,
+      sn: 'cursor-1',
+    };
+
+    const updatedPartialSnapshot = {
+      f: [
+        fullSnapshot.f[0],
+        fullSnapshot.f[1],
+        {
+          ...fullSnapshot.f[2],
+          s: updatedPlaintext.length,
+        },
+      ],
+      u: fullSnapshot.u,
+      sn: 'cursor-3',
     };
 
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -178,10 +196,16 @@ describe('MegaTransportAdapter', () => {
               headers: { 'content-type': 'application/json' },
             });
           case 'f':
-            return new Response(JSON.stringify([payload.n ? partialSnapshot : fullSnapshot]), {
-              status: 200,
-              headers: { 'content-type': 'application/json' },
-            });
+            if (payload.n) {
+              partialFetchCount += 1;
+            }
+            return new Response(
+              JSON.stringify([payload.n ? (partialFetchCount >= 2 ? updatedPartialSnapshot : partialSnapshot) : fullSnapshot]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
           case 'g':
             return new Response(JSON.stringify([{ g: `https://download.test/${String(payload.n)}`, s: filePlaintext.length }]), {
               status: 200,
@@ -191,8 +215,26 @@ describe('MegaTransportAdapter', () => {
             throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
         }
       }
+      if (url.startsWith('https://g.api.mega.co.nz/sc')) {
+        const currentCursor = new URL(url).searchParams.get('sn');
+        if (currentCursor === 'cursor-1') {
+          return new Response(JSON.stringify({ a: [{ a: 'u', n: 'outside0001' }], sn: 'cursor-2' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (currentCursor === 'cursor-2') {
+          return new Response(JSON.stringify({ a: [{ a: 'u', n: fileHandle }], sn: 'cursor-3' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        throw new Error(`Unexpected SC cursor: ${currentCursor}`);
+      }
       if (url === `https://download.test/${fileHandle}`) {
-        return new Response(new Uint8Array(fileCiphertext), { status: 200 });
+        const body = downloadVersion === 0 ? fileCiphertext : updatedCiphertext;
+        downloadVersion += 1;
+        return new Response(new Uint8Array(body), { status: 200 });
       }
       throw new Error(`Unexpected fetch URL: ${url}`);
     }) as typeof fetch;
@@ -266,6 +308,16 @@ describe('MegaTransportAdapter', () => {
     await adapter.ensureSync(share, account);
 
     await expect(fs.readFile(path.join(localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(filePlaintext.toString('utf8'));
+    expect(partialFetchCount).toBe(1);
+
+    await adapter.ensureSync(share, account);
+    await expect(fs.readFile(path.join(localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(filePlaintext.toString('utf8'));
+    expect(partialFetchCount).toBe(1);
+
+    await adapter.ensureSync(share, account);
+    await expect(fs.readFile(path.join(localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(updatedPlaintext.toString('utf8'));
+    expect(partialFetchCount).toBe(2);
+
     expect(commandInvocations).toEqual([]);
 
     const state = await adapter.getState(share, account);

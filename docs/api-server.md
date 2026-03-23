@@ -294,7 +294,7 @@ Request:
 
 ### POST /integrations/providers/:provider/install (local-only)
 
-Downloads and prepares provider-specific local helpers when a provider needs them. Nearbytes uses this for automatic MEGAcmd setup.
+Downloads and prepares provider-specific local helpers when a provider needs them. The MEGA provider no longer uses this path because its native runtime is built in.
 
 ### POST /integrations/providers/:provider/reconcile (local-only)
 
@@ -358,7 +358,6 @@ Environment variables:
 - `NEARBYTES_MAX_UPLOAD_MB` (default `50`)
 - `NEARBYTES_GOOGLE_CLIENT_ID` (optional override for the built-in Google Drive Desktop app client ID)
 - `NEARBYTES_GOOGLE_CLIENT_SECRET` (advanced local-only override; not needed for the default Desktop app PKCE flow)
-- `NEARBYTES_MEGACMD_DIR` (optional directory containing `mega-login`, `mega-sync`, and the rest of the MEGAcmd binaries)
 - `NEARBYTES_MEGA_REMOTE_BASE` (default `/Nearbytes`) - remote MEGA folder prefix for Nearbytes-managed shares
 
 ## Example flow (header secret)

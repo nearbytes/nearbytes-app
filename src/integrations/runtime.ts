@@ -41,7 +41,6 @@ export interface GoogleDriveRuntimeConfig {
 }
 
 export interface MegaRuntimeConfig {
-  readonly commandDirectory?: string;
   readonly remoteBasePath: string;
   readonly syncIntervalMs: number;
 }
@@ -78,11 +77,6 @@ export interface IntegrationRuntimeOptions {
   readonly github?: Partial<GitHubRuntimeConfig>;
 }
 
-export interface ResolvedMegaInvocation {
-  readonly command: string;
-  readonly args: readonly string[];
-}
-
 const DEFAULT_GOOGLE_SCOPES = ['https://www.googleapis.com/auth/drive.file'] as const;
 const DEFAULT_GITHUB_SCOPES = ['repo', 'read:user', 'user:email'] as const;
 const DEFAULT_SYNC_INTERVAL_MS = 20_000;
@@ -112,8 +106,6 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
       syncIntervalMs: positiveInt(options.google?.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS),
     },
     mega: {
-      commandDirectory:
-        options.mega?.commandDirectory?.trim() || process.env.NEARBYTES_MEGACMD_DIR?.trim() || undefined,
       remoteBasePath: normalizeMegaRemotePath(
         options.mega?.remoteBasePath?.trim() || process.env.NEARBYTES_MEGA_REMOTE_BASE?.trim() || '/nearbytes'
       ),
@@ -135,40 +127,6 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
       scopes: options.github?.scopes?.length ? [...options.github.scopes] : [...DEFAULT_GITHUB_SCOPES],
       syncIntervalMs: positiveInt(options.github?.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS),
     },
-  };
-}
-
-export function resolveMegaCommand(
-  commandDirectory: string | undefined,
-  subcommand: string,
-  platform: NodeJS.Platform = process.platform
-): string {
-  const filename = platform === 'win32' ? 'MegaClient.exe' : `mega-${subcommand}`;
-  if (!commandDirectory) {
-    return filename;
-  }
-  const normalizedDirectory = commandDirectory.trim().replace(/[\\/]+$/u, '');
-  if (normalizedDirectory === '') {
-    return filename;
-  }
-  return `${normalizedDirectory}/${filename}`;
-}
-
-export function resolveMegaInvocation(
-  commandDirectory: string | undefined,
-  subcommand: string,
-  args: readonly string[],
-  platform: NodeJS.Platform = process.platform
-): ResolvedMegaInvocation {
-  if (platform === 'win32') {
-    return {
-      command: resolveMegaCommand(commandDirectory, subcommand, platform),
-      args: [subcommand, ...args],
-    };
-  }
-  return {
-    command: resolveMegaCommand(commandDirectory, subcommand, platform),
-    args,
   };
 }
 
