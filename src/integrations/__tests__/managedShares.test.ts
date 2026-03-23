@@ -147,6 +147,33 @@ class MirrorInventoryAdapter extends FakeTransportAdapter {
   }
 }
 
+class IncomingShareAdapter extends FakeTransportAdapter {
+  constructor(private readonly offers: Array<{ label: string; remoteDescriptor: Record<string, unknown> }>) {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  async listIncomingShares(account: ProviderAccount) {
+    return this.offers.map((offer, index) => ({
+      id: `offer-${index + 1}`,
+      provider: 'mega',
+      accountId: account.id,
+      label: offer.label,
+      ownerLabel: String(offer.remoteDescriptor.ownerEmail ?? 'MEGA owner'),
+      detail: 'Incoming MEGA share',
+      remoteDescriptor: offer.remoteDescriptor,
+    }));
+  }
+
+  async acceptInvite(input: { remoteDescriptor?: Record<string, unknown> }) {
+    return {
+      remoteDescriptor: {
+        ...(input.remoteDescriptor ?? {}),
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+    };
+  }
+}
+
 class BlockingEnsureSyncAdapter extends FakeTransportAdapter {
   ensureSyncCalls = 0;
 
@@ -1302,6 +1329,92 @@ describe('ManagedShareService', () => {
       '/nearbytes/shared-demo',
     ]);
     expect(shares.shares.filter((entry) => entry.share.remoteDescriptor.remotePath === '/nearbytes')).toHaveLength(1);
+  });
+
+  it('reconnecting MEGA adopts remote incoming shares even when local managed-share state was lost', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-incoming-reconnect-'));
+    tempDirs.add(tempDir);
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+    const managedRoot = path.join(tempDir, 'managed-root');
+    const localRoot = path.join(tempDir, 'local-root');
+    await fs.mkdir(localRoot, { recursive: true });
+    await fs.writeFile(
+      rootsConfigPath,
+      `${JSON.stringify({
+        version: 2,
+        sources: [
+          {
+            id: 'src-local',
+            provider: 'local',
+            path: localRoot,
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+          },
+        ],
+        defaultVolume: { destinations: [] },
+        volumes: [],
+      }, null, 2)}\n`,
+      'utf8'
+    );
+
+    const storage = new MultiRootStorageBackend({
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      defaultVolume: { destinations: [] },
+      volumes: [],
+    });
+    const service = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      integrationStatePath,
+      mirrorRoot: managedRoot,
+      adapters: [
+        new IncomingShareAdapter([
+          {
+            label: 'nearbytes',
+            remoteDescriptor: {
+              remotePath: 'friend@example.com:nearbytes',
+              shareName: 'nearbytes',
+              ownerEmail: 'friend@example.com',
+              rootHandle: 'share-root-1',
+              shareHandle: 'share-root-1',
+            },
+          },
+        ]),
+      ],
+    });
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      credentials: {
+        email: 'reader@example.com',
+        password: 'secret',
+      },
+    });
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(1);
+    expect(shares.shares[0]?.share.role).toBe('recipient');
+    expect(shares.shares[0]?.share.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
+    expect(shares.shares[0]?.share.localPath).toBe(
+      path.resolve(path.join(managedRoot, 'mega', 'friend-example-com', `${'nearbytes'} ${shares.shares[0]!.share.id.slice(-6)}`))
+    );
   });
 
   it('repairs accepted MEGA shares that were incorrectly stored on the account base folder', async () => {

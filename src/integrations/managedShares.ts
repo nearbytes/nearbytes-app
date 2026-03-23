@@ -301,9 +301,14 @@ export class ManagedShareService {
       accounts: merged.accounts,
       preferredProviders,
     };
-    const reconciled = await this.reconcileProviderManagedShares(provider, merged.account, connectedState);
+    const reconciledMirrors = await this.reconcileProviderManagedShares(provider, merged.account, connectedState);
+    const reconciledIncoming = await this.reconcileIncomingManagedShares(
+      provider,
+      merged.account,
+      reconciledMirrors.state
+    );
     await this.ensureDefaultManagedShare(provider, merged.account, {
-      stateSnapshot: reconciled.state,
+      stateSnapshot: reconciledIncoming.state,
       createMissing: true,
     });
     return {
@@ -796,13 +801,71 @@ export class ManagedShareService {
     for (const account of state.accounts.filter((entry) => this.isOperationalAccount(entry))) {
       const provider = normalizeProvider(account.provider);
       const adapter = this.adapters.get(provider);
-      if (!adapter?.listManagedShareMirrors) {
-        continue;
+      if (adapter?.listManagedShareMirrors) {
+        const reconciled = await this.reconcileProviderManagedShares(provider, account, state);
+        state = reconciled.state;
       }
-      const reconciled = await this.reconcileProviderManagedShares(provider, account, state);
-      state = reconciled.state;
+      if (adapter?.listIncomingShares) {
+        const reconciledIncoming = await this.reconcileIncomingManagedShares(provider, account, state);
+        state = reconciledIncoming.state;
+      }
     }
     return state;
+  }
+
+  private async reconcileIncomingManagedShares(
+    provider: string,
+    account: ProviderAccount,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    adoptedShares: number;
+  }> {
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.listIncomingShares) {
+      return {
+        state: stateSnapshot,
+        adoptedShares: 0,
+      };
+    }
+
+    let offers: IncomingManagedShareOffer[] = [];
+    try {
+      offers = await adapter.listIncomingShares(account);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Incoming managed share reconciliation failed for ${provider}:${account.id}: ${message}`);
+      return {
+        state: stateSnapshot,
+        adoptedShares: 0,
+      };
+    }
+
+    let state = stateSnapshot;
+    let adoptedShares = 0;
+    for (const offer of offers) {
+      const existing = findManagedShareByRemoteDescriptor(state.managedShares, provider, account.id, offer.remoteDescriptor);
+      if (existing) {
+        await this.prepareManagedShareForSync(existing.id);
+        state = await this.loadState();
+        continue;
+      }
+
+      await this.acceptManagedShare({
+        provider,
+        accountId: account.id,
+        label: offer.label,
+        localPath: offer.suggestedLocalPath,
+        remoteDescriptor: offer.remoteDescriptor,
+      });
+      state = await this.loadState();
+      adoptedShares += 1;
+    }
+
+    return {
+      state,
+      adoptedShares,
+    };
   }
 
   private async reconcileProviderManagedShares(

@@ -252,9 +252,11 @@ export class MegaTransportAdapter {
   }
 
   async listIncomingShares(account: ProviderAccount): Promise<IncomingManagedShareOffer[]> {
-    const session = await this.getAccountSession(account);
-    const snapshot = await this.fetchNodesSnapshot(session);
-    const tree = decryptMegaTree(snapshot, session);
+    const resolved = await this.withRecoveredAccountSession(account, async (session) => ({
+      session,
+      snapshot: await this.fetchNodesSnapshot(session),
+    }));
+    const tree = decryptMegaTree(resolved.snapshot, resolved.session);
     const offers: IncomingManagedShareOffer[] = [];
 
     for (const node of tree.nodesByHandle.values()) {
@@ -457,16 +459,19 @@ export class MegaTransportAdapter {
         }
       }
 
-      const fetched = await this.fetchPartialTreeWithSnapshot(session, rootHandle);
+      const resolved = await this.withRecoveredAccountSession(account, async (activeSession) => ({
+        session: activeSession,
+        fetched: await this.fetchPartialTreeWithSnapshot(activeSession, rootHandle),
+      }));
       const refreshResult = await this.refreshWorker.refresh(
         share.localPath,
-        new MegaReadonlyRemoteAdapter(this.fetchImpl, this.apiClient, session, fetched.tree),
+        new MegaReadonlyRemoteAdapter(this.fetchImpl, this.apiClient, resolved.session, resolved.fetched.tree),
         { entries: manifest.entries }
       );
       await this.runtime.secretStore.set(mirrorManifestKey(share.id), {
-        rootHandle: fetched.tree.root.handle,
-        lastScsn: fetched.snapshot.scsn?.trim() || manifest.lastScsn,
-        knownHandles: collectTreeHandles(fetched.tree),
+        rootHandle: resolved.fetched.tree.root.handle,
+        lastScsn: resolved.fetched.snapshot.scsn?.trim() || manifest.lastScsn,
+        knownHandles: collectTreeHandles(resolved.fetched.tree),
         entries: refreshResult.manifest.entries,
       } satisfies MegaMirrorManifest);
       this.syncStates.set(share.id, {
@@ -516,6 +521,46 @@ export class MegaTransportAdapter {
       } satisfies MegaAccountSecret);
       return refreshed;
     }
+  }
+
+  private async withRecoveredAccountSession<T>(
+    account: ProviderAccount,
+    operation: (session: MegaSession) => Promise<T>
+  ): Promise<T> {
+    const session = await this.getAccountSession(account);
+    try {
+      return await operation(session);
+    } catch (error) {
+      if (!shouldRefreshMegaSession(error)) {
+        throw error;
+      }
+      const refreshed = await this.refreshAccountSession(account);
+      return operation(refreshed);
+    }
+  }
+
+  private async refreshAccountSession(account: ProviderAccount): Promise<MegaSession> {
+    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
+    if (!secret || !isStoredMegaAccountSecret(secret)) {
+      throw new Error('Reconnect MEGA to resume syncing.');
+    }
+    const email = (typeof secret.email === 'string' && secret.email.trim() !== '' ? secret.email : account.email ?? '').trim();
+    const password = typeof secret.password === 'string' ? secret.password : '';
+    if (!email || !password) {
+      throw new Error('Reconnect MEGA to resume syncing.');
+    }
+
+    const refreshed = await this.loginWithPassword(email, password, secret.mfaCode);
+    await this.runtime.secretStore.set(secretKey(account.id), {
+      ...secret,
+      email,
+      sid: refreshed.sid,
+      masterKey: encodeMegaBase64Url(refreshed.masterKey),
+      userHandle: refreshed.userHandle,
+      accountVersion: refreshed.accountVersion,
+      accountSalt: refreshed.accountSalt,
+    } satisfies MegaAccountSecret);
+    return refreshed;
   }
 
   private async loginWithPassword(email: string, password: string, mfaCode?: string): Promise<MegaSession> {
@@ -722,6 +767,15 @@ function incomingShareMatches(candidate: Record<string, unknown>, target: Record
     getStringDescriptor(candidate, 'remotePath') === getStringDescriptor(target, 'remotePath') &&
     getStringDescriptor(candidate, 'ownerEmail') === getStringDescriptor(target, 'ownerEmail')
   );
+}
+
+function shouldRefreshMegaSession(error: unknown): boolean {
+  const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
+  if (code === -15) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /MEGA API error -15|session|auth|login/i.test(message);
 }
 
 function isLegacyMegaLocalMirror(share: ManagedShare): boolean {

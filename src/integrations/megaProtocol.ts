@@ -115,10 +115,10 @@ export class MegaApiClient {
     }
 
     const payload = (await response.json()) as unknown;
-    if (!Array.isArray(payload)) {
-      throw new Error('MEGA API response was not an array.');
+    if (Array.isArray(payload)) {
+      return payload as readonly T[];
     }
-    return payload as readonly T[];
+    return [payload as T];
   }
 
   async requestSingle<T = unknown>(

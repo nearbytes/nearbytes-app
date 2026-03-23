@@ -155,6 +155,40 @@ describe('megaProtocol', () => {
     ]);
   });
 
+  it('accepts singleton object responses for single-command requests', async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+        },
+      });
+    });
+    const client = new MegaApiClient({
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const response = await client.requestSingle<{ ok: boolean }>(buildMegaFetchNodesCommand());
+    expect(response).toEqual({ ok: true });
+  });
+
+  it('passes through singleton numeric error responses for single-command requests', async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(JSON.stringify(-15), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+        },
+      });
+    });
+    const client = new MegaApiClient({
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const response = await client.requestSingle<number>(buildMegaFetchNodesCommand());
+    expect(response).toBe(-15);
+  });
+
   it('uses MEGA base64url encoding for opaque binary blobs', () => {
     const value = randomBytes(32);
     const encoded = encodeMegaBase64Url(value);
