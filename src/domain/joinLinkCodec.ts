@@ -179,8 +179,8 @@ function parseJoinLinkAttachment(value: unknown, index: number): JoinLinkAttachm
 }
 
 function parseJoinLinkSpace(value: unknown): JoinLinkSpace {
-  const object = asObject(value, 'Join link space is invalid');
-  const mode = parseNonEmptyString(object.mode, 'Join link space mode is invalid');
+  const object = asObject(value, 'Join link hub is invalid');
+  const mode = parseNonEmptyString(object.mode, 'Join link hub mode is invalid');
   if (mode === 'seed') {
     return {
       mode: 'seed',
@@ -208,7 +208,7 @@ function parseJoinLinkSpace(value: unknown): JoinLinkSpace {
       value: value.toLowerCase(),
     };
   }
-  throw new Error(`Unsupported join link space mode: ${mode}`);
+  throw new Error(`Unsupported join link hub mode: ${mode}`);
 }
 
 function parseOptionalTransportEndpointBootstrap(

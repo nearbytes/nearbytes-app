@@ -1192,7 +1192,7 @@
     if (entry.provider === 'mega') {
       const reconnectIssue = megaProviderReconnectIssue();
       if (reconnectIssue) {
-        return 'MEGA rejected the saved session. Disconnect and reconnect this account to resume incoming-share mirroring.';
+        return 'MEGA rejected the saved session. Nearbytes will reuse the saved MEGA sign-in when it can; if recovery changed the credentials, reconnect this account to resume incoming-share mirroring.';
       }
     }
     const pending = pendingSessionForProvider(entry.provider);
@@ -1532,8 +1532,8 @@
         diagnostic: {
           id: 'mega-provider-reconnect',
           title: 'MEGA account needs recovery',
-          summary: 'Incoming MEGA shares are unavailable until the MEGA account is recovered and reconnected.',
-          detail: account.detail?.trim() || 'Recover the MEGA account on mega.io, then reconnect it here.',
+          summary: 'Incoming MEGA shares are unavailable until the MEGA account is recovered.',
+          detail: account.detail?.trim() || 'Recover the MEGA account on mega.io. Nearbytes will retry the saved sign-in automatically, and you only need to reconnect if the credentials changed.',
           facts: [
             account.email?.trim() ? { label: 'Account', value: account.email.trim() } : null,
             { label: 'Last change', value: formatMegaRuntimeLogTimestamp(account.updatedAt) },
@@ -1974,7 +1974,7 @@
         syncing: false,
         progressPercent: null,
         progressLabel: 'Recovery required',
-        selfRepairCopy: 'Nearbytes retried the saved MEGA session and it is no longer valid. If MEGA locked the account, unlock it and complete the password change on mega.io, then reconnect this account here.',
+        selfRepairCopy: 'Nearbytes retried the saved MEGA session. If MEGA locked the account, unlock it and complete the password change on mega.io. Nearbytes will retry the saved sign-in automatically; reconnect this account only if the credentials changed.',
       };
     }
 
@@ -5746,16 +5746,16 @@
 
           {#if dialogMegaReconnectIssue}
             <p class="panel-error">
-              Nearbytes cannot discover incoming MEGA shares until this MEGA account is recovered. If MEGA locked it, finish the unlock and password-change flow on mega.io first, then disconnect it here and reconnect it with the new credentials.
+              Nearbytes cannot discover incoming MEGA shares until this MEGA account is recovered. If MEGA locked it, finish the unlock and password-change flow on mega.io first. Nearbytes will retry the saved sign-in automatically; reconnect here only if the credentials changed.
             </p>
           {/if}
 
           {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
             <p class="panel-error">
               {#if dialogDisconnectImpact.inaccessibleSpaces.length > 0}
-                Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'space')} not accessible until you reconnect it.
+                Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'hub')} not accessible until you reconnect it.
               {:else}
-                Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'location')} from {countLabel(dialogDisconnectImpact.spaces, 'space')}, but those spaces will stay accessible.
+                Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'location')} from {countLabel(dialogDisconnectImpact.spaces, 'hub')}, but those hubs will stay accessible.
               {/if}
             </p>
           {/if}

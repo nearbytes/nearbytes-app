@@ -52,7 +52,7 @@ export async function importMountedSourceReferenceBundle(
 ): Promise<ReferenceImportResponse> {
   const sourceSecret = resolveMountedSourceSecret(bundle.s);
   if (!sourceSecret) {
-    throw new Error('Source space is not mounted or unlocked locally.');
+    throw new Error('Source hub is not mounted or unlocked locally.');
   }
   return importSourceReferences(auth, bundle, sourceSecret);
 }

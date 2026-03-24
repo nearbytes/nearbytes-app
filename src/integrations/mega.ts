@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, webcrypto } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, webcrypto } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import {
@@ -62,6 +62,7 @@ interface MegaAccountSecret {
   readonly mfaCode?: string;
   readonly sid: string;
   readonly masterKey: string;
+  readonly encryptedPrivateKey?: string;
   readonly userHandle: string;
   readonly accountVersion: number;
   readonly accountSalt?: string;
@@ -73,6 +74,8 @@ interface MegaSession {
   readonly mfaCode?: string;
   readonly sid: string;
   readonly masterKey: Buffer;
+  readonly encryptedPrivateKey?: string;
+  readonly privateKey?: MegaPrivateKey;
   readonly userHandle: string;
   readonly accountVersion: number;
   readonly accountSalt?: string;
@@ -109,6 +112,10 @@ interface DecryptedMegaTree {
   readonly root: DecryptedMegaNode;
   readonly nodesByHandle: ReadonlyMap<string, DecryptedMegaNode>;
   readonly childrenByParent: ReadonlyMap<string, readonly DecryptedMegaNode[]>;
+}
+
+interface MegaKeyManagerState {
+  readonly shareKeys: ReadonlyMap<string, Buffer>;
 }
 
 interface MegaApiError extends Error {
@@ -205,6 +212,7 @@ export class MegaTransportAdapter {
       mfaCode,
       sid: session.sid,
       masterKey: encodeMegaBase64Url(session.masterKey),
+      encryptedPrivateKey: session.encryptedPrivateKey,
       userHandle: session.userHandle,
       accountVersion: session.accountVersion,
       accountSalt: session.accountSalt,
@@ -257,8 +265,9 @@ export class MegaTransportAdapter {
     const resolved = await this.withRecoveredAccountSession(account, async (session) => ({
       session,
       snapshot: await this.fetchNodesSnapshot(session),
+      keyManager: await this.fetchKeyManagerState(session),
     }));
-    const tree = decryptMegaTree(resolved.snapshot, resolved.session);
+    const tree = decryptMegaTree(resolved.snapshot, resolved.session, undefined, resolved.keyManager.shareKeys);
     const offers: IncomingManagedShareOffer[] = [];
 
     for (const node of tree.nodesByHandle.values()) {
@@ -510,7 +519,7 @@ export class MegaTransportAdapter {
       return session;
     } catch (error) {
       if (isMegaSessionInvalid(error)) {
-        throw createMegaReconnectRequiredError(error);
+        return this.refreshAccountSession(account, secret, error);
       }
       throw error;
     }
@@ -525,6 +534,68 @@ export class MegaTransportAdapter {
       return await operation(session);
     } catch (error) {
       if (isMegaSessionInvalid(error)) {
+        const refreshed = await this.refreshAccountSession(account, undefined, error);
+        return operation(refreshed);
+      }
+      throw error;
+    }
+  }
+
+  private async refreshAccountSession(
+    account: ProviderAccount,
+    cachedSecret?: MegaAccountSecret,
+    cause?: unknown
+  ): Promise<MegaSession> {
+    const secret = cachedSecret ?? (await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id)));
+    if (!secret || !isStoredMegaAccountSecret(secret)) {
+      if (secret && !isStoredMegaAccountSecret(secret)) {
+        await this.runtime.secretStore.delete(secretKey(account.id));
+      }
+      this.runtime.logger.warn('MEGA session refresh skipped because the stored account secret is missing or malformed.', {
+        accountId: account.id,
+        hadSecret: Boolean(secret),
+      });
+      throw createMegaReconnectRequiredError(cause);
+    }
+
+    const email = (typeof secret.email === 'string' && secret.email.trim() !== '' ? secret.email : account.email ?? '').trim();
+    const password = typeof secret.password === 'string' ? secret.password : '';
+    if (!email || !password) {
+      this.runtime.logger.warn('MEGA session refresh skipped because reusable credentials are not available.', {
+        accountId: account.id,
+        hasEmail: email.length > 0,
+        hasPassword: password.length > 0,
+        hasMfaCode: typeof secret.mfaCode === 'string' && secret.mfaCode.trim().length > 0,
+      });
+      throw createMegaReconnectRequiredError(cause);
+    }
+
+    try {
+      this.runtime.logger.log('Refreshing MEGA session with the stored account credentials.', {
+        accountId: account.id,
+        hasMfaCode: typeof secret.mfaCode === 'string' && secret.mfaCode.trim().length > 0,
+      });
+      const refreshed = await this.loginWithPassword(email, password, secret.mfaCode);
+      await this.runtime.secretStore.set(secretKey(account.id), {
+        ...secret,
+        email,
+        sid: refreshed.sid,
+        masterKey: encodeMegaBase64Url(refreshed.masterKey),
+        encryptedPrivateKey: refreshed.encryptedPrivateKey ?? secret.encryptedPrivateKey,
+        userHandle: refreshed.userHandle,
+        accountVersion: refreshed.accountVersion,
+        accountSalt: refreshed.accountSalt,
+      } satisfies MegaAccountSecret);
+      this.runtime.logger.log('MEGA session refresh succeeded.', {
+        accountId: account.id,
+      });
+      return refreshed;
+    } catch (error) {
+      this.runtime.logger.warn('MEGA session refresh failed.', {
+        accountId: account.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      if (isMegaSessionInvalid(error) || isMegaSessionInvalid(cause)) {
         throw createMegaReconnectRequiredError(error);
       }
       throw error;
@@ -560,18 +631,38 @@ export class MegaTransportAdapter {
       ...(mfaCode ? { mfa: mfaCode } : {}),
     });
 
+    this.runtime.logger.log('MEGA login response received.', {
+      email: email.trim(),
+      hasTsid: typeof response.tsid === 'string' && response.tsid.trim().length > 0,
+      hasCsid: typeof response.csid === 'string' && response.csid.trim().length > 0,
+      hasPrivk: typeof response.privk === 'string' && response.privk.trim().length > 0,
+      hasSek: typeof response.sek === 'string' && response.sek.trim().length > 0,
+    });
+
     const encryptedMasterKey = decodeMegaBase64Url(assertString(response.k, 'MEGA login response is missing the encrypted master key.'));
     const masterKey = decryptAesEcb(encryptedMasterKey, passwordKey);
     const userHandle = assertString(response.u, 'MEGA login response is missing the user handle.');
 
+    const encryptedPrivateKey = typeof response.privk === 'string' && response.privk.trim() ? response.privk.trim() : undefined;
+    const privateKey = encryptedPrivateKey
+      ? decodeMegaPrivateKey(decryptMegaPrivateKey(decodeMegaBase64Url(encryptedPrivateKey), masterKey))
+      : undefined;
+
     let sid = typeof response.tsid === 'string' ? response.tsid.trim() : '';
     if (sid) {
+      this.runtime.logger.log('Using temporary MEGA session identifier from login response.', {
+        email: email.trim(),
+      });
       validateTemporarySessionId(sid, masterKey);
     } else {
-      const encryptedPrivateKey = decodeMegaBase64Url(assertString(response.privk, 'MEGA login response is missing the private key.'));
-      const privateKey = decodeMegaPrivateKey(decryptMegaPrivateKey(encryptedPrivateKey, masterKey));
+      if (!privateKey) {
+        throw new Error('MEGA login response is missing the private key.');
+      }
       const sidCiphertext = decodeMegaBase64Url(assertString(response.csid, 'MEGA login response is missing the session id.'));
       sid = decryptSessionIdFromCsid(sidCiphertext, privateKey, userHandle);
+      this.runtime.logger.log('Using RSA-backed MEGA session identifier from login response.', {
+        email: email.trim(),
+      });
     }
 
     return {
@@ -580,6 +671,8 @@ export class MegaTransportAdapter {
       mfaCode,
       sid,
       masterKey,
+      encryptedPrivateKey,
+      privateKey,
       userHandle,
       accountVersion: version,
       accountSalt,
@@ -601,10 +694,27 @@ export class MegaTransportAdapter {
       session
     );
     const snapshot = parseMegaFetchNodesSnapshot(response);
+    const keyManager = await this.fetchKeyManagerState(session);
     return {
       snapshot,
-      tree: decryptMegaTree(snapshot, session, rootHandle),
+      tree: decryptMegaTree(snapshot, session, rootHandle, keyManager.shareKeys),
     };
+  }
+
+  private async fetchKeyManagerState(session: MegaSession): Promise<MegaKeyManagerState> {
+    try {
+      const response = await this.apiCommand<Record<string, unknown>>(
+        { a: 'uga', u: session.userHandle, ua: '^!keys', v: 1 },
+        session
+      );
+      return parseMegaKeyManagerState(response, session.masterKey);
+    } catch (error) {
+      this.runtime.logger.warn('MEGA key-manager state fetch failed.', {
+        email: session.email,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return { shareKeys: new Map() };
+    }
   }
 
   private async fetchActionPackets(session: MegaSession, scsn: string): Promise<MegaActionPacketBatch> {
@@ -688,12 +798,20 @@ function createOpaqueId(prefix: string): string {
 }
 
 function deserializeSession(secret: MegaAccountSecret, fallbackEmail = ''): MegaSession {
+  const masterKey = decodeMegaBase64Url(secret.masterKey);
+  const encryptedPrivateKey = typeof secret.encryptedPrivateKey === 'string' && secret.encryptedPrivateKey.trim() !== ''
+    ? secret.encryptedPrivateKey.trim()
+    : undefined;
   return {
     email: typeof secret.email === 'string' && secret.email.trim() !== '' ? secret.email : fallbackEmail,
     password: secret.password,
     mfaCode: secret.mfaCode,
     sid: secret.sid,
-    masterKey: decodeMegaBase64Url(secret.masterKey),
+    masterKey,
+    encryptedPrivateKey,
+    privateKey: encryptedPrivateKey
+      ? decodeMegaPrivateKey(decryptMegaPrivateKey(decodeMegaBase64Url(encryptedPrivateKey), masterKey))
+      : undefined,
     userHandle: secret.userHandle,
     accountVersion: secret.accountVersion,
     accountSalt: secret.accountSalt,
@@ -790,7 +908,8 @@ function normalizeMegaIncomingOwnerLabel(ownerEmail: string | undefined, ownerHa
 function decryptMegaTree(
   snapshot: MegaFetchNodesSnapshot,
   session: MegaSession,
-  expectedRootHandle?: string
+  expectedRootHandle?: string,
+  extraShareKeys: ReadonlyMap<string, Buffer> = new Map()
 ): DecryptedMegaTree {
   const usersByHandle = new Map<string, MegaUserRecord>();
   for (const user of snapshot.users) {
@@ -801,13 +920,31 @@ function decryptMegaTree(
   }
 
   const shareKeys = new Map<string, Buffer>();
+  for (const [handle, shareKey] of extraShareKeys.entries()) {
+    shareKeys.set(handle, shareKey);
+  }
   for (const node of snapshot.nodes) {
     if (typeof node.h !== 'string' || typeof (node as Record<string, unknown>).su !== 'string' || typeof (node as Record<string, unknown>).sk !== 'string') {
       continue;
     }
-    const shareKey = decryptShareKey(String((node as Record<string, unknown>).sk), session.masterKey);
+    const shareKey = decryptShareKey(String((node as Record<string, unknown>).sk), session);
     if (shareKey) {
       shareKeys.set(node.h, shareKey);
+    }
+  }
+  for (const shareRecord of snapshot.outgoingShares) {
+    const handle = typeof shareRecord.t === 'string'
+      ? shareRecord.t.trim()
+      : typeof shareRecord.h === 'string'
+        ? shareRecord.h.trim()
+        : '';
+    const encodedShareKey = typeof shareRecord.sk === 'string' ? shareRecord.sk.trim() : '';
+    if (!handle || !encodedShareKey || shareKeys.has(handle)) {
+      continue;
+    }
+    const shareKey = decryptShareKey(encodedShareKey, session);
+    if (shareKey) {
+      shareKeys.set(handle, shareKey);
     }
   }
 
@@ -840,6 +977,68 @@ function decryptMegaTree(
     nodesByHandle,
     childrenByParent,
   };
+}
+
+function parseMegaKeyManagerState(response: Record<string, unknown>, masterKey: Buffer): MegaKeyManagerState {
+  const encodedValue = typeof response.av === 'string' ? response.av.trim() : '';
+  if (!encodedValue) {
+    return { shareKeys: new Map() };
+  }
+
+  const container = decodeMegaBase64Url(encodedValue);
+  const plaintext = decryptMegaKeyManagerContainer(container, masterKey);
+  return {
+    shareKeys: parseMegaKeyManagerShareKeys(plaintext),
+  };
+}
+
+function decryptMegaKeyManagerContainer(container: Buffer, masterKey: Buffer): Buffer {
+  if (container.length <= 14 || container[0] !== 20) {
+    throw new Error('MEGA key-manager container is invalid.');
+  }
+
+  const ivLength = 12;
+  const authTagLength = 16;
+  if (container.length <= 2 + ivLength + authTagLength) {
+    throw new Error('MEGA key-manager container is truncated.');
+  }
+
+  const derivedKey = deriveMegaKeyManagerKey(masterKey);
+  const iv = container.subarray(2, 2 + ivLength);
+  const encrypted = container.subarray(2 + ivLength);
+  const ciphertext = encrypted.subarray(0, encrypted.length - authTagLength);
+  const authTag = encrypted.subarray(encrypted.length - authTagLength);
+  const decipher = createDecipheriv('aes-128-gcm', derivedKey, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+function deriveMegaKeyManagerKey(masterKey: Buffer): Buffer {
+  return Buffer.from(hkdfSync('sha256', masterKey, Buffer.alloc(0), Buffer.from([1]), 16));
+}
+
+function parseMegaKeyManagerShareKeys(value: Buffer): Map<string, Buffer> {
+  const result = new Map<string, Buffer>();
+  let offset = 0;
+  while (offset + 4 <= value.length) {
+    const tag = value[offset] ?? 0;
+    const length = ((value[offset + 1] ?? 0) << 16) | ((value[offset + 2] ?? 0) << 8) | (value[offset + 3] ?? 0);
+    offset += 4;
+    if (offset + length > value.length) {
+      throw new Error('MEGA key-manager record is malformed.');
+    }
+    const payload = value.subarray(offset, offset + length);
+    offset += length;
+    if (tag !== 48) {
+      continue;
+    }
+    for (let entryOffset = 0; entryOffset + 23 <= payload.length; entryOffset += 23) {
+      const handle = encodeMegaBase64Url(payload.subarray(entryOffset, entryOffset + 6));
+      const shareKey = payload.subarray(entryOffset + 6, entryOffset + 22);
+      result.set(handle, Buffer.from(shareKey));
+    }
+  }
+  return result;
 }
 
 function resolveTreeRootHandle(nodesByHandle: ReadonlyMap<string, DecryptedMegaNode>): string {
@@ -926,12 +1125,24 @@ function deriveShareHandle(encodedKey: string | undefined, shareKeys: ReadonlyMa
   return undefined;
 }
 
-function decryptShareKey(value: string, masterKey: Buffer): Buffer | null {
-  const encrypted = decodeMegaBase64Url(value.trim());
+function decryptShareKey(value: string, session: MegaSession): Buffer | null {
+  const payload = value.trim();
+  if (!payload) {
+    return null;
+  }
+  if (payload.length > 43) {
+    if (!session.privateKey) {
+      return null;
+    }
+    const cleartext = rsaRawDecryptMpi(decodeMegaBase64Url(payload), session.privateKey);
+    return cleartext.length >= 16 ? cleartext.subarray(0, 16) : null;
+  }
+
+  const encrypted = decodeMegaBase64Url(payload);
   if (encrypted.length !== 16) {
     return null;
   }
-  return decryptAesEcb(encrypted, masterKey);
+  return decryptAesEcb(encrypted, session.masterKey);
 }
 
 function decryptNodeKey(
@@ -973,6 +1184,15 @@ function decryptNodeKey(
   }
 
   const encrypted = decodeMegaBase64Url(payload);
+  if (payload.length > 43) {
+    if (!session.privateKey) {
+      return null;
+    }
+    const cleartext = rsaRawDecryptMpi(encrypted, session.privateKey);
+    const keyLength = Number(node.t ?? 0) !== 0 ? 16 : 32;
+    return cleartext.length >= keyLength ? cleartext.subarray(0, keyLength) : null;
+  }
+
   const key = keyOwner === session.userHandle ? session.masterKey : shareKeys.get(keyOwner);
   if (!key || encrypted.length === 0 || encrypted.length % 16 !== 0) {
     return null;
@@ -1224,7 +1444,10 @@ function decryptMegaPrivateKey(encryptedPrivateKey: Buffer, masterKey: Buffer): 
 
 function decryptSessionIdFromCsid(ciphertext: Buffer, privateKey: MegaPrivateKey, userHandle: string): string {
   const cleartext = rsaRawDecryptMpi(ciphertext, privateKey);
-  const sid = cleartext.subarray(0, 43).toString('latin1');
+  if (cleartext.length !== 255) {
+    throw new Error(`MEGA session id length is invalid: ${cleartext.length}.`);
+  }
+  const sid = encodeMegaBase64Url(cleartext.subarray(0, 43));
   const embeddedUserHandle = cleartext.subarray(16, 27).toString('latin1');
   if (embeddedUserHandle !== userHandle) {
     throw new Error('MEGA session id user-handle validation failed.');

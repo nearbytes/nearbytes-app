@@ -453,10 +453,11 @@ export class ManagedShareService {
             };
           }
           try {
+            const discoveryTimeoutMs = normalizeProvider(account.provider) === 'mega' ? 12_000 : 1_500;
             const discovered = await this.withSoftTimeout(
               adapter.listIncomingShares(account),
               [] satisfies IncomingManagedShareOffer[],
-              1_500,
+              discoveryTimeoutMs,
               `Incoming managed share discovery timed out for ${account.provider}:${account.id}`
             );
             return {
@@ -1756,8 +1757,8 @@ export class ManagedShareService {
         detail: share
           ? input.volumeId
             ? usedCredentialBootstrap
-              ? 'Connected the provider from this link and attached the managed share to this space.'
-              : 'Attached the managed share to this space.'
+              ? 'Connected the provider from this link and attached the managed share to this hub.'
+              : 'Attached the managed share to this hub.'
             : 'Matched an existing managed share.'
           : 'A connected provider is available for this route.',
       });
