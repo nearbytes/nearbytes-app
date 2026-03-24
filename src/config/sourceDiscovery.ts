@@ -205,7 +205,9 @@ export async function ensureNearbytesMarkers(sources: readonly SourceConfigEntry
 
   for (const source of sources) {
     const markerFile = path.join(source.path, NEARBYTES_MARKER_FILE);
-    if (source.writable === false) {
+    const shouldSkipReadonlyRoot =
+      source.writable === false && source.integration?.kind !== 'provider-managed';
+    if (shouldSkipReadonlyRoot) {
       results.push({
         rootId: source.id,
         path: source.path,

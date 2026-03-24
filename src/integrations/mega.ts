@@ -51,6 +51,7 @@ const MEGA_RECONNECT_REQUIRED_MESSAGE =
   'Reconnect MEGA to resume syncing. If MEGA asked you to unlock the account or change the password first, complete that on mega.io and then reconnect here.';
 const ZERO_IV = Buffer.alloc(16, 0);
 const READONLY_BADGES = ['Readonly'];
+const MEGA_SYNC_TIMEOUT_CODE = 'MEGA_SYNC_TIMEOUT';
 
 interface MegaAdapterOptions {
   readonly fetchImpl?: typeof fetch;
@@ -422,7 +423,14 @@ export class MegaTransportAdapter {
       return existing;
     }
 
-    const task = this.syncShare(share, account).finally(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, this.runtime.mega.syncTimeoutMs);
+    timeout.unref?.();
+
+    const task = this.syncShare(share, account, controller.signal).finally(() => {
+      clearTimeout(timeout);
       if (this.syncTasks.get(share.id) === task) {
         this.syncTasks.delete(share.id);
       }
@@ -431,7 +439,7 @@ export class MegaTransportAdapter {
     await task;
   }
 
-  private async syncShare(share: ManagedShare, account: ProviderAccount): Promise<void> {
+  private async syncShare(share: ManagedShare, account: ProviderAccount, signal?: AbortSignal): Promise<void> {
     this.syncStates.set(share.id, {
       status: 'syncing',
       detail: 'Refreshing the MEGA readonly mirror.',
@@ -439,7 +447,7 @@ export class MegaTransportAdapter {
     });
 
     try {
-      const session = await this.getAccountSession(account);
+      const session = await this.getAccountSession(account, signal);
       const descriptor = await this.resolveIncomingShareDescriptor(account, share.remoteDescriptor);
       const rootHandle = getStringDescriptor(descriptor, 'rootHandle') ?? getStringDescriptor(descriptor, 'shareHandle');
       if (!rootHandle) {
@@ -450,7 +458,7 @@ export class MegaTransportAdapter {
       const incrementalScsn = manifest.rootHandle === rootHandle ? manifest.lastScsn?.trim() : undefined;
       if (incrementalScsn) {
         try {
-          const actionBatch = await this.fetchActionPackets(session, incrementalScsn);
+          const actionBatch = await this.fetchActionPackets(session, incrementalScsn, signal);
           if (actionBatch.scsn) {
             await this.updateManifestCursor(share.id, actionBatch.scsn);
           }
@@ -472,11 +480,11 @@ export class MegaTransportAdapter {
 
       const resolved = await this.withRecoveredAccountSession(account, async (activeSession) => ({
         session: activeSession,
-        fetched: await this.fetchPartialTreeWithSnapshot(activeSession, rootHandle),
+        fetched: await this.fetchPartialTreeWithSnapshot(activeSession, rootHandle, signal),
       }));
       const refreshResult = await this.refreshWorker.refresh(
         share.localPath,
-        new MegaReadonlyRemoteAdapter(this.fetchImpl, this.apiClient, resolved.session, resolved.fetched.tree),
+        new MegaReadonlyRemoteAdapter(this.fetchImpl, this.apiClient, resolved.session, resolved.fetched.tree, signal),
         { entries: manifest.entries }
       );
       await this.runtime.secretStore.set(mirrorManifestKey(share.id), {
@@ -492,18 +500,24 @@ export class MegaTransportAdapter {
         lastSyncAt: this.runtime.now(),
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const needsAuth = /session|auth|credential|login|MEGA API error -15/i.test(message);
+      const failure = describeMegaSyncFailure(error, share.localPath, signal);
+      const needsAuth = /session|auth|credential|login|MEGA API error -15/i.test(failure.detail);
       this.syncStates.set(share.id, {
         status: needsAuth ? 'needs-auth' : 'attention',
-        detail: message,
+        detail: failure.detail,
         badges: [needsAuth ? 'Reconnect' : 'Repair'],
+        diagnostic: {
+          code: failure.code,
+          title: failure.summary,
+          summary: failure.summary,
+          detail: failure.detail,
+        },
       });
       throw error;
     }
   }
 
-  private async getAccountSession(account: ProviderAccount): Promise<MegaSession> {
+  private async getAccountSession(account: ProviderAccount, signal?: AbortSignal): Promise<MegaSession> {
     const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
     if (!secret) {
       throw new Error(MEGA_RECONNECT_REQUIRED_MESSAGE);
@@ -515,7 +529,7 @@ export class MegaTransportAdapter {
 
     const session = deserializeSession(secret, account.email ?? account.label);
     try {
-      await this.fetchCurrentUser(session);
+      await this.fetchCurrentUser(session, signal);
       return session;
     } catch (error) {
       if (isMegaSessionInvalid(error)) {
@@ -679,33 +693,39 @@ export class MegaTransportAdapter {
     };
   }
 
-  private async fetchCurrentUser(session: MegaSession): Promise<Record<string, unknown>> {
-    return this.apiCommand<Record<string, unknown>>({ a: 'ug' }, session);
+  private async fetchCurrentUser(session: MegaSession, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.apiCommand<Record<string, unknown>>({ a: 'ug' }, session, signal);
   }
 
-  private async fetchNodesSnapshot(session: MegaSession): Promise<MegaFetchNodesSnapshot> {
-    const response = await this.apiCommand<Record<string, unknown>>(buildMegaFetchNodesCommand(), session);
+  private async fetchNodesSnapshot(session: MegaSession, signal?: AbortSignal): Promise<MegaFetchNodesSnapshot> {
+    const response = await this.apiCommand<Record<string, unknown>>(buildMegaFetchNodesCommand(), session, signal);
     return parseMegaFetchNodesSnapshot(response);
   }
 
-  private async fetchPartialTreeWithSnapshot(session: MegaSession, rootHandle: string): Promise<MegaFetchedTree> {
+  private async fetchPartialTreeWithSnapshot(
+    session: MegaSession,
+    rootHandle: string,
+    signal?: AbortSignal
+  ): Promise<MegaFetchedTree> {
     const response = await this.apiCommand<Record<string, unknown>>(
       buildMegaFetchNodesCommand({ partialRoot: rootHandle }),
-      session
+      session,
+      signal
     );
     const snapshot = parseMegaFetchNodesSnapshot(response);
-    const keyManager = await this.fetchKeyManagerState(session);
+    const keyManager = await this.fetchKeyManagerState(session, signal);
     return {
       snapshot,
       tree: decryptMegaTree(snapshot, session, rootHandle, keyManager.shareKeys),
     };
   }
 
-  private async fetchKeyManagerState(session: MegaSession): Promise<MegaKeyManagerState> {
+  private async fetchKeyManagerState(session: MegaSession, signal?: AbortSignal): Promise<MegaKeyManagerState> {
     try {
       const response = await this.apiCommand<Record<string, unknown>>(
         { a: 'uga', u: session.userHandle, ua: '^!keys', v: 1 },
-        session
+        session,
+        signal
       );
       return parseMegaKeyManagerState(response, session.masterKey);
     } catch (error) {
@@ -717,12 +737,13 @@ export class MegaTransportAdapter {
     }
   }
 
-  private async fetchActionPackets(session: MegaSession, scsn: string): Promise<MegaActionPacketBatch> {
+  private async fetchActionPackets(session: MegaSession, scsn: string, signal?: AbortSignal): Promise<MegaActionPacketBatch> {
     const response = await this.fetchImpl(buildMegaScChannelUrl({ scsn, sessionId: session.sid }), {
       method: 'GET',
       headers: {
         accept: 'application/json',
       },
+      signal,
     });
     if (!response.ok) {
       throw new Error(`MEGA action-packet request failed with HTTP ${response.status}.`);
@@ -767,10 +788,12 @@ export class MegaTransportAdapter {
 
   private async apiCommand<T = Record<string, unknown>>(
     command: Record<string, unknown>,
-    session?: MegaSession
+    session?: MegaSession,
+    signal?: AbortSignal
   ): Promise<T> {
     const response = await this.apiClient.requestSingle<T | number>(command, {
       sessionId: session?.sid,
+      signal,
     });
     if (typeof response === 'number') {
       const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
@@ -1241,20 +1264,24 @@ async function downloadAuthenticatedMegaFileContent(
   session: MegaSession,
   handle: string,
   nodeKey: Buffer,
-  expectedSize: number
+  expectedSize?: number,
+  signal?: AbortSignal
 ): Promise<Uint8Array> {
-  const response = await apiClient.requestSingle<Record<string, unknown> | number>({ a: 'g', g: 1, n: handle }, { sessionId: session.sid });
+  const response = await apiClient.requestSingle<Record<string, unknown> | number>(
+    { a: 'g', g: 1, n: handle },
+    { sessionId: session.sid, signal }
+  );
   if (typeof response === 'number') {
     throw new Error(`MEGA API error ${response}.`);
   }
   const url = assertString(response.g, `MEGA did not return a download URL for ${handle}.`);
-  const download = await fetchImpl(url);
+  const download = await fetchImpl(url, { signal });
   if (!download.ok) {
     throw new Error(`MEGA file download failed with HTTP ${download.status}.`);
   }
   const ciphertext = Buffer.from(await download.arrayBuffer());
   const plaintext = decryptFileCiphertext(ciphertext, nodeKey);
-  if (expectedSize > 0 && plaintext.length !== expectedSize) {
+  if (typeof expectedSize === 'number' && expectedSize > 0 && plaintext.length !== expectedSize) {
     throw new Error(`MEGA file download size mismatch for handle ${handle}.`);
   }
   return plaintext;
@@ -1387,7 +1414,8 @@ class MegaReadonlyRemoteAdapter implements ProviderRefreshRemoteAdapter {
     private readonly fetchImpl: typeof fetch,
     private readonly apiClient: MegaApiClient,
     private readonly session: MegaSession,
-    private readonly tree: DecryptedMegaTree
+    private readonly tree: DecryptedMegaTree,
+    private readonly signal?: AbortSignal
   ) {}
 
   async list(): Promise<readonly ProviderRefreshRemoteEntry[]> {
@@ -1418,9 +1446,52 @@ class MegaReadonlyRemoteAdapter implements ProviderRefreshRemoteAdapter {
       this.session,
       node.handle,
       node.nodeKey,
-      node.size
+      node.size,
+      this.signal
     );
   }
+}
+
+function describeMegaSyncFailure(
+  error: unknown,
+  localPath: string,
+  signal?: AbortSignal
+): { code: string; summary: string; detail: string } {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const aborted = Boolean(signal?.aborted) || (error instanceof Error && error.name === 'AbortError');
+
+  if (aborted) {
+    return {
+      code: MEGA_SYNC_TIMEOUT_CODE,
+      summary: 'MEGA mirror timed out',
+      detail:
+        'Nearbytes waited too long for MEGA while refreshing this mirror. It stopped this sync attempt and will retry automatically. Open the runtime logs if this keeps happening.',
+    };
+  }
+
+  if (/ENOENT: no such file or directory/i.test(rawMessage) && rawMessage.includes(localPath)) {
+    return {
+      code: 'MEGA_LOCAL_MIRROR_CHANGED',
+      summary: 'MEGA mirror changed mid-refresh',
+      detail:
+        'Nearbytes saw the local MEGA mirror change while files were being refreshed. It will retry automatically. Open the runtime logs if the same location keeps failing.',
+    };
+  }
+
+  if (/fetch failed/i.test(rawMessage)) {
+    return {
+      code: 'MEGA_FETCH_FAILED',
+      summary: 'MEGA refresh request failed',
+      detail:
+        'Nearbytes could not complete a MEGA network request while refreshing this mirror. Check connectivity and inspect the runtime logs for the failing request.',
+    };
+  }
+
+  return {
+    code: 'MEGA_SYNC_FAILED',
+    summary: 'MEGA mirror refresh failed',
+    detail: rawMessage,
+  };
 }
 
 function validateTemporarySessionId(sessionId: string, masterKey: Buffer): void {

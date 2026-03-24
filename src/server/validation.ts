@@ -251,6 +251,21 @@ const uiDebugActionSchema = z.discriminatedUnion('type', [
     selector: z.string().trim().min(1).optional(),
     maxLength: z.number().int().positive().max(2_000_000).optional(),
   }),
+  z.object({
+    type: z.literal('filesystem.readTextFile'),
+    path: z.string().trim().min(1, 'Filesystem path is required'),
+    maxBytes: z.number().int().positive().max(2_000_000).optional(),
+  }),
+  z.object({
+    type: z.literal('mega.syncUntilFileReadable'),
+    shareId: z.string().trim().min(1).optional(),
+    ownerEmail: z.string().trim().email('Owner email must be valid').optional(),
+    shareName: z.string().trim().min(1).optional(),
+    relativePath: z.string().trim().min(1).optional(),
+    timeoutMs: z.number().int().positive().max(300_000).optional(),
+    pollIntervalMs: z.number().int().positive().max(10_000).optional(),
+    maxBytes: z.number().int().positive().max(2_000_000).optional(),
+  }),
 ]);
 
 export const runUiDebugActionsBodySchema = z.object({

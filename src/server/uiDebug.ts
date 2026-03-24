@@ -53,6 +53,21 @@ export type UiDebugAction =
       type: 'snapshotDom';
       selector?: string;
       maxLength?: number;
+    }
+  | {
+      type: 'filesystem.readTextFile';
+      path: string;
+      maxBytes?: number;
+    }
+  | {
+      type: 'mega.syncUntilFileReadable';
+      shareId?: string;
+      ownerEmail?: string;
+      shareName?: string;
+      relativePath?: string;
+      timeoutMs?: number;
+      pollIntervalMs?: number;
+      maxBytes?: number;
     };
 
 export interface UiDebugRunRequest {

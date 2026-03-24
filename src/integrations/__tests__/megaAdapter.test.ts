@@ -415,6 +415,110 @@ describe('MegaTransportAdapter', () => {
     await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toBeNull();
   });
 
+  it('times out a hung readonly refresh and surfaces a readable repair state', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-timeout', {
+      email: 'reader@example.com',
+      password: 'correct horse battery staple',
+      sid: 'timeout-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'usrhandle01',
+      accountVersion: 2,
+    });
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      logger: {
+        log() {},
+        warn() {},
+      },
+      mega: {
+        syncTimeoutMs: 25,
+        syncIntervalMs: 60_000,
+      },
+    });
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      }
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: 'usrhandle01', email: 'reader@example.com' }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'uga':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              'abort',
+              () => {
+                const error = new Error('This operation was aborted.');
+                error.name = 'AbortError';
+                reject(error);
+              },
+              { once: true }
+            );
+          });
+        default:
+          throw new Error(`Unexpected MEGA command: ${String(payload.a)}`);
+      }
+    }) as typeof fetch;
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-timeout-'));
+    tempDirs.push(localPath);
+
+    const share: ManagedShare = {
+      id: 'share-mega-timeout-1',
+      provider: 'mega',
+      accountId: 'acct-mega-timeout',
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-timeout-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: 'hNtERb6T',
+        shareHandle: 'hNtERb6T',
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-timeout',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).rejects.toMatchObject({ name: 'AbortError' });
+
+    await expect(adapter.getState(share, account)).resolves.toMatchObject({
+      status: 'attention',
+      badges: ['Repair'],
+      diagnostic: expect.objectContaining({
+        code: 'MEGA_SYNC_TIMEOUT',
+        summary: 'MEGA mirror timed out',
+      }),
+    });
+  });
+
   it('reuses the saved MEGA login to refresh an invalid session and still lists incoming shares', async () => {
     const email = 'reader@example.com';
     const password = 'correct horse battery staple';

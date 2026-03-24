@@ -80,6 +80,7 @@ const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEEP_LINK_PROTOCOL = 'nearbytes';
 const DESKTOP_RUNTIME_LOG_TAIL_BYTES = 64 * 1024;
 const DESKTOP_FORCE_EXIT_TIMEOUT_MS = 5_000;
+const UI_DEBUG_FILE_READ_MAX_BYTES = 128 * 1024;
 const execFileAsync = promisify(execFile);
 
 
@@ -213,7 +214,7 @@ async function startDesktop(): Promise<void> {
           },
         },
       },
-      uiDebugExecutor: isDesktopDebugEnabled() ? createDesktopUiDebugExecutor() : undefined,
+      uiDebugExecutor: isDev || isDesktopDebugEnabled() ? createDesktopUiDebugExecutor() : undefined,
     });
   } catch (error) {
     state.commandExecutor = null;
@@ -287,7 +288,20 @@ function createDesktopUiDebugExecutor(): UiDebugExecutor {
     async getCapabilities() {
       return {
         available: true,
-        actions: ['inspect', 'quitApp', 'navigate', 'waitFor', 'click', 'type', 'pressKey', 'read', 'screenshot', 'snapshotDom'],
+        actions: [
+          'inspect',
+          'quitApp',
+          'navigate',
+          'waitFor',
+          'click',
+          'type',
+          'pressKey',
+          'read',
+          'screenshot',
+          'snapshotDom',
+          'filesystem.readTextFile',
+          'mega.syncUntilFileReadable',
+        ],
         screenshot: true,
         title: requireDesktopWindow().getTitle(),
         url: requireDesktopWindow().webContents.getURL(),
@@ -349,9 +363,158 @@ async function runDesktopUiDebugAction(action: UiDebugAction): Promise<Record<st
       return captureDesktopScreenshot(action);
     case 'snapshotDom':
       return captureDesktopDomSnapshot(action);
+    case 'filesystem.readTextFile':
+      return readDesktopTextFile(action.path, action.maxBytes);
+    case 'mega.syncUntilFileReadable':
+      return syncMegaUntilFileReadable(action);
     default:
       throw new Error(`Unsupported UI debug action: ${(action as { type?: string }).type ?? 'unknown'}`);
   }
+}
+
+function requireDesktopRuntimeConfig(): DesktopRuntimeConfig {
+  if (!state.config) {
+    throw new Error('Nearbytes desktop runtime config is not available.');
+  }
+  return state.config;
+}
+
+async function desktopApiJson<T = unknown>(apiPath: string, init: RequestInit = {}): Promise<T> {
+  const config = requireDesktopRuntimeConfig();
+  const headers = new Headers(init.headers ?? {});
+  headers.set('x-nearbytes-desktop-token', config.desktopToken);
+  const method = init.method?.toUpperCase() ?? 'GET';
+  if (init.body && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  const response = await fetch(new URL(apiPath, config.apiBaseUrl), {
+    ...init,
+    method,
+    headers,
+  });
+  const text = await response.text();
+  const payload = text.trim().length > 0 ? JSON.parse(text) as T | { error?: { message?: string } } : ({} as T);
+  if (!response.ok) {
+    const message = typeof payload === 'object' && payload && 'error' in payload && payload.error?.message
+      ? payload.error.message
+      : `Desktop API request failed with HTTP ${response.status}.`;
+    throw new Error(message);
+  }
+  return payload as T;
+}
+
+async function readDesktopTextFile(rawPath: string, maxBytes = UI_DEBUG_FILE_READ_MAX_BYTES): Promise<Record<string, unknown>> {
+  const resolvedPath = path.resolve(rawPath.trim());
+  const limit = clampUiDebugFileLength(maxBytes);
+  const content = await fs.readFile(resolvedPath, 'utf8');
+  return {
+    path: resolvedPath,
+    bytes: Buffer.byteLength(content, 'utf8'),
+    content: content.length > limit ? content.slice(0, limit) : content,
+    truncated: content.length > limit,
+  };
+}
+
+function clampUiDebugFileLength(maxBytes: number | undefined): number {
+  if (!Number.isFinite(maxBytes) || maxBytes === undefined) {
+    return UI_DEBUG_FILE_READ_MAX_BYTES;
+  }
+  return Math.max(256, Math.min(2_000_000, Math.floor(maxBytes)));
+}
+
+async function syncMegaUntilFileReadable(
+  action: Extract<UiDebugAction, { type: 'mega.syncUntilFileReadable' }>
+): Promise<Record<string, unknown>> {
+  const timeoutMs = Math.max(1_000, Math.min(300_000, Math.floor(action.timeoutMs ?? 60_000)));
+  const pollIntervalMs = Math.max(100, Math.min(10_000, Math.floor(action.pollIntervalMs ?? 1_000)));
+  const relativePath = action.relativePath?.trim() || 'Nearbytes.html';
+  const startedAt = Date.now();
+  let attempts = 0;
+  let lastState: Record<string, unknown> | null = null;
+  let lastError = '';
+
+  while (Date.now() - startedAt < timeoutMs) {
+    attempts += 1;
+    const sharesResponse = await desktopApiJson<{ shares: Array<Record<string, unknown>> }>('/integrations/shares');
+    const targetShare = selectMegaDebugShare(sharesResponse.shares, action);
+    if (!targetShare) {
+      throw new Error('No matching MEGA recipient share is currently available for debug sync.');
+    }
+
+    const share = targetShare.share as { id: string; localPath: string };
+    const stateResponse = await desktopApiJson<{ summary: Record<string, unknown> }>(
+      `/integrations/shares/${encodeURIComponent(share.id)}/state`
+    );
+    const summary = stateResponse.summary as {
+      share: { id: string; localPath: string };
+      state: { status?: string; detail?: string };
+    };
+    lastState = summary as unknown as Record<string, unknown>;
+
+    const filePath = path.join(summary.share.localPath, relativePath);
+    try {
+      const fileResult = await readDesktopTextFile(filePath, action.maxBytes);
+      return {
+        attempts,
+        waitedMs: Date.now() - startedAt,
+        shareId: summary.share.id,
+        localPath: summary.share.localPath,
+        relativePath,
+        state: summary.state,
+        ...fileResult,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    const status = summary.state.status?.trim().toLowerCase() ?? '';
+    if (status === 'needs-auth') {
+      throw new Error(summary.state.detail?.trim() || 'MEGA requires sign-in before the mirror can refresh.');
+    }
+
+    await delay(pollIntervalMs);
+  }
+
+  const stateLabel =
+    lastState && typeof lastState === 'object' && 'state' in lastState
+      ? JSON.stringify((lastState as { state?: unknown }).state)
+      : 'unknown';
+  throw new Error(
+    `Timed out after ${Math.ceil(timeoutMs / 1000)}s waiting for MEGA mirror file ${relativePath}. Last state: ${stateLabel}. Last read error: ${lastError}`
+  );
+}
+
+function selectMegaDebugShare(
+  shares: Array<Record<string, unknown>>,
+  action: Extract<UiDebugAction, { type: 'mega.syncUntilFileReadable' }>
+): Record<string, unknown> | null {
+  const requestedShareId = action.shareId?.trim();
+  const requestedOwnerEmail = action.ownerEmail?.trim().toLowerCase();
+  const requestedShareName = action.shareName?.trim().toLowerCase();
+  const entries = shares.filter((entry) => {
+    const share = entry.share as { id?: string; provider?: string; role?: string; label?: string; remoteDescriptor?: Record<string, unknown> } | undefined;
+    if (!share || share.provider !== 'mega' || share.role !== 'recipient') {
+      return false;
+    }
+    if (requestedShareId && share.id !== requestedShareId) {
+      return false;
+    }
+    const remoteDescriptor = share.remoteDescriptor ?? {};
+    const ownerEmail = typeof remoteDescriptor.ownerEmail === 'string' ? remoteDescriptor.ownerEmail.trim().toLowerCase() : '';
+    const shareName = typeof remoteDescriptor.shareName === 'string'
+      ? remoteDescriptor.shareName.trim().toLowerCase()
+      : typeof share.label === 'string'
+        ? share.label.trim().toLowerCase()
+        : '';
+    if (requestedOwnerEmail && ownerEmail !== requestedOwnerEmail) {
+      return false;
+    }
+    if (requestedShareName && shareName !== requestedShareName) {
+      return false;
+    }
+    return true;
+  });
+  return entries[0] ?? null;
 }
 
 async function quitDesktopApp(): Promise<Record<string, unknown>> {

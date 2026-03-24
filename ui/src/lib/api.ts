@@ -884,7 +884,20 @@ interface NearbytesDesktopBridge {
 
 export interface UiDebugCapabilities {
   available: boolean;
-  actions: Array<'inspect' | 'quitApp' | 'navigate' | 'waitFor' | 'click' | 'type' | 'pressKey' | 'read' | 'screenshot' | 'snapshotDom'>;
+  actions: Array<
+    'inspect'
+    | 'quitApp'
+    | 'navigate'
+    | 'waitFor'
+    | 'click'
+    | 'type'
+    | 'pressKey'
+    | 'read'
+    | 'screenshot'
+    | 'snapshotDom'
+    | 'filesystem.readTextFile'
+    | 'mega.syncUntilFileReadable'
+  >;
   screenshot: boolean;
   title?: string;
   url?: string;
@@ -900,7 +913,18 @@ export type UiDebugAction =
   | { type: 'pressKey'; key: string; alt?: boolean; control?: boolean; meta?: boolean; shift?: boolean }
   | { type: 'read'; selector: string; field?: 'text' | 'html' | 'outerHtml' | 'value'; attribute?: string }
   | { type: 'screenshot'; path?: string; selector?: string; fullPage?: boolean }
-  | { type: 'snapshotDom'; selector?: string; maxLength?: number };
+  | { type: 'snapshotDom'; selector?: string; maxLength?: number }
+  | { type: 'filesystem.readTextFile'; path: string; maxBytes?: number }
+  | {
+      type: 'mega.syncUntilFileReadable';
+      shareId?: string;
+      ownerEmail?: string;
+      shareName?: string;
+      relativePath?: string;
+      timeoutMs?: number;
+      pollIntervalMs?: number;
+      maxBytes?: number;
+    };
 
 export interface UiDebugRunResponse {
   ok: boolean;
