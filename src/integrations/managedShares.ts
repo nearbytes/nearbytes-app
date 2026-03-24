@@ -1326,10 +1326,22 @@ export class ManagedShareService {
   }
 
   private buildSyncBootstrapState(share: ManagedShare): TransportState {
+    const providerLabel = defaultProviderLabel(normalizeProvider(share.provider));
+    const detail = `Nearbytes is preparing this ${providerLabel} shared location locally. This is a transient startup state while the local mirror is being checked and started.`;
     return {
       status: 'syncing',
-      detail: `Nearbytes is preparing this ${defaultProviderLabel(normalizeProvider(share.provider))} shared location locally.`,
-      badges: ['Syncing'],
+      detail,
+      badges: ['Preparing'],
+      diagnostic: {
+        code: 'MIRROR_PREPARING',
+        title: `${providerLabel} mirror is preparing`,
+        summary: 'Preparing local mirror',
+        detail,
+        facts:
+          normalizeProvider(share.provider) === 'mega'
+            ? [{ label: 'Inspect', value: 'Open the MEGA runtime logs from the provider card to watch startup progress.' }]
+            : [{ label: 'Inspect', value: 'Refresh this panel to check whether the mirror finished starting.' }],
+      },
     };
   }
 

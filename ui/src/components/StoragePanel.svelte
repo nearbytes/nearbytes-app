@@ -272,6 +272,7 @@
   let runtimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let backfillPollTimer: ReturnType<typeof setTimeout> | null = null;
   let megaRuntimeLogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let panelRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let startupLoadRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let runtimeRefreshInFlight = false;
   let backfillPollIdleRounds = 0;
@@ -314,6 +315,10 @@
     if (megaRuntimeLogRefreshTimer) {
       clearTimeout(megaRuntimeLogRefreshTimer);
       megaRuntimeLogRefreshTimer = null;
+    }
+    if (panelRefreshTimer) {
+      clearTimeout(panelRefreshTimer);
+      panelRefreshTimer = null;
     }
     if (startupLoadRetryTimer) {
       clearTimeout(startupLoadRetryTimer);
@@ -818,9 +823,11 @@
       return compactShareStatusDetail(summary.state.detail) ?? 'Needs repair';
     }
     if (primaryBadge === 'Reconnect') return 'Sign-in needed';
+    if (primaryBadge === 'Preparing') return 'Preparing';
     if (primaryBadge === 'Syncing') return 'Syncing';
     if (primaryBadge === 'Share') return 'Connected';
     if (summary.state.status === 'ready') return 'Connected';
+    if (summary.state.status === 'syncing' && /prepar/i.test(summary.state.detail)) return 'Preparing';
     if (summary.state.status === 'syncing') return 'Syncing';
     if (summary.state.status === 'idle') return 'Available';
     if (summary.state.status === 'needs-auth') return 'Sign-in needed';
@@ -1505,6 +1512,15 @@
     return line.length > 140 ? `${line.slice(0, 137).trimEnd()}...` : line;
   }
 
+  function openMegaRuntimeLogsInspector(): void {
+    megaRuntimeLogsVisible = true;
+    void loadMegaRuntimeLogs();
+  }
+
+  function isPreparingManagedShare(summary: ManagedShareSummary): boolean {
+    return summary.state.badges.some((badge) => badge.trim() === 'Preparing') || /prepar/i.test(summary.state.detail);
+  }
+
   function megaRuntimeReconnectLine(detail: string): string | null {
     const lines = detail
       .split(/\r?\n/u)
@@ -1958,6 +1974,7 @@
     const total = shares.length;
     const ready = shares.filter((summary) => summary.state.status === 'ready').length;
     const syncing = shares.filter((summary) => summary.state.status === 'syncing').length;
+    const preparing = shares.filter((summary) => summary.state.status === 'syncing' && isPreparingManagedShare(summary)).length;
     const checking = shares.filter((summary) => summary.state.status === 'idle').length;
     const issue = megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
     const reconnectIssue = megaProviderReconnectIssue();
@@ -2020,15 +2037,19 @@
 
     if (inProgress) {
       return {
-        headline: 'Syncing with MEGA',
+        headline: preparing > 0 ? 'Preparing MEGA locations' : 'Syncing with MEGA',
         detail: loading
           ? 'Checking account session and mirror health.'
-          : 'Fetching updates for shared locations.',
+          : preparing > 0
+            ? 'Nearbytes is still creating or checking the local mirror. Open runtime logs to inspect startup progress.'
+            : 'Fetching updates for shared locations.',
         tone: 'muted',
         syncing: true,
         progressPercent,
-        progressLabel: total > 0 ? `${ready}/${total} locations ready` : 'Preparing locations',
-        selfRepairCopy: 'Nearbytes auto-repairs common MEGA transport failures during sync.',
+        progressLabel: total > 0 ? `${ready}/${total} locations ready` : preparing > 0 ? 'Preparing local mirror' : 'Refreshing locations',
+        selfRepairCopy: preparing > 0
+          ? 'This state should clear automatically. If it stays here, inspect the MEGA runtime logs for the exact startup step or failure.'
+          : 'Nearbytes auto-repairs common MEGA transport failures during sync.',
       };
     }
 
@@ -2217,6 +2238,9 @@
       return 'Nearbytes cannot use this location until the provider account is connected again.';
     }
     if (summary.state.status === 'syncing') {
+      if (isPreparingManagedShare(summary)) {
+        return `${summary.state.detail} If it does not clear soon, inspect the MEGA runtime logs from the provider card.`;
+      }
       return summary.state.detail || 'Nearbytes is still getting this location ready.';
     }
     if (summary.attachments.length === 0) {
@@ -4225,6 +4249,16 @@
         ? `${offer.label} is attached and ready in this hub.`
         : `${offer.label} is connected as a read-only mirror. Nearbytes can read from it now.`;
       await loadPanel();
+      if (response.summary.state.status === 'syncing') {
+        successMessage = `${offer.label} is attached. Nearbytes is preparing the local mirror now.`;
+        if (panelRefreshTimer) {
+          clearTimeout(panelRefreshTimer);
+        }
+        panelRefreshTimer = setTimeout(() => {
+          panelRefreshTimer = null;
+          void loadPanel({ background: true });
+        }, 900);
+      }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to accept incoming storage location';
     } finally {
@@ -4590,6 +4624,15 @@
               </div>
 
               <div class="button-row storage-card-actions-right">
+                {#if summary.share.provider === 'mega' && (summary.state.status === 'syncing' || summary.state.status === 'attention' || summary.state.status === 'needs-auth')}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => openMegaRuntimeLogsInspector()}
+                  >
+                    <span>Inspect logs</span>
+                  </button>
+                {/if}
                 {#if view.onOpen}
                   <button
                     type="button"

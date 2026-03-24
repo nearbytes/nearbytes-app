@@ -473,6 +473,13 @@ describe('ManagedShareService', () => {
     expect(result.kind).toBe('summary');
     if (result.kind === 'summary') {
       expect(result.summary.share.id).toBe('share-mega-1');
+      expect(result.summary.state.status).toBe('syncing');
+      expect(result.summary.state.badges).toEqual(['Preparing']);
+      expect(result.summary.state.detail).toContain('transient startup state');
+      expect(result.summary.state.diagnostic).toMatchObject({
+        code: 'MIRROR_PREPARING',
+        summary: 'Preparing local mirror',
+      });
     }
     expect(adapter.ensureSyncCalls).toBe(1);
   });
