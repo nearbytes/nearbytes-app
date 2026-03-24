@@ -35,7 +35,7 @@
     type TimelineEvent,
     type VolumeChatState,
   } from './lib/api.js';
-  import { getCachedFiles, setCachedFiles } from './lib/cache.js';
+  import { clearCache, getCachedFiles, setCachedFiles } from './lib/cache.js';
   import {
     buildIdentitySecret,
     createConfiguredIdentity,
@@ -269,6 +269,7 @@
     getClipboardImageStatus?: () => Promise<{ hasImage: boolean }>;
     readClipboardImage?: () => Promise<DesktopRemoteFile | null>;
     loadUiState?: () => Promise<PersistedUiState>;
+    wipeStoredConfig?: (options?: { deleteLocalData?: boolean }) => Promise<{ relaunching: true }>;
     getUpdaterState?: () => Promise<DesktopUpdaterState | null>;
     installDownloadedUpdate?: () => Promise<boolean>;
     openUpdateReleasePage?: () => Promise<boolean>;
@@ -1236,6 +1237,58 @@
     await bridge.openUpdateReleasePage();
   }
 
+  function openResetDialog(): void {
+    if (!getDesktopBridge()?.wipeStoredConfig) {
+      return;
+    }
+    resetDialogDeleteLocalData = false;
+    resetDialogBusy = false;
+    resetDialogError = '';
+    showResetDialog = true;
+  }
+
+  function closeResetDialog(): void {
+    if (resetDialogBusy) {
+      return;
+    }
+    showResetDialog = false;
+    resetDialogDeleteLocalData = false;
+    resetDialogError = '';
+  }
+
+  async function clearRendererStoredState(): Promise<void> {
+    try {
+      localStorage.clear();
+    } catch {
+      // ignore
+    }
+    try {
+      sessionStorage.clear();
+    } catch {
+      // ignore
+    }
+    await clearCache().catch(() => undefined);
+  }
+
+  async function confirmStoredConfigReset(): Promise<void> {
+    const bridge = getDesktopBridge();
+    if (!bridge || typeof bridge.wipeStoredConfig !== 'function') {
+      resetDialogError = 'Desktop reset controls are unavailable in this build.';
+      return;
+    }
+    resetDialogBusy = true;
+    resetDialogError = '';
+    try {
+      await bridge.wipeStoredConfig({
+        deleteLocalData: resetDialogDeleteLocalData,
+      });
+      await clearRendererStoredState();
+    } catch (error) {
+      resetDialogError = error instanceof Error ? error.message : 'Failed to wipe stored configuration';
+      resetDialogBusy = false;
+    }
+  }
+
   function base64ToBytes(value: string): Uint8Array {
     const binary = atob(value);
     const bytes = new Uint8Array(binary.length);
@@ -1431,6 +1484,10 @@
   let themeRegistry = $state<NearbytesThemeRegistry>(defaultThemeRegistry());
   let themeSettings = $state<NearbytesThemeSettings>(defaultThemeSettings());
   let showThemeDialog = $state(false);
+  let showResetDialog = $state(false);
+  let resetDialogDeleteLocalData = $state(false);
+  let resetDialogBusy = $state(false);
+  let resetDialogError = $state('');
   let themeDialogSection = $state<ThemeDialogSection>('preset');
   let themeDialogBusy = $state(false);
   let themeDialogFeedback = $state<{ tone: 'success' | 'warning'; message: string } | null>(null);
@@ -5732,6 +5789,11 @@
       showThemeDialog = false;
       return;
     }
+    if (showResetDialog) {
+      e.preventDefault();
+      closeResetDialog();
+      return;
+    }
     if (showJoinVolumeDialog) {
       e.preventDefault();
       closeJoinVolumeDialog();
@@ -5963,6 +6025,21 @@
                 >
                   <UserRound class="button-icon" size={14} strokeWidth={2} />
                 </button>
+                {#if getDesktopBridge()?.wipeStoredConfig}
+                  <button
+                    type="button"
+                    class="header-tool-btn"
+                    class:danger={showResetDialog}
+                    aria-label="Reset app state"
+                    title="Reset app state"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      openResetDialog();
+                    }}
+                  >
+                    <Trash2 class="button-icon" size={14} strokeWidth={2} />
+                  </button>
+                {/if}
                 <button
                   type="button"
                   class="header-tool-btn"
@@ -7889,6 +7966,68 @@
     </div>
   {/if}
 
+  {#if showResetDialog}
+    <div
+      class="theme-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Reset Nearbytes data"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeResetDialog();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeResetDialog();
+        }
+      }}
+    >
+      <div class="theme-dialog panel-surface reset-dialog" role="document" tabindex="-1">
+        <div class="theme-dialog-header">
+          <div class="theme-dialog-head-meta">
+            <p class="theme-dialog-eyebrow danger">Reset</p>
+            <p class="theme-dialog-title">Clear stored configuration</p>
+            <p class="theme-dialog-subtitle">This helper disconnects all known providers, clears saved Nearbytes configuration and local app state, and then restarts the desktop app.</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close reset dialog" onclick={closeResetDialog} disabled={resetDialogBusy}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div class="theme-dialog-body">
+          <section class="theme-dialog-section reset-dialog-section">
+            <div class="reset-warning-card">
+              <p class="reset-warning-title">Safe start-from-scratch helper</p>
+              <p class="theme-dialog-note">Nearbytes will first disconnect every known provider account so the reset does not leave provider-backed storage attached. Local blocks and channels stay in place unless you opt into deleting them below.</p>
+            </div>
+
+            <label class="reset-checkbox-row">
+              <input type="checkbox" bind:checked={resetDialogDeleteLocalData} disabled={resetDialogBusy} />
+              <span>
+                <strong>Also delete local blocks and channels</strong>
+                <small>Use this only if you want a completely empty local store. Nearbytes disconnects providers first, then removes local blocks and channels as a separate final step.</small>
+              </span>
+            </label>
+
+            {#if resetDialogError}
+              <p class="theme-dialog-status error">{resetDialogError}</p>
+            {/if}
+
+            <div class="theme-dialog-actions">
+              <button type="button" class="status-link-btn secondary" onclick={closeResetDialog} disabled={resetDialogBusy}>Cancel</button>
+              <button type="button" class="status-link-btn danger" onclick={confirmStoredConfigReset} disabled={resetDialogBusy}>
+                {resetDialogBusy ? 'Resetting...' : 'Reset and restart'}
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if isDevThemeStudio && showThemeDialog}
     <div
       class="theme-dialog-backdrop"
@@ -9386,6 +9525,12 @@
     color: var(--nb-btn-hover-color, rgba(224, 242, 254, 0.96));
   }
 
+  .header-tool-btn.danger:hover {
+    background: color-mix(in srgb, var(--nb-danger, #dc2626) 16%, var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.88)) 84%);
+    border-color: color-mix(in srgb, var(--nb-danger, #dc2626) 44%, var(--nb-btn-hover-border, rgba(96, 165, 250, 0.28)) 56%);
+    color: color-mix(in srgb, var(--nb-danger, #dc2626) 82%, var(--nb-btn-hover-color, rgba(224, 242, 254, 0.96)) 18%);
+  }
+
   .mount-add-btn:focus-visible,
   .header-tool-btn:focus-visible {
     outline: none;
@@ -9397,6 +9542,11 @@
     background: var(--nb-btn-active-bg, linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94)));
     color: var(--nb-btn-active-color, rgba(236, 254, 255, 0.98));
     box-shadow: var(--nb-btn-active-shadow, 0 10px 24px rgba(6, 182, 212, 0.16));
+  }
+
+  .header-tool-btn.danger {
+    border-color: color-mix(in srgb, var(--nb-danger, #dc2626) 28%, var(--nb-btn-border, rgba(56, 189, 248, 0.14)) 72%);
+    color: color-mix(in srgb, var(--nb-danger, #dc2626) 72%, var(--nb-btn-color, rgba(191, 219, 254, 0.78)) 28%);
   }
 
   :global(.button-icon) {
@@ -9504,9 +9654,20 @@
     background: var(--nb-btn-bg, rgba(8, 17, 31, 0.8));
   }
 
+  .status-link-btn.danger {
+    border-color: color-mix(in srgb, var(--nb-danger, #dc2626) 36%, transparent);
+    background: color-mix(in srgb, var(--nb-danger, #dc2626) 76%, rgba(127, 29, 29, 0.92) 24%);
+    color: #fff7f7;
+  }
+
   .status-link-btn:hover:not(:disabled) {
     background: var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.96));
     border-color: var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34));
+  }
+
+  .status-link-btn.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--nb-danger, #dc2626) 84%, rgba(127, 29, 29, 0.94) 16%);
+    border-color: color-mix(in srgb, var(--nb-danger, #dc2626) 48%, transparent);
   }
 
   .status-link-btn:disabled {
@@ -10417,6 +10578,10 @@
     color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.8));
   }
 
+  .theme-dialog-eyebrow.danger {
+    color: color-mix(in srgb, var(--nb-danger, #dc2626) 76%, rgba(110, 110, 115, 0.24));
+  }
+
   .mount-dialog-title,
   .theme-dialog-title,
   .share-dialog-title,
@@ -10524,11 +10689,66 @@
     padding: 1rem 1.3rem 1.3rem;
   }
 
+  .reset-dialog {
+    width: min(560px, 94vw);
+  }
+
   .mount-dialog-section,
   .share-dialog-section,
   .join-dialog-section,
   .theme-dialog-section {
     display: grid;
+  }
+
+  .reset-dialog-section {
+    gap: 1rem;
+  }
+
+  .reset-warning-card {
+    display: grid;
+    gap: 0.45rem;
+    padding: 1rem 1.05rem;
+    border-radius: 18px;
+    border: 1px solid color-mix(in srgb, var(--nb-danger, #dc2626) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)) 80%);
+    background: color-mix(in srgb, var(--nb-danger, #dc2626) 6%, var(--nb-panel-bg, #ffffff) 94%);
+  }
+
+  .reset-warning-title {
+    margin: 0;
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+  }
+
+  .reset-checkbox-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.85rem;
+    align-items: flex-start;
+    padding: 0.95rem 1rem;
+    border-radius: 18px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(255, 248, 244, 0.9));
+  }
+
+  .reset-checkbox-row input {
+    margin-top: 0.18rem;
+  }
+
+  .reset-checkbox-row span {
+    display: grid;
+    gap: 0.32rem;
+  }
+
+  .reset-checkbox-row strong {
+    font-size: 0.94rem;
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+  }
+
+  .reset-checkbox-row small {
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
   }
 
   .mount-dialog-section {

@@ -8,10 +8,13 @@ import { promisify } from 'util';
 import { createDesktopCommandExecutor, type DisposableCommandExecutor } from './desktopCommandExecutor.js';
 import { clearPublishedDesktopSession, publishDesktopSession } from './session.js';
 import { generateDesktopApiToken } from './security.js';
-import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
+import { clearDesktopUiState, readDesktopUiState, writeDesktopUiState } from './uiState.js';
 import { debugTriggerUpdateInstall, getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
 import { APP_CONFIG } from '../src/config/appConfig.js';
+import { resolveDefaultRootsConfigPath } from '../src/config/roots.js';
 import type { CommandExecutor } from '../src/integrations/runtime.js';
+import { resolveIntegrationStatePath } from '../src/integrations/store.js';
+import { getDefaultStorageDir } from '../src/storagePath.js';
 import type { UiDebugAction, UiDebugActionResult, UiDebugExecutor, UiDebugRunRequest, UiDebugRunResponse } from '../src/server/uiDebug.js';
 
 interface RuntimeHandle {
@@ -46,6 +49,18 @@ interface DesktopRuntimeConfig {
   readonly apiBaseUrl: string;
   readonly desktopToken: string;
   readonly isDesktop: true;
+}
+
+interface ProviderAccountsResponse {
+  readonly accounts: Array<{
+    readonly id: string;
+    readonly provider: string;
+    readonly state: string;
+  }>;
+}
+
+interface WipeStoredConfigOptions {
+  readonly deleteLocalData?: boolean;
 }
 
 interface RendererProfileState {
@@ -401,6 +416,99 @@ async function desktopApiJson<T = unknown>(apiPath: string, init: RequestInit = 
     throw new Error(message);
   }
   return payload as T;
+}
+
+async function wipeStoredConfig(options: WipeStoredConfigOptions = {}): Promise<{ relaunching: true }> {
+  const deleteLocalData = options.deleteLocalData === true;
+  await disconnectAllProviderAccounts();
+
+  if (state.window && !state.window.isDestroyed()) {
+    await state.window.webContents.session.clearStorageData({
+      storages: ['localstorage', 'indexdb', 'serviceworkers', 'cachestorage'],
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`Failed to clear desktop browser storage: ${message}`);
+    });
+  }
+
+  const rootsConfigPath = resolveDefaultRootsConfigPath();
+  const integrationStatePath = resolveIntegrationStatePath();
+  const desktopSecretStorePath = path.join(app.getPath('userData'), 'integration-secrets.json');
+  const storageRoots = deleteLocalData ? await resolveLocalDataRootsForWipe(rootsConfigPath) : [];
+
+  await clearPublishedDesktopSession();
+  await clearDesktopUiState();
+  await removePathIfPresent(rootsConfigPath);
+  await removePathIfPresent(integrationStatePath);
+  await removePathIfPresent(desktopSecretStorePath);
+
+  if (deleteLocalData) {
+    for (const storageRoot of storageRoots) {
+      await removePathIfPresent(path.join(storageRoot, 'blocks'));
+      await removePathIfPresent(path.join(storageRoot, 'channels'));
+    }
+  }
+
+  setTimeout(() => {
+    app.relaunch();
+    void requestAppQuit('wipe-stored-config');
+  }, 0);
+
+  return { relaunching: true };
+}
+
+async function disconnectAllProviderAccounts(): Promise<void> {
+  const accountsResponse = await desktopApiJson<ProviderAccountsResponse>('/integrations/accounts?fast=1');
+  for (const account of accountsResponse.accounts) {
+    const encodedAccountId = encodeURIComponent(account.id);
+    try {
+      await desktopApiJson(`/integrations/accounts/${encodedAccountId}?mode=reset`, {
+        method: 'DELETE',
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Nearbytes could not safely disconnect provider ${account.provider.toUpperCase()} before starting from scratch: ${detail}`);
+    }
+  }
+
+  const remainingAccounts = await desktopApiJson<ProviderAccountsResponse>('/integrations/accounts?fast=1');
+  if (remainingAccounts.accounts.length > 0) {
+    throw new Error('Nearbytes could not disconnect all provider accounts before reset.');
+  }
+}
+
+async function resolveLocalDataRootsForWipe(rootsConfigPath: string): Promise<string[]> {
+  const candidates = new Set<string>([path.resolve(getDefaultStorageDir())]);
+  try {
+    const raw = await fs.readFile(rootsConfigPath, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      sources?: Array<{
+        provider?: unknown;
+        path?: unknown;
+      }>;
+    };
+    for (const source of parsed.sources ?? []) {
+      if (source?.provider !== 'local' || typeof source.path !== 'string' || source.path.trim() === '') {
+        continue;
+      }
+      candidates.add(path.resolve(source.path));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      console.warn('Failed to inspect roots config before deleting local data:', error);
+    }
+  }
+  return Array.from(candidates.values());
+}
+
+async function removePathIfPresent(targetPath: string): Promise<void> {
+  try {
+    await fs.rm(targetPath, { recursive: true, force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
 }
 
 async function readDesktopTextFile(rawPath: string, maxBytes = UI_DEBUG_FILE_READ_MAX_BYTES): Promise<Record<string, unknown>> {
@@ -958,6 +1066,12 @@ function registerIpc(): void {
       rawState as { volumeMounts?: unknown; sourceDiscovery?: unknown; dismissedRootSuggestions?: unknown; theme?: unknown }
     );
     return true;
+  });
+  ipcMain.handle('nearbytes-desktop:wipe-stored-config', async (_event, rawOptions: unknown) => {
+    if (rawOptions !== undefined && (!rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions))) {
+      throw new Error('Stored config wipe options must be an object.');
+    }
+    return wipeStoredConfig((rawOptions ?? {}) as WipeStoredConfigOptions);
   });
   ipcMain.handle('nearbytes-desktop:save-theme-registry', async (_event, rawRegistry: unknown) => {
     if (!isDev) {

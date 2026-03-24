@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('nearbytesDesktop', {
   getClipboardImageStatus: () => ipcRenderer.invoke('nearbytes-desktop:get-clipboard-image-status'),
   readClipboardImage: () => ipcRenderer.invoke('nearbytes-desktop:read-clipboard-image'),
   loadUiState: () => ipcRenderer.invoke('nearbytes-desktop:load-ui-state'),
+  wipeStoredConfig: (options) => ipcRenderer.invoke('nearbytes-desktop:wipe-stored-config', options),
   getUpdaterState: () => ipcRenderer.invoke('nearbytes-desktop:get-updater-state'),
   installDownloadedUpdate: () => ipcRenderer.invoke('nearbytes-desktop:install-downloaded-update'),
   debugTriggerUpdateInstall: () => ipcRenderer.invoke('nearbytes-desktop:debug-trigger-update-install'),

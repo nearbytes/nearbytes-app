@@ -327,7 +327,7 @@ export class ManagedShareService {
     };
   }
 
-  async disconnectAccount(accountId: string): Promise<void> {
+  async disconnectAccount(accountId: string, options: { skipManagedShareMigration?: boolean } = {}): Promise<void> {
     const state = await this.loadState();
     const account = state.accounts.find((entry) => entry.id === accountId);
     if (!account) {
@@ -337,7 +337,9 @@ export class ManagedShareService {
     let workingState = state;
     const ownedShares = workingState.managedShares.filter((share) => share.accountId === accountId);
     for (const share of ownedShares) {
-      const retired = await this.retireManagedShareEntry(share, workingState, account);
+      const retired = await this.retireManagedShareEntry(share, workingState, account, {
+        skipMigration: options.skipManagedShareMigration === true,
+      });
       workingState = retired.state;
     }
     await this.adapters.get(normalizeProvider(account.provider))?.disconnect?.(account).catch(() => {
@@ -1137,12 +1139,17 @@ export class ManagedShareService {
   private async retireManagedShareEntry(
     share: ManagedShare,
     stateSnapshot: IntegrationStateSnapshot,
-    account: ProviderAccount | null
+    account: ProviderAccount | null,
+    options: {
+      readonly skipMigration?: boolean;
+    } = {}
   ): Promise<{
     state: IntegrationStateSnapshot;
     migrated: boolean;
   }> {
-    const moved = await this.moveManagedShareSourceIntoPrimaryLocalRoot(share);
+    const moved = options.skipMigration
+      ? { migrated: false }
+      : await this.moveManagedShareSourceIntoPrimaryLocalRoot(share);
     const adapter = this.adapters.get(normalizeProvider(share.provider));
     await adapter?.detachManagedShare?.(share, account).catch(() => {
       // Ignore cleanup failures when removing local managed-share state.

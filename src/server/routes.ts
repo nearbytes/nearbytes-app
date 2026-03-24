@@ -352,7 +352,9 @@ export function createRoutes(deps: RouteDependencies): Router {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
     const { id } = parseWithSchema(providerAccountIdParamSchema, req.params);
-    await service.disconnectAccount(id);
+    await service.disconnectAccount(id, {
+      skipManagedShareMigration: req.query.mode === 'reset',
+    });
     res.json({ ok: true });
   }));
 
