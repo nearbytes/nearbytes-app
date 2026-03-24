@@ -139,6 +139,15 @@ export class ManagedShareService {
 
   async warmupBackgroundActivity(reason = 'startup'): Promise<void> {
     const state = await this.loadState();
+    this.runtime.logger.log('Managed share provider warmup started.', {
+      reason,
+      accounts: state.accounts.map((account) => ({
+        id: account.id,
+        provider: normalizeProvider(account.provider),
+        state: account.state,
+      })),
+      managedShareCount: state.managedShares.length,
+    });
     this.scheduleManagedShareSyncs(state);
     if (this.readMaintenanceMode === 'background') {
       this.requestBackgroundMaintenance(reason, state);
@@ -865,13 +874,30 @@ export class ManagedShareService {
     for (const account of state.accounts.filter((entry) => this.isOperationalAccount(entry))) {
       const provider = normalizeProvider(account.provider);
       const adapter = this.adapters.get(provider);
+      this.runtime.logger.log('Managed share provider reconciliation started.', {
+        provider,
+        accountId: account.id,
+        accountState: account.state,
+      });
       if (adapter?.listManagedShareMirrors) {
         const reconciled = await this.reconcileProviderManagedShares(provider, account, state);
         state = reconciled.state;
+        this.runtime.logger.log('Managed share mirror inventory reconciled.', {
+          provider,
+          accountId: account.id,
+          adoptedShares: reconciled.adoptedShares,
+          retiredShares: reconciled.retiredShares,
+          migratedShares: reconciled.migratedShares,
+        });
       }
       if (adapter?.listIncomingShares) {
         const reconciledIncoming = await this.reconcileIncomingManagedShares(provider, account, state);
         state = reconciledIncoming.state;
+        this.runtime.logger.log('Managed share incoming inventory reconciled.', {
+          provider,
+          accountId: account.id,
+          adoptedShares: reconciledIncoming.adoptedShares,
+        });
       }
     }
     return state;
@@ -896,6 +922,11 @@ export class ManagedShareService {
     let offers: IncomingManagedShareOffer[] = [];
     try {
       offers = await adapter.listIncomingShares(account);
+      this.runtime.logger.log('Managed share incoming inventory discovered.', {
+        provider,
+        accountId: account.id,
+        offerCount: offers.length,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.runtime.logger.warn(`Incoming managed share reconciliation failed for ${provider}:${account.id}: ${message}`);
@@ -959,6 +990,11 @@ export class ManagedShareService {
     let mirrors: ManagedShareMirrorEntry[] = [];
     try {
       mirrors = dedupeManagedShareMirrors(await adapter.listManagedShareMirrors(account), provider);
+      this.runtime.logger.log('Managed share mirror inventory discovered.', {
+        provider,
+        accountId: account.id,
+        mirrorCount: mirrors.length,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.runtime.logger.warn(`Managed share inventory discovery failed for ${provider}:${account.id}: ${message}`);
@@ -1338,9 +1374,24 @@ export class ManagedShareService {
     if (!account || !this.isOperationalAccount(account) || this.syncBootstrapTasks.has(share.id)) {
       return;
     }
+    this.runtime.logger.log('Managed share sync bootstrap scheduled.', {
+      provider: normalizeProvider(share.provider),
+      shareId: share.id,
+      accountId: account.id,
+      role: share.role,
+      localPath: share.localPath,
+      remoteDescriptor: share.remoteDescriptor,
+    });
     const task = this.adapters
       .get(normalizeProvider(share.provider))
       ?.ensureSync?.(share, account)
+      .then(() => {
+        this.runtime.logger.log('Managed share sync bootstrap completed.', {
+          provider: normalizeProvider(share.provider),
+          shareId: share.id,
+          accountId: account.id,
+        });
+      })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
@@ -1498,6 +1549,7 @@ export class ManagedShareService {
     let reason = initialReason;
     while (this.maintenanceRequested) {
       this.maintenanceRequested = false;
+      this.runtime.logger.log('Managed share background maintenance started.', { reason });
       try {
         const state = await this.loadState();
         const repairedState = await this.repairManagedShareState(state);
@@ -1506,6 +1558,11 @@ export class ManagedShareService {
         const refreshedState = await this.loadState();
         const stampedState = await this.persistBackgroundMaintenanceSnapshot(refreshedState);
         this.scheduleManagedShareSyncs(stampedState);
+        this.runtime.logger.log('Managed share background maintenance completed.', {
+          reason,
+          accountCount: stampedState.accounts.length,
+          managedShareCount: stampedState.managedShares.length,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.runtime.logger.warn(`Managed share maintenance pass failed after ${reason}: ${message}`);

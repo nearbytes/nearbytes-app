@@ -371,6 +371,14 @@ export class MegaTransportAdapter {
   }
 
   async ensureSync(share: ManagedShare, account: ProviderAccount): Promise<void> {
+    this.runtime.logger.log('Provider sync bootstrap entered.', {
+      provider: this.provider,
+      accountId: account.id,
+      shareId: share.id,
+      role: share.role,
+      localPath: share.localPath,
+      remoteDescriptor: share.remoteDescriptor,
+    });
     if (isLegacyMegaLocalMirror(share)) {
       return;
     }
@@ -401,6 +409,12 @@ export class MegaTransportAdapter {
     await fs.mkdir(share.localPath, { recursive: true });
     await this.runSyncLoop(share, account);
     if (!this.syncTimers.has(share.id)) {
+      this.runtime.logger.log('Provider recurring sync timer started.', {
+        provider: this.provider,
+        accountId: account.id,
+        shareId: share.id,
+        intervalMs: this.runtime.mega.syncIntervalMs,
+      });
       const timer = setInterval(() => {
         this.runSyncLoop(share, account).catch((error) => {
           this.runtime.logger.warn('MEGA sync loop failed.', error);
