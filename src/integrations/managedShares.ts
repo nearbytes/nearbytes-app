@@ -137,6 +137,14 @@ export class ManagedShareService {
     );
   }
 
+  async warmupBackgroundActivity(reason = 'startup'): Promise<void> {
+    const state = await this.loadState();
+    this.scheduleManagedShareSyncs(state);
+    if (this.readMaintenanceMode === 'background') {
+      this.requestBackgroundMaintenance(reason, state);
+    }
+  }
+
   private isOperationalAccount(account: ProviderAccount): boolean {
     const provider = normalizeProvider(account.provider);
     return account.state === 'connected' || (provider === 'mega' && account.state === 'attention');

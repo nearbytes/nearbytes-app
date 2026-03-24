@@ -12,6 +12,7 @@
     disconnectProviderAccount,
     discoverSources,
     readDesktopRuntimeLogs,
+    getManagedShareState,
     getStorageLocationRepairReport,
     getRootsConfig,
     hasDesktopDirectoryPicker,
@@ -132,6 +133,8 @@
   const BACKGROUND_ROOTS_FALLBACK_TIMEOUT_MS = 2_500;
   const INITIAL_ROOTS_REQUEST_MAX_WAIT_MS = 20_000;
   const INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS = 500;
+  const AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS = 3_000;
+  const AUTHORITATIVE_MANAGED_SHARE_RAPID_REFRESH_MS = 1_200;
   const DEFAULT_DESTINATION: VolumeDestinationConfig = {
     sourceId: '',
     enabled: true,
@@ -274,7 +277,9 @@
   let megaRuntimeLogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let panelRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let startupLoadRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let managedShareStateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let runtimeRefreshInFlight = false;
+  let managedShareStateRefreshInFlight = false;
   let backfillPollIdleRounds = 0;
   let lastBackfillProgressSignature = '';
 
@@ -323,6 +328,10 @@
     if (startupLoadRetryTimer) {
       clearTimeout(startupLoadRetryTimer);
       startupLoadRetryTimer = null;
+    }
+    if (managedShareStateRefreshTimer) {
+      clearTimeout(managedShareStateRefreshTimer);
+      managedShareStateRefreshTimer = null;
     }
     sourceWatchConnection?.close();
     sourceWatchConnection = null;
@@ -1314,6 +1323,16 @@
     });
   }
 
+  function mergeManagedShareSummaries(entries: readonly ManagedShareSummary[]): ManagedShareSummary[] {
+    if (entries.length === 0) {
+      return managedShares;
+    }
+    const byId = new Map(entries.map((summary) => [summary.share.id, summary]));
+    const merged = managedShares.map((summary) => byId.get(summary.share.id) ?? summary);
+    managedShares = sortManagedShareSummaries(merged);
+    return managedShares;
+  }
+
   function sortIncomingManagedShareOffers(entries: readonly IncomingManagedShareOffer[]): IncomingManagedShareOffer[] {
     return [...entries].sort((left, right) => {
       const providerOrder = providerPriority(left.provider) - providerPriority(right.provider);
@@ -1344,6 +1363,59 @@
 
   function providerVisibleShareCount(provider: string): number {
     return providerVisibleShares(provider).length;
+  }
+
+  function megaShareStatesNeedRapidRefresh(entries: readonly ManagedShareSummary[]): boolean {
+    return entries.some((summary) =>
+      summary.share.provider === 'mega' && (summary.state.status === 'syncing' || summary.state.status === 'idle')
+    );
+  }
+
+  function scheduleManagedShareStateRefresh(delayMs = AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS): void {
+    if (managedShareStateRefreshTimer) {
+      clearTimeout(managedShareStateRefreshTimer);
+      managedShareStateRefreshTimer = null;
+    }
+    if (providerShares('mega').length === 0) {
+      return;
+    }
+    managedShareStateRefreshTimer = setTimeout(() => {
+      managedShareStateRefreshTimer = null;
+      void refreshAuthoritativeManagedShareStates();
+    }, delayMs);
+  }
+
+  async function refreshAuthoritativeManagedShareStates(): Promise<void> {
+    if (managedShareStateRefreshInFlight) {
+      return;
+    }
+    const megaShares = providerShares('mega');
+    if (megaShares.length === 0) {
+      return;
+    }
+    managedShareStateRefreshInFlight = true;
+    try {
+      const refreshed = await Promise.all(
+        megaShares.map(async (summary) => {
+          try {
+            const response = await getManagedShareState(summary.share.id);
+            return response.summary;
+          } catch {
+            return null;
+          }
+        })
+      );
+      const merged = mergeManagedShareSummaries(
+        refreshed.filter((summary): summary is ManagedShareSummary => summary !== null)
+      );
+      scheduleManagedShareStateRefresh(
+        megaShareStatesNeedRapidRefresh(merged)
+          ? AUTHORITATIVE_MANAGED_SHARE_RAPID_REFRESH_MS
+          : AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS
+      );
+    } finally {
+      managedShareStateRefreshInFlight = false;
+    }
   }
 
   function providerIncomingShareCount(provider: string): number {
@@ -1981,7 +2053,7 @@
     const loading = providersLoading || sharesLoading || incomingLoading;
     const hasUsableMegaShare = shares.some((summary) => summary.state.status === 'ready');
     const hasBlockingError = shareLoadError || (!hasUsableMegaShare ? incomingLoadError : '');
-    const inProgress = loading || syncing > 0;
+    const inProgress = syncing > 0 || (loading && total === 0);
     const progressPercent = total > 0 && inProgress ? Math.max(6, Math.min(98, Math.round((ready / total) * 100))) : null;
 
     if (reconnectIssue) {
@@ -3458,6 +3530,8 @@
       if (rootsLoadError) {
         throw rootsLoadError;
       }
+
+      scheduleManagedShareStateRefresh(keepVisible ? 350 : 125);
 
       if (!keepVisible) {
         setTimeout(() => {

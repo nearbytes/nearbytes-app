@@ -107,6 +107,10 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     readMaintenanceMode: 'background',
     ...options.integrationOptions,
   });
+  void managedShareService.warmupBackgroundActivity('runtime startup').catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`Warning: managed share startup bootstrap failed: ${message}`);
+  });
 
   const app = createApp({
     fileService,

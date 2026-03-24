@@ -614,6 +614,56 @@ describe('ManagedShareService', () => {
     expect(adapter.ensureSyncCalls).toBe(0);
   });
 
+  it('starts sync bootstrap during background startup warmup', async () => {
+    const adapter = new BlockingEnsureSyncAdapter();
+    const { integrationStatePath, service } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+    const localPath = path.join(path.dirname(integrationStatePath), 'mega-share-startup-bootstrap');
+    await fs.mkdir(localPath, { recursive: true });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'MEGA share',
+            role: 'recipient',
+            localPath,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes/MEGA share' },
+            capabilities: ['mirror', 'read', 'write'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    await service.warmupBackgroundActivity();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(adapter.ensureSyncCalls).toBe(1);
+  });
+
   it('does not start bootstrap from explicit managed-share state reads', async () => {
     const adapter = new BlockingEnsureSyncAdapter();
     const { integrationStatePath, service, localRoot } = await createHarness({
