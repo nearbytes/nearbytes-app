@@ -441,7 +441,7 @@ async function syncMegaUntilFileReadable(
       throw new Error('No matching MEGA recipient share is currently available for debug sync.');
     }
 
-    const share = targetShare.share as { id: string; localPath: string };
+    const   share = targetShare.share as { id: string; localPath: string };
     const stateResponse = await desktopApiJson<{ summary: Record<string, unknown> }>(
       `/integrations/shares/${encodeURIComponent(share.id)}/state`
     );

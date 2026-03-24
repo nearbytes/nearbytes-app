@@ -82,7 +82,7 @@ const DEFAULT_GOOGLE_SCOPES = ['https://www.googleapis.com/auth/drive.file'] as 
 const DEFAULT_GITHUB_SCOPES = ['repo', 'read:user', 'user:email'] as const;
 const DEFAULT_SYNC_INTERVAL_MS = 20_000;
 const DEFAULT_MEGA_SYNC_INTERVAL_MS = 5_000;
-const DEFAULT_MEGA_SYNC_TIMEOUT_MS = 15_000;
+const DEFAULT_MEGA_SYNC_TIMEOUT_MS = 60_000;
 export const DEFAULT_GOOGLE_DESKTOP_CLIENT_ID =
   '381193316033-b1g7h9dovqs5j22fi7obc4jug4o77vmi.apps.googleusercontent.com';
 

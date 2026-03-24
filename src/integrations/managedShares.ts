@@ -68,7 +68,7 @@ const BACKGROUND_MAINTENANCE_SCHEMA_VERSION = 1;
 const BACKGROUND_MAINTENANCE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 750;
 const FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 6_000;
-const FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 2_500;
+const FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 5_000;
 const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
 const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
 
@@ -344,7 +344,7 @@ export class ManagedShareService {
     const state = await this.loadState();
     const preferFastRemoteDetails = options.fast === true;
     const skipAncillaryRemoteDetails = this.readMaintenanceMode === 'background' || options.fast === true;
-    const preparedState =
+    let preparedState =
       this.readMaintenanceMode === 'inline'
         ? await this.withSoftTimeout(
             (async () => {
@@ -361,7 +361,9 @@ export class ManagedShareService {
     if (this.readMaintenanceMode === 'background' && options.fast !== true) {
       this.requestBackgroundMaintenance('listManagedShares', preparedState);
     }
-    const visibleShares = preparedState.managedShares.filter((share) => isProviderEnabled(share.provider));
+    if (this.readMaintenanceMode === 'inline' && options.fast !== true) {
+      this.scheduleManagedShareSyncs(preparedState);
+    }
     const config = this.options.storage.getRootsConfig();
     const runtime = await this.withSoftTimeout(
       this.options.storage.getRuntimeSnapshot({ includeUsage: false }),
@@ -375,34 +377,56 @@ export class ManagedShareService {
     const summaryTimeoutMs = preferFastRemoteDetails
       ? FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS
       : FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS;
-    const summaries = await Promise.all(
-      visibleShares.map((share) =>
-        this.withSoftTimeout(
-          this.buildManagedShareSummary(share, {
-            config,
-            runtime,
-            state: preparedState,
-            preferFastRemoteDetails,
-            skipAncillaryRemoteDetails,
-            skipRemoteChecks: options.fast === true,
-          }),
-          this.fallbackManagedShareSummary(share, config, runtime, preparedState),
-          summaryTimeoutMs,
-          `Managed share summary timed out for ${share.id}`
+    const buildSummaries = async (stateSnapshot: IntegrationStateSnapshot): Promise<ManagedShareSummary[]> => {
+      const shares = stateSnapshot.managedShares.filter((share) => isProviderEnabled(share.provider));
+      return Promise.all(
+        shares.map((share) =>
+          this.withSoftTimeout(
+            this.buildManagedShareSummary(share, {
+              config,
+              runtime,
+              state: stateSnapshot,
+              preferFastRemoteDetails,
+              skipAncillaryRemoteDetails,
+              skipRemoteChecks: options.fast === true,
+            }),
+            this.fallbackManagedShareSummary(share, config, runtime, stateSnapshot),
+            summaryTimeoutMs,
+            `Managed share summary timed out for ${share.id}`
+          )
         )
-      )
-    );
+      );
+    };
+
+    let summaries = await buildSummaries(preparedState);
     const repairableShares = summaries.filter((summary) => this.shouldAutoRepairManagedShare(summary));
 
     if (repairableShares.length > 0) {
-      void Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary)));
+      if (this.readMaintenanceMode === 'inline' && options.fast !== true) {
+        await Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary)));
+        preparedState = await this.loadState();
+        summaries = await buildSummaries(preparedState);
+      } else {
+        void Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary)));
+      }
     }
 
     const markerRefreshableShares = summaries.filter((summary) => this.shouldRefreshManagedShareMarker(summary));
     if (markerRefreshableShares.length > 0) {
-      void Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
+      if (this.readMaintenanceMode === 'inline' && options.fast !== true) {
+        await Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
+        preparedState = await this.loadState();
+        summaries = await buildSummaries(preparedState);
+      } else {
+        void Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
+      }
     }
-    if (options.fast !== true) {
+    if (this.readMaintenanceMode === 'inline' && options.fast !== true && repairableShares.length > 0) {
+      await Promise.all(repairableShares.map((summary) => this.hydrateManagedShareRootFromPeers(summary.share)));
+      preparedState = await this.loadState();
+      summaries = await buildSummaries(preparedState);
+    }
+    if (this.readMaintenanceMode === 'background') {
       this.scheduleManagedShareSyncs(preparedState);
     }
 
@@ -759,14 +783,21 @@ export class ManagedShareService {
   }
 
   async getManagedShareState(shareId: string): Promise<ManagedShareSummary> {
-    const state = await this.loadState();
-    this.scheduleManagedShareSyncs(state);
+    let state = await this.loadState();
+    if (this.readMaintenanceMode === 'inline') {
+      const repairedState = await this.repairManagedShareState(state);
+      state = repairedState;
+      state = await this.loadState();
+    }
     const share = state.managedShares.find((entry) => entry.id === shareId);
     if (!share) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
     if (!isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+    if (this.readMaintenanceMode === 'inline') {
+      this.scheduleManagedShareSync(share, state);
     }
     return this.buildManagedShareSummary(share);
   }
@@ -1243,10 +1274,28 @@ export class ManagedShareService {
       ensureMarker: false,
       rewriteMarker: false,
     });
+    await this.options.storage.reconcileConfiguredVolumes();
+    await this.hydrateManagedShareRootFromPeers(nextShare);
     this.pendingMarkerRefreshes.add(shareId);
     if (account && this.isOperationalAccount(account)) {
       await adapter?.ensureSync?.(nextShare, account);
     }
+  }
+
+  private async hydrateManagedShareRootFromPeers(share: ManagedShare): Promise<void> {
+    if (!share.sourceId) {
+      return;
+    }
+    const localPath = path.resolve(share.localPath);
+    const config = this.options.storage.getRootsConfig();
+    const peerSources = config.sources.filter(
+      (source) => source.enabled && source.id !== share.sourceId && normalizeComparablePath(source.path) !== normalizeComparablePath(localPath)
+    );
+    for (const source of peerSources) {
+      await copyIfPresent(path.join(source.path, 'blocks'), path.join(localPath, 'blocks'));
+      await copyIfPresent(path.join(source.path, 'channels'), path.join(localPath, 'channels'));
+    }
+    await normalizeNearbytesRoot(localPath, { rewriteMarker: true });
   }
 
   private shouldRefreshManagedShareMarker(summary: ManagedShareSummary): boolean {
@@ -1256,6 +1305,7 @@ export class ManagedShareService {
   private async refreshManagedShareMarker(shareId: string): Promise<void> {
     try {
       const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
+      await this.hydrateManagedShareRootFromPeers(nextShare);
       await normalizeNearbytesRoot(nextShare.localPath, {
         rewriteMarker: true,
       });
@@ -1271,23 +1321,27 @@ export class ManagedShareService {
 
   private scheduleManagedShareSyncs(state: IntegrationStateSnapshot): void {
     for (const share of state.managedShares) {
-      const account = state.accounts.find((entry) => entry.id === share.accountId);
-      if (!account || !this.isOperationalAccount(account) || this.syncBootstrapTasks.has(share.id)) {
-        continue;
-      }
-      const task = this.adapters
-        .get(normalizeProvider(share.provider))
-        ?.ensureSync?.(share, account)
-        .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
-        })
-        .finally(() => {
-          this.syncBootstrapTasks.delete(share.id);
-        });
-      if (task) {
-        this.syncBootstrapTasks.set(share.id, task);
-      }
+      this.scheduleManagedShareSync(share, state);
+    }
+  }
+
+  private scheduleManagedShareSync(share: ManagedShare, state: IntegrationStateSnapshot): void {
+    const account = state.accounts.find((entry) => entry.id === share.accountId);
+    if (!account || !this.isOperationalAccount(account) || this.syncBootstrapTasks.has(share.id)) {
+      return;
+    }
+    const task = this.adapters
+      .get(normalizeProvider(share.provider))
+      ?.ensureSync?.(share, account)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
+      })
+      .finally(() => {
+        this.syncBootstrapTasks.delete(share.id);
+      });
+    if (task) {
+      this.syncBootstrapTasks.set(share.id, task);
     }
   }
 
@@ -2012,6 +2066,11 @@ export class ManagedShareService {
       const shares = state.managedShares.filter((share) => share.accountId === account.id);
       for (const share of shares) {
         let currentShare = state.managedShares.find((entry) => entry.id === share.id) ?? share;
+        const repairedOwner = await this.repairMegaOwnerBaseShareIfNeeded(currentShare, account, state);
+        if (repairedOwner !== state) {
+          state = repairedOwner;
+          currentShare = state.managedShares.find((entry) => entry.id === share.id) ?? currentShare;
+        }
         const normalized = await this.repairMegaIncomingRecipientShareIfNeeded(currentShare, state);
         if (normalized !== state) {
           state = normalized;
@@ -2107,12 +2166,16 @@ export class ManagedShareService {
     if (provider !== 'mega') {
       return;
     }
+    const adapter = this.adapters.get(provider);
+    if (adapter?.listIncomingShares) {
+      return;
+    }
 
     const state = options.stateSnapshot ?? (await this.loadState());
     const existing = state.managedShares.find((share) =>
       normalizeProvider(share.provider) === 'mega' &&
       share.accountId === account.id &&
-      isLegacyMegaLocalBaseShare(share)
+      isMegaOwnerBaseShare(share)
     );
     if (existing) {
       return;
@@ -2137,9 +2200,8 @@ export class ManagedShareService {
       )
     );
     const inspection = await inspectNearbytesRoot(localPath);
-    if (!inspection) {
-      return;
-    }
+    await ensureMirrorFolder(localPath);
+    await normalizeNearbytesRoot(localPath);
 
     const shareId = createId('share', 'mega', state.managedShares.length + 1);
     const recoveredShare: ManagedShare = {
@@ -2154,7 +2216,7 @@ export class ManagedShareService {
       remoteDescriptor: {
         remotePath: '/nearbytes',
         shareName: 'nearbytes',
-        legacyLocalMirror: true,
+        ...(inspection ? { legacyLocalMirror: true } : {}),
       },
       capabilities: ['mirror', 'read', 'write'],
       invitationEmails: [],
@@ -2172,6 +2234,58 @@ export class ManagedShareService {
       ...state,
       managedShares: [...state.managedShares, { ...recoveredShare, sourceId }],
     });
+  }
+
+  private async repairMegaOwnerBaseShareIfNeeded(
+    share: ManagedShare,
+    account: ProviderAccount,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    if (!isMegaOwnerBaseShare(share)) {
+      return stateSnapshot;
+    }
+
+    const expectedLocalPath = path.resolve(
+      resolveManagedShareLocalPath(
+        this.mirrorRoot,
+        'mega',
+        account,
+        share.label,
+        share.id,
+        share.remoteDescriptor,
+        share.role
+      )
+    );
+    const providerRoot = path.resolve(resolveProviderManagedShareRoot(this.mirrorRoot, 'mega', account));
+    const currentLocalPath = path.resolve(share.localPath);
+
+    if (normalizeComparablePath(currentLocalPath) !== normalizeComparablePath(expectedLocalPath)) {
+      await relocateMegaOwnerBaseShareRoot(currentLocalPath, expectedLocalPath, providerRoot);
+      const { config: nextConfig, sourceId } = ensureManagedShareSource(
+        cloneConfig(this.options.storage.getRootsConfig()),
+        {
+          ...share,
+          localPath: expectedLocalPath,
+        },
+        expectedLocalPath
+      );
+      const nextShare: ManagedShare = {
+        ...share,
+        localPath: expectedLocalPath,
+        sourceId,
+        updatedAt: this.runtime.now(),
+      };
+      const nextState: IntegrationStateSnapshot = {
+        ...stateSnapshot,
+        managedShares: stateSnapshot.managedShares.map((entry) => (entry.id === share.id ? nextShare : entry)),
+      };
+      await this.persistRootsConfig(nextConfig);
+      await this.saveState(nextState);
+      stateSnapshot = nextState;
+    }
+
+    await normalizeMegaOwnerBaseShareRoot(expectedLocalPath, providerRoot);
+    return stateSnapshot;
   }
 
   private async relocateMegaRecipientShareIfNeeded(
@@ -2546,14 +2660,10 @@ function isProviderBaseShare(
   return normalizedLabel === 'nearbytes' || shareName === 'nearbytes';
 }
 
-function isLegacyMegaLocalBaseShare(share: ManagedShare): boolean {
-  if (normalizeProvider(share.provider) !== 'mega' || share.role !== 'owner') {
-    return false;
-  }
-  if (share.remoteDescriptor?.legacyLocalMirror !== true) {
-    return false;
-  }
-  return getManagedShareRemotePath('mega', share.remoteDescriptor) === '/nearbytes';
+function isMegaOwnerBaseShare(share: ManagedShare): boolean {
+  return normalizeProvider(share.provider) === 'mega' &&
+    share.role === 'owner' &&
+    getManagedShareRemotePath('mega', share.remoteDescriptor) === '/nearbytes';
 }
 
 function sanitizeManagedFolderLabel(value: string): string {
@@ -2568,6 +2678,185 @@ function sanitizeManagedFolderLabel(value: string): string {
 async function ensureMirrorFolder(localPath: string): Promise<void> {
   await fs.mkdir(path.join(localPath, 'blocks'), { recursive: true });
   await fs.mkdir(path.join(localPath, 'channels'), { recursive: true });
+}
+
+async function relocateMegaOwnerBaseShareRoot(
+  sourceRoot: string,
+  canonicalRoot: string,
+  providerRoot: string
+): Promise<void> {
+  await ensureMirrorFolder(canonicalRoot);
+  await normalizeNearbytesRoot(canonicalRoot);
+  const entries = await readDirectoryEntries(sourceRoot);
+  for (const entry of entries) {
+    if (entry.name === path.basename(canonicalRoot)) {
+      continue;
+    }
+    const sourcePath = path.join(sourceRoot, entry.name);
+    if (isMegaCanonicalEntryName(entry.name)) {
+      await mergePathIntoCanonicalMegaRoot(sourcePath, path.join(canonicalRoot, entry.name));
+      continue;
+    }
+    await moveEntryToMegaDebris(sourcePath, providerRoot, entry.name);
+  }
+}
+
+async function normalizeMegaOwnerBaseShareRoot(canonicalRoot: string, providerRoot: string): Promise<void> {
+  await ensureMirrorFolder(canonicalRoot);
+  await normalizeNearbytesRoot(canonicalRoot);
+  const entries = await readDirectoryEntries(canonicalRoot);
+  for (const entry of entries) {
+    if (isMegaAllowedCanonicalEntry(entry.name, entry.isDirectory())) {
+      continue;
+    }
+    const entryPath = path.join(canonicalRoot, entry.name);
+    if (entry.isDirectory() && isNestedMegaShareRootName(entry.name)) {
+      await drainNestedMegaShareRoot(entryPath, canonicalRoot, providerRoot);
+      continue;
+    }
+    await moveEntryToMegaDebris(entryPath, providerRoot, `${path.basename(canonicalRoot)} ${entry.name}`);
+  }
+}
+
+async function drainNestedMegaShareRoot(nestedRoot: string, canonicalRoot: string, providerRoot: string): Promise<void> {
+  const nestedBlocks = path.join(nestedRoot, 'blocks');
+  const nestedChannels = path.join(nestedRoot, 'channels');
+  if (await isDirectoryPath(nestedBlocks)) {
+    await mergePathIntoCanonicalMegaRoot(nestedBlocks, path.join(canonicalRoot, 'blocks'));
+  }
+  if (await isDirectoryPath(nestedChannels)) {
+    await mergePathIntoCanonicalMegaRoot(nestedChannels, path.join(canonicalRoot, 'channels'));
+  }
+  try {
+    await moveEntryToMegaDebris(nestedRoot, providerRoot, path.basename(nestedRoot));
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+    if (code !== 'EPERM') {
+      throw error;
+    }
+    await fs.rm(nestedRoot, { recursive: true, force: true });
+  }
+}
+
+async function mergePathIntoCanonicalMegaRoot(sourcePath: string, targetPath: string): Promise<void> {
+  const stats = await safeStatPath(sourcePath);
+  if (!stats) {
+    return;
+  }
+  if (stats.isDirectory()) {
+    await fs.mkdir(targetPath, { recursive: true });
+    const entries = await readDirectoryEntries(sourcePath);
+    for (const entry of entries) {
+      await mergePathIntoCanonicalMegaRoot(path.join(sourcePath, entry.name), path.join(targetPath, entry.name));
+    }
+    await fs.rm(sourcePath, { recursive: true, force: true });
+    return;
+  }
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  try {
+    await fs.rename(sourcePath, targetPath);
+  } catch {
+    await fs.copyFile(sourcePath, targetPath);
+    await fs.rm(sourcePath, { force: true });
+  }
+}
+
+async function copyIfPresent(sourcePath: string, targetPath: string): Promise<void> {
+  if (!(await safeStatPath(sourcePath))) {
+    return;
+  }
+  await copyPathIntoTarget(sourcePath, targetPath);
+}
+
+async function copyPathIntoTarget(sourcePath: string, targetPath: string): Promise<void> {
+  const stats = await safeStatPath(sourcePath);
+  if (!stats) {
+    return;
+  }
+  if (stats.isDirectory()) {
+    await fs.mkdir(targetPath, { recursive: true });
+    const entries = await readDirectoryEntries(sourcePath);
+    for (const entry of entries) {
+      await copyPathIntoTarget(path.join(sourcePath, entry.name), path.join(targetPath, entry.name));
+    }
+    return;
+  }
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.copyFile(sourcePath, targetPath);
+}
+
+async function moveEntryToMegaDebris(sourcePath: string, providerRoot: string, label: string): Promise<void> {
+  const debrisRoot = path.join(providerRoot, '.debris');
+  await fs.mkdir(debrisRoot, { recursive: true });
+  const baseLabel = sanitizeMegaDebrisLabel(label);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const suffix = `${Date.now().toString(36)}${attempt === 0 ? '' : `-${attempt}`}`;
+    const destination = path.join(debrisRoot, `${baseLabel} ${suffix}`.trim());
+    try {
+      await fs.rename(sourcePath, destination);
+      return;
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+      if (code === 'ENOENT') {
+        return;
+      }
+      if (code === 'EEXIST') {
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+function sanitizeMegaDebrisLabel(value: string): string {
+  return value.replace(/[\\/]+/gu, ' ').replace(/\s+/gu, ' ').trim() || 'debris';
+}
+
+function isMegaCanonicalEntryName(name: string): boolean {
+  return name === 'blocks' || name === 'channels' || name === 'Nearbytes.html' || name === '.nearbytes';
+}
+
+function isMegaAllowedCanonicalEntry(name: string, isDirectory: boolean): boolean {
+  if (name === 'Nearbytes.html') {
+    return !isDirectory;
+  }
+  if (name === 'blocks' || name === 'channels') {
+    return isDirectory;
+  }
+  return false;
+}
+
+function isNestedMegaShareRootName(name: string): boolean {
+  return /^nearbytes(?:\s|$)/iu.test(name);
+}
+
+async function readDirectoryEntries(dirPath: string): Promise<import('fs').Dirent[]> {
+  try {
+    return await fs.readdir(dirPath, { withFileTypes: true });
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+    if (code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function safeStatPath(targetPath: string): Promise<import('fs').Stats | null> {
+  try {
+    return await fs.stat(targetPath);
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+    if (code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function isDirectoryPath(targetPath: string): Promise<boolean> {
+  const stats = await safeStatPath(targetPath);
+  return Boolean(stats?.isDirectory());
 }
 
 function resolveManagedShareBaseRoot(config: RootsConfig): string {

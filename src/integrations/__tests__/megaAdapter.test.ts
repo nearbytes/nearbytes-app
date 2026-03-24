@@ -165,18 +165,28 @@ describe('MegaTransportAdapter', () => {
     const ownerHandle = 'owner000001';
     const shareHandle = 'hNtERb6T';
     const blocksHandle = 'blocks0001';
+    const channelsHandle = 'chnls00001';
+    const roomHandle = 'room000001';
     const fileHandle = 'file000001';
+    const eventHandle = 'event00001';
+    const unsupportedHandle = 'testfile01';
     const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
     const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
     const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const roomNodeKey = Buffer.from('33445566778899aabbccddeeff001122', 'hex');
     const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
+    const eventNodeKey = Buffer.from('445566778899aabbccddeeff00112233102132435465768798a9babbdcddf0f1', 'hex');
+    const unsupportedNodeKey = Buffer.from('5566778899aabbccddeeff0011223344102132435465768798a9babbdcddf0f1', 'hex');
     const filePlaintext = Buffer.from('native-mega-share-data', 'utf8');
     const updatedPlaintext = Buffer.from('native-mega-share-data-v2', 'utf8');
+    const eventPlaintext = Buffer.from('channel-event', 'utf8');
     const fileCiphertext = encryptFileContent(filePlaintext, fileNodeKey);
     const updatedCiphertext = encryptFileContent(updatedPlaintext, fileNodeKey);
+    const eventCiphertext = encryptFileContent(eventPlaintext, eventNodeKey);
     const commandInvocations: string[] = [];
     let partialFetchCount = 0;
-    let downloadVersion = 0;
+    let blockDownloadVersion = 0;
 
     const fullSnapshot = {
       f: [
@@ -197,12 +207,42 @@ describe('MegaTransportAdapter', () => {
           k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
         },
         {
+          h: channelsHandle,
+          p: shareHandle,
+          t: 1,
+          a: encryptAttributes('channels', channelsNodeKey),
+          k: encryptNodeKey(channelsNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: roomHandle,
+          p: channelsHandle,
+          t: 1,
+          a: encryptAttributes('room-a', roomNodeKey),
+          k: encryptNodeKey(roomNodeKey, shareKey, shareHandle),
+        },
+        {
           h: fileHandle,
           p: blocksHandle,
           t: 0,
           s: filePlaintext.length,
           a: encryptAttributes('aa.bin', fileNodeKey),
           k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: eventHandle,
+          p: roomHandle,
+          t: 0,
+          s: eventPlaintext.length,
+          a: encryptAttributes('event.bin', eventNodeKey),
+          k: encryptNodeKey(eventNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: unsupportedHandle,
+          p: shareHandle,
+          t: 0,
+          s: 8,
+          a: encryptAttributes('test.txt', unsupportedNodeKey),
+          k: encryptNodeKey(unsupportedNodeKey, shareKey, shareHandle),
         },
       ],
       u: [{ u: ownerHandle, m: 'owner@example.com' }],
@@ -218,10 +258,14 @@ describe('MegaTransportAdapter', () => {
       f: [
         fullSnapshot.f[0],
         fullSnapshot.f[1],
+        fullSnapshot.f[2],
+        fullSnapshot.f[3],
         {
-          ...fullSnapshot.f[2],
+          ...fullSnapshot.f[4],
           s: updatedPlaintext.length,
         },
+        fullSnapshot.f[5],
+        fullSnapshot.f[6],
       ],
       u: fullSnapshot.u,
       sn: 'cursor-3',
@@ -259,10 +303,19 @@ describe('MegaTransportAdapter', () => {
               }
             );
           case 'g':
-            return new Response(JSON.stringify([{ g: `https://download.test/${String(payload.n)}`, s: filePlaintext.length }]), {
-              status: 200,
-              headers: { 'content-type': 'application/json' },
-            });
+            if (payload.n === fileHandle) {
+              return new Response(JSON.stringify([{ g: `https://download.test/${String(payload.n)}`, s: filePlaintext.length }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            if (payload.n === eventHandle) {
+              return new Response(JSON.stringify([{ g: `https://download.test/${String(payload.n)}`, s: eventPlaintext.length }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            throw new Error(`Unexpected MEGA file handle: ${String(payload.n)}`);
           default:
             throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
         }
@@ -284,12 +337,18 @@ describe('MegaTransportAdapter', () => {
         throw new Error(`Unexpected SC cursor: ${currentCursor}`);
       }
       if (url === `https://download.test/${fileHandle}`) {
-        const body = downloadVersion === 0 ? fileCiphertext : updatedCiphertext;
-        downloadVersion += 1;
+        const body = blockDownloadVersion === 0 ? fileCiphertext : updatedCiphertext;
+        blockDownloadVersion += 1;
         return new Response(new Uint8Array(body), { status: 200 });
+      }
+      if (url === `https://download.test/${eventHandle}`) {
+        return new Response(new Uint8Array(eventCiphertext), { status: 200 });
       }
       throw new Error(`Unexpected fetch URL: ${url}`);
     }) as typeof fetch;
+
+    const logSpy = vi.fn();
+    const warnSpy = vi.fn();
 
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
@@ -304,8 +363,8 @@ describe('MegaTransportAdapter', () => {
         syncIntervalMs: 60000,
       },
       logger: {
-        log() {},
-        warn() {},
+        log: logSpy,
+        warn: warnSpy,
       },
     });
 
@@ -360,6 +419,9 @@ describe('MegaTransportAdapter', () => {
     await adapter.ensureSync(share, account);
 
     await expect(fs.readFile(path.join(localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(filePlaintext.toString('utf8'));
+    await expect(fs.readFile(path.join(localPath, 'channels', 'room-a', 'event.bin'), 'utf8')).resolves.toBe(
+      eventPlaintext.toString('utf8')
+    );
     expect(partialFetchCount).toBe(1);
 
     await adapter.ensureSync(share, account);
@@ -369,6 +431,61 @@ describe('MegaTransportAdapter', () => {
     await adapter.ensureSync(share, account);
     await expect(fs.readFile(path.join(localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(updatedPlaintext.toString('utf8'));
     expect(partialFetchCount).toBe(2);
+
+    const pushLogs = logSpy.mock.calls.filter(([message]) => message === 'MEGA push update received.');
+    expect(pushLogs).toHaveLength(2);
+    expect(pushLogs[0]?.[1]).toMatchObject({
+      shareId: share.id,
+      packetCount: 1,
+      actions: ['u'],
+      touchesShare: false,
+      previousScsn: 'cursor-1',
+      nextScsn: 'cursor-2',
+    });
+    expect(pushLogs[1]?.[1]).toMatchObject({
+      shareId: share.id,
+      packetCount: 1,
+      actions: ['u'],
+      touchesShare: true,
+      previousScsn: 'cursor-2',
+      nextScsn: 'cursor-3',
+    });
+
+    const newBlockLogs = logSpy.mock.calls.filter(([message]) => message === 'MEGA readonly share reported new block.');
+    expect(newBlockLogs).toHaveLength(1);
+    expect(newBlockLogs[0]?.[1]).toMatchObject({
+      shareId: share.id,
+      path: 'blocks/aa.bin',
+      size: filePlaintext.length,
+    });
+
+    const newFileLogs = logSpy.mock.calls.filter(([message]) => message === 'MEGA readonly share reported new file.');
+    expect(newFileLogs).toHaveLength(1);
+    expect(newFileLogs[0]?.[1]).toMatchObject({
+      shareId: share.id,
+      path: 'channels/room-a/event.bin',
+      size: eventPlaintext.length,
+    });
+
+    const updatedBlockLogs = logSpy.mock.calls.filter(([message]) => message === 'MEGA readonly share reported updated block.');
+    expect(updatedBlockLogs).toHaveLength(1);
+    expect(updatedBlockLogs[0]?.[1]).toMatchObject({
+      shareId: share.id,
+      path: 'blocks/aa.bin',
+      previousSize: filePlaintext.length,
+      size: updatedPlaintext.length,
+    });
+
+    const unsupportedTopLevelLogs = logSpy.mock.calls.filter(
+      ([message]) => message === 'MEGA readonly share reported unsupported top-level entries.'
+    );
+    expect(unsupportedTopLevelLogs).toHaveLength(1);
+    expect(unsupportedTopLevelLogs[0]?.[1]).toMatchObject({
+      shareId: share.id,
+      added: ['test.txt'],
+      removed: [],
+      current: ['test.txt'],
+    });
 
     expect(commandInvocations).toEqual([]);
 
@@ -413,6 +530,217 @@ describe('MegaTransportAdapter', () => {
     ).rejects.toThrow('Reconnect MEGA to resume syncing.');
 
     await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toBeNull();
+  });
+
+  it('persists unsupported top-level entry diffs across aborted readonly sync attempts', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-unsupported', {
+      email: 'reader@example.com',
+      password: 'correct horse battery staple',
+      sid: 'unsupported-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'usrhandle01',
+      accountVersion: 2,
+    });
+
+    const shareHandle = 'hNtERb6T';
+    const ownerHandle = 'owner000001';
+    const blocksHandle = 'blocks0001';
+    const fileHandle = 'file000001';
+    const unsupportedHandleOne = 'testfile01';
+    const unsupportedHandleTwo = 'testfile02';
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
+    const unsupportedNodeKeyOne = Buffer.from('5566778899aabbccddeeff0011223344102132435465768798a9babbdcddf0f1', 'hex');
+    const unsupportedNodeKeyTwo = Buffer.from('66778899aabbccddeeff001122334455102132435465768798a9babbdcddf0f1', 'hex');
+    const filePlaintext = Buffer.from('abort-after-tree-fetch', 'utf8');
+    const fileCiphertext = encryptFileContent(filePlaintext, fileNodeKey);
+    let snapshotCount = 0;
+
+    const snapshotWithOneUnsupported = {
+      f: [
+        {
+          h: shareHandle,
+          t: 1,
+          a: encryptAttributes('Team Space', rootNodeKey),
+          k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+          su: ownerHandle,
+          sk: encodeMegaBase64Url(encryptAesEcb(shareKey, Buffer.from('00112233445566778899aabbccddeeff', 'hex'))),
+          r: 0,
+        },
+        {
+          h: blocksHandle,
+          p: shareHandle,
+          t: 1,
+          a: encryptAttributes('blocks', blocksNodeKey),
+          k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: fileHandle,
+          p: blocksHandle,
+          t: 0,
+          s: filePlaintext.length,
+          a: encryptAttributes('aa.bin', fileNodeKey),
+          k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: unsupportedHandleOne,
+          p: shareHandle,
+          t: 0,
+          s: 8,
+          a: encryptAttributes('test.txt', unsupportedNodeKeyOne),
+          k: encryptNodeKey(unsupportedNodeKeyOne, shareKey, shareHandle),
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+      sn: 'cursor-1',
+    };
+
+    const snapshotWithTwoUnsupported = {
+      ...snapshotWithOneUnsupported,
+      f: [
+        ...snapshotWithOneUnsupported.f,
+        {
+          h: unsupportedHandleTwo,
+          p: shareHandle,
+          t: 0,
+          s: 9,
+          a: encryptAttributes('test2.txt', unsupportedNodeKeyTwo),
+          k: encryptNodeKey(unsupportedNodeKeyTwo, shareKey, shareHandle),
+        },
+      ],
+      sn: 'cursor-2',
+    };
+
+    const logSpy = vi.fn();
+    const warnSpy = vi.fn();
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      logger: {
+        log: logSpy,
+        warn: warnSpy,
+      },
+      mega: {
+        syncTimeoutMs: 25,
+        syncIntervalMs: 60_000,
+      },
+    });
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/sc')) {
+        return new Response(JSON.stringify({ a: [{ a: 't' }], sn: 'cursor-2' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: 'usrhandle01', email: 'reader@example.com' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            snapshotCount += 1;
+            return new Response(JSON.stringify([snapshotCount === 1 ? snapshotWithOneUnsupported : snapshotWithTwoUnsupported]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'g':
+            return new Response(JSON.stringify([{ g: 'https://mega.nz/abort-download', s: filePlaintext.length }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA command: ${String(payload.a)}`);
+        }
+      }
+      if (url === 'https://mega.nz/abort-download') {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              const error = new Error('This operation was aborted.');
+              error.name = 'AbortError';
+              reject(error);
+            },
+            { once: true }
+          );
+        });
+      }
+      if (url === 'https://mega.nz/file-download') {
+        return new Response(new Uint8Array(fileCiphertext), {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-unsupported-'));
+    tempDirs.push(localPath);
+
+    const share: ManagedShare = {
+      id: 'share-mega-unsupported-1',
+      provider: 'mega',
+      accountId: 'acct-mega-unsupported',
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-unsupported-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-unsupported',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(adapter.ensureSync(share, account)).rejects.toMatchObject({ name: 'AbortError' });
+
+    const unsupportedTopLevelLogs = logSpy.mock.calls.filter(
+      ([message]) => message === 'MEGA readonly share reported unsupported top-level entries.'
+    );
+    expect(unsupportedTopLevelLogs).toHaveLength(2);
+    expect(unsupportedTopLevelLogs[0]?.[1]).toMatchObject({
+      shareId: share.id,
+      added: ['test.txt'],
+      removed: [],
+      current: ['test.txt'],
+    });
+    expect(unsupportedTopLevelLogs[1]?.[1]).toMatchObject({
+      shareId: share.id,
+      added: ['test2.txt'],
+      removed: [],
+      current: ['test.txt', 'test2.txt'],
+    });
   });
 
   it('times out a hung readonly refresh and surfaces a readable repair state', async () => {
@@ -517,6 +845,307 @@ describe('MegaTransportAdapter', () => {
         summary: 'MEGA mirror timed out',
       }),
     });
+  });
+
+  it('retries transient MEGA API locks during readonly sync', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-retry', {
+      email: 'reader@example.com',
+      password: 'correct horse battery staple',
+      sid: 'retry-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'usrhandle01',
+      accountVersion: 2,
+    });
+
+    const shareHandle = 'hNtERb6T';
+    const ownerHandle = 'owner000001';
+    const blocksHandle = 'blocks0001';
+    const fileHandle = 'file000001';
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
+    const filePlaintext = Buffer.from('retry-after-api-lock', 'utf8');
+    const fileCiphertext = encryptFileContent(filePlaintext, fileNodeKey);
+    let currentUserCalls = 0;
+
+    const partialSnapshot = {
+      f: [
+        {
+          h: shareHandle,
+          t: 1,
+          a: encryptAttributes('Team Space', rootNodeKey),
+          k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+          su: ownerHandle,
+          sk: encodeMegaBase64Url(encryptAesEcb(shareKey, Buffer.from('00112233445566778899aabbccddeeff', 'hex'))),
+          r: 0,
+        },
+        {
+          h: blocksHandle,
+          p: shareHandle,
+          t: 1,
+          a: encryptAttributes('blocks', blocksNodeKey),
+          k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: fileHandle,
+          p: blocksHandle,
+          t: 0,
+          s: filePlaintext.length,
+          a: encryptAttributes('aa.bin', fileNodeKey),
+          k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+      sn: 'cursor-1',
+    };
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            currentUserCalls += 1;
+            return new Response(JSON.stringify([currentUserCalls === 1 ? -3 : { u: 'usrhandle01', email: 'reader@example.com' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(JSON.stringify([partialSnapshot]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'g':
+            return new Response(JSON.stringify([{ g: 'https://mega.nz/file-download' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA command: ${String(payload.a)}`);
+        }
+      }
+      if (url === 'https://mega.nz/file-download') {
+        return new Response(new Uint8Array(fileCiphertext), {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      logger: {
+        log() {},
+        warn() {},
+      },
+      mega: {
+        syncTimeoutMs: 5_000,
+        syncIntervalMs: 60_000,
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-retry-'));
+    tempDirs.push(localPath);
+
+    const share: ManagedShare = {
+      id: 'share-mega-retry-1',
+      provider: 'mega',
+      accountId: 'acct-mega-retry',
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-retry-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-retry',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(filePlaintext.toString('utf8'));
+    expect(currentUserCalls).toBeGreaterThanOrEqual(2);
+    await expect(adapter.getState(share, account)).resolves.toMatchObject({ status: 'ready' });
+  });
+
+  it('falls back to a full snapshot when partial MEGA tree fetches stay locked', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-full-fallback', {
+      email: 'reader@example.com',
+      password: 'correct horse battery staple',
+      sid: 'fallback-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'usrhandle01',
+      accountVersion: 2,
+    });
+
+    const shareHandle = 'hNtERb6T';
+    const ownerHandle = 'owner000001';
+    const blocksHandle = 'blocks0001';
+    const fileHandle = 'file000001';
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
+    const filePlaintext = Buffer.from('full-snapshot-fallback', 'utf8');
+    const fileCiphertext = encryptFileContent(filePlaintext, fileNodeKey);
+    let partialFetchCalls = 0;
+    let fullFetchCalls = 0;
+
+    const snapshot = {
+      f: [
+        {
+          h: shareHandle,
+          t: 1,
+          a: encryptAttributes('Team Space', rootNodeKey),
+          k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+          su: ownerHandle,
+          sk: encodeMegaBase64Url(encryptAesEcb(shareKey, masterKey)),
+          r: 0,
+        },
+        {
+          h: blocksHandle,
+          p: shareHandle,
+          t: 1,
+          a: encryptAttributes('blocks', blocksNodeKey),
+          k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: fileHandle,
+          p: blocksHandle,
+          t: 0,
+          s: filePlaintext.length,
+          a: encryptAttributes('aa.bin', fileNodeKey),
+          k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+      sn: 'cursor-1',
+    };
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: 'usrhandle01', email: 'reader@example.com' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            if (payload.n) {
+              partialFetchCalls += 1;
+              return new Response(JSON.stringify([-3]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            fullFetchCalls += 1;
+            return new Response(JSON.stringify([snapshot]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'g':
+            return new Response(JSON.stringify([{ g: 'https://mega.nz/file-download-fallback' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA command: ${String(payload.a)}`);
+        }
+      }
+      if (url === 'https://mega.nz/file-download-fallback') {
+        return new Response(new Uint8Array(fileCiphertext), {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      logger: {
+        log() {},
+        warn() {},
+      },
+      mega: {
+        syncTimeoutMs: 10_000,
+        syncIntervalMs: 60_000,
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-full-fallback-'));
+    tempDirs.push(localPath);
+
+    const share: ManagedShare = {
+      id: 'share-mega-full-fallback-1',
+      provider: 'mega',
+      accountId: 'acct-mega-full-fallback',
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-full-fallback-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-full-fallback',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(filePlaintext.toString('utf8'));
+    expect(partialFetchCalls).toBeGreaterThanOrEqual(1);
+    expect(fullFetchCalls).toBe(1);
   });
 
   it('reuses the saved MEGA login to refresh an invalid session and still lists incoming shares', async () => {
@@ -753,14 +1382,19 @@ describe('MegaTransportAdapter', () => {
     const p = decodeMegaBase64Url(String(privateJwk.p));
     const d = decodeMegaBase64Url(String(privateJwk.d));
     const qi = decodeMegaBase64Url(String(privateJwk.qi));
+    const privateKeyPayload = Buffer.concat([
+      encodeMegaPrivateKeyComponent(q),
+      encodeMegaPrivateKeyComponent(p),
+      encodeMegaPrivateKeyComponent(d),
+      encodeMegaPrivateKeyComponent(qi),
+      Buffer.alloc(8, 0),
+    ]);
+    const paddedPrivateKeyPayload = Buffer.concat([
+      privateKeyPayload,
+      Buffer.alloc((16 - (privateKeyPayload.length % 16)) % 16, 0),
+    ]);
     const encryptedPrivateKey = encryptAesEcb(
-      Buffer.concat([
-        encodeMegaPrivateKeyComponent(q),
-        encodeMegaPrivateKeyComponent(p),
-        encodeMegaPrivateKeyComponent(d),
-        encodeMegaPrivateKeyComponent(qi),
-        Buffer.alloc(8, 0),
-      ]),
+      paddedPrivateKeyPayload,
       masterKey
     );
     const modulus = bufferToBigInt(decodeMegaBase64Url(String(publicJwk.n)));

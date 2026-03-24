@@ -1383,8 +1383,16 @@ export class MultiRootStorageBackend implements StorageBackend {
 
     const referencedHashes = await this.collectReferencedBlockHashesAcrossStates(this.rootStates);
     const targetBlocksDir = join(target.config.path, 'blocks');
-    await fs.mkdir(targetBlocksDir, { recursive: true });
-    await ensureNearbytesMarker(target.config.path);
+    try {
+      await fs.mkdir(targetBlocksDir, { recursive: true });
+      await ensureNearbytesMarker(target.config.path);
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+      if (code === 'ENOENT') {
+        return;
+      }
+      throw error;
+    }
 
     for (const source of this.rootStates) {
       if (source.config.id === target.config.id) {

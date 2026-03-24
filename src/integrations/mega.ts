@@ -52,6 +52,9 @@ const MEGA_RECONNECT_REQUIRED_MESSAGE =
 const ZERO_IV = Buffer.alloc(16, 0);
 const READONLY_BADGES = ['Readonly'];
 const MEGA_SYNC_TIMEOUT_CODE = 'MEGA_SYNC_TIMEOUT';
+const MEGA_RETRYABLE_API_ERROR_CODES = new Set([-3, -4]);
+const MEGA_API_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
+const EXPECTED_MEGA_TOP_LEVEL_NAMES = new Set(['blocks', 'channels', 'Nearbytes.html']);
 
 interface MegaAdapterOptions {
   readonly fetchImpl?: typeof fetch;
@@ -86,6 +89,7 @@ interface MegaMirrorManifest {
   readonly rootHandle?: string;
   readonly lastScsn?: string;
   readonly knownHandles?: readonly string[];
+  readonly unsupportedTopLevelNames?: readonly string[];
   readonly entries: Record<string, ProviderRefreshManifestEntry>;
 }
 
@@ -459,10 +463,22 @@ export class MegaTransportAdapter {
       if (incrementalScsn) {
         try {
           const actionBatch = await this.fetchActionPackets(session, incrementalScsn, signal);
+          const touchesShare = actionPacketBatchTouchesShare(actionBatch.packets, rootHandle, manifest);
+          if (actionBatch.packets.length) {
+            this.runtime.logger.log('MEGA push update received.', {
+              shareId: share.id,
+              rootHandle,
+              packetCount: actionBatch.packets.length,
+              actions: summarizeActionPacketActions(actionBatch.packets),
+              touchesShare,
+              previousScsn: incrementalScsn,
+              nextScsn: actionBatch.scsn,
+            });
+          }
           if (actionBatch.scsn) {
             await this.updateManifestCursor(share.id, actionBatch.scsn);
           }
-          if (!actionPacketBatchTouchesShare(actionBatch.packets, rootHandle, manifest)) {
+          if (!touchesShare) {
             this.syncStates.set(share.id, {
               status: 'ready',
               detail: 'MEGA readonly mirror is up to date.',
@@ -482,15 +498,30 @@ export class MegaTransportAdapter {
         session: activeSession,
         fetched: await this.fetchPartialTreeWithSnapshot(activeSession, rootHandle, signal),
       }));
+      const topLevelEntryNames = listMegaTopLevelEntryNames(resolved.fetched.tree);
+      this.runtime.logger.log('MEGA share top-level entries.', {
+        shareId: share.id,
+        accountId: account.id,
+        rootHandle,
+        names: topLevelEntryNames,
+      });
+      logUnsupportedMegaTopLevelEntries(this.runtime, share.id, manifest.unsupportedTopLevelNames, topLevelEntryNames);
+      const fetchedManifest: MegaMirrorManifest = {
+        ...manifest,
+        rootHandle: resolved.fetched.tree.root.handle,
+        lastScsn: resolved.fetched.snapshot.scsn?.trim() || manifest.lastScsn,
+        knownHandles: collectTreeHandles(resolved.fetched.tree),
+        unsupportedTopLevelNames: listUnsupportedMegaTopLevelEntryNames(topLevelEntryNames),
+      };
+      await this.runtime.secretStore.set(mirrorManifestKey(share.id), fetchedManifest);
       const refreshResult = await this.refreshWorker.refresh(
         share.localPath,
         new MegaReadonlyRemoteAdapter(this.fetchImpl, this.apiClient, resolved.session, resolved.fetched.tree, signal),
         { entries: manifest.entries }
       );
+      logMegaMirrorRefreshEvents(this.runtime, share.id, manifest.entries, refreshResult);
       await this.runtime.secretStore.set(mirrorManifestKey(share.id), {
-        rootHandle: resolved.fetched.tree.root.handle,
-        lastScsn: resolved.fetched.snapshot.scsn?.trim() || manifest.lastScsn,
-        knownHandles: collectTreeHandles(resolved.fetched.tree),
+        ...fetchedManifest,
         entries: refreshResult.manifest.entries,
       } satisfies MegaMirrorManifest);
       this.syncStates.set(share.id, {
@@ -500,12 +531,31 @@ export class MegaTransportAdapter {
         lastSyncAt: this.runtime.now(),
       });
     } catch (error) {
+      this.runtime.logger.warn('MEGA readonly sync attempt failed.', {
+        shareId: share.id,
+        accountId: account.id,
+        localPath: share.localPath,
+        errorName: error instanceof Error ? error.name : undefined,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        aborted: Boolean(signal?.aborted) || (error instanceof Error && error.name === 'AbortError'),
+      });
       const failure = describeMegaSyncFailure(error, share.localPath, signal);
       const needsAuth = /session|auth|credential|login|MEGA API error -15/i.test(failure.detail);
+      const localMirrorAvailable = await hasUsableMegaMirror(share.localPath);
+      const keepMirrorReady =
+        localMirrorAvailable &&
+        !needsAuth &&
+        (failure.code === MEGA_SYNC_TIMEOUT_CODE ||
+          failure.code === 'MEGA_FETCH_FAILED' ||
+          failure.code === 'MEGA_API_LOCKED' ||
+          failure.code === 'MEGA_RATE_LIMITED' ||
+          failure.code === 'MEGA_LOCAL_MIRROR_CHANGED');
       this.syncStates.set(share.id, {
-        status: needsAuth ? 'needs-auth' : 'attention',
-        detail: failure.detail,
-        badges: [needsAuth ? 'Reconnect' : 'Repair'],
+        status: keepMirrorReady ? 'ready' : needsAuth ? 'needs-auth' : 'attention',
+        detail: keepMirrorReady
+          ? 'MEGA readonly mirror is available locally. The latest refresh did not complete and will retry automatically.'
+          : failure.detail,
+        badges: keepMirrorReady ? [...READONLY_BADGES, 'Retrying'] : [needsAuth ? 'Reconnect' : 'Repair'],
         diagnostic: {
           code: failure.code,
           title: failure.summary,
@@ -707,12 +757,25 @@ export class MegaTransportAdapter {
     rootHandle: string,
     signal?: AbortSignal
   ): Promise<MegaFetchedTree> {
-    const response = await this.apiCommand<Record<string, unknown>>(
-      buildMegaFetchNodesCommand({ partialRoot: rootHandle }),
-      session,
-      signal
-    );
-    const snapshot = parseMegaFetchNodesSnapshot(response);
+    let snapshot: MegaFetchNodesSnapshot;
+    try {
+      const response = await this.apiCommand<Record<string, unknown>>(
+        buildMegaFetchNodesCommand({ partialRoot: rootHandle }),
+        session,
+        signal
+      );
+      snapshot = parseMegaFetchNodesSnapshot(response);
+    } catch (error) {
+      if (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) {
+        throw error;
+      }
+      this.runtime.logger.warn('MEGA partial tree fetch failed; falling back to a full node snapshot.', {
+        email: session.email,
+        rootHandle,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      snapshot = await this.fetchNodesSnapshot(session, signal);
+    }
     const keyManager = await this.fetchKeyManagerState(session, signal);
     return {
       snapshot,
@@ -738,23 +801,25 @@ export class MegaTransportAdapter {
   }
 
   private async fetchActionPackets(session: MegaSession, scsn: string, signal?: AbortSignal): Promise<MegaActionPacketBatch> {
-    const response = await this.fetchImpl(buildMegaScChannelUrl({ scsn, sessionId: session.sid }), {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-      },
-      signal,
-    });
-    if (!response.ok) {
-      throw new Error(`MEGA action-packet request failed with HTTP ${response.status}.`);
-    }
-    const payload = (await response.json()) as unknown;
-    if (typeof payload === 'number') {
-      const error = new Error(`MEGA API error ${payload}.`) as MegaApiError;
-      error.code = payload;
-      throw error;
-    }
-    return parseMegaActionPacketBatch(payload);
+    return withMegaApiRetry(async () => {
+      const response = await this.fetchImpl(buildMegaScChannelUrl({ scsn, sessionId: session.sid }), {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+        },
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(`MEGA action-packet request failed with HTTP ${response.status}.`);
+      }
+      const payload = (await response.json()) as unknown;
+      if (typeof payload === 'number') {
+        const error = new Error(`MEGA API error ${payload}.`) as MegaApiError;
+        error.code = payload;
+        throw error;
+      }
+      return parseMegaActionPacketBatch(payload);
+    }, signal);
   }
 
   private async resolveIncomingShareDescriptor(
@@ -791,16 +856,18 @@ export class MegaTransportAdapter {
     session?: MegaSession,
     signal?: AbortSignal
   ): Promise<T> {
-    const response = await this.apiClient.requestSingle<T | number>(command, {
-      sessionId: session?.sid,
-      signal,
-    });
-    if (typeof response === 'number') {
-      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
-      error.code = response;
-      throw error;
-    }
-    return response;
+    return withMegaApiRetry(async () => {
+      const response = await this.apiClient.requestSingle<T | number>(command, {
+        sessionId: session?.sid,
+        signal,
+      });
+      if (typeof response === 'number') {
+        const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+        error.code = response;
+        throw error;
+      }
+      return response;
+    }, signal);
   }
 
   private usesPublicLinkMirror(share: ManagedShare): boolean {
@@ -885,6 +952,70 @@ function isMegaSessionInvalid(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : String(error);
   return /MEGA API error -15|session|auth|login/i.test(message);
+}
+
+function isMegaRetryableApiError(error: unknown): error is MegaApiError {
+  const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
+  return code !== null && MEGA_RETRYABLE_API_ERROR_CODES.has(code);
+}
+
+function isMegaRetryableTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /fetch failed/i.test(message) ||
+    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|network/i.test(message) ||
+    /HTTP 5\d\d/i.test(message)
+  );
+}
+
+async function withMegaApiRetry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) ||
+        attempt >= MEGA_API_RETRY_DELAYS_MS.length
+      ) {
+        throw error;
+      }
+      const delayMs = MEGA_API_RETRY_DELAYS_MS[attempt] ?? MEGA_API_RETRY_DELAYS_MS[MEGA_API_RETRY_DELAYS_MS.length - 1];
+      attempt += 1;
+      await waitForMegaRetry(delayMs, signal);
+    }
+  }
+}
+
+async function waitForMegaRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    throw createMegaAbortError();
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+    timer.unref?.();
+
+    const onAbort = () => {
+      cleanup();
+      reject(createMegaAbortError());
+    };
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function createMegaAbortError(): Error {
+  const error = new Error('This operation was aborted.');
+  error.name = 'AbortError';
+  return error;
 }
 
 function createMegaReconnectRequiredError(error: unknown): Error {
@@ -1341,6 +1472,17 @@ function collectActionPacketHandles(packet: Record<string, unknown>): string[] {
   return [...result];
 }
 
+function summarizeActionPacketActions(packets: readonly Record<string, unknown>[]): string[] {
+  const actions = new Set<string>();
+  for (const packet of packets) {
+    const action = typeof packet.a === 'string' ? packet.a.trim() : '';
+    if (action) {
+      actions.add(action);
+    }
+  }
+  return [...actions];
+}
+
 function collectPacketHandlesRecursive(value: unknown, result: Set<string>, key?: string): void {
   if (typeof value === 'string') {
     if (key && ACTION_PACKET_HANDLE_KEYS.has(key) && value.trim()) {
@@ -1389,6 +1531,41 @@ function collectTreeHandles(tree: DecryptedMegaTree): string[] {
   return [...tree.nodesByHandle.keys()].sort();
 }
 
+function listMegaTopLevelEntryNames(tree: DecryptedMegaTree): string[] {
+  return [...(tree.childrenByParent.get(tree.root.handle) ?? [])]
+    .map((node) => node.name.trim())
+    .filter((name) => name.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function listUnsupportedMegaTopLevelEntryNames(names: readonly string[]): string[] {
+  return names.filter((name) => !EXPECTED_MEGA_TOP_LEVEL_NAMES.has(name));
+}
+
+function logUnsupportedMegaTopLevelEntries(
+  runtime: Pick<IntegrationRuntime, 'logger'>,
+  shareId: string,
+  previousNames: readonly string[] | undefined,
+  currentTopLevelNames: readonly string[]
+): void {
+  const previousUnsupported = new Set(previousNames ?? []);
+  const currentUnsupported = listUnsupportedMegaTopLevelEntryNames(currentTopLevelNames);
+  const currentUnsupportedSet = new Set(currentUnsupported);
+  const added = currentUnsupported.filter((name) => !previousUnsupported.has(name));
+  const removed = [...previousUnsupported]
+    .filter((name) => !currentUnsupportedSet.has(name))
+    .sort((left, right) => left.localeCompare(right));
+  if (added.length === 0 && removed.length === 0) {
+    return;
+  }
+  runtime.logger.log('MEGA readonly share reported unsupported top-level entries.', {
+    shareId,
+    added,
+    removed,
+    current: currentUnsupported,
+  });
+}
+
 function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\/+/, '');
 }
@@ -1405,6 +1582,46 @@ function summarizeRefreshResult(
     changes.push(`${result.removed.length} removed`);
   }
   return changes.length > 0 ? `${prefix} ${changes.join(', ')}.` : prefix;
+}
+
+function logMegaMirrorRefreshEvents(
+  runtime: Pick<IntegrationRuntime, 'logger'>,
+  shareId: string,
+  previousEntries: Record<string, ProviderRefreshManifestEntry>,
+  result: {
+    downloaded: string[];
+    manifest: { entries: Record<string, ProviderRefreshManifestEntry> };
+  }
+): void {
+  for (const relativePath of result.downloaded) {
+    const nextEntry = result.manifest.entries[relativePath];
+    if (!nextEntry || nextEntry.kind !== 'file') {
+      continue;
+    }
+    const previousEntry = previousEntries[relativePath];
+    const basePayload = {
+      shareId,
+      path: relativePath,
+      size: nextEntry.size ?? 0,
+    };
+    if (!previousEntry || previousEntry.kind !== 'file') {
+      if (relativePath.startsWith('blocks/')) {
+        runtime.logger.log('MEGA readonly share reported new block.', basePayload);
+      } else {
+        runtime.logger.log('MEGA readonly share reported new file.', basePayload);
+      }
+      continue;
+    }
+    runtime.logger.log(
+      relativePath.startsWith('blocks/')
+        ? 'MEGA readonly share reported updated block.'
+        : 'MEGA readonly share reported updated file.',
+      {
+        ...basePayload,
+        previousSize: previousEntry.size ?? 0,
+      }
+    );
+  }
 }
 
 class MegaReadonlyRemoteAdapter implements ProviderRefreshRemoteAdapter {
@@ -1476,6 +1693,26 @@ function describeMegaSyncFailure(
       detail:
         'Nearbytes saw the local MEGA mirror change while files were being refreshed. It will retry automatically. Open the runtime logs if the same location keeps failing.',
     };
+  }
+
+  if (isMegaRetryableApiError(error)) {
+    const code = (error as MegaApiError).code;
+    if (code === -3) {
+      return {
+        code: 'MEGA_API_LOCKED',
+        summary: 'MEGA asked Nearbytes to retry',
+        detail:
+          'MEGA temporarily locked this mirror refresh request. Nearbytes will keep the current local mirror and retry automatically.',
+      };
+    }
+    if (code === -4) {
+      return {
+        code: 'MEGA_RATE_LIMITED',
+        summary: 'MEGA rate limited this refresh',
+        detail:
+          'MEGA temporarily rate limited this mirror refresh request. Nearbytes will keep the current local mirror and retry automatically.',
+      };
+    }
   }
 
   if (/fetch failed/i.test(rawMessage)) {
@@ -1563,6 +1800,19 @@ function decodeMegaPrivateKey(value: Buffer): MegaPrivateKey {
     privateExponent: d,
     modulusLength: bufferLengthForBigInt(p * q),
   };
+}
+
+async function hasUsableMegaMirror(localPath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(localPath);
+    if (!stats.isDirectory()) {
+      return false;
+    }
+    const entries = await fs.readdir(localPath);
+    return entries.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function bytesToBigInt(value: Buffer): bigint {

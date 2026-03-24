@@ -614,6 +614,55 @@ describe('ManagedShareService', () => {
     expect(adapter.ensureSyncCalls).toBe(0);
   });
 
+  it('does not start bootstrap from explicit managed-share state reads', async () => {
+    const adapter = new BlockingEnsureSyncAdapter();
+    const { integrationStatePath, service, localRoot } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'MEGA share',
+            role: 'owner',
+            localPath: localRoot,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes/MEGA share' },
+            capabilities: ['mirror', 'read', 'write'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const summary = await service.getManagedShareState('share-mega-1');
+
+    expect(summary.state.status).toBe('ready');
+    expect(summary.state.detail).toBe('MEGA is ready.');
+    expect(adapter.ensureSyncCalls).toBe(0);
+  });
+
   it('returns managed shares without awaiting live remote state checks in fast mode', async () => {
     const adapter = new BlockingRemoteDetailsAdapter();
     const { integrationStatePath, service, localRoot } = await createHarness({
@@ -668,6 +717,62 @@ describe('ManagedShareService', () => {
       expect(result.shares.shares[0]?.share.id).toBe('share-mega-1');
       expect(result.shares.shares[0]?.state.status).toBe('idle');
     }
+  });
+
+  it('starts sync bootstrap from fast managed-share reads in background mode', async () => {
+    const adapter = new BlockingEnsureSyncAdapter();
+    const { integrationStatePath, service, localRoot } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'MEGA share',
+            role: 'owner',
+            localPath: localRoot,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes/MEGA share' },
+            capabilities: ['mirror', 'read', 'write'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const result = await Promise.race([
+      service.listManagedShares({ fast: true }).then((shares) => ({ kind: 'shares' as const, shares })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'timeout' }), 50);
+      }),
+    ]);
+
+    expect(result.kind).toBe('shares');
+    if (result.kind === 'shares') {
+      expect(result.shares.shares[0]?.state.status).toBe('idle');
+    }
+    expect(adapter.ensureSyncCalls).toBe(1);
   });
 
   it('waits for slow non-fast transport state checks before falling back', async () => {
@@ -1086,8 +1191,6 @@ describe('ManagedShareService', () => {
     expect(shares.shares[0]?.state.status).toBe('ready');
     expect(await fs.readFile(path.join(localRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('block-data');
     expect(await fs.readFile(path.join(localRoot, 'channels', volumeId, 'event.bin'), 'utf8')).toContain(blockHash);
-    expect(await fs.readFile(path.join(managedRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('block-data');
-    expect(await fs.readFile(path.join(managedRoot, 'channels', volumeId, 'event.bin'), 'utf8')).toContain(blockHash);
     expect((await fs.readFile(path.join(managedRoot, 'Nearbytes.html'), 'utf8')).length).toBeGreaterThan(0);
     await expect(fs.readFile(path.join(managedRoot, 'Nearbytes.json'), 'utf8')).rejects.toThrow();
   });

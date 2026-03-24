@@ -1645,15 +1645,15 @@
 
   function escapeLogHtml(value: string): string {
     return value
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function stripUnsupportedControlChars(value: string): string {
-    return value.replaceAll(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, '');
+    return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, '');
   }
 
   function ansiCodeToClass(code: number): string | null {
@@ -1979,7 +1979,8 @@
     const issue = megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
     const reconnectIssue = megaProviderReconnectIssue();
     const loading = providersLoading || sharesLoading || incomingLoading;
-    const hasBlockingError = shareLoadError || incomingLoadError;
+    const hasUsableMegaShare = shares.some((summary) => summary.state.status === 'ready');
+    const hasBlockingError = shareLoadError || (!hasUsableMegaShare ? incomingLoadError : '');
     const inProgress = loading || syncing > 0;
     const progressPercent = total > 0 && inProgress ? Math.max(6, Math.min(98, Math.round((ready / total) * 100))) : null;
 
@@ -3423,7 +3424,8 @@
 
       const incomingSharesPromise = withPanelRequestTimeout(
         'Incoming share discovery',
-        (signal) => listIncomingManagedShares({ signal, fast: !keepVisible })
+        (signal) => listIncomingManagedShares({ signal, fast: !keepVisible }),
+        15_000
       )
         .then((incomingSharesResponse) => {
           incomingManagedShareOffers = sortIncomingManagedShareOffers(incomingSharesResponse.shares);
