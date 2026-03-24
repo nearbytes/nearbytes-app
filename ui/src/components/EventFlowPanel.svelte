@@ -5,13 +5,10 @@
     watchSources,
     watchVolume,
     getTimeline,
-    getEventStorageLocations,
     type Auth,
-    type RootsConfigResponse,
     type RootRuntimeStatus,
+    type SourceVolumeUsage,
     type SourceProvider,
-    type TimelineEvent,
-    type EventStorageLocationEntry,
     type VolumeWatchConnection,
     type VolumeWatchUpdate,
     type SourceWatchUpdate,
@@ -36,13 +33,18 @@
     exists: boolean;
     canWrite: boolean;
     availableBytes?: number;
+    sessionEventCount: number;
+    sessionBlockCount: number;
+    totalEventCount: number;
+    totalBlockCount: number;
+    totalStoredBytes: number;
+    bandwidthInBytes: number;
+    bandwidthOutBytes: number;
     x: number;
     y: number;
     radius: number;
     pulse: number;
     health: 'ok' | 'warn' | 'error' | 'offline';
-    eventCount: number;
-    blockCount: number;
     lastActivity: number;
   }
 
@@ -88,7 +90,22 @@
   let hoveredNode = $state<string | null>(null);
   let totalEvents = $state(0);
   let totalBlocks = $state(0);
+  let sessionEvents = $state(0);
+  let sessionBlocks = $state(0);
+  let sessionBandwidthInBytes = $state(0);
+  let sessionBandwidthOutBytes = $state(0);
   let lastRefresh = $state(0);
+  let statsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const baselineUsageByNode = new Map<string, SourceVolumeUsage>();
+  const previousUsageByNode = new Map<string, SourceVolumeUsage>();
+  const EMPTY_USAGE: SourceVolumeUsage = {
+    volumeId: '',
+    historyBytes: 0,
+    historyFileCount: 0,
+    fileBytes: 0,
+    fileCount: 0,
+  };
 
   const PROVIDER_COLORS: Record<string, string> = {
     local: '#22d3ee',
@@ -140,11 +157,39 @@
         radius: 32,
         pulse: 0,
         health,
-        eventCount: 0,
-        blockCount: 0,
+        sessionEventCount: 0,
+        sessionBlockCount: 0,
+        totalEventCount: 0,
+        totalBlockCount: 0,
+        totalStoredBytes: 0,
+        bandwidthInBytes: 0,
+        bandwidthOutBytes: 0,
         lastActivity: 0,
       };
     });
+  }
+
+  function aggregateVolumeUsage(usage: RootRuntimeStatus['usage']): SourceVolumeUsage {
+    if (volumeId) {
+      return usage.volumeUsages.find((entry) => entry.volumeId === volumeId) ?? EMPTY_USAGE;
+    }
+    return usage.volumeUsages.reduce<SourceVolumeUsage>((aggregate, entry) => ({
+      volumeId: '',
+      historyBytes: aggregate.historyBytes + entry.historyBytes,
+      historyFileCount: aggregate.historyFileCount + entry.historyFileCount,
+      fileBytes: aggregate.fileBytes + entry.fileBytes,
+      fileCount: aggregate.fileCount + entry.fileCount,
+    }), EMPTY_USAGE);
+  }
+
+  function scheduleStatsRefresh(delayMs = 350): void {
+    if (statsRefreshTimer) {
+      clearTimeout(statsRefreshTimer);
+    }
+    statsRefreshTimer = setTimeout(() => {
+      statsRefreshTimer = null;
+      void loadStorageState();
+    }, delayMs);
   }
 
   /* ── Particles ── */
@@ -197,30 +242,50 @@
       loading = true;
       error = '';
       const rootsResp = await getRootsConfig({ includeUsage: true });
-      storageNodes = layoutNodes(rootsResp.runtime.sources);
+      const nextNodes = layoutNodes(rootsResp.runtime.sources);
+
+      for (const node of nextNodes) {
+        const source = rootsResp.runtime.sources.find((entry) => entry.id === node.id);
+        if (!source) {
+          continue;
+        }
+        const currentUsage = aggregateVolumeUsage(source.usage);
+        const baselineUsage = baselineUsageByNode.get(node.id) ?? currentUsage;
+        const previousUsage = previousUsageByNode.get(node.id) ?? currentUsage;
+
+        if (!baselineUsageByNode.has(node.id)) {
+          baselineUsageByNode.set(node.id, baselineUsage);
+        }
+
+        const currentTotalBytes = currentUsage.historyBytes + currentUsage.fileBytes;
+        const previousTotalBytes = previousUsage.historyBytes + previousUsage.fileBytes;
+        const byteDelta = currentTotalBytes - previousTotalBytes;
+
+        node.sessionEventCount = Math.max(0, currentUsage.historyFileCount - baselineUsage.historyFileCount);
+        node.sessionBlockCount = Math.max(0, currentUsage.fileCount - baselineUsage.fileCount);
+        node.totalEventCount = currentUsage.historyFileCount;
+        node.totalBlockCount = currentUsage.fileCount;
+        node.totalStoredBytes = currentTotalBytes;
+        node.bandwidthInBytes = Math.max(0, byteDelta);
+        node.bandwidthOutBytes = Math.max(0, -byteDelta);
+
+        previousUsageByNode.set(node.id, currentUsage);
+      }
+
+      storageNodes = nextNodes;
+      sessionEvents = nextNodes.reduce((sum, node) => sum + node.sessionEventCount, 0);
+      sessionBlocks = nextNodes.reduce((sum, node) => sum + node.sessionBlockCount, 0);
+      sessionBandwidthInBytes = nextNodes.reduce((sum, node) => sum + node.bandwidthInBytes, 0);
+      sessionBandwidthOutBytes = nextNodes.reduce((sum, node) => sum + node.bandwidthOutBytes, 0);
+      totalBlocks = nextNodes.reduce((sum, node) => sum + node.totalBlockCount, 0);
 
       if (auth && volumeId) {
         try {
           const timeline = await getTimeline(auth);
           totalEvents = timeline.eventCount;
-
-          // Sample recent events for storage location data
-          const recentEvents = timeline.events.slice(-10);
-          for (const evt of recentEvents) {
-            try {
-              const locations = await getEventStorageLocations(auth, evt.eventHash);
-              for (const loc of locations.locations) {
-                const node = storageNodes.find(n => n.id === loc.rootId);
-                if (node) {
-                  if (loc.hasEventFile) node.eventCount++;
-                  if (loc.hasDataBlock) node.blockCount++;
-                }
-              }
-            } catch { /* best-effort */ }
-          }
-
-          totalBlocks = storageNodes.reduce((sum, n) => sum + n.blockCount, 0);
         } catch { /* no volume open */ }
+      } else {
+        totalEvents = nextNodes.reduce((sum, node) => sum + node.totalEventCount, 0);
       }
 
       lastRefresh = Date.now();
@@ -245,6 +310,7 @@
           node.pulse = 1;
           node.lastActivity = Date.now();
         }
+        scheduleStatsRefresh();
         // Visual: spawn sync particles between all pairs
         if (storageNodes.length >= 2) {
           spawnParticle(storageNodes[0].id, storageNodes[storageNodes.length - 1].id, 'sync', 'rescan');
@@ -275,20 +341,17 @@
 
           if (event.change === 'add' || event.change === 'change') {
             if (isChannel) {
-              primaryNode.eventCount++;
-              totalEvents++;
               addActivity('incoming', `Event: ${fileName.slice(0, 16)}… (${event.change})`, undefined, primaryNode.id);
               // Spawn replication particles to other nodes
               spawnReplicationBurst(primaryNode.id, fileName.slice(0, 8));
             } else if (isBlock) {
-              primaryNode.blockCount++;
-              totalBlocks++;
               addActivity('incoming', `Block: ${fileName.slice(0, 16)}… (${event.change})`, undefined, primaryNode.id);
               spawnReplicationBurst(primaryNode.id, fileName.slice(0, 8));
             }
           } else if (event.change === 'unlink') {
             addActivity('outgoing', `Removed: ${fileName.slice(0, 16)}…`, primaryNode.id);
           }
+          scheduleStatsRefresh(250);
         },
         onError(err) {
           const msg = err instanceof Error ? err.message : 'message' in err ? err.message : 'Unknown error';
@@ -501,10 +564,10 @@
       ctx.fillText(node.label, node.x, node.y + node.radius + 14);
 
       // Stats below
-      if (node.eventCount > 0 || node.blockCount > 0) {
+      if (node.totalEventCount > 0 || node.totalBlockCount > 0) {
         ctx.font = '9px system-ui, sans-serif';
         ctx.fillStyle = 'rgba(148,163,184,0.6)';
-        ctx.fillText(`${node.eventCount}E ${node.blockCount}B`, node.x, node.y + node.radius + 26);
+        ctx.fillText(`Σ ${node.totalEventCount}E ${node.totalBlockCount}B`, node.x, node.y + node.radius + 26);
       }
     }
 
@@ -577,6 +640,7 @@
 
   onDestroy(() => {
     if (animFrameId !== null) cancelAnimationFrame(animFrameId);
+    if (statsRefreshTimer) clearTimeout(statsRefreshTimer);
     disconnectWatchers();
   });
 
@@ -606,6 +670,8 @@
       <div class="ef-stats">
         <span class="ef-stat"><span class="ef-stat-dot event"></span>{totalEvents} events</span>
         <span class="ef-stat"><span class="ef-stat-dot block"></span>{totalBlocks} blocks</span>
+        <span class="ef-stat"><span class="ef-stat-dot sync"></span>session +{sessionEvents}E +{sessionBlocks}B</span>
+        <span class="ef-stat"><span class="ef-stat-dot sync"></span>{formatBytes(sessionBandwidthInBytes)} in / {formatBytes(sessionBandwidthOutBytes)} out</span>
         <span class="ef-stat"><span class="ef-stat-dot node"></span>{storageNodes.length} storage nodes</span>
       </div>
     </div>
@@ -638,8 +704,13 @@
           <div class="ef-tooltip-provider">{PROVIDER_ICONS[node.provider] ?? '📂'} {node.provider}</div>
           <div class="ef-tooltip-path">{node.path}</div>
           <div class="ef-tooltip-stats">
-            <span>Events: {node.eventCount}</span>
-            <span>Blocks: {node.blockCount}</span>
+            <span>Session events: +{node.sessionEventCount}</span>
+            <span>Session blocks: +{node.sessionBlockCount}</span>
+            <span>Total events: {node.totalEventCount}</span>
+            <span>Total blocks: {node.totalBlockCount}</span>
+            <span>Bandwidth in: {formatBytes(node.bandwidthInBytes)}</span>
+            <span>Bandwidth out: {formatBytes(node.bandwidthOutBytes)}</span>
+            <span>Stored here: {formatBytes(node.totalStoredBytes)}</span>
             <span>Free: {formatBytes(node.availableBytes)}</span>
           </div>
           <div class="ef-tooltip-health">
