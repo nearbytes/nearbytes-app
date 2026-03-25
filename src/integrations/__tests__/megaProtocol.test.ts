@@ -189,6 +189,24 @@ describe('megaProtocol', () => {
     expect(response).toBe(-15);
   });
 
+  it('surfaces invalid JSON responses with a MEGA-specific error', async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response('v10\x00hiko\x0e\x01', {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+        },
+      });
+    });
+    const client = new MegaApiClient({
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.requestSingle(buildMegaFetchNodesCommand())).rejects.toThrow(
+      'MEGA API returned invalid JSON. Response started with: "v10\\u0000hiko\\u000e\\u0001" Open the runtime logs and retry.'
+    );
+  });
+
   it('uses MEGA base64url encoding for opaque binary blobs', () => {
     const value = randomBytes(32);
     const encoded = encodeMegaBase64Url(value);

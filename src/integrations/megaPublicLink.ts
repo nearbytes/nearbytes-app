@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
+import { parseMegaJsonResponse } from './megaProtocol.js';
 
 const MEGA_PUBLIC_API_URL = 'https://g.api.mega.co.nz/cs';
 const ZERO_IV = Buffer.alloc(16, 0);
@@ -387,7 +388,7 @@ async function megaApiRequest<T>(
   if (!response.ok) {
     throw new Error(`MEGA public API failed with HTTP ${response.status}.`);
   }
-  const json = (await response.json()) as unknown;
+  const json = await parseMegaJsonResponse(response, 'MEGA public API');
   const result = unwrapMegaApiResult(json);
   if (typeof result === 'number' && result < 0) {
     throw new Error(`MEGA public API returned error ${result}.`);

@@ -9,6 +9,7 @@ import {
   MegaApiClient,
   parseMegaActionPacketBatch,
   parseMegaFetchNodesSnapshot,
+  parseMegaJsonResponse,
   type MegaActionPacketBatch,
   type MegaFetchNodesSnapshot,
   type MegaNodeRecord,
@@ -903,7 +904,7 @@ export class MegaTransportAdapter {
       if (!response.ok) {
         throw new Error(`MEGA action-packet request failed with HTTP ${response.status}.`);
       }
-      const payload = (await response.json()) as unknown;
+      const payload = await parseMegaJsonResponse(response, 'MEGA action-packet API');
       if (typeof payload === 'number') {
         const error = new Error(`MEGA API error ${payload}.`) as MegaApiError;
         error.code = payload;

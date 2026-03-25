@@ -114,7 +114,7 @@ export class MegaApiClient {
       throw new Error(`MEGA API request failed with HTTP ${response.status}.`);
     }
 
-    const payload = (await response.json()) as unknown;
+    const payload = await parseMegaJsonResponse(response, 'MEGA API');
     if (Array.isArray(payload)) {
       return payload as readonly T[];
     }
@@ -315,4 +315,25 @@ function asRecordArray(value: unknown): readonly Record<string, unknown>[] {
     return [];
   }
   return value.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object' && !Array.isArray(entry));
+}
+
+export async function parseMegaJsonResponse(response: Response, label: string): Promise<unknown> {
+  const raw = await response.text();
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    const preview = summarizeMegaPayloadPreview(raw);
+    throw new Error(
+      `${label} returned invalid JSON.${preview ? ` Response started with: ${preview}` : ''} Open the runtime logs and retry.`
+    );
+  }
+}
+
+function summarizeMegaPayloadPreview(raw: string): string {
+  const normalized = raw.replace(/\s+/gu, ' ').trim();
+  if (!normalized) {
+    return '';
+  }
+  const preview = normalized.slice(0, 48);
+  return JSON.stringify(preview);
 }
