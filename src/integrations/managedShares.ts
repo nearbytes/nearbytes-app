@@ -191,10 +191,8 @@ export class ManagedShareService {
         preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
       };
     }
-    if (options.fast !== true) {
-      this.requestBackgroundMaintenance('listAccounts', state);
-      this.scheduleManagedShareSyncs(state);
-    }
+    this.requestBackgroundMaintenance('listAccounts', state);
+    this.scheduleManagedShareSyncs(state);
     const setupStates = options.fast
       ? this.fallbackProviderSetupStates()
       : await this.withSoftTimeout(
@@ -377,7 +375,7 @@ export class ManagedShareService {
             'Managed share inventory refresh timed out; using the last known share state.'
           )
         : state;
-    if (this.readMaintenanceMode === 'background' && options.fast !== true) {
+    if (this.readMaintenanceMode === 'background') {
       this.requestBackgroundMaintenance('listManagedShares', preparedState);
     }
     if (this.readMaintenanceMode === 'inline' && options.fast !== true) {
@@ -1269,6 +1267,9 @@ export class ManagedShareService {
   }
 
   private shouldManageShareThroughMirrorInventory(provider: string, share: ManagedShare): boolean {
+    if (provider === 'mega' && isMegaOwnerBaseShare(share)) {
+      return false;
+    }
     const remotePath = getManagedShareRemotePath(provider, share.remoteDescriptor);
     if (!remotePath) {
       return false;
@@ -1585,8 +1586,25 @@ export class ManagedShareService {
   }
 
   private shouldRunBackgroundMaintenance(stateSnapshot: IntegrationStateSnapshot): boolean {
+    if (this.hasMissingDefaultManagedShares(stateSnapshot)) {
+      return true;
+    }
     const signature = this.computeBackgroundMaintenanceSignature(stateSnapshot);
     return !this.hasFreshBackgroundMaintenance(stateSnapshot, signature);
+  }
+
+  private hasMissingDefaultManagedShares(stateSnapshot: IntegrationStateSnapshot): boolean {
+    return stateSnapshot.accounts.some((account) => {
+      const provider = normalizeProvider(account.provider);
+      if (provider !== 'mega' || !this.isOperationalAccount(account)) {
+        return false;
+      }
+      return !stateSnapshot.managedShares.some((share) =>
+        normalizeProvider(share.provider) === 'mega' &&
+        share.accountId === account.id &&
+        isMegaOwnerBaseShare(share)
+      );
+    });
   }
 
   private hasFreshBackgroundMaintenance(stateSnapshot: IntegrationStateSnapshot, signature: string): boolean {
@@ -2238,10 +2256,6 @@ export class ManagedShareService {
     if (provider !== 'mega') {
       return;
     }
-    const adapter = this.adapters.get(provider);
-    if (adapter?.listIncomingShares) {
-      return;
-    }
 
     const state = options.stateSnapshot ?? (await this.loadState());
     const existing = state.managedShares.find((share) =>
@@ -2290,7 +2304,7 @@ export class ManagedShareService {
         shareName: 'nearbytes',
         ...(inspection ? { legacyLocalMirror: true } : {}),
       },
-      capabilities: ['mirror', 'read', 'write'],
+      capabilities: ['mirror', 'read', 'write', 'invite'],
       invitationEmails: [],
       createdAt: this.runtime.now(),
       updatedAt: this.runtime.now(),

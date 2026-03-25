@@ -564,7 +564,7 @@ describe('ManagedShareService', () => {
     }
   });
 
-  it('does not start sync bootstrap from fast account reads', async () => {
+  it('starts sync bootstrap from fast account reads in background mode', async () => {
     const adapter = new BlockingEnsureSyncAdapter();
     const { integrationStatePath, service } = await createHarness({
       adapters: [adapter],
@@ -611,7 +611,7 @@ describe('ManagedShareService', () => {
     await service.listAccounts({ fast: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(adapter.ensureSyncCalls).toBe(0);
+    expect(adapter.ensureSyncCalls).toBe(1);
   });
 
   it('starts sync bootstrap during background startup warmup', async () => {
@@ -1569,11 +1569,16 @@ describe('ManagedShareService', () => {
     });
 
     const shares = await service.listManagedShares();
-    expect(shares.shares).toHaveLength(1);
-    expect(shares.shares[0]?.share.role).toBe('recipient');
-    expect(shares.shares[0]?.share.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
-    expect(shares.shares[0]?.share.localPath).toBe(
-      path.resolve(path.join(managedRoot, 'mega', 'friend-example-com', `${'nearbytes'} ${shares.shares[0]!.share.id.slice(-6)}`))
+    expect(shares.shares).toHaveLength(2);
+
+    const ownerShare = shares.shares.find((entry) => entry.share.role === 'owner');
+    expect(ownerShare?.share.remoteDescriptor.remotePath).toBe('/nearbytes');
+    expect(ownerShare?.share.localPath).toBe(path.resolve(path.join(managedRoot, 'mega', 'reader-example-com', 'nearbytes')));
+
+    const recipientShare = shares.shares.find((entry) => entry.share.role === 'recipient');
+    expect(recipientShare?.share.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
+    expect(recipientShare?.share.localPath).toBe(
+      path.resolve(path.join(managedRoot, 'mega', 'friend-example-com', `${'nearbytes'} ${recipientShare!.share.id.slice(-6)}`))
     );
   });
 

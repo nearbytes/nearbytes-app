@@ -5,6 +5,7 @@ import * as fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { ensureMegaCmdForDev } from './megacmd-helper.mjs';
 
 const repoRoot = process.cwd();
 const args = process.argv.slice(2);
@@ -37,6 +38,15 @@ async function main() {
         }
       : {}),
   };
+
+  const megaCmdDir = await ensureMegaCmdForDev(repoRoot).catch((error) => {
+    console.warn(`[dev-run] MEGAcmd helper setup skipped: ${formatError(error)}`);
+    return null;
+  });
+  if (megaCmdDir) {
+    childEnv.NEARBYTES_MEGACMD_DIR = megaCmdDir;
+    console.log(`[dev-run] using MEGAcmd helper from ${megaCmdDir}`);
+  }
 
   let uiChild = null;
   console.log(`[dev-run] starting renderer dev server on ${devUiUrl}`);

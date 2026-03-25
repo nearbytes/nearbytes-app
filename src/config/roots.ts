@@ -228,11 +228,14 @@ export function parseRootsConfig(value: unknown): RootsConfig {
       destinations: normalizeDestinationList(volume.destinations, sourceIds),
     } satisfies VolumePolicyEntry;
   });
+  const prunedVolumes = normalizedVolumes.filter(
+    (volume) => !destinationsEqual(resolveMergedVolumeDestinations(normalizedDefault, volume), normalizedDefault.destinations)
+  );
   return {
     version: ROOTS_CONFIG_VERSION,
     sources: normalizedSources,
     defaultVolume: normalizedDefault,
-    volumes: normalizedVolumes,
+    volumes: prunedVolumes,
   };
 }
 
@@ -311,6 +314,46 @@ export function resolveVolumeDestinations(config: RootsConfig, volumeId: string)
 export function getExplicitVolumePolicy(config: RootsConfig, volumeId: string): VolumePolicyEntry | undefined {
   const normalizedVolumeId = volumeId.trim().toLowerCase();
   return config.volumes.find((entry) => entry.volumeId === normalizedVolumeId);
+}
+
+function resolveMergedVolumeDestinations(
+  defaultVolume: DefaultVolumePolicy,
+  explicit: VolumePolicyEntry
+): VolumeDestinationConfig[] {
+  const merged = new Map<string, VolumeDestinationConfig>();
+  for (const destination of defaultVolume.destinations) {
+    merged.set(destination.sourceId, { ...destination });
+  }
+  for (const destination of explicit.destinations) {
+    merged.set(destination.sourceId, { ...destination });
+  }
+  return Array.from(merged.values());
+}
+
+function destinationsEqual(
+  left: readonly VolumeDestinationConfig[],
+  right: readonly VolumeDestinationConfig[]
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const leftKeys = destinationComparisonKeys(left);
+  const rightKeys = destinationComparisonKeys(right);
+  return leftKeys.every((entry, index) => entry === rightKeys[index]);
+}
+
+function destinationComparisonKeys(destinations: readonly VolumeDestinationConfig[]): string[] {
+  return [...destinations]
+    .map((destination) => JSON.stringify({
+      sourceId: destination.sourceId,
+      enabled: destination.enabled,
+      storeEvents: destination.storeEvents,
+      storeBlocks: destination.storeBlocks,
+      copySourceBlocks: destination.copySourceBlocks,
+      reservePercent: destination.reservePercent,
+      fullPolicy: destination.fullPolicy,
+    }))
+    .sort((left, right) => left.localeCompare(right));
 }
 
 export function getSourceById(config: RootsConfig, sourceId: string): SourceConfigEntry | undefined {

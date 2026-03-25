@@ -1237,7 +1237,7 @@
       return entry.isConnected
         ? megaProviderReconnectIssue()
           ? 'Nearbytes can see the MEGA account, but MEGA requires account recovery before incoming-share mirroring can resume.'
-          : 'Mirror incoming MEGA shares and public links in Nearbytes. Owner-side MEGA folders are not listed here yet.'
+          : 'Mirror incoming MEGA shares and public links in Nearbytes, and expose your local MEGA owner root here for quick access.'
         : 'Mirror incoming MEGA shares and public links in Nearbytes.';
     }
     return entry.setup.detail || entry.description;
@@ -1465,6 +1465,30 @@
 
   function providerSupportsCreateAction(provider: string): boolean {
     return provider !== 'mega';
+  }
+
+  function destinationComparisonKey(destination: VolumeDestinationConfig): string {
+    return JSON.stringify({
+      sourceId: destination.sourceId,
+      enabled: destination.enabled,
+      storeEvents: destination.storeEvents,
+      storeBlocks: destination.storeBlocks,
+      copySourceBlocks: destination.copySourceBlocks,
+      reservePercent: destination.reservePercent,
+      fullPolicy: destination.fullPolicy,
+    });
+  }
+
+  function destinationsEqual(
+    left: readonly VolumeDestinationConfig[],
+    right: readonly VolumeDestinationConfig[]
+  ): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+    const leftKeys = [...left].map(destinationComparisonKey).sort((a, b) => a.localeCompare(b));
+    const rightKeys = [...right].map(destinationComparisonKey).sort((a, b) => a.localeCompare(b));
+    return leftKeys.every((entry, index) => entry === rightKeys[index]);
   }
 
   function providerAttachedShareCount(provider: string): number {
@@ -2289,7 +2313,7 @@
   function managedShareNarrative(summary: ManagedShareSummary): string {
     if (summary.state.status === 'ready') {
       if (summary.share.provider === 'mega' && summary.share.role === 'owner') {
-        return 'This is the local mirror of your own MEGA location. The folder below should stay in sync with your provider copy.';
+        return 'This is your local Nearbytes root for this MEGA account. You can open it here, but provider-side writable MEGA sync is not implemented yet.';
       }
       if (summary.share.provider === 'mega' && summary.share.role === 'recipient') {
         const ownerEmail = managedShareOwnerEmail(summary);
@@ -2431,7 +2455,7 @@
       return `Connect ${provider.label} first, then Nearbytes will manage its shares here.`;
     }
     if (provider.provider === 'mega') {
-      return 'Accepted incoming MEGA shares appear here as local mirrors. Your own MEGA account folders are not shown in this section yet.';
+      return 'Accepted incoming MEGA shares appear here as local mirrors. Your own MEGA Nearbytes root also appears here for local access.';
     }
     return 'Create a storage location here to make it available in Nearbytes.';
   }
@@ -2738,6 +2762,27 @@
     return configDraft?.volumes.find((entry) => entry.volumeId === targetVolumeId);
   }
 
+  function hasMeaningfulExplicitVolumePolicy(targetVolumeId: string): boolean {
+    if (!configDraft) {
+      return false;
+    }
+    const explicit = explicitVolumePolicy(targetVolumeId);
+    if (!explicit) {
+      return false;
+    }
+    return !destinationsEqual(effectiveDestinations(targetVolumeId), configDraft.defaultVolume.destinations);
+  }
+
+  function pruneRedundantVolumePolicy(targetVolumeId: string): void {
+    if (!configDraft || hasMeaningfulExplicitVolumePolicy(targetVolumeId)) {
+      return;
+    }
+    configDraft = {
+      ...configDraft,
+      volumes: configDraft.volumes.filter((entry) => entry.volumeId !== targetVolumeId),
+    };
+  }
+
   function ensureExplicitVolumePolicy(targetVolumeId: string): VolumePolicyEntry {
     if (!configDraft) {
       throw new Error('Config not loaded');
@@ -2788,6 +2833,7 @@
       ...configDraft,
       volumes: nextVolumes,
     };
+    pruneRedundantVolumePolicy(targetVolumeId);
   }
 
   function updateDestinationField<K extends keyof VolumeDestinationConfig>(
@@ -2986,16 +3032,17 @@
             ),
       volumes: nextVolumes,
     };
+    pruneRedundantVolumePolicy(targetVolumeId);
   }
 
   function hubStorageHeading(targetVolumeId: string): string {
-    return explicitVolumePolicy(targetVolumeId)
+    return hasMeaningfulExplicitVolumePolicy(targetVolumeId)
       ? 'Custom storage locations'
       : 'Default storage locations';
   }
 
   function hubStorageIntro(targetVolumeId: string): string {
-    return explicitVolumePolicy(targetVolumeId)
+    return hasMeaningfulExplicitVolumePolicy(targetVolumeId)
       ? 'These choices apply only here.'
       : 'These choices come from your default storage locations. Change any location below if you want different behavior here.';
   }
@@ -5584,7 +5631,7 @@
                 <Plus size={14} strokeWidth={2} />
                 <span>Add another location</span>
               </button>
-              {#if explicitVolumePolicy(volumeId)}
+              {#if hasMeaningfulExplicitVolumePolicy(volumeId)}
                 <ArmedActionButton
                   class="panel-btn subtle compact danger"
                   icon={Trash2}

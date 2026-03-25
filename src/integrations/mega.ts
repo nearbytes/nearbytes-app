@@ -254,8 +254,20 @@ export class MegaTransportAdapter {
     throw new Error('Native MEGA writable share creation is not supported. Connect an incoming share or a public link instead.');
   }
 
-  async invite(_share: ManagedShare, _input: InviteManagedShareInput, _account: ProviderAccount): Promise<void> {
-    throw new Error('Native MEGA share invitations are not supported.');
+  async invite(share: ManagedShare, input: InviteManagedShareInput, account: ProviderAccount): Promise<void> {
+    if (share.role !== 'owner') {
+      throw new Error('MEGA invitations are available only for owner shares.');
+    }
+    const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+    const emails = uniqueTrimmedStrings(input.emails);
+    if (emails.length === 0) {
+      return;
+    }
+    await this.withMegaHelperSession(account, async () => {
+      for (const email of emails) {
+        await this.runMegaHelperCommand('mega-share', ['-a', `--with=${email}`, '--level=0', remotePath]);
+      }
+    });
   }
 
   async acceptInvite(input: AcceptManagedShareInput, account: ProviderAccount): Promise<Partial<ManagedShare>> {
@@ -309,12 +321,17 @@ export class MegaTransportAdapter {
     return [];
   }
 
-  async listIncomingContactInvites(_account: ProviderAccount): Promise<IncomingProviderContactInvite[]> {
-    return [];
+  async listIncomingContactInvites(account: ProviderAccount): Promise<IncomingProviderContactInvite[]> {
+    return this.withMegaHelperSession(account, async () => {
+      const stdout = await this.runMegaHelperCommand('mega-showpcr', ['--in']);
+      return parseMegaIncomingContactInvites(stdout, account.id, this.provider);
+    });
   }
 
-  async acceptIncomingContactInvite(_account: ProviderAccount, _inviteId: string): Promise<void> {
-    throw new Error('Native MEGA contact invite acceptance is not supported.');
+  async acceptIncomingContactInvite(account: ProviderAccount, inviteId: string): Promise<void> {
+    await this.withMegaHelperSession(account, async () => {
+      await this.runMegaHelperCommand('mega-ipc', [inviteId, '-a']);
+    });
   }
 
   async getState(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState> {
@@ -322,6 +339,13 @@ export class MegaTransportAdapter {
       return {
         status: 'ready',
         detail: 'This legacy MEGA Nearbytes folder is attached locally. Nearbytes is preserving the local location after reconnect.',
+        badges: ['Local'],
+      };
+    }
+    if (share.role === 'owner') {
+      return {
+        status: 'ready',
+        detail: 'This MEGA owner folder is attached locally and can be opened from Nearbytes. Provider-side writable sync is not implemented yet.',
         badges: ['Local'],
       };
     }
@@ -350,7 +374,14 @@ export class MegaTransportAdapter {
     };
   }
 
-  async getCollaborators(share: ManagedShare, _account: ProviderAccount | null): Promise<ManagedShareCollaborator[]> {
+  async getCollaborators(share: ManagedShare, account: ProviderAccount | null): Promise<ManagedShareCollaborator[]> {
+    if (share.role === 'owner' && account) {
+      const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+      return this.withMegaHelperSession(account, async () => {
+        const stdout = await this.runMegaHelperCommand('mega-share', ['-p', remotePath]);
+        return parseMegaCollaborators(stdout);
+      });
+    }
     const ownerEmail = getStringDescriptor(share.remoteDescriptor, 'ownerEmail');
     if (!ownerEmail) {
       return [];
@@ -382,6 +413,9 @@ export class MegaTransportAdapter {
     if (isLegacyMegaLocalMirror(share)) {
       return;
     }
+    if (share.role === 'owner') {
+      return;
+    }
     if (this.usesPublicLinkMirror(share)) {
       this.syncStates.set(share.id, {
         status: 'syncing',
@@ -403,7 +437,7 @@ export class MegaTransportAdapter {
     }
 
     if (share.role !== 'recipient') {
-      throw new Error('Only readonly incoming MEGA shares are supported by the native adapter.');
+      throw new Error('Only readonly incoming MEGA shares and local owner roots are supported by the native adapter.');
     }
 
     await fs.mkdir(share.localPath, { recursive: true });
@@ -680,6 +714,63 @@ export class MegaTransportAdapter {
     }
   }
 
+  private async withMegaHelperSession<T>(account: ProviderAccount, operation: () => Promise<T>): Promise<T> {
+    await this.ensureMegaHelperSession(account);
+    return operation();
+  }
+
+  private async ensureMegaHelperSession(account: ProviderAccount): Promise<void> {
+    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
+    if (!secret || !isStoredMegaAccountSecret(secret)) {
+      throw createMegaReconnectRequiredError(undefined);
+    }
+    const expectedEmail = (secret.email || account.email || '').trim().toLowerCase();
+    if (!expectedEmail) {
+      throw createMegaReconnectRequiredError(undefined);
+    }
+
+    try {
+      const whoami = await this.runMegaHelperCommand('mega-whoami', []);
+      if (whoami.toLowerCase().includes(expectedEmail)) {
+        return;
+      }
+    } catch {
+      // Fall through to a helper login attempt.
+    }
+
+    const password = typeof secret.password === 'string' ? secret.password : '';
+    if (!password) {
+      throw createMegaReconnectRequiredError(undefined);
+    }
+
+    try {
+      await this.runMegaHelperCommand('mega-logout', ['--keep-session']);
+    } catch {
+      // Ignore helper logout failures before a fresh login.
+    }
+    await this.runMegaHelperCommand('mega-login', [expectedEmail, password], undefined, 60_000);
+  }
+
+  private async runMegaHelperCommand(
+    command: string,
+    args: readonly string[],
+    input?: string,
+    timeoutMs = 30_000
+  ): Promise<string> {
+    const result = await this.runtime.commandExecutor.run({
+      command: resolveMegaHelperCommand(command),
+      args,
+      env: buildMegaHelperEnv(),
+      input,
+      timeoutMs,
+    });
+    if (result.exitCode !== 0) {
+      const detail = result.stderr.trim() || result.stdout.trim() || `${command} exited with ${result.exitCode}`;
+      throw new Error(detail);
+    }
+    return result.stdout;
+  }
+
   private async loginWithPassword(email: string, password: string, mfaCode?: string): Promise<MegaSession> {
     const prelogin = await this.apiCommand<{ v?: number; s?: string }>({ a: 'us0', user: email.trim() });
     const version = Number(prelogin.v ?? 1) || 1;
@@ -893,12 +984,107 @@ function secretKey(accountId: string): string {
   return `${MEGA_SECRET_PREFIX}${accountId}`;
 }
 
+function buildMegaHelperEnv(): Record<string, string | undefined> {
+  const helperDir = process.env.NEARBYTES_MEGACMD_DIR?.trim();
+  if (!helperDir) {
+    return {};
+  }
+  const pathSeparator = process.platform === 'win32' ? ';' : ':';
+  return {
+    NEARBYTES_MEGACMD_DIR: helperDir,
+    PATH: [helperDir, process.env.PATH ?? ''].filter((entry) => entry && entry.length > 0).join(pathSeparator),
+  };
+}
+
+function resolveMegaHelperCommand(command: string): string {
+  const helperDir = process.env.NEARBYTES_MEGACMD_DIR?.trim();
+  if (!helperDir) {
+    return command;
+  }
+  return path.join(helperDir, command);
+}
+
 function mirrorManifestKey(shareId: string): string {
   return `${MEGA_MANIFEST_PREFIX}${shareId}`;
 }
 
 function createOpaqueId(prefix: string): string {
   return `${prefix}-${randomBytes(6).toString('hex')}`;
+}
+
+function uniqueTrimmedStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const normalized = trimmed.toLowerCase();
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function getMegaShareRemotePath(share: ManagedShare, fallbackPath: string): string {
+  return getStringDescriptor(share.remoteDescriptor, 'remotePath') ?? fallbackPath;
+}
+
+function parseMegaCollaborators(stdout: string): ManagedShareCollaborator[] {
+  const collaborators: ManagedShareCollaborator[] = [];
+  for (const rawLine of stdout.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    const match = /shared( \(still pending\))? with\s+(.+?)\s+\((.+?)\)$/iu.exec(line);
+    if (!match) {
+      continue;
+    }
+    const pending = Boolean(match[1]);
+    const email = match[2]?.trim() || '';
+    const role = match[3]?.trim() || undefined;
+    collaborators.push({
+      label: email,
+      email,
+      role,
+      status: pending ? 'invited' : 'active',
+      source: 'provider',
+    });
+  }
+  return collaborators;
+}
+
+function parseMegaIncomingContactInvites(
+  stdout: string,
+  accountId: string,
+  provider: string
+): IncomingProviderContactInvite[] {
+  const invites: IncomingProviderContactInvite[] = [];
+  for (const rawLine of stdout.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    const match = /^(.+?)\s+\(id:\s*([^,\)]+).*/iu.exec(line);
+    if (!match) {
+      continue;
+    }
+    const label = match[1]?.trim() || '';
+    const id = match[2]?.trim() || label;
+    invites.push({
+      id,
+      provider,
+      accountId,
+      label,
+      detail: `${label} wants to connect on MEGA.`,
+    });
+  }
+  return invites;
 }
 
 function deserializeSession(secret: MegaAccountSecret, fallbackEmail = ''): MegaSession {

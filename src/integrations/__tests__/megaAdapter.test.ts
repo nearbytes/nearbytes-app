@@ -532,6 +532,174 @@ describe('MegaTransportAdapter', () => {
     await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toBeNull();
   });
 
+  it('uses the helper bridge for MEGA owner invitations and collaborator listing', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-owner', {
+      email: 'owner@example.com',
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'ownerhandle',
+      accountVersion: 2,
+    });
+
+    const commands: Array<{ command: string; args: readonly string[] | undefined }> = [];
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: {
+        async run(invocation) {
+          commands.push({ command: String(invocation.command), args: invocation.args });
+          if (invocation.command === 'mega-whoami') {
+            return { stdout: 'owner@example.com\n', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-share' && invocation.args?.[0] === '-a') {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-share' && invocation.args?.[0] === '-p') {
+            return {
+              stdout:
+                'nearbytes, shared with active@example.com (read-only)\nnearbytes, shared (still pending) with invited@example.com (read-only)\n',
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
+        },
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, {
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/tmp/nearbytes',
+      sourceId: 'src-mega-owner',
+      syncMode: 'mirror',
+      remoteDescriptor: { remotePath: '/nearbytes' },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await adapter.invite(share, { emails: ['active@example.com', 'active@example.com', 'invited@example.com'] }, account);
+    const collaborators = await adapter.getCollaborators(share, account);
+
+    expect(commands).toEqual([
+      { command: 'mega-whoami', args: [] },
+      { command: 'mega-share', args: ['-a', '--with=active@example.com', '--level=0', '/nearbytes'] },
+      { command: 'mega-share', args: ['-a', '--with=invited@example.com', '--level=0', '/nearbytes'] },
+      { command: 'mega-whoami', args: [] },
+      { command: 'mega-share', args: ['-p', '/nearbytes'] },
+    ]);
+    expect(collaborators).toEqual([
+      {
+        label: 'active@example.com',
+        email: 'active@example.com',
+        role: 'read-only',
+        status: 'active',
+        source: 'provider',
+      },
+      {
+        label: 'invited@example.com',
+        email: 'invited@example.com',
+        role: 'read-only',
+        status: 'invited',
+        source: 'provider',
+      },
+    ]);
+  });
+
+  it('uses the helper bridge for incoming MEGA contact invites', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-owner', {
+      email: 'owner@example.com',
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'ownerhandle',
+      accountVersion: 2,
+    });
+
+    const commands: Array<{ command: string; args: readonly string[] | undefined }> = [];
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: {
+        async run(invocation) {
+          commands.push({ command: String(invocation.command), args: invocation.args });
+          if (invocation.command === 'mega-whoami') {
+            return { stdout: 'owner@example.com\n', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-showpcr') {
+            return {
+              stdout: 'peer@example.com (id: abc123, creation: 2025-03-01, modification: 2025-03-01)\n',
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          if (invocation.command === 'mega-ipc') {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
+        },
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, {
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const invites = await adapter.listIncomingContactInvites(account);
+    await adapter.acceptIncomingContactInvite(account, 'abc123');
+
+    expect(invites).toEqual([
+      {
+        id: 'abc123',
+        provider: 'mega',
+        accountId: 'acct-mega-owner',
+        label: 'peer@example.com',
+        detail: 'peer@example.com wants to connect on MEGA.',
+      },
+    ]);
+    expect(commands).toEqual([
+      { command: 'mega-whoami', args: [] },
+      { command: 'mega-showpcr', args: ['--in'] },
+      { command: 'mega-whoami', args: [] },
+      { command: 'mega-ipc', args: ['abc123', '-a'] },
+    ]);
+  });
+
   it('persists unsupported top-level entry diffs across aborted readonly sync attempts', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-unsupported', {
@@ -1351,6 +1519,54 @@ describe('MegaTransportAdapter', () => {
     ).resolves.toBeUndefined();
 
     await expect(adapter.getState(share, null)).resolves.toMatchObject({
+      status: 'ready',
+      badges: ['Local'],
+    });
+  });
+
+  it('treats MEGA owner folders as local shares without starting recipient sync', async () => {
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+
+    const share: ManagedShare = {
+      id: 'share-mega-owner-1',
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: path.join(os.tmpdir(), 'nearbytes-mega-owner-local'),
+      sourceId: 'src-mega-owner-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-1',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(adapter.getState(share, account)).resolves.toMatchObject({
       status: 'ready',
       badges: ['Local'],
     });
