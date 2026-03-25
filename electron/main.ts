@@ -104,7 +104,7 @@ const DESKTOP_FORCE_EXIT_TIMEOUT_MS = 5_000;
 const UI_DEBUG_FILE_READ_MAX_BYTES = 128 * 1024;
 const execFileAsync = promisify(execFile);
 
-
+installSafeConsoleWrites();
 
 applyDebugFlagFromArgv(process.argv);
 
@@ -206,6 +206,41 @@ process.once('SIGTERM', () => {
 });
 
 
+
+function installSafeConsoleWrites(): void {
+  const methods: Array<'log' | 'info' | 'warn' | 'error' | 'debug'> = ['log', 'info', 'warn', 'error', 'debug'];
+  for (const method of methods) {
+    const original = console[method].bind(console);
+    console[method] = ((...args: unknown[]) => {
+      try {
+        original(...args);
+      } catch (error) {
+        if (!isIgnorableConsoleWriteError(error)) {
+          throw error;
+        }
+      }
+    }) as Console[typeof method];
+  }
+
+  process.stdout.on('error', (error) => {
+    if (!isIgnorableConsoleWriteError(error)) {
+      throw error;
+    }
+  });
+  process.stderr.on('error', (error) => {
+    if (!isIgnorableConsoleWriteError(error)) {
+      throw error;
+    }
+  });
+}
+
+function isIgnorableConsoleWriteError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
+}
 
 async function startDesktop(): Promise<void> {
   app.setName('Nearbytes');

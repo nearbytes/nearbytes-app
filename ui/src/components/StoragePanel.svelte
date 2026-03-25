@@ -3686,6 +3686,8 @@
   function isRetriableStorageStartupError(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error ?? '');
     return (
+      /still starting/i.test(message) ||
+      /preparing your storage locations/i.test(message) ||
       /timed out/i.test(message) ||
       /failed to fetch/i.test(message) ||
       /networkerror/i.test(message) ||

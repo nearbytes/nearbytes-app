@@ -1256,20 +1256,6 @@
     resetDialogError = '';
   }
 
-  async function clearRendererStoredState(): Promise<void> {
-    try {
-      localStorage.clear();
-    } catch {
-      // ignore
-    }
-    try {
-      sessionStorage.clear();
-    } catch {
-      // ignore
-    }
-    await clearCache().catch(() => undefined);
-  }
-
   async function confirmStoredConfigReset(): Promise<void> {
     const bridge = getDesktopBridge();
     if (!bridge || typeof bridge.wipeStoredConfig !== 'function') {
@@ -1282,7 +1268,6 @@
       await bridge.wipeStoredConfig({
         deleteLocalData: resetDialogDeleteLocalData,
       });
-      await clearRendererStoredState();
     } catch (error) {
       resetDialogError = error instanceof Error ? error.message : 'Failed to wipe stored configuration';
       resetDialogBusy = false;
