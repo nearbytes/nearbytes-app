@@ -1774,17 +1774,28 @@ async function writeSecretEntries(filePath: string, entries: Record<string, stri
 }
 
 function encryptDesktopSecret(value: Buffer): Buffer {
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!shouldUseDesktopSecretEncryption()) {
     return value;
   }
   return safeStorage.encryptString(value.toString('utf8'));
 }
 
 function decryptDesktopSecret(value: Buffer): Buffer {
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!shouldUseDesktopSecretEncryption()) {
     return value;
   }
   return Buffer.from(safeStorage.decryptString(value), 'utf8');
+}
+
+function shouldUseDesktopSecretEncryption(): boolean {
+  const override = process.env.NEARBYTES_DISABLE_SAFE_STORAGE?.trim().toLowerCase();
+  if (override === '1' || override === 'true') {
+    return false;
+  }
+  if (isDev) {
+    return false;
+  }
+  return safeStorage.isEncryptionAvailable();
 }
 
 function isFileNotFound(error: unknown): error is NodeJS.ErrnoException {
