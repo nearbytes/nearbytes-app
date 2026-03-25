@@ -285,37 +285,13 @@ export class MegaTransportAdapter {
       snapshot: await this.fetchNodesSnapshot(session),
       keyManager: await this.fetchKeyManagerState(session),
     }));
-    const tree = decryptMegaTree(resolved.snapshot, resolved.session, undefined, resolved.keyManager.shareKeys);
-    const offers: IncomingManagedShareOffer[] = [];
-
-    for (const node of tree.nodesByHandle.values()) {
-      if (!node.isFolder || !node.ownerHandle || node.shareHandle !== node.handle) {
-        continue;
-      }
-      const shareName = normalizeMegaIncomingShareName(node.name, node.handle);
-      const ownerIdentity = normalizeMegaIncomingOwnerIdentity(node.ownerEmail, node.ownerHandle);
-      const ownerLabel = normalizeMegaIncomingOwnerLabel(node.ownerEmail, node.ownerHandle);
-      const remotePath = `${ownerIdentity}:${shareName}`;
-      offers.push({
-        id: `mega:incoming:${node.handle}`,
-        provider: this.provider,
-        accountId: account.id,
-        label: shareName,
-        ownerLabel,
-        detail: `${ownerLabel} shared this MEGA location${node.accessLevel ? ` with ${node.accessLevel}` : ''}.`,
-        remoteDescriptor: {
-          remotePath,
-          shareName,
-          ownerEmail: ownerIdentity,
-          accessLevel: node.accessLevel ?? 'read',
-          shareHandle: node.handle,
-          rootHandle: node.handle,
-        },
-      });
-    }
-
-    offers.sort((left, right) => left.label.localeCompare(right.label));
-    return offers;
+    return listIncomingMegaShareOffers(
+      resolved.snapshot,
+      resolved.session,
+      resolved.keyManager.shareKeys,
+      this.provider,
+      account.id
+    );
   }
 
   async listManagedShareMirrors(_account: ProviderAccount): Promise<ManagedShareMirrorEntry[]> {
@@ -1341,6 +1317,105 @@ function decryptMegaTree(
     nodesByHandle,
     childrenByParent,
   };
+}
+
+function listIncomingMegaShareOffers(
+  snapshot: MegaFetchNodesSnapshot,
+  session: MegaSession,
+  extraShareKeys: ReadonlyMap<string, Buffer>,
+  provider: string,
+  accountId: string
+): IncomingManagedShareOffer[] {
+  const usersByHandle = buildMegaUsersByHandle(snapshot);
+  const shareKeys = collectMegaShareKeys(snapshot, session, extraShareKeys);
+  const offers: IncomingManagedShareOffer[] = [];
+
+  for (const node of snapshot.nodes) {
+    const nodeMeta = node as Record<string, unknown>;
+    const ownerHandle = typeof nodeMeta.su === 'string' ? nodeMeta.su.trim() : '';
+    if (!ownerHandle || Number(node.t ?? 0) === 0) {
+      continue;
+    }
+    const decrypted = decryptNodeRecord(node, session, shareKeys, usersByHandle);
+    if (!decrypted || !decrypted.ownerHandle || decrypted.shareHandle !== decrypted.handle) {
+      continue;
+    }
+    const shareName = normalizeMegaIncomingShareName(decrypted.name, decrypted.handle);
+    const ownerIdentity = normalizeMegaIncomingOwnerIdentity(decrypted.ownerEmail, decrypted.ownerHandle);
+    const ownerLabel = normalizeMegaIncomingOwnerLabel(decrypted.ownerEmail, decrypted.ownerHandle);
+    const remotePath = `${ownerIdentity}:${shareName}`;
+    offers.push({
+      id: `mega:incoming:${decrypted.handle}`,
+      provider,
+      accountId,
+      label: shareName,
+      ownerLabel,
+      detail: `${ownerLabel} shared this MEGA location${decrypted.accessLevel ? ` with ${decrypted.accessLevel}` : ''}.`,
+      remoteDescriptor: {
+        remotePath,
+        shareName,
+        ownerEmail: ownerIdentity,
+        accessLevel: decrypted.accessLevel ?? 'read',
+        shareHandle: decrypted.handle,
+        rootHandle: decrypted.handle,
+      },
+    });
+  }
+
+  offers.sort((left, right) => left.label.localeCompare(right.label));
+  return offers;
+}
+
+function buildMegaUsersByHandle(snapshot: MegaFetchNodesSnapshot): Map<string, MegaUserRecord> {
+  const usersByHandle = new Map<string, MegaUserRecord>();
+  for (const user of snapshot.users) {
+    const handle = typeof user.u === 'string' ? user.u.trim() : '';
+    if (handle) {
+      usersByHandle.set(handle, user);
+    }
+  }
+  return usersByHandle;
+}
+
+function collectMegaShareKeys(
+  snapshot: MegaFetchNodesSnapshot,
+  session: MegaSession,
+  extraShareKeys: ReadonlyMap<string, Buffer> = new Map()
+): Map<string, Buffer> {
+  const shareKeys = new Map<string, Buffer>();
+  for (const [handle, shareKey] of extraShareKeys.entries()) {
+    shareKeys.set(handle, shareKey);
+  }
+  for (const node of snapshot.nodes) {
+    if (
+      typeof node.h !== 'string' ||
+      typeof (node as Record<string, unknown>).su !== 'string' ||
+      typeof (node as Record<string, unknown>).sk !== 'string'
+    ) {
+      continue;
+    }
+    const shareKey = decryptShareKey(String((node as Record<string, unknown>).sk), session);
+    if (shareKey) {
+      shareKeys.set(node.h, shareKey);
+    }
+  }
+  for (const shareRecord of snapshot.outgoingShares) {
+    const handle =
+      typeof shareRecord.t === 'string'
+        ? shareRecord.t.trim()
+        : typeof shareRecord.h === 'string'
+          ? shareRecord.h.trim()
+          : '';
+    const encodedShareKey = typeof shareRecord.sk === 'string' ? shareRecord.sk.trim() : '';
+    if (!handle || !encodedShareKey || shareKeys.has(handle)) {
+      continue;
+    }
+    const shareKey = decryptShareKey(encodedShareKey, session);
+    if (shareKey) {
+      shareKeys.set(handle, shareKey);
+    }
+  }
+  return shareKeys;
 }
 
 function parseMegaKeyManagerState(response: Record<string, unknown>, masterKey: Buffer): MegaKeyManagerState {
