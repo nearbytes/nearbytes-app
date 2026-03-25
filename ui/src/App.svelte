@@ -2606,7 +2606,10 @@
     if (!left || !right || left.type !== right.type) {
       return false;
     }
-    return left.type === 'token' ? left.token === right.token : left.secret === right.secret;
+    if (left.type === 'token') {
+      return left.token === right.token;
+    }
+    return left.secret === right.secret;
   }
 
   function clearMountRuntimeRefresh(mountId: string): void {
@@ -2629,6 +2632,75 @@
     mountRefreshTimers.set(mountId, timer);
   }
 
+  function shouldKeepMountTimelineWarm(mount: VolumeMount | null, runtime?: MountRuntimeState | null): boolean {
+    if (!mount) {
+      return false;
+    }
+    if (showTimeMachinePanel && activeMountId === mount.id) {
+      return true;
+    }
+    if (mount.showChatPane) {
+      return true;
+    }
+    return (runtime?.timelineEvents.length ?? 0) > 0;
+  }
+
+  async function refreshMountTimeline(
+    mountId: string,
+    authOverride?: Auth,
+    options: { applyIfCurrent?: boolean; keepPosition?: boolean } = {}
+  ): Promise<void> {
+    const mount = mounts.find((entry) => entry.id === mountId) ?? null;
+    const runtime = mountRuntimeById[mountId] ?? null;
+    const targetAuth = authOverride ?? runtime?.auth ?? null;
+    if (!mount || !runtime || !targetAuth || matchingMountRuntime(mount) !== runtime) {
+      return;
+    }
+
+    const applyIfCurrent = options.applyIfCurrent === true;
+    const keepPosition = options.keepPosition !== false;
+    const previousEvents = runtime.timelineEvents;
+    const previousPosition = runtime.timelinePosition;
+    const isCurrentMount = activeMountId === mountId && authEquals(auth, runtime.auth);
+
+    if (applyIfCurrent && isCurrentMount) {
+      isTimelineLoading = true;
+    }
+
+    try {
+      const timeline = await getTimeline(targetAuth);
+      const nextRuntime: MountRuntimeState = {
+        ...runtime,
+        timelineEvents: timeline.events,
+        timelinePosition: keepPosition
+          ? previousPosition >= previousEvents.length
+            ? timeline.events.length
+            : Math.min(previousPosition, timeline.events.length)
+          : timeline.events.length,
+        isOffline: false,
+      };
+      writeMountRuntime(mountId, nextRuntime);
+      if (isCurrentMount) {
+        applyMountRuntime(nextRuntime);
+        chatRefreshVersion += 1;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load timeline';
+      const nextRuntime: MountRuntimeState = {
+        ...runtime,
+        errorMessage: runtime.errorMessage || message,
+      };
+      writeMountRuntime(mountId, nextRuntime);
+      if (isCurrentMount) {
+        errorMessage = runtime.errorMessage || message;
+      }
+    } finally {
+      if (applyIfCurrent && isCurrentMount) {
+        isTimelineLoading = false;
+      }
+    }
+  }
+
   async function refreshMountRuntime(mountId: string): Promise<void> {
     const mount = mounts.find((entry) => entry.id === mountId) ?? null;
     const runtime = mountRuntimeById[mountId];
@@ -2638,18 +2710,18 @@
     }
 
     try {
-      const [filesResponse, timelineResponse] = await Promise.all([
-        listFiles(runtime.auth),
-        getTimeline(runtime.auth),
-      ]);
+      const filesResponse = await listFiles(runtime.auth);
+      const nextTimelineEvents = shouldKeepMountTimelineWarm(mount, runtime)
+        ? await getTimeline(runtime.auth).then((response) => response.events)
+        : runtime.timelineEvents;
       const nextRuntime: MountRuntimeState = {
         ...runtime,
         files: filesResponse.files,
-        timelineEvents: timelineResponse.events,
+        timelineEvents: nextTimelineEvents,
         timelinePosition:
           runtime.timelinePosition >= runtime.timelineEvents.length
-            ? timelineResponse.events.length
-            : Math.min(runtime.timelinePosition, timelineResponse.events.length),
+            ? nextTimelineEvents.length
+            : Math.min(runtime.timelinePosition, nextTimelineEvents.length),
         lastRefresh: Date.now(),
         isOffline: false,
         errorMessage: '',
@@ -2943,23 +3015,12 @@
         12000,
         'Opening this hub timed out. Check the storage locations and try again.'
       );
-      const shouldLoadTimeline = options.preloadTimeline ?? options.activateIfCurrent === true;
+      const shouldLoadTimeline = options.preloadTimeline ?? shouldKeepMountTimelineWarm(mount);
       const nextAuth =
         response.token
           ? ({ type: 'token', token: response.token } as const)
           : ({ type: 'secret', secret } as const);
-      let nextTimelineEvents: TimelineEvent[] = [];
-      let nextTimelinePosition = 0;
       let nextErrorMessage = response.storageHint ?? '';
-      if (shouldLoadTimeline) {
-        try {
-          const timeline = await getTimeline(nextAuth);
-          nextTimelineEvents = timeline.events;
-          nextTimelinePosition = timeline.events.length;
-        } catch (error) {
-          nextErrorMessage = nextErrorMessage || (error instanceof Error ? error.message : 'Failed to load timeline');
-        }
-      }
 
       mounts = mounts.map((entry) =>
         entry.id === mount.id ? { ...entry, volumeId: response.volumeId } : entry
@@ -2971,8 +3032,8 @@
         auth: nextAuth,
         volumeId: response.volumeId,
         files: response.files,
-        timelineEvents: nextTimelineEvents,
-        timelinePosition: nextTimelinePosition,
+        timelineEvents: [],
+        timelinePosition: 0,
         lastRefresh: Date.now(),
         isOffline: false,
         errorMessage: nextErrorMessage,
@@ -2991,6 +3052,12 @@
       void setCachedFiles(response.volumeId, response.files).catch((error) => {
         console.warn('Failed to cache volume file list:', error);
       });
+      if (shouldLoadTimeline) {
+        void refreshMountTimeline(mount.id, nextAuth, {
+          applyIfCurrent: options.activateIfCurrent === true,
+          keepPosition: false,
+        });
+      }
       scheduleMountRuntimeRefresh(mount.id);
     })().finally(() => {
       mountWarmPromises.delete(mount.id);
@@ -3074,7 +3141,7 @@
       if (!matchingMountRuntime(mount) && !mountWarmPromises.has(mount.id)) {
         void ensureMountRuntimeLoaded(mount, {
           activateIfCurrent: mount.id === activeMountId,
-          preloadTimeline: mount.id === activeMountId,
+          preloadTimeline: mount.id === activeMountId && shouldKeepMountTimelineWarm(mount),
         });
       }
     }
@@ -5329,7 +5396,9 @@
 
       // Update cache
       await setCachedFiles(volumeId, response.files);
-      await refreshTimeline(true);
+      if (showTimeMachinePanel || showChatWorkspace || timelineEvents.length > 0) {
+        await refreshTimeline(true);
+      }
       chatRefreshVersion += 1;
     } catch (error) {
       // Try cached data
@@ -5345,6 +5414,23 @@
       isRefreshing = false;
     }
   }
+
+  $effect(() => {
+    if (!auth || !activeMount) {
+      return;
+    }
+    if (!showTimeMachinePanel && !showChatWorkspace) {
+      return;
+    }
+    const runtime = matchingMountRuntime(activeMount);
+    if (!runtime || isTimelineLoading || runtime.timelineEvents.length > 0) {
+      return;
+    }
+    void refreshMountTimeline(activeMount.id, runtime.auth, {
+      applyIfCurrent: true,
+      keepPosition: true,
+    });
+  });
 
   // Drag and drop handlers
   function handleDragOver(e: DragEvent) {

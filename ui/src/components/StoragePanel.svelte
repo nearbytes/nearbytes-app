@@ -1371,12 +1371,21 @@
     );
   }
 
+  function shouldAuthoritativelyRefreshMegaShare(summary: ManagedShareSummary): boolean {
+    return summary.share.provider === 'mega' && (
+      summary.state.status === 'syncing' ||
+      summary.state.status === 'idle' ||
+      summary.state.status === 'attention' ||
+      summary.state.status === 'needs-auth'
+    );
+  }
+
   function scheduleManagedShareStateRefresh(delayMs = AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS): void {
     if (managedShareStateRefreshTimer) {
       clearTimeout(managedShareStateRefreshTimer);
       managedShareStateRefreshTimer = null;
     }
-    if (providerShares('mega').length === 0) {
+    if (providerShares('mega').filter((summary) => shouldAuthoritativelyRefreshMegaShare(summary)).length === 0) {
       return;
     }
     managedShareStateRefreshTimer = setTimeout(() => {
@@ -1389,7 +1398,7 @@
     if (managedShareStateRefreshInFlight) {
       return;
     }
-    const megaShares = providerShares('mega');
+    const megaShares = providerShares('mega').filter((summary) => shouldAuthoritativelyRefreshMegaShare(summary));
     if (megaShares.length === 0) {
       return;
     }
@@ -1408,11 +1417,13 @@
       const merged = mergeManagedShareSummaries(
         refreshed.filter((summary): summary is ManagedShareSummary => summary !== null)
       );
-      scheduleManagedShareStateRefresh(
-        megaShareStatesNeedRapidRefresh(merged)
-          ? AUTHORITATIVE_MANAGED_SHARE_RAPID_REFRESH_MS
-          : AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS
-      );
+      if (merged.some((summary) => shouldAuthoritativelyRefreshMegaShare(summary))) {
+        scheduleManagedShareStateRefresh(
+          megaShareStatesNeedRapidRefresh(merged)
+            ? AUTHORITATIVE_MANAGED_SHARE_RAPID_REFRESH_MS
+            : AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS
+        );
+      }
     } finally {
       managedShareStateRefreshInFlight = false;
     }
@@ -3572,7 +3583,8 @@
           incomingLoading = false;
         });
 
-      await Promise.allSettled([rootsPromise, accountsPromise, sharesPromise, incomingSharesPromise, incomingInvitesPromise]);
+      void incomingInvitesPromise;
+      await Promise.allSettled([rootsPromise, accountsPromise, sharesPromise, incomingSharesPromise]);
 
       if (rootsLoadError) {
         throw rootsLoadError;
