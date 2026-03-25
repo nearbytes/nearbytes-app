@@ -128,6 +128,21 @@ interface MegaApiError extends Error {
   code: number;
 }
 
+interface MegaHelperSyncRow {
+  readonly id: string;
+  readonly localPath: string;
+  readonly remotePath: string;
+  readonly runState: string;
+  readonly status: string;
+  readonly error: string;
+}
+
+interface MegaHelperSyncIssueRow {
+  readonly issueId: string;
+  readonly parentSync: string;
+  readonly reason: string;
+}
+
 interface MegaPrivateKey {
   readonly modulus: bigint;
   readonly privateExponent: bigint;
@@ -137,7 +152,7 @@ interface MegaPrivateKey {
 export class MegaTransportAdapter {
   readonly provider = 'mega';
   readonly label = 'MEGA';
-  readonly description = 'Native MEGA readonly mirroring for public links and incoming shares.';
+  readonly description = 'Native MEGA sync for owner folders plus readonly mirroring for public links and incoming shares.';
   readonly supportsAccountConnection = true;
 
   private readonly apiClient: MegaApiClient;
@@ -169,7 +184,7 @@ export class MegaTransportAdapter {
     if (endpoint.transport === 'provider-share' && endpoint.provider?.trim().toLowerCase() === this.provider) {
       return {
         status: 'ready',
-        detail: 'MEGA native readonly mirroring is available.',
+        detail: 'MEGA native sync is available.',
         badges: ['Native'],
       };
     }
@@ -183,7 +198,7 @@ export class MegaTransportAdapter {
   async getSetupState(): Promise<ProviderSetupState> {
     return {
       status: 'ready',
-      detail: 'MEGA native sync is built in. No local helper install is required.',
+      detail: 'MEGA native sync is built in. No separate local helper install is required.',
     };
   }
 
@@ -295,8 +310,16 @@ export class MegaTransportAdapter {
     );
   }
 
-  async listManagedShareMirrors(_account: ProviderAccount): Promise<ManagedShareMirrorEntry[]> {
-    return [];
+  async listManagedShareMirrors(account: ProviderAccount): Promise<ManagedShareMirrorEntry[]> {
+    return this.withMegaHelperSession(account, async () =>
+      (await this.listMegaHelperSyncs())
+        .filter((sync) => isMegaManagedMirrorPath(sync.remotePath, this.runtime.mega.remoteBasePath))
+        .map((sync) => ({
+          label: path.posix.basename(sync.remotePath) || 'nearbytes',
+          localPath: sync.localPath,
+          remotePath: sync.remotePath,
+        }))
+    );
   }
 
   async listIncomingContactInvites(account: ProviderAccount): Promise<IncomingProviderContactInvite[]> {
@@ -313,6 +336,10 @@ export class MegaTransportAdapter {
   }
 
   async getState(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState> {
+    const cached = this.syncStates.get(share.id);
+    if (cached) {
+      return cached;
+    }
     if (isLegacyMegaLocalMirror(share)) {
       return {
         status: 'ready',
@@ -321,15 +348,18 @@ export class MegaTransportAdapter {
       };
     }
     if (share.role === 'owner') {
+      if (!account) {
+        return {
+          status: 'needs-auth',
+          detail: 'Reconnect MEGA to resume this writable owner sync.',
+          badges: ['Reconnect'],
+        };
+      }
       return {
-        status: 'ready',
-        detail: 'This MEGA owner folder is attached locally and can be opened from Nearbytes. Provider-side writable sync is not implemented yet.',
-        badges: ['Local'],
+        status: 'idle',
+        detail: 'MEGA owner sync is ready to start.',
+        badges: ['Writable'],
       };
-    }
-    const cached = this.syncStates.get(share.id);
-    if (cached) {
-      return cached;
     }
     if (this.usesPublicLinkMirror(share)) {
       return {
@@ -392,6 +422,10 @@ export class MegaTransportAdapter {
       return;
     }
     if (share.role === 'owner') {
+      await fs.mkdir(share.localPath, { recursive: true });
+      await ensureMegaOwnerLocalStructure(share.localPath);
+      await this.runSyncLoop(share, account);
+      this.startRecurringSyncTimer(share, account);
       return;
     }
     if (this.usesPublicLinkMirror(share)) {
@@ -420,21 +454,7 @@ export class MegaTransportAdapter {
 
     await fs.mkdir(share.localPath, { recursive: true });
     await this.runSyncLoop(share, account);
-    if (!this.syncTimers.has(share.id)) {
-      this.runtime.logger.log('Provider recurring sync timer started.', {
-        provider: this.provider,
-        accountId: account.id,
-        shareId: share.id,
-        intervalMs: this.runtime.mega.syncIntervalMs,
-      });
-      const timer = setInterval(() => {
-        this.runSyncLoop(share, account).catch((error) => {
-          this.runtime.logger.warn('MEGA sync loop failed.', error);
-        });
-      }, this.runtime.mega.syncIntervalMs);
-      timer.unref?.();
-      this.syncTimers.set(share.id, timer);
-    }
+    this.startRecurringSyncTimer(share, account);
   }
 
   async detachManagedShare(share: ManagedShare, _account: ProviderAccount | null): Promise<void> {
@@ -479,6 +499,11 @@ export class MegaTransportAdapter {
   }
 
   private async syncShare(share: ManagedShare, account: ProviderAccount, signal?: AbortSignal): Promise<void> {
+    if (share.role === 'owner') {
+      await this.syncOwnerShare(share, account);
+      return;
+    }
+
     this.syncStates.set(share.id, {
       status: 'syncing',
       detail: 'Refreshing the MEGA readonly mirror.',
@@ -600,6 +625,109 @@ export class MegaTransportAdapter {
       });
       throw error;
     }
+  }
+
+  private startRecurringSyncTimer(share: ManagedShare, account: ProviderAccount): void {
+    if (this.syncTimers.has(share.id)) {
+      return;
+    }
+    this.runtime.logger.log('Provider recurring sync timer started.', {
+      provider: this.provider,
+      accountId: account.id,
+      shareId: share.id,
+      intervalMs: this.runtime.mega.syncIntervalMs,
+    });
+    const timer = setInterval(() => {
+      this.runSyncLoop(share, account).catch((error) => {
+        this.runtime.logger.warn('MEGA sync loop failed.', error);
+      });
+    }, this.runtime.mega.syncIntervalMs);
+    timer.unref?.();
+    this.syncTimers.set(share.id, timer);
+  }
+
+  private async syncOwnerShare(share: ManagedShare, account: ProviderAccount): Promise<void> {
+    const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+    this.syncStates.set(share.id, {
+      status: 'syncing',
+      detail: 'Checking the MEGA writable owner sync.',
+      badges: ['Writable', 'Checking'],
+    });
+
+    try {
+      await fs.mkdir(share.localPath, { recursive: true });
+      await ensureMegaOwnerLocalStructure(share.localPath);
+      await this.withMegaHelperSession(account, async () => {
+        await this.runMegaHelperCommand('mega-mkdir', ['-p', remotePath]);
+        let syncs = await this.listMegaHelperSyncs();
+        const localSync = findMegaHelperSyncByLocalPath(syncs, share.localPath);
+        const remoteSync = findMegaHelperSyncByRemotePath(syncs, remotePath);
+
+        if (localSync && normalizeMegaRemoteDisplayPath(localSync.remotePath) !== normalizeMegaRemoteDisplayPath(remotePath)) {
+          throw new Error(
+            `MEGA already syncs this local folder to ${localSync.remotePath}. Remove or retarget that existing sync before using ${remotePath}.`
+          );
+        }
+        if (remoteSync && normalizeMegaComparableLocalPath(remoteSync.localPath) !== normalizeMegaComparableLocalPath(share.localPath)) {
+          throw new Error(
+            `MEGA already syncs ${remotePath} with ${remoteSync.localPath}. Disconnect that existing sync before reusing this owner share.`
+          );
+        }
+
+        if (!localSync && !remoteSync) {
+          await this.runMegaHelperCommand('mega-sync', [share.localPath, remotePath], undefined, 60_000);
+          syncs = await this.listMegaHelperSyncs();
+        }
+
+        const activeSync =
+          findMegaHelperSync(syncs, share.localPath, remotePath) ??
+          findMegaHelperSyncByLocalPath(syncs, share.localPath) ??
+          findMegaHelperSyncByRemotePath(syncs, remotePath);
+        if (!activeSync) {
+          throw new Error(`MEGA did not report an active sync for ${remotePath}.`);
+        }
+
+        if (isMegaSyncPaused(activeSync.runState)) {
+          await this.runMegaHelperCommand('mega-sync', ['--enable', activeSync.id]);
+        }
+
+        const refreshedSync =
+          findMegaHelperSync(await this.listMegaHelperSyncs(), share.localPath, remotePath) ?? activeSync;
+        const issues = await this.listMegaHelperSyncIssues(refreshedSync.id);
+        this.syncStates.set(share.id, buildMegaOwnerTransportState(refreshedSync, issues));
+      });
+    } catch (error) {
+      const detail = describeMegaOwnerSyncFailure(error, remotePath);
+      this.syncStates.set(share.id, {
+        status: 'attention',
+        detail,
+        badges: ['Writable', 'Repair'],
+        diagnostic: {
+          code: 'MEGA_OWNER_SYNC_FAILED',
+          title: 'MEGA owner sync needs attention',
+          summary: 'MEGA owner sync failed',
+          detail,
+        },
+      });
+      throw error;
+    }
+  }
+
+  private async listMegaHelperSyncs(): Promise<MegaHelperSyncRow[]> {
+    const stdout = await this.runMegaHelperCommand('mega-sync', [
+      '--col-separator=\t',
+      '--output-cols=ID,LOCALPATH,REMOTEPATH,RUN_STATE,STATUS,ERROR',
+    ]);
+    return parseMegaHelperSyncRows(stdout);
+  }
+
+  private async listMegaHelperSyncIssues(syncId: string): Promise<MegaHelperSyncIssueRow[]> {
+    const stdout = await this.runMegaHelperCommand('mega-sync-issues', [
+      '--limit=0',
+      '--col-separator=\t',
+      '--output-cols=ISSUE_ID,PARENT_SYNC,REASON',
+    ]);
+    return parseMegaHelperSyncIssueRows(stdout).filter((issue) => issue.parentSync === syncId);
   }
 
   private async getAccountSession(account: ProviderAccount, signal?: AbortSignal): Promise<MegaSession> {
@@ -1019,6 +1147,172 @@ function uniqueTrimmedStrings(values: readonly string[]): string[] {
 
 function getMegaShareRemotePath(share: ManagedShare, fallbackPath: string): string {
   return getStringDescriptor(share.remoteDescriptor, 'remotePath') ?? fallbackPath;
+}
+
+async function ensureMegaOwnerLocalStructure(localPath: string): Promise<void> {
+  await Promise.all([
+    fs.mkdir(path.join(localPath, 'blocks'), { recursive: true }),
+    fs.mkdir(path.join(localPath, 'channels'), { recursive: true }),
+  ]);
+}
+
+function findMegaHelperSync(
+  syncs: readonly MegaHelperSyncRow[],
+  localPath: string,
+  remotePath: string
+): MegaHelperSyncRow | undefined {
+  return syncs.find(
+    (sync) =>
+      normalizeMegaComparableLocalPath(sync.localPath) === normalizeMegaComparableLocalPath(localPath) &&
+      normalizeMegaRemoteDisplayPath(sync.remotePath) === normalizeMegaRemoteDisplayPath(remotePath)
+  );
+}
+
+function findMegaHelperSyncByLocalPath(
+  syncs: readonly MegaHelperSyncRow[],
+  localPath: string
+): MegaHelperSyncRow | undefined {
+  return syncs.find((sync) => normalizeMegaComparableLocalPath(sync.localPath) === normalizeMegaComparableLocalPath(localPath));
+}
+
+function findMegaHelperSyncByRemotePath(
+  syncs: readonly MegaHelperSyncRow[],
+  remotePath: string
+): MegaHelperSyncRow | undefined {
+  return syncs.find((sync) => normalizeMegaRemoteDisplayPath(sync.remotePath) === normalizeMegaRemoteDisplayPath(remotePath));
+}
+
+function parseMegaHelperSyncRows(stdout: string): MegaHelperSyncRow[] {
+  return stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && line !== 'No syncs found' && !line.startsWith('Use "'))
+    .map((line) => line.split('\t'))
+    .filter((columns) => columns.length >= 6 && columns[0] !== 'ID')
+    .map(([id, localPath, remotePath, runState, status, error]) => ({
+      id: id!.trim(),
+      localPath: localPath!.trim(),
+      remotePath: remotePath!.trim(),
+      runState: runState!.trim(),
+      status: status!.trim(),
+      error: error!.trim(),
+    }))
+    .filter((row) => row.id && row.localPath && row.remotePath);
+}
+
+function parseMegaHelperSyncIssueRows(stdout: string): MegaHelperSyncIssueRow[] {
+  return stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('Use "') && !line.startsWith('There are no sync-issues'))
+    .map((line) => line.split('\t'))
+    .filter((columns) => columns.length >= 3 && columns[0] !== 'ISSUE_ID')
+    .map(([issueId, parentSync, reason]) => ({
+      issueId: issueId!.trim(),
+      parentSync: parentSync!.trim(),
+      reason: reason!.trim(),
+    }))
+    .filter((issue) => issue.issueId && issue.parentSync && issue.reason);
+}
+
+function buildMegaOwnerTransportState(
+  sync: MegaHelperSyncRow,
+  issues: readonly MegaHelperSyncIssueRow[]
+): TransportState {
+  if (issues.length > 0) {
+    const detail = `MEGA reported sync issues for ${sync.remotePath}. ${issues[0]?.reason ?? 'Open the runtime logs and inspect mega-sync-issues.'}`;
+    return {
+      status: 'attention',
+      detail,
+      badges: ['Writable', 'Repair'],
+      diagnostic: {
+        code: 'MEGA_OWNER_SYNC_ISSUES',
+        title: 'MEGA owner sync has issues',
+        summary: 'MEGA sync issues detected',
+        detail,
+        facts: issues.slice(0, 3).map((issue) => ({
+          label: issue.issueId,
+          value: issue.reason,
+        })),
+      },
+    };
+  }
+
+  if (sync.error && sync.error !== 'NO') {
+    const detail = `MEGA reported an owner sync error for ${sync.remotePath}: ${sync.error}`;
+    return {
+      status: 'attention',
+      detail,
+      badges: ['Writable', 'Repair'],
+      diagnostic: {
+        code: 'MEGA_OWNER_SYNC_ERROR',
+        title: 'MEGA owner sync failed',
+        summary: 'MEGA reported a sync error',
+        detail,
+      },
+    };
+  }
+
+  if (isMegaSyncBusy(sync.status) || isMegaSyncPaused(sync.runState)) {
+    return {
+      status: 'syncing',
+      detail: `MEGA owner sync is ${sync.status.toLowerCase()} for ${sync.remotePath}.`,
+      badges: ['Writable', 'Syncing'],
+      lastSyncAt: Date.now(),
+    };
+  }
+
+  return {
+    status: 'ready',
+    detail: `MEGA owner sync is active for ${sync.remotePath}.`,
+    badges: ['Writable', 'Synced'],
+    lastSyncAt: Date.now(),
+  };
+}
+
+function describeMegaOwnerSyncFailure(error: unknown, remotePath: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/already syncs this local folder/i.test(message) || /already syncs .* with /i.test(message)) {
+    return message;
+  }
+  if (/timed out/i.test(message)) {
+    return `Nearbytes timed out while checking the MEGA owner sync for ${remotePath}. Open the runtime logs and retry.`;
+  }
+  if (/login|session|auth|credential|whoami|password/i.test(message)) {
+    return `Reconnect MEGA to resume the owner sync for ${remotePath}. ${message}`.trim();
+  }
+  return `Nearbytes could not activate the MEGA owner sync for ${remotePath}. ${message}`.trim();
+}
+
+function isMegaSyncPaused(runState: string): boolean {
+  const normalized = runState.trim().toLowerCase();
+  return normalized === 'disabled' || normalized === 'suspended' || normalized === 'pending' || normalized === 'loading';
+}
+
+function isMegaSyncBusy(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === 'syncing' || normalized === 'pending' || normalized === 'processing';
+}
+
+function normalizeMegaComparableLocalPath(value: string): string {
+  const trimmed = value.trim().replace(/^\\\\\?\\/, '');
+  const resolved = path.resolve(trimmed);
+  return process.platform === 'win32' ? resolved.replace(/\\/g, '/').toLowerCase() : resolved;
+}
+
+function normalizeMegaRemoteDisplayPath(value: string): string {
+  const trimmed = value.trim().replace(/\\/g, '/');
+  if (!trimmed) {
+    return '/';
+  }
+  const normalized = path.posix.normalize(trimmed);
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
+}
+
+function isMegaManagedMirrorPath(remotePath: string, remoteBasePath: string): boolean {
+  const normalizedRemote = normalizeMegaRemoteDisplayPath(remotePath);
+  const normalizedBase = normalizeMegaRemoteDisplayPath(remoteBasePath);
+  return normalizedRemote === normalizedBase || normalizedRemote.startsWith(`${normalizedBase}/`);
 }
 
 function parseMegaCollaborators(stdout: string): ManagedShareCollaborator[] {

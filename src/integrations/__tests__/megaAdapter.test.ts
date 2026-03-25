@@ -628,6 +628,117 @@ describe('MegaTransportAdapter', () => {
     ]);
   });
 
+  it('activates a writable MEGA owner sync through the helper and reports it ready', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-owner-sync', {
+      email: 'owner@example.com',
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'ownerhandle',
+      accountVersion: 2,
+    });
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-sync-'));
+    tempDirs.push(localPath);
+
+    const commands: Array<{ command: string; args: readonly string[] | undefined }> = [];
+    let syncListCount = 0;
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      commandExecutor: {
+        async run(invocation) {
+          commands.push({ command: String(invocation.command), args: invocation.args });
+          if (invocation.command === 'mega-whoami') {
+            return { stdout: 'owner@example.com\n', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-mkdir') {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-sync' && invocation.args?.some((arg) => arg.includes('output-cols=ID,LOCALPATH'))) {
+            syncListCount += 1;
+            const header = 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n';
+            if (syncListCount === 1) {
+              return { stdout: header, stderr: '', exitCode: 0 };
+            }
+            return {
+              stdout: `${header}sync-1\t${localPath}\t/nearbytes\tRunning\tSynced\tNO\n`,
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          if (invocation.command === 'mega-sync' && invocation.args?.[0] === localPath && invocation.args?.[1] === '/nearbytes') {
+            return { stdout: 'Added sync: local to /nearbytes\n', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-sync-issues') {
+            return {
+              stdout: 'ISSUE_ID\tPARENT_SYNC\tREASON\n',
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
+        },
+      },
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, {
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner-sync',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner-sync',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath,
+      sourceId: 'src-mega-owner-sync',
+      syncMode: 'mirror',
+      remoteDescriptor: { remotePath: '/nearbytes' },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await adapter.ensureSync(share, account);
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('ready');
+    expect(state.detail).toContain('/nearbytes');
+    await expect(fs.stat(path.join(localPath, 'blocks'))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(localPath, 'channels'))).resolves.toBeTruthy();
+    expect(commands.map((entry) => entry.command)).toEqual([
+      'mega-whoami',
+      'mega-mkdir',
+      'mega-sync',
+      'mega-sync',
+      'mega-sync',
+      'mega-sync',
+      'mega-sync-issues',
+    ]);
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
   it('uses the helper bridge for incoming MEGA contact invites', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-owner', {
@@ -1641,9 +1752,52 @@ describe('MegaTransportAdapter', () => {
     });
   });
 
-  it('treats MEGA owner folders as local shares without starting recipient sync', async () => {
+  it('treats MEGA owner folders as helper-backed writable syncs without using recipient fetches', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-1', {
+      email: 'owner@example.com',
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'ownerhandle',
+      accountVersion: 2,
+    });
+    let syncListCount = 0;
     const runtime = createIntegrationRuntime({
-      secretStore: createMemorySecretStore(),
+      secretStore,
+      commandExecutor: {
+        async run(invocation) {
+          if (invocation.command === 'mega-whoami') {
+            return { stdout: 'owner@example.com\n', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-mkdir') {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-sync' && invocation.args?.some((arg) => arg.includes('output-cols=ID,LOCALPATH'))) {
+            syncListCount += 1;
+            const header = 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n';
+            if (syncListCount === 1) {
+              return { stdout: header, stderr: '', exitCode: 0 };
+            }
+            return {
+              stdout: `${header}sync-1\t${path.join(os.tmpdir(), 'nearbytes-mega-owner-local')}\t/nearbytes\tRunning\tSynced\tNO\n`,
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          if (
+            invocation.command === 'mega-sync' &&
+            invocation.args?.[0] === path.join(os.tmpdir(), 'nearbytes-mega-owner-local') &&
+            invocation.args?.[1] === '/nearbytes'
+          ) {
+            return { stdout: 'Added sync: local to /nearbytes\n', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-sync-issues') {
+            return { stdout: 'ISSUE_ID\tPARENT_SYNC\tREASON\n', stderr: '', exitCode: 0 };
+          }
+          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
+        },
+      },
       logger: {
         log() {},
         warn() {},
@@ -1685,7 +1839,7 @@ describe('MegaTransportAdapter', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     await expect(adapter.getState(share, account)).resolves.toMatchObject({
       status: 'ready',
-      badges: ['Local'],
+      badges: ['Writable', 'Synced'],
     });
   });
 

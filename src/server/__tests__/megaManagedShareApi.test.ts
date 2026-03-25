@@ -29,15 +29,6 @@ interface ProviderAccountsResponseBody {
   }>;
 }
 
-interface IncomingSharesResponseBody {
-  shares: Array<{
-    provider: string;
-    accountId: string;
-    label: string;
-    remoteDescriptor: Record<string, unknown>;
-  }>;
-}
-
 interface OpenResponseBody {
   volumeId: string;
 }
@@ -56,8 +47,44 @@ interface ManagedShareMutationResponseBody {
   };
 }
 
+interface ManagedSharesResponseBody {
+  shares: Array<{
+    share: {
+      id: string;
+      provider: string;
+      role: string;
+      localPath: string;
+      remoteDescriptor: Record<string, unknown>;
+    };
+    state: {
+      status: string;
+      detail: string;
+      badges: string[];
+    };
+  }>;
+}
+
 function typedBody<T>(value: { body: unknown }): T {
   return value.body as T;
+}
+
+async function waitForManagedShareState(
+  app: ReturnType<typeof createApp>,
+  shareId: string,
+  status: string,
+  attempts = 10
+): Promise<ManagedShareMutationResponseBody> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const response = await request(app)
+      .get(`/integrations/shares/${encodeURIComponent(shareId)}/state`)
+      .expect(200);
+    const body = typedBody<ManagedShareMutationResponseBody>(response);
+    if (body.summary.state.status === status) {
+      return body;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for managed share ${shareId} to reach state ${status}.`);
 }
 
 function createMemorySecretStore(): ProviderSecretStore {
@@ -317,8 +344,40 @@ describe('MEGA managed share API', () => {
     const storage = new MultiRootStorageBackend(rootsConfig);
     const fileService = createFileService({ crypto, storage });
     const chatService = createChatService({ crypto, storage });
+    let syncListCount = 0;
+    let ownerSyncLocalPath = '';
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
+      commandExecutor: {
+        async run(invocation) {
+          if (invocation.command === 'mega-whoami') {
+            return { stdout: `${email}\n`, stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-mkdir') {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-sync' && invocation.args?.some((arg) => arg.includes('output-cols=ID,LOCALPATH'))) {
+            syncListCount += 1;
+            const header = 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n';
+            if (syncListCount === 1 || !ownerSyncLocalPath) {
+              return { stdout: header, stderr: '', exitCode: 0 };
+            }
+            return {
+              stdout: `${header}sync-1\t${ownerSyncLocalPath}\t/nearbytes\tRunning\tSynced\tNO\n`,
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          if (invocation.command === 'mega-sync' && invocation.args?.[1] === '/nearbytes') {
+            ownerSyncLocalPath = String(invocation.args[0] ?? '');
+            return { stdout: 'Added sync: local to /nearbytes\n', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-sync-issues') {
+            return { stdout: 'ISSUE_ID\tPARENT_SYNC\tREASON\n', stderr: '', exitCode: 0 };
+          }
+          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
+        },
+      },
       mega: {
         remoteBasePath: '/nearbytes',
         syncIntervalMs: 60_000,
@@ -360,11 +419,6 @@ describe('MEGA managed share API', () => {
       .expect(200);
     const accountId = typedBody<{ account: { id: string } }>(connectRes).account.id;
 
-    const incomingRes = await request(app).get('/integrations/shares/incoming').expect(200);
-    const offer = typedBody<IncomingSharesResponseBody>(incomingRes).shares.find((entry) => entry.provider === 'mega');
-    expect(offer).toBeDefined();
-    expect(offer?.accountId).toBe(accountId);
-
     const openRes = await request(app).post('/open').send({ secret: SECRET }).expect(200);
     const openBody = typedBody<OpenResponseBody>(openRes);
 
@@ -373,23 +427,202 @@ describe('MEGA managed share API', () => {
       .send({
         provider: 'mega',
         accountId,
-        label: offer?.label,
+        label: 'Team Space',
         volumeId: openBody.volumeId,
-        remoteDescriptor: offer?.remoteDescriptor,
+        remoteDescriptor: {
+          rootHandle: shareHandle,
+          shareHandle,
+          shareName: 'Team Space',
+          ownerEmail: 'owner@example.com',
+          accessLevel: 'read',
+        },
       })
       .expect(200);
     const acceptBody = typedBody<ManagedShareMutationResponseBody>(acceptRes);
 
     expect(acceptBody.summary.share.provider).toBe('mega');
     expect(acceptBody.summary.share.sourceId).toBeTruthy();
-    expect(acceptBody.summary.state.status).toBe('ready');
     await expect(fs.readFile(path.join(acceptBody.summary.share.localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(
       filePlaintext.toString('utf8')
     );
 
-    const stateRes = await request(app)
-      .get(`/integrations/shares/${encodeURIComponent(acceptBody.summary.share.id)}/state`)
+    const stateBody = await waitForManagedShareState(app, acceptBody.summary.share.id, 'ready');
+    expect(stateBody.summary.state.status).toBe('ready');
+  });
+
+  it('creates the default writable MEGA owner share and reports it ready through the local API', async () => {
+    const email = 'owner@example.com';
+    const password = 'correct horse battery staple';
+    const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
+    const passwordKey = await deriveV2MasterKey(password, salt);
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const encryptedMasterKey = encryptAesEcb(masterKey, passwordKey);
+    const tsidLeft = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
+    const userHandle = 'usrhandle01';
+
+    const helperCommands: Array<{ command: string; args: readonly string[] | undefined }> = [];
+    let syncListCount = 0;
+    let ownerSyncLocalPath = '';
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      }
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'us0':
+          return new Response(JSON.stringify([{ v: 2, s: salt }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'us':
+          return new Response(
+            JSON.stringify([{ k: encodeMegaBase64Url(encryptedMasterKey), u: userHandle, tsid }]),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        case 'ug':
+          return new Response(JSON.stringify([{ u: userHandle, email }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          return new Response(JSON.stringify([{ f: [], u: [], sn: 'cursor-1' }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    }) as typeof fetch;
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-api-'));
+    tempDirs.push(tempDir);
+    process.env.HOME = tempDir;
+
+    const mainRoot = path.join(tempDir, 'main-root');
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    await fs.mkdir(mainRoot, { recursive: true });
+
+    const rootsConfig: RootsConfig = {
+      version: 2,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: mainRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      defaultVolume: {
+        destinations: [
+          {
+            sourceId: 'src-main',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 10,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+      volumes: [],
+    };
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
+
+    const storage = new MultiRootStorageBackend(rootsConfig);
+    const crypto = createCryptoOperations();
+    const fileService = createFileService({ crypto, storage });
+    const chatService = createChatService({ crypto, storage });
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      commandExecutor: {
+        async run(invocation) {
+          helperCommands.push({ command: String(invocation.command), args: invocation.args });
+          if (invocation.command === 'mega-whoami') {
+            return { stdout: `${email}\n`, stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-mkdir') {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-share' && invocation.args?.[0] === '-p') {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-sync' && invocation.args?.some((arg) => arg.includes('output-cols=ID,LOCALPATH'))) {
+            syncListCount += 1;
+            const header = 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n';
+            if (syncListCount === 1 || !ownerSyncLocalPath) {
+              return { stdout: header, stderr: '', exitCode: 0 };
+            }
+            return {
+              stdout: `${header}sync-1\t${ownerSyncLocalPath}\t/nearbytes\tRunning\tSynced\tNO\n`,
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          if (invocation.command === 'mega-sync' && invocation.args?.[1] === '/nearbytes') {
+            ownerSyncLocalPath = String(invocation.args[0] ?? '');
+            return { stdout: 'Added sync: local to /nearbytes\n', stderr: '', exitCode: 0 };
+          }
+          if (invocation.command === 'mega-sync-issues') {
+            return { stdout: 'ISSUE_ID\tPARENT_SYNC\tREASON\n', stderr: '', exitCode: 0 };
+          }
+          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
+        },
+      },
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const managedShareService = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      adapters: [new MegaTransportAdapter(runtime, { fetchImpl })],
+    });
+    services.push(managedShareService);
+    const app = createApp({
+      fileService,
+      chatService,
+      crypto,
+      storage,
+      tokenKey: randomBytes(32),
+      corsOrigin: true,
+      maxUploadBytes: 5 * 1024 * 1024,
+      rootsConfigPath,
+      resolvedStorageDir: mainRoot,
+      managedShareService,
+    });
+
+    const connectRes = await request(app)
+      .post('/integrations/accounts/connect')
+      .send({
+        provider: 'mega',
+        label: 'MEGA',
+        accountId: 'acct-mega-1',
+        credentials: { email, password },
+      })
       .expect(200);
-    expect(typedBody<ManagedShareMutationResponseBody>(stateRes).summary.state.status).toBe('ready');
+    expect(typedBody<{ account: { id: string } }>(connectRes).account.id).toContain('acct-mega-1');
+
+    const sharesRes = await request(app).get('/integrations/shares').expect(200);
+    const sharesBody = typedBody<ManagedSharesResponseBody>(sharesRes);
+    const ownerShare = sharesBody.shares.find((entry) => entry.share.provider === 'mega' && entry.share.role === 'owner');
+    expect(ownerShare).toBeDefined();
+    await expect(fs.stat(path.join(ownerShare!.share.localPath, 'blocks'))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(ownerShare!.share.localPath, 'channels'))).resolves.toBeTruthy();
+
+    const stateBody = await waitForManagedShareState(app, ownerShare!.share.id, 'ready');
+    expect(stateBody.summary.state.status).toBe('ready');
+    expect(helperCommands.map((entry) => entry.command)).toContain('mega-sync');
+    expect(fetchImpl).toHaveBeenCalled();
   });
 });

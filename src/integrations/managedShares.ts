@@ -155,8 +155,19 @@ export class ManagedShareService {
   }
 
   private isOperationalAccount(account: ProviderAccount): boolean {
+    return account.state === 'connected';
+  }
+
+  private isMegaHelperOperationalAccount(account: ProviderAccount): boolean {
     const provider = normalizeProvider(account.provider);
-    return account.state === 'connected' || (provider === 'mega' && account.state === 'attention');
+    return provider === 'mega' && (account.state === 'connected' || account.state === 'attention');
+  }
+
+  private canSyncManagedShare(share: ManagedShare, account: ProviderAccount): boolean {
+    if (normalizeProvider(share.provider) === 'mega' && share.role === 'owner') {
+      return this.isMegaHelperOperationalAccount(account);
+    }
+    return this.isOperationalAccount(account);
   }
 
   private presentationAccount(account: ProviderAccount): ProviderAccount {
@@ -461,7 +472,7 @@ export class ManagedShareService {
 
   async repairManagedShare(shareId: string): Promise<ManagedShareSummary> {
     const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
-    if (account && this.isOperationalAccount(account)) {
+    if (account && this.canSyncManagedShare(nextShare, account)) {
       await adapter?.ensureSync?.(nextShare, account);
     }
 
@@ -879,7 +890,7 @@ export class ManagedShareService {
     stateSnapshot: IntegrationStateSnapshot
   ): Promise<IntegrationStateSnapshot> {
     let state = stateSnapshot;
-    for (const account of state.accounts.filter((entry) => this.isOperationalAccount(entry))) {
+    for (const account of state.accounts.filter((entry) => this.isOperationalAccount(entry) || this.isMegaHelperOperationalAccount(entry))) {
       const provider = normalizeProvider(account.provider);
       const adapter = this.adapters.get(provider);
       this.runtime.logger.log('Managed share provider reconciliation started.', {
@@ -898,7 +909,7 @@ export class ManagedShareService {
           migratedShares: reconciled.migratedShares,
         });
       }
-      if (adapter?.listIncomingShares) {
+      if (adapter?.listIncomingShares && this.isOperationalAccount(account)) {
         const reconciledIncoming = await this.reconcileIncomingManagedShares(provider, account, state);
         state = reconciledIncoming.state;
         this.runtime.logger.log('Managed share incoming inventory reconciled.', {
@@ -1369,7 +1380,7 @@ export class ManagedShareService {
       await normalizeNearbytesRoot(nextShare.localPath, {
         rewriteMarker: true,
       });
-      if (account && this.isOperationalAccount(account)) {
+      if (account && this.canSyncManagedShare(nextShare, account)) {
         await adapter?.ensureSync?.(nextShare, account);
       }
       this.pendingMarkerRefreshes.delete(shareId);
@@ -1387,7 +1398,7 @@ export class ManagedShareService {
 
   private scheduleManagedShareSync(share: ManagedShare, state: IntegrationStateSnapshot): void {
     const account = state.accounts.find((entry) => entry.id === share.accountId);
-    if (!account || !this.isOperationalAccount(account) || this.syncBootstrapTasks.has(share.id)) {
+    if (!account || !this.canSyncManagedShare(share, account) || this.syncBootstrapTasks.has(share.id)) {
       return;
     }
     this.runtime.logger.log('Managed share sync bootstrap scheduled.', {
@@ -1608,7 +1619,7 @@ export class ManagedShareService {
   private hasMissingDefaultManagedShares(stateSnapshot: IntegrationStateSnapshot): boolean {
     return stateSnapshot.accounts.some((account) => {
       const provider = normalizeProvider(account.provider);
-      if (provider !== 'mega' || !this.isOperationalAccount(account)) {
+      if (provider !== 'mega' || !this.isMegaHelperOperationalAccount(account)) {
         return false;
       }
       return !stateSnapshot.managedShares.some((share) =>
@@ -1698,7 +1709,7 @@ export class ManagedShareService {
     } = {}
   ): Promise<void> {
     for (const account of state.accounts) {
-      if (!this.isOperationalAccount(account)) {
+      if (!this.isMegaHelperOperationalAccount(account)) {
         continue;
       }
       await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account, {
