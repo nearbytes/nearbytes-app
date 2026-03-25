@@ -174,6 +174,37 @@ class IncomingShareAdapter extends FakeTransportAdapter {
   }
 }
 
+class BlockingIncomingShareAdapter extends FakeTransportAdapter {
+  incomingCalls = 0;
+
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  async listIncomingShares(): Promise<never> {
+    this.incomingCalls += 1;
+    await new Promise<void>(() => {
+      // Intentionally never resolves; connect should fall back after a soft timeout.
+    });
+    throw new Error('Unreachable');
+  }
+}
+
+class BlockingIncomingShareSyncAdapter extends IncomingShareAdapter {
+  ensureSyncCalls = 0;
+
+  constructor(offers: Array<{ label: string; remoteDescriptor: Record<string, unknown> }>) {
+    super(offers);
+  }
+
+  override async ensureSync(): Promise<void> {
+    this.ensureSyncCalls += 1;
+    await new Promise<void>(() => {
+      // Intentionally never resolves; connect should not block on recipient sync bootstrap.
+    });
+  }
+}
+
 class BlockingEnsureSyncAdapter extends FakeTransportAdapter {
   ensureSyncCalls = 0;
 
@@ -349,6 +380,7 @@ async function createHarness(options?: {
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(
     Array.from(tempDirs, async (tempDir) => {
       try {
@@ -564,7 +596,7 @@ describe('ManagedShareService', () => {
     }
   });
 
-  it('starts sync bootstrap from fast account reads in background mode', async () => {
+  it('does not start sync bootstrap from fast account reads in background mode', async () => {
     const adapter = new BlockingEnsureSyncAdapter();
     const { integrationStatePath, service } = await createHarness({
       adapters: [adapter],
@@ -611,7 +643,7 @@ describe('ManagedShareService', () => {
     await service.listAccounts({ fast: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(adapter.ensureSyncCalls).toBe(1);
+    expect(adapter.ensureSyncCalls).toBe(0);
   });
 
   it('starts sync bootstrap during background startup warmup', async () => {
@@ -950,6 +982,67 @@ describe('ManagedShareService', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(adapter.inventoryCalls).toBe(0);
+  });
+
+  it('does not block account connect on a long-running incoming-share discovery', async () => {
+    const adapter = new BlockingIncomingShareAdapter();
+    const { service } = await createHarness({ adapters: [adapter] });
+    vi.spyOn(service as never, 'providerIncomingShareDiscoveryTimeoutMs' as never).mockReturnValue(10);
+
+    const result = await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      credentials: {
+        email: 'owner@example.com',
+        password: 'secret',
+      },
+    });
+
+    expect(result.status).toBe('connected');
+    expect(result.account?.id).toBe('acct-mega-1');
+    expect(adapter.incomingCalls).toBe(1);
+  });
+
+  it('does not block account connect on an auto-adopted incoming share sync bootstrap', async () => {
+    const adapter = new BlockingIncomingShareSyncAdapter([
+      {
+        label: 'shared-demo',
+        remoteDescriptor: {
+          remotePath: '/nearbytes/shared-demo',
+          shareName: 'shared-demo',
+          ownerEmail: 'owner@example.com',
+          rootHandle: 'root-1',
+          shareHandle: 'share-1',
+          accessLevel: 'read',
+        },
+      },
+    ]);
+    const { service } = await createHarness({ adapters: [adapter] });
+
+    const result = await Promise.race([
+      service.connectAccount({
+        provider: 'mega',
+        accountId: 'acct-mega-1',
+        label: 'MEGA',
+        email: 'owner@example.com',
+        credentials: {
+          email: 'owner@example.com',
+          password: 'secret',
+        },
+      }).then((value) => ({ kind: 'connected' as const, value })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'timeout' }), 50);
+      }),
+    ]);
+
+    expect(result.kind).toBe('connected');
+    if (result.kind === 'connected') {
+      expect(result.value.status).toBe('connected');
+      expect(result.value.account?.id).toBe('acct-mega-1');
+    }
+    expect(adapter.ensureSyncCalls).toBe(1);
   });
 
   it('skips background maintenance on a fresh service when the persisted stamp is still valid', async () => {

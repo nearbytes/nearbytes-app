@@ -51,6 +51,11 @@ interface DesktopRuntimeConfig {
   readonly isDesktop: true;
 }
 
+interface DesktopApiJsonOptions extends RequestInit {
+  readonly timeoutMs?: number;
+  readonly timeoutLabel?: string;
+}
+
 interface ProviderAccountsResponse {
   readonly accounts: Array<{
     readonly id: string;
@@ -93,6 +98,7 @@ interface DesktopElementState {
 
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEEP_LINK_PROTOCOL = 'nearbytes';
+const DEFAULT_DESKTOP_API_TIMEOUT_MS = 15_000;
 const DESKTOP_RUNTIME_LOG_TAIL_BYTES = 64 * 1024;
 const DESKTOP_FORCE_EXIT_TIMEOUT_MS = 5_000;
 const UI_DEBUG_FILE_READ_MAX_BYTES = 128 * 1024;
@@ -394,7 +400,7 @@ function requireDesktopRuntimeConfig(): DesktopRuntimeConfig {
   return state.config;
 }
 
-async function desktopApiJson<T = unknown>(apiPath: string, init: RequestInit = {}): Promise<T> {
+async function desktopApiJson<T = unknown>(apiPath: string, init: DesktopApiJsonOptions = {}): Promise<T> {
   const config = requireDesktopRuntimeConfig();
   const headers = new Headers(init.headers ?? {});
   headers.set('x-nearbytes-desktop-token', config.desktopToken);
@@ -402,11 +408,47 @@ async function desktopApiJson<T = unknown>(apiPath: string, init: RequestInit = 
   if (init.body && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
   }
-  const response = await fetch(new URL(apiPath, config.apiBaseUrl), {
-    ...init,
-    method,
-    headers,
-  });
+  const timeoutMs = Math.max(250, Math.floor(init.timeoutMs ?? DEFAULT_DESKTOP_API_TIMEOUT_MS));
+  const timeoutLabel = init.timeoutLabel?.trim() || `${method} ${apiPath}`;
+  const timeoutController = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    timeoutController.abort();
+  }, timeoutMs);
+  timeout.unref?.();
+
+  const upstreamSignal = init.signal;
+  const onAbort = () => {
+    timeoutController.abort();
+  };
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      timeoutController.abort();
+    } else {
+      upstreamSignal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(new URL(apiPath, config.apiBaseUrl), {
+      ...init,
+      method,
+      headers,
+      signal: timeoutController.signal,
+    });
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`Desktop API request timed out after ${timeoutMs}ms: ${timeoutLabel}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (upstreamSignal) {
+      upstreamSignal.removeEventListener('abort', onAbort);
+    }
+  }
   const text = await response.text();
   const payload = text.trim().length > 0 ? JSON.parse(text) as T | { error?: { message?: string } } : ({} as T);
   if (!response.ok) {
@@ -420,7 +462,9 @@ async function desktopApiJson<T = unknown>(apiPath: string, init: RequestInit = 
 
 async function wipeStoredConfig(options: WipeStoredConfigOptions = {}): Promise<{ relaunching: true }> {
   const deleteLocalData = options.deleteLocalData === true;
+  console.log(`[desktop] wipeStoredConfig starting (deleteLocalData=${deleteLocalData})`);
   await disconnectAllProviderAccounts();
+  console.log('[desktop] wipeStoredConfig disconnected provider accounts');
 
   if (state.window && !state.window.isDestroyed()) {
     await state.window.webContents.session.clearStorageData({
@@ -430,6 +474,7 @@ async function wipeStoredConfig(options: WipeStoredConfigOptions = {}): Promise<
       console.warn(`Failed to clear desktop browser storage: ${message}`);
     });
   }
+  console.log('[desktop] wipeStoredConfig cleared renderer browser storage');
 
   const rootsConfigPath = resolveDefaultRootsConfigPath();
   const integrationStatePath = resolveIntegrationStatePath();
@@ -441,12 +486,14 @@ async function wipeStoredConfig(options: WipeStoredConfigOptions = {}): Promise<
   await removePathIfPresent(rootsConfigPath);
   await removePathIfPresent(integrationStatePath);
   await removePathIfPresent(desktopSecretStorePath);
+  console.log('[desktop] wipeStoredConfig removed persisted desktop config files');
 
   if (deleteLocalData) {
     for (const storageRoot of storageRoots) {
       await removePathIfPresent(path.join(storageRoot, 'blocks'));
       await removePathIfPresent(path.join(storageRoot, 'channels'));
     }
+    console.log(`[desktop] wipeStoredConfig removed local blocks/channels from ${storageRoots.length} storage roots`);
   }
 
   setTimeout(() => {
@@ -454,27 +501,41 @@ async function wipeStoredConfig(options: WipeStoredConfigOptions = {}): Promise<
     void requestAppQuit('wipe-stored-config');
   }, 0);
 
+  console.log('[desktop] wipeStoredConfig scheduled relaunch');
+
   return { relaunching: true };
 }
 
 async function disconnectAllProviderAccounts(): Promise<void> {
-  const accountsResponse = await desktopApiJson<ProviderAccountsResponse>('/integrations/accounts?fast=1');
+  console.log('[desktop] wipeStoredConfig fetching provider accounts');
+  const accountsResponse = await desktopApiJson<ProviderAccountsResponse>('/integrations/accounts?fast=1', {
+    timeoutMs: 2_500,
+    timeoutLabel: 'list provider accounts for reset',
+  });
+  console.log(`[desktop] wipeStoredConfig found ${accountsResponse.accounts.length} provider accounts to disconnect`);
   for (const account of accountsResponse.accounts) {
     const encodedAccountId = encodeURIComponent(account.id);
     try {
       await desktopApiJson(`/integrations/accounts/${encodedAccountId}?mode=reset`, {
         method: 'DELETE',
+        timeoutMs: 10_000,
+        timeoutLabel: `disconnect provider ${account.provider}:${account.id} for reset`,
       });
+      console.log(`[desktop] wipeStoredConfig disconnected provider ${account.provider}:${account.id}`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`Nearbytes could not safely disconnect provider ${account.provider.toUpperCase()} before starting from scratch: ${detail}`);
     }
   }
 
-  const remainingAccounts = await desktopApiJson<ProviderAccountsResponse>('/integrations/accounts?fast=1');
+  const remainingAccounts = await desktopApiJson<ProviderAccountsResponse>('/integrations/accounts?fast=1', {
+    timeoutMs: 2_500,
+    timeoutLabel: 'verify provider disconnects for reset',
+  });
   if (remainingAccounts.accounts.length > 0) {
     throw new Error('Nearbytes could not disconnect all provider accounts before reset.');
   }
+  console.log('[desktop] wipeStoredConfig verified all provider accounts are disconnected');
 }
 
 async function resolveLocalDataRootsForWipe(rootsConfigPath: string): Promise<string[]> {

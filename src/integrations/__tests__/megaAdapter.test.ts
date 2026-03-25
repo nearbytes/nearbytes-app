@@ -1015,6 +1015,123 @@ describe('MegaTransportAdapter', () => {
     });
   });
 
+  it('aborts an in-flight readonly refresh when the share is detached', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-detach', {
+      email: 'reader@example.com',
+      password: 'correct horse battery staple',
+      sid: 'detach-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'usrhandle01',
+      accountVersion: 2,
+    });
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      logger: {
+        log() {},
+        warn() {},
+      },
+      mega: {
+        syncTimeoutMs: 5_000,
+        syncIntervalMs: 60_000,
+      },
+    });
+
+    let fetchNodesStarted = false;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      }
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: 'usrhandle01', email: 'reader@example.com' }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'uga':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          fetchNodesStarted = true;
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              'abort',
+              () => {
+                const error = new Error('This operation was aborted.');
+                error.name = 'AbortError';
+                reject(error);
+              },
+              { once: true }
+            );
+          });
+        default:
+          throw new Error(`Unexpected MEGA command: ${String(payload.a)}`);
+      }
+    }) as typeof fetch;
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-detach-'));
+    tempDirs.push(localPath);
+
+    const share: ManagedShare = {
+      id: 'share-mega-detach-1',
+      provider: 'mega',
+      accountId: 'acct-mega-detach',
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-detach-1',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: 'hNtERb6T',
+        shareHandle: 'hNtERb6T',
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-detach',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const syncPromise = adapter.ensureSync(share, account).then(
+      () => ({ kind: 'resolved' as const }),
+      (error) => ({ kind: 'rejected' as const, error })
+    );
+
+    await vi.waitFor(() => {
+      expect(fetchNodesStarted).toBe(true);
+    });
+    await adapter.detachManagedShare(share, account);
+
+    const result = await Promise.race([
+      syncPromise,
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'timeout' }), 75);
+      }),
+    ]);
+
+    expect(result.kind).toBe('rejected');
+    if (result.kind === 'rejected') {
+      expect(result.error).toMatchObject({ name: 'AbortError' });
+    }
+  });
+
   it('retries transient MEGA API locks during readonly sync', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-retry', {

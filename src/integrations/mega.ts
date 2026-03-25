@@ -143,6 +143,7 @@ export class MegaTransportAdapter {
   private readonly fetchImpl: typeof fetch;
   private readonly syncStates = new Map<string, TransportState>();
   private readonly syncTimers = new Map<string, NodeJS.Timeout>();
+  private readonly syncControllers = new Map<string, AbortController>();
   private readonly syncTasks = new Map<string, Promise<void>>();
   private readonly refreshWorker = new ProviderRefreshWorker();
 
@@ -465,6 +466,11 @@ export class MegaTransportAdapter {
       clearInterval(timer);
       this.syncTimers.delete(share.id);
     }
+    const controller = this.syncControllers.get(share.id);
+    if (controller) {
+      controller.abort();
+      this.syncControllers.delete(share.id);
+    }
     this.syncStates.delete(share.id);
     this.syncTasks.delete(share.id);
   }
@@ -476,6 +482,7 @@ export class MegaTransportAdapter {
     }
 
     const controller = new AbortController();
+    this.syncControllers.set(share.id, controller);
     const timeout = setTimeout(() => {
       controller.abort();
     }, this.runtime.mega.syncTimeoutMs);
@@ -485,6 +492,9 @@ export class MegaTransportAdapter {
       clearTimeout(timeout);
       if (this.syncTasks.get(share.id) === task) {
         this.syncTasks.delete(share.id);
+      }
+      if (this.syncControllers.get(share.id) === controller) {
+        this.syncControllers.delete(share.id);
       }
     });
     this.syncTasks.set(share.id, task);

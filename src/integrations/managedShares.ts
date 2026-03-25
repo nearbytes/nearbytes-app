@@ -191,8 +191,10 @@ export class ManagedShareService {
         preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
       };
     }
-    this.requestBackgroundMaintenance('listAccounts', state);
-    this.scheduleManagedShareSyncs(state);
+    if (options.fast !== true) {
+      this.requestBackgroundMaintenance('listAccounts', state);
+      this.scheduleManagedShareSyncs(state);
+    }
     const setupStates = options.fast
       ? this.fallbackProviderSetupStates()
       : await this.withSoftTimeout(
@@ -310,10 +312,15 @@ export class ManagedShareService {
       preferredProviders,
     };
     const reconciledMirrors = await this.reconcileProviderManagedShares(provider, merged.account, connectedState);
-    const reconciledIncoming = await this.reconcileIncomingManagedShares(
-      provider,
-      merged.account,
-      reconciledMirrors.state
+    const incomingDiscoveryTimeoutMs = this.providerIncomingShareDiscoveryTimeoutMs(provider);
+    const reconciledIncoming = await this.withSoftTimeout(
+      this.reconcileIncomingManagedShares(provider, merged.account, reconciledMirrors.state),
+      {
+        state: reconciledMirrors.state,
+        adoptedShares: 0,
+      },
+      incomingDiscoveryTimeoutMs,
+      `Incoming managed share discovery timed out during connect for ${provider}:${merged.account.id}`
     );
     await this.ensureDefaultManagedShare(provider, merged.account, {
       stateSnapshot: reconciledIncoming.state,
@@ -494,7 +501,7 @@ export class ManagedShareService {
             };
           }
           try {
-            const discoveryTimeoutMs = normalizeProvider(account.provider) === 'mega' ? 12_000 : 1_500;
+            const discoveryTimeoutMs = this.providerIncomingShareDiscoveryTimeoutMs(account.provider);
             const discovered = await this.withSoftTimeout(
               adapter.listIncomingShares(account),
               [] satisfies IncomingManagedShareOffer[],
@@ -689,11 +696,12 @@ export class ManagedShareService {
     }
     await this.persistRootsConfig(config);
 
-    await this.saveState({
+    const nextState: IntegrationStateSnapshot = {
       ...state,
       managedShares: [...state.managedShares, nextShare],
-    });
-    await adapter?.ensureSync?.(nextShare, account);
+    };
+    await this.saveState(nextState);
+    this.scheduleManagedShareSync(nextShare, nextState);
 
     return this.buildManagedShareSummary(nextShare);
   }
@@ -1523,6 +1531,10 @@ export class ManagedShareService {
         clearTimeout(timer);
       }
     }
+  }
+
+  private providerIncomingShareDiscoveryTimeoutMs(provider: string): number {
+    return normalizeProvider(provider) === 'mega' ? 12_000 : 1_500;
   }
 
   private requestBackgroundMaintenance(reason: string, stateSnapshot: IntegrationStateSnapshot): void {
@@ -2373,7 +2385,7 @@ export class ManagedShareService {
     const currentShare = stateSnapshot.managedShares.find((entry) => entry.id === share.id) ?? share;
     const attached = computeManagedShareAttachments(this.options.storage.getRootsConfig(), currentShare);
     if (attached.length === 0 && currentShare.remoteDescriptor.legacyLocalMirror === true) {
-      const nextConfig = await this.attachTrackedLocalVolumesToMegaOwnerBaseShare(currentShare, stateSnapshot);
+      const nextConfig = await this.attachTrackedLocalVolumesToMegaOwnerBaseShare(currentShare);
       if (nextConfig) {
         stateSnapshot = await this.loadState();
       }
@@ -2384,8 +2396,7 @@ export class ManagedShareService {
   }
 
   private async attachTrackedLocalVolumesToMegaOwnerBaseShare(
-    share: ManagedShare,
-    stateSnapshot: IntegrationStateSnapshot
+    share: ManagedShare
   ): Promise<RootsConfig | null> {
     const sourceId =
       share.sourceId ??

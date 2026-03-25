@@ -1038,19 +1038,15 @@ async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {
     return runtimeConfigPromise;
   }
 
-  const bridge = getDesktopBridge();
-  if (!bridge) {
-    if (isElectronRenderer()) {
-      runtimeConfigPromise = Promise.reject(
-        new Error('Nearbytes desktop bridge is unavailable in Electron renderer.')
-      );
-      return runtimeConfigPromise;
+  const nextPromise = (async () => {
+    const bridge = getDesktopBridge();
+    if (!bridge) {
+      if (isElectronRenderer()) {
+        throw new Error('Nearbytes desktop bridge is unavailable in Electron renderer.');
+      }
+      return WEB_RUNTIME_CONFIG;
     }
-    runtimeConfigPromise = Promise.resolve(WEB_RUNTIME_CONFIG);
-    return runtimeConfigPromise;
-  }
 
-  runtimeConfigPromise = (async () => {
     if (typeof bridge.getRuntimeConfig !== 'function') {
       throw new Error('Nearbytes desktop bridge is missing getRuntimeConfig().');
     }
@@ -1064,7 +1060,16 @@ async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {
       isDesktop: config.isDesktop === true,
     };
   })();
-  return runtimeConfigPromise;
+
+  runtimeConfigPromise = nextPromise;
+  try {
+    return await nextPromise;
+  } catch (error) {
+    if (runtimeConfigPromise === nextPromise) {
+      runtimeConfigPromise = null;
+    }
+    throw error;
+  }
 }
 
 /**
