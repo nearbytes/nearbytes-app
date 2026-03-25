@@ -1,4 +1,4 @@
-import { promises as fs } from 'fs';
+import { promises as fs, type Dirent } from 'fs';
 import path from 'path';
 import { isProviderEnabled } from '../config/appConfig.js';
 import {
@@ -2370,8 +2370,53 @@ export class ManagedShareService {
       stateSnapshot = nextState;
     }
 
+    const currentShare = stateSnapshot.managedShares.find((entry) => entry.id === share.id) ?? share;
+    const attached = computeManagedShareAttachments(this.options.storage.getRootsConfig(), currentShare);
+    if (attached.length === 0 && currentShare.remoteDescriptor.legacyLocalMirror === true) {
+      const nextConfig = await this.attachTrackedLocalVolumesToMegaOwnerBaseShare(currentShare, stateSnapshot);
+      if (nextConfig) {
+        stateSnapshot = await this.loadState();
+      }
+    }
+
     await normalizeMegaOwnerBaseShareRoot(expectedLocalPath, providerRoot);
     return stateSnapshot;
+  }
+
+  private async attachTrackedLocalVolumesToMegaOwnerBaseShare(
+    share: ManagedShare,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<RootsConfig | null> {
+    const sourceId =
+      share.sourceId ??
+      this.options.storage.getRootsConfig().sources.find((source) => source.integration?.managedShareId === share.id)?.id;
+    if (!sourceId) {
+      return null;
+    }
+
+    const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(
+      this.options.storage.getRootsConfig().sources,
+      sourceId
+    );
+    if (trackedVolumeIds.length === 0) {
+      return null;
+    }
+
+    let nextConfig = cloneConfig(this.options.storage.getRootsConfig());
+    let changed = false;
+    for (const volumeId of trackedVolumeIds) {
+      const updated = ensureVolumeAttachment(nextConfig, volumeId, sourceId);
+      if (updated !== nextConfig) {
+        nextConfig = updated;
+        changed = true;
+      }
+    }
+    if (!changed) {
+      return null;
+    }
+
+    await this.persistRootsConfig(nextConfig);
+    return nextConfig;
   }
 
   private async relocateMegaRecipientShareIfNeeded(
@@ -3198,6 +3243,38 @@ function computeManagedShareAttachments(config: RootsConfig, share: ManagedShare
     });
   }
   return attachments;
+}
+
+async function collectTrackedVolumeIdsFromNonManagedRoots(
+  sources: readonly SourceConfigEntry[],
+  excludedSourceId: string
+): Promise<string[]> {
+  const volumeIds = new Set<string>();
+  for (const source of sources) {
+    if (source.id === excludedSourceId || source.enabled !== true) {
+      continue;
+    }
+    if (source.integration?.kind === 'provider-managed') {
+      continue;
+    }
+    const channelsPath = path.join(source.path, 'channels');
+    let entries: Dirent[] = [];
+    try {
+      entries = await fs.readdir(channelsPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const volumeId = entry.name.trim().toLowerCase();
+      if (/^[a-f0-9]{64,200}$/i.test(volumeId)) {
+        volumeIds.add(volumeId);
+      }
+    }
+  }
+  return [...volumeIds].sort((left, right) => left.localeCompare(right));
 }
 
 function buildAttachedShareKeys(shares: readonly ManagedShare[]): Set<string> {

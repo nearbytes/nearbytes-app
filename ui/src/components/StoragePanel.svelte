@@ -1025,6 +1025,16 @@
   }
 
   async function runSourceRepair(sourceId: string, action: 'trash' | 'delete'): Promise<void> {
+    const report = sourceRepairReport(sourceId);
+    const warning = action === 'trash'
+      ? 'Trash the invalid Nearbytes files in this storage location? Nearbytes will remove malformed event names, malformed block names, corrupted blocks, and invalidly signed events.'
+      : 'Delete the invalid Nearbytes files in this storage location permanently? Nearbytes will remove malformed event names, malformed block names, corrupted blocks, and invalidly signed events.';
+    const detail = report && report.issueCount > 0
+      ? `\n\nThis will target ${countLabel(report.issueCount, 'detected issue')} in the selected Nearbytes storage location.`
+      : '';
+    if (!globalThis.confirm(`${warning}${detail}`)) {
+      return;
+    }
     repairingSourceId = sourceId;
     errorMessage = '';
     successMessage = '';

@@ -9,6 +9,7 @@ import {
 } from '../config/roots.js';
 import {
   ensureNearbytesMarker,
+  inspectNearbytesRoot,
   isNearbytesIgnoredTopLevelEntryName,
   normalizeNearbytesRoot,
   NEARBYTES_IGNORED_ROOT_FILES,
@@ -805,6 +806,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     action: 'delete' | 'trash',
     options: StorageLocationRepairOptions = {}
   ): Promise<StorageLocationRepairResult> {
+    await this.assertSafeStorageLocationCleanup(sourceId);
     const report = await this.inspectStorageLocation(sourceId, {
       validateContents: options.structuralOnly !== true,
     });
@@ -819,6 +821,20 @@ export class MultiRootStorageBackend implements StorageBackend {
       cleanupCandidateCount: report.cleanupCandidateCount,
       action,
     };
+  }
+
+  private async assertSafeStorageLocationCleanup(sourceId: string): Promise<void> {
+    const state = this.getRootStateById(sourceId);
+    if (!state) {
+      throw new StorageError(`Source not found: ${sourceId}`);
+    }
+    const inspection = await inspectNearbytesRoot(state.config.path);
+    if (inspection?.hasMarker) {
+      return;
+    }
+    throw new StorageError(
+      'Cleanup is only allowed for storage locations that contain Nearbytes.html. Add a Nearbytes marker first, then try again.'
+    );
   }
 
   private async inspectStorageLocationIssues(

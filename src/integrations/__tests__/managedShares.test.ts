@@ -1335,7 +1335,9 @@ describe('ManagedShareService', () => {
     const managedRoot = path.join(tempDir, 'managed-root');
     const localRoot = path.join(tempDir, 'local-root');
     const legacyMegaRoot = path.join(managedRoot, 'mega', 'owner-example-com', 'nearbytes');
+    const trackedVolumeId = 'a'.repeat(130);
     await fs.mkdir(path.join(localRoot, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(localRoot, 'channels', trackedVolumeId), { recursive: true });
     await fs.mkdir(path.join(legacyMegaRoot, 'blocks'), { recursive: true });
     await fs.writeFile(path.join(legacyMegaRoot, 'Nearbytes.html'), 'marker\n', 'utf8');
     await fs.writeFile(
@@ -1401,6 +1403,25 @@ describe('ManagedShareService', () => {
       remotePath: '/nearbytes',
       legacyLocalMirror: true,
     });
+    expect(shares.shares[0]?.attachments.map((attachment) => attachment.volumeId)).toEqual([trackedVolumeId]);
+
+    const persistedConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    expect(persistedConfig.volumes).toEqual([
+      {
+        volumeId: trackedVolumeId,
+        destinations: [
+          {
+            sourceId: shares.shares[0]!.share.sourceId!,
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+    ]);
   });
 
   it('adopts active MEGA sync mirrors on connect without duplicating the default base share', async () => {

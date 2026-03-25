@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { type RootsConfig } from '../../config/roots.js';
+import { NEARBYTES_MARKER_FILE } from '../../config/sourceDiscovery.js';
 import { MultiRootStorageBackend, type MultiRootRuntimeSnapshot } from '../multiRoot.js';
 
 function bytes(value: string): Uint8Array {
@@ -1069,6 +1070,7 @@ describe('MultiRootStorageBackend', () => {
     const mainRoot = join(dir, 'main');
     await mkdir(join(mainRoot, 'blocks'), { recursive: true });
     await mkdir(join(mainRoot, 'channels'), { recursive: true });
+    await writeFile(join(mainRoot, NEARBYTES_MARKER_FILE), 'marker', 'utf8');
     await writeFile(join(mainRoot, 'rogue.txt'), 'rogue', 'utf8');
     await writeFile(join(mainRoot, 'blocks', 'not-a-hash.bin'), 'bad', 'utf8');
     await writeFile(join(mainRoot, 'blocks', `${'a'.repeat(64)}.bin`), 'wrong-data', 'utf8');
@@ -1099,6 +1101,7 @@ describe('MultiRootStorageBackend', () => {
     const validEventName = `${'c'.repeat(64)}.bin`;
     await mkdir(join(mainRoot, 'blocks', 'conflicts'), { recursive: true });
     await mkdir(join(mainRoot, 'channels', volumeId, 'duplicates'), { recursive: true });
+    await writeFile(join(mainRoot, NEARBYTES_MARKER_FILE), 'marker', 'utf8');
     await writeFile(join(mainRoot, 'blocks', `${'a'.repeat(64)} (1).bin`), 'duplicate', 'utf8');
     await writeFile(join(mainRoot, 'channels', volumeId, `${'d'.repeat(64)} (1).bin`), 'duplicate', 'utf8');
     await writeFile(join(mainRoot, 'channels', volumeId, validEventName), 'not-a-real-event', 'utf8');
@@ -1121,6 +1124,22 @@ describe('MultiRootStorageBackend', () => {
     await expect(readFile(join(mainRoot, 'blocks', 'conflicts'), 'utf8')).rejects.toThrow();
     await expect(readFile(join(mainRoot, 'channels', volumeId, `${'d'.repeat(64)} (1).bin`), 'utf8')).rejects.toThrow();
     await expect(readFile(join(mainRoot, 'channels', volumeId, 'duplicates'), 'utf8')).rejects.toThrow();
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('refuses destructive cleanup when Nearbytes.html is missing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    await mkdir(join(mainRoot, 'blocks'), { recursive: true });
+    await mkdir(join(mainRoot, 'channels'), { recursive: true });
+    await writeFile(join(mainRoot, 'blocks', 'not-a-hash.bin'), 'bad', 'utf8');
+
+    const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot }));
+
+    await expect(storage.repairStorageLocation('src-main', 'delete')).rejects.toThrow(
+      'Cleanup is only allowed for storage locations that contain Nearbytes.html.'
+    );
 
     await rm(dir, { recursive: true, force: true });
   });
