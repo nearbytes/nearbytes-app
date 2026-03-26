@@ -319,7 +319,13 @@ function createDesktopSecretStore(): {
       if (!encoded) {
         return null;
       }
-      const decrypted = decryptDesktopSecret(Buffer.from(encoded, 'base64'));
+      const decoded = Buffer.from(encoded, 'base64');
+      const decrypted = decryptDesktopSecret(decoded);
+      if (shouldUseDesktopSecretEncryption() && isLegacyPlaintextDesktopSecret(decoded, decrypted)) {
+        const encrypted = encryptDesktopSecret(decrypted);
+        entries[key] = encrypted.toString('base64');
+        await writeSecretEntries(filePath, entries);
+      }
       return JSON.parse(decrypted.toString('utf8')) as T;
     },
     async set<T>(key: string, value: T): Promise<void> {
@@ -1784,7 +1790,14 @@ function decryptDesktopSecret(value: Buffer): Buffer {
   if (!shouldUseDesktopSecretEncryption()) {
     return value;
   }
-  return Buffer.from(safeStorage.decryptString(value), 'utf8');
+  try {
+    return Buffer.from(safeStorage.decryptString(value), 'utf8');
+  } catch (error) {
+    if (looksLikePlaintextDesktopSecret(value)) {
+      return value;
+    }
+    throw error;
+  }
 }
 
 function shouldUseDesktopSecretEncryption(): boolean {
@@ -1800,6 +1813,22 @@ function shouldUseDesktopSecretEncryption(): boolean {
 
 function isFileNotFound(error: unknown): error is NodeJS.ErrnoException {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'ENOENT');
+}
+
+function looksLikePlaintextDesktopSecret(value: Buffer): boolean {
+  const text = value.toString('utf8').trim();
+  return (
+    (text.startsWith('{') && text.endsWith('}')) ||
+    (text.startsWith('[') && text.endsWith(']')) ||
+    text === 'null' ||
+    text === 'true' ||
+    text === 'false' ||
+    /^-?\d+(?:\.\d+)?$/u.test(text)
+  );
+}
+
+function isLegacyPlaintextDesktopSecret(original: Buffer, decrypted: Buffer): boolean {
+  return original.equals(decrypted) && looksLikePlaintextDesktopSecret(decrypted);
 }
 
 function resolvePreloadPath(): string | undefined {

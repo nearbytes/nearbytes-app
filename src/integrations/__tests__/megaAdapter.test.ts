@@ -716,6 +716,7 @@ describe('MegaTransportAdapter', () => {
     const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
     const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
     let uploadedFileNodeKey: Buffer | null = null;
+    let uploadedFileVisible = false;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (url.startsWith('https://g.api.mega.co.nz/cs')) {
@@ -758,6 +759,16 @@ describe('MegaTransportAdapter', () => {
                       a: encryptAttributes('channels', channelsNodeKey),
                       k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
                     },
+                    ...(uploadedFileVisible && uploadedFileNodeKey
+                      ? [{
+                        h: 'file000001',
+                        p: 'blocks0001',
+                        t: 0,
+                        s: 16,
+                        a: encryptAttributes('aa.bin', uploadedFileNodeKey),
+                        k: encodeMegaBase64Url(encryptAesEcb(uploadedFileNodeKey, masterKey)),
+                      }]
+                      : []),
                   ],
                   u: [],
                 },
@@ -777,6 +788,7 @@ describe('MegaTransportAdapter', () => {
               const node = ((payload.n as Array<Record<string, unknown>> | undefined) ?? [])[0];
               const encodedKey = typeof node?.k === 'string' ? node.k : '';
               uploadedFileNodeKey = encodedKey ? decryptAesEcb(decodeMegaBase64Url(encodedKey), masterKey) : null;
+              uploadedFileVisible = Boolean(uploadedFileNodeKey);
             }
             return new Response(JSON.stringify([{}]), {
               status: 200,
@@ -845,7 +857,7 @@ describe('MegaTransportAdapter', () => {
 
     await adapter.detachManagedShare(share, account);
     await adapter.dispose();
-  });
+  }, 15_000);
 
   it('lists and accepts native incoming MEGA contact invites', async () => {
     const secretStore = createMemorySecretStore();
@@ -1664,7 +1676,7 @@ describe('MegaTransportAdapter', () => {
     await expect(fs.readFile(path.join(localPath, 'blocks', 'aa.bin'), 'utf8')).resolves.toBe(filePlaintext.toString('utf8'));
     expect(partialFetchCalls).toBeGreaterThanOrEqual(1);
     expect(fullFetchCalls).toBe(1);
-  });
+  }, 20_000);
 
   it('reuses the saved MEGA login to refresh an invalid session and still lists incoming shares', async () => {
     const email = 'reader@example.com';
@@ -2100,14 +2112,16 @@ describe('MegaTransportAdapter', () => {
     const p = decodeMegaBase64Url(String(privateJwk.p));
     const d = decodeMegaBase64Url(String(privateJwk.d));
     const qi = decodeMegaBase64Url(String(privateJwk.qi));
+    const privateKeyBlob = Buffer.concat([
+      encodeMegaPrivateKeyComponent(q),
+      encodeMegaPrivateKeyComponent(p),
+      encodeMegaPrivateKeyComponent(d),
+      encodeMegaPrivateKeyComponent(qi),
+      Buffer.alloc(8, 0),
+    ]);
+    const privateKeyPadding = (16 - (privateKeyBlob.length % 16)) % 16;
     const encryptedPrivateKey = encryptAesEcb(
-      Buffer.concat([
-        encodeMegaPrivateKeyComponent(q),
-        encodeMegaPrivateKeyComponent(p),
-        encodeMegaPrivateKeyComponent(d),
-        encodeMegaPrivateKeyComponent(qi),
-        Buffer.alloc(8, 0),
-      ]),
+      Buffer.concat([privateKeyBlob, Buffer.alloc(privateKeyPadding, 0)]),
       masterKey
     );
     const modulus = bufferToBigInt(decodeMegaBase64Url(String(publicJwk.n)));

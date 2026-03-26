@@ -55,9 +55,17 @@ const ZERO_IV = Buffer.alloc(16, 0);
 const READONLY_BADGES = ['Readonly'];
 const MEGA_SYNC_TIMEOUT_CODE = 'MEGA_SYNC_TIMEOUT';
 const MEGA_RETRYABLE_API_ERROR_CODES = new Set([-3, -4]);
-const MEGA_API_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
+const MEGA_LOCK_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
+const MEGA_RATE_LIMIT_RETRY_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 18_000] as const;
+const MEGA_TRANSIENT_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
+const MEGA_CREATE_RECOVERY_ATTEMPTS = 7;
+const MEGA_UPLOAD_RECOVERY_ATTEMPTS = 7;
+const MEGA_NODE_APPEAR_ATTEMPTS = 7;
+const MEGA_NODE_APPEAR_DELAYS_MS = [250, 500, 1_000, 1_500, 2_500, 4_000] as const;
 const EXPECTED_MEGA_TOP_LEVEL_NAMES = new Set(['blocks', 'channels', 'Nearbytes.html']);
+const MEGA_PUT_NODES_PLACEHOLDER_HANDLE = 'xxxxxxxx';
 const MEGA_WRITABLE_SHARE_ACCESS_LEVEL = 2;
+const megaSyncActivityTouchers = new WeakMap<AbortSignal, () => void>();
 
 interface MegaAdapterOptions {
   readonly fetchImpl?: typeof fetch;
@@ -108,6 +116,7 @@ interface DecryptedMegaNode {
   readonly isFolder: boolean;
   readonly size: number;
   readonly name: string;
+  readonly modifiedAt?: number;
   readonly nodeKey: Buffer;
   readonly encodedKey?: string;
   readonly encodedAttributes?: string;
@@ -520,15 +529,12 @@ export class MegaTransportAdapter {
       return existing;
     }
 
-    const controller = new AbortController();
+    const syncAbort = createMegaSyncAbortController(this.runtime.mega.syncTimeoutMs);
+    const { controller } = syncAbort;
     this.syncControllers.set(share.id, controller);
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, this.runtime.mega.syncTimeoutMs);
-    timeout.unref?.();
 
     const task = this.syncShare(share, account, controller.signal).finally(() => {
-      clearTimeout(timeout);
+      syncAbort.dispose();
       if (this.syncTasks.get(share.id) === task) {
         this.syncTasks.delete(share.id);
       }
@@ -714,9 +720,10 @@ export class MegaTransportAdapter {
         rootPath: root.path,
       });
       const worker = new MirrorWorker();
+      const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal);
       const result = await worker.sync(
         share.localPath,
-        new MegaOwnerRemoteAdapter(this.fetchImpl, this.apiClient, session, root, signal)
+        new MegaOwnerRemoteAdapter(this.fetchImpl, this.apiClient, session, root, shareCrypto, signal)
       );
       console.log('[MEGA:owner-sync] owner share sync completed.', {
         shareId: share.id,
@@ -934,18 +941,11 @@ export class MegaTransportAdapter {
   }
 
   private async fetchNodesSnapshot(session: MegaSession, signal?: AbortSignal): Promise<MegaFetchNodesSnapshot> {
-    const response = await this.apiCommand<Record<string, unknown>>(buildMegaFetchNodesCommand(), session, signal);
-    return parseMegaFetchNodesSnapshot(response);
+    return fetchMegaNodesSnapshot(this.apiClient, session, undefined, { useCache: false }, signal);
   }
 
   private async fetchCompleteTree(session: MegaSession, signal?: AbortSignal): Promise<MegaFetchedTree> {
-    const snapshot = await this.fetchNodesSnapshot(session, signal);
-    const keyManager = await this.fetchKeyManagerState(session, signal);
-    const rootHandle = resolveMegaCloudDriveHandle(snapshot);
-    return {
-      snapshot,
-      tree: decryptMegaTree(snapshot, session, rootHandle, keyManager.shareKeys),
-    };
+    return fetchMegaDecryptedTree(this.apiClient, session, undefined, { useCache: false }, signal);
   }
 
   private async fetchPartialTreeWithSnapshot(
@@ -953,62 +953,11 @@ export class MegaTransportAdapter {
     rootHandle: string,
     signal?: AbortSignal
   ): Promise<MegaFetchedTree> {
-    let snapshot: MegaFetchNodesSnapshot;
-    try {
-      const response = await this.apiCommand<Record<string, unknown>>(
-        buildMegaFetchNodesCommand({ partialRoot: rootHandle }),
-        session,
-        signal
-      );
-      snapshot = parseMegaFetchNodesSnapshot(response);
-    } catch (error) {
-      if (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) {
-        throw error;
-      }
-      this.runtime.logger.warn('MEGA partial tree fetch failed; falling back to a full node snapshot.', {
-        email: session.email,
-        rootHandle,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      snapshot = await this.fetchNodesSnapshot(session, signal);
-    }
-    const keyManager = await this.fetchKeyManagerState(session, signal);
-    try {
-      return {
-        snapshot,
-        tree: decryptMegaTree(snapshot, session, rootHandle, keyManager.shareKeys),
-      };
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'MEGA tree did not include the requested root node.') {
-        throw error;
-      }
-      this.runtime.logger.warn('MEGA partial tree decryption missed the requested root; falling back to a full node snapshot.', {
-        email: session.email,
-        rootHandle,
-      });
-      const fullSnapshot = await this.fetchNodesSnapshot(session, signal);
-      return {
-        snapshot: fullSnapshot,
-        tree: decryptMegaTree(fullSnapshot, session, rootHandle, keyManager.shareKeys),
-      };
-    }
+    return fetchMegaDecryptedTree(this.apiClient, session, rootHandle, {}, signal, this.runtime.logger);
   }
 
   private async fetchKeyManagerState(session: MegaSession, signal?: AbortSignal): Promise<MegaKeyManagerState> {
-    try {
-      const response = await this.apiCommand<Record<string, unknown>>(
-        { a: 'uga', u: session.userHandle, ua: '^!keys', v: 1 },
-        session,
-        signal
-      );
-      return parseMegaKeyManagerState(response, session.masterKey);
-    } catch (error) {
-      this.runtime.logger.warn('MEGA key-manager state fetch failed.', {
-        email: session.email,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      return { shareKeys: new Map() };
-    }
+    return fetchMegaKeyManagerState(this.apiClient, session, signal, this.runtime.logger);
   }
 
   private async fetchActionPackets(session: MegaSession, scsn: string, signal?: AbortSignal): Promise<MegaActionPacketBatch> {
@@ -1101,8 +1050,7 @@ export class MegaTransportAdapter {
         current = existing;
         continue;
       }
-      await this.createRemoteFolderNode(session, current.handle, segment, signal);
-      const created = await this.waitForOwnerRemoteFolder(session, current.handle, segment, signal);
+      const created = await this.ensureOwnerRemoteFolder(session, current.handle, segment, signal);
       fetched = created.fetched;
       current = created.node;
       continue;
@@ -1115,6 +1063,66 @@ export class MegaTransportAdapter {
     };
   }
 
+  private async ensureOwnerRemoteFolder(
+    session: MegaSession,
+    parentHandle: string,
+    name: string,
+    signal?: AbortSignal
+  ): Promise<{
+    fetched: MegaFetchedTree;
+    node: DecryptedMegaNode;
+  }> {
+    for (let attempt = 0; attempt < MEGA_CREATE_RECOVERY_ATTEMPTS; attempt += 1) {
+      const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal);
+      const created = findChildNodeByName(fetched.tree, parentHandle, name, true);
+      if (created) {
+        return {
+          fetched,
+          node: created,
+        };
+      }
+
+      try {
+        await this.createRemoteFolderNode(session, parentHandle, name, signal);
+        return this.waitForOwnerRemoteFolder(session, parentHandle, name, signal);
+      } catch (error) {
+        const recovered = await this.findOwnerRemoteFolder(session, parentHandle, name, signal);
+        if (recovered) {
+          return recovered;
+        }
+        if (
+          !isMegaRetryableApiError(error) &&
+          !isMegaRetryableTransportError(error) &&
+          !isMegaEventuallyConsistentMutationError(error)
+        ) {
+          throw error;
+        }
+        if (attempt >= MEGA_CREATE_RECOVERY_ATTEMPTS - 1) {
+          throw error;
+        }
+        await waitForMegaRetry(getMegaRetryDelayMs(error, attempt), signal);
+      }
+    }
+    throw new Error(`MEGA did not create ${name}.`);
+  }
+
+  private async findOwnerRemoteFolder(
+    session: MegaSession,
+    parentHandle: string,
+    name: string,
+    signal?: AbortSignal
+  ): Promise<{
+    fetched: MegaFetchedTree;
+    node: DecryptedMegaNode;
+  } | null> {
+    const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal);
+    const node = findChildNodeByName(fetched.tree, parentHandle, name, true);
+    if (!node) {
+      return null;
+    }
+    return { fetched, node };
+  }
+
   private async waitForOwnerRemoteFolder(
     session: MegaSession,
     parentHandle: string,
@@ -1124,20 +1132,14 @@ export class MegaTransportAdapter {
     fetched: MegaFetchedTree;
     node: DecryptedMegaNode;
   }> {
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal);
-      const created = findChildNodeByName(fetched.tree, parentHandle, name, true);
-      if (!created) {
-        if (attempt < 5) {
-          await waitForMegaRetry(250 * (attempt + 1), signal);
-          continue;
-        }
-        throw new Error(`MEGA did not create ${name}.`);
+    for (let attempt = 0; attempt < MEGA_NODE_APPEAR_ATTEMPTS; attempt += 1) {
+      const recovered = await this.findOwnerRemoteFolder(session, parentHandle, name, signal);
+      if (recovered) {
+        return recovered;
       }
-      return {
-        fetched,
-        node: created,
-      };
+      if (attempt < MEGA_NODE_APPEAR_DELAYS_MS.length) {
+        await waitForMegaRetry(MEGA_NODE_APPEAR_DELAYS_MS[attempt]!, signal);
+      }
     }
     throw new Error(`MEGA did not create ${name}.`);
   }
@@ -1148,26 +1150,50 @@ export class MegaTransportAdapter {
     name: string,
     signal?: AbortSignal
   ): Promise<void> {
+    touchMegaSyncActivity(signal);
     const nodeKey = randomBytes(16);
     const encryptedNodeKey = encryptMegaNodeKeyForOwner(nodeKey, session.masterKey);
-    await this.apiCommand(
+    const response = await this.apiClient.requestSingle<Record<string, unknown> | number>(
       {
         a: 'p',
-        v: 4,
-        sm: 1,
         t: parentHandle,
+        i: createMegaMutationRequestId(),
         n: [
           {
-            h: encodeMegaBase64Url(randomBytes(6)),
+            h: MEGA_PUT_NODES_PLACEHOLDER_HANDLE,
             t: 1,
             a: encryptMegaAttributes(name, nodeKey),
             k: encodeMegaBase64Url(encryptedNodeKey),
           },
         ],
       },
-      session,
-      signal
+      { sessionId: session.sid, signal }
     );
+    if (typeof response === 'number') {
+      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+      error.code = response;
+      throw error;
+    }
+  }
+
+  private async resolveOwnerShareCryptoContext(
+    session: MegaSession,
+    root: MegaOwnerRemoteRoot,
+    signal?: AbortSignal
+  ): Promise<MegaShareCryptoContext | undefined> {
+    const shareHandle = root.root.shareHandle?.trim();
+    if (!shareHandle) {
+      return undefined;
+    }
+    const keyManager = await this.fetchKeyManagerState(session, signal);
+    const shareKey = keyManager.shareKeys.get(shareHandle);
+    if (!shareKey) {
+      return undefined;
+    }
+    return {
+      shareHandle,
+      shareKey: Buffer.from(shareKey),
+    };
   }
 }
 
@@ -1279,6 +1305,11 @@ interface MegaOwnerRemoteRoot {
   readonly tree: DecryptedMegaTree;
 }
 
+interface MegaShareCryptoContext {
+  readonly shareHandle: string;
+  readonly shareKey: Buffer;
+}
+
 class MegaOwnerRemoteAdapter {
   // Cache of created folders: key is `${parentHandle}/${name}`, value is the created handle.
   // Prevents duplicate folder creation within a single sync cycle.
@@ -1289,6 +1320,7 @@ class MegaOwnerRemoteAdapter {
     private readonly apiClient: MegaApiClient,
     private readonly session: MegaSession,
     private readonly ownerRoot: MegaOwnerRemoteRoot,
+    private readonly shareCrypto: MegaShareCryptoContext | undefined,
     private readonly signal?: AbortSignal
   ) { }
 
@@ -1356,6 +1388,7 @@ class MegaOwnerRemoteAdapter {
       this.ownerRoot,
       folderSegments,
       this.createdFolders,
+      this.shareCrypto,
       this.signal
     );
     const existing = findChildNodeByName(this.ownerRoot.tree, parent.handle, name, false);
@@ -1373,7 +1406,16 @@ class MegaOwnerRemoteAdapter {
       name,
       dataSize: data.length,
     });
-    await uploadMegaOwnerFile(this.fetchImpl, this.apiClient, this.session, parent.handle, name, Buffer.from(data), this.signal);
+    await uploadMegaOwnerFile(
+      this.fetchImpl,
+      this.apiClient,
+      this.session,
+      parent.handle,
+      name,
+      Buffer.from(data),
+      this.shareCrypto,
+      this.signal
+    );
     console.log('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
   }
 }
@@ -1404,12 +1446,14 @@ function findChildNodeByName(
   name: string,
   folderOnly?: boolean
 ): DecryptedMegaNode | undefined {
-  return (tree.childrenByParent.get(parentHandle) ?? []).find((node) => {
+  const candidates = [...(tree.childrenByParent.get(parentHandle) ?? [])].filter((node) => {
     if (folderOnly && !node.isFolder) {
       return false;
     }
     return node.name === name;
   });
+  candidates.sort((left, right) => compareMegaNodeCandidates(tree, left, right));
+  return candidates[0];
 }
 
 function findNodeByRelativePath(
@@ -1436,6 +1480,7 @@ async function ensureTreePath(
   ownerRoot: MegaOwnerRemoteRoot,
   segments: readonly string[],
   createdFolders: Map<string, string>,
+  shareCrypto: MegaShareCryptoContext | undefined,
   signal?: AbortSignal
 ): Promise<DecryptedMegaNode> {
   let current = ownerRoot.root;
@@ -1462,7 +1507,7 @@ async function ensureTreePath(
       continue;
     }
     // Create the folder and cache the handle.
-    const createdHandle = await createMegaFolder(apiClient, session, current.handle, segment, signal);
+    const createdHandle = await createMegaFolder(apiClient, session, current.handle, segment, shareCrypto, signal);
     createdFolders.set(cacheKey, createdHandle);
     console.log('[MEGA:ensureTreePath] folder created.', { segment, parentHandle: current.handle, createdHandle });
     current = {
@@ -1507,14 +1552,26 @@ function buildMegaSetShareCommand(
 function buildMegaShareNodeKeyRecords(ownerRoot: MegaOwnerRemoteRoot, shareKey: Buffer): readonly unknown[] {
   const shareHandles = [ownerRoot.root.handle];
   const itemHandles: string[] = [];
-  const records: Array<readonly [number, number, string]> = [];
+  const records: Array<number | string> = [];
   const nodes = [ownerRoot.root, ...collectChildNodes(ownerRoot.tree, ownerRoot.root.handle)];
   for (const node of nodes) {
     const itemIndex = itemHandles.length;
     itemHandles.push(node.handle);
-    records.push([0, itemIndex, encodeMegaBase64Url(encryptAesEcb(node.nodeKey, shareKey))]);
+    records.push(0, itemIndex, encodeMegaBase64Url(encryptAesEcb(node.nodeKey, shareKey)));
   }
   return [shareHandles, itemHandles, records];
+}
+
+function buildMegaChildNodeShareRecords(
+  shareCrypto: MegaShareCryptoContext,
+  nodeHandle: string,
+  nodeKey: Buffer
+): readonly unknown[] {
+  return [
+    [shareCrypto.shareHandle],
+    [nodeHandle],
+    [0, 0, encodeMegaBase64Url(encryptAesEcb(nodeKey, shareCrypto.shareKey))],
+  ];
 }
 
 function collectChildNodes(tree: DecryptedMegaTree, parentHandle: string): DecryptedMegaNode[] {
@@ -1531,44 +1588,241 @@ function collectChildNodes(tree: DecryptedMegaTree, parentHandle: string): Decry
   return result;
 }
 
+function compareMegaNodeCandidates(tree: DecryptedMegaTree, left: DecryptedMegaNode, right: DecryptedMegaNode): number {
+  const leftScore = scoreMegaNodeCandidate(tree, left);
+  const rightScore = scoreMegaNodeCandidate(tree, right);
+  if (leftScore !== rightScore) {
+    return rightScore - leftScore;
+  }
+  const leftModifiedAt = left.modifiedAt ?? 0;
+  const rightModifiedAt = right.modifiedAt ?? 0;
+  if (leftModifiedAt !== rightModifiedAt) {
+    return rightModifiedAt - leftModifiedAt;
+  }
+  return left.handle.localeCompare(right.handle);
+}
+
+function scoreMegaNodeCandidate(tree: DecryptedMegaTree, node: DecryptedMegaNode): number {
+  if (!node.isFolder) {
+    return 0;
+  }
+  const children = [...(tree.childrenByParent.get(node.handle) ?? [])];
+  const childNames = new Set(children.map((child) => child.name));
+  const descendantCount = collectChildNodes(tree, node.handle).length;
+  const expectedTopLevelChildren = Number(childNames.has('blocks')) + Number(childNames.has('channels'));
+  const directChildCount = children.length;
+  return expectedTopLevelChildren * 1_000_000 + directChildCount * 1_000 + descendantCount;
+}
+
+async function fetchMegaNodesSnapshot(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  partialRoot?: string,
+  options: {
+    readonly useCache?: boolean;
+  } = {},
+  signal?: AbortSignal
+): Promise<MegaFetchNodesSnapshot> {
+  const response = await withMegaApiRetry(
+    () => requestMegaNodesSnapshot(apiClient, session, partialRoot, options, signal),
+    signal
+  );
+  return parseMegaFetchNodesSnapshot(response);
+}
+
+async function requestMegaNodesSnapshot(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  partialRoot?: string,
+  options: {
+    readonly useCache?: boolean;
+  } = {},
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  touchMegaSyncActivity(signal);
+  const result = await apiClient.requestSingle<Record<string, unknown> | number>(
+    buildMegaFetchNodesCommand({
+      ...(partialRoot ? { partialRoot } : {}),
+      ...(options.useCache === false ? { useCache: false } : {}),
+    }),
+    { sessionId: session.sid, signal }
+  );
+  if (typeof result === 'number') {
+    const error = new Error(`MEGA API error ${result}.`) as MegaApiError;
+    error.code = result;
+    throw error;
+  }
+  return result;
+}
+
+async function fetchMegaKeyManagerState(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  signal?: AbortSignal,
+  logger?: Pick<IntegrationRuntime['logger'], 'warn'>
+): Promise<MegaKeyManagerState> {
+  try {
+    const response = await withMegaApiRetry(async () => {
+      const result = await apiClient.requestSingle<Record<string, unknown> | number>(
+        { a: 'uga', u: session.userHandle, ua: '^!keys', v: 1 },
+        { sessionId: session.sid, signal }
+      );
+      if (typeof result === 'number') {
+        const error = new Error(`MEGA API error ${result}.`) as MegaApiError;
+        error.code = result;
+        throw error;
+      }
+      return result;
+    }, signal);
+    return parseMegaKeyManagerState(response, session.masterKey);
+  } catch (error) {
+    logger?.warn?.('MEGA key-manager state fetch failed.', {
+      email: session.email,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return { shareKeys: new Map() };
+  }
+}
+
+async function fetchMegaDecryptedTree(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  rootHandle?: string,
+  options: {
+    readonly useCache?: boolean;
+  } = {},
+  signal?: AbortSignal,
+  logger?: Pick<IntegrationRuntime['logger'], 'warn'>
+): Promise<MegaFetchedTree> {
+  let snapshot: MegaFetchNodesSnapshot;
+  if (rootHandle) {
+    try {
+      snapshot = parseMegaFetchNodesSnapshot(await requestMegaNodesSnapshot(apiClient, session, rootHandle, options, signal));
+    } catch (error) {
+      if (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error) && !isMegaAccessDeniedError(error)) {
+        throw error;
+      }
+      logger?.warn?.('MEGA partial tree fetch failed; falling back to a full node snapshot.', {
+        email: session.email,
+        rootHandle,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      snapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, options, signal);
+    }
+  } else {
+    snapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, options, signal);
+  }
+
+  const keyManager = await fetchMegaKeyManagerState(apiClient, session, signal, logger);
+  const expectedRootHandle = rootHandle?.trim() || resolveMegaCloudDriveHandle(snapshot);
+  try {
+    return {
+      snapshot,
+      tree: decryptMegaTree(snapshot, session, expectedRootHandle, keyManager.shareKeys),
+    };
+  } catch (error) {
+    if (
+      !expectedRootHandle ||
+      !(error instanceof Error) ||
+      error.message !== 'MEGA tree did not include the requested root node.'
+    ) {
+      throw error;
+    }
+    logger?.warn?.('MEGA partial tree decryption missed the requested root; falling back to a full node snapshot.', {
+      email: session.email,
+      rootHandle: expectedRootHandle,
+    });
+    const fullSnapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, options, signal);
+    return {
+      snapshot: fullSnapshot,
+      tree: decryptMegaTree(fullSnapshot, session, expectedRootHandle, keyManager.shareKeys),
+    };
+  }
+}
+
+async function findMegaRemoteChildNode(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  parentHandle: string,
+  name: string,
+  folderOnly: boolean,
+  signal?: AbortSignal
+): Promise<DecryptedMegaNode | undefined> {
+  try {
+    const fetched = await fetchMegaDecryptedTree(apiClient, session, parentHandle, {}, signal);
+    return findChildNodeByName(fetched.tree, parentHandle, name, folderOnly);
+  } catch (error) {
+    if (!isMegaMissingRequestedRootError(error)) {
+      throw error;
+    }
+    const fetched = await fetchMegaDecryptedTree(apiClient, session, undefined, {}, signal);
+    return findChildNodeByName(fetched.tree, parentHandle, name, folderOnly);
+  }
+}
+
+async function findMegaRemoteChildNodeInFullSnapshot(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  parentHandle: string,
+  name: string,
+  folderOnly: boolean,
+  signal?: AbortSignal
+): Promise<DecryptedMegaNode | undefined> {
+  const fetched = await fetchMegaDecryptedTree(apiClient, session, undefined, { useCache: false }, signal);
+  return findChildNodeByName(fetched.tree, parentHandle, name, folderOnly);
+}
+
+async function waitForMegaChildNode(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  parentHandle: string,
+  name: string,
+  folderOnly: boolean,
+  signal?: AbortSignal
+): Promise<DecryptedMegaNode | undefined> {
+  for (let attempt = 0; attempt < MEGA_NODE_APPEAR_ATTEMPTS; attempt += 1) {
+    const node = await findMegaRemoteChildNode(apiClient, session, parentHandle, name, folderOnly, signal);
+    if (node) {
+      return node;
+    }
+    if (attempt < MEGA_NODE_APPEAR_DELAYS_MS.length) {
+      await waitForMegaRetry(MEGA_NODE_APPEAR_DELAYS_MS[attempt]!, signal);
+    }
+  }
+  return undefined;
+}
+
+async function waitForMegaChildNodeInFullSnapshot(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  parentHandle: string,
+  name: string,
+  folderOnly: boolean,
+  signal?: AbortSignal
+): Promise<DecryptedMegaNode | undefined> {
+  for (let attempt = 0; attempt < MEGA_NODE_APPEAR_ATTEMPTS; attempt += 1) {
+    const node = await findMegaRemoteChildNodeInFullSnapshot(apiClient, session, parentHandle, name, folderOnly, signal);
+    if (node) {
+      return node;
+    }
+    if (attempt < MEGA_NODE_APPEAR_DELAYS_MS.length) {
+      await waitForMegaRetry(MEGA_NODE_APPEAR_DELAYS_MS[attempt]!, signal);
+    }
+  }
+  return undefined;
+}
+
 async function fetchOwnerRootByPath(
   apiClient: MegaApiClient,
   session: MegaSession,
   remotePath: string,
   signal?: AbortSignal
 ): Promise<MegaOwnerRemoteRoot> {
-  const snapshot = await withMegaApiRetry(async () => {
-    const response = await apiClient.requestSingle<Record<string, unknown> | number>(buildMegaFetchNodesCommand(), {
-      sessionId: session.sid,
-      signal,
-    });
-    if (typeof response === 'number') {
-      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
-      error.code = response;
-      throw error;
-    }
-    return parseMegaFetchNodesSnapshot(response);
-  }, signal);
-  const cloudDriveHandle = resolveMegaCloudDriveHandle(snapshot);
-  const tree = decryptMegaTree(snapshot, session, cloudDriveHandle);
+  const fetched = await fetchMegaDecryptedTree(apiClient, session, undefined, {}, signal);
+  const tree = fetched.tree;
   let current = tree.root;
   const segments = normalizeMegaRemoteDisplayPath(remotePath).split('/').filter((entry) => entry.length > 0);
-  console.log('[MEGA:fetchOwnerRootByPath] resolving path.', {
-    remotePath,
-    segments,
-    cloudDriveHandle,
-    rootHandle: tree.root.handle,
-    rootName: tree.root.name,
-  });
   for (const segment of segments) {
-    const children = tree.childrenByParent.get(current.handle) ?? [];
-    console.log('[MEGA:fetchOwnerRootByPath] looking for segment in parent.', {
-      segment,
-      parentHandle: current.handle,
-      parentName: current.name,
-      childCount: children.length,
-      childNames: children.map((c) => ({ name: c.name, handle: c.handle, isFolder: c.isFolder })),
-    });
     const next = findChildNodeByName(tree, current.handle, segment, true);
     if (!next) {
       throw new Error(`MEGA path ${remotePath} is missing ${segment}.`);
@@ -1578,7 +1832,7 @@ async function fetchOwnerRootByPath(
   return {
     path: normalizeMegaRemoteDisplayPath(remotePath),
     root: current,
-    tree,
+    tree: fetched.tree,
   };
 }
 
@@ -1587,45 +1841,107 @@ async function createMegaFolder(
   session: MegaSession,
   parentHandle: string,
   name: string,
+  shareCrypto: MegaShareCryptoContext | undefined,
   signal?: AbortSignal
 ): Promise<string> {
-  return withMegaApiRetry(async () => {
+  for (let attempt = 0; attempt < MEGA_CREATE_RECOVERY_ATTEMPTS; attempt += 1) {
     const nodeKey = randomBytes(16);
-    const response = await apiClient.requestSingle<Record<string, unknown> | number>(
-      {
+    try {
+      const request = {
         a: 'p',
+        ...(shareCrypto ? { v: 3, sm: 1 } : {}),
         t: parentHandle,
+        i: createMegaMutationRequestId(),
+        ...(shareCrypto ? { cr: buildMegaChildNodeShareRecords(shareCrypto, MEGA_PUT_NODES_PLACEHOLDER_HANDLE, nodeKey) } : {}),
         n: [
           {
-            h: encodeMegaBase64Url(randomBytes(6)),
+            h: MEGA_PUT_NODES_PLACEHOLDER_HANDLE,
             t: 1,
             a: encryptMegaAttributes(name, nodeKey),
             k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(nodeKey, session.masterKey)),
           },
         ],
-      },
-      { sessionId: session.sid, signal }
-    );
-    if (typeof response === 'number') {
-      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
-      error.code = response;
-      throw error;
-    }
-    // Extract handle from response.f[0].h (standard 'p' command response)
-    const createdNodes = Array.isArray(response.f) ? response.f : [];
-    const createdNode = createdNodes[0] as Record<string, unknown> | undefined;
-    const handle = typeof createdNode?.h === 'string' ? createdNode.h.trim() : '';
-    if (!handle) {
-      console.error('[MEGA:createMegaFolder] unexpected response.', {
-        name, parentHandle,
-        responseKeys: Object.keys(response),
-        f: JSON.stringify(response.f)?.slice(0, 500),
+      } satisfies Record<string, unknown>;
+      console.log('[MEGA:create-folder] sending create request.', {
+        parentHandle,
+        name,
+        attempt,
+        shareHandle: shareCrypto?.shareHandle,
+        cr: request.cr ?? null,
       });
-      throw new Error(`MEGA did not return a handle for the created folder ${name}.`);
+      touchMegaSyncActivity(signal);
+      const response = await apiClient.requestSingle<Record<string, unknown> | number>(request, { sessionId: session.sid, signal });
+      console.log('[MEGA:create-folder] create response received.', {
+        parentHandle,
+        name,
+        attempt,
+        createdNode:
+          typeof response === 'object' && response !== null && Array.isArray((response as { f?: unknown }).f)
+            ? ((response as { f: unknown[] }).f[0] ?? null)
+            : null,
+      });
+      if (typeof response === 'number') {
+        const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+        error.code = response;
+        throw error;
+      }
+      const committedNode = await waitForMegaChildNode(apiClient, session, parentHandle, name, true, signal);
+      if (!committedNode || !committedNode.isFolder) {
+        throw new Error(`MEGA did not make the created folder visible for ${name}.`);
+      }
+      const globallyVisibleNode = await waitForMegaChildNodeInFullSnapshot(
+        apiClient,
+        session,
+        parentHandle,
+        name,
+        true,
+        signal
+      );
+      if (!globallyVisibleNode || !globallyVisibleNode.isFolder) {
+        throw new Error(`MEGA did not make the created folder globally visible for ${name}.`);
+      }
+      console.log('[MEGA:create-folder] folder became globally visible.', {
+        parentHandle,
+        name,
+        attempt,
+        handle: globallyVisibleNode.handle,
+      });
+      return globallyVisibleNode.handle;
+    } catch (error) {
+      console.warn('[MEGA:create-folder] create attempt failed.', {
+        parentHandle,
+        name,
+        attempt,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      const recovered = await findMegaRemoteChildNode(apiClient, session, parentHandle, name, true, signal);
+      if (recovered?.isFolder) {
+        const globallyVisibleNode = await findMegaRemoteChildNodeInFullSnapshot(
+          apiClient,
+          session,
+          parentHandle,
+          name,
+          true,
+          signal
+        );
+        if (globallyVisibleNode?.isFolder) {
+          return globallyVisibleNode.handle;
+        }
+      }
+      if (
+        !isMegaRetryableApiError(error) &&
+        !isMegaRetryableTransportError(error) &&
+        !isMegaEventuallyConsistentMutationError(error)
+      ) {
+        throw error;
+      }
+      if (attempt >= MEGA_CREATE_RECOVERY_ATTEMPTS - 1) {
+        throw error;
+      }
+      await waitForMegaRetry(getMegaRetryDelayMs(error, attempt), signal);
     }
-    console.log('[MEGA:createMegaFolder] folder created.', { name, parentHandle, handle });
-    return handle;
-  }, signal);
+  }
+  throw new Error(`MEGA did not create ${name}.`);
 }
 
 async function uploadMegaOwnerFile(
@@ -1635,91 +1951,135 @@ async function uploadMegaOwnerFile(
   parentHandle: string,
   name: string,
   data: Buffer,
+  shareCrypto: MegaShareCryptoContext | undefined,
   signal?: AbortSignal
 ): Promise<void> {
-  await withMegaApiRetry(async () => {
-    console.log('[MEGA:upload] requesting upload slot.', {
-      parentHandle,
-      name,
-      dataSize: data.length,
-    });
-    const transferKey = randomBytes(16);
-    const iv = randomBytes(8);
+  for (let attempt = 0; attempt < MEGA_UPLOAD_RECOVERY_ATTEMPTS; attempt += 1) {
+    try {
+      const transferKey = randomBytes(16);
+      const iv = randomBytes(8);
 
-    const uploadReservation = await apiClient.requestSingle<Record<string, unknown> | number>(
-      {
-        a: 'u',
-        ssl: 2,
-        v: 2,
-        s: data.length,
-        t: [parentHandle],
-      },
-      { sessionId: session.sid, signal }
-    );
-    if (typeof uploadReservation === 'number') {
-      console.error('[MEGA:upload] upload reservation FAILED with API error.', { name, errorCode: uploadReservation });
-      const error = new Error(`MEGA API error ${uploadReservation}.`) as MegaApiError;
-      error.code = uploadReservation;
-      throw error;
-    }
+      touchMegaSyncActivity(signal);
+      const uploadReservation = await apiClient.requestSingle<Record<string, unknown> | number>(
+        {
+          a: 'u',
+          ssl: 2,
+          v: 2,
+          s: data.length,
+          t: [parentHandle],
+        },
+        { sessionId: session.sid, signal }
+      );
+      if (typeof uploadReservation === 'number') {
+        const error = new Error(`MEGA API error ${uploadReservation}.`) as MegaApiError;
+        error.code = uploadReservation;
+        throw error;
+      }
 
-    const uploadUrl = assertString(uploadReservation.p, `MEGA did not return an upload URL for ${name}.`);
-    console.log('[MEGA:upload] upload slot obtained, encrypting and sending data.', {
-      name,
-      uploadUrl: uploadUrl.slice(0, 80) + '...',
-      dataSize: data.length,
-    });
-    const encrypted = encryptMegaFileContent(data, transferKey, iv);
-    const crc = computeMegaUploadChecksum(encrypted);
-    const uploadResponse = await fetchImpl(`${uploadUrl}/0?d=${encodeMegaBase64Url(crc)}`, {
-      method: 'POST',
-      body: new Uint8Array(encrypted),
-      signal,
-    });
-    if (!uploadResponse.ok) {
-      console.error('[MEGA:upload] HTTP upload FAILED.', { name, status: uploadResponse.status });
-      throw new Error(`MEGA upload failed with HTTP ${uploadResponse.status}.`);
-    }
-    const uploadToken = Buffer.from(await uploadResponse.arrayBuffer());
-    if (uploadToken.length === 0) {
-      console.error('[MEGA:upload] empty upload token received.', { name });
-      throw new Error(`MEGA did not return an upload token for ${name}.`);
-    }
-    console.log('[MEGA:upload] data sent, committing node.', {
-      name,
-      uploadTokenLength: uploadToken.length,
-    });
+      const uploadUrl = assertString(uploadReservation.p, `MEGA did not return an upload URL for ${name}.`);
+      const encrypted = encryptMegaFileContent(data, transferKey, iv);
+      const crc = computeMegaUploadChecksum(encrypted);
+      touchMegaSyncActivity(signal);
+      const uploadResponse = await fetchImpl(`${uploadUrl}/0?d=${encodeMegaBase64Url(crc)}`, {
+        method: 'POST',
+        body: new Uint8Array(encrypted),
+        signal,
+      });
+      if (!uploadResponse.ok) {
+        throw new Error(`MEGA upload failed with HTTP ${uploadResponse.status}.`);
+      }
+      const uploadToken = Buffer.from(await uploadResponse.arrayBuffer());
+      if (uploadToken.length === 0) {
+        throw new Error(`MEGA did not return an upload token for ${name}.`);
+      }
 
-    const sentNodeKey = buildMegaFileNodeKey(transferKey, iv, computeMegaMetaMac(data, transferKey, iv));
-    const response = await apiClient.requestSingle<Record<string, unknown> | number>(
-      {
-        a: 'p',
-        v: 4,
-        sm: 1,
-        t: parentHandle,
-        n: [
-          {
-            h: encodeMegaBase64Url(uploadToken),
-            t: 0,
-            a: encryptMegaAttributes(name, transferKey),
-            k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(sentNodeKey, session.masterKey)),
-          },
-        ],
-      },
-      { sessionId: session.sid, signal }
-    );
-    if (typeof response === 'number') {
-      console.error('[MEGA:upload] node commit FAILED with API error.', { name, errorCode: response });
-      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
-      error.code = response;
-      throw error;
+      const sentNodeKey = buildMegaFileNodeKey(transferKey, iv, computeMegaMetaMac(data, transferKey, iv));
+      const uploadHandle = normalizeMegaUploadTokenHandle(uploadToken);
+      touchMegaSyncActivity(signal);
+      const response = await apiClient.requestSingle<Record<string, unknown> | number>(
+        {
+          a: 'p',
+          v: 3,
+          ...(shareCrypto ? { sm: 1 } : {}),
+          t: parentHandle,
+          i: createMegaMutationRequestId(),
+          ...(shareCrypto ? { cr: buildMegaChildNodeShareRecords(shareCrypto, uploadHandle, sentNodeKey) } : {}),
+          n: [
+            {
+              h: uploadHandle,
+              t: 0,
+              a: encryptMegaAttributes(name, transferKey),
+              k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(sentNodeKey, session.masterKey)),
+            },
+          ],
+        },
+        { sessionId: session.sid, signal }
+      );
+      if (typeof response === 'number') {
+        const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+        error.code = response;
+        throw error;
+      }
+      const committedNode = await waitForMegaChildNode(apiClient, session, parentHandle, name, false, signal);
+      if (!committedNode || committedNode.isFolder) {
+        throw new Error(`MEGA did not make the uploaded file visible for ${name}.`);
+      }
+      const globallyVisibleNode = await waitForMegaChildNodeInFullSnapshot(
+        apiClient,
+        session,
+        parentHandle,
+        name,
+        false,
+        signal
+      );
+      if (!globallyVisibleNode || globallyVisibleNode.isFolder) {
+        throw new Error(`MEGA did not make the uploaded file globally visible for ${name}.`);
+      }
+      return;
+    } catch (error) {
+      const recovered = await findMegaRemoteChildNode(apiClient, session, parentHandle, name, false, signal);
+      if (recovered && !recovered.isFolder) {
+        const globallyVisibleNode = await findMegaRemoteChildNodeInFullSnapshot(
+          apiClient,
+          session,
+          parentHandle,
+          name,
+          false,
+          signal
+        );
+        if (globallyVisibleNode && !globallyVisibleNode.isFolder) {
+          return;
+        }
+      }
+      if (
+        !isMegaRetryableApiError(error) &&
+        !isMegaRetryableTransportError(error) &&
+        !isMegaEventuallyConsistentMutationError(error)
+      ) {
+        throw error;
+      }
+      if (attempt >= MEGA_UPLOAD_RECOVERY_ATTEMPTS - 1) {
+        throw error;
+      }
+      await waitForMegaRetry(getMegaRetryDelayMs(error, attempt), signal);
     }
-    console.log('[MEGA:upload] file upload completed successfully.', { name, parentHandle });
-  }, signal);
+  }
 }
 
 function encryptMegaNodeKeyForOwner(nodeKey: Buffer, masterKey: Buffer): Buffer {
   return encryptAesEcb(nodeKey, masterKey);
+}
+
+function createMegaMutationRequestId(): number {
+  return randomBytes(4).readUInt32BE(0);
+}
+
+function normalizeMegaUploadTokenHandle(uploadToken: Buffer): string {
+  const ascii = uploadToken.toString('utf8').trim();
+  if (/^[A-Za-z0-9_-]{6,}$/u.test(ascii)) {
+    return ascii;
+  }
+  return encodeMegaBase64Url(uploadToken);
 }
 
 function encryptMegaAttributes(name: string, key: Buffer): string {
@@ -1913,12 +2273,58 @@ function isMegaRetryableApiError(error: unknown): error is MegaApiError {
   return code !== null && MEGA_RETRYABLE_API_ERROR_CODES.has(code);
 }
 
+function isMegaAccessDeniedError(error: unknown): error is MegaApiError {
+  const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
+  return code === -11;
+}
+
+function getMegaHttpStatus(error: unknown): number | null {
+  const status = typeof (error as { status?: unknown } | undefined)?.status === 'number'
+    ? Number((error as { status: number }).status)
+    : null;
+  if (status !== null && Number.isFinite(status)) {
+    return Math.trunc(status);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/HTTP\s+(\d{3})/i);
+  return match ? Number.parseInt(match[1]!, 10) : null;
+}
+
+function isMegaRateLimitedError(error: unknown): boolean {
+  const apiCode = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
+  const httpStatus = getMegaHttpStatus(error);
+  return apiCode === -4 || httpStatus === 429;
+}
+
+function getMegaRetryDelayMs(error: unknown, attempt: number): number {
+  const apiCode = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
+  const httpStatus = getMegaHttpStatus(error);
+  const delays =
+    apiCode === -3
+      ? MEGA_LOCK_RETRY_DELAYS_MS
+      : isMegaRateLimitedError(error) || httpStatus === 503
+        ? MEGA_RATE_LIMIT_RETRY_DELAYS_MS
+        : MEGA_TRANSIENT_RETRY_DELAYS_MS;
+  return delays[Math.min(attempt, delays.length - 1)]!;
+}
+
 function isMegaRetryableTransportError(error: unknown): boolean {
+  const httpStatus = getMegaHttpStatus(error);
+  if (httpStatus === 429 || httpStatus === 408 || (httpStatus !== null && httpStatus >= 500)) {
+    return true;
+  }
   const message = error instanceof Error ? error.message : String(error);
   return (
     /fetch failed/i.test(message) ||
     /ECONNRESET|ECONNREFUSED|ETIMEDOUT|network/i.test(message) ||
-    /HTTP 5\d\d/i.test(message)
+    /EAI_AGAIN|ENOTFOUND|socket hang up/i.test(message)
+  );
+}
+
+function isMegaEventuallyConsistentMutationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /did not make the created folder (globally )?visible|did not make the uploaded file (globally )?visible/i.test(
+    message
   );
 }
 
@@ -1926,15 +2332,16 @@ async function withMegaApiRetry<T>(operation: () => Promise<T>, signal?: AbortSi
   let attempt = 0;
   while (true) {
     try {
+      touchMegaSyncActivity(signal);
       return await operation();
     } catch (error) {
       if (
         (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) ||
-        attempt >= MEGA_API_RETRY_DELAYS_MS.length
+        attempt >= Math.max(MEGA_LOCK_RETRY_DELAYS_MS.length, MEGA_RATE_LIMIT_RETRY_DELAYS_MS.length, MEGA_TRANSIENT_RETRY_DELAYS_MS.length)
       ) {
         throw error;
       }
-      const delayMs = MEGA_API_RETRY_DELAYS_MS[attempt] ?? MEGA_API_RETRY_DELAYS_MS[MEGA_API_RETRY_DELAYS_MS.length - 1];
+      const delayMs = getMegaRetryDelayMs(error, attempt);
       attempt += 1;
       await waitForMegaRetry(delayMs, signal);
     }
@@ -1970,6 +2377,50 @@ function createMegaAbortError(): Error {
   const error = new Error('This operation was aborted.');
   error.name = 'AbortError';
   return error;
+}
+
+function isMegaMissingRequestedRootError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'MEGA tree did not include the requested root node.';
+}
+
+function createMegaSyncAbortController(timeoutMs: number): {
+  controller: AbortController;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | null = null;
+
+  const scheduleAbort = () => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      controller.abort();
+    }, timeoutMs);
+    timer.unref?.();
+  };
+
+  scheduleAbort();
+  megaSyncActivityTouchers.set(controller.signal, scheduleAbort);
+
+  return {
+    controller,
+    dispose: () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      megaSyncActivityTouchers.delete(controller.signal);
+    },
+  };
+}
+
+function touchMegaSyncActivity(signal?: AbortSignal): void {
+  if (!signal || signal.aborted) {
+    return;
+  }
+  megaSyncActivityTouchers.get(signal)?.();
 }
 
 function createMegaReconnectRequiredError(error: unknown): Error {
@@ -2295,17 +2746,18 @@ function decryptNodeRecord(
   const accessLevel = typeof nodeMeta.r === 'number' ? describeAccessLevel(nodeMeta.r) : undefined;
   const shareHandle = ownerHandle ? handle : deriveShareHandle(typeof node.k === 'string' ? node.k : undefined, shareKeys);
 
-  return {
-    handle,
-    parentHandle: typeof node.p === 'string' && node.p.trim() ? node.p.trim() : undefined,
-    nodeType,
-    isFolder: nodeType !== 0,
-    size: Number(node.s ?? 0) || 0,
-    name,
-    nodeKey,
-    encodedKey: typeof node.k === 'string' ? node.k : undefined,
-    encodedAttributes: typeof node.a === 'string' ? node.a : undefined,
-    ownerHandle,
+    return {
+      handle,
+      parentHandle: typeof node.p === 'string' && node.p.trim() ? node.p.trim() : undefined,
+      nodeType,
+      isFolder: nodeType !== 0,
+      size: Number(node.s ?? 0) || 0,
+      name,
+      modifiedAt: typeof node.ts === 'number' && Number.isFinite(node.ts) ? Math.trunc(node.ts) : undefined,
+      nodeKey,
+      encodedKey: typeof node.k === 'string' ? node.k : undefined,
+      encodedAttributes: typeof node.a === 'string' ? node.a : undefined,
+      ownerHandle,
     ownerEmail,
     accessLevel,
     shareHandle,
@@ -2402,10 +2854,8 @@ function decryptNodeKey(
   if (encoded.length === 22 || encoded.length === 43) {
     keyOwner = session.userHandle;
     payload = encoded;
-  } else if (encoded.length > 12 && encoded[11] === ':' && encoded.slice(0, 11) === session.userHandle) {
-    keyOwner = session.userHandle;
-    payload = encoded.slice(12);
   } else {
+    const ownedSegments: Array<{ owner: string; payload: string }> = [];
     for (const segment of encoded.split('/')) {
       const colonIndex = segment.indexOf(':');
       if (colonIndex <= 0) {
@@ -2413,10 +2863,22 @@ function decryptNodeKey(
       }
       const owner = segment.slice(0, colonIndex).trim();
       const candidate = segment.slice(colonIndex + 1).trim();
-      if (shareKeys.has(owner)) {
+      if (!owner || !candidate) {
+        continue;
+      }
+      ownedSegments.push({ owner, payload: candidate });
+    }
+    const preferredOwner = ownedSegments.find((segment) => segment.owner === session.userHandle)
+      ?? ownedSegments.find((segment) => shareKeys.has(segment.owner));
+    if (preferredOwner) {
+      keyOwner = preferredOwner.owner;
+      payload = preferredOwner.payload;
+    } else if (encoded.length > 12 && encoded[11] === ':') {
+      const owner = encoded.slice(0, 11).trim();
+      const candidate = encoded.slice(12).trim();
+      if (owner === session.userHandle || shareKeys.has(owner)) {
         keyOwner = owner;
         payload = candidate;
-        break;
       }
     }
   }
@@ -2801,6 +3263,15 @@ function describeMegaSyncFailure(
           'MEGA temporarily rate limited this mirror refresh request. Nearbytes will keep the current local mirror and retry automatically.',
       };
     }
+  }
+
+  if (isMegaRateLimitedError(error)) {
+    return {
+      code: 'MEGA_RATE_LIMITED',
+      summary: 'MEGA rate limited this refresh',
+      detail:
+        'MEGA temporarily rate limited this mirror refresh request. Nearbytes will keep the current local mirror and retry automatically.',
+    };
   }
 
   if (/fetch failed/i.test(rawMessage)) {

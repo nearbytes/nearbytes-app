@@ -1,4 +1,5 @@
 import { createCipheriv, randomBytes } from 'crypto';
+import { createDecipheriv } from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -106,6 +107,15 @@ function encodeMegaBase64Url(value: Buffer): string {
   return value.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
 }
 
+function decodeMegaBase64Url(value: string): Buffer {
+  const normalized = value.trim().replace(/-/g, '+').replace(/_/g, '/');
+  if (!normalized) {
+    return Buffer.alloc(0);
+  }
+  const padding = (4 - (normalized.length % 4)) % 4;
+  return Buffer.from(`${normalized}${'='.repeat(padding)}`, 'base64');
+}
+
 function xorBuffers(left: Buffer, right: Buffer): Buffer {
   const result = Buffer.alloc(Math.min(left.length, right.length));
   for (let index = 0; index < result.length; index += 1) {
@@ -125,6 +135,12 @@ function encryptAesEcb(value: Buffer, key: Buffer): Buffer {
   const cipher = createCipheriv('aes-128-ecb', key.subarray(0, 16), null);
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(value), cipher.final()]);
+}
+
+function decryptAesEcb(value: Buffer, key: Buffer): Buffer {
+  const decipher = createDecipheriv('aes-128-ecb', key.subarray(0, 16), null);
+  decipher.setAutoPadding(false);
+  return Buffer.concat([decipher.update(value), decipher.final()]);
 }
 
 function encryptAesCbc(value: Buffer, key: Buffer): Buffer {
@@ -464,6 +480,11 @@ describe('MEGA managed share API', () => {
     const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
     const userHandle = 'usrhandle01';
 
+    let createCalls = 0;
+    const nearbytesKey = `${'share000001'}:${encodeMegaBase64Url(Buffer.from('8899aabbccddeeff0011223344556677', 'hex'))}/${userHandle}:${encodeMegaBase64Url(
+      encryptAesEcb(Buffer.from('00112233445566778899aabbccddeeff', 'hex'), masterKey)
+    )}`;
+
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
@@ -504,9 +525,7 @@ describe('MEGA managed share API', () => {
                     p: 'root000001',
                     t: 1,
                     a: encryptAttributes('nearbytes', Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
-                    k: encodeMegaBase64Url(
-                      encryptAesEcb(Buffer.from('00112233445566778899aabbccddeeff', 'hex'), masterKey)
-                    ),
+                    k: nearbytesKey,
                   },
                   {
                     h: 'blocks0001',
@@ -536,6 +555,9 @@ describe('MEGA managed share API', () => {
               headers: { 'content-type': 'application/json' },
             }
           );
+        case 'p':
+          createCalls += 1;
+          throw new Error(`Unexpected MEGA create request: ${JSON.stringify(payload)}`);
         default:
           throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
       }
@@ -653,5 +675,711 @@ describe('MEGA managed share API', () => {
     }
     expect(ownerStateStatus).toBe('ready');
     expect(fetchImpl).toHaveBeenCalled();
+    expect(createCalls).toBe(0);
   });
+
+  it('recovers from a rate-limited owner-root creation without issuing duplicate create requests', async () => {
+    const email = 'owner@example.com';
+    const password = 'correct horse battery staple';
+    const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
+    const passwordKey = await deriveV2MasterKey(password, salt);
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const encryptedMasterKey = encryptAesEcb(masterKey, passwordKey);
+    const tsidLeft = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
+    const userHandle = 'usrhandle01';
+
+    let folderVisible = false;
+    let createCalls = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      }
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'us0':
+          return new Response(JSON.stringify([{ v: 2, s: salt }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'us':
+          return new Response(
+            JSON.stringify([{ k: encodeMegaBase64Url(encryptedMasterKey), u: userHandle, tsid }]),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        case 'ug':
+          return new Response(JSON.stringify([{ u: userHandle, email }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'uga':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f': {
+          const nodes: Array<Record<string, unknown>> = [
+            {
+              h: 'root000001',
+              t: 1,
+              a: encryptAttributes('Cloud Drive', Buffer.from('102132435465768798a9babbdcddf0f1', 'hex')),
+              k: encodeMegaBase64Url(encryptAesEcb(Buffer.from('102132435465768798a9babbdcddf0f1', 'hex'), masterKey)),
+            },
+          ];
+          if (folderVisible) {
+            nodes.push({
+              h: 'nearbytes0',
+              p: 'root000001',
+              t: 1,
+              a: encryptAttributes('nearbytes', Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+              k: `${userHandle}:${encodeMegaBase64Url(
+                encryptAesEcb(Buffer.from('00112233445566778899aabbccddeeff', 'hex'), masterKey)
+              )}`,
+            });
+          }
+          return new Response(JSON.stringify([{ f: nodes, u: [], sn: folderVisible ? 'cursor-2' : 'cursor-1' }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        case 'p':
+          createCalls += 1;
+          folderVisible = true;
+          return new Response(JSON.stringify([-4]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    }) as typeof fetch;
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-rate-limit-'));
+    tempDirs.push(tempDir);
+    process.env.HOME = tempDir;
+
+    const mainRoot = path.join(tempDir, 'main-root');
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    await fs.mkdir(mainRoot, { recursive: true });
+
+    const rootsConfig: RootsConfig = {
+      version: 2,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: mainRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      defaultVolume: {
+        destinations: [
+          {
+            sourceId: 'src-main',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 10,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+      volumes: [],
+    };
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
+
+    const storage = new MultiRootStorageBackend(rootsConfig);
+    const crypto = createCryptoOperations();
+    const fileService = createFileService({ crypto, storage });
+    const chatService = createChatService({ crypto, storage });
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const managedShareService = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      adapters: [new MegaTransportAdapter(runtime, { fetchImpl })],
+    });
+    services.push(managedShareService);
+    const app = createApp({
+      fileService,
+      chatService,
+      crypto,
+      storage,
+      tokenKey: randomBytes(32),
+      corsOrigin: true,
+      maxUploadBytes: 5 * 1024 * 1024,
+      rootsConfigPath,
+      resolvedStorageDir: mainRoot,
+      managedShareService,
+    });
+
+    await request(app)
+      .post('/integrations/accounts/connect')
+      .send({
+        provider: 'mega',
+        label: 'MEGA',
+        accountId: 'acct-mega-rate-limit',
+        credentials: { email, password },
+      })
+      .expect(200);
+
+    const sharesRes = await request(app).get('/integrations/shares').expect(200);
+    const ownerShare = typedBody<ManagedSharesResponseBody>(sharesRes).shares.find(
+      (entry) => entry.share.provider === 'mega' && entry.share.role === 'owner'
+    );
+    expect(ownerShare).toBeDefined();
+
+    let ownerStateStatus = ownerShare!.state.status;
+    for (let attempt = 0; attempt < 20 && ownerStateStatus !== 'ready'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const nextSharesRes = await request(app).get('/integrations/shares').expect(200);
+      const nextOwnerShare = typedBody<ManagedSharesResponseBody>(nextSharesRes).shares.find(
+        (entry) => entry.share.id === ownerShare!.share.id
+      );
+      ownerStateStatus = nextOwnerShare?.state.status ?? ownerStateStatus;
+    }
+
+    expect(ownerStateStatus).toBe('ready');
+    expect(createCalls).toBe(1);
+  });
+
+  it('retries owner uploads after a temporary HTTP 429 and completes the sync', async () => {
+    const email = 'owner@example.com';
+    const password = 'correct horse battery staple';
+    const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
+    const passwordKey = await deriveV2MasterKey(password, salt);
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const encryptedMasterKey = encryptAesEcb(masterKey, passwordKey);
+    const tsidLeft = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
+    const userHandle = 'usrhandle01';
+
+    let uploadPostCalls = 0;
+    let commitCalls = 0;
+    let uploadedFileVisible = false;
+    let uploadedFileNodeKey: Buffer | null = null;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'us0':
+            return new Response(JSON.stringify([{ v: 2, s: salt }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'us':
+            return new Response(
+              JSON.stringify([{ k: encodeMegaBase64Url(encryptedMasterKey), u: userHandle, tsid }]),
+              { status: 200, headers: { 'content-type': 'application/json' } }
+            );
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(
+              JSON.stringify([
+                {
+                  f: [
+                    {
+                      h: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('Cloud Drive', Buffer.from('102132435465768798a9babbdcddf0f1', 'hex')),
+                      k: encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('102132435465768798a9babbdcddf0f1', 'hex'), masterKey)
+                      ),
+                    },
+                    {
+                      h: 'nearbytes0',
+                      p: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('nearbytes', Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+                      k: `${userHandle}:${encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('00112233445566778899aabbccddeeff', 'hex'), masterKey)
+                      )}`,
+                    },
+                    {
+                      h: 'blocks0001',
+                      p: 'nearbytes0',
+                      t: 1,
+                      a: encryptAttributes('blocks', Buffer.from('11223344556677889900aabbccddeeff', 'hex')),
+                      k: `${userHandle}:${encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('11223344556677889900aabbccddeeff', 'hex'), masterKey)
+                      )}`,
+                    },
+                    ...(uploadedFileVisible && uploadedFileNodeKey
+                      ? [{
+                        h: 'file000001',
+                        p: 'blocks0001',
+                        t: 0,
+                        s: 9,
+                        a: encryptAttributes('aa.bin', uploadedFileNodeKey),
+                        k: `${userHandle}:${encodeMegaBase64Url(encryptAesEcb(uploadedFileNodeKey, masterKey))}`,
+                      }]
+                      : []),
+                  ],
+                  u: [],
+                  sn: 'cursor-1',
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          case 'u':
+            return new Response(JSON.stringify([{ p: 'https://upload.test/slot' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'p':
+            commitCalls += 1;
+            {
+              const node = ((payload.n as Array<Record<string, unknown>> | undefined) ?? [])[0];
+              const encodedKey = typeof node?.k === 'string' ? node.k : '';
+              uploadedFileNodeKey = encodedKey ? decryptAesEcb(decodeMegaBase64Url(encodedKey), masterKey) : null;
+              uploadedFileVisible = Boolean(uploadedFileNodeKey);
+            }
+            return new Response(JSON.stringify([{ f: [{ h: 'file000001' }] }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://upload.test/slot/0?d=')) {
+        uploadPostCalls += 1;
+        if (uploadPostCalls === 1) {
+          return new Response('rate limited', { status: 429 });
+        }
+        return new Response(Uint8Array.from([1, 2, 3, 4, 5, 6]), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-upload-'));
+    tempDirs.push(tempDir);
+    process.env.HOME = tempDir;
+
+    const localPath = path.join(tempDir, 'owner-share');
+    await fs.mkdir(path.join(localPath, 'blocks'), { recursive: true });
+    await fs.writeFile(path.join(localPath, 'blocks', 'aa.bin'), 'upload-me', 'utf8');
+    await fs.mkdir(path.join(localPath, 'channels'), { recursive: true });
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const connectResult = await adapter.connect({
+      provider: 'mega',
+      label: 'MEGA',
+      accountId: 'acct-mega-upload',
+      credentials: { email, password },
+    });
+    expect(connectResult.status).toBe('connected');
+
+    const account = connectResult.account!;
+    const share = {
+      id: 'share-mega-upload',
+      provider: 'mega',
+      role: 'owner',
+      localPath,
+      remoteDescriptor: { remotePath: '/nearbytes', shareName: 'nearbytes' },
+    } as any;
+
+    await (adapter as any).syncOwnerShare(share, account);
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('ready');
+    expect(uploadPostCalls).toBe(2);
+    expect(commitCalls).toBe(1);
+  }, 15_000);
+
+  it('retries owner folder creation when MEGA returns a ghost handle before the folder becomes globally visible', async () => {
+    const email = 'owner@example.com';
+    const password = 'correct horse battery staple';
+    const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
+    const passwordKey = await deriveV2MasterKey(password, salt);
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const encryptedMasterKey = encryptAesEcb(masterKey, passwordKey);
+    const tsidLeft = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
+    const userHandle = 'usrhandle01';
+
+    let folderCreateCalls = 0;
+    let uploadPostCalls = 0;
+    let commitCalls = 0;
+    let blocksFolderVisible = false;
+    let uploadedFileVisible = false;
+    let uploadedFileNodeKey: Buffer | null = null;
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'us0':
+            return new Response(JSON.stringify([{ v: 2, s: salt }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'us':
+            return new Response(
+              JSON.stringify([{ k: encodeMegaBase64Url(encryptedMasterKey), u: userHandle, tsid }]),
+              { status: 200, headers: { 'content-type': 'application/json' } }
+            );
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(
+              JSON.stringify([
+                {
+                  f: [
+                    {
+                      h: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('Cloud Drive', Buffer.from('102132435465768798a9babbdcddf0f1', 'hex')),
+                      k: encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('102132435465768798a9babbdcddf0f1', 'hex'), masterKey)
+                      ),
+                    },
+                    {
+                      h: 'nearbytes0',
+                      p: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('nearbytes', Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+                      k: `${userHandle}:${encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('00112233445566778899aabbccddeeff', 'hex'), masterKey)
+                      )}`,
+                    },
+                    ...(blocksFolderVisible
+                      ? [{
+                        h: 'blocks0001',
+                        p: 'nearbytes0',
+                        t: 1,
+                        a: encryptAttributes('blocks', Buffer.from('11223344556677889900aabbccddeeff', 'hex')),
+                        k: `${userHandle}:${encodeMegaBase64Url(
+                          encryptAesEcb(Buffer.from('11223344556677889900aabbccddeeff', 'hex'), masterKey)
+                        )}`,
+                      }]
+                      : []),
+                    ...(uploadedFileVisible && uploadedFileNodeKey
+                      ? [{
+                        h: 'file000001',
+                        p: 'blocks0001',
+                        t: 0,
+                        s: 9,
+                        a: encryptAttributes('aa.bin', uploadedFileNodeKey),
+                        k: `${userHandle}:${encodeMegaBase64Url(encryptAesEcb(uploadedFileNodeKey, masterKey))}`,
+                      }]
+                      : []),
+                  ],
+                  u: [],
+                  sn: `cursor-${folderCreateCalls}-${uploadedFileVisible ? 'file' : 'base'}`,
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          case 'u':
+            return new Response(JSON.stringify([{ p: 'https://upload.test/slot' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'p': {
+            const nodes = ((payload.n as Array<Record<string, unknown>> | undefined) ?? []);
+            const node = nodes[0];
+            if (Number(node?.t ?? -1) === 1) {
+              folderCreateCalls += 1;
+              if (folderCreateCalls >= 2) {
+                blocksFolderVisible = true;
+                return new Response(JSON.stringify([{ f: [{ h: 'blocks0001' }] }]), {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                });
+              }
+              return new Response(JSON.stringify([{ f: [{ h: 'ghostblk01' }] }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            commitCalls += 1;
+            const encodedKey = typeof node?.k === 'string' ? node.k : '';
+            uploadedFileNodeKey = encodedKey ? decryptAesEcb(decodeMegaBase64Url(encodedKey), masterKey) : null;
+            uploadedFileVisible = Boolean(uploadedFileNodeKey);
+            return new Response(JSON.stringify([{ f: [{ h: 'file000001' }] }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://upload.test/slot/0?d=')) {
+        uploadPostCalls += 1;
+        return new Response(Uint8Array.from([1, 2, 3, 4, 5, 6]), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-ghost-folder-'));
+    tempDirs.push(tempDir);
+    process.env.HOME = tempDir;
+
+    const localPath = path.join(tempDir, 'owner-share');
+    await fs.mkdir(path.join(localPath, 'blocks'), { recursive: true });
+    await fs.writeFile(path.join(localPath, 'blocks', 'aa.bin'), 'upload-me', 'utf8');
+    await fs.mkdir(path.join(localPath, 'channels'), { recursive: true });
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const connectResult = await adapter.connect({
+      provider: 'mega',
+      label: 'MEGA',
+      accountId: 'acct-mega-ghost-folder',
+      credentials: { email, password },
+    });
+    expect(connectResult.status).toBe('connected');
+
+    const account = connectResult.account!;
+    const share = {
+      id: 'share-mega-ghost-folder',
+      provider: 'mega',
+      role: 'owner',
+      localPath,
+      remoteDescriptor: { remotePath: '/nearbytes', shareName: 'nearbytes' },
+    } as any;
+
+    await (adapter as any).syncOwnerShare(share, account);
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('ready');
+    expect(folderCreateCalls).toBe(2);
+    expect(uploadPostCalls).toBe(1);
+    expect(commitCalls).toBe(1);
+  }, 15_000);
+
+  it('falls back to a full snapshot when a partial MEGA node lookup returns access denied', async () => {
+    const email = 'owner@example.com';
+    const password = 'correct horse battery staple';
+    const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
+    const passwordKey = await deriveV2MasterKey(password, salt);
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const encryptedMasterKey = encryptAesEcb(masterKey, passwordKey);
+    const tsidLeft = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
+    const userHandle = 'usrhandle01';
+
+    let partialFetchCalls = 0;
+    let uploadPostCalls = 0;
+    let commitCalls = 0;
+    let uploadedFileVisible = false;
+    let uploadedFileNodeKey: Buffer | null = null;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'us0':
+            return new Response(JSON.stringify([{ v: 2, s: salt }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'us':
+            return new Response(
+              JSON.stringify([{ k: encodeMegaBase64Url(encryptedMasterKey), u: userHandle, tsid }]),
+              { status: 200, headers: { 'content-type': 'application/json' } }
+            );
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            if (payload.n) {
+              partialFetchCalls += 1;
+              return new Response(JSON.stringify([-11]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            return new Response(
+              JSON.stringify([
+                {
+                  f: [
+                    {
+                      h: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('Cloud Drive', Buffer.from('102132435465768798a9babbdcddf0f1', 'hex')),
+                      k: encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('102132435465768798a9babbdcddf0f1', 'hex'), masterKey)
+                      ),
+                    },
+                    {
+                      h: 'nearbytes0',
+                      p: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('nearbytes', Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+                      k: `${userHandle}:${encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('00112233445566778899aabbccddeeff', 'hex'), masterKey)
+                      )}`,
+                    },
+                    {
+                      h: 'blocks0001',
+                      p: 'nearbytes0',
+                      t: 1,
+                      a: encryptAttributes('blocks', Buffer.from('11223344556677889900aabbccddeeff', 'hex')),
+                      k: `${userHandle}:${encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('11223344556677889900aabbccddeeff', 'hex'), masterKey)
+                      )}`,
+                    },
+                    ...(uploadedFileVisible && uploadedFileNodeKey
+                      ? [{
+                        h: 'file000001',
+                        p: 'blocks0001',
+                        t: 0,
+                        s: 9,
+                        a: encryptAttributes('aa.bin', uploadedFileNodeKey),
+                        k: `${userHandle}:${encodeMegaBase64Url(encryptAesEcb(uploadedFileNodeKey, masterKey))}`,
+                      }]
+                      : []),
+                  ],
+                  u: [],
+                  sn: 'cursor-1',
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          case 'u':
+            return new Response(JSON.stringify([{ p: 'https://upload.test/slot' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'p':
+            commitCalls += 1;
+            {
+              const node = ((payload.n as Array<Record<string, unknown>> | undefined) ?? [])[0];
+              const encodedKey = typeof node?.k === 'string' ? node.k : '';
+              uploadedFileNodeKey = encodedKey ? decryptAesEcb(decodeMegaBase64Url(encodedKey), masterKey) : null;
+              uploadedFileVisible = Boolean(uploadedFileNodeKey);
+            }
+            return new Response(JSON.stringify([{ f: [{ h: 'file000001' }] }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://upload.test/slot/0?d=')) {
+        uploadPostCalls += 1;
+        return new Response(Uint8Array.from([1, 2, 3, 4, 5, 6]), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-eaccess-'));
+    tempDirs.push(tempDir);
+    process.env.HOME = tempDir;
+
+    const localPath = path.join(tempDir, 'owner-share');
+    await fs.mkdir(path.join(localPath, 'blocks'), { recursive: true });
+    await fs.writeFile(path.join(localPath, 'blocks', 'aa.bin'), 'upload-me', 'utf8');
+    await fs.mkdir(path.join(localPath, 'channels'), { recursive: true });
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const connectResult = await adapter.connect({
+      provider: 'mega',
+      label: 'MEGA',
+      accountId: 'acct-mega-eaccess',
+      credentials: { email, password },
+    });
+
+    const account = connectResult.account!;
+    const share = {
+      id: 'share-mega-eaccess',
+      provider: 'mega',
+      role: 'owner',
+      localPath,
+      remoteDescriptor: { remotePath: '/nearbytes', shareName: 'nearbytes' },
+    } as any;
+
+    await (adapter as any).syncOwnerShare(share, account);
+    const state = await adapter.getState(share, account);
+
+    expect(state.status).toBe('ready');
+    expect(partialFetchCalls).toBeGreaterThan(0);
+    expect(uploadPostCalls).toBe(1);
+    expect(commitCalls).toBe(1);
+  }, 15_000);
 });
