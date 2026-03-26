@@ -10,8 +10,11 @@ export interface MirrorSyncResult {
 
 export class MirrorWorker {
   async sync(localRoot: string, remote: MirrorRemoteAdapter): Promise<MirrorSyncResult> {
+    console.log('[MirrorWorker] sync started.', { localRoot });
     const localEntries = await listMirrorFiles(localRoot);
+    console.log('[MirrorWorker] local entries found.', { count: localEntries.length, paths: localEntries.map((e) => e.path) });
     const remoteEntries = await remote.list();
+    console.log('[MirrorWorker] remote entries found.', { count: remoteEntries.length, paths: remoteEntries.map((e) => e.path) });
     const remoteMap = new Map(remoteEntries.map((entry) => [normalizeRelativePath(entry.path), entry]));
     const localMap = new Map(localEntries.map((entry) => [entry.path, entry]));
 
@@ -21,11 +24,19 @@ export class MirrorWorker {
 
     for (const entry of localEntries) {
       if (remoteMap.has(entry.path)) {
+        console.log('[MirrorWorker] skip (already remote).', { path: entry.path, size: entry.size });
         skipped.push(entry.path);
         continue;
       }
-      await remote.upload(entry.path, await fs.readFile(path.join(localRoot, entry.path)));
-      uploaded.push(entry.path);
+      console.log('[MirrorWorker] uploading local → remote.', { path: entry.path, size: entry.size });
+      try {
+        await remote.upload(entry.path, await fs.readFile(path.join(localRoot, entry.path)));
+        console.log('[MirrorWorker] upload succeeded.', { path: entry.path });
+        uploaded.push(entry.path);
+      } catch (error) {
+        console.error('[MirrorWorker] upload FAILED.', { path: entry.path, error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
     }
 
     for (const remoteEntry of remoteEntries) {
@@ -34,11 +45,19 @@ export class MirrorWorker {
         continue;
       }
       const fullPath = path.join(localRoot, normalizedPath);
-      await fs.mkdir(path.dirname(fullPath), { recursive: true });
-      await fs.writeFile(fullPath, await remote.download(normalizedPath));
-      downloaded.push(normalizedPath);
+      console.log('[MirrorWorker] downloading remote → local.', { path: normalizedPath, size: remoteEntry.size });
+      try {
+        await fs.mkdir(path.dirname(fullPath), { recursive: true });
+        await fs.writeFile(fullPath, await remote.download(normalizedPath));
+        console.log('[MirrorWorker] download succeeded.', { path: normalizedPath });
+        downloaded.push(normalizedPath);
+      } catch (error) {
+        console.error('[MirrorWorker] download FAILED.', { path: normalizedPath, error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
     }
 
+    console.log('[MirrorWorker] sync completed.', { uploaded: uploaded.length, downloaded: downloaded.length, skipped: skipped.length });
     return {
       uploaded,
       downloaded,

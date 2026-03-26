@@ -690,6 +690,12 @@ export class MegaTransportAdapter {
 
   private async syncOwnerShare(share: ManagedShare, account: ProviderAccount, signal?: AbortSignal): Promise<void> {
     const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+    console.log('[MEGA:owner-sync] starting owner share sync.', {
+      shareId: share.id,
+      accountId: account.id,
+      remotePath,
+      localPath: share.localPath,
+    });
     this.syncStates.set(share.id, {
       status: 'syncing',
       detail: 'Syncing the MEGA writable owner folder.',
@@ -700,12 +706,23 @@ export class MegaTransportAdapter {
       await fs.mkdir(share.localPath, { recursive: true });
       await ensureMegaOwnerLocalStructure(share.localPath);
       const session = await this.getAccountSession(account, signal);
+      console.log('[MEGA:owner-sync] session obtained, resolving remote root.', { remotePath });
       const root = await this.ensureOwnerRemoteRoot(session, remotePath, signal);
+      console.log('[MEGA:owner-sync] remote root resolved.', {
+        rootHandle: root.root.handle,
+        rootName: root.root.name,
+        rootPath: root.path,
+      });
       const worker = new MirrorWorker();
       const result = await worker.sync(
         share.localPath,
         new MegaOwnerRemoteAdapter(this.fetchImpl, this.apiClient, session, root, signal)
       );
+      console.log('[MEGA:owner-sync] owner share sync completed.', {
+        shareId: share.id,
+        uploaded: result.uploaded,
+        downloaded: result.downloaded,
+      });
       this.syncStates.set(share.id, {
         status: 'ready',
         detail: summarizeOwnerMirrorResult(remotePath, result),
@@ -713,6 +730,11 @@ export class MegaTransportAdapter {
         lastSyncAt: this.runtime.now(),
       });
     } catch (error) {
+      console.error('[MEGA:owner-sync] owner share sync FAILED.', {
+        shareId: share.id,
+        remotePath,
+        error: error instanceof Error ? error.stack ?? error.message : String(error),
+      });
       const detail = describeMegaOwnerSyncFailure(error, remotePath);
       const needsAuth = /login|session|auth|credential|password|reconnect/i.test(detail);
       this.syncStates.set(share.id, {
@@ -1264,9 +1286,13 @@ class MegaOwnerRemoteAdapter {
     private readonly session: MegaSession,
     private readonly ownerRoot: MegaOwnerRemoteRoot,
     private readonly signal?: AbortSignal
-  ) {}
+  ) { }
 
   async list(): Promise<readonly MirrorRemoteEntry[]> {
+    console.log('[MEGA:owner-adapter] listing remote entries.', {
+      rootHandle: this.ownerRoot.root.handle,
+      rootPath: this.ownerRoot.path,
+    });
     const entries: MirrorRemoteEntry[] = [];
     await visitTree(this.ownerRoot.tree, async (relativePath, node) => {
       if (!isMirrorRelativePath(relativePath)) {
@@ -1277,15 +1303,22 @@ class MegaOwnerRemoteAdapter {
         size: node.isFolder ? 0 : node.size,
       });
     });
-    return entries.sort((left, right) => left.path.localeCompare(right.path));
+    const sorted = entries.sort((left, right) => left.path.localeCompare(right.path));
+    console.log('[MEGA:owner-adapter] remote entries listed.', {
+      count: sorted.length,
+      paths: sorted.map((e) => e.path),
+    });
+    return sorted;
   }
 
   async download(relativePath: string): Promise<Uint8Array> {
+    console.log('[MEGA:owner-adapter] downloading file from owner root.', { relativePath });
     const node = findNodeByRelativePath(this.ownerRoot.tree, this.ownerRoot.root.handle, relativePath);
     if (!node || node.isFolder) {
+      console.error('[MEGA:owner-adapter] download target not found in tree.', { relativePath });
       throw new Error(`MEGA owner folder is missing ${relativePath}.`);
     }
-    return downloadAuthenticatedMegaFileContent(
+    const data = await downloadAuthenticatedMegaFileContent(
       this.fetchImpl,
       this.apiClient,
       this.session,
@@ -1294,6 +1327,8 @@ class MegaOwnerRemoteAdapter {
       node.size,
       this.signal
     );
+    console.log('[MEGA:owner-adapter] download completed.', { relativePath, size: data.length });
+    return data;
   }
 
   async upload(relativePath: string, data: Uint8Array): Promise<void> {
@@ -1304,6 +1339,13 @@ class MegaOwnerRemoteAdapter {
       throw new Error('MEGA upload path must include a file name.');
     }
 
+    console.log('[MEGA:owner-adapter] preparing upload.', {
+      relativePath: normalized,
+      name,
+      folderSegments,
+      dataSize: data.length,
+    });
+
     const parent = await ensureTreePath(
       this.apiClient,
       this.session,
@@ -1313,10 +1355,21 @@ class MegaOwnerRemoteAdapter {
     );
     const existing = findChildNodeByName(this.ownerRoot.tree, parent.handle, name, false);
     if (existing) {
+      console.log('[MEGA:owner-adapter] upload skipped (already exists on remote).', {
+        relativePath: normalized,
+        existingHandle: existing.handle,
+      });
       return;
     }
 
+    console.log('[MEGA:owner-adapter] uploading file to MEGA.', {
+      relativePath: normalized,
+      parentHandle: parent.handle,
+      name,
+      dataSize: data.length,
+    });
     await uploadMegaOwnerFile(this.fetchImpl, this.apiClient, this.session, parent.handle, name, Buffer.from(data), this.signal);
+    console.log('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
   }
 }
 
@@ -1524,6 +1577,11 @@ async function uploadMegaOwnerFile(
   data: Buffer,
   signal?: AbortSignal
 ): Promise<void> {
+  console.log('[MEGA:upload] requesting upload slot.', {
+    parentHandle,
+    name,
+    dataSize: data.length,
+  });
   const transferKey = randomBytes(16);
   const iv = randomBytes(8);
 
@@ -1538,10 +1596,16 @@ async function uploadMegaOwnerFile(
     { sessionId: session.sid, signal }
   );
   if (typeof uploadReservation === 'number') {
+    console.error('[MEGA:upload] upload reservation FAILED with API error.', { name, errorCode: uploadReservation });
     throw new Error(`MEGA API error ${uploadReservation}.`);
   }
 
   const uploadUrl = assertString(uploadReservation.p, `MEGA did not return an upload URL for ${name}.`);
+  console.log('[MEGA:upload] upload slot obtained, encrypting and sending data.', {
+    name,
+    uploadUrl: uploadUrl.slice(0, 80) + '...',
+    dataSize: data.length,
+  });
   const encrypted = encryptMegaFileContent(data, transferKey, iv);
   const crc = computeMegaUploadChecksum(encrypted);
   const uploadResponse = await fetchImpl(`${uploadUrl}/0?d=${encodeMegaBase64Url(crc)}`, {
@@ -1550,12 +1614,18 @@ async function uploadMegaOwnerFile(
     signal,
   });
   if (!uploadResponse.ok) {
+    console.error('[MEGA:upload] HTTP upload FAILED.', { name, status: uploadResponse.status });
     throw new Error(`MEGA upload failed with HTTP ${uploadResponse.status}.`);
   }
   const uploadToken = Buffer.from(await uploadResponse.arrayBuffer());
   if (uploadToken.length === 0) {
+    console.error('[MEGA:upload] empty upload token received.', { name });
     throw new Error(`MEGA did not return an upload token for ${name}.`);
   }
+  console.log('[MEGA:upload] data sent, committing node.', {
+    name,
+    uploadTokenLength: uploadToken.length,
+  });
 
   const sentNodeKey = buildMegaFileNodeKey(transferKey, iv, computeMegaMetaMac(data, transferKey, iv));
   const response = await apiClient.requestSingle<Record<string, unknown> | number>(
@@ -1576,8 +1646,10 @@ async function uploadMegaOwnerFile(
     { sessionId: session.sid, signal }
   );
   if (typeof response === 'number') {
+    console.error('[MEGA:upload] node commit FAILED with API error.', { name, errorCode: response });
     throw new Error(`MEGA API error ${response}.`);
   }
+  console.log('[MEGA:upload] file upload completed successfully.', { name, parentHandle });
 }
 
 function encryptMegaNodeKeyForOwner(nodeKey: Buffer, masterKey: Buffer): Buffer {
@@ -1620,8 +1692,8 @@ function computeMegaMetaMac(data: Buffer, transferKey: Buffer, iv: Buffer): Buff
     mac = encryptAesEcb(xorBuffers(mac, chunkMac), cipher) as Buffer;
   }
   mac = Buffer.from(mac);
-  mac.writeUInt32LE(mac.readUInt32LE(0) ^ mac.readUInt32LE(4), 0);
-  mac.writeUInt32LE(mac.readUInt32LE(8) ^ mac.readUInt32LE(12), 4);
+  mac.writeUInt32LE((mac.readUInt32LE(0) ^ mac.readUInt32LE(4)) >>> 0, 0);
+  mac.writeUInt32LE((mac.readUInt32LE(8) ^ mac.readUInt32LE(12)) >>> 0, 4);
   return mac.subarray(0, 8);
 }
 
@@ -2583,7 +2655,7 @@ class MegaReadonlyRemoteAdapter implements ProviderRefreshRemoteAdapter {
     private readonly session: MegaSession,
     private readonly tree: DecryptedMegaTree,
     private readonly signal?: AbortSignal
-  ) {}
+  ) { }
 
   async list(): Promise<readonly ProviderRefreshRemoteEntry[]> {
     this.nodesByPath.clear();
