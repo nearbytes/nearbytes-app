@@ -1280,6 +1280,10 @@ interface MegaOwnerRemoteRoot {
 }
 
 class MegaOwnerRemoteAdapter {
+  // Cache of created folders: key is `${parentHandle}/${name}`, value is the created handle.
+  // Prevents duplicate folder creation within a single sync cycle.
+  private readonly createdFolders = new Map<string, string>();
+
   constructor(
     private readonly fetchImpl: typeof fetch,
     private readonly apiClient: MegaApiClient,
@@ -1351,6 +1355,7 @@ class MegaOwnerRemoteAdapter {
       this.session,
       this.ownerRoot,
       folderSegments,
+      this.createdFolders,
       this.signal
     );
     const existing = findChildNodeByName(this.ownerRoot.tree, parent.handle, name, false);
@@ -1430,23 +1435,45 @@ async function ensureTreePath(
   session: MegaSession,
   ownerRoot: MegaOwnerRemoteRoot,
   segments: readonly string[],
+  createdFolders: Map<string, string>,
   signal?: AbortSignal
 ): Promise<DecryptedMegaNode> {
-  let currentRoot = ownerRoot;
   let current = ownerRoot.root;
   for (const segment of segments) {
-    const existing = findChildNodeByName(currentRoot.tree, current.handle, segment, true);
+    // First check the initial tree snapshot.
+    const existing = findChildNodeByName(ownerRoot.tree, current.handle, segment, true);
     if (existing) {
       current = existing;
       continue;
     }
-    await createMegaFolder(apiClient, session, current.handle, segment, signal);
-    currentRoot = await fetchOwnerRootByPath(apiClient, session, ownerRoot.path, signal);
-    const created = findChildNodeByName(currentRoot.tree, current.handle, segment, true);
-    if (!created) {
-      throw new Error(`MEGA did not create ${segment}.`);
+    // Then check the cache of folders created during this sync cycle.
+    const cacheKey = `${current.handle}/${segment}`;
+    const cachedHandle = createdFolders.get(cacheKey);
+    if (cachedHandle) {
+      current = {
+        handle: cachedHandle,
+        parentHandle: current.handle,
+        nodeType: 1,
+        isFolder: true,
+        size: 0,
+        name: segment,
+        nodeKey: Buffer.alloc(16),
+      };
+      continue;
     }
-    current = created;
+    // Create the folder and cache the handle.
+    const createdHandle = await createMegaFolder(apiClient, session, current.handle, segment, signal);
+    createdFolders.set(cacheKey, createdHandle);
+    console.log('[MEGA:ensureTreePath] folder created.', { segment, parentHandle: current.handle, createdHandle });
+    current = {
+      handle: createdHandle,
+      parentHandle: current.handle,
+      nodeType: 1,
+      isFolder: true,
+      size: 0,
+      name: segment,
+      nodeKey: Buffer.alloc(16),
+    };
   }
   return current;
 }
@@ -1522,9 +1549,26 @@ async function fetchOwnerRootByPath(
     }
     return parseMegaFetchNodesSnapshot(response);
   }, signal);
-  const tree = decryptMegaTree(snapshot, session, resolveMegaCloudDriveHandle(snapshot));
+  const cloudDriveHandle = resolveMegaCloudDriveHandle(snapshot);
+  const tree = decryptMegaTree(snapshot, session, cloudDriveHandle);
   let current = tree.root;
-  for (const segment of normalizeMegaRemoteDisplayPath(remotePath).split('/').filter((entry) => entry.length > 0)) {
+  const segments = normalizeMegaRemoteDisplayPath(remotePath).split('/').filter((entry) => entry.length > 0);
+  console.log('[MEGA:fetchOwnerRootByPath] resolving path.', {
+    remotePath,
+    segments,
+    cloudDriveHandle,
+    rootHandle: tree.root.handle,
+    rootName: tree.root.name,
+  });
+  for (const segment of segments) {
+    const children = tree.childrenByParent.get(current.handle) ?? [];
+    console.log('[MEGA:fetchOwnerRootByPath] looking for segment in parent.', {
+      segment,
+      parentHandle: current.handle,
+      parentName: current.name,
+      childCount: children.length,
+      childNames: children.map((c) => ({ name: c.name, handle: c.handle, isFolder: c.isFolder })),
+    });
     const next = findChildNodeByName(tree, current.handle, segment, true);
     if (!next) {
       throw new Error(`MEGA path ${remotePath} is missing ${segment}.`);
@@ -1544,28 +1588,44 @@ async function createMegaFolder(
   parentHandle: string,
   name: string,
   signal?: AbortSignal
-): Promise<void> {
-  const nodeKey = randomBytes(16);
-  const response = await apiClient.requestSingle<Record<string, unknown> | number>(
-    {
-      a: 'p',
-      v: 4,
-      sm: 1,
-      t: parentHandle,
-      n: [
-        {
-          h: encodeMegaBase64Url(randomBytes(6)),
-          t: 1,
-          a: encryptMegaAttributes(name, nodeKey),
-          k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(nodeKey, session.masterKey)),
-        },
-      ],
-    },
-    { sessionId: session.sid, signal }
-  );
-  if (typeof response === 'number') {
-    throw new Error(`MEGA API error ${response}.`);
-  }
+): Promise<string> {
+  return withMegaApiRetry(async () => {
+    const nodeKey = randomBytes(16);
+    const response = await apiClient.requestSingle<Record<string, unknown> | number>(
+      {
+        a: 'p',
+        t: parentHandle,
+        n: [
+          {
+            h: encodeMegaBase64Url(randomBytes(6)),
+            t: 1,
+            a: encryptMegaAttributes(name, nodeKey),
+            k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(nodeKey, session.masterKey)),
+          },
+        ],
+      },
+      { sessionId: session.sid, signal }
+    );
+    if (typeof response === 'number') {
+      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+      error.code = response;
+      throw error;
+    }
+    // Extract handle from response.f[0].h (standard 'p' command response)
+    const createdNodes = Array.isArray(response.f) ? response.f : [];
+    const createdNode = createdNodes[0] as Record<string, unknown> | undefined;
+    const handle = typeof createdNode?.h === 'string' ? createdNode.h.trim() : '';
+    if (!handle) {
+      console.error('[MEGA:createMegaFolder] unexpected response.', {
+        name, parentHandle,
+        responseKeys: Object.keys(response),
+        f: JSON.stringify(response.f)?.slice(0, 500),
+      });
+      throw new Error(`MEGA did not return a handle for the created folder ${name}.`);
+    }
+    console.log('[MEGA:createMegaFolder] folder created.', { name, parentHandle, handle });
+    return handle;
+  }, signal);
 }
 
 async function uploadMegaOwnerFile(
@@ -1577,79 +1637,85 @@ async function uploadMegaOwnerFile(
   data: Buffer,
   signal?: AbortSignal
 ): Promise<void> {
-  console.log('[MEGA:upload] requesting upload slot.', {
-    parentHandle,
-    name,
-    dataSize: data.length,
-  });
-  const transferKey = randomBytes(16);
-  const iv = randomBytes(8);
+  await withMegaApiRetry(async () => {
+    console.log('[MEGA:upload] requesting upload slot.', {
+      parentHandle,
+      name,
+      dataSize: data.length,
+    });
+    const transferKey = randomBytes(16);
+    const iv = randomBytes(8);
 
-  const uploadReservation = await apiClient.requestSingle<Record<string, unknown> | number>(
-    {
-      a: 'u',
-      ssl: 2,
-      v: 2,
-      s: data.length,
-      t: [parentHandle],
-    },
-    { sessionId: session.sid, signal }
-  );
-  if (typeof uploadReservation === 'number') {
-    console.error('[MEGA:upload] upload reservation FAILED with API error.', { name, errorCode: uploadReservation });
-    throw new Error(`MEGA API error ${uploadReservation}.`);
-  }
+    const uploadReservation = await apiClient.requestSingle<Record<string, unknown> | number>(
+      {
+        a: 'u',
+        ssl: 2,
+        v: 2,
+        s: data.length,
+        t: [parentHandle],
+      },
+      { sessionId: session.sid, signal }
+    );
+    if (typeof uploadReservation === 'number') {
+      console.error('[MEGA:upload] upload reservation FAILED with API error.', { name, errorCode: uploadReservation });
+      const error = new Error(`MEGA API error ${uploadReservation}.`) as MegaApiError;
+      error.code = uploadReservation;
+      throw error;
+    }
 
-  const uploadUrl = assertString(uploadReservation.p, `MEGA did not return an upload URL for ${name}.`);
-  console.log('[MEGA:upload] upload slot obtained, encrypting and sending data.', {
-    name,
-    uploadUrl: uploadUrl.slice(0, 80) + '...',
-    dataSize: data.length,
-  });
-  const encrypted = encryptMegaFileContent(data, transferKey, iv);
-  const crc = computeMegaUploadChecksum(encrypted);
-  const uploadResponse = await fetchImpl(`${uploadUrl}/0?d=${encodeMegaBase64Url(crc)}`, {
-    method: 'POST',
-    body: new Uint8Array(encrypted),
-    signal,
-  });
-  if (!uploadResponse.ok) {
-    console.error('[MEGA:upload] HTTP upload FAILED.', { name, status: uploadResponse.status });
-    throw new Error(`MEGA upload failed with HTTP ${uploadResponse.status}.`);
-  }
-  const uploadToken = Buffer.from(await uploadResponse.arrayBuffer());
-  if (uploadToken.length === 0) {
-    console.error('[MEGA:upload] empty upload token received.', { name });
-    throw new Error(`MEGA did not return an upload token for ${name}.`);
-  }
-  console.log('[MEGA:upload] data sent, committing node.', {
-    name,
-    uploadTokenLength: uploadToken.length,
-  });
+    const uploadUrl = assertString(uploadReservation.p, `MEGA did not return an upload URL for ${name}.`);
+    console.log('[MEGA:upload] upload slot obtained, encrypting and sending data.', {
+      name,
+      uploadUrl: uploadUrl.slice(0, 80) + '...',
+      dataSize: data.length,
+    });
+    const encrypted = encryptMegaFileContent(data, transferKey, iv);
+    const crc = computeMegaUploadChecksum(encrypted);
+    const uploadResponse = await fetchImpl(`${uploadUrl}/0?d=${encodeMegaBase64Url(crc)}`, {
+      method: 'POST',
+      body: new Uint8Array(encrypted),
+      signal,
+    });
+    if (!uploadResponse.ok) {
+      console.error('[MEGA:upload] HTTP upload FAILED.', { name, status: uploadResponse.status });
+      throw new Error(`MEGA upload failed with HTTP ${uploadResponse.status}.`);
+    }
+    const uploadToken = Buffer.from(await uploadResponse.arrayBuffer());
+    if (uploadToken.length === 0) {
+      console.error('[MEGA:upload] empty upload token received.', { name });
+      throw new Error(`MEGA did not return an upload token for ${name}.`);
+    }
+    console.log('[MEGA:upload] data sent, committing node.', {
+      name,
+      uploadTokenLength: uploadToken.length,
+    });
 
-  const sentNodeKey = buildMegaFileNodeKey(transferKey, iv, computeMegaMetaMac(data, transferKey, iv));
-  const response = await apiClient.requestSingle<Record<string, unknown> | number>(
-    {
-      a: 'p',
-      v: 4,
-      sm: 1,
-      t: parentHandle,
-      n: [
-        {
-          h: encodeMegaBase64Url(uploadToken),
-          t: 0,
-          a: encryptMegaAttributes(name, transferKey),
-          k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(sentNodeKey, session.masterKey)),
-        },
-      ],
-    },
-    { sessionId: session.sid, signal }
-  );
-  if (typeof response === 'number') {
-    console.error('[MEGA:upload] node commit FAILED with API error.', { name, errorCode: response });
-    throw new Error(`MEGA API error ${response}.`);
-  }
-  console.log('[MEGA:upload] file upload completed successfully.', { name, parentHandle });
+    const sentNodeKey = buildMegaFileNodeKey(transferKey, iv, computeMegaMetaMac(data, transferKey, iv));
+    const response = await apiClient.requestSingle<Record<string, unknown> | number>(
+      {
+        a: 'p',
+        v: 4,
+        sm: 1,
+        t: parentHandle,
+        n: [
+          {
+            h: encodeMegaBase64Url(uploadToken),
+            t: 0,
+            a: encryptMegaAttributes(name, transferKey),
+            k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(sentNodeKey, session.masterKey)),
+          },
+        ],
+      },
+      { sessionId: session.sid, signal }
+    );
+    if (typeof response === 'number') {
+      console.error('[MEGA:upload] node commit FAILED with API error.', { name, errorCode: response });
+      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+      error.code = response;
+      throw error;
+    }
+    console.log('[MEGA:upload] file upload completed successfully.', { name, parentHandle });
+  }, signal);
 }
 
 function encryptMegaNodeKeyForOwner(nodeKey: Buffer, masterKey: Buffer): Buffer {
