@@ -1,4 +1,4 @@
-import { createCipheriv, generateKeyPairSync, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, generateKeyPairSync, randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -99,6 +99,12 @@ function encryptAesEcb(value: Buffer, key: Buffer): Buffer {
   const cipher = createCipheriv('aes-128-ecb', key.subarray(0, 16), null);
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(value), cipher.final()]);
+}
+
+function decryptAesEcb(value: Buffer, key: Buffer): Buffer {
+  const decipher = createDecipheriv('aes-128-ecb', key.subarray(0, 16), null);
+  decipher.setAutoPadding(false);
+  return Buffer.concat([decipher.update(value), decipher.final()]);
 }
 
 function encryptAesCbc(value: Buffer, key: Buffer): Buffer {
@@ -709,6 +715,7 @@ describe('MegaTransportAdapter', () => {
     const nearbytesNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
     const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
     const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    let uploadedFileNodeKey: Buffer | null = null;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (url.startsWith('https://g.api.mega.co.nz/cs')) {
@@ -766,6 +773,11 @@ describe('MegaTransportAdapter', () => {
               headers: { 'content-type': 'application/json' },
             });
           case 'p':
+            if (payload.t === 'blocks0001') {
+              const node = ((payload.n as Array<Record<string, unknown>> | undefined) ?? [])[0];
+              const encodedKey = typeof node?.k === 'string' ? node.k : '';
+              uploadedFileNodeKey = encodedKey ? decryptAesEcb(decodeMegaBase64Url(encodedKey), masterKey) : null;
+            }
             return new Response(JSON.stringify([{}]), {
               status: 200,
               headers: { 'content-type': 'application/json' },
@@ -827,6 +839,9 @@ describe('MegaTransportAdapter', () => {
     await expect(fs.stat(path.join(localPath, 'blocks'))).resolves.toBeTruthy();
     await expect(fs.stat(path.join(localPath, 'channels'))).resolves.toBeTruthy();
     expect(fetchImpl).toHaveBeenCalled();
+    expect(uploadedFileNodeKey).not.toBeNull();
+    expect(uploadedFileNodeKey).toHaveLength(32);
+    expect(uploadedFileNodeKey!.subarray(24, 32).equals(Buffer.alloc(8, 0))).toBe(false);
 
     await adapter.detachManagedShare(share, account);
     await adapter.dispose();

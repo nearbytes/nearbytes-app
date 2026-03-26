@@ -1526,8 +1526,6 @@ async function uploadMegaOwnerFile(
 ): Promise<void> {
   const transferKey = randomBytes(16);
   const iv = randomBytes(8);
-  const secondHalf = Buffer.concat([iv, Buffer.alloc(8, 0)]);
-  const sentNodeKey = Buffer.concat([xorBuffers(transferKey, secondHalf), secondHalf]);
 
   const uploadReservation = await apiClient.requestSingle<Record<string, unknown> | number>(
     {
@@ -1559,6 +1557,7 @@ async function uploadMegaOwnerFile(
     throw new Error(`MEGA did not return an upload token for ${name}.`);
   }
 
+  const sentNodeKey = buildMegaFileNodeKey(transferKey, iv, computeMegaMetaMac(data, transferKey, iv));
   const response = await apiClient.requestSingle<Record<string, unknown> | number>(
     {
       a: 'p',
@@ -1599,6 +1598,54 @@ function encryptMegaFileContent(data: Buffer, transferKey: Buffer, iv: Buffer): 
   iv.copy(counter, 0);
   const cipher = createCipheriv('aes-128-ctr', transferKey, counter);
   return Buffer.concat([cipher.update(data), cipher.final()]);
+}
+
+function buildMegaFileNodeKey(transferKey: Buffer, iv: Buffer, metaMac: Buffer): Buffer {
+  const secondHalf = Buffer.concat([iv.subarray(0, 8), metaMac.subarray(0, 8)]);
+  return Buffer.concat([xorBuffers(transferKey, secondHalf), secondHalf]);
+}
+
+function computeMegaMetaMac(data: Buffer, transferKey: Buffer, iv: Buffer): Buffer {
+  const cipher = transferKey.subarray(0, 16);
+  const chunkMacs: Buffer[] = [];
+  let offset = 0;
+  while (offset < data.length) {
+    const end = Math.min(nextMegaChunkBoundary(offset), data.length);
+    chunkMacs.push(computeMegaChunkMac(data.subarray(offset, end), cipher, iv));
+    offset = end;
+  }
+
+  let mac: Buffer = Buffer.alloc(16, 0);
+  for (const chunkMac of chunkMacs) {
+    mac = encryptAesEcb(xorBuffers(mac, chunkMac), cipher) as Buffer;
+  }
+  mac = Buffer.from(mac);
+  mac.writeUInt32LE(mac.readUInt32LE(0) ^ mac.readUInt32LE(4), 0);
+  mac.writeUInt32LE(mac.readUInt32LE(8) ^ mac.readUInt32LE(12), 4);
+  return mac.subarray(0, 8);
+}
+
+function computeMegaChunkMac(chunk: Buffer, transferKey: Buffer, iv: Buffer): Buffer {
+  const mac = Buffer.concat([iv.subarray(0, 8), iv.subarray(0, 8)]);
+  for (let offset = 0; offset < chunk.length; offset += 16) {
+    const block = Buffer.alloc(16, 0);
+    chunk.copy(block, 0, offset, Math.min(offset + 16, chunk.length));
+    mac.set(encryptAesEcb(xorBuffers(block, mac), transferKey));
+  }
+  return mac;
+}
+
+function nextMegaChunkBoundary(position: number): number {
+  const segmentSize = 131_072;
+  let chunkStart = 0;
+  for (let multiplier = 1; multiplier <= 8; multiplier += 1) {
+    const chunkEnd = chunkStart + multiplier * segmentSize;
+    if (position >= chunkStart && position < chunkEnd) {
+      return chunkEnd;
+    }
+    chunkStart = chunkEnd;
+  }
+  return Math.floor((position - chunkStart) / (8 * segmentSize)) * (8 * segmentSize) + chunkStart + 8 * segmentSize;
 }
 
 function computeMegaUploadChecksum(data: Buffer): Buffer {
