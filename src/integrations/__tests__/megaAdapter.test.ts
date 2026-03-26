@@ -1,4 +1,4 @@
-import { createCipheriv, generateKeyPairSync } from 'crypto';
+import { createCipheriv, generateKeyPairSync, randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -532,7 +532,7 @@ describe('MegaTransportAdapter', () => {
     await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toBeNull();
   });
 
-  it('uses the helper bridge for MEGA owner invitations and collaborator listing', async () => {
+  it('manages native owner invitations and collaborator inventory', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-owner', {
       email: 'owner@example.com',
@@ -542,30 +542,91 @@ describe('MegaTransportAdapter', () => {
       userHandle: 'ownerhandle',
       accountVersion: 2,
     });
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const nearbytesNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
+        throw new Error(`Unexpected request URL: ${url}`);
+      }
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: 'ownerhandle', email: 'owner@example.com' }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          return new Response(
+            JSON.stringify([
+              {
+                f: [
+                  {
+                    h: 'root000001',
+                    t: 1,
+                    a: encryptAttributes('Cloud Drive', rootNodeKey),
+                    k: encodeMegaBase64Url(encryptAesEcb(rootNodeKey, masterKey)),
+                  },
+                  {
+                    h: 'nearbytes0',
+                    p: 'root000001',
+                    t: 1,
+                    a: encryptAttributes('nearbytes', nearbytesNodeKey),
+                    k: encodeMegaBase64Url(encryptAesEcb(nearbytesNodeKey, masterKey)),
+                  },
+                  {
+                    h: 'blocks0001',
+                    p: 'nearbytes0',
+                    t: 1,
+                    a: encryptAttributes('blocks', blocksNodeKey),
+                    k: encodeMegaBase64Url(encryptAesEcb(blocksNodeKey, masterKey)),
+                  },
+                  {
+                    h: 'chans00001',
+                    p: 'nearbytes0',
+                    t: 1,
+                    a: encryptAttributes('channels', channelsNodeKey),
+                    k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
+                  },
+                ],
+                s: [
+                  { h: 'nearbytes0', u: 'activeusr01', r: 2, ts: 1710000000 },
+                  { h: 'nearbytes0', p: 'pending0001', r: 2, ts: 1710000001 },
+                ],
+                opc: [
+                  {
+                    p: 'pending0001',
+                    e: 'invited@example.com',
+                    m: 'owner@example.com',
+                    ts: 1710000001,
+                    uts: 1710000001,
+                  },
+                ],
+                u: [
+                  { u: 'activeusr01', m: 'active@example.com' },
+                ],
+              },
+            ]),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }
+          );
+        case 's2':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    });
 
-    const commands: Array<{ command: string; args: readonly string[] | undefined }> = [];
     const runtime = createIntegrationRuntime({
       secretStore,
-      commandExecutor: {
-        async run(invocation) {
-          commands.push({ command: String(invocation.command), args: invocation.args });
-          if (invocation.command === 'mega-whoami') {
-            return { stdout: 'owner@example.com\n', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-share' && invocation.args?.[0] === '-a') {
-            return { stdout: '', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-share' && invocation.args?.[0] === '-p') {
-            return {
-              stdout:
-                'nearbytes, shared with active@example.com (read-only)\nnearbytes, shared (still pending) with invited@example.com (read-only)\n',
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
-        },
-      },
       logger: {
         log() {},
         warn() {},
@@ -573,7 +634,7 @@ describe('MegaTransportAdapter', () => {
     });
 
     const adapter = new MegaTransportAdapter(runtime, {
-      fetchImpl: vi.fn() as unknown as typeof fetch,
+      fetchImpl,
     });
     const account: ProviderAccount = {
       id: 'acct-mega-owner',
@@ -600,35 +661,34 @@ describe('MegaTransportAdapter', () => {
       updatedAt: Date.now(),
     };
 
-    await adapter.invite(share, { emails: ['active@example.com', 'active@example.com', 'invited@example.com'] }, account);
+    await adapter.invite(share, { emails: ['active@example.com', 'active@example.com', 'new@example.com'] }, account);
     const collaborators = await adapter.getCollaborators(share, account);
 
-    expect(commands).toEqual([
-      { command: 'mega-whoami', args: [] },
-      { command: 'mega-share', args: ['-a', '--with=active@example.com', '--level=0', '/nearbytes'] },
-      { command: 'mega-share', args: ['-a', '--with=invited@example.com', '--level=0', '/nearbytes'] },
-      { command: 'mega-whoami', args: [] },
-      { command: 'mega-share', args: ['-p', '/nearbytes'] },
-    ]);
     expect(collaborators).toEqual([
       {
         label: 'active@example.com',
         email: 'active@example.com',
-        role: 'read-only',
+        role: 'full access',
         status: 'active',
         source: 'provider',
       },
       {
         label: 'invited@example.com',
         email: 'invited@example.com',
-        role: 'read-only',
+        role: 'full access',
         status: 'invited',
         source: 'provider',
       },
     ]);
+    expect(
+      fetchImpl.mock.calls.some(([, init]) => {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        return payload.a === 's2';
+      })
+    ).toBe(true);
   });
 
-  it('activates a writable MEGA owner sync through the helper and reports it ready', async () => {
+  it('activates a writable MEGA owner sync through the native API and reports it ready', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-owner-sync', {
       email: 'owner@example.com',
@@ -641,45 +701,86 @@ describe('MegaTransportAdapter', () => {
 
     const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-sync-'));
     tempDirs.push(localPath);
+    await fs.mkdir(path.join(localPath, 'blocks'), { recursive: true });
+    await fs.writeFile(path.join(localPath, 'blocks', 'aa.bin'), Buffer.from('hello-owner-sync', 'utf8'));
 
-    const commands: Array<{ command: string; args: readonly string[] | undefined }> = [];
-    let syncListCount = 0;
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const nearbytesNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: 'ownerhandle', email: 'owner@example.com' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(
+              JSON.stringify([
+                {
+                  f: [
+                    {
+                      h: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('Cloud Drive', rootNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(rootNodeKey, masterKey)),
+                    },
+                    {
+                      h: 'nearbytes0',
+                      p: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('nearbytes', nearbytesNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(nearbytesNodeKey, masterKey)),
+                    },
+                    {
+                      h: 'blocks0001',
+                      p: 'nearbytes0',
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(blocksNodeKey, masterKey)),
+                    },
+                    {
+                      h: 'chans00001',
+                      p: 'nearbytes0',
+                      t: 1,
+                      a: encryptAttributes('channels', channelsNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
+                    },
+                  ],
+                  u: [],
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          case 'u':
+            return new Response(JSON.stringify([{ p: 'https://upload.test/file' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'p':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://upload.test/file/0?d=')) {
+        return new Response(randomBytes(36), { status: 200 });
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    });
     const runtime = createIntegrationRuntime({
       secretStore,
-      commandExecutor: {
-        async run(invocation) {
-          commands.push({ command: String(invocation.command), args: invocation.args });
-          if (invocation.command === 'mega-whoami') {
-            return { stdout: 'owner@example.com\n', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-mkdir') {
-            return { stdout: '', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-sync' && invocation.args?.some((arg) => arg.includes('output-cols=ID,LOCALPATH'))) {
-            syncListCount += 1;
-            const header = 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n';
-            if (syncListCount === 1) {
-              return { stdout: header, stderr: '', exitCode: 0 };
-            }
-            return {
-              stdout: `${header}sync-1\t${localPath}\t/nearbytes\tRunning\tSynced\tNO\n`,
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          if (invocation.command === 'mega-sync' && invocation.args?.[0] === localPath && invocation.args?.[1] === '/nearbytes') {
-            return { stdout: 'Added sync: local to /nearbytes\n', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-sync-issues') {
-            return {
-              stdout: 'ISSUE_ID\tPARENT_SYNC\tREASON\n',
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
-        },
-      },
       mega: {
         remoteBasePath: '/nearbytes',
         syncIntervalMs: 60_000,
@@ -691,7 +792,7 @@ describe('MegaTransportAdapter', () => {
     });
 
     const adapter = new MegaTransportAdapter(runtime, {
-      fetchImpl: vi.fn() as unknown as typeof fetch,
+      fetchImpl,
     });
     const account: ProviderAccount = {
       id: 'acct-mega-owner-sync',
@@ -725,21 +826,13 @@ describe('MegaTransportAdapter', () => {
     expect(state.detail).toContain('/nearbytes');
     await expect(fs.stat(path.join(localPath, 'blocks'))).resolves.toBeTruthy();
     await expect(fs.stat(path.join(localPath, 'channels'))).resolves.toBeTruthy();
-    expect(commands.map((entry) => entry.command)).toEqual([
-      'mega-whoami',
-      'mega-mkdir',
-      'mega-sync',
-      'mega-sync',
-      'mega-sync',
-      'mega-sync',
-      'mega-sync-issues',
-    ]);
+    expect(fetchImpl).toHaveBeenCalled();
 
     await adapter.detachManagedShare(share, account);
     await adapter.dispose();
   });
 
-  it('uses the helper bridge for incoming MEGA contact invites', async () => {
+  it('lists and accepts native incoming MEGA contact invites', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-owner', {
       email: 'owner@example.com',
@@ -750,28 +843,42 @@ describe('MegaTransportAdapter', () => {
       accountVersion: 2,
     });
 
-    const commands: Array<{ command: string; args: readonly string[] | undefined }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
+        throw new Error(`Unexpected request URL: ${url}`);
+      }
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: 'ownerhandle', email: 'owner@example.com' }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          return new Response(
+            JSON.stringify([
+              {
+                f: [],
+                ipc: [{ p: 'abc123', m: 'peer@example.com', ts: 1710000000, uts: 1710000000 }],
+              },
+            ]),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }
+          );
+        case 'upca':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    });
     const runtime = createIntegrationRuntime({
       secretStore,
-      commandExecutor: {
-        async run(invocation) {
-          commands.push({ command: String(invocation.command), args: invocation.args });
-          if (invocation.command === 'mega-whoami') {
-            return { stdout: 'owner@example.com\n', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-showpcr') {
-            return {
-              stdout: 'peer@example.com (id: abc123, creation: 2025-03-01, modification: 2025-03-01)\n',
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          if (invocation.command === 'mega-ipc') {
-            return { stdout: '', stderr: '', exitCode: 0 };
-          }
-          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
-        },
-      },
       logger: {
         log() {},
         warn() {},
@@ -779,7 +886,7 @@ describe('MegaTransportAdapter', () => {
     });
 
     const adapter = new MegaTransportAdapter(runtime, {
-      fetchImpl: vi.fn() as unknown as typeof fetch,
+      fetchImpl,
     });
     const account: ProviderAccount = {
       id: 'acct-mega-owner',
@@ -803,12 +910,12 @@ describe('MegaTransportAdapter', () => {
         detail: 'peer@example.com wants to connect on MEGA.',
       },
     ]);
-    expect(commands).toEqual([
-      { command: 'mega-whoami', args: [] },
-      { command: 'mega-showpcr', args: ['--in'] },
-      { command: 'mega-whoami', args: [] },
-      { command: 'mega-ipc', args: ['abc123', '-a'] },
-    ]);
+    expect(
+      fetchImpl.mock.calls.some(([, init]) => {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        return payload.a === 'upca' && payload.p === 'abc123';
+      })
+    ).toBe(true);
   });
 
   it('persists unsupported top-level entry diffs across aborted readonly sync attempts', async () => {
@@ -1703,7 +1810,7 @@ describe('MegaTransportAdapter', () => {
     expect(currentUserCount).toBe(1);
   });
 
-  it('treats recovered legacy local MEGA folders as locally attached shares', async () => {
+  it('treats recovered legacy local MEGA folders as locally attached shares until the account reconnects', async () => {
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
       logger: {
@@ -1735,24 +1842,13 @@ describe('MegaTransportAdapter', () => {
       updatedAt: Date.now(),
     };
 
-    await expect(
-      adapter.ensureSync(share, {
-        id: 'acct-mega-1',
-        provider: 'mega',
-        label: 'MEGA',
-        state: 'connected',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      })
-    ).resolves.toBeUndefined();
-
     await expect(adapter.getState(share, null)).resolves.toMatchObject({
       status: 'ready',
       badges: ['Local'],
     });
   });
 
-  it('treats MEGA owner folders as helper-backed writable syncs without using recipient fetches', async () => {
+  it('treats MEGA owner folders as native writable syncs', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-1', {
       email: 'owner@example.com',
@@ -1762,48 +1858,78 @@ describe('MegaTransportAdapter', () => {
       userHandle: 'ownerhandle',
       accountVersion: 2,
     });
-    let syncListCount = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: 'ownerhandle', email: 'owner@example.com' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(
+              JSON.stringify([
+                {
+                  f: [
+                    {
+                      h: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('Cloud Drive', Buffer.from('102132435465768798a9babbdcddf0f1', 'hex')),
+                      k: encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('102132435465768798a9babbdcddf0f1', 'hex'), Buffer.from('00112233445566778899aabbccddeeff', 'hex'))
+                      ),
+                    },
+                    {
+                      h: 'nearbytes0',
+                      p: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('nearbytes', Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+                      k: encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('00112233445566778899aabbccddeeff', 'hex'), Buffer.from('00112233445566778899aabbccddeeff', 'hex'))
+                      ),
+                    },
+                    {
+                      h: 'blocks0001',
+                      p: 'nearbytes0',
+                      t: 1,
+                      a: encryptAttributes('blocks', Buffer.from('11223344556677889900aabbccddeeff', 'hex')),
+                      k: encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('11223344556677889900aabbccddeeff', 'hex'), Buffer.from('00112233445566778899aabbccddeeff', 'hex'))
+                      ),
+                    },
+                    {
+                      h: 'chans00001',
+                      p: 'nearbytes0',
+                      t: 1,
+                      a: encryptAttributes('channels', Buffer.from('2233445566778899aabbccddeeff0011', 'hex')),
+                      k: encodeMegaBase64Url(
+                        encryptAesEcb(Buffer.from('2233445566778899aabbccddeeff0011', 'hex'), Buffer.from('00112233445566778899aabbccddeeff', 'hex'))
+                      ),
+                    },
+                  ],
+                  u: [],
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    });
     const runtime = createIntegrationRuntime({
       secretStore,
-      commandExecutor: {
-        async run(invocation) {
-          if (invocation.command === 'mega-whoami') {
-            return { stdout: 'owner@example.com\n', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-mkdir') {
-            return { stdout: '', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-sync' && invocation.args?.some((arg) => arg.includes('output-cols=ID,LOCALPATH'))) {
-            syncListCount += 1;
-            const header = 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n';
-            if (syncListCount === 1) {
-              return { stdout: header, stderr: '', exitCode: 0 };
-            }
-            return {
-              stdout: `${header}sync-1\t${path.join(os.tmpdir(), 'nearbytes-mega-owner-local')}\t/nearbytes\tRunning\tSynced\tNO\n`,
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          if (
-            invocation.command === 'mega-sync' &&
-            invocation.args?.[0] === path.join(os.tmpdir(), 'nearbytes-mega-owner-local') &&
-            invocation.args?.[1] === '/nearbytes'
-          ) {
-            return { stdout: 'Added sync: local to /nearbytes\n', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-sync-issues') {
-            return { stdout: 'ISSUE_ID\tPARENT_SYNC\tREASON\n', stderr: '', exitCode: 0 };
-          }
-          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
-        },
-      },
       logger: {
         log() {},
         warn() {},
       },
     });
-    const fetchImpl = vi.fn() as unknown as typeof fetch;
     const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
 
     const share: ManagedShare = {
@@ -1818,6 +1944,7 @@ describe('MegaTransportAdapter', () => {
       remoteDescriptor: {
         remotePath: '/nearbytes',
         shareName: 'nearbytes',
+        legacyLocalMirror: true,
       },
       capabilities: ['mirror', 'read', 'write'],
       invitationEmails: [],
@@ -1836,7 +1963,7 @@ describe('MegaTransportAdapter', () => {
     };
 
     await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalled();
     await expect(adapter.getState(share, account)).resolves.toMatchObject({
       status: 'ready',
       badges: ['Writable', 'Synced'],

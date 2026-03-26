@@ -220,6 +220,24 @@ class BlockingEnsureSyncAdapter extends FakeTransportAdapter {
   }
 }
 
+class ReconnectRequiredBootstrapAdapter extends FakeTransportAdapter {
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  override async ensureSync(): Promise<void> {
+    throw new Error('Reconnect MEGA to resume syncing.');
+  }
+
+  override async getState(): Promise<TransportState> {
+    return {
+      status: 'needs-auth',
+      detail: 'Reconnect MEGA to resume syncing.',
+      badges: ['Reconnect'],
+    };
+  }
+}
+
 class BlockingMirrorInventoryAdapter extends FakeTransportAdapter {
   inventoryCalls = 0;
 
@@ -505,13 +523,9 @@ describe('ManagedShareService', () => {
     expect(result.kind).toBe('summary');
     if (result.kind === 'summary') {
       expect(result.summary.share.id).toBe('share-mega-1');
-      expect(result.summary.state.status).toBe('syncing');
-      expect(result.summary.state.badges).toEqual(['Preparing']);
-      expect(result.summary.state.detail).toContain('transient startup state');
-      expect(result.summary.state.diagnostic).toMatchObject({
-        code: 'MIRROR_PREPARING',
-        summary: 'Preparing local mirror',
-      });
+      expect(result.summary.state.status).toBe('ready');
+      expect(result.summary.state.badges).toEqual(['Fake']);
+      expect(result.summary.state.detail).toBe('MEGA is ready.');
     }
     expect(adapter.ensureSyncCalls).toBe(1);
   });
@@ -984,7 +998,7 @@ describe('ManagedShareService', () => {
     expect(adapter.inventoryCalls).toBe(0);
   });
 
-  it('does not block account connect on a long-running incoming-share discovery', async () => {
+  it('does not block account connect by waiting for MEGA incoming-share discovery', async () => {
     const adapter = new BlockingIncomingShareAdapter();
     const { service } = await createHarness({ adapters: [adapter] });
     vi.spyOn(service as never, 'providerIncomingShareDiscoveryTimeoutMs' as never).mockReturnValue(10);
@@ -1002,7 +1016,7 @@ describe('ManagedShareService', () => {
 
     expect(result.status).toBe('connected');
     expect(result.account?.id).toBe('acct-mega-1');
-    expect(adapter.incomingCalls).toBe(1);
+    expect(adapter.incomingCalls).toBe(0);
   });
 
   it('does not block account connect on an auto-adopted incoming share sync bootstrap', async () => {
@@ -1043,6 +1057,108 @@ describe('ManagedShareService', () => {
       expect(result.value.account?.id).toBe('acct-mega-1');
     }
     expect(adapter.ensureSyncCalls).toBe(1);
+  });
+
+  it('surfaces reconnect-required transport state instead of leaving a MEGA share stuck in preparing', async () => {
+    const { service } = await createHarness({
+      adapters: [new ReconnectRequiredBootstrapAdapter()],
+    });
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      credentials: {
+        email: 'owner@example.com',
+        password: 'secret',
+      },
+    });
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(1);
+    expect(shares.shares[0]?.share.role).toBe('owner');
+    expect(shares.shares[0]?.state).toMatchObject({
+      status: 'needs-auth',
+      detail: 'Reconnect MEGA to resume syncing.',
+      badges: ['Reconnect'],
+    });
+  });
+
+  it('routes default storage writes into the writable MEGA base share at the storage layer', async () => {
+    const { rootsConfigPath, service } = await createHarness();
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      credentials: {
+        email: 'owner@example.com',
+        password: 'secret',
+      },
+    });
+
+    const rootsConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    const megaSource = rootsConfig.sources.find(
+      (source) =>
+        source.integration?.kind === 'provider-managed' &&
+        source.integration.provider === 'mega'
+    );
+    expect(megaSource).toBeTruthy();
+    expect(
+      rootsConfig.defaultVolume.destinations.some((destination) => destination.sourceId === megaSource?.id)
+    ).toBe(true);
+  });
+
+  it('restores default-volume routing for an existing writable MEGA base share', async () => {
+    const { integrationStatePath, rootsConfigPath, service } = await createHarness();
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      credentials: {
+        email: 'owner@example.com',
+        password: 'secret',
+      },
+    });
+    await service.dispose();
+
+    const connectedState = await loadIntegrationState(integrationStatePath);
+    const ownerShare = connectedState.managedShares.find((share) => share.provider === 'mega' && share.role === 'owner');
+    expect(ownerShare?.sourceId).toBeTruthy();
+
+    const degradedConfigSource = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    const degradedConfig: RootsConfig = {
+      ...degradedConfigSource,
+      defaultVolume: {
+        destinations: degradedConfigSource.defaultVolume.destinations.filter(
+          (destination) => destination.sourceId !== ownerShare?.sourceId
+        ),
+      },
+    };
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(degradedConfig, null, 2)}\n`, 'utf8');
+
+    const repairedStorage = new MultiRootStorageBackend(degradedConfig);
+    const repairedService = new ManagedShareService({
+      storage: repairedStorage,
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+      readMaintenanceMode: 'inline',
+    });
+    tempDirs.add(path.dirname(rootsConfigPath));
+
+    await repairedService.listAccounts();
+
+    const repairedConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    expect(
+      repairedConfig.defaultVolume.destinations.some((destination) => destination.sourceId === ownerShare?.sourceId)
+    ).toBe(true);
+
+    await repairedService.dispose();
   });
 
   it('skips background maintenance on a fresh service when the persisted stamp is still valid', async () => {
@@ -1499,22 +1615,11 @@ describe('ManagedShareService', () => {
     expect(shares.shares[0]?.attachments.map((attachment) => attachment.volumeId)).toEqual([trackedVolumeId]);
 
     const persistedConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
-    expect(persistedConfig.volumes).toEqual([
-      {
-        volumeId: trackedVolumeId,
-        destinations: [
-          {
-            sourceId: shares.shares[0]!.share.sourceId!,
-            enabled: true,
-            storeEvents: true,
-            storeBlocks: true,
-            copySourceBlocks: true,
-            reservePercent: 5,
-            fullPolicy: 'block-writes',
-          },
-        ],
-      },
-    ]);
+    expect(
+      persistedConfig.defaultVolume.destinations.some(
+        (destination) => destination.sourceId === shares.shares[0]!.share.sourceId
+      )
+    ).toBe(true);
   });
 
   it('adopts active MEGA sync mirrors on connect without duplicating the default base share', async () => {

@@ -193,11 +193,19 @@ describe('MEGA managed share API', () => {
     const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
     const userHandle = 'usrhandle01';
     const ownerHandle = 'owner000001';
+    const cloudRootHandle = 'root000001';
+    const nearbytesHandle = 'nearbytes0';
+    const ownerBlocksHandle = 'ownblocks01';
+    const ownerChannelsHandle = 'ownchans001';
     const shareHandle = 'share00001';
     const blocksHandle = 'blocks0001';
     const fileHandle = 'file000001';
     const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
     const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const cloudRootNodeKey = Buffer.from('66778899aabbccddeeff001122334455', 'hex');
+    const nearbytesNodeKey = Buffer.from('5566778899aabbccddeeff0011223344', 'hex');
+    const ownerBlocksNodeKey = Buffer.from('445566778899aabbccddeeff00112233', 'hex');
+    const ownerChannelsNodeKey = Buffer.from('33445566778899aabbccddeeff001122', 'hex');
     const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
     const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
     const filePlaintext = Buffer.from('native-mega-share-data', 'utf8');
@@ -205,6 +213,33 @@ describe('MEGA managed share API', () => {
 
     const fullSnapshot = {
       f: [
+        {
+          h: cloudRootHandle,
+          t: 1,
+          a: encryptAttributes('Cloud Drive', cloudRootNodeKey),
+          k: encodeMegaBase64Url(encryptAesEcb(cloudRootNodeKey, masterKey)),
+        },
+        {
+          h: nearbytesHandle,
+          p: cloudRootHandle,
+          t: 1,
+          a: encryptAttributes('nearbytes', nearbytesNodeKey),
+          k: encodeMegaBase64Url(encryptAesEcb(nearbytesNodeKey, masterKey)),
+        },
+        {
+          h: ownerBlocksHandle,
+          p: nearbytesHandle,
+          t: 1,
+          a: encryptAttributes('blocks', ownerBlocksNodeKey),
+          k: encodeMegaBase64Url(encryptAesEcb(ownerBlocksNodeKey, masterKey)),
+        },
+        {
+          h: ownerChannelsHandle,
+          p: nearbytesHandle,
+          t: 1,
+          a: encryptAttributes('channels', ownerChannelsNodeKey),
+          k: encodeMegaBase64Url(encryptAesEcb(ownerChannelsNodeKey, masterKey)),
+        },
         {
           h: shareHandle,
           t: 1,
@@ -344,40 +379,8 @@ describe('MEGA managed share API', () => {
     const storage = new MultiRootStorageBackend(rootsConfig);
     const fileService = createFileService({ crypto, storage });
     const chatService = createChatService({ crypto, storage });
-    let syncListCount = 0;
-    let ownerSyncLocalPath = '';
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
-      commandExecutor: {
-        async run(invocation) {
-          if (invocation.command === 'mega-whoami') {
-            return { stdout: `${email}\n`, stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-mkdir') {
-            return { stdout: '', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-sync' && invocation.args?.some((arg) => arg.includes('output-cols=ID,LOCALPATH'))) {
-            syncListCount += 1;
-            const header = 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n';
-            if (syncListCount === 1 || !ownerSyncLocalPath) {
-              return { stdout: header, stderr: '', exitCode: 0 };
-            }
-            return {
-              stdout: `${header}sync-1\t${ownerSyncLocalPath}\t/nearbytes\tRunning\tSynced\tNO\n`,
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          if (invocation.command === 'mega-sync' && invocation.args?.[1] === '/nearbytes') {
-            ownerSyncLocalPath = String(invocation.args[0] ?? '');
-            return { stdout: 'Added sync: local to /nearbytes\n', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-sync-issues') {
-            return { stdout: 'ISSUE_ID\tPARENT_SYNC\tREASON\n', stderr: '', exitCode: 0 };
-          }
-          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
-        },
-      },
       mega: {
         remoteBasePath: '/nearbytes',
         syncIntervalMs: 60_000,
@@ -461,9 +464,6 @@ describe('MEGA managed share API', () => {
     const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
     const userHandle = 'usrhandle01';
 
-    const helperCommands: Array<{ command: string; args: readonly string[] | undefined }> = [];
-    let syncListCount = 0;
-    let ownerSyncLocalPath = '';
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
@@ -487,10 +487,55 @@ describe('MEGA managed share API', () => {
             headers: { 'content-type': 'application/json' },
           });
         case 'f':
-          return new Response(JSON.stringify([{ f: [], u: [], sn: 'cursor-1' }]), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify([
+              {
+                f: [
+                  {
+                    h: 'root000001',
+                    t: 1,
+                    a: encryptAttributes('Cloud Drive', Buffer.from('102132435465768798a9babbdcddf0f1', 'hex')),
+                    k: encodeMegaBase64Url(
+                      encryptAesEcb(Buffer.from('102132435465768798a9babbdcddf0f1', 'hex'), masterKey)
+                    ),
+                  },
+                  {
+                    h: 'nearbytes0',
+                    p: 'root000001',
+                    t: 1,
+                    a: encryptAttributes('nearbytes', Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+                    k: encodeMegaBase64Url(
+                      encryptAesEcb(Buffer.from('00112233445566778899aabbccddeeff', 'hex'), masterKey)
+                    ),
+                  },
+                  {
+                    h: 'blocks0001',
+                    p: 'nearbytes0',
+                    t: 1,
+                    a: encryptAttributes('blocks', Buffer.from('11223344556677889900aabbccddeeff', 'hex')),
+                    k: encodeMegaBase64Url(
+                      encryptAesEcb(Buffer.from('11223344556677889900aabbccddeeff', 'hex'), masterKey)
+                    ),
+                  },
+                  {
+                    h: 'chans00001',
+                    p: 'nearbytes0',
+                    t: 1,
+                    a: encryptAttributes('channels', Buffer.from('2233445566778899aabbccddeeff0011', 'hex')),
+                    k: encodeMegaBase64Url(
+                      encryptAesEcb(Buffer.from('2233445566778899aabbccddeeff0011', 'hex'), masterKey)
+                    ),
+                  },
+                ],
+                u: [],
+                sn: 'cursor-1',
+              },
+            ]),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }
+          );
         default:
           throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
       }
@@ -540,40 +585,6 @@ describe('MEGA managed share API', () => {
     const chatService = createChatService({ crypto, storage });
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
-      commandExecutor: {
-        async run(invocation) {
-          helperCommands.push({ command: String(invocation.command), args: invocation.args });
-          if (invocation.command === 'mega-whoami') {
-            return { stdout: `${email}\n`, stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-mkdir') {
-            return { stdout: '', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-share' && invocation.args?.[0] === '-p') {
-            return { stdout: '', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-sync' && invocation.args?.some((arg) => arg.includes('output-cols=ID,LOCALPATH'))) {
-            syncListCount += 1;
-            const header = 'ID\tLOCALPATH\tREMOTEPATH\tRUN_STATE\tSTATUS\tERROR\n';
-            if (syncListCount === 1 || !ownerSyncLocalPath) {
-              return { stdout: header, stderr: '', exitCode: 0 };
-            }
-            return {
-              stdout: `${header}sync-1\t${ownerSyncLocalPath}\t/nearbytes\tRunning\tSynced\tNO\n`,
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          if (invocation.command === 'mega-sync' && invocation.args?.[1] === '/nearbytes') {
-            ownerSyncLocalPath = String(invocation.args[0] ?? '');
-            return { stdout: 'Added sync: local to /nearbytes\n', stderr: '', exitCode: 0 };
-          }
-          if (invocation.command === 'mega-sync-issues') {
-            return { stdout: 'ISSUE_ID\tPARENT_SYNC\tREASON\n', stderr: '', exitCode: 0 };
-          }
-          throw new Error(`Unexpected helper command: ${invocation.command} ${(invocation.args ?? []).join(' ')}`);
-        },
-      },
       mega: {
         remoteBasePath: '/nearbytes',
         syncIntervalMs: 60_000,
@@ -619,10 +630,28 @@ describe('MEGA managed share API', () => {
     expect(ownerShare).toBeDefined();
     await expect(fs.stat(path.join(ownerShare!.share.localPath, 'blocks'))).resolves.toBeTruthy();
     await expect(fs.stat(path.join(ownerShare!.share.localPath, 'channels'))).resolves.toBeTruthy();
+    const nextRootsConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    const megaSource = nextRootsConfig.sources.find(
+      (source) =>
+        source.integration?.kind === 'provider-managed' &&
+        source.integration.provider === 'mega' &&
+        source.integration.managedShareId === ownerShare!.share.id
+    );
+    expect(megaSource).toBeTruthy();
+    expect(
+      nextRootsConfig.defaultVolume.destinations.some((destination) => destination.sourceId === megaSource?.id)
+    ).toBe(true);
 
-    const stateBody = await waitForManagedShareState(app, ownerShare!.share.id, 'ready');
-    expect(stateBody.summary.state.status).toBe('ready');
-    expect(helperCommands.map((entry) => entry.command)).toContain('mega-sync');
+    let ownerStateStatus = ownerShare!.state.status;
+    for (let attempt = 0; attempt < 20 && ownerStateStatus !== 'ready'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const nextSharesRes = await request(app).get('/integrations/shares').expect(200);
+      const nextOwnerShare = typedBody<ManagedSharesResponseBody>(nextSharesRes).shares.find(
+        (entry) => entry.share.id === ownerShare!.share.id
+      );
+      ownerStateStatus = nextOwnerShare?.state.status ?? ownerStateStatus;
+    }
+    expect(ownerStateStatus).toBe('ready');
     expect(fetchImpl).toHaveBeenCalled();
   });
 });

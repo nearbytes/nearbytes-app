@@ -569,6 +569,26 @@ export function createRoutes(deps: RouteDependencies): Router {
     }));
   }
 
+  router.get('/__debug/integrations/shares/:shareId/remote-entry', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const pathQuery = req.query.path;
+    const relativePath = typeof pathQuery === 'string'
+      ? pathQuery
+      : Array.isArray(pathQuery) && typeof pathQuery[0] === 'string'
+        ? pathQuery[0]
+        : '';
+    if (!relativePath.trim()) {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Query parameter "path" is required.');
+    }
+    const entry = await service.probeManagedShareRemoteEntry(shareId, relativePath);
+    res.json({
+      exists: entry !== null,
+      entry,
+    });
+  }));
+
   router.get('/__debug/ui', asyncHandler(async (_req, res) => {
     if (!deps.uiDebugExecutor) {
       res.json({

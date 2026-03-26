@@ -18,6 +18,7 @@ import {
   createDefaultTransportAdapters,
   createProviderCatalog,
   type ManagedShareMirrorEntry,
+  type ManagedShareRemoteEntryProbe,
   type TransportAdapter,
 } from './adapters.js';
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
@@ -322,6 +323,19 @@ export class ManagedShareService {
       accounts: merged.accounts,
       preferredProviders,
     };
+    if (provider === 'mega') {
+      await this.ensureDefaultManagedShare(provider, merged.account, {
+        stateSnapshot: connectedState,
+        createMissing: true,
+      });
+      const refreshedState = await this.loadState();
+      this.scheduleManagedShareSyncs(refreshedState);
+      this.requestBackgroundMaintenance(`connectAccount:${provider}`, refreshedState);
+      return {
+        status: 'connected',
+        account: merged.account,
+      };
+    }
     const reconciledMirrors = await this.reconcileProviderManagedShares(provider, merged.account, connectedState);
     const incomingDiscoveryTimeoutMs = this.providerIncomingShareDiscoveryTimeoutMs(provider);
     const reconciledIncoming = await this.withSoftTimeout(
@@ -836,6 +850,31 @@ export class ManagedShareService {
       this.scheduleManagedShareSync(share, state);
     }
     return this.buildManagedShareSummary(share);
+  }
+
+  async probeManagedShareRemoteEntry(shareId: string, relativePath: string): Promise<ManagedShareRemoteEntryProbe | null> {
+    const normalizedPath = relativePath.trim().replace(/^\/+/u, '');
+    if (!normalizedPath) {
+      throw new ManagedShareServiceError(400, 'INVALID_REQUEST', 'A relative path is required.');
+    }
+
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.probeManagedShareRemoteEntry) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Remote managed share probing is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    return adapter.probeManagedShareRemoteEntry(share, account, normalizedPath);
   }
 
   async reconcileProviderManagedShareInventory(providerInput: string): Promise<{
@@ -1617,16 +1656,27 @@ export class ManagedShareService {
   }
 
   private hasMissingDefaultManagedShares(stateSnapshot: IntegrationStateSnapshot): boolean {
+    const currentConfig = this.options.storage.getRootsConfig();
     return stateSnapshot.accounts.some((account) => {
       const provider = normalizeProvider(account.provider);
       if (provider !== 'mega' || !this.isMegaHelperOperationalAccount(account)) {
         return false;
       }
-      return !stateSnapshot.managedShares.some((share) =>
+      const existing = stateSnapshot.managedShares.find((share) =>
         normalizeProvider(share.provider) === 'mega' &&
         share.accountId === account.id &&
         isMegaOwnerBaseShare(share)
       );
+      if (!existing) {
+        return true;
+      }
+      if (!shouldUseManagedShareAsDefaultDestination(existing)) {
+        return false;
+      }
+      const sourceId =
+        existing.sourceId ??
+        currentConfig.sources.find((source) => source.integration?.managedShareId === existing.id)?.id;
+      return !sourceId || !currentConfig.defaultVolume.destinations.some((destination) => destination.sourceId === sourceId);
     });
   }
 
@@ -2065,10 +2115,18 @@ export class ManagedShareService {
         badges: ['Repair'],
       };
     }
-    if (this.syncBootstrapTasks.has(share.id)) {
-      return this.buildSyncBootstrapState(share);
-    }
     if (adapter?.getState) {
+      if (this.syncBootstrapTasks.has(share.id)) {
+        try {
+          const stateDuringBootstrap = await adapter.getState(share, account);
+          if (stateDuringBootstrap.status !== 'idle') {
+            return stateDuringBootstrap;
+          }
+        } catch {
+          return this.buildSyncBootstrapState(share);
+        }
+        return this.buildSyncBootstrapState(share);
+      }
       try {
         return await adapter.getState(share, account);
       } catch (error) {
@@ -2287,6 +2345,38 @@ export class ManagedShareService {
       isMegaOwnerBaseShare(share)
     );
     if (existing) {
+      const currentConfig = this.options.storage.getRootsConfig();
+      const existingSource =
+        currentConfig.sources.find((source) => source.integration?.managedShareId === existing.id) ??
+        currentConfig.sources.find((source) => path.resolve(source.path) === path.resolve(existing.localPath));
+      const needsSourceRepair =
+        !existingSource ||
+        existing.sourceId !== existingSource.id ||
+        path.resolve(existingSource.path) !== path.resolve(existing.localPath) ||
+        existingSource.writable !== managedShareAllowsWrites(existing);
+      const needsDefaultDestination =
+        shouldUseManagedShareAsDefaultDestination(existing) &&
+        (!existingSource || !currentConfig.defaultVolume.destinations.some((destination) => destination.sourceId === existingSource.id));
+      if (!needsSourceRepair && !needsDefaultDestination) {
+        return;
+      }
+
+      const { config, sourceId } = ensureManagedShareSource(cloneConfig(currentConfig), existing, existing.localPath);
+      await this.persistRootsConfig(config);
+      if (existing.sourceId !== sourceId) {
+        await this.saveState({
+          ...state,
+          managedShares: state.managedShares.map((share) =>
+            share.id === existing.id
+              ? {
+                  ...share,
+                  sourceId,
+                  updatedAt: this.runtime.now(),
+                }
+              : share
+          ),
+        });
+      }
       return;
     }
     if (options.createMissing !== true) {
@@ -3092,20 +3182,26 @@ function ensureManagedShareSource(
   };
 
   if (existing) {
+    const nextConfig: RootsConfig = {
+      ...config,
+      sources: config.sources.map((source) => (source.id === existing.id ? nextSource : source)),
+    };
     return {
-      config: {
-        ...config,
-        sources: config.sources.map((source) => (source.id === existing.id ? nextSource : source)),
-      },
+      config: shouldUseManagedShareAsDefaultDestination(share)
+        ? ensureDefaultVolumeDestination(nextConfig, existing.id)
+        : nextConfig,
       sourceId: existing.id,
     };
   }
 
+  const nextConfig: RootsConfig = {
+    ...config,
+    sources: [...config.sources, nextSource],
+  };
   return {
-    config: {
-      ...config,
-      sources: [...config.sources, nextSource],
-    },
+    config: shouldUseManagedShareAsDefaultDestination(share)
+      ? ensureDefaultVolumeDestination(nextConfig, sourceId)
+      : nextConfig,
     sourceId,
   };
 }
@@ -3205,6 +3301,28 @@ function ensureVolumeAttachment(config: RootsConfig, volumeId: string, sourceId:
         : volume
     ),
   };
+}
+
+function ensureDefaultVolumeDestination(config: RootsConfig, sourceId: string): RootsConfig {
+  if (config.defaultVolume.destinations.some((destination) => destination.sourceId === sourceId)) {
+    return config;
+  }
+  return {
+    ...config,
+    defaultVolume: {
+      destinations: [
+        ...config.defaultVolume.destinations,
+        {
+          ...DEFAULT_DESTINATION,
+          sourceId,
+        },
+      ],
+    },
+  };
+}
+
+function shouldUseManagedShareAsDefaultDestination(share: ManagedShare): boolean {
+  return isMegaOwnerBaseShare(share) && managedShareAllowsWrites(share);
 }
 
 function cloneConfig(config: RootsConfig): RootsConfig {

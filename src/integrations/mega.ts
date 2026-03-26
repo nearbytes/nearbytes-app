@@ -20,7 +20,8 @@ import {
   normalizeMegaPublicLinkDescriptor,
   resolveMegaPublicLinkTarget,
 } from './megaPublicLink.js';
-import type { ManagedShareMirrorEntry } from './adapters.js';
+import { MirrorWorker } from './mirrorWorker.js';
+import type { ManagedShareMirrorEntry, ManagedShareRemoteEntryProbe, MirrorRemoteEntry } from './adapters.js';
 import {
   ProviderRefreshWorker,
   type ProviderRefreshManifestEntry,
@@ -56,6 +57,7 @@ const MEGA_SYNC_TIMEOUT_CODE = 'MEGA_SYNC_TIMEOUT';
 const MEGA_RETRYABLE_API_ERROR_CODES = new Set([-3, -4]);
 const MEGA_API_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
 const EXPECTED_MEGA_TOP_LEVEL_NAMES = new Set(['blocks', 'channels', 'Nearbytes.html']);
+const MEGA_WRITABLE_SHARE_ACCESS_LEVEL = 2;
 
 interface MegaAdapterOptions {
   readonly fetchImpl?: typeof fetch;
@@ -102,6 +104,7 @@ interface MegaFetchedTree {
 interface DecryptedMegaNode {
   readonly handle: string;
   readonly parentHandle?: string;
+  readonly nodeType: number;
   readonly isFolder: boolean;
   readonly size: number;
   readonly name: string;
@@ -126,21 +129,6 @@ interface MegaKeyManagerState {
 
 interface MegaApiError extends Error {
   code: number;
-}
-
-interface MegaHelperSyncRow {
-  readonly id: string;
-  readonly localPath: string;
-  readonly remotePath: string;
-  readonly runState: string;
-  readonly status: string;
-  readonly error: string;
-}
-
-interface MegaHelperSyncIssueRow {
-  readonly issueId: string;
-  readonly parentSync: string;
-  readonly reason: string;
 }
 
 interface MegaPrivateKey {
@@ -275,14 +263,32 @@ export class MegaTransportAdapter {
     if (share.role !== 'owner') {
       throw new Error('MEGA invitations are available only for owner shares.');
     }
-    const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
     const emails = uniqueTrimmedStrings(input.emails);
     if (emails.length === 0) {
       return;
     }
-    await this.withMegaHelperSession(account, async () => {
-      for (const email of emails) {
-        await this.runMegaHelperCommand('mega-share', ['-a', `--with=${email}`, '--level=0', remotePath]);
+    const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+    await this.withRecoveredAccountSession(account, async (session) => {
+      const root = await this.ensureOwnerRemoteRoot(session, remotePath);
+      const collaborators = collectMegaOwnerCollaborators(await this.fetchNodesSnapshot(session), root.root.handle);
+      const existingEmails = new Set(
+        collaborators
+          .map((collaborator) => collaborator.email?.trim().toLowerCase())
+          .filter((value): value is string => Boolean(value))
+      );
+      const invitees = emails.filter((email) => !existingEmails.has(email.toLowerCase()));
+      if (invitees.length === 0) {
+        return;
+      }
+
+      const hasExistingShares = collaborators.length > 0;
+      for (const [index, email] of invitees.entries()) {
+        await this.apiCommand(
+          buildMegaSetShareCommand(root, email, MEGA_WRITABLE_SHARE_ACCESS_LEVEL, {
+            createShareKey: !hasExistingShares && index === 0,
+          }),
+          session
+        );
       }
     });
   }
@@ -311,28 +317,33 @@ export class MegaTransportAdapter {
   }
 
   async listManagedShareMirrors(account: ProviderAccount): Promise<ManagedShareMirrorEntry[]> {
-    return this.withMegaHelperSession(account, async () =>
-      (await this.listMegaHelperSyncs())
-        .filter((sync) => isMegaManagedMirrorPath(sync.remotePath, this.runtime.mega.remoteBasePath))
-        .map((sync) => ({
-          label: path.posix.basename(sync.remotePath) || 'nearbytes',
-          localPath: sync.localPath,
-          remotePath: sync.remotePath,
-        }))
-    );
+    void account;
+    return [];
   }
 
   async listIncomingContactInvites(account: ProviderAccount): Promise<IncomingProviderContactInvite[]> {
-    return this.withMegaHelperSession(account, async () => {
-      const stdout = await this.runMegaHelperCommand('mega-showpcr', ['--in']);
-      return parseMegaIncomingContactInvites(stdout, account.id, this.provider);
-    });
+    const snapshot = await this.withRecoveredAccountSession(account, (session) => this.fetchNodesSnapshot(session));
+    return snapshot.incomingPendingContacts
+      .map((invite) => mapIncomingMegaContactInvite(invite, account.id, this.provider))
+      .filter((value): value is IncomingProviderContactInvite => value !== null)
+      .sort((left, right) => left.label.localeCompare(right.label));
   }
 
   async acceptIncomingContactInvite(account: ProviderAccount, inviteId: string): Promise<void> {
-    await this.withMegaHelperSession(account, async () => {
-      await this.runMegaHelperCommand('mega-ipc', [inviteId, '-a']);
-    });
+    const normalizedInviteId = inviteId.trim();
+    if (!normalizedInviteId) {
+      throw new Error('MEGA contact invite id is required.');
+    }
+    await this.withRecoveredAccountSession(account, (session) =>
+      this.apiCommand(
+        {
+          a: 'upca',
+          p: normalizedInviteId,
+          aa: 'a',
+        },
+        session
+      )
+    );
   }
 
   async getState(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState> {
@@ -340,14 +351,14 @@ export class MegaTransportAdapter {
     if (cached) {
       return cached;
     }
-    if (isLegacyMegaLocalMirror(share)) {
-      return {
-        status: 'ready',
-        detail: 'This legacy MEGA Nearbytes folder is attached locally. Nearbytes is preserving the local location after reconnect.',
-        badges: ['Local'],
-      };
-    }
     if (share.role === 'owner') {
+      if (isLegacyMegaLocalMirror(share) && !account) {
+        return {
+          status: 'ready',
+          detail: 'This legacy MEGA Nearbytes folder is attached locally. Nearbytes is preserving the local location after reconnect.',
+          badges: ['Local'],
+        };
+      }
       if (!account) {
         return {
           status: 'needs-auth',
@@ -384,10 +395,10 @@ export class MegaTransportAdapter {
 
   async getCollaborators(share: ManagedShare, account: ProviderAccount | null): Promise<ManagedShareCollaborator[]> {
     if (share.role === 'owner' && account) {
-      const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
-      return this.withMegaHelperSession(account, async () => {
-        const stdout = await this.runMegaHelperCommand('mega-share', ['-p', remotePath]);
-        return parseMegaCollaborators(stdout);
+      return this.withRecoveredAccountSession(account, async (session) => {
+        const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+        const root = await this.ensureOwnerRemoteRoot(session, remotePath);
+        return collectMegaOwnerCollaborators(await this.fetchNodesSnapshot(session), root.root.handle);
       });
     }
     const ownerEmail = getStringDescriptor(share.remoteDescriptor, 'ownerEmail');
@@ -405,6 +416,37 @@ export class MegaTransportAdapter {
     ];
   }
 
+  async probeManagedShareRemoteEntry(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<ManagedShareRemoteEntryProbe | null> {
+    if (!account) {
+      throw new Error('Reconnect MEGA to inspect the remote share state.');
+    }
+    if (share.role !== 'owner') {
+      return null;
+    }
+    const normalizedPath = normalizeRelativePath(relativePath);
+    if (!isMirrorRelativePath(normalizedPath)) {
+      return null;
+    }
+    return this.withRecoveredAccountSession(account, async (session) => {
+      const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+      const root = await fetchOwnerRootByPath(this.apiClient, session, remotePath);
+      const node = findNodeByRelativePath(root.tree, root.root.handle, normalizedPath);
+      if (!node) {
+        return null;
+      }
+      return {
+        path: normalizedPath,
+        kind: node.isFolder ? 'folder' : 'file',
+        size: node.isFolder ? undefined : node.size,
+        handle: node.handle,
+      };
+    });
+  }
+
   async getShareStorageMetrics(_share: ManagedShare, _account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined> {
     return undefined;
   }
@@ -418,14 +460,14 @@ export class MegaTransportAdapter {
       localPath: share.localPath,
       remoteDescriptor: share.remoteDescriptor,
     });
-    if (isLegacyMegaLocalMirror(share)) {
-      return;
-    }
     if (share.role === 'owner') {
       await fs.mkdir(share.localPath, { recursive: true });
       await ensureMegaOwnerLocalStructure(share.localPath);
       await this.runSyncLoop(share, account);
       this.startRecurringSyncTimer(share, account);
+      return;
+    }
+    if (isLegacyMegaLocalMirror(share)) {
       return;
     }
     if (this.usesPublicLinkMirror(share)) {
@@ -500,7 +542,7 @@ export class MegaTransportAdapter {
 
   private async syncShare(share: ManagedShare, account: ProviderAccount, signal?: AbortSignal): Promise<void> {
     if (share.role === 'owner') {
-      await this.syncOwnerShare(share, account);
+      await this.syncOwnerShare(share, account, signal);
       return;
     }
 
@@ -600,7 +642,7 @@ export class MegaTransportAdapter {
         aborted: Boolean(signal?.aborted) || (error instanceof Error && error.name === 'AbortError'),
       });
       const failure = describeMegaSyncFailure(error, share.localPath, signal);
-      const needsAuth = /session|auth|credential|login|MEGA API error -15/i.test(failure.detail);
+      const needsAuth = /session|auth|credential|login|reconnect|MEGA API error -15/i.test(failure.detail);
       const localMirrorAvailable = await hasUsableMegaMirror(share.localPath);
       const keepMirrorReady =
         localMirrorAvailable &&
@@ -646,88 +688,46 @@ export class MegaTransportAdapter {
     this.syncTimers.set(share.id, timer);
   }
 
-  private async syncOwnerShare(share: ManagedShare, account: ProviderAccount): Promise<void> {
+  private async syncOwnerShare(share: ManagedShare, account: ProviderAccount, signal?: AbortSignal): Promise<void> {
     const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
     this.syncStates.set(share.id, {
       status: 'syncing',
-      detail: 'Checking the MEGA writable owner sync.',
-      badges: ['Writable', 'Checking'],
+      detail: 'Syncing the MEGA writable owner folder.',
+      badges: ['Writable', 'Syncing'],
     });
 
     try {
       await fs.mkdir(share.localPath, { recursive: true });
       await ensureMegaOwnerLocalStructure(share.localPath);
-      await this.withMegaHelperSession(account, async () => {
-        await this.runMegaHelperCommand('mega-mkdir', ['-p', remotePath]);
-        let syncs = await this.listMegaHelperSyncs();
-        const localSync = findMegaHelperSyncByLocalPath(syncs, share.localPath);
-        const remoteSync = findMegaHelperSyncByRemotePath(syncs, remotePath);
-
-        if (localSync && normalizeMegaRemoteDisplayPath(localSync.remotePath) !== normalizeMegaRemoteDisplayPath(remotePath)) {
-          throw new Error(
-            `MEGA already syncs this local folder to ${localSync.remotePath}. Remove or retarget that existing sync before using ${remotePath}.`
-          );
-        }
-        if (remoteSync && normalizeMegaComparableLocalPath(remoteSync.localPath) !== normalizeMegaComparableLocalPath(share.localPath)) {
-          throw new Error(
-            `MEGA already syncs ${remotePath} with ${remoteSync.localPath}. Disconnect that existing sync before reusing this owner share.`
-          );
-        }
-
-        if (!localSync && !remoteSync) {
-          await this.runMegaHelperCommand('mega-sync', [share.localPath, remotePath], undefined, 60_000);
-          syncs = await this.listMegaHelperSyncs();
-        }
-
-        const activeSync =
-          findMegaHelperSync(syncs, share.localPath, remotePath) ??
-          findMegaHelperSyncByLocalPath(syncs, share.localPath) ??
-          findMegaHelperSyncByRemotePath(syncs, remotePath);
-        if (!activeSync) {
-          throw new Error(`MEGA did not report an active sync for ${remotePath}.`);
-        }
-
-        if (isMegaSyncPaused(activeSync.runState)) {
-          await this.runMegaHelperCommand('mega-sync', ['--enable', activeSync.id]);
-        }
-
-        const refreshedSync =
-          findMegaHelperSync(await this.listMegaHelperSyncs(), share.localPath, remotePath) ?? activeSync;
-        const issues = await this.listMegaHelperSyncIssues(refreshedSync.id);
-        this.syncStates.set(share.id, buildMegaOwnerTransportState(refreshedSync, issues));
+      const session = await this.getAccountSession(account, signal);
+      const root = await this.ensureOwnerRemoteRoot(session, remotePath, signal);
+      const worker = new MirrorWorker();
+      const result = await worker.sync(
+        share.localPath,
+        new MegaOwnerRemoteAdapter(this.fetchImpl, this.apiClient, session, root, signal)
+      );
+      this.syncStates.set(share.id, {
+        status: 'ready',
+        detail: summarizeOwnerMirrorResult(remotePath, result),
+        badges: ['Writable', 'Synced'],
+        lastSyncAt: this.runtime.now(),
       });
     } catch (error) {
       const detail = describeMegaOwnerSyncFailure(error, remotePath);
+      const needsAuth = /login|session|auth|credential|password|reconnect/i.test(detail);
       this.syncStates.set(share.id, {
-        status: 'attention',
+        status: needsAuth ? 'needs-auth' : 'attention',
         detail,
-        badges: ['Writable', 'Repair'],
+        badges: ['Writable', needsAuth ? 'Reconnect' : 'Repair'],
         diagnostic: {
-          code: 'MEGA_OWNER_SYNC_FAILED',
-          title: 'MEGA owner sync needs attention',
-          summary: 'MEGA owner sync failed',
+          code: needsAuth ? 'MEGA_OWNER_SYNC_RECONNECT_REQUIRED' : 'MEGA_OWNER_SYNC_FAILED',
+          title: needsAuth ? 'Reconnect MEGA to resume owner sync' : 'MEGA owner sync needs attention',
+          summary: needsAuth ? 'Reconnect required' : 'MEGA owner sync failed',
           detail,
         },
       });
       throw error;
     }
-  }
-
-  private async listMegaHelperSyncs(): Promise<MegaHelperSyncRow[]> {
-    const stdout = await this.runMegaHelperCommand('mega-sync', [
-      '--col-separator=\t',
-      '--output-cols=ID,LOCALPATH,REMOTEPATH,RUN_STATE,STATUS,ERROR',
-    ]);
-    return parseMegaHelperSyncRows(stdout);
-  }
-
-  private async listMegaHelperSyncIssues(syncId: string): Promise<MegaHelperSyncIssueRow[]> {
-    const stdout = await this.runMegaHelperCommand('mega-sync-issues', [
-      '--limit=0',
-      '--col-separator=\t',
-      '--output-cols=ISSUE_ID,PARENT_SYNC,REASON',
-    ]);
-    return parseMegaHelperSyncIssueRows(stdout).filter((issue) => issue.parentSync === syncId);
   }
 
   private async getAccountSession(account: ProviderAccount, signal?: AbortSignal): Promise<MegaSession> {
@@ -829,62 +829,6 @@ export class MegaTransportAdapter {
     }
   }
 
-  private async withMegaHelperSession<T>(account: ProviderAccount, operation: () => Promise<T>): Promise<T> {
-    await this.ensureMegaHelperSession(account);
-    return operation();
-  }
-
-  private async ensureMegaHelperSession(account: ProviderAccount): Promise<void> {
-    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
-    if (!secret || !isStoredMegaAccountSecret(secret)) {
-      throw createMegaReconnectRequiredError(undefined);
-    }
-    const expectedEmail = (secret.email || account.email || '').trim().toLowerCase();
-    if (!expectedEmail) {
-      throw createMegaReconnectRequiredError(undefined);
-    }
-
-    try {
-      const whoami = await this.runMegaHelperCommand('mega-whoami', []);
-      if (whoami.toLowerCase().includes(expectedEmail)) {
-        return;
-      }
-    } catch {
-      // Fall through to a helper login attempt.
-    }
-
-    const password = typeof secret.password === 'string' ? secret.password : '';
-    if (!password) {
-      throw createMegaReconnectRequiredError(undefined);
-    }
-
-    try {
-      await this.runMegaHelperCommand('mega-logout', ['--keep-session']);
-    } catch {
-      // Ignore helper logout failures before a fresh login.
-    }
-    await this.runMegaHelperCommand('mega-login', [expectedEmail, password], undefined, 60_000);
-  }
-
-  private async runMegaHelperCommand(
-    command: string,
-    args: readonly string[],
-    input?: string,
-    timeoutMs = 30_000
-  ): Promise<string> {
-    const result = await this.runtime.commandExecutor.run({
-      command: resolveMegaHelperCommand(command),
-      args,
-      env: buildMegaHelperEnv(),
-      input,
-      timeoutMs,
-    });
-    if (result.exitCode !== 0) {
-      const detail = result.stderr.trim() || result.stdout.trim() || `${command} exited with ${result.exitCode}`;
-      throw new Error(detail);
-    }
-    return result.stdout;
-  }
 
   private async loginWithPassword(email: string, password: string, mfaCode?: string): Promise<MegaSession> {
     const prelogin = await this.apiCommand<{ v?: number; s?: string }>({ a: 'us0', user: email.trim() });
@@ -972,6 +916,16 @@ export class MegaTransportAdapter {
     return parseMegaFetchNodesSnapshot(response);
   }
 
+  private async fetchCompleteTree(session: MegaSession, signal?: AbortSignal): Promise<MegaFetchedTree> {
+    const snapshot = await this.fetchNodesSnapshot(session, signal);
+    const keyManager = await this.fetchKeyManagerState(session, signal);
+    const rootHandle = resolveMegaCloudDriveHandle(snapshot);
+    return {
+      snapshot,
+      tree: decryptMegaTree(snapshot, session, rootHandle, keyManager.shareKeys),
+    };
+  }
+
   private async fetchPartialTreeWithSnapshot(
     session: MegaSession,
     rootHandle: string,
@@ -997,10 +951,25 @@ export class MegaTransportAdapter {
       snapshot = await this.fetchNodesSnapshot(session, signal);
     }
     const keyManager = await this.fetchKeyManagerState(session, signal);
-    return {
-      snapshot,
-      tree: decryptMegaTree(snapshot, session, rootHandle, keyManager.shareKeys),
-    };
+    try {
+      return {
+        snapshot,
+        tree: decryptMegaTree(snapshot, session, rootHandle, keyManager.shareKeys),
+      };
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'MEGA tree did not include the requested root node.') {
+        throw error;
+      }
+      this.runtime.logger.warn('MEGA partial tree decryption missed the requested root; falling back to a full node snapshot.', {
+        email: session.email,
+        rootHandle,
+      });
+      const fullSnapshot = await this.fetchNodesSnapshot(session, signal);
+      return {
+        snapshot: fullSnapshot,
+        tree: decryptMegaTree(fullSnapshot, session, rootHandle, keyManager.shareKeys),
+      };
+    }
   }
 
   private async fetchKeyManagerState(session: MegaSession, signal?: AbortSignal): Promise<MegaKeyManagerState> {
@@ -1093,30 +1062,95 @@ export class MegaTransportAdapter {
   private usesPublicLinkMirror(share: ManagedShare): boolean {
     return resolveMegaPublicLinkTarget(share.remoteDescriptor) !== null;
   }
+
+  private async ensureOwnerRemoteRoot(
+    session: MegaSession,
+    remotePath: string,
+    signal?: AbortSignal
+  ): Promise<MegaOwnerRemoteRoot> {
+    const normalizedPath = normalizeMegaRemoteDisplayPath(remotePath);
+    const segments = normalizedPath.split('/').filter((segment) => segment.length > 0);
+    let fetched = await this.fetchCompleteTree(session, signal);
+    let current = fetched.tree.root;
+
+    for (const segment of segments) {
+      const existing = findChildNodeByName(fetched.tree, current.handle, segment, true);
+      if (existing) {
+        current = existing;
+        continue;
+      }
+      await this.createRemoteFolderNode(session, current.handle, segment, signal);
+      const created = await this.waitForOwnerRemoteFolder(session, current.handle, segment, signal);
+      fetched = created.fetched;
+      current = created.node;
+      continue;
+    }
+
+    return {
+      path: normalizedPath,
+      root: current,
+      tree: fetched.tree,
+    };
+  }
+
+  private async waitForOwnerRemoteFolder(
+    session: MegaSession,
+    parentHandle: string,
+    name: string,
+    signal?: AbortSignal
+  ): Promise<{
+    fetched: MegaFetchedTree;
+    node: DecryptedMegaNode;
+  }> {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal);
+      const created = findChildNodeByName(fetched.tree, parentHandle, name, true);
+      if (!created) {
+        if (attempt < 5) {
+          await waitForMegaRetry(250 * (attempt + 1), signal);
+          continue;
+        }
+        throw new Error(`MEGA did not create ${name}.`);
+      }
+      return {
+        fetched,
+        node: created,
+      };
+    }
+    throw new Error(`MEGA did not create ${name}.`);
+  }
+
+  private async createRemoteFolderNode(
+    session: MegaSession,
+    parentHandle: string,
+    name: string,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const nodeKey = randomBytes(16);
+    const encryptedNodeKey = encryptMegaNodeKeyForOwner(nodeKey, session.masterKey);
+    await this.apiCommand(
+      {
+        a: 'p',
+        v: 4,
+        sm: 1,
+        t: parentHandle,
+        n: [
+          {
+            h: encodeMegaBase64Url(randomBytes(6)),
+            t: 1,
+            a: encryptMegaAttributes(name, nodeKey),
+            k: encodeMegaBase64Url(encryptedNodeKey),
+          },
+        ],
+      },
+      session,
+      signal
+    );
+  }
 }
 
 function secretKey(accountId: string): string {
   return `${MEGA_SECRET_PREFIX}${accountId}`;
-}
-
-function buildMegaHelperEnv(): Record<string, string | undefined> {
-  const helperDir = process.env.NEARBYTES_MEGACMD_DIR?.trim();
-  if (!helperDir) {
-    return {};
-  }
-  const pathSeparator = process.platform === 'win32' ? ';' : ':';
-  return {
-    NEARBYTES_MEGACMD_DIR: helperDir,
-    PATH: [helperDir, process.env.PATH ?? ''].filter((entry) => entry && entry.length > 0).join(pathSeparator),
-  };
-}
-
-function resolveMegaHelperCommand(command: string): string {
-  const helperDir = process.env.NEARBYTES_MEGACMD_DIR?.trim();
-  if (!helperDir) {
-    return command;
-  }
-  return path.join(helperDir, command);
 }
 
 function mirrorManifestKey(shareId: string): string {
@@ -1125,6 +1159,14 @@ function mirrorManifestKey(shareId: string): string {
 
 function createOpaqueId(prefix: string): string {
   return `${prefix}-${randomBytes(6).toString('hex')}`;
+}
+
+function xorBuffers(left: Buffer, right: Buffer): Buffer {
+  const result = Buffer.alloc(Math.min(left.length, right.length));
+  for (let index = 0; index < result.length; index += 1) {
+    result[index] = left[index]! ^ right[index]!;
+  }
+  return result;
 }
 
 function uniqueTrimmedStrings(values: readonly string[]): string[] {
@@ -1145,6 +1187,59 @@ function uniqueTrimmedStrings(values: readonly string[]): string[] {
   return result;
 }
 
+function collectMegaOwnerCollaborators(
+  snapshot: MegaFetchNodesSnapshot,
+  rootHandle: string
+): ManagedShareCollaborator[] {
+  const usersByHandle = buildMegaUsersByHandle(snapshot);
+  const pendingContactsByHandle = new Map<string, string>();
+  for (const pending of snapshot.outgoingPendingContacts) {
+    const handle = typeof pending.p === 'string' ? pending.p.trim() : '';
+    const email = typeof pending.e === 'string' ? pending.e.trim() : '';
+    if (handle && email) {
+      pendingContactsByHandle.set(handle, email);
+    }
+  }
+
+  const collaborators = new Map<string, ManagedShareCollaborator>();
+  const records = [...snapshot.outgoingShares, ...snapshot.pendingShares];
+  for (const record of records) {
+    const nodeHandle = typeof record.h === 'string' ? record.h.trim() : '';
+    if (!nodeHandle || nodeHandle !== rootHandle) {
+      continue;
+    }
+    const userHandle = typeof record.u === 'string' ? record.u.trim() : '';
+    const pendingHandle = typeof record.p === 'string' ? record.p.trim() : '';
+    const email =
+      (userHandle ? usersByHandle.get(userHandle)?.m : undefined) ??
+      (pendingHandle ? pendingContactsByHandle.get(pendingHandle) : undefined) ??
+      undefined;
+    if (!email) {
+      continue;
+    }
+
+    const key = email.toLowerCase();
+    const collaborator: ManagedShareCollaborator = {
+      label: email,
+      email,
+      role: describeAccessLevel(Number(record.r ?? 0)),
+      status: pendingHandle ? 'invited' : 'active',
+      source: 'provider',
+    };
+    const existing = collaborators.get(key);
+    if (!existing || existing.status === 'invited') {
+      collaborators.set(key, collaborator);
+    }
+  }
+
+  return [...collaborators.values()].sort((left, right) => {
+    if (left.status !== right.status) {
+      return left.status === 'active' ? -1 : 1;
+    }
+    return left.label.localeCompare(right.label);
+  });
+}
+
 function getMegaShareRemotePath(share: ManagedShare, fallbackPath: string): string {
   return getStringDescriptor(share.remoteDescriptor, 'remotePath') ?? fallbackPath;
 }
@@ -1156,148 +1251,381 @@ async function ensureMegaOwnerLocalStructure(localPath: string): Promise<void> {
   ]);
 }
 
-function findMegaHelperSync(
-  syncs: readonly MegaHelperSyncRow[],
-  localPath: string,
-  remotePath: string
-): MegaHelperSyncRow | undefined {
-  return syncs.find(
-    (sync) =>
-      normalizeMegaComparableLocalPath(sync.localPath) === normalizeMegaComparableLocalPath(localPath) &&
-      normalizeMegaRemoteDisplayPath(sync.remotePath) === normalizeMegaRemoteDisplayPath(remotePath)
-  );
+interface MegaOwnerRemoteRoot {
+  readonly path: string;
+  readonly root: DecryptedMegaNode;
+  readonly tree: DecryptedMegaTree;
 }
 
-function findMegaHelperSyncByLocalPath(
-  syncs: readonly MegaHelperSyncRow[],
-  localPath: string
-): MegaHelperSyncRow | undefined {
-  return syncs.find((sync) => normalizeMegaComparableLocalPath(sync.localPath) === normalizeMegaComparableLocalPath(localPath));
+class MegaOwnerRemoteAdapter {
+  constructor(
+    private readonly fetchImpl: typeof fetch,
+    private readonly apiClient: MegaApiClient,
+    private readonly session: MegaSession,
+    private readonly ownerRoot: MegaOwnerRemoteRoot,
+    private readonly signal?: AbortSignal
+  ) {}
+
+  async list(): Promise<readonly MirrorRemoteEntry[]> {
+    const entries: MirrorRemoteEntry[] = [];
+    await visitTree(this.ownerRoot.tree, async (relativePath, node) => {
+      if (!isMirrorRelativePath(relativePath)) {
+        return;
+      }
+      entries.push({
+        path: normalizeRelativePath(relativePath),
+        size: node.isFolder ? 0 : node.size,
+      });
+    });
+    return entries.sort((left, right) => left.path.localeCompare(right.path));
+  }
+
+  async download(relativePath: string): Promise<Uint8Array> {
+    const node = findNodeByRelativePath(this.ownerRoot.tree, this.ownerRoot.root.handle, relativePath);
+    if (!node || node.isFolder) {
+      throw new Error(`MEGA owner folder is missing ${relativePath}.`);
+    }
+    return downloadAuthenticatedMegaFileContent(
+      this.fetchImpl,
+      this.apiClient,
+      this.session,
+      node.handle,
+      node.nodeKey,
+      node.size,
+      this.signal
+    );
+  }
+
+  async upload(relativePath: string, data: Uint8Array): Promise<void> {
+    const normalized = normalizeRelativePath(relativePath);
+    const folderSegments = normalized.split('/').slice(0, -1);
+    const name = normalized.split('/').at(-1)?.trim() ?? '';
+    if (!name) {
+      throw new Error('MEGA upload path must include a file name.');
+    }
+
+    const parent = await ensureTreePath(
+      this.apiClient,
+      this.session,
+      this.ownerRoot,
+      folderSegments,
+      this.signal
+    );
+    const existing = findChildNodeByName(this.ownerRoot.tree, parent.handle, name, false);
+    if (existing) {
+      return;
+    }
+
+    await uploadMegaOwnerFile(this.fetchImpl, this.apiClient, this.session, parent.handle, name, Buffer.from(data), this.signal);
+  }
 }
 
-function findMegaHelperSyncByRemotePath(
-  syncs: readonly MegaHelperSyncRow[],
-  remotePath: string
-): MegaHelperSyncRow | undefined {
-  return syncs.find((sync) => normalizeMegaRemoteDisplayPath(sync.remotePath) === normalizeMegaRemoteDisplayPath(remotePath));
+function isMirrorRelativePath(value: string): boolean {
+  return value.startsWith('blocks/') || value.startsWith('channels/');
 }
 
-function parseMegaHelperSyncRows(stdout: string): MegaHelperSyncRow[] {
-  return stdout
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line && line !== 'No syncs found' && !line.startsWith('Use "'))
-    .map((line) => line.split('\t'))
-    .filter((columns) => columns.length >= 6 && columns[0] !== 'ID')
-    .map(([id, localPath, remotePath, runState, status, error]) => ({
-      id: id!.trim(),
-      localPath: localPath!.trim(),
-      remotePath: remotePath!.trim(),
-      runState: runState!.trim(),
-      status: status!.trim(),
-      error: error!.trim(),
-    }))
-    .filter((row) => row.id && row.localPath && row.remotePath);
+function summarizeOwnerMirrorResult(
+  remotePath: string,
+  result: { uploaded: readonly string[]; downloaded: readonly string[] }
+): string {
+  const parts: string[] = [];
+  if (result.uploaded.length > 0) {
+    parts.push(`${result.uploaded.length} uploaded`);
+  }
+  if (result.downloaded.length > 0) {
+    parts.push(`${result.downloaded.length} downloaded`);
+  }
+  return parts.length > 0
+    ? `MEGA owner sync is active for ${remotePath}. ${parts.join(', ')}.`
+    : `MEGA owner sync is active for ${remotePath}.`;
 }
 
-function parseMegaHelperSyncIssueRows(stdout: string): MegaHelperSyncIssueRow[] {
-  return stdout
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('Use "') && !line.startsWith('There are no sync-issues'))
-    .map((line) => line.split('\t'))
-    .filter((columns) => columns.length >= 3 && columns[0] !== 'ISSUE_ID')
-    .map(([issueId, parentSync, reason]) => ({
-      issueId: issueId!.trim(),
-      parentSync: parentSync!.trim(),
-      reason: reason!.trim(),
-    }))
-    .filter((issue) => issue.issueId && issue.parentSync && issue.reason);
+function findChildNodeByName(
+  tree: DecryptedMegaTree,
+  parentHandle: string,
+  name: string,
+  folderOnly?: boolean
+): DecryptedMegaNode | undefined {
+  return (tree.childrenByParent.get(parentHandle) ?? []).find((node) => {
+    if (folderOnly && !node.isFolder) {
+      return false;
+    }
+    return node.name === name;
+  });
 }
 
-function buildMegaOwnerTransportState(
-  sync: MegaHelperSyncRow,
-  issues: readonly MegaHelperSyncIssueRow[]
-): TransportState {
-  if (issues.length > 0) {
-    const detail = `MEGA reported sync issues for ${sync.remotePath}. ${issues[0]?.reason ?? 'Open the runtime logs and inspect mega-sync-issues.'}`;
-    return {
-      status: 'attention',
-      detail,
-      badges: ['Writable', 'Repair'],
-      diagnostic: {
-        code: 'MEGA_OWNER_SYNC_ISSUES',
-        title: 'MEGA owner sync has issues',
-        summary: 'MEGA sync issues detected',
-        detail,
-        facts: issues.slice(0, 3).map((issue) => ({
-          label: issue.issueId,
-          value: issue.reason,
-        })),
+function findNodeByRelativePath(
+  tree: DecryptedMegaTree,
+  rootHandle: string,
+  relativePath: string
+): DecryptedMegaNode | undefined {
+  const segments = normalizeRelativePath(relativePath).split('/').filter((segment) => segment.length > 0);
+  let parentHandle = rootHandle;
+  let current: DecryptedMegaNode | undefined;
+  for (let index = 0; index < segments.length; index += 1) {
+    current = findChildNodeByName(tree, parentHandle, segments[index]!, index < segments.length - 1);
+    if (!current) {
+      return undefined;
+    }
+    parentHandle = current.handle;
+  }
+  return current;
+}
+
+async function ensureTreePath(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  ownerRoot: MegaOwnerRemoteRoot,
+  segments: readonly string[],
+  signal?: AbortSignal
+): Promise<DecryptedMegaNode> {
+  let currentRoot = ownerRoot;
+  let current = ownerRoot.root;
+  for (const segment of segments) {
+    const existing = findChildNodeByName(currentRoot.tree, current.handle, segment, true);
+    if (existing) {
+      current = existing;
+      continue;
+    }
+    await createMegaFolder(apiClient, session, current.handle, segment, signal);
+    currentRoot = await fetchOwnerRootByPath(apiClient, session, ownerRoot.path, signal);
+    const created = findChildNodeByName(currentRoot.tree, current.handle, segment, true);
+    if (!created) {
+      throw new Error(`MEGA did not create ${segment}.`);
+    }
+    current = created;
+  }
+  return current;
+}
+
+function buildMegaSetShareCommand(
+  ownerRoot: MegaOwnerRemoteRoot,
+  email: string,
+  accessLevel: number,
+  options: {
+    readonly createShareKey?: boolean;
+  } = {}
+): Record<string, unknown> {
+  const command: Record<string, unknown> = {
+    a: 's2',
+    n: ownerRoot.root.handle,
+    ok: encodeMegaBase64Url(Buffer.alloc(16, 0)),
+    ha: encodeMegaBase64Url(Buffer.alloc(16, 0)),
+    s: [
+      {
+        u: email,
+        r: accessLevel,
       },
-    };
-  }
-
-  if (sync.error && sync.error !== 'NO') {
-    const detail = `MEGA reported an owner sync error for ${sync.remotePath}: ${sync.error}`;
-    return {
-      status: 'attention',
-      detail,
-      badges: ['Writable', 'Repair'],
-      diagnostic: {
-        code: 'MEGA_OWNER_SYNC_ERROR',
-        title: 'MEGA owner sync failed',
-        summary: 'MEGA reported a sync error',
-        detail,
-      },
-    };
-  }
-
-  if (isMegaSyncBusy(sync.status) || isMegaSyncPaused(sync.runState)) {
-    return {
-      status: 'syncing',
-      detail: `MEGA owner sync is ${sync.status.toLowerCase()} for ${sync.remotePath}.`,
-      badges: ['Writable', 'Syncing'],
-      lastSyncAt: Date.now(),
-    };
-  }
-
-  return {
-    status: 'ready',
-    detail: `MEGA owner sync is active for ${sync.remotePath}.`,
-    badges: ['Writable', 'Synced'],
-    lastSyncAt: Date.now(),
+    ],
   };
+  if (options.createShareKey !== false) {
+    command.cr = buildMegaShareNodeKeyRecords(ownerRoot, randomBytes(16));
+  }
+  return command;
+}
+
+function buildMegaShareNodeKeyRecords(ownerRoot: MegaOwnerRemoteRoot, shareKey: Buffer): readonly unknown[] {
+  const shareHandles = [ownerRoot.root.handle];
+  const itemHandles: string[] = [];
+  const records: Array<readonly [number, number, string]> = [];
+  const nodes = [ownerRoot.root, ...collectChildNodes(ownerRoot.tree, ownerRoot.root.handle)];
+  for (const node of nodes) {
+    const itemIndex = itemHandles.length;
+    itemHandles.push(node.handle);
+    records.push([0, itemIndex, encodeMegaBase64Url(encryptAesEcb(node.nodeKey, shareKey))]);
+  }
+  return [shareHandles, itemHandles, records];
+}
+
+function collectChildNodes(tree: DecryptedMegaTree, parentHandle: string): DecryptedMegaNode[] {
+  const result: DecryptedMegaNode[] = [];
+  const pending = [...(tree.childrenByParent.get(parentHandle) ?? [])];
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (!current) {
+      continue;
+    }
+    result.push(current);
+    pending.unshift(...(tree.childrenByParent.get(current.handle) ?? []));
+  }
+  return result;
+}
+
+async function fetchOwnerRootByPath(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  remotePath: string,
+  signal?: AbortSignal
+): Promise<MegaOwnerRemoteRoot> {
+  const snapshot = await withMegaApiRetry(async () => {
+    const response = await apiClient.requestSingle<Record<string, unknown> | number>(buildMegaFetchNodesCommand(), {
+      sessionId: session.sid,
+      signal,
+    });
+    if (typeof response === 'number') {
+      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+      error.code = response;
+      throw error;
+    }
+    return parseMegaFetchNodesSnapshot(response);
+  }, signal);
+  const tree = decryptMegaTree(snapshot, session, resolveMegaCloudDriveHandle(snapshot));
+  let current = tree.root;
+  for (const segment of normalizeMegaRemoteDisplayPath(remotePath).split('/').filter((entry) => entry.length > 0)) {
+    const next = findChildNodeByName(tree, current.handle, segment, true);
+    if (!next) {
+      throw new Error(`MEGA path ${remotePath} is missing ${segment}.`);
+    }
+    current = next;
+  }
+  return {
+    path: normalizeMegaRemoteDisplayPath(remotePath),
+    root: current,
+    tree,
+  };
+}
+
+async function createMegaFolder(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  parentHandle: string,
+  name: string,
+  signal?: AbortSignal
+): Promise<void> {
+  const nodeKey = randomBytes(16);
+  const response = await apiClient.requestSingle<Record<string, unknown> | number>(
+    {
+      a: 'p',
+      v: 4,
+      sm: 1,
+      t: parentHandle,
+      n: [
+        {
+          h: encodeMegaBase64Url(randomBytes(6)),
+          t: 1,
+          a: encryptMegaAttributes(name, nodeKey),
+          k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(nodeKey, session.masterKey)),
+        },
+      ],
+    },
+    { sessionId: session.sid, signal }
+  );
+  if (typeof response === 'number') {
+    throw new Error(`MEGA API error ${response}.`);
+  }
+}
+
+async function uploadMegaOwnerFile(
+  fetchImpl: typeof fetch,
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  parentHandle: string,
+  name: string,
+  data: Buffer,
+  signal?: AbortSignal
+): Promise<void> {
+  const transferKey = randomBytes(16);
+  const iv = randomBytes(8);
+  const secondHalf = Buffer.concat([iv, Buffer.alloc(8, 0)]);
+  const sentNodeKey = Buffer.concat([xorBuffers(transferKey, secondHalf), secondHalf]);
+
+  const uploadReservation = await apiClient.requestSingle<Record<string, unknown> | number>(
+    {
+      a: 'u',
+      ssl: 2,
+      v: 2,
+      s: data.length,
+      t: [parentHandle],
+    },
+    { sessionId: session.sid, signal }
+  );
+  if (typeof uploadReservation === 'number') {
+    throw new Error(`MEGA API error ${uploadReservation}.`);
+  }
+
+  const uploadUrl = assertString(uploadReservation.p, `MEGA did not return an upload URL for ${name}.`);
+  const encrypted = encryptMegaFileContent(data, transferKey, iv);
+  const crc = computeMegaUploadChecksum(encrypted);
+  const uploadResponse = await fetchImpl(`${uploadUrl}/0?d=${encodeMegaBase64Url(crc)}`, {
+    method: 'POST',
+    body: new Uint8Array(encrypted),
+    signal,
+  });
+  if (!uploadResponse.ok) {
+    throw new Error(`MEGA upload failed with HTTP ${uploadResponse.status}.`);
+  }
+  const uploadToken = Buffer.from(await uploadResponse.arrayBuffer());
+  if (uploadToken.length === 0) {
+    throw new Error(`MEGA did not return an upload token for ${name}.`);
+  }
+
+  const response = await apiClient.requestSingle<Record<string, unknown> | number>(
+    {
+      a: 'p',
+      v: 4,
+      sm: 1,
+      t: parentHandle,
+      n: [
+        {
+          h: encodeMegaBase64Url(uploadToken),
+          t: 0,
+          a: encryptMegaAttributes(name, transferKey),
+          k: encodeMegaBase64Url(encryptMegaNodeKeyForOwner(sentNodeKey, session.masterKey)),
+        },
+      ],
+    },
+    { sessionId: session.sid, signal }
+  );
+  if (typeof response === 'number') {
+    throw new Error(`MEGA API error ${response}.`);
+  }
+}
+
+function encryptMegaNodeKeyForOwner(nodeKey: Buffer, masterKey: Buffer): Buffer {
+  return encryptAesEcb(nodeKey, masterKey);
+}
+
+function encryptMegaAttributes(name: string, key: Buffer): string {
+  const raw = Buffer.from(`MEGA${JSON.stringify({ n: name })}`, 'utf8');
+  const paddedLength = Math.ceil(raw.length / 16) * 16;
+  const padded = Buffer.concat([raw, Buffer.alloc(paddedLength - raw.length, 0)]);
+  const cipher = createCipheriv('aes-128-cbc', key.subarray(0, 16), ZERO_IV);
+  cipher.setAutoPadding(false);
+  return encodeMegaBase64Url(Buffer.concat([cipher.update(padded), cipher.final()]));
+}
+
+function encryptMegaFileContent(data: Buffer, transferKey: Buffer, iv: Buffer): Buffer {
+  const counter = Buffer.alloc(16, 0);
+  iv.copy(counter, 0);
+  const cipher = createCipheriv('aes-128-ctr', transferKey, counter);
+  return Buffer.concat([cipher.update(data), cipher.final()]);
+}
+
+function computeMegaUploadChecksum(data: Buffer): Buffer {
+  const crc = Buffer.alloc(12, 0);
+  let offset = 0;
+  const alignedBytes = data.length - (data.length % crc.length);
+  while (offset < alignedBytes) {
+    for (let index = 0; index < crc.length; index += 1) {
+      crc[index] = crc[index]! ^ data[offset + index]!;
+    }
+    offset += crc.length;
+  }
+  for (let index = 0; offset + index < data.length; index += 1) {
+    crc[index] = crc[index]! ^ data[offset + index]!;
+  }
+  return crc;
 }
 
 function describeMegaOwnerSyncFailure(error: unknown, remotePath: string): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/already syncs this local folder/i.test(message) || /already syncs .* with /i.test(message)) {
-    return message;
-  }
   if (/timed out/i.test(message)) {
-    return `Nearbytes timed out while checking the MEGA owner sync for ${remotePath}. Open the runtime logs and retry.`;
+    return `Nearbytes timed out while syncing the MEGA owner folder ${remotePath}. Open the runtime logs and retry.`;
   }
-  if (/login|session|auth|credential|whoami|password/i.test(message)) {
-    return `Reconnect MEGA to resume the owner sync for ${remotePath}. ${message}`.trim();
+  if (/login|session|auth|credential|password/i.test(message)) {
+    return `Reconnect MEGA to resume the writable owner sync for ${remotePath}. ${message}`.trim();
   }
-  return `Nearbytes could not activate the MEGA owner sync for ${remotePath}. ${message}`.trim();
-}
-
-function isMegaSyncPaused(runState: string): boolean {
-  const normalized = runState.trim().toLowerCase();
-  return normalized === 'disabled' || normalized === 'suspended' || normalized === 'pending' || normalized === 'loading';
-}
-
-function isMegaSyncBusy(status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  return normalized === 'syncing' || normalized === 'pending' || normalized === 'processing';
-}
-
-function normalizeMegaComparableLocalPath(value: string): string {
-  const trimmed = value.trim().replace(/^\\\\\?\\/, '');
-  const resolved = path.resolve(trimmed);
-  return process.platform === 'win32' ? resolved.replace(/\\/g, '/').toLowerCase() : resolved;
+  return `Nearbytes could not sync the writable MEGA owner folder ${remotePath}. ${message}`.trim();
 }
 
 function normalizeMegaRemoteDisplayPath(value: string): string {
@@ -1309,63 +1637,23 @@ function normalizeMegaRemoteDisplayPath(value: string): string {
   return normalized.startsWith('/') ? normalized : `/${normalized}`;
 }
 
-function isMegaManagedMirrorPath(remotePath: string, remoteBasePath: string): boolean {
-  const normalizedRemote = normalizeMegaRemoteDisplayPath(remotePath);
-  const normalizedBase = normalizeMegaRemoteDisplayPath(remoteBasePath);
-  return normalizedRemote === normalizedBase || normalizedRemote.startsWith(`${normalizedBase}/`);
-}
-
-function parseMegaCollaborators(stdout: string): ManagedShareCollaborator[] {
-  const collaborators: ManagedShareCollaborator[] = [];
-  for (const rawLine of stdout.split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (!line) {
-      continue;
-    }
-    const match = /shared( \(still pending\))? with\s+(.+?)\s+\((.+?)\)$/iu.exec(line);
-    if (!match) {
-      continue;
-    }
-    const pending = Boolean(match[1]);
-    const email = match[2]?.trim() || '';
-    const role = match[3]?.trim() || undefined;
-    collaborators.push({
-      label: email,
-      email,
-      role,
-      status: pending ? 'invited' : 'active',
-      source: 'provider',
-    });
-  }
-  return collaborators;
-}
-
-function parseMegaIncomingContactInvites(
-  stdout: string,
+function mapIncomingMegaContactInvite(
+  invite: Record<string, unknown>,
   accountId: string,
   provider: string
-): IncomingProviderContactInvite[] {
-  const invites: IncomingProviderContactInvite[] = [];
-  for (const rawLine of stdout.split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (!line) {
-      continue;
-    }
-    const match = /^(.+?)\s+\(id:\s*([^,\)]+).*/iu.exec(line);
-    if (!match) {
-      continue;
-    }
-    const label = match[1]?.trim() || '';
-    const id = match[2]?.trim() || label;
-    invites.push({
-      id,
-      provider,
-      accountId,
-      label,
-      detail: `${label} wants to connect on MEGA.`,
-    });
+): IncomingProviderContactInvite | null {
+  const id = typeof invite.p === 'string' ? invite.p.trim() : '';
+  const label = typeof invite.m === 'string' ? invite.m.trim() : '';
+  if (!id || !label) {
+    return null;
   }
-  return invites;
+  return {
+    id,
+    provider,
+    accountId,
+    label,
+    detail: `${label} wants to connect on MEGA.`,
+  };
 }
 
 function deserializeSession(secret: MegaAccountSecret, fallbackEmail = ''): MegaSession {
@@ -1500,7 +1788,12 @@ function createMegaAbortError(): Error {
 }
 
 function createMegaReconnectRequiredError(error: unknown): Error {
-  const reason = error instanceof Error ? error.message.trim() : String(error).trim();
+  const reason =
+    error == null
+      ? ''
+      : error instanceof Error
+        ? error.message.trim()
+        : String(error).trim();
   const suffix = reason ? ` ${reason}` : '';
   return new Error(`${MEGA_RECONNECT_REQUIRED_MESSAGE}${suffix}`);
 }
@@ -1777,6 +2070,11 @@ function parseMegaKeyManagerShareKeys(value: Buffer): Map<string, Buffer> {
 
 function resolveTreeRootHandle(nodesByHandle: ReadonlyMap<string, DecryptedMegaNode>): string {
   for (const node of nodesByHandle.values()) {
+    if (node.nodeType === 2) {
+      return node.handle;
+    }
+  }
+  for (const node of nodesByHandle.values()) {
     if (!node.parentHandle || !nodesByHandle.has(node.parentHandle)) {
       return node.handle;
     }
@@ -1795,11 +2093,13 @@ function decryptNodeRecord(
     return null;
   }
 
-  const nodeKey = decryptNodeKey(node, session, shareKeys);
+  const nodeType = Number(node.t ?? 0);
+  const isSpecialRoot = nodeType === 2 || nodeType === 3 || nodeType === 4;
+  const nodeKey = decryptNodeKey(node, session, shareKeys) ?? (isSpecialRoot ? Buffer.alloc(16, 0) : null);
   if (!nodeKey) {
     return null;
   }
-  const name = decryptNodeName(typeof node.a === 'string' ? node.a : undefined, nodeKey);
+  const name = decryptNodeName(typeof node.a === 'string' ? node.a : undefined, nodeKey) ?? describeMegaSpecialNodeName(nodeType);
   if (!name) {
     return null;
   }
@@ -1813,7 +2113,8 @@ function decryptNodeRecord(
   return {
     handle,
     parentHandle: typeof node.p === 'string' && node.p.trim() ? node.p.trim() : undefined,
-    isFolder: Number(node.t ?? 0) !== 0,
+    nodeType,
+    isFolder: nodeType !== 0,
     size: Number(node.s ?? 0) || 0,
     name,
     nodeKey,
@@ -1824,6 +2125,28 @@ function decryptNodeRecord(
     accessLevel,
     shareHandle,
   };
+}
+
+function resolveMegaCloudDriveHandle(snapshot: MegaFetchNodesSnapshot): string | undefined {
+  for (const node of snapshot.nodes) {
+    if (Number(node.t ?? 0) === 2 && typeof node.h === 'string' && node.h.trim()) {
+      return node.h.trim();
+    }
+  }
+  return undefined;
+}
+
+function describeMegaSpecialNodeName(nodeType: number): string | undefined {
+  switch (nodeType) {
+    case 2:
+      return 'Cloud Drive';
+    case 3:
+      return 'Inbox';
+    case 4:
+      return 'Rubbish Bin';
+    default:
+      return undefined;
+  }
 }
 
 function describeAccessLevel(level: number): string {

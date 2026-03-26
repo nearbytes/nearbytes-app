@@ -33,6 +33,14 @@ export interface ManagedShareMirrorEntry {
   readonly remotePath: string;
 }
 
+export interface ManagedShareRemoteEntryProbe {
+  readonly path: string;
+  readonly kind: 'file' | 'folder';
+  readonly size?: number;
+  readonly handle?: string;
+  readonly modifiedAt?: string;
+}
+
 export interface MirrorRemoteAdapter {
   list(): Promise<readonly MirrorRemoteEntry[]>;
   download(path: string): Promise<Uint8Array>;
@@ -67,6 +75,11 @@ export interface TransportAdapter {
   getShareStorageMetrics?(share: ManagedShare, account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined>;
   ensureSync?(share: ManagedShare, account: ProviderAccount): Promise<void>;
   detachManagedShare?(share: ManagedShare, account: ProviderAccount | null): Promise<void>;
+  probeManagedShareRemoteEntry?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<ManagedShareRemoteEntryProbe | null>;
 }
 
 export function createDefaultTransportAdapters(runtime: IntegrationRuntime): TransportAdapter[] {
