@@ -435,6 +435,15 @@ export function createRoutes(deps: RouteDependencies): Router {
     });
   }));
 
+  router.post('/integrations/shares/:shareId/repair', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    res.json({
+      summary: await service.repairManagedShare(shareId),
+    });
+  }));
+
   router.post('/links/join/parse', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);

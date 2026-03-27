@@ -742,6 +742,22 @@ export class MegaTransportAdapter {
         remotePath,
         error: error instanceof Error ? error.stack ?? error.message : String(error),
       });
+      if (isMegaTransientSyncError(error)) {
+        this.syncStates.set(share.id, {
+          status: 'ready',
+          detail:
+            'MEGA temporarily asked Nearbytes to retry owner sync. The local writable mirror stays available and the next sync cycle will retry automatically.',
+          badges: ['Writable', 'Retrying'],
+          diagnostic: {
+            code: 'MEGA_OWNER_SYNC_RETRYING',
+            title: 'MEGA owner sync retry scheduled',
+            summary: 'Retrying automatically',
+            detail:
+              'MEGA returned a transient lock, rate limit, or network error while syncing this owner folder. Nearbytes will retry automatically.',
+          },
+        });
+        return;
+      }
       const detail = describeMegaOwnerSyncFailure(error, remotePath);
       const needsAuth = /login|session|auth|credential|password|reconnect/i.test(detail);
       this.syncStates.set(share.id, {
@@ -765,8 +781,9 @@ export class MegaTransportAdapter {
       throw new Error(MEGA_RECONNECT_REQUIRED_MESSAGE);
     }
     if (!isStoredMegaAccountSecret(secret)) {
-      await this.runtime.secretStore.delete(secretKey(account.id));
-      throw new Error(MEGA_RECONNECT_REQUIRED_MESSAGE);
+      const recovered = await this.refreshAccountSession(account, secret);
+      await this.fetchCurrentUser(recovered, signal);
+      return recovered;
     }
 
     const session = deserializeSession(secret, account.email ?? account.label);
@@ -776,6 +793,13 @@ export class MegaTransportAdapter {
     } catch (error) {
       if (isMegaSessionInvalid(error)) {
         return this.refreshAccountSession(account, secret, error);
+      }
+      if (isMegaTemporaryLockError(error)) {
+        this.runtime.logger.warn('MEGA account session validation was temporarily locked; continuing with the cached session.', {
+          accountId: account.id,
+          code: (error as MegaApiError | undefined)?.code,
+        });
+        return session;
       }
       throw error;
     }
@@ -799,45 +823,36 @@ export class MegaTransportAdapter {
 
   private async refreshAccountSession(
     account: ProviderAccount,
-    cachedSecret?: MegaAccountSecret,
+    cachedSecret?: MegaAccountSecret | unknown,
     cause?: unknown
   ): Promise<MegaSession> {
-    const secret = cachedSecret ?? (await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id)));
-    if (!secret || !isStoredMegaAccountSecret(secret)) {
-      if (secret && !isStoredMegaAccountSecret(secret)) {
-        await this.runtime.secretStore.delete(secretKey(account.id));
-      }
-      this.runtime.logger.warn('MEGA session refresh skipped because the stored account secret is missing or malformed.', {
+    const storedSecret =
+      cachedSecret === undefined
+        ? ((await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id))) as unknown)
+        : cachedSecret;
+    const credentials = extractMegaReusableCredentials(storedSecret, account.email ?? '');
+    if (!credentials) {
+      this.runtime.logger.warn('MEGA session refresh skipped because reusable credentials are missing.', {
         accountId: account.id,
-        hadSecret: Boolean(secret),
+        hadSecret: Boolean(storedSecret),
       });
       throw createMegaReconnectRequiredError(cause);
     }
-
-    const email = (typeof secret.email === 'string' && secret.email.trim() !== '' ? secret.email : account.email ?? '').trim();
-    const password = typeof secret.password === 'string' ? secret.password : '';
-    if (!email || !password) {
-      this.runtime.logger.warn('MEGA session refresh skipped because reusable credentials are not available.', {
-        accountId: account.id,
-        hasEmail: email.length > 0,
-        hasPassword: password.length > 0,
-        hasMfaCode: typeof secret.mfaCode === 'string' && secret.mfaCode.trim().length > 0,
-      });
-      throw createMegaReconnectRequiredError(cause);
-    }
+    const { email, password, mfaCode } = credentials;
 
     try {
       this.runtime.logger.log('Refreshing MEGA session with the stored account credentials.', {
         accountId: account.id,
-        hasMfaCode: typeof secret.mfaCode === 'string' && secret.mfaCode.trim().length > 0,
+        hasMfaCode: typeof mfaCode === 'string' && mfaCode.trim().length > 0,
       });
-      const refreshed = await this.loginWithPassword(email, password, secret.mfaCode);
+      const refreshed = await this.loginWithPassword(email, password, mfaCode);
       await this.runtime.secretStore.set(secretKey(account.id), {
-        ...secret,
         email,
         sid: refreshed.sid,
+        password,
+        mfaCode,
         masterKey: encodeMegaBase64Url(refreshed.masterKey),
-        encryptedPrivateKey: refreshed.encryptedPrivateKey ?? secret.encryptedPrivateKey,
+        encryptedPrivateKey: refreshed.encryptedPrivateKey,
         userHandle: refreshed.userHandle,
         accountVersion: refreshed.accountVersion,
         accountSalt: refreshed.accountSalt,
@@ -2239,6 +2254,23 @@ function isStoredMegaAccountSecret(secret: unknown): secret is MegaAccountSecret
   );
 }
 
+function extractMegaReusableCredentials(
+  secret: unknown,
+  fallbackEmail = ''
+): { email: string; password: string; mfaCode?: string } | null {
+  if (!secret || typeof secret !== 'object') {
+    return null;
+  }
+  const candidate = secret as Partial<MegaAccountSecret>;
+  const email = (typeof candidate.email === 'string' && candidate.email.trim() !== '' ? candidate.email : fallbackEmail).trim();
+  const password = typeof candidate.password === 'string' ? candidate.password : '';
+  const mfaCode = typeof candidate.mfaCode === 'string' && candidate.mfaCode.trim() !== '' ? candidate.mfaCode.trim() : undefined;
+  if (!email || !password) {
+    return null;
+  }
+  return { email, password, mfaCode };
+}
+
 function acceptedShareCapabilities(descriptor: Record<string, unknown>): string[] {
   const accessLevel = (getStringDescriptor(descriptor, 'accessLevel') ?? '').trim().toLowerCase();
   if (accessLevel === '2' || accessLevel === '3' || accessLevel === 'full' || accessLevel === 'full access' || accessLevel === 'owner') {
@@ -2271,6 +2303,15 @@ function isMegaSessionInvalid(error: unknown): boolean {
 function isMegaRetryableApiError(error: unknown): error is MegaApiError {
   const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
   return code !== null && MEGA_RETRYABLE_API_ERROR_CODES.has(code);
+}
+
+function isMegaTemporaryLockError(error: unknown): boolean {
+  const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
+  return code === -3;
+}
+
+function isMegaTransientSyncError(error: unknown): boolean {
+  return isMegaTemporaryLockError(error) || isMegaRateLimitedError(error) || isMegaRetryableTransportError(error);
 }
 
 function isMegaAccessDeniedError(error: unknown): error is MegaApiError {

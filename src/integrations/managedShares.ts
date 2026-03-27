@@ -71,6 +71,7 @@ const BACKGROUND_MAINTENANCE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 750;
 const FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 6_000;
 const FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 5_000;
+const FULL_MEGA_MANAGED_SHARE_COLLABORATORS_TIMEOUT_MS = 5_000;
 const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
 const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
 
@@ -2079,7 +2080,9 @@ export class ManagedShareService {
         : this.withSoftTimeout(
             this.resolveShareCollaborators(share, state),
             fallbackCollaborators,
-            1_500,
+            normalizeProvider(share.provider) === 'mega'
+              ? FULL_MEGA_MANAGED_SHARE_COLLABORATORS_TIMEOUT_MS
+              : 1_500,
             `Managed share collaborators timed out for ${share.id}`
           ),
     ]);
