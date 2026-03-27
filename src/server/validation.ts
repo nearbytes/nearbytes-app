@@ -114,7 +114,7 @@ export const managedShareIdParamSchema = z.object({
 
 export const connectProviderAccountBodySchema = z.object({
   provider: z.string().trim().min(1, 'Provider is required'),
-  mode: z.enum(['login', 'signup', 'confirm-signup']).optional(),
+  mode: z.enum(['login']).optional(),
   label: providerLabelSchema.optional(),
   email: z.string().trim().email('Provider email must be valid').optional(),
   preferred: z.boolean().optional().default(false),

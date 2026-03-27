@@ -173,7 +173,7 @@
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
   let providerFlowStates = $state<Record<string, ProviderFlowState>>({});
   let providerCredentialDrafts = $state<Record<string, {
-    mode: 'login' | 'signup';
+    mode: 'login';
     name: string;
     email: string;
     password: string;
@@ -536,7 +536,7 @@
   }
 
   function providerCredentialDraft(provider: string): {
-    mode: 'login' | 'signup';
+    mode: 'login';
     name: string;
     email: string;
     password: string;
@@ -695,7 +695,6 @@
         draft.password ||
         draft.mfaCode.trim() ||
         draft.confirmationLink.trim() ||
-        draft.mode !== 'login' ||
         draft.useMfa
     );
   }
@@ -706,12 +705,6 @@
 
   function canSubmitMegaAction(provider: string): boolean {
     const draft = providerCredentialDraft(provider);
-    if (pendingSessionForProvider(provider)) {
-      return draft.confirmationLink.trim() !== '';
-    }
-    if (draft.mode === 'signup') {
-      return draft.name.trim() !== '' && draft.email.trim() !== '' && draft.password.trim() !== '';
-    }
     if (draft.email.trim() === '' || draft.password.trim() === '') {
       return false;
     }
@@ -723,32 +716,20 @@
       return 'Confirming...';
     }
     if (integrationBusyKey === `connect:${provider}`) {
-      const draft = providerCredentialDraft(provider);
-      return draft.mode === 'signup' ? 'Creating...' : 'Signing in...';
+      return 'Signing in...';
     }
-    if (pendingSessionForProvider(provider)) {
-      return 'Confirm account';
-    }
-    return providerCredentialDraft(provider).mode === 'signup' ? 'Create account' : 'Sign in to MEGA';
+    return 'Sign in to MEGA';
   }
 
   function megaOnboardingCopy(provider: string): string {
-    const draft = providerCredentialDraft(provider);
     const pending = pendingSessionForProvider(provider);
     if (pending) {
-      return pending.detail || 'Paste the MEGA confirmation link from your email to finish creating the account.';
-    }
-    if (draft.mode === 'signup') {
-      return 'Create the MEGA account here, then finish the email confirmation step inside Nearbytes.';
+      return pending.detail || 'Pending signup confirmations are no longer supported in-app. Complete setup on mega.io, then sign in here.';
     }
     return 'Sign in here so Nearbytes can create live mirror locations, keep them synced, and send MEGA storage invites.';
   }
 
   async function submitMegaAction(provider: ProviderCatalogEntry): Promise<void> {
-    if (pendingSessionForProvider(provider.provider)) {
-      await confirmMegaSignup(provider);
-      return;
-    }
     await connectProvider(provider);
   }
 
@@ -3902,42 +3883,32 @@
       const draft = providerCredentialDraft(provider.provider);
       setProviderFlowState(provider.provider, {
         phase: 'connecting',
-        title:
-          provider.provider === 'mega' && draft.mode === 'signup'
-            ? 'Creating MEGA account'
-            : `Connecting ${provider.label}`,
+        title: `Connecting ${provider.label}`,
         detail:
-          provider.provider === 'mega' && draft.mode === 'signup'
-            ? 'Submitting your account details to MEGA and waiting for the confirmation step.'
-            : provider.provider === 'mega'
-              ? 'Submitting your MEGA credentials and opening a local session.'
-              : `Handing off to ${provider.label} to continue sign-in.`,
+          provider.provider === 'mega'
+            ? 'Submitting your MEGA credentials and opening a local session.'
+            : `Handing off to ${provider.label} to continue sign-in.`,
         canCancel: true,
         canReset: true,
       });
       if (provider.provider === 'mega') {
-        if (draft.mode === 'signup') {
-          if (draft.name.trim() === '' || draft.email.trim() === '' || draft.password.trim() === '') {
-            throw new Error('Enter your name, email, and password first.');
-          }
-        } else if (draft.email.trim() === '' || draft.password.trim() === '') {
+        if (draft.email.trim() === '' || draft.password.trim() === '') {
           throw new Error('Enter the MEGA email and password first.');
         }
       }
 
       const response = await connectProviderAccount({
         provider: provider.provider,
-        mode: provider.provider === 'mega' ? draft.mode : undefined,
+        mode: provider.provider === 'mega' ? 'login' : undefined,
         label: provider.label,
         preferred: provider.provider === 'gdrive',
         email: provider.provider === 'mega' ? draft.email.trim() || undefined : undefined,
         credentials:
           provider.provider === 'mega'
             ? {
-                name: draft.mode === 'signup' ? draft.name.trim() || undefined : undefined,
                 email: draft.email.trim() || undefined,
                 password: draft.password,
-                mfaCode: draft.mode === 'login' && draft.useMfa ? draft.mfaCode.trim() || undefined : undefined,
+                mfaCode: draft.useMfa ? draft.mfaCode.trim() || undefined : undefined,
               }
             : undefined,
       }, { signal: controller.signal });
@@ -5386,7 +5357,7 @@
                       <h4>MEGA account</h4>
                       <p class="provider-story-copy">{megaOnboardingCopy(provider.provider)}</p>
                     </div>
-                    <p class="muted-copy compact-mode-copy">{pendingSession ? 'Email confirmation' : draft.mode === 'signup' ? 'Create account' : 'Sign in'}</p>
+                    <p class="muted-copy compact-mode-copy">{pendingSession ? 'Email confirmation' : 'Sign in'}</p>
                   </div>
 
                   <div class="provider-credentials">
@@ -5402,36 +5373,6 @@
                         />
                       </label>
                     {:else}
-                      <div class="segmented-toggle">
-                        <button
-                          type="button"
-                          class="segmented-toggle-btn"
-                          class:active={draft.mode === 'login'}
-                          onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
-                        >
-                          Sign in
-                        </button>
-                        <button
-                          type="button"
-                          class="segmented-toggle-btn"
-                          class:active={draft.mode === 'signup'}
-                          onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
-                        >
-                          Create account
-                        </button>
-                      </div>
-                      {#if draft.mode === 'signup'}
-                        <label class="field-block compact-field">
-                          <span>Name</span>
-                          <input
-                            class="panel-input"
-                            type="text"
-                            value={draft.name}
-                            placeholder="Your name"
-                            oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
-                          />
-                        </label>
-                      {/if}
                       <label class="field-block compact-field">
                         <span>Email</span>
                         <input
@@ -5452,19 +5393,17 @@
                           oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
                         />
                       </label>
-                      {#if draft.mode === 'login'}
-                        <label class="field-block compact-field">
-                          <span class="toggle-only-label">
-                            <input
-                              type="checkbox"
-                              checked={draft.useMfa}
-                              onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
-                            />
-                            <span>I enabled 2-factor authentication on MEGA</span>
-                          </span>
-                        </label>
-                      {/if}
-                      {#if draft.mode === 'login' && draft.useMfa}
+                      <label class="field-block compact-field">
+                        <span class="toggle-only-label">
+                          <input
+                            type="checkbox"
+                            checked={draft.useMfa}
+                            onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
+                          />
+                          <span>I enabled 2-factor authentication on MEGA</span>
+                        </span>
+                      </label>
+                      {#if draft.useMfa}
                         <label class="field-block compact-field">
                           <span>2FA code</span>
                           <input

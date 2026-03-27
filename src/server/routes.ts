@@ -598,6 +598,22 @@ export function createRoutes(deps: RouteDependencies): Router {
     });
   }));
 
+  router.post('/__debug/integrations/shares/:shareId/push-path', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const body = req.body as { path?: unknown };
+    const relativePath = typeof body?.path === 'string' ? body.path : '';
+    if (!relativePath.trim()) {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Request body field "path" is required.');
+    }
+    await service.forceManagedShareUpload(shareId, relativePath);
+    res.json({
+      ok: true,
+      path: relativePath,
+    });
+  }));
+
   router.get('/__debug/integrations/providers/:provider/share-inventory', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);

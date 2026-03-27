@@ -87,6 +87,11 @@ export interface TransportAdapter {
     account: ProviderAccount | null,
     relativePath: string
   ): Promise<ManagedShareRemoteEntryProbe | null>;
+  forceManagedShareUpload?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void>;
   getShareInventoryDebug?(account: ProviderAccount): Promise<{
     incoming: ProviderShareInventoryDebugEntry[];
     outgoing: ProviderShareInventoryDebugEntry[];

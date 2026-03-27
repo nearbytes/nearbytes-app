@@ -881,6 +881,31 @@ export class ManagedShareService {
     return adapter.probeManagedShareRemoteEntry(share, account, normalizedPath);
   }
 
+  async forceManagedShareUpload(shareId: string, relativePath: string): Promise<void> {
+    const normalizedPath = relativePath.trim().replace(/^\/+/u, '');
+    if (!normalizedPath) {
+      throw new ManagedShareServiceError(400, 'INVALID_REQUEST', 'A relative path is required.');
+    }
+
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.forceManagedShareUpload) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Forced managed share upload is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    await adapter.forceManagedShareUpload(share, account, normalizedPath);
+  }
+
   async debugProviderShareInventory(providerInput: string): Promise<{
     provider: string;
     accounts: Array<{

@@ -258,7 +258,12 @@ export class MegaTransportAdapter {
 
     const accountId = input.accountId?.trim() || createOpaqueId('acct-mega');
     const now = this.runtime.now();
-    const session = await this.loginWithPassword(email, password, mfaCode);
+    let session: MegaSession;
+    try {
+      session = await this.loginWithPassword(email, password, mfaCode);
+    } catch (error) {
+      throw normalizeMegaConnectError(error, email);
+    }
     await this.runtime.secretStore.set(secretKey(accountId), {
       email: session.email,
       password,
@@ -512,6 +517,33 @@ export class MegaTransportAdapter {
         size: node.isFolder ? undefined : node.size,
         handle: node.handle,
       };
+    });
+  }
+
+  async forceManagedShareUpload(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void> {
+    if (!account) {
+      throw new Error('Reconnect MEGA to upload to the remote share.');
+    }
+    if (share.role !== 'owner') {
+      throw new Error('Forced upload is supported only for writable MEGA owner shares.');
+    }
+    const normalizedPath = normalizeRelativePath(relativePath);
+    if (!isMirrorRelativePath(normalizedPath)) {
+      throw new Error('Only channels/* and blocks/* paths can be uploaded to MEGA.');
+    }
+
+    const localFilePath = path.join(share.localPath, normalizedPath);
+    const localBytes = new Uint8Array(await fs.readFile(localFilePath));
+    await this.withRecoveredAccountSession(account, async (session) => {
+      const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+      const root = await this.ensureOwnerRemoteRoot(session, remotePath);
+      const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root);
+      const adapter = new MegaOwnerRemoteAdapter(this.fetchImpl, this.apiClient, session, root, shareCrypto);
+      await adapter.upload(normalizedPath, localBytes);
     });
   }
 
@@ -866,6 +898,7 @@ export class MegaTransportAdapter {
         }
 
         if (actionBatch.packets.length > 0) {
+          const actions = summarizeActionPacketActions(actionBatch.packets);
           const rootHandle = this.shareRootHandles.get(share.id);
           let touchesShare = true;
           if (rootHandle) {
@@ -875,18 +908,22 @@ export class MegaTransportAdapter {
               knownHandles,
             });
           }
+          const triggerOwnerSync = share.role === 'owner' && !allActionsAreAccountLevel(actions);
+          const shouldTriggerSync = touchesShare || triggerOwnerSync;
 
           if (actionBatch.packets.length) {
             this.runtime.logger.log('MEGA sc channel event received.', {
               shareId: share.id,
               rootHandle,
               packetCount: actionBatch.packets.length,
-              actions: summarizeActionPacketActions(actionBatch.packets),
+              actions,
               touchesShare,
+              triggerOwnerSync,
+              shouldTriggerSync,
             });
           }
 
-          if (touchesShare) {
+          if (shouldTriggerSync) {
             console.log('[MEGA:sc] remote change detected, triggering sync.', { shareId: share.id });
             try {
               await this.runSyncLoop(share, account);
@@ -1727,45 +1764,37 @@ class MegaOwnerRemoteAdapter {
       });
       return;
     }
-
-    const shouldStageUpload = shouldUseMegaTemporaryUploadName(name);
-    const temporaryName = shouldStageUpload ? buildMegaTemporaryUploadName(name) : name;
-    const existingTemporary = shouldStageUpload
-      ? findChildNodeByName(this.ownerRoot.tree, parent.handle, temporaryName, false)
-      : undefined;
-    if (shouldStageUpload && existingTemporary && existingTemporary.size === data.length) {
-      debugMegaLog('[MEGA:owner-adapter] finalizing existing staged upload.', {
-        relativePath: normalized,
-        temporaryHandle: existingTemporary.handle,
-      });
-      await renameMegaNode(this.apiClient, this.session, existingTemporary, name, this.signal);
-      return;
-    }
     if (existing && existing.size !== data.length) {
       await deleteMegaNode(this.apiClient, this.session, existing.handle, this.signal);
-    }
-    if (existingTemporary && existingTemporary.size !== data.length) {
-      await deleteMegaNode(this.apiClient, this.session, existingTemporary.handle, this.signal);
     }
 
     debugMegaLog('[MEGA:owner-adapter] uploading file to MEGA.', {
       relativePath: normalized,
       parentHandle: parent.handle,
-      name: temporaryName,
+      name,
       dataSize: data.length,
     });
-    const uploadedNode = await uploadMegaOwnerFile(
+    await uploadMegaOwnerFile(
       this.fetchImpl,
       this.apiClient,
       this.session,
       parent.handle,
-      temporaryName,
+      name,
       Buffer.from(data),
       this.shareCrypto,
       this.signal
     );
-    if (shouldStageUpload) {
-      await renameMegaNode(this.apiClient, this.session, uploadedNode, name, this.signal);
+    // Keep a hard visibility check so uploads only count once the final name is visible in MEGA snapshots.
+    const visibleNode = await waitForMegaChildNodeInFullSnapshot(
+      this.apiClient,
+      this.session,
+      parent.handle,
+      name,
+      false,
+      this.signal
+    );
+    if (!visibleNode || visibleNode.isFolder) {
+      throw new Error(`MEGA did not make the uploaded file visible for ${name}.`);
     }
     debugMegaLog('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
   }
@@ -1773,14 +1802,6 @@ class MegaOwnerRemoteAdapter {
 
 function isMirrorRelativePath(value: string): boolean {
   return value.startsWith('blocks/') || value.startsWith('channels/');
-}
-
-function shouldUseMegaTemporaryUploadName(name: string): boolean {
-  return name.endsWith('.bin');
-}
-
-function buildMegaTemporaryUploadName(name: string): string {
-  return `${name}.tmp`;
 }
 
 function summarizeOwnerMirrorResult(
@@ -2239,7 +2260,7 @@ async function createMegaFolder(
             ? ((response as { f: unknown[] }).f[0] ?? null)
             : null,
       });
-      if (typeof response === 'number') {
+      if (typeof response === 'number' && response !== 0) {
         const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
         error.code = response;
         throw error;
@@ -2374,7 +2395,7 @@ async function uploadMegaOwnerFile(
         },
         { sessionId: session.sid, signal }
       );
-      if (typeof response === 'number') {
+      if (typeof response === 'number' && response !== 0) {
         const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
         error.code = response;
         throw error;
@@ -2426,55 +2447,6 @@ async function uploadMegaOwnerFile(
   throw new Error(`MEGA did not upload ${name}.`);
 }
 
-async function renameMegaNode(
-  apiClient: MegaApiClient,
-  session: MegaSession,
-  node: DecryptedMegaNode,
-  nextName: string,
-  signal?: AbortSignal
-): Promise<DecryptedMegaNode> {
-  const parentHandle = node.parentHandle?.trim();
-  if (!parentHandle) {
-    throw new Error(`MEGA cannot rename ${node.handle} without a parent handle.`);
-  }
-  for (let attempt = 0; attempt < MEGA_UPLOAD_RECOVERY_ATTEMPTS; attempt += 1) {
-    try {
-      touchMegaSyncActivity(signal);
-      const response = await apiClient.requestSingle<Record<string, unknown> | number>(
-        {
-          a: 'a',
-          n: node.handle,
-          at: encryptMegaAttributes(nextName, node.nodeKey),
-        },
-        { sessionId: session.sid, signal }
-      );
-      if (typeof response === 'number') {
-        const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
-        error.code = response;
-        throw error;
-      }
-      const renamedNode = await waitForMegaChildNodeInFullSnapshot(apiClient, session, parentHandle, nextName, false, signal);
-      if (!renamedNode || renamedNode.isFolder) {
-        throw new Error(`MEGA did not make the renamed file visible for ${nextName}.`);
-      }
-      return renamedNode;
-    } catch (error) {
-      const recovered = await findMegaRemoteChildNodeInFullSnapshot(apiClient, session, parentHandle, nextName, false, signal);
-      if (recovered && !recovered.isFolder) {
-        return recovered;
-      }
-      if (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) {
-        throw error;
-      }
-      if (attempt >= MEGA_UPLOAD_RECOVERY_ATTEMPTS - 1) {
-        throw error;
-      }
-      await waitForMegaRetry(getMegaRetryDelayMs(error, attempt), signal);
-    }
-  }
-  throw new Error(`MEGA did not rename ${node.handle} to ${nextName}.`);
-}
-
 async function deleteMegaNode(
   apiClient: MegaApiClient,
   session: MegaSession,
@@ -2485,10 +2457,10 @@ async function deleteMegaNode(
     try {
       touchMegaSyncActivity(signal);
       const response = await apiClient.requestSingle<Record<string, unknown> | number>(
-        { a: 'd', n: nodeHandle },
+        { a: 'd', i: createMegaMutationRequestId(), n: nodeHandle },
         { sessionId: session.sid, signal }
       );
-      if (typeof response === 'number') {
+      if (typeof response === 'number' && response !== 0) {
         const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
         error.code = response;
         throw error;
@@ -2733,6 +2705,16 @@ function isMegaRetryableApiError(error: unknown): error is MegaApiError {
 function isMegaTemporaryLockError(error: unknown): boolean {
   const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
   return code === -3;
+}
+
+function normalizeMegaConnectError(error: unknown, email: string): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/HTTP 402\b/i.test(message)) {
+    return new Error(
+      `MEGA refused login for ${email} (HTTP 402). Verify the account on mega.io (captcha, security check, account lock, or temporary service restriction), then retry in Nearbytes.`
+    );
+  }
+  return error instanceof Error ? error : new Error(message);
 }
 
 function isMegaTransientSyncError(error: unknown): boolean {
@@ -3589,6 +3571,11 @@ function shouldResetScCursor(error: unknown): boolean {
 }
 
 const ACTION_PACKET_HANDLE_KEYS = new Set(['h', 'n', 'p', 'ph', 'sh']);
+const ACCOUNT_LEVEL_ACTIONS = new Set(['ua']);
+
+function allActionsAreAccountLevel(actions: readonly string[]): boolean {
+  return actions.length > 0 && actions.every((action) => ACCOUNT_LEVEL_ACTIONS.has(action));
+}
 
 function sanitizePathSegment(value: string): string {
   const cleaned = value.replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, ' ').trim();
