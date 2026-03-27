@@ -41,6 +41,13 @@ export interface ManagedShareRemoteEntryProbe {
   readonly modifiedAt?: string;
 }
 
+export interface ProviderShareInventoryDebugEntry {
+  readonly shareHandle: string;
+  readonly rootHandle?: string;
+  readonly ownerEmail?: string;
+  readonly label: string;
+}
+
 export interface MirrorRemoteAdapter {
   list(): Promise<readonly MirrorRemoteEntry[]>;
   download(path: string): Promise<Uint8Array>;
@@ -80,6 +87,10 @@ export interface TransportAdapter {
     account: ProviderAccount | null,
     relativePath: string
   ): Promise<ManagedShareRemoteEntryProbe | null>;
+  getShareInventoryDebug?(account: ProviderAccount): Promise<{
+    incoming: ProviderShareInventoryDebugEntry[];
+    outgoing: ProviderShareInventoryDebugEntry[];
+  }>;
 }
 
 export function createDefaultTransportAdapters(runtime: IntegrationRuntime): TransportAdapter[] {

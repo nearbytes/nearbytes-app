@@ -879,6 +879,45 @@ export class ManagedShareService {
     return adapter.probeManagedShareRemoteEntry(share, account, normalizedPath);
   }
 
+  async debugProviderShareInventory(providerInput: string): Promise<{
+    provider: string;
+    accounts: Array<{
+      accountId: string;
+      email?: string;
+      incoming: Array<{
+        shareHandle: string;
+        rootHandle?: string;
+        ownerEmail?: string;
+        label: string;
+      }>;
+      outgoing: Array<{
+        shareHandle: string;
+        rootHandle?: string;
+        ownerEmail?: string;
+        label: string;
+      }>;
+    }>;
+  }> {
+    const provider = normalizeProvider(providerInput);
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.getShareInventoryDebug) {
+      throw new ManagedShareServiceError(501, 'NOT_IMPLEMENTED', `Share inventory debugging is not supported for ${provider}`);
+    }
+    const state = await this.loadState();
+    const accounts = state.accounts.filter((entry) => normalizeProvider(entry.provider) === provider && this.isOperationalAccount(entry));
+    const inventory = await Promise.all(
+      accounts.map(async (account) => ({
+        accountId: account.id,
+        email: account.email,
+        ...(await adapter.getShareInventoryDebug!(account)),
+      }))
+    );
+    return {
+      provider,
+      accounts: inventory,
+    };
+  }
+
   async reconcileProviderManagedShareInventory(providerInput: string): Promise<{
     provider: string;
     adoptedShares: number;

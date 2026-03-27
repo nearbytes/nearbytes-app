@@ -21,7 +21,12 @@ import {
   resolveMegaPublicLinkTarget,
 } from './megaPublicLink.js';
 import { MirrorWorker } from './mirrorWorker.js';
-import type { ManagedShareMirrorEntry, ManagedShareRemoteEntryProbe, MirrorRemoteEntry } from './adapters.js';
+import type {
+  ManagedShareMirrorEntry,
+  ManagedShareRemoteEntryProbe,
+  MirrorRemoteEntry,
+  ProviderShareInventoryDebugEntry,
+} from './adapters.js';
 import {
   ProviderRefreshWorker,
   type ProviderRefreshManifestEntry,
@@ -159,6 +164,7 @@ export class MegaTransportAdapter {
   private readonly syncControllers = new Map<string, AbortController>();
   private readonly syncTasks = new Map<string, Promise<void>>();
   private readonly refreshWorker = new ProviderRefreshWorker();
+  private readonly devInventorySignatures = new Map<string, string>();
 
   constructor(
     private readonly runtime: IntegrationRuntime,
@@ -330,6 +336,22 @@ export class MegaTransportAdapter {
     return [];
   }
 
+  async getShareInventoryDebug(account: ProviderAccount): Promise<{
+    incoming: ProviderShareInventoryDebugEntry[];
+    outgoing: ProviderShareInventoryDebugEntry[];
+  }> {
+    const resolved = await this.withRecoveredAccountSession(account, async (session) => ({
+      session,
+      snapshot: await this.fetchNodesSnapshot(session),
+      keyManager: await this.fetchKeyManagerState(session),
+    }));
+    return buildMegaShareInventoryDebugEntries(
+      resolved.snapshot,
+      resolved.session,
+      resolved.keyManager.shareKeys
+    );
+  }
+
   async listIncomingContactInvites(account: ProviderAccount): Promise<IncomingProviderContactInvite[]> {
     const snapshot = await this.withRecoveredAccountSession(account, (session) => this.fetchNodesSnapshot(session));
     return snapshot.incomingPendingContacts
@@ -472,6 +494,7 @@ export class MegaTransportAdapter {
     if (share.role === 'owner') {
       await fs.mkdir(share.localPath, { recursive: true });
       await ensureMegaOwnerLocalStructure(share.localPath);
+      await this.logDevShareInventoryIfChanged(account, 'boot');
       await this.runSyncLoop(share, account);
       this.startRecurringSyncTimer(share, account);
       return;
@@ -504,6 +527,7 @@ export class MegaTransportAdapter {
     }
 
     await fs.mkdir(share.localPath, { recursive: true });
+    await this.logDevShareInventoryIfChanged(account, 'boot');
     await this.runSyncLoop(share, account);
     this.startRecurringSyncTimer(share, account);
   }
@@ -686,12 +710,42 @@ export class MegaTransportAdapter {
       intervalMs: this.runtime.mega.syncIntervalMs,
     });
     const timer = setInterval(() => {
+      if (isDevLogsEnabled()) {
+        void this.logDevShareInventoryIfChanged(account, 'change');
+      }
       this.runSyncLoop(share, account).catch((error) => {
         this.runtime.logger.warn('MEGA sync loop failed.', error);
       });
     }, this.runtime.mega.syncIntervalMs);
     timer.unref?.();
     this.syncTimers.set(share.id, timer);
+  }
+
+  private async logDevShareInventoryIfChanged(account: ProviderAccount, reason: 'boot' | 'change'): Promise<void> {
+    if (!isDevLogsEnabled()) {
+      return;
+    }
+    try {
+      const inventory = await this.getShareInventoryDebug(account);
+      const signature = JSON.stringify(inventory);
+      const previous = this.devInventorySignatures.get(account.id);
+      if (previous === signature) {
+        return;
+      }
+      this.devInventorySignatures.set(account.id, signature);
+      const prefix = reason === 'boot' ? '[MEGA:inventory] boot snapshot' : '[MEGA:inventory] change detected';
+      console.log(prefix, {
+        accountId: account.id,
+        email: account.email ?? account.label,
+        incoming: inventory.incoming,
+        outgoing: inventory.outgoing,
+      });
+    } catch (error) {
+      this.runtime.logger.warn('MEGA inventory debug refresh failed.', {
+        accountId: account.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async syncOwnerShare(share: ManagedShare, account: ProviderAccount, signal?: AbortSignal): Promise<void> {
@@ -1340,7 +1394,7 @@ class MegaOwnerRemoteAdapter {
   ) { }
 
   async list(): Promise<readonly MirrorRemoteEntry[]> {
-    console.log('[MEGA:owner-adapter] listing remote entries.', {
+    debugMegaLog('[MEGA:owner-adapter] listing remote entries.', {
       rootHandle: this.ownerRoot.root.handle,
       rootPath: this.ownerRoot.path,
     });
@@ -1355,7 +1409,7 @@ class MegaOwnerRemoteAdapter {
       });
     });
     const sorted = entries.sort((left, right) => left.path.localeCompare(right.path));
-    console.log('[MEGA:owner-adapter] remote entries listed.', {
+    debugMegaLog('[MEGA:owner-adapter] remote entries listed.', {
       count: sorted.length,
       paths: sorted.map((e) => e.path),
     });
@@ -1363,7 +1417,7 @@ class MegaOwnerRemoteAdapter {
   }
 
   async download(relativePath: string): Promise<Uint8Array> {
-    console.log('[MEGA:owner-adapter] downloading file from owner root.', { relativePath });
+    debugMegaLog('[MEGA:owner-adapter] downloading file from owner root.', { relativePath });
     const node = findNodeByRelativePath(this.ownerRoot.tree, this.ownerRoot.root.handle, relativePath);
     if (!node || node.isFolder) {
       console.error('[MEGA:owner-adapter] download target not found in tree.', { relativePath });
@@ -1378,7 +1432,7 @@ class MegaOwnerRemoteAdapter {
       node.size,
       this.signal
     );
-    console.log('[MEGA:owner-adapter] download completed.', { relativePath, size: data.length });
+    debugMegaLog('[MEGA:owner-adapter] download completed.', { relativePath, size: data.length });
     return data;
   }
 
@@ -1390,7 +1444,7 @@ class MegaOwnerRemoteAdapter {
       throw new Error('MEGA upload path must include a file name.');
     }
 
-    console.log('[MEGA:owner-adapter] preparing upload.', {
+    debugMegaLog('[MEGA:owner-adapter] preparing upload.', {
       relativePath: normalized,
       name,
       folderSegments,
@@ -1408,14 +1462,14 @@ class MegaOwnerRemoteAdapter {
     );
     const existing = findChildNodeByName(this.ownerRoot.tree, parent.handle, name, false);
     if (existing) {
-      console.log('[MEGA:owner-adapter] upload skipped (already exists on remote).', {
+      debugMegaLog('[MEGA:owner-adapter] upload skipped (already exists on remote).', {
         relativePath: normalized,
         existingHandle: existing.handle,
       });
       return;
     }
 
-    console.log('[MEGA:owner-adapter] uploading file to MEGA.', {
+    debugMegaLog('[MEGA:owner-adapter] uploading file to MEGA.', {
       relativePath: normalized,
       parentHandle: parent.handle,
       name,
@@ -1431,7 +1485,7 @@ class MegaOwnerRemoteAdapter {
       this.shareCrypto,
       this.signal
     );
-    console.log('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
+    debugMegaLog('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
   }
 }
 
@@ -1524,7 +1578,7 @@ async function ensureTreePath(
     // Create the folder and cache the handle.
     const createdHandle = await createMegaFolder(apiClient, session, current.handle, segment, shareCrypto, signal);
     createdFolders.set(cacheKey, createdHandle);
-    console.log('[MEGA:ensureTreePath] folder created.', { segment, parentHandle: current.handle, createdHandle });
+    debugMegaLog('[MEGA:ensureTreePath] folder created.', { segment, parentHandle: current.handle, createdHandle });
     current = {
       handle: createdHandle,
       parentHandle: current.handle,
@@ -1877,7 +1931,7 @@ async function createMegaFolder(
           },
         ],
       } satisfies Record<string, unknown>;
-      console.log('[MEGA:create-folder] sending create request.', {
+      debugMegaLog('[MEGA:create-folder] sending create request.', {
         parentHandle,
         name,
         attempt,
@@ -1886,7 +1940,7 @@ async function createMegaFolder(
       });
       touchMegaSyncActivity(signal);
       const response = await apiClient.requestSingle<Record<string, unknown> | number>(request, { sessionId: session.sid, signal });
-      console.log('[MEGA:create-folder] create response received.', {
+      debugMegaLog('[MEGA:create-folder] create response received.', {
         parentHandle,
         name,
         attempt,
@@ -1915,7 +1969,7 @@ async function createMegaFolder(
       if (!globallyVisibleNode || !globallyVisibleNode.isFolder) {
         throw new Error(`MEGA did not make the created folder globally visible for ${name}.`);
       }
-      console.log('[MEGA:create-folder] folder became globally visible.', {
+      debugMegaLog('[MEGA:create-folder] folder became globally visible.', {
         parentHandle,
         name,
         attempt,
@@ -2319,6 +2373,16 @@ function isMegaAccessDeniedError(error: unknown): error is MegaApiError {
   return code === -11;
 }
 
+function isDevLogsEnabled(): boolean {
+  return (process.env.NODE_ENV ?? '').trim().toLowerCase() === 'development';
+}
+
+function debugMegaLog(...args: unknown[]): void {
+  if ((process.env.DEBUG ?? '').trim() !== '') {
+    console.log(...args);
+  }
+}
+
 function getMegaHttpStatus(error: unknown): number | null {
   const status = typeof (error as { status?: unknown } | undefined)?.status === 'number'
     ? Number((error as { status: number }).status)
@@ -2629,6 +2693,60 @@ function listIncomingMegaShareOffers(
 
   offers.sort((left, right) => left.label.localeCompare(right.label));
   return offers;
+}
+
+function buildMegaShareInventoryDebugEntries(
+  snapshot: MegaFetchNodesSnapshot,
+  session: MegaSession,
+  extraShareKeys: ReadonlyMap<string, Buffer> = new Map()
+): {
+  incoming: ProviderShareInventoryDebugEntry[];
+  outgoing: ProviderShareInventoryDebugEntry[];
+} {
+  const incoming = listIncomingMegaShareOffers(snapshot, session, extraShareKeys, 'mega', 'debug')
+    .map((offer) => ({
+      shareHandle:
+        getStringDescriptor(offer.remoteDescriptor, 'shareHandle') ??
+        getStringDescriptor(offer.remoteDescriptor, 'rootHandle') ??
+        '',
+      rootHandle:
+        getStringDescriptor(offer.remoteDescriptor, 'rootHandle') ??
+        getStringDescriptor(offer.remoteDescriptor, 'shareHandle'),
+      ownerEmail: getStringDescriptor(offer.remoteDescriptor, 'ownerEmail'),
+      label: offer.label,
+    }))
+    .filter((entry) => entry.shareHandle.length > 0);
+
+  const usersByHandle = buildMegaUsersByHandle(snapshot);
+  const shareKeys = collectMegaShareKeys(snapshot, session, extraShareKeys);
+  const outgoingByHandle = new Map<string, ProviderShareInventoryDebugEntry>();
+  for (const shareRecord of snapshot.outgoingShares) {
+    const shareHandle =
+      typeof shareRecord.t === 'string'
+        ? shareRecord.t.trim()
+        : typeof shareRecord.h === 'string'
+          ? shareRecord.h.trim()
+          : '';
+    if (!shareHandle) {
+      continue;
+    }
+    if (outgoingByHandle.has(shareHandle)) {
+      continue;
+    }
+    const matchingNode = snapshot.nodes.find((node) => typeof node.h === 'string' && node.h.trim() === shareHandle);
+    const decrypted = matchingNode ? decryptNodeRecord(matchingNode, session, shareKeys, usersByHandle) : null;
+    outgoingByHandle.set(shareHandle, {
+      shareHandle,
+      rootHandle: shareHandle,
+      ownerEmail: session.email,
+      label: normalizeMegaIncomingShareName(decrypted?.name, shareHandle),
+    });
+  }
+
+  return {
+    incoming: incoming.sort((left, right) => left.label.localeCompare(right.label)),
+    outgoing: Array.from(outgoingByHandle.values()).sort((left, right) => left.label.localeCompare(right.label)),
+  };
 }
 
 function buildMegaUsersByHandle(snapshot: MegaFetchNodesSnapshot): Map<string, MegaUserRecord> {

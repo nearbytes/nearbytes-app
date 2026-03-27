@@ -13,9 +13,9 @@ export class MirrorWorker {
   async sync(localRoot: string, remote: MirrorRemoteAdapter): Promise<MirrorSyncResult> {
     console.log('[MirrorWorker] sync started.', { localRoot });
     const localEntries = await listMirrorFiles(localRoot);
-    console.log('[MirrorWorker] local entries found.', { count: localEntries.length, paths: localEntries.map((e) => e.path) });
+    debugMirrorLog('[MirrorWorker] local entries found.', { count: localEntries.length, paths: localEntries.map((e) => e.path) });
     const remoteEntries = await remote.list();
-    console.log('[MirrorWorker] remote entries found.', { count: remoteEntries.length, paths: remoteEntries.map((e) => e.path) });
+    debugMirrorLog('[MirrorWorker] remote entries found.', { count: remoteEntries.length, paths: remoteEntries.map((e) => e.path) });
     const remoteMap = new Map(remoteEntries.map((entry) => [normalizeRelativePath(entry.path), entry]));
     const localMap = new Map(localEntries.map((entry) => [entry.path, entry]));
 
@@ -25,14 +25,14 @@ export class MirrorWorker {
 
     for (const entry of localEntries) {
       if (remoteMap.has(entry.path)) {
-        console.log('[MirrorWorker] skip (already remote).', { path: entry.path, size: entry.size });
+        debugMirrorLog('[MirrorWorker] skip (already remote).', { path: entry.path, size: entry.size });
         skipped.push(entry.path);
         continue;
       }
       const localBytes = new Uint8Array(await fs.readFile(path.join(localRoot, entry.path)));
       const localValidation = await validateCanonicalStorageFile(entry.path, localBytes);
       if (!localValidation.ok) {
-        console.warn('[MirrorWorker] skip invalid local storage file.', {
+        debugMirrorWarn('[MirrorWorker] skip invalid local storage file.', {
           path: entry.path,
           code: localValidation.code,
           detail: localValidation.detail,
@@ -40,10 +40,10 @@ export class MirrorWorker {
         skipped.push(entry.path);
         continue;
       }
-      console.log('[MirrorWorker] uploading local → remote.', { path: entry.path, size: entry.size });
+      debugMirrorLog('[MirrorWorker] uploading local → remote.', { path: entry.path, size: entry.size });
       try {
         await remote.upload(entry.path, localBytes);
-        console.log('[MirrorWorker] upload succeeded.', { path: entry.path });
+        debugMirrorLog('[MirrorWorker] upload succeeded.', { path: entry.path });
         uploaded.push(entry.path);
       } catch (error) {
         console.error('[MirrorWorker] upload FAILED.', { path: entry.path, error: error instanceof Error ? error.message : String(error) });
@@ -60,7 +60,7 @@ export class MirrorWorker {
       const remoteBytes = await remote.download(normalizedPath);
       const remoteValidation = await validateCanonicalStorageFile(normalizedPath, remoteBytes);
       if (!remoteValidation.ok) {
-        console.warn('[MirrorWorker] skip invalid remote storage file.', {
+        debugMirrorWarn('[MirrorWorker] skip invalid remote storage file.', {
           path: normalizedPath,
           code: remoteValidation.code,
           detail: remoteValidation.detail,
@@ -68,11 +68,11 @@ export class MirrorWorker {
         skipped.push(normalizedPath);
         continue;
       }
-      console.log('[MirrorWorker] downloading remote → local.', { path: normalizedPath, size: remoteEntry.size });
+      debugMirrorLog('[MirrorWorker] downloading remote → local.', { path: normalizedPath, size: remoteEntry.size });
       try {
         await fs.mkdir(path.dirname(fullPath), { recursive: true });
         await fs.writeFile(fullPath, remoteBytes);
-        console.log('[MirrorWorker] download succeeded.', { path: normalizedPath });
+        debugMirrorLog('[MirrorWorker] download succeeded.', { path: normalizedPath });
         downloaded.push(normalizedPath);
       } catch (error) {
         console.error('[MirrorWorker] download FAILED.', { path: normalizedPath, error: error instanceof Error ? error.message : String(error) });
@@ -86,6 +86,23 @@ export class MirrorWorker {
       downloaded,
       skipped,
     };
+  }
+}
+
+function isMirrorDebugEnabled(): boolean {
+  const value = process.env.DEBUG?.trim();
+  return Boolean(value);
+}
+
+function debugMirrorLog(...args: unknown[]): void {
+  if (isMirrorDebugEnabled()) {
+    console.log(...args);
+  }
+}
+
+function debugMirrorWarn(...args: unknown[]): void {
+  if (isMirrorDebugEnabled()) {
+    console.warn(...args);
   }
 }
 

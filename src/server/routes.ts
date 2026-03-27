@@ -598,6 +598,13 @@ export function createRoutes(deps: RouteDependencies): Router {
     });
   }));
 
+  router.get('/__debug/integrations/providers/:provider/share-inventory', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { provider } = parseWithSchema(providerIdParamSchema, req.params);
+    res.json(await service.debugProviderShareInventory(provider));
+  }));
+
   router.get('/__debug/ui', asyncHandler(async (_req, res) => {
     if (!deps.uiDebugExecutor) {
       res.json({
