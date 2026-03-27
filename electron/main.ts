@@ -1,7 +1,8 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, type OpenDialogOptions } from 'electron';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'crypto';
-import { existsSync, promises as fs } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, promises as fs, writeFileSync } from 'fs';
+import os from 'node:os';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { promisify } from 'util';
@@ -208,12 +209,19 @@ process.once('SIGTERM', () => {
 
 
 function installSafeConsoleWrites(): void {
+  const logFilePath = path.join(os.homedir(), '.nearbytes', 'logs', 'runtime.log');
+  mkdirSync(path.dirname(logFilePath), { recursive: true });
+  // Reset at every app boot, as requested.
+  writeFileSync(logFilePath, '', 'utf8');
   const methods: Array<'log' | 'info' | 'warn' | 'error' | 'debug'> = ['log', 'info', 'warn', 'error', 'debug'];
   for (const method of methods) {
     const original = console[method].bind(console);
     console[method] = ((...args: unknown[]) => {
       try {
         original(...args);
+        const timestamp = new Date().toISOString();
+        const payload = args.map(stringifyLogArg).join(' ');
+        appendFileSync(logFilePath, `[${timestamp}] ${method.toUpperCase()} ${payload}\n`, 'utf8');
       } catch (error) {
         if (!isIgnorableConsoleWriteError(error)) {
           throw error;
@@ -232,6 +240,20 @@ function installSafeConsoleWrites(): void {
       throw error;
     }
   });
+}
+
+function stringifyLogArg(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value instanceof Error) {
+    return value.stack ?? value.message;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function isIgnorableConsoleWriteError(error: unknown): boolean {
