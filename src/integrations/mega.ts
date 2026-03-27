@@ -2763,19 +2763,7 @@ function extractMegaReusableCredentials(
   return { email, password, mfaCode };
 }
 
-function acceptedShareCapabilities(descriptor: Record<string, unknown>): string[] {
-  const accessLevel = (getStringDescriptor(descriptor, 'accessLevel') ?? '').trim().toLowerCase();
-  if (
-    accessLevel === '2' ||
-    accessLevel === '3' ||
-    accessLevel === 'full' ||
-    accessLevel === 'full access' ||
-    accessLevel === 'owner' ||
-    accessLevel === 'read/write' ||
-    accessLevel === 'read-write'
-  ) {
-    return ['mirror', 'read', 'write', 'accept'];
-  }
+function acceptedShareCapabilities(_descriptor: Record<string, unknown>): string[] {
   return ['mirror', 'read', 'accept'];
 }
 
