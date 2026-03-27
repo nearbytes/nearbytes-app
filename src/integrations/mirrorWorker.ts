@@ -12,12 +12,12 @@ export interface MirrorSyncResult {
 export class MirrorWorker {
   async sync(localRoot: string, remote: MirrorRemoteAdapter): Promise<MirrorSyncResult> {
     console.log('[MirrorWorker] sync started.', { localRoot });
-    const localEntries = await listMirrorFiles(localRoot);
+    let localEntries = await listMirrorFiles(localRoot);
     debugMirrorLog('[MirrorWorker] local entries found.', { count: localEntries.length, paths: localEntries.map((e) => e.path) });
-    const remoteEntries = await remote.list();
+    let remoteEntries = await remote.list();
     debugMirrorLog('[MirrorWorker] remote entries found.', { count: remoteEntries.length, paths: remoteEntries.map((e) => e.path) });
-    const remoteMap = new Map(remoteEntries.map((entry) => [normalizeRelativePath(entry.path), entry]));
-    const localMap = new Map(localEntries.map((entry) => [entry.path, entry]));
+    let remoteMap = new Map(remoteEntries.map((entry) => [normalizeRelativePath(entry.path), entry]));
+    let localMap = new Map(localEntries.map((entry) => [entry.path, entry]));
 
     const uploaded: string[] = [];
     const downloaded: string[] = [];
@@ -45,11 +45,17 @@ export class MirrorWorker {
         await remote.upload(entry.path, localBytes);
         debugMirrorLog('[MirrorWorker] upload succeeded.', { path: entry.path });
         uploaded.push(entry.path);
+        remoteEntries = await remote.list();
+        remoteMap = new Map(remoteEntries.map((e) => [normalizeRelativePath(e.path), e]));
       } catch (error) {
         console.error('[MirrorWorker] upload FAILED.', { path: entry.path, error: error instanceof Error ? error.message : String(error) });
         throw error;
       }
     }
+
+    localEntries = await listMirrorFiles(localRoot);
+    localMap = new Map(localEntries.map((e) => [e.path, e]));
+    remoteEntries = await remote.list();
 
     for (const remoteEntry of remoteEntries) {
       const normalizedPath = normalizeRelativePath(remoteEntry.path);

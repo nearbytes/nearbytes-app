@@ -77,7 +77,14 @@ const MEGA_NODE_APPEAR_DELAYS_MS = [250, 500, 1_000, 1_500, 2_500, 4_000] as con
 const EXPECTED_MEGA_TOP_LEVEL_NAMES = new Set(['blocks', 'channels', 'Nearbytes.html']);
 const MEGA_PUT_NODES_PLACEHOLDER_HANDLE = 'xxxxxxxx';
 const MEGA_SHARE_ACCESS_LEVEL_READ_ONLY = 0;
+/** Placeholder `u` for share targets who are not yet contacts (see MegaClient::EXPORTEDLINK in meganz/sdk). */
+const MEGA_SHARE_INVITE_NON_CONTACT_USER = 'EXP';
 const megaSyncActivityTouchers = new WeakMap<AbortSignal, () => void>();
+
+interface MegaShareInviteTarget {
+  readonly u: string;
+  readonly e?: string;
+}
 
 interface MegaAdapterOptions {
   readonly fetchImpl?: typeof fetch;
@@ -318,7 +325,8 @@ export class MegaTransportAdapter {
     const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
     await this.withRecoveredAccountSession(account, async (session) => {
       const root = await this.ensureOwnerRemoteRoot(session, remotePath);
-      const collaborators = collectMegaOwnerCollaborators(await this.fetchNodesSnapshot(session), root.root.handle);
+      let snapshot = await this.fetchNodesSnapshot(session);
+      const collaborators = collectMegaOwnerCollaborators(snapshot, root.root.handle, root.root.shareHandle);
       const existingEmails = new Set(
         collaborators
           .map((collaborator) => collaborator.email?.trim().toLowerCase())
@@ -330,17 +338,136 @@ export class MegaTransportAdapter {
       }
 
       const hasExistingShares = collaborators.length > 0;
-      const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root);
       for (const [index, email] of invitees.entries()) {
-        await this.apiCommand(
-          buildMegaSetShareCommand(root, session, email, MEGA_SHARE_ACCESS_LEVEL_READ_ONLY, {
-            createShareKey: !hasExistingShares && index === 0,
-            existingShareKey: shareCrypto?.shareKey,
-          }),
-          session
-        );
+        if (index > 0) {
+          await waitForMegaRetry(400);
+        }
+        snapshot = await this.fetchNodesSnapshot(session);
+        let cryptoNow = await this.resolveOwnerShareCryptoContext(session, root);
+        for (let keyAttempt = 0; index > 0 && !cryptoNow?.shareKey && keyAttempt < 12; keyAttempt += 1) {
+          await waitForMegaRetry(500 + keyAttempt * 200);
+          cryptoNow = await this.resolveOwnerShareCryptoContext(session, root);
+        }
+        if (!cryptoNow?.shareKey) {
+          const snap = await this.fetchNodesSnapshot(session);
+          const km = await this.fetchKeyManagerState(session);
+          const keys = collectMegaShareKeys(snap, session, km.shareKeys);
+          for (const handle of [root.root.shareHandle, root.root.handle]) {
+            const trimmed = typeof handle === 'string' ? handle.trim() : '';
+            if (!trimmed) {
+              continue;
+            }
+            const material = keys.get(trimmed);
+            if (material) {
+              cryptoNow = { shareHandle: trimmed, shareKey: Buffer.from(material) };
+              break;
+            }
+          }
+        }
+        const createShareKey = !hasExistingShares && index === 0 && !cryptoNow?.shareKey;
+        const existingShareKey =
+          createShareKey || !cryptoNow?.shareKey ? undefined : Buffer.from(cryptoNow.shareKey);
+        if (!createShareKey && !existingShareKey) {
+          throw new Error(
+            'MEGA has collaborators listed for this folder but Nearbytes could not read the share encryption key. Reconnect MEGA or create the share once on mega.nz, then try inviting again.'
+          );
+        }
+        let target = resolveMegaShareInviteTarget(snapshot, email);
+        if (target.u === MEGA_SHARE_INVITE_NON_CONTACT_USER && target.e) {
+          try {
+            await this.apiCommand({ a: 'upc', u: target.e, aa: 'a' }, session);
+            this.runtime.logger.log('MEGA invite: sent pending-contact request before share invite.', {
+              email: target.e,
+            });
+          } catch (error) {
+            // Ignore transient/duplicate contact-request failures and continue with s2.
+            this.runtime.logger.warn('MEGA invite: pending-contact request failed; continuing with share invite.', {
+              email: target.e,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        this.runtime.logger.log('MEGA invite: issuing s2 set-share.', {
+          email: email.trim(),
+          index,
+          createShareKey,
+          inviteTarget: target.u === MEGA_SHARE_INVITE_NON_CONTACT_USER ? 'EXP' : 'contact',
+        });
+        try {
+          await this.apiCommand(
+            buildMegaSetShareCommand(root, session, target, MEGA_SHARE_ACCESS_LEVEL_READ_ONLY, {
+              createShareKey,
+              existingShareKey,
+            }),
+            session
+          );
+        } catch (error) {
+          const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
+          const canFallbackToDirectEmail =
+            code === -3 &&
+            target.u === MEGA_SHARE_INVITE_NON_CONTACT_USER &&
+            typeof target.e === 'string' &&
+            target.e.trim().length > 0;
+          if (!canFallbackToDirectEmail) {
+            throw error;
+          }
+          const fallbackTarget: MegaShareInviteTarget = { u: target.e!.trim() };
+          this.runtime.logger.warn('MEGA invite: EXP target returned API -3, retrying with direct email target.', {
+            email: email.trim(),
+          });
+          await this.apiCommand(
+            buildMegaSetShareCommand(root, session, fallbackTarget, MEGA_SHARE_ACCESS_LEVEL_READ_ONLY, {
+              createShareKey,
+              existingShareKey,
+            }),
+            session
+          );
+        }
       }
+
+      this.collaboratorCache.delete(share.id);
+      await this.waitForMegaOutgoingInviteReflection(session, root, invitees);
     });
+  }
+
+  private async waitForMegaOutgoingInviteReflection(
+    session: MegaSession,
+    root: MegaOwnerRemoteRoot,
+    invitees: readonly string[]
+  ): Promise<void> {
+    const timeoutMs = this.runtime.mega.inviteReflectionTimeoutMs;
+    if (timeoutMs <= 0 || invitees.length === 0) {
+      return;
+    }
+    const pollMs = this.runtime.mega.inviteReflectionPollMs;
+    const expected = invitees.map((email) => email.trim().toLowerCase()).filter((entry) => entry.length > 0);
+    if (expected.length === 0) {
+      return;
+    }
+    const deadline = this.runtime.now() + timeoutMs;
+    let poll = pollMs;
+    let lastSnapshot: MegaFetchNodesSnapshot | null = null;
+    while (this.runtime.now() < deadline) {
+      const snapshot = await this.fetchNodesSnapshot(session);
+      lastSnapshot = snapshot;
+      if (snapshotReflectsOutgoingInvitees(snapshot, root.root.handle, root.root.shareHandle, expected)) {
+        this.runtime.logger.log('MEGA outgoing shares now list invited collaborator(s).', {
+          emails: expected,
+        });
+        return;
+      }
+      await waitForMegaRetry(poll);
+      poll = Math.min(Math.floor(poll * 1.45), 8_000);
+    }
+    if (lastSnapshot && snapshotHasOutgoingShareForRoot(lastSnapshot, root.root.handle, root.root.shareHandle)) {
+      this.runtime.logger.warn(
+        `MEGA invite reflection timeout for ${expected.join(', ')} — outgoing share exists but collaborator row is still missing.`
+      );
+      return;
+    }
+    throw new Error(
+      `MEGA did not list ${expected.join(', ')} on outgoing shares within ${Math.round(timeoutMs / 1000)}s (fetch-nodes never reflected the invite). Check mega.nz while logged in as the same account, or try again.`
+    );
   }
 
   async acceptInvite(input: AcceptManagedShareInput, account: ProviderAccount): Promise<Partial<ManagedShare>> {
@@ -476,7 +603,11 @@ export class MegaTransportAdapter {
       return this.withRecoveredAccountSession(account, async (session) => {
         const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
         const root = await this.ensureOwnerRemoteRoot(session, remotePath);
-        const collaborators = collectMegaOwnerCollaborators(await this.fetchNodesSnapshot(session), root.root.handle);
+        const collaborators = collectMegaOwnerCollaborators(
+          await this.fetchNodesSnapshot(session),
+          root.root.handle,
+          root.root.shareHandle
+        );
         this.collaboratorCache.set(share.id, {
           expiresAt: Date.now() + MEGA_OWNER_COLLABORATOR_CACHE_MS,
           collaborators,
@@ -1326,6 +1457,7 @@ export class MegaTransportAdapter {
     return this.apiCommand<Record<string, unknown>>({ a: 'ug' }, session, signal);
   }
 
+
   private async fetchNodesSnapshot(session: MegaSession, signal?: AbortSignal): Promise<MegaFetchNodesSnapshot> {
     return fetchMegaNodesSnapshot(this.apiClient, session, undefined, { useCache: false }, signal);
   }
@@ -1688,9 +1820,60 @@ function uniqueTrimmedStrings(values: readonly string[]): string[] {
   return result;
 }
 
+function megaOutgoingShareRecordNodeHandles(record: Record<string, unknown>): string[] {
+  const handles: string[] = [];
+  for (const key of ['t', 'h'] as const) {
+    const raw = record[key];
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (trimmed) {
+        handles.push(trimmed);
+      }
+    }
+  }
+  return [...new Set(handles)];
+}
+
+function resolveMegaShareInviteTarget(snapshot: MegaFetchNodesSnapshot, email: string): MegaShareInviteTarget {
+  const normalized = email.trim().toLowerCase();
+  for (const user of snapshot.users) {
+    const handle = typeof user.u === 'string' ? user.u.trim() : '';
+    const mail = typeof user.m === 'string' ? user.m.trim().toLowerCase() : '';
+    if (handle && mail === normalized) {
+      return { u: handle };
+    }
+  }
+  const trimmed = email.trim();
+  return trimmed ? { u: MEGA_SHARE_INVITE_NON_CONTACT_USER, e: trimmed } : { u: MEGA_SHARE_INVITE_NON_CONTACT_USER };
+}
+
+function resolveOutgoingSharePeerEmail(
+  record: Record<string, unknown>,
+  usersByHandle: Map<string, MegaUserRecord>,
+  pendingContactsByHandle: ReadonlyMap<string, string>
+): string | undefined {
+  const pendingHandle = typeof record.p === 'string' ? record.p.trim() : '';
+  if (pendingHandle) {
+    const fromPending = pendingContactsByHandle.get(pendingHandle)?.trim();
+    if (fromPending) {
+      return fromPending;
+    }
+  }
+  const uRaw = typeof record.u === 'string' ? record.u.trim() : '';
+  if (!uRaw) {
+    return undefined;
+  }
+  if (uRaw.includes('@')) {
+    return uRaw;
+  }
+  const fromUser = usersByHandle.get(uRaw)?.m;
+  return typeof fromUser === 'string' && fromUser.trim() ? fromUser.trim() : undefined;
+}
+
 function collectMegaOwnerCollaborators(
   snapshot: MegaFetchNodesSnapshot,
-  rootHandle: string
+  rootNodeHandle: string,
+  rootShareHandle?: string
 ): ManagedShareCollaborator[] {
   const usersByHandle = buildMegaUsersByHandle(snapshot);
   const pendingContactsByHandle = new Map<string, string>();
@@ -1705,16 +1888,17 @@ function collectMegaOwnerCollaborators(
   const collaborators = new Map<string, ManagedShareCollaborator>();
   const records = [...snapshot.outgoingShares, ...snapshot.pendingShares];
   for (const record of records) {
-    const nodeHandle = typeof record.h === 'string' ? record.h.trim() : '';
-    if (!nodeHandle || nodeHandle !== rootHandle) {
+    const recordHandles = megaOutgoingShareRecordNodeHandles(record);
+    if (
+      !recordHandles.some(
+        (handle) =>
+          handle === rootNodeHandle || (typeof rootShareHandle === 'string' && rootShareHandle.trim() !== '' && handle === rootShareHandle.trim())
+      )
+    ) {
       continue;
     }
-    const userHandle = typeof record.u === 'string' ? record.u.trim() : '';
     const pendingHandle = typeof record.p === 'string' ? record.p.trim() : '';
-    const email =
-      (userHandle ? usersByHandle.get(userHandle)?.m : undefined) ??
-      (pendingHandle ? pendingContactsByHandle.get(pendingHandle) : undefined) ??
-      undefined;
+    const email = resolveOutgoingSharePeerEmail(record, usersByHandle, pendingContactsByHandle);
     if (!email) {
       continue;
     }
@@ -1739,6 +1923,72 @@ function collectMegaOwnerCollaborators(
     }
     return left.label.localeCompare(right.label);
   });
+}
+
+function snapshotReflectsOutgoingInvitees(
+  snapshot: MegaFetchNodesSnapshot,
+  rootNodeHandle: string,
+  rootShareHandle: string | undefined,
+  expectedLowercaseEmails: readonly string[]
+): boolean {
+  if (expectedLowercaseEmails.length === 0) {
+    return true;
+  }
+  const fromCollaborators = new Set(
+    collectMegaOwnerCollaborators(snapshot, rootNodeHandle, rootShareHandle)
+      .map((c) => c.email?.trim().toLowerCase())
+      .filter((v): v is string => Boolean(v))
+  );
+  const pendingByHandle = new Map<string, string>();
+  for (const pending of snapshot.outgoingPendingContacts) {
+    const handle = typeof pending.p === 'string' ? pending.p.trim() : '';
+    const mail = typeof pending.e === 'string' ? pending.e.trim().toLowerCase() : '';
+    if (handle && mail) {
+      pendingByHandle.set(handle, mail);
+    }
+  }
+  const fromRawRows = new Set<string>();
+  for (const record of [...snapshot.outgoingShares, ...snapshot.pendingShares]) {
+    const recordHandles = megaOutgoingShareRecordNodeHandles(record);
+    if (
+      !recordHandles.some(
+        (handle) =>
+          handle === rootNodeHandle ||
+          (typeof rootShareHandle === 'string' && rootShareHandle.trim() !== '' && handle === rootShareHandle.trim())
+      )
+    ) {
+      continue;
+    }
+    const uRaw = typeof record.u === 'string' ? record.u.trim() : '';
+    if (uRaw.includes('@')) {
+      fromRawRows.add(uRaw.toLowerCase());
+    }
+    const pending = typeof record.p === 'string' ? record.p.trim() : '';
+    const pendingEmail = pending ? pendingByHandle.get(pending) : undefined;
+    if (pendingEmail) {
+      fromRawRows.add(pendingEmail);
+    }
+  }
+  return expectedLowercaseEmails.every((email) => fromCollaborators.has(email) || fromRawRows.has(email));
+}
+
+function snapshotHasOutgoingShareForRoot(
+  snapshot: MegaFetchNodesSnapshot,
+  rootNodeHandle: string,
+  rootShareHandle: string | undefined
+): boolean {
+  for (const record of [...snapshot.outgoingShares, ...snapshot.pendingShares]) {
+    const handles = megaOutgoingShareRecordNodeHandles(record);
+    if (
+      handles.some(
+        (handle) =>
+          handle === rootNodeHandle || (typeof rootShareHandle === 'string' && rootShareHandle.trim() !== '' && handle === rootShareHandle.trim())
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function getMegaShareRemotePath(share: ManagedShare, fallbackPath: string): string {
@@ -1783,8 +2033,15 @@ class MegaOwnerRemoteAdapter {
       rootHandle: this.ownerRoot.root.handle,
       rootPath: this.ownerRoot.path,
     });
+    const fetched = await fetchMegaDecryptedTree(
+      this.apiClient,
+      this.session,
+      this.ownerRoot.root.handle,
+      { useCache: false },
+      this.signal
+    );
     const entries: MirrorRemoteEntry[] = [];
-    await visitTree(this.ownerRoot.tree, async (relativePath, node) => {
+    await visitTree(fetched.tree, async (relativePath, node) => {
       if (!isMirrorRelativePath(relativePath)) {
         return;
       }
@@ -1845,7 +2102,8 @@ class MegaOwnerRemoteAdapter {
       this.shareCrypto,
       this.signal
     );
-    const existing = findChildNodeByName(this.ownerRoot.tree, parent.handle, name, false);
+    debugMegaLog('[MEGA:owner-adapter] checking remote for existing file via live tree.', { parentHandle: parent.handle, name });
+    const existing = await findMegaRemoteChildNode(this.apiClient, this.session, parent.handle, name, false, this.signal);
     if (existing && existing.size === data.length) {
       debugMegaLog('[MEGA:owner-adapter] upload skipped (already exists on remote).', {
         relativePath: normalized,
@@ -1994,8 +2252,8 @@ async function ensureTreePath(
 
 function buildMegaSetShareCommand(
   ownerRoot: MegaOwnerRemoteRoot,
-  session: MegaSession,
-  email: string,
+  _session: MegaSession,
+  invitee: MegaShareInviteTarget,
   accessLevel: number,
   options: {
     readonly createShareKey?: boolean;
@@ -2003,21 +2261,24 @@ function buildMegaSetShareCommand(
   } = {}
 ): Record<string, unknown> {
   const shareKey = options.existingShareKey ?? randomBytes(16);
-  const handleBytes = decodeMegaBase64Url(ownerRoot.root.handle);
-  const paddedHandle = Buffer.alloc(16, 0);
-  handleBytes.copy(paddedHandle, 0, 0, Math.min(handleBytes.length, 16));
+  // Match MEGA SDK behavior: modern API paths accept dummy all-zero ok/ha.
+  // (See sdk/src/commands.cpp CommandSetShare TODO comment.)
+  const dummy = Buffer.alloc(16, 0);
   const command: Record<string, unknown> = {
     a: 's2',
     n: ownerRoot.root.handle,
-    ok: encodeMegaBase64Url(encryptAesEcb(shareKey, session.masterKey)),
-    ha: encodeMegaBase64Url(encryptAesEcb(paddedHandle, shareKey)),
+    ok: encodeMegaBase64Url(dummy),
+    ha: encodeMegaBase64Url(dummy),
     s: [
       {
-        u: email,
+        u: invitee.u,
         r: accessLevel,
       },
     ],
   };
+  if (invitee.e) {
+    command.e = invitee.e;
+  }
   if (options.createShareKey !== false) {
     command.cr = buildMegaShareNodeKeyRecords(ownerRoot, shareKey);
   }
@@ -4194,3 +4455,4 @@ function decryptAesEcb(value: Buffer, key: Buffer): Buffer {
   decipher.setAutoPadding(false);
   return Buffer.concat([decipher.update(value), decipher.final()]);
 }
+
