@@ -11,6 +11,7 @@ import {
 } from '../config/roots.js';
 import { ensureNearbytesMarkers, inspectNearbytesRoot, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
+import { normalizeVolumeId } from '../storage/integrity.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
 import { getDefaultStorageDir, getDefaultStorageHomeDir, getProviderStorageFolderName, resolveStorageHomeDir } from '../storagePath.js';
@@ -3408,8 +3409,8 @@ async function collectTrackedVolumeIdsFromNonManagedRoots(
       if (!entry.isDirectory()) {
         continue;
       }
-      const volumeId = entry.name.trim().toLowerCase();
-      if (/^[a-f0-9]{64,200}$/i.test(volumeId)) {
+      const volumeId = normalizeVolumeId(entry.name);
+      if (volumeId) {
         volumeIds.add(volumeId);
       }
     }

@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { z } from 'zod';
+import { normalizeVolumeId } from '../storage/integrity.js';
 
 export type RootProvider = 'local' | 'dropbox' | 'mega' | 'gdrive' | 'icloud' | 'onedrive';
 export type StorageFullPolicy = 'block-writes' | 'drop-older-blocks';
@@ -55,8 +56,6 @@ export interface RootsConfig {
 
 const ROOTS_CONFIG_VERSION = 2 as const;
 const LEGACY_ROOTS_CONFIG_VERSION = 1 as const;
-const CHANNEL_KEY_REGEX = /^[a-f0-9]{64,200}$/;
-
 const fullPolicySchema = z.enum(['block-writes', 'drop-older-blocks']);
 const providerManagedSourceIntegrationSchema = z.object({
   kind: z.literal('provider-managed'),
@@ -215,8 +214,8 @@ export function parseRootsConfig(value: unknown): RootsConfig {
   };
   const seenVolumeIds = new Set<string>();
   const normalizedVolumes = parsed.volumes.map((volume) => {
-    const volumeId = volume.volumeId.trim().toLowerCase();
-    if (!CHANNEL_KEY_REGEX.test(volumeId)) {
+    const volumeId = normalizeVolumeId(volume.volumeId);
+    if (!volumeId) {
       throw new Error(`Invalid volume id: ${volume.volumeId}`);
     }
     if (seenVolumeIds.has(volumeId)) {
@@ -618,8 +617,8 @@ function migrateLegacyRootsConfig(value: unknown): unknown {
       continue;
     }
     for (const channelKey of root.strategy.channelKeys) {
-      const normalizedKey = channelKey.trim().toLowerCase();
-      if (!CHANNEL_KEY_REGEX.test(normalizedKey)) {
+      const normalizedKey = normalizeVolumeId(channelKey);
+      if (!normalizedKey) {
         throw new Error(`Invalid backup allowlist channel key in ${root.id}: ${channelKey}`);
       }
       const destinations = volumeMap.get(normalizedKey) ?? [];

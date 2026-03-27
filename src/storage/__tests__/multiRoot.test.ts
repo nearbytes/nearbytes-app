@@ -2,12 +2,60 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { createCryptoOperations } from '../../crypto/index.js';
 import { type RootsConfig } from '../../config/roots.js';
 import { NEARBYTES_MARKER_FILE } from '../../config/sourceDiscovery.js';
+import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
+import { createEncryptedData, EMPTY_HASH, EventType, type EventPayload, type Hash } from '../../types/events.js';
+import { createSecret } from '../../types/keys.js';
+import { serializeEvent, serializeEventPayload } from '../serialization.js';
 import { MultiRootStorageBackend, type MultiRootRuntimeSnapshot } from '../multiRoot.js';
 
 function bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
+}
+
+const crypto = createCryptoOperations();
+
+async function createStoredBlock(value: string): Promise<{ hash: Hash; bytes: Uint8Array }> {
+  const data = bytes(value);
+  return {
+    hash: await crypto.computeHash(data),
+    bytes: data,
+  };
+}
+
+async function createSignedStoredEvent(
+  secretValue: string,
+  payload: EventPayload
+): Promise<{ volumeId: string; eventHash: Hash; bytes: Uint8Array }> {
+  const keyPair = await crypto.deriveKeys(createSecret(secretValue));
+  const payloadBytes = serializeEventPayload(payload);
+  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
+  const eventHash = await crypto.computeHash(payloadBytes);
+  return {
+    volumeId: volumeIdFromPublicKey(keyPair.publicKey),
+    eventHash,
+    bytes: bytes(JSON.stringify(serializeEvent({ payload, signature }))),
+  };
+}
+
+function createCreateFilePayload(fileName: string, blockHash: Hash): EventPayload {
+  return {
+    type: EventType.CREATE_FILE,
+    fileName,
+    hash: blockHash,
+    encryptedKey: createEncryptedData(new Uint8Array(0)),
+  };
+}
+
+function createDeleteFilePayload(fileName: string): EventPayload {
+  return {
+    type: EventType.DELETE_FILE,
+    fileName,
+    hash: EMPTY_HASH,
+    encryptedKey: createEncryptedData(new Uint8Array(0)),
+  };
 }
 
 function createConfig(args: {
@@ -257,21 +305,16 @@ describe('MultiRootStorageBackend', () => {
     const mainRoot = join(dir, 'main');
     await mkdir(mainRoot, { recursive: true });
 
-    const volumeId = 'a'.repeat(130);
-    const blockHash = 'b'.repeat(64);
-    await mkdir(join(mainRoot, 'channels', volumeId), { recursive: true });
-    await writeFile(
-      join(mainRoot, 'channels', volumeId, 'event.bin'),
-      JSON.stringify({
-        payload: {
-          type: 'CREATE_FILE',
-          hash: blockHash,
-        },
-      }),
-      'utf8'
+    const block = await createStoredBlock('block-data');
+    const event = await createSignedStoredEvent(
+      'nearbytes-test-runtime-snapshot',
+      createCreateFilePayload('snapshot.txt', block.hash)
     );
+    const volumeId = event.volumeId;
+    await mkdir(join(mainRoot, 'channels', volumeId), { recursive: true });
+    await writeFile(join(mainRoot, 'channels', volumeId, `${event.eventHash}.bin`), event.bytes);
     await mkdir(join(mainRoot, 'blocks'), { recursive: true });
-    await writeFile(join(mainRoot, 'blocks', `${blockHash}.bin`), 'block-data', 'utf8');
+    await writeFile(join(mainRoot, 'blocks', `${block.hash}.bin`), block.bytes);
 
     const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot }));
     const storageInternals = storage as unknown as {
@@ -741,8 +784,12 @@ describe('MultiRootStorageBackend', () => {
     await mkdir(mainRoot, { recursive: true });
     await mkdir(backupRoot, { recursive: true });
 
-    const keyHex = 'f'.repeat(130);
-    const blockHash = 'e'.repeat(64);
+    const block = await createStoredBlock('block-data');
+    const event = await createSignedStoredEvent(
+      'nearbytes-test-resolve-source-conflicts',
+      createCreateFilePayload('conflict.txt', block.hash)
+    );
+    const keyHex = event.volumeId;
     const config = createConfig({
       mainPath: mainRoot,
       sources: [
@@ -784,18 +831,9 @@ describe('MultiRootStorageBackend', () => {
     });
 
     await mkdir(join(mainRoot, 'blocks'), { recursive: true });
-    await writeFile(join(mainRoot, 'blocks', `${blockHash}.bin`), 'block-data', 'utf8');
+    await writeFile(join(mainRoot, 'blocks', `${block.hash}.bin`), block.bytes);
     await mkdir(join(mainRoot, 'channels', keyHex), { recursive: true });
-    await writeFile(
-      join(mainRoot, 'channels', keyHex, 'event.bin'),
-      JSON.stringify({
-        payload: {
-          type: 'CREATE_FILE',
-          hash: blockHash,
-        },
-      }),
-      'utf8'
-    );
+    await writeFile(join(mainRoot, 'channels', keyHex, `${event.eventHash}.bin`), event.bytes);
     await writeFile(join(backupRoot, 'Nearbytes.html'), 'stale marker\n', 'utf8');
     await writeFile(join(backupRoot, 'Nearbytes.json'), '{"legacy":true}\n', 'utf8');
 
@@ -808,8 +846,8 @@ describe('MultiRootStorageBackend', () => {
     expect(resolved.rewrittenMarkers).toBe(1);
     expect(resolved.removedLegacyMetadata).toBe(1);
     expect(resolved.clearedSources).toBe(0);
-    expect(await readFile(join(backupRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('block-data');
-    expect(await readFile(join(backupRoot, 'channels', keyHex, 'event.bin'), 'utf8')).toContain(blockHash);
+    expect(await readFile(join(backupRoot, 'blocks', `${block.hash}.bin`), 'utf8')).toBe('block-data');
+    expect(await readFile(join(backupRoot, 'channels', keyHex, `${event.eventHash}.bin`), 'utf8')).toContain(block.hash);
     expect(await readFile(join(backupRoot, 'Nearbytes.html'), 'utf8')).toContain('Nearbytes storage location');
     await expect(readFile(join(backupRoot, 'Nearbytes.json'), 'utf8')).rejects.toThrow();
 
@@ -823,8 +861,16 @@ describe('MultiRootStorageBackend', () => {
     await mkdir(mainRoot, { recursive: true });
     await mkdir(backupRoot, { recursive: true });
 
-    const keyHex = 'e'.repeat(130);
-    const blockHash = 'f'.repeat(64);
+    const block = await createStoredBlock('block-data');
+    const createEvent = await createSignedStoredEvent(
+      'nearbytes-test-reconcile-source',
+      createCreateFilePayload('doc.txt', block.hash)
+    );
+    const deleteEvent = await createSignedStoredEvent(
+      'nearbytes-test-reconcile-source',
+      createDeleteFilePayload('doc.txt')
+    );
+    const keyHex = createEvent.volumeId;
     const config = createConfig({
       mainPath: mainRoot,
       sources: [
@@ -851,27 +897,10 @@ describe('MultiRootStorageBackend', () => {
     });
 
     await mkdir(join(mainRoot, 'blocks'), { recursive: true });
-    await writeFile(join(mainRoot, 'blocks', `${blockHash}.bin`), 'block-data', 'utf8');
+    await writeFile(join(mainRoot, 'blocks', `${block.hash}.bin`), block.bytes);
     await mkdir(join(mainRoot, 'channels', keyHex), { recursive: true });
-    await writeFile(
-      join(mainRoot, 'channels', keyHex, 'event-a.bin'),
-      JSON.stringify({
-        payload: {
-          type: 'CREATE_FILE',
-          hash: blockHash,
-        },
-      }),
-      'utf8'
-    );
-    await writeFile(
-      join(mainRoot, 'channels', keyHex, 'event-b.bin'),
-      JSON.stringify({
-        payload: {
-          type: 'DELETE_FILE',
-        },
-      }),
-      'utf8'
-    );
+    await writeFile(join(mainRoot, 'channels', keyHex, `${createEvent.eventHash}.bin`), createEvent.bytes);
+    await writeFile(join(mainRoot, 'channels', keyHex, `${deleteEvent.eventHash}.bin`), deleteEvent.bytes);
 
     const storage = new MultiRootStorageBackend(config);
     storage.updateRootsConfig({
@@ -896,9 +925,9 @@ describe('MultiRootStorageBackend', () => {
 
     await storage.reconcileConfiguredVolumes();
 
-    expect(await readFile(join(backupRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('block-data');
-    expect(await readFile(join(backupRoot, 'channels', keyHex, 'event-a.bin'), 'utf8')).toContain(blockHash);
-    expect(await readFile(join(backupRoot, 'channels', keyHex, 'event-b.bin'), 'utf8')).toContain('DELETE_FILE');
+    expect(await readFile(join(backupRoot, 'blocks', `${block.hash}.bin`), 'utf8')).toBe('block-data');
+    expect(await readFile(join(backupRoot, 'channels', keyHex, `${createEvent.eventHash}.bin`), 'utf8')).toContain(block.hash);
+    expect(await readFile(join(backupRoot, 'channels', keyHex, `${deleteEvent.eventHash}.bin`), 'utf8')).toContain('DELETE_FILE');
 
     await rm(dir, { recursive: true, force: true });
   });
@@ -910,7 +939,7 @@ describe('MultiRootStorageBackend', () => {
     await mkdir(join(localRoot, 'blocks'), { recursive: true });
     await mkdir(join(remoteRoot, 'blocks'), { recursive: true });
 
-    const orphanHash = '1'.repeat(64);
+    const orphanBlock = await createStoredBlock('orphan-data');
     const config = createConfig({
       mainPath: localRoot,
       sources: [
@@ -936,13 +965,13 @@ describe('MultiRootStorageBackend', () => {
       volumes: [],
     });
 
-    await writeFile(join(remoteRoot, 'blocks', `${orphanHash}.bin`), 'orphan-data', 'utf8');
+    await writeFile(join(remoteRoot, 'blocks', `${orphanBlock.hash}.bin`), orphanBlock.bytes);
 
     const storage = new MultiRootStorageBackend(config);
     await storage.reconcileConfiguredVolumes();
 
-    expect(await readFile(join(localRoot, 'blocks', `${orphanHash}.bin`), 'utf8')).toBe('orphan-data');
-    await expect(readFile(join(remoteRoot, 'blocks', `${orphanHash}.bin`), 'utf8')).rejects.toThrow();
+    expect(await readFile(join(localRoot, 'blocks', `${orphanBlock.hash}.bin`), 'utf8')).toBe('orphan-data');
+    await expect(readFile(join(remoteRoot, 'blocks', `${orphanBlock.hash}.bin`), 'utf8')).rejects.toThrow();
 
     await rm(dir, { recursive: true, force: true });
   });
@@ -954,10 +983,13 @@ describe('MultiRootStorageBackend', () => {
     await mkdir(join(localRoot, 'blocks'), { recursive: true });
     await mkdir(join(remoteRoot, 'blocks'), { recursive: true });
 
-    const volumeId = 'f'.repeat(130);
-    const knownHash = '2'.repeat(64);
-    const orphanHash = '3'.repeat(64);
-    const eventPayload = JSON.stringify({ payload: { type: 'CREATE_FILE', hash: knownHash } });
+    const knownBlock = await createStoredBlock('known-data');
+    const orphanBlock = await createStoredBlock('orphan-data');
+    const createEvent = await createSignedStoredEvent(
+      'nearbytes-test-remote-reference',
+      createCreateFilePayload('known.txt', knownBlock.hash)
+    );
+    const volumeId = createEvent.volumeId;
 
     const config = createConfig({
       mainPath: localRoot,
@@ -1000,17 +1032,17 @@ describe('MultiRootStorageBackend', () => {
     });
 
     await mkdir(join(remoteRoot, 'channels', volumeId), { recursive: true });
-    await writeFile(join(remoteRoot, 'channels', volumeId, 'event.bin'), eventPayload, 'utf8');
-    await writeFile(join(remoteRoot, 'blocks', `${knownHash}.bin`), 'known-data', 'utf8');
-    await writeFile(join(remoteRoot, 'blocks', `${orphanHash}.bin`), 'orphan-data', 'utf8');
+    await writeFile(join(remoteRoot, 'channels', volumeId, `${createEvent.eventHash}.bin`), createEvent.bytes);
+    await writeFile(join(remoteRoot, 'blocks', `${knownBlock.hash}.bin`), knownBlock.bytes);
+    await writeFile(join(remoteRoot, 'blocks', `${orphanBlock.hash}.bin`), orphanBlock.bytes);
 
     const storage = new MultiRootStorageBackend(config);
     await storage.reconcileConfiguredVolumes();
 
-    expect(await readFile(join(localRoot, 'blocks', `${knownHash}.bin`), 'utf8')).toBe('known-data');
-    expect(await readFile(join(localRoot, 'blocks', `${orphanHash}.bin`), 'utf8')).toBe('orphan-data');
-    expect(await readFile(join(remoteRoot, 'blocks', `${knownHash}.bin`), 'utf8')).toBe('known-data');
-    await expect(readFile(join(remoteRoot, 'blocks', `${orphanHash}.bin`), 'utf8')).rejects.toThrow();
+    expect(await readFile(join(localRoot, 'blocks', `${knownBlock.hash}.bin`), 'utf8')).toBe('known-data');
+    expect(await readFile(join(localRoot, 'blocks', `${orphanBlock.hash}.bin`), 'utf8')).toBe('orphan-data');
+    expect(await readFile(join(remoteRoot, 'blocks', `${knownBlock.hash}.bin`), 'utf8')).toBe('known-data');
+    await expect(readFile(join(remoteRoot, 'blocks', `${orphanBlock.hash}.bin`), 'utf8')).rejects.toThrow();
 
     await rm(dir, { recursive: true, force: true });
   });
@@ -1022,9 +1054,12 @@ describe('MultiRootStorageBackend', () => {
     await mkdir(join(localRoot, 'blocks'), { recursive: true });
     await mkdir(join(remoteRoot, 'blocks'), { recursive: true });
 
-    const volumeId = '9'.repeat(130);
-    const blockHash = 'a'.repeat(64);
-    const eventPayload = JSON.stringify({ payload: { type: 'CREATE_FILE', hash: blockHash } });
+    const block = await createStoredBlock('referenced-data');
+    const createEvent = await createSignedStoredEvent(
+      'nearbytes-test-disk-only-volume',
+      createCreateFilePayload('tracked.txt', block.hash)
+    );
+    const volumeId = createEvent.volumeId;
 
     const config = createConfig({
       mainPath: localRoot,
@@ -1052,15 +1087,78 @@ describe('MultiRootStorageBackend', () => {
     });
 
     await mkdir(join(remoteRoot, 'channels', volumeId), { recursive: true });
-    await writeFile(join(remoteRoot, 'channels', volumeId, 'event.bin'), eventPayload, 'utf8');
-    await writeFile(join(remoteRoot, 'blocks', `${blockHash}.bin`), 'referenced-data', 'utf8');
+    await writeFile(join(remoteRoot, 'channels', volumeId, `${createEvent.eventHash}.bin`), createEvent.bytes);
+    await writeFile(join(remoteRoot, 'blocks', `${block.hash}.bin`), block.bytes);
 
     const storage = new MultiRootStorageBackend(config);
     await storage.reconcileConfiguredVolumes();
 
-    expect(await readFile(join(localRoot, 'channels', volumeId, 'event.bin'), 'utf8')).toContain(blockHash);
-    expect(await readFile(join(localRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('referenced-data');
-    expect(await readFile(join(remoteRoot, 'blocks', `${blockHash}.bin`), 'utf8')).toBe('referenced-data');
+    expect(await readFile(join(localRoot, 'channels', volumeId, `${createEvent.eventHash}.bin`), 'utf8')).toContain(block.hash);
+    expect(await readFile(join(localRoot, 'blocks', `${block.hash}.bin`), 'utf8')).toBe('referenced-data');
+    expect(await readFile(join(remoteRoot, 'blocks', `${block.hash}.bin`), 'utf8')).toBe('referenced-data');
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('does not reconcile malformed event files with non-canonical filenames', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    const backupRoot = join(dir, 'backup');
+    await mkdir(join(mainRoot, 'channels'), { recursive: true });
+    await mkdir(backupRoot, { recursive: true });
+
+    const validEvent = await createSignedStoredEvent(
+      'nearbytes-test-invalid-filename',
+      createDeleteFilePayload('ignored.txt')
+    );
+    const invalidFileName = `${validEvent.eventHash} (1).bin`;
+    const config = createConfig({
+      mainPath: mainRoot,
+      sources: [
+        {
+          id: 'src-main',
+          provider: 'local',
+          path: mainRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-backup',
+          provider: 'dropbox',
+          path: backupRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 10,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+      ],
+      volumes: [
+        {
+          volumeId: validEvent.volumeId,
+          destinations: [
+            {
+              sourceId: 'src-backup',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 10,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+      ],
+    });
+
+    await mkdir(join(mainRoot, 'channels', validEvent.volumeId), { recursive: true });
+    await writeFile(join(mainRoot, 'channels', validEvent.volumeId, invalidFileName), validEvent.bytes);
+
+    const storage = new MultiRootStorageBackend(config);
+    await storage.reconcileConfiguredVolumes();
+
+    await expect(readFile(join(backupRoot, 'channels', validEvent.volumeId, invalidFileName), 'utf8')).rejects.toThrow();
 
     await rm(dir, { recursive: true, force: true });
   });
@@ -1109,6 +1207,7 @@ describe('MultiRootStorageBackend', () => {
     const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot }));
     const report = await storage.inspectStorageLocation('src-main');
 
+    expect(report.issues.map((issue) => issue.code)).toEqual(expect.arrayContaining(['event-deserialize-failed']));
     expect(report.issues.map((issue) => issue.detail)).toEqual(
       expect.arrayContaining([
         `Invalid block filename: ${'a'.repeat(64)} (1).bin`,
@@ -1124,6 +1223,7 @@ describe('MultiRootStorageBackend', () => {
     await expect(readFile(join(mainRoot, 'blocks', 'conflicts'), 'utf8')).rejects.toThrow();
     await expect(readFile(join(mainRoot, 'channels', volumeId, `${'d'.repeat(64)} (1).bin`), 'utf8')).rejects.toThrow();
     await expect(readFile(join(mainRoot, 'channels', volumeId, 'duplicates'), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(mainRoot, 'channels', volumeId, validEventName), 'utf8')).rejects.toThrow();
 
     await rm(dir, { recursive: true, force: true });
   });

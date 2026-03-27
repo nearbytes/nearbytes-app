@@ -7,7 +7,7 @@ import { serializeEvent, deserializeEvent, serializeEventPayload } from './seria
 import { computeHash } from '../crypto/hash.js';
 import { isMultiRootStorageBackend } from './multiRoot.js';
 import { verifyPU } from '../crypto/asymmetric.js';
-import { validateBlockBytes } from './integrity.js';
+import { validateBlockBytes, validateEventBytes } from './integrity.js';
 
 /**
  * Channel storage operations
@@ -87,27 +87,17 @@ export class ChannelStorage {
       const eventPath = this.getEventPath(publicKey, eventHash);
       const channelHex = publicKeyToHex(publicKey);
       const eventBytes = isMultiRootStorageBackend(this.storage)
-        ? await this.storage.readValidatedFileForChannel(eventPath, channelHex, async (data) => {
-            const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(data)) as import('../types/events.js').SerializedEvent);
-            const payloadBytes = serializeEventPayload(parsed.payload);
-            const payloadHash = await computeHash(payloadBytes);
-            if (payloadHash !== eventHash) {
-              return {
-                ok: false,
-                code: 'event-hash-mismatch',
-                detail: `Expected event hash ${eventHash}, got ${payloadHash}`,
-              };
-            }
-            const valid = await verifyPU(payloadBytes, parsed.signature, publicKey).catch(() => false);
-            return valid
-              ? { ok: true }
-              : {
-                  ok: false,
-                  code: 'event-signature-invalid',
-                  detail: `Signature verification failed for event ${eventHash}`,
-                };
-          })
+        ? await this.storage.readValidatedFileForChannel(eventPath, channelHex, (data) =>
+            validateEventBytes(channelHex, eventHash, data)
+          )
         : await this.storage.readFile(eventPath);
+      if (!isMultiRootStorageBackend(this.storage)) {
+        const validation = await validateEventBytes(channelHex, eventHash, eventBytes);
+        if (!validation.ok) {
+          await this.storage.deleteFile(eventPath).catch(() => undefined);
+          throw new StorageError(`Failed to retrieve event: ${validation.detail ?? 'event validation failed'}`);
+        }
+      }
       const serialized = JSON.parse(new TextDecoder().decode(eventBytes)) as import('../types/events.js').SerializedEvent;
       const event = deserializeEvent(serialized);
       const payloadBytes = serializeEventPayload(event.payload);

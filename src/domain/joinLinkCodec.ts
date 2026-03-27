@@ -1,4 +1,5 @@
 import { base64UrlToBytes } from '../utils/encoding.js';
+import { normalizeVolumeId } from '../storage/integrity.js';
 import { canonicalJsonString } from './fileReferenceCodec.js';
 import type {
   JoinLink,
@@ -199,13 +200,13 @@ function parseJoinLinkSpace(value: unknown): JoinLinkSpace {
     };
   }
   if (mode === 'volume-id') {
-    const value = parseNonEmptyString(object.value, 'Join link volume id is invalid');
-    if (!/^[a-f0-9]{64,200}$/iu.test(value)) {
+    const value = normalizeVolumeId(parseNonEmptyString(object.value, 'Join link volume id is invalid'));
+    if (!value) {
       throw new Error('Join link volume id is invalid');
     }
     return {
       mode: 'volume-id',
-      value: value.toLowerCase(),
+      value,
     };
   }
   throw new Error(`Unsupported join link hub mode: ${mode}`);

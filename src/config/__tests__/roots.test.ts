@@ -12,6 +12,7 @@ import {
 
 describe('roots config', () => {
   it('migrates legacy main/backup roots into v2 sources and volume policies', () => {
+    const volumeId = 'abcd'.repeat(32) + 'ab';
     const parsed = parseRootsConfig({
       version: 1,
       roots: [
@@ -33,7 +34,7 @@ describe('roots config', () => {
           writable: false,
           strategy: {
             name: 'allowlist',
-            channelKeys: ['ABCD'.repeat(16), 'abcd'.repeat(16)],
+            channelKeys: [volumeId.toUpperCase(), volumeId],
           },
         },
       ],
@@ -52,7 +53,7 @@ describe('roots config', () => {
     ]);
     expect(parsed.volumes).toEqual([
       expect.objectContaining({
-        volumeId: 'abcd'.repeat(16),
+        volumeId,
         destinations: [
           expect.objectContaining({
             sourceId: 'backup-a',
@@ -79,6 +80,34 @@ describe('roots config', () => {
         ],
       })
     ).toThrow(/all-keys/i);
+  });
+
+  it('rejects non-public-key volume ids', () => {
+    expect(() =>
+      parseRootsConfig({
+        version: 2,
+        sources: [
+          {
+            id: 'src-main',
+            provider: 'local',
+            path: '/tmp/root',
+            enabled: true,
+            writable: true,
+            reservePercent: 5,
+            opportunisticPolicy: 'drop-older-blocks',
+          },
+        ],
+        defaultVolume: {
+          destinations: [],
+        },
+        volumes: [
+          {
+            volumeId: 'abcd'.repeat(16),
+            destinations: [],
+          },
+        ],
+      })
+    ).toThrow(/invalid volume id/i);
   });
 
   it('creates a default manifest when missing and saves atomically', async () => {

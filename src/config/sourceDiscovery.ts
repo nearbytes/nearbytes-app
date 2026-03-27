@@ -2,6 +2,7 @@ import { promises as fs, type Dirent, type Stats } from 'fs';
 import os from 'os';
 import path from 'path';
 import type { RootProvider, SourceConfigEntry } from './roots.js';
+import { normalizeVolumeId } from '../storage/integrity.js';
 
 export interface DiscoveredNearbytesSource {
   readonly provider: RootProvider;
@@ -72,7 +73,6 @@ const DEFAULT_PROVIDER_MAX_DIRECTORIES: Readonly<Partial<Record<RootProvider, nu
   onedrive: 600,
   icloud: 600,
 };
-const CHANNEL_DIRECTORY_REGEX = /^[a-f0-9]{64,200}$/i;
 export const NEARBYTES_MARKER_FILE = 'Nearbytes.html';
 export const NEARBYTES_LEGACY_METADATA_FILE = 'Nearbytes.json';
 export const NEARBYTES_LEGACY_MARKER_FILE = '.nearbytes';
@@ -656,8 +656,8 @@ function parseScanPathsFromEnv(value: string | undefined): string[] {
 async function listVolumeIds(channelsPath: string): Promise<string[]> {
   const entries = await safeReadDir(channelsPath);
   return entries
-    .filter((entry) => entry.isDirectory() && CHANNEL_DIRECTORY_REGEX.test(entry.name))
-    .map((entry) => entry.name.toLowerCase())
+    .map((entry) => (entry.isDirectory() ? normalizeVolumeId(entry.name) : null))
+    .filter((entry): entry is string => entry !== null)
     .sort((left, right) => left.localeCompare(right));
 }
 

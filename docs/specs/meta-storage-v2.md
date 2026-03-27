@@ -6,6 +6,10 @@ This document defines how Nearbytes stores, discovers, retains, and prunes encry
 
 Its scope is metadata-driven placement and retention policy. It does not define cryptographic content formats or secret handling.
 
+Correctness note:
+
+1. Canonical storage-path validity and file correctness are defined in `data-correctness-v1.md`.
+
 ## 1. Scope
 
 This specification defines the meta-level storage model for Nearbytes:
@@ -75,10 +79,11 @@ Normative rules:
 1. `blocks/` stores encrypted blocks addressed by hash.
 2. `<block-hash>` MUST be lowercase 64-hex (SHA-256 of the ciphertext block).
 3. `channels/` MUST contain one directory per volume, named by `volumeId`.
-4. `<eventHash>` MUST be lowercase 64-hex (event hash).
+4. `<eventHash>` MUST be lowercase 64-hex (event hash as defined by the event serialization/signing rules).
 5. Readers MUST ignore non-`.bin` files when enumerating event logs; `snapshot.latest.json` is optional and not part of the log.
 6. `Nearbytes.html`, when present, is a discovery marker only and MUST NOT be treated as durable data.
 7. `Nearbytes.json` is obsolete metadata and MUST be ignored and removed if found.
+8. Files that do not satisfy canonical path or content correctness MUST be treated as invalid storage data per `data-correctness-v1.md`.
 
 Each source has:
 

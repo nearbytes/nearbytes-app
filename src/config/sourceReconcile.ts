@@ -11,6 +11,7 @@ import {
   type VolumePolicyEntry,
 } from './roots.js';
 import { discoverNearbytesRoots } from './sourceDiscovery.js';
+import { normalizeVolumeId } from '../storage/integrity.js';
 
 export type DiscoveryAction =
   | 'added-source'
@@ -60,7 +61,6 @@ export interface ReconcileDiscoveredSourcesResult {
   readonly config: RootsConfig;
 }
 
-const CHANNEL_DIRECTORY_REGEX = /^[a-f0-9]{64,200}$/i;
 const DEFAULT_RESERVE_PERCENT = 5;
 const DEFAULT_FULL_POLICY: StorageFullPolicy = 'block-writes';
 
@@ -196,8 +196,8 @@ function collectKnownVolumeIds(config: RootsConfig, suppliedVolumeIds: readonly 
     all.add(volume.volumeId.toLowerCase());
   }
   for (const volumeId of suppliedVolumeIds ?? []) {
-    const normalized = volumeId.trim().toLowerCase();
-    if (CHANNEL_DIRECTORY_REGEX.test(normalized)) {
+    const normalized = normalizeVolumeId(volumeId);
+    if (normalized) {
       all.add(normalized);
     }
   }

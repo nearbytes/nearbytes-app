@@ -8,6 +8,7 @@ import { createCryptoOperations } from '../crypto/index.js';
 import { DecryptionError } from '../crypto/errors.js';
 import { FilesystemStorageBackend } from '../storage/filesystem.js';
 import { ChannelStorage } from '../storage/channel.js';
+import { validateBlockBytes } from '../storage/integrity.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { defaultPathMapper } from '../types/storage.js';
 import { serializeEvent, serializeEventPayload } from '../storage/serialization.js';
@@ -1418,6 +1419,10 @@ async function ensureDestinationBlockAvailable(
 ): Promise<void> {
   const dataPath = `blocks/${blobHash}.bin`;
   const encryptedData = await storage.readFile(dataPath);
+  const validation = await validateBlockBytes(blobHash, encryptedData);
+  if (!validation.ok) {
+    throw new Error(validation.detail ?? `Invalid block data for ${blobHash}`);
+  }
   await channelStorage.storeEncryptedData(blobHash as Hash, encryptedData as EncryptedData, false, destinationPublicKey);
 }
 

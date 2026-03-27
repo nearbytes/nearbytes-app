@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import { validateCanonicalStorageFile } from '../storage/integrity.js';
 
 export interface ProviderRefreshRemoteEntry {
   readonly path: string;
@@ -80,8 +81,14 @@ export class ProviderRefreshWorker {
       if (stats?.isDirectory()) {
         await fs.rm(targetPath, { recursive: true, force: true });
       }
+      const remoteBytes = await remote.download(entry.path);
+      const remoteValidation = await validateCanonicalStorageFile(entry.path, remoteBytes);
+      if (!remoteValidation.ok) {
+        skipped.push(entry.path);
+        continue;
+      }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.writeFile(targetPath, await remote.download(entry.path));
+      await fs.writeFile(targetPath, remoteBytes);
       downloaded.push(entry.path);
     }
 

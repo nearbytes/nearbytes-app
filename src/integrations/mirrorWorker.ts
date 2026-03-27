@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { MirrorRemoteAdapter } from './adapters.js';
+import { validateCanonicalStorageFile } from '../storage/integrity.js';
 
 export interface MirrorSyncResult {
   readonly uploaded: string[];
@@ -28,9 +29,20 @@ export class MirrorWorker {
         skipped.push(entry.path);
         continue;
       }
+      const localBytes = new Uint8Array(await fs.readFile(path.join(localRoot, entry.path)));
+      const localValidation = await validateCanonicalStorageFile(entry.path, localBytes);
+      if (!localValidation.ok) {
+        console.warn('[MirrorWorker] skip invalid local storage file.', {
+          path: entry.path,
+          code: localValidation.code,
+          detail: localValidation.detail,
+        });
+        skipped.push(entry.path);
+        continue;
+      }
       console.log('[MirrorWorker] uploading local → remote.', { path: entry.path, size: entry.size });
       try {
-        await remote.upload(entry.path, await fs.readFile(path.join(localRoot, entry.path)));
+        await remote.upload(entry.path, localBytes);
         console.log('[MirrorWorker] upload succeeded.', { path: entry.path });
         uploaded.push(entry.path);
       } catch (error) {
@@ -45,10 +57,21 @@ export class MirrorWorker {
         continue;
       }
       const fullPath = path.join(localRoot, normalizedPath);
+      const remoteBytes = await remote.download(normalizedPath);
+      const remoteValidation = await validateCanonicalStorageFile(normalizedPath, remoteBytes);
+      if (!remoteValidation.ok) {
+        console.warn('[MirrorWorker] skip invalid remote storage file.', {
+          path: normalizedPath,
+          code: remoteValidation.code,
+          detail: remoteValidation.detail,
+        });
+        skipped.push(normalizedPath);
+        continue;
+      }
       console.log('[MirrorWorker] downloading remote → local.', { path: normalizedPath, size: remoteEntry.size });
       try {
         await fs.mkdir(path.dirname(fullPath), { recursive: true });
-        await fs.writeFile(fullPath, await remote.download(normalizedPath));
+        await fs.writeFile(fullPath, remoteBytes);
         console.log('[MirrorWorker] download succeeded.', { path: normalizedPath });
         downloaded.push(normalizedPath);
       } catch (error) {

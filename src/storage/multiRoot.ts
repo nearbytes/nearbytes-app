@@ -14,12 +14,20 @@ import {
   normalizeNearbytesRoot,
   NEARBYTES_IGNORED_ROOT_FILES,
 } from '../config/sourceDiscovery.js';
+import { EventType, type SerializedEvent } from '../types/events.js';
 import { StorageError } from '../types/errors.js';
 import type { StorageBackend } from '../types/storage.js';
 import { FilesystemStorageBackend } from './filesystem.js';
-import { validateBlockBytes, validateEventBytes, type IntegrityValidationResult } from './integrity.js';
+import {
+  normalizeVolumeId,
+  parseCanonicalEventRelativePath,
+  validateBlockBytes,
+  validateEventBytes,
+  type IntegrityValidationResult,
+} from './integrity.js';
+import { deserializeEvent } from './serialization.js';
 
-const CHANNEL_PATH_REGEX = /^channels\/([a-f0-9]{64,200})(?:\/|$)/i;
+const CHANNEL_PATH_REGEX = /^channels\/([a-f0-9]{130})(?:\/|$)/i;
 const BLOCK_PATH_REGEX = /^blocks\/([a-f0-9]{64})(?:\.bin)?$/i;
 const RESOURCE_EXHAUSTED_CODES = new Set(['ENOSPC', 'EDQUOT']);
 const UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOTDIR', 'EIO']);
@@ -135,7 +143,9 @@ export interface StorageLocationIssue {
     | 'block-hash-mismatch'
     | 'event-deserialize-failed'
     | 'event-hash-mismatch'
-    | 'event-signature-invalid';
+    | 'event-signature-invalid'
+    | 'event-format-invalid'
+    | 'nested-signature-invalid';
   readonly severity: 'warn' | 'error';
   readonly relativePath: string;
   readonly absolutePath: string;
@@ -1313,11 +1323,11 @@ export class MultiRootStorageBackend implements StorageBackend {
 
     for (const target of eventTargets) {
       for (const eventFile of eventFiles) {
-        if (!eventFile.endsWith('.bin')) {
+        const relativePath = `${directory}/${eventFile}`;
+        const parsedEventPath = parseCanonicalEventRelativePath(relativePath);
+        if (!parsedEventPath) {
           continue;
         }
-
-        const relativePath = `${directory}/${eventFile}`;
         try {
           if (await target.state.backend.exists(relativePath)) {
             continue;
@@ -1328,7 +1338,11 @@ export class MultiRootStorageBackend implements StorageBackend {
 
         let data: Uint8Array;
         try {
-          data = await this.readFileFromRoots(relativePath, this.prioritizeRootsForChannel(volumeId));
+          data = await this.readValidatedFileFromRoots(
+            relativePath,
+            this.prioritizeRootsForChannel(volumeId),
+            (bytes) => validateEventBytes(parsedEventPath.volumeId, parsedEventPath.eventHash, bytes)
+          );
         } catch {
           continue;
         }
@@ -1371,7 +1385,11 @@ export class MultiRootStorageBackend implements StorageBackend {
 
         let data: Uint8Array;
         try {
-          data = await this.readFileFromRoots(relativePath, this.prioritizeRootsForChannel(volumeId));
+          data = await this.readValidatedFileFromRoots(
+            relativePath,
+            this.prioritizeRootsForChannel(volumeId),
+            (bytes) => validateBlockBytes(hash, bytes)
+          );
         } catch {
           continue;
         }
@@ -1431,6 +1449,14 @@ export class MultiRootStorageBackend implements StorageBackend {
         const destinationAbsolute = join(targetBlocksDir, entry.name);
         const stats = await safeStat(sourceAbsolute);
         if (!stats || !stats.isFile()) {
+          continue;
+        }
+        const bytes = await fs.readFile(sourceAbsolute).then((buffer) => new Uint8Array(buffer)).catch(() => null);
+        if (!bytes) {
+          continue;
+        }
+        const validation = await validateBlockBytes(hash, bytes);
+        if (!validation.ok) {
           continue;
         }
 
@@ -1560,8 +1586,8 @@ export class MultiRootStorageBackend implements StorageBackend {
         if (!entry.isDirectory()) {
           continue;
         }
-        const volumeId = entry.name.trim().toLowerCase();
-        if (/^[a-f0-9]{64,200}$/i.test(volumeId)) {
+        const volumeId = normalizeVolumeId(entry.name);
+        if (volumeId) {
           volumeIds.add(volumeId);
         }
       }
@@ -1579,24 +1605,26 @@ export class MultiRootStorageBackend implements StorageBackend {
     const eventFiles = await this.listFilesAcrossStates(directory, states);
 
     for (const eventFile of eventFiles) {
-      if (!eventFile.endsWith('.bin')) {
+      const relativePath = `${directory}/${eventFile}`;
+      const parsedEventPath = parseCanonicalEventRelativePath(relativePath);
+      if (!parsedEventPath) {
         continue;
       }
-      const relativePath = `${directory}/${eventFile}`;
       let bytes: Uint8Array;
       try {
-        bytes = await this.readFileFromRoots(relativePath, Array.from(states));
+        bytes = await this.readValidatedFileFromRoots(
+          relativePath,
+          Array.from(states),
+          (data) => validateEventBytes(parsedEventPath.volumeId, parsedEventPath.eventHash, data)
+        );
       } catch {
         continue;
       }
 
       try {
-        const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
-          payload?: { type?: string; hash?: string };
-        };
-        const hash = parsed.payload?.hash?.trim().toLowerCase();
-        if (parsed.payload?.type === 'CREATE_FILE' && hash && /^[a-f0-9]{64}$/i.test(hash)) {
-          hashes.add(hash);
+        const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(bytes)) as SerializedEvent);
+        if (parsed.payload.type === EventType.CREATE_FILE) {
+          hashes.add(parsed.payload.hash);
         }
       } catch {
         // Ignore unreadable event payloads at the meta layer.
@@ -1659,8 +1687,8 @@ export class MultiRootStorageBackend implements StorageBackend {
       if (normalized.startsWith('channels/')) {
         channelBytes += file.size;
         const parts = normalized.split('/');
-        const volumeId = parts[1]?.trim().toLowerCase();
-        if (volumeId && /^[a-f0-9]{64,200}$/i.test(volumeId)) {
+        const volumeId = parts[1] ? normalizeVolumeId(parts[1]) : null;
+        if (volumeId) {
           const current = historyByVolume.get(volumeId) ?? { bytes: 0, files: 0 };
           current.bytes += file.size;
           current.files += 1;

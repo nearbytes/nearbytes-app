@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ApiError } from './errors.js';
+import { VOLUME_ID_HEX_REGEX } from '../storage/integrity.js';
 
 export const openBodySchema = z.object({
   secret: z.string().min(1, 'Secret is required'),
@@ -91,7 +92,7 @@ export const reconcileDiscoveredSourcesBodySchema = z.object({
       z
         .string()
         .trim()
-        .regex(/^[a-f0-9]{64,200}$/i, 'Known volume ids must be lowercase or uppercase hex')
+        .regex(VOLUME_ID_HEX_REGEX, 'Known volume ids must be 130-hex public keys')
     )
     .optional()
     .default([]),
@@ -143,7 +144,7 @@ export const createManagedShareBodySchema = z.object({
   volumeId: z
     .string()
     .trim()
-    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .regex(VOLUME_ID_HEX_REGEX, 'Volume id must be a 130-hex public key')
     .optional(),
   remoteDescriptor: z.record(z.string(), z.unknown()).optional(),
   capabilities: z.array(z.string().trim().min(1)).optional(),
@@ -157,7 +158,7 @@ export const attachManagedShareBodySchema = z.object({
   volumeId: z
     .string()
     .trim()
-    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex'),
+    .regex(VOLUME_ID_HEX_REGEX, 'Volume id must be a 130-hex public key'),
 });
 
 export const acceptManagedShareBodySchema = z.object({
@@ -167,7 +168,7 @@ export const acceptManagedShareBodySchema = z.object({
   volumeId: z
     .string()
     .trim()
-    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .regex(VOLUME_ID_HEX_REGEX, 'Volume id must be a 130-hex public key')
     .optional(),
   localPath: z.string().trim().min(1).optional(),
   remoteDescriptor: z.record(z.string(), z.unknown()).optional(),
@@ -191,7 +192,7 @@ export const openJoinLinkBodySchema = parseJoinLinkBodySchema.extend({
   volumeId: z
     .string()
     .trim()
-    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .regex(VOLUME_ID_HEX_REGEX, 'Volume id must be a 130-hex public key')
     .optional(),
 });
 
