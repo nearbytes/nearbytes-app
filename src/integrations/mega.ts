@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, webcrypto } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
+import chokidar, { type FSWatcher } from 'chokidar';
 import {
   buildMegaScChannelUrl,
   buildMegaFetchNodesCommand,
@@ -63,6 +64,12 @@ const MEGA_RETRYABLE_API_ERROR_CODES = new Set([-3, -4]);
 const MEGA_LOCK_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 const MEGA_RATE_LIMIT_RETRY_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 18_000] as const;
 const MEGA_TRANSIENT_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
+const MEGA_TRANSIENT_SYNC_COOLDOWN_MS = 30_000;
+const MEGA_POST_UPLOAD_SETTLE_MS = 30_000;
+const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 500;
+const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
+const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
+const MEGA_OWNER_COLLABORATOR_CACHE_MS = 30_000;
 const MEGA_CREATE_RECOVERY_ATTEMPTS = 7;
 const MEGA_UPLOAD_RECOVERY_ATTEMPTS = 7;
 const MEGA_NODE_APPEAR_ATTEMPTS = 7;
@@ -165,6 +172,14 @@ export class MegaTransportAdapter {
   private readonly syncTasks = new Map<string, Promise<void>>();
   private readonly refreshWorker = new ProviderRefreshWorker();
   private readonly devInventorySignatures = new Map<string, string>();
+  private readonly devInventoryRefreshedAt = new Map<string, number>();
+  private readonly syncRetryCooldowns = new Map<string, number>();
+  private readonly collaboratorCache = new Map<string, { expiresAt: number; collaborators: ManagedShareCollaborator[] }>();
+  private readonly localWatchers = new Map<string, FSWatcher>();
+  private readonly scListenerControllers = new Map<string, AbortController>();
+  private readonly shareScsn = new Map<string, string>();
+  private readonly shareKnownHandles = new Map<string, string[]>();
+  private readonly shareRootHandles = new Map<string, string>();
 
   constructor(
     private readonly runtime: IntegrationRuntime,
@@ -179,8 +194,21 @@ export class MegaTransportAdapter {
       clearInterval(timer);
     }
     this.syncTimers.clear();
+    for (const watcher of this.localWatchers.values()) {
+      void watcher.close();
+    }
+    this.localWatchers.clear();
+    for (const controller of this.scListenerControllers.values()) {
+      controller.abort();
+    }
+    this.scListenerControllers.clear();
     this.syncStates.clear();
     this.syncTasks.clear();
+    this.syncRetryCooldowns.clear();
+    this.collaboratorCache.clear();
+    this.shareScsn.clear();
+    this.shareKnownHandles.clear();
+    this.shareRootHandles.clear();
   }
 
   async probe(endpoint: TransportEndpoint): Promise<TransportState> {
@@ -426,10 +454,19 @@ export class MegaTransportAdapter {
 
   async getCollaborators(share: ManagedShare, account: ProviderAccount | null): Promise<ManagedShareCollaborator[]> {
     if (share.role === 'owner' && account) {
+      const cached = this.collaboratorCache.get(share.id);
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.collaborators;
+      }
       return this.withRecoveredAccountSession(account, async (session) => {
         const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
         const root = await this.ensureOwnerRemoteRoot(session, remotePath);
-        return collectMegaOwnerCollaborators(await this.fetchNodesSnapshot(session), root.root.handle);
+        const collaborators = collectMegaOwnerCollaborators(await this.fetchNodesSnapshot(session), root.root.handle);
+        this.collaboratorCache.set(share.id, {
+          expiresAt: Date.now() + MEGA_OWNER_COLLABORATOR_CACHE_MS,
+          collaborators,
+        });
+        return collaborators;
       });
     }
     const ownerEmail = getStringDescriptor(share.remoteDescriptor, 'ownerEmail');
@@ -494,9 +531,9 @@ export class MegaTransportAdapter {
     if (share.role === 'owner') {
       await fs.mkdir(share.localPath, { recursive: true });
       await ensureMegaOwnerLocalStructure(share.localPath);
-      await this.logDevShareInventoryIfChanged(account, 'boot');
+      void this.logDevShareInventoryIfChanged(account, 'boot');
       await this.runSyncLoop(share, account);
-      this.startRecurringSyncTimer(share, account);
+      this.startOwnerPushPullSync(share, account);
       return;
     }
     if (isLegacyMegaLocalMirror(share)) {
@@ -527,8 +564,9 @@ export class MegaTransportAdapter {
     }
 
     await fs.mkdir(share.localPath, { recursive: true });
-    await this.logDevShareInventoryIfChanged(account, 'boot');
+    void this.logDevShareInventoryIfChanged(account, 'boot');
     await this.runSyncLoop(share, account);
+    this.startScChannelListener(share, account);
     this.startRecurringSyncTimer(share, account);
   }
 
@@ -538,6 +576,16 @@ export class MegaTransportAdapter {
       clearInterval(timer);
       this.syncTimers.delete(share.id);
     }
+    const watcher = this.localWatchers.get(share.id);
+    if (watcher) {
+      void watcher.close();
+      this.localWatchers.delete(share.id);
+    }
+    const scController = this.scListenerControllers.get(share.id);
+    if (scController) {
+      scController.abort();
+      this.scListenerControllers.delete(share.id);
+    }
     const controller = this.syncControllers.get(share.id);
     if (controller) {
       controller.abort();
@@ -545,6 +593,11 @@ export class MegaTransportAdapter {
     }
     this.syncStates.delete(share.id);
     this.syncTasks.delete(share.id);
+    this.syncRetryCooldowns.delete(share.id);
+    this.collaboratorCache.delete(share.id);
+    this.shareScsn.delete(share.id);
+    this.shareKnownHandles.delete(share.id);
+    this.shareRootHandles.delete(share.id);
   }
 
   private async runSyncLoop(share: ManagedShare, account: ProviderAccount): Promise<void> {
@@ -609,6 +662,7 @@ export class MegaTransportAdapter {
           }
           if (actionBatch.scsn) {
             await this.updateManifestCursor(share.id, actionBatch.scsn);
+            this.shareScsn.set(share.id, actionBatch.scsn);
           }
           if (!touchesShare) {
             this.syncStates.set(share.id, {
@@ -646,6 +700,13 @@ export class MegaTransportAdapter {
         unsupportedTopLevelNames: listUnsupportedMegaTopLevelEntryNames(topLevelEntryNames),
       };
       await this.runtime.secretStore.set(mirrorManifestKey(share.id), fetchedManifest);
+      this.shareRootHandles.set(share.id, resolved.fetched.tree.root.handle);
+      if (fetchedManifest.lastScsn) {
+        this.shareScsn.set(share.id, fetchedManifest.lastScsn);
+      }
+      if (fetchedManifest.knownHandles) {
+        this.shareKnownHandles.set(share.id, [...fetchedManifest.knownHandles]);
+      }
       const refreshResult = await this.refreshWorker.refresh(
         share.localPath,
         new MegaReadonlyRemoteAdapter(this.fetchImpl, this.apiClient, resolved.session, resolved.fetched.tree, signal),
@@ -710,8 +771,11 @@ export class MegaTransportAdapter {
       intervalMs: this.runtime.mega.syncIntervalMs,
     });
     const timer = setInterval(() => {
-      if (isDevLogsEnabled()) {
+      if (isDevLogsEnabled() && this.shouldRefreshDevInventory(account, share)) {
         void this.logDevShareInventoryIfChanged(account, 'change');
+      }
+      if (this.isSyncCoolingDown(share.id)) {
+        return;
       }
       this.runSyncLoop(share, account).catch((error) => {
         this.runtime.logger.warn('MEGA sync loop failed.', error);
@@ -721,11 +785,184 @@ export class MegaTransportAdapter {
     this.syncTimers.set(share.id, timer);
   }
 
+  private startOwnerPushPullSync(share: ManagedShare, account: ProviderAccount): void {
+    if (this.localWatchers.has(share.id)) {
+      return;
+    }
+
+    const watcher = chokidar.watch(
+      [path.join(share.localPath, 'blocks'), path.join(share.localPath, 'channels')],
+      {
+        persistent: true,
+        ignoreInitial: true,
+        depth: 10,
+        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+      }
+    );
+
+    let debounceTimer: NodeJS.Timeout | null = null;
+    watcher.on('all', () => {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (this.isSyncCoolingDown(share.id)) {
+          return;
+        }
+        console.log('[MEGA:push] local change detected, triggering owner sync.', { shareId: share.id });
+        this.runSyncLoop(share, account).catch((error) => {
+          this.runtime.logger.warn('MEGA owner push sync failed.', error);
+        });
+      }, MEGA_LOCAL_WATCH_DEBOUNCE_MS);
+    });
+    this.localWatchers.set(share.id, watcher);
+
+    this.startScChannelListener(share, account);
+    this.startRecurringSyncTimer(share, account);
+
+    this.runtime.logger.log('Owner push/pull sync started.', {
+      provider: this.provider,
+      accountId: account.id,
+      shareId: share.id,
+      safetyNetIntervalMs: this.runtime.mega.syncIntervalMs,
+      localWatchDebounceMs: MEGA_LOCAL_WATCH_DEBOUNCE_MS,
+    });
+  }
+
+  private startScChannelListener(share: ManagedShare, account: ProviderAccount): void {
+    if (this.scListenerControllers.has(share.id)) {
+      return;
+    }
+    const controller = new AbortController();
+    this.scListenerControllers.set(share.id, controller);
+    void this.runScChannelLoop(share, account, controller.signal);
+    this.runtime.logger.log('SC channel listener started.', {
+      provider: this.provider,
+      shareId: share.id,
+    });
+  }
+
+  private async runScChannelLoop(share: ManagedShare, account: ProviderAccount, signal: AbortSignal): Promise<void> {
+    let backoffMs = 0;
+
+    while (!signal.aborted) {
+      try {
+        if (backoffMs > 0) {
+          await waitForMegaRetry(backoffMs, signal);
+        }
+
+        const scsn = this.shareScsn.get(share.id);
+        if (!scsn) {
+          await waitForMegaRetry(5_000, signal);
+          continue;
+        }
+
+        const session = await this.getAccountSession(account, signal);
+        const actionBatch = await this.fetchActionPackets(session, scsn, signal);
+
+        if (actionBatch.scsn) {
+          this.shareScsn.set(share.id, actionBatch.scsn);
+        }
+
+        if (actionBatch.packets.length > 0) {
+          const rootHandle = this.shareRootHandles.get(share.id);
+          let touchesShare = true;
+          if (rootHandle) {
+            const knownHandles = this.shareKnownHandles.get(share.id) ?? [];
+            touchesShare = actionPacketBatchTouchesShare(actionBatch.packets, rootHandle, {
+              entries: {},
+              knownHandles,
+            });
+          }
+
+          if (actionBatch.packets.length) {
+            this.runtime.logger.log('MEGA sc channel event received.', {
+              shareId: share.id,
+              rootHandle,
+              packetCount: actionBatch.packets.length,
+              actions: summarizeActionPacketActions(actionBatch.packets),
+              touchesShare,
+            });
+          }
+
+          if (touchesShare) {
+            console.log('[MEGA:sc] remote change detected, triggering sync.', { shareId: share.id });
+            try {
+              await this.runSyncLoop(share, account);
+            } catch {
+              // sync failure is logged inside runSyncLoop; listener continues
+            }
+          }
+          backoffMs = 0;
+          continue;
+        }
+
+        if (actionBatch.waitUrl) {
+          try {
+            const waitController = new AbortController();
+            const onParentAbort = () => waitController.abort();
+            signal.addEventListener('abort', onParentAbort, { once: true });
+            const waitTimeout = setTimeout(() => waitController.abort(), MEGA_SC_LISTEN_TIMEOUT_MS);
+            waitTimeout.unref?.();
+            try {
+              await this.fetchImpl(actionBatch.waitUrl, { method: 'GET', signal: waitController.signal });
+            } finally {
+              clearTimeout(waitTimeout);
+              signal.removeEventListener('abort', onParentAbort);
+            }
+          } catch {
+            if (signal.aborted) {
+              return;
+            }
+          }
+          backoffMs = 0;
+          continue;
+        }
+
+        backoffMs = 5_000;
+      } catch (error) {
+        if (signal.aborted) {
+          return;
+        }
+        if (shouldResetScCursor(error)) {
+          this.shareScsn.delete(share.id);
+        }
+        backoffMs = Math.min(backoffMs ? backoffMs * 2 : 2_000, 60_000);
+      }
+    }
+  }
+
+  private shouldRefreshDevInventory(account: ProviderAccount, share: ManagedShare): boolean {
+    if (this.syncTasks.has(share.id) || this.isSyncCoolingDown(share.id)) {
+      return false;
+    }
+    const lastRefreshedAt = this.devInventoryRefreshedAt.get(account.id) ?? 0;
+    return Date.now() - lastRefreshedAt >= MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS;
+  }
+
+  private markSyncCooldown(shareId: string, delayMs = MEGA_TRANSIENT_SYNC_COOLDOWN_MS): void {
+    this.syncRetryCooldowns.set(shareId, Date.now() + delayMs);
+  }
+
+  private isSyncCoolingDown(shareId: string): boolean {
+    const until = this.syncRetryCooldowns.get(shareId);
+    if (!until) {
+      return false;
+    }
+    if (Date.now() >= until) {
+      this.syncRetryCooldowns.delete(shareId);
+      return false;
+    }
+    return true;
+  }
+
   private async logDevShareInventoryIfChanged(account: ProviderAccount, reason: 'boot' | 'change'): Promise<void> {
     if (!isDevLogsEnabled()) {
       return;
     }
     try {
+      this.devInventoryRefreshedAt.set(account.id, Date.now());
       const inventory = await this.getShareInventoryDebug(account);
       const signature = JSON.stringify(inventory);
       const previous = this.devInventorySignatures.get(account.id);
@@ -741,9 +978,17 @@ export class MegaTransportAdapter {
         outgoing: inventory.outgoing,
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isMegaTransientSyncError(error)) {
+        this.runtime.logger.log('MEGA inventory debug refresh deferred after transient error.', {
+          accountId: account.id,
+          error: message,
+        });
+        return;
+      }
       this.runtime.logger.warn('MEGA inventory debug refresh failed.', {
         accountId: account.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
     }
   }
@@ -772,7 +1017,9 @@ export class MegaTransportAdapter {
         rootHandle: root.root.handle,
         rootName: root.root.name,
         rootPath: root.path,
+        scsn: root.scsn,
       });
+      this.shareRootHandles.set(share.id, root.root.handle);
       const worker = new MirrorWorker();
       const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal);
       const result = await worker.sync(
@@ -784,6 +1031,15 @@ export class MegaTransportAdapter {
         uploaded: result.uploaded,
         downloaded: result.downloaded,
       });
+      if (root.scsn) {
+        this.shareScsn.set(share.id, root.scsn);
+      }
+      this.shareKnownHandles.set(share.id, collectTreeHandles(root.tree));
+      if (result.uploaded.length > 0) {
+        this.markSyncCooldown(share.id, MEGA_POST_UPLOAD_SETTLE_MS);
+      } else {
+        this.syncRetryCooldowns.delete(share.id);
+      }
       this.syncStates.set(share.id, {
         status: 'ready',
         detail: summarizeOwnerMirrorResult(remotePath, result),
@@ -797,6 +1053,7 @@ export class MegaTransportAdapter {
         error: error instanceof Error ? error.stack ?? error.message : String(error),
       });
       if (isMegaTransientSyncError(error)) {
+        this.markSyncCooldown(share.id);
         this.syncStates.set(share.id, {
           status: 'ready',
           detail:
@@ -1022,7 +1279,7 @@ export class MegaTransportAdapter {
     rootHandle: string,
     signal?: AbortSignal
   ): Promise<MegaFetchedTree> {
-    return fetchMegaDecryptedTree(this.apiClient, session, rootHandle, {}, signal, this.runtime.logger);
+    return fetchMegaDecryptedTree(this.apiClient, session, rootHandle, { useCache: false }, signal, this.runtime.logger);
   }
 
   private async fetchKeyManagerState(session: MegaSession, signal?: AbortSignal): Promise<MegaKeyManagerState> {
@@ -1129,6 +1386,7 @@ export class MegaTransportAdapter {
       path: normalizedPath,
       root: current,
       tree: fetched.tree,
+      scsn: fetched.snapshot.scsn?.trim(),
     };
   }
 
@@ -1372,6 +1630,7 @@ interface MegaOwnerRemoteRoot {
   readonly path: string;
   readonly root: DecryptedMegaNode;
   readonly tree: DecryptedMegaTree;
+  readonly scsn?: string;
 }
 
 interface MegaShareCryptoContext {
@@ -1461,7 +1720,7 @@ class MegaOwnerRemoteAdapter {
       this.signal
     );
     const existing = findChildNodeByName(this.ownerRoot.tree, parent.handle, name, false);
-    if (existing) {
+    if (existing && existing.size === data.length) {
       debugMegaLog('[MEGA:owner-adapter] upload skipped (already exists on remote).', {
         relativePath: normalized,
         existingHandle: existing.handle,
@@ -1469,28 +1728,59 @@ class MegaOwnerRemoteAdapter {
       return;
     }
 
+    const shouldStageUpload = shouldUseMegaTemporaryUploadName(name);
+    const temporaryName = shouldStageUpload ? buildMegaTemporaryUploadName(name) : name;
+    const existingTemporary = shouldStageUpload
+      ? findChildNodeByName(this.ownerRoot.tree, parent.handle, temporaryName, false)
+      : undefined;
+    if (shouldStageUpload && existingTemporary && existingTemporary.size === data.length) {
+      debugMegaLog('[MEGA:owner-adapter] finalizing existing staged upload.', {
+        relativePath: normalized,
+        temporaryHandle: existingTemporary.handle,
+      });
+      await renameMegaNode(this.apiClient, this.session, existingTemporary, name, this.signal);
+      return;
+    }
+    if (existing && existing.size !== data.length) {
+      await deleteMegaNode(this.apiClient, this.session, existing.handle, this.signal);
+    }
+    if (existingTemporary && existingTemporary.size !== data.length) {
+      await deleteMegaNode(this.apiClient, this.session, existingTemporary.handle, this.signal);
+    }
+
     debugMegaLog('[MEGA:owner-adapter] uploading file to MEGA.', {
       relativePath: normalized,
       parentHandle: parent.handle,
-      name,
+      name: temporaryName,
       dataSize: data.length,
     });
-    await uploadMegaOwnerFile(
+    const uploadedNode = await uploadMegaOwnerFile(
       this.fetchImpl,
       this.apiClient,
       this.session,
       parent.handle,
-      name,
+      temporaryName,
       Buffer.from(data),
       this.shareCrypto,
       this.signal
     );
+    if (shouldStageUpload) {
+      await renameMegaNode(this.apiClient, this.session, uploadedNode, name, this.signal);
+    }
     debugMegaLog('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
   }
 }
 
 function isMirrorRelativePath(value: string): boolean {
   return value.startsWith('blocks/') || value.startsWith('channels/');
+}
+
+function shouldUseMegaTemporaryUploadName(name: string): boolean {
+  return name.endsWith('.bin');
+}
+
+function buildMegaTemporaryUploadName(name: string): string {
+  return `${name}.tmp`;
 }
 
 function summarizeOwnerMirrorResult(
@@ -2022,7 +2312,7 @@ async function uploadMegaOwnerFile(
   data: Buffer,
   shareCrypto: MegaShareCryptoContext | undefined,
   signal?: AbortSignal
-): Promise<void> {
+): Promise<DecryptedMegaNode> {
   for (let attempt = 0; attempt < MEGA_UPLOAD_RECOVERY_ATTEMPTS; attempt += 1) {
     try {
       const transferKey = randomBytes(16);
@@ -2104,7 +2394,7 @@ async function uploadMegaOwnerFile(
       if (!globallyVisibleNode || globallyVisibleNode.isFolder) {
         throw new Error(`MEGA did not make the uploaded file globally visible for ${name}.`);
       }
-      return;
+      return globallyVisibleNode;
     } catch (error) {
       const recovered = await findMegaRemoteChildNode(apiClient, session, parentHandle, name, false, signal);
       if (recovered && !recovered.isFolder) {
@@ -2117,7 +2407,7 @@ async function uploadMegaOwnerFile(
           signal
         );
         if (globallyVisibleNode && !globallyVisibleNode.isFolder) {
-          return;
+          return globallyVisibleNode;
         }
       }
       if (
@@ -2125,6 +2415,87 @@ async function uploadMegaOwnerFile(
         !isMegaRetryableTransportError(error) &&
         !isMegaEventuallyConsistentMutationError(error)
       ) {
+        throw error;
+      }
+      if (attempt >= MEGA_UPLOAD_RECOVERY_ATTEMPTS - 1) {
+        throw error;
+      }
+      await waitForMegaRetry(getMegaRetryDelayMs(error, attempt), signal);
+    }
+  }
+  throw new Error(`MEGA did not upload ${name}.`);
+}
+
+async function renameMegaNode(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  node: DecryptedMegaNode,
+  nextName: string,
+  signal?: AbortSignal
+): Promise<DecryptedMegaNode> {
+  const parentHandle = node.parentHandle?.trim();
+  if (!parentHandle) {
+    throw new Error(`MEGA cannot rename ${node.handle} without a parent handle.`);
+  }
+  for (let attempt = 0; attempt < MEGA_UPLOAD_RECOVERY_ATTEMPTS; attempt += 1) {
+    try {
+      touchMegaSyncActivity(signal);
+      const response = await apiClient.requestSingle<Record<string, unknown> | number>(
+        {
+          a: 'a',
+          n: node.handle,
+          at: encryptMegaAttributes(nextName, node.nodeKey),
+        },
+        { sessionId: session.sid, signal }
+      );
+      if (typeof response === 'number') {
+        const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+        error.code = response;
+        throw error;
+      }
+      const renamedNode = await waitForMegaChildNodeInFullSnapshot(apiClient, session, parentHandle, nextName, false, signal);
+      if (!renamedNode || renamedNode.isFolder) {
+        throw new Error(`MEGA did not make the renamed file visible for ${nextName}.`);
+      }
+      return renamedNode;
+    } catch (error) {
+      const recovered = await findMegaRemoteChildNodeInFullSnapshot(apiClient, session, parentHandle, nextName, false, signal);
+      if (recovered && !recovered.isFolder) {
+        return recovered;
+      }
+      if (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) {
+        throw error;
+      }
+      if (attempt >= MEGA_UPLOAD_RECOVERY_ATTEMPTS - 1) {
+        throw error;
+      }
+      await waitForMegaRetry(getMegaRetryDelayMs(error, attempt), signal);
+    }
+  }
+  throw new Error(`MEGA did not rename ${node.handle} to ${nextName}.`);
+}
+
+async function deleteMegaNode(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  nodeHandle: string,
+  signal?: AbortSignal
+): Promise<void> {
+  for (let attempt = 0; attempt < MEGA_UPLOAD_RECOVERY_ATTEMPTS; attempt += 1) {
+    try {
+      touchMegaSyncActivity(signal);
+      const response = await apiClient.requestSingle<Record<string, unknown> | number>(
+        { a: 'd', n: nodeHandle },
+        { sessionId: session.sid, signal }
+      );
+      if (typeof response === 'number') {
+        const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+        error.code = response;
+        throw error;
+      }
+      return;
+    } catch (error) {
+      if (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) {
         throw error;
       }
       if (attempt >= MEGA_UPLOAD_RECOVERY_ATTEMPTS - 1) {

@@ -716,6 +716,7 @@ describe('MegaTransportAdapter', () => {
     const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
     const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
     let uploadedFileNodeKey: Buffer | null = null;
+    let uploadedTempFileVisible = false;
     let uploadedFileVisible = false;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
@@ -759,6 +760,16 @@ describe('MegaTransportAdapter', () => {
                       a: encryptAttributes('channels', channelsNodeKey),
                       k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
                     },
+                    ...(uploadedTempFileVisible && uploadedFileNodeKey
+                      ? [{
+                        h: 'filetmp001',
+                        p: 'blocks0001',
+                        t: 0,
+                        s: 16,
+                        a: encryptAttributes('aa.bin.tmp', uploadedFileNodeKey),
+                        k: encodeMegaBase64Url(encryptAesEcb(uploadedFileNodeKey, masterKey)),
+                      }]
+                      : []),
                     ...(uploadedFileVisible && uploadedFileNodeKey
                       ? [{
                         h: 'file000001',
@@ -788,8 +799,15 @@ describe('MegaTransportAdapter', () => {
               const node = ((payload.n as Array<Record<string, unknown>> | undefined) ?? [])[0];
               const encodedKey = typeof node?.k === 'string' ? node.k : '';
               uploadedFileNodeKey = encodedKey ? decryptAesEcb(decodeMegaBase64Url(encodedKey), masterKey) : null;
-              uploadedFileVisible = Boolean(uploadedFileNodeKey);
+              uploadedTempFileVisible = Boolean(uploadedFileNodeKey);
             }
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'a':
+            uploadedFileVisible = uploadedTempFileVisible;
+            uploadedTempFileVisible = false;
             return new Response(JSON.stringify([{}]), {
               status: 200,
               headers: { 'content-type': 'application/json' },

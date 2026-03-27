@@ -72,6 +72,7 @@ const FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 750;
 const FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 6_000;
 const FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 5_000;
 const FULL_MEGA_MANAGED_SHARE_COLLABORATORS_TIMEOUT_MS = 5_000;
+const MEGA_COLLABORATOR_LOOKUP_COOLDOWN_MS = 30_000;
 const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
 const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
 
@@ -108,6 +109,7 @@ export class ManagedShareService {
   private readonly readMaintenanceMode: 'background' | 'inline';
   private readonly syncBootstrapTasks = new Map<string, Promise<void>>();
   private readonly autoRepairCooldowns = new Map<string, number>();
+  private readonly collaboratorLookupCooldowns = new Map<string, number>();
   private readonly pendingMarkerRefreshes = new Set<string>();
   private maintenanceRequested = false;
   private maintenanceTask: Promise<void> | null = null;
@@ -1626,12 +1628,14 @@ export class ManagedShareService {
     promise: Promise<T>,
     fallback: T,
     timeoutMs: number,
-    warning: string
+    warning: string,
+    onTimeout?: () => void
   ): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<T>((resolve) => {
       timer = setTimeout(() => {
         this.runtime.logger.warn(warning);
+        onTimeout?.();
         resolve(fallback);
       }, timeoutMs);
       timer.unref?.();
@@ -2137,13 +2141,20 @@ export class ManagedShareService {
       ),
       skipAncillaryRemoteDetails
         ? Promise.resolve(fallbackCollaborators)
+        : this.isCollaboratorLookupCoolingDown(share)
+          ? Promise.resolve(fallbackCollaborators)
         : this.withSoftTimeout(
             this.resolveShareCollaborators(share, state),
             fallbackCollaborators,
             normalizeProvider(share.provider) === 'mega'
               ? FULL_MEGA_MANAGED_SHARE_COLLABORATORS_TIMEOUT_MS
               : 1_500,
-            `Managed share collaborators timed out for ${share.id}`
+            `Managed share collaborators timed out for ${share.id}`,
+            () => {
+              if (normalizeProvider(share.provider) === 'mega') {
+                this.markCollaboratorLookupCooldown(share);
+              }
+            }
           ),
     ]);
     return {
@@ -2246,7 +2257,14 @@ export class ManagedShareService {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.runtime.logger.warn(`Managed share collaborator lookup failed for ${share.id}: ${message}`);
+        if (normalizeProvider(share.provider) === 'mega' && isMegaTransientCollaboratorError(error)) {
+          this.markCollaboratorLookupCooldown(share);
+          this.runtime.logger.log(
+            `Managed share collaborator lookup deferred for ${share.id}: transient MEGA error (${message})`
+          );
+        } else {
+          this.runtime.logger.warn(`Managed share collaborator lookup failed for ${share.id}: ${message}`);
+        }
       }
     }
 
@@ -2273,6 +2291,22 @@ export class ManagedShareService {
 
   private async loadState(): Promise<IntegrationStateSnapshot> {
     return loadIntegrationState(this.integrationStatePath);
+  }
+
+  private markCollaboratorLookupCooldown(share: ManagedShare): void {
+    this.collaboratorLookupCooldowns.set(share.id, Date.now() + MEGA_COLLABORATOR_LOOKUP_COOLDOWN_MS);
+  }
+
+  private isCollaboratorLookupCoolingDown(share: ManagedShare): boolean {
+    const until = this.collaboratorLookupCooldowns.get(share.id);
+    if (!until) {
+      return false;
+    }
+    if (Date.now() >= until) {
+      this.collaboratorLookupCooldowns.delete(share.id);
+      return false;
+    }
+    return true;
   }
 
   private async repairManagedShareState(stateSnapshot: IntegrationStateSnapshot): Promise<IntegrationStateSnapshot> {
@@ -2833,6 +2867,17 @@ export class ManagedShareService {
 
 function normalizeProvider(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function isMegaTransientCollaboratorError(error: unknown): boolean {
+  const code = typeof (error as { code?: unknown } | undefined)?.code === 'number'
+    ? Number((error as { code: number }).code)
+    : null;
+  if (code === -3 || code === -4) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /MEGA API error -3|MEGA API error -4|rate\s*limit|timeout|timed?\s*out|temporar/i.test(message);
 }
 
 function describeMegaAccountRecovery(message: string): string {
@@ -3558,6 +3603,16 @@ function buildManagedShareMatchKeys(share: ManagedShare): Set<string> {
   if (typeof share.remoteDescriptor.managedShareId === 'string' && share.remoteDescriptor.managedShareId.trim() !== '') {
     keys.add(`managed:${share.remoteDescriptor.managedShareId.trim().toLowerCase()}`);
   }
+  if (typeof share.remoteDescriptor.shareHandle === 'string' && share.remoteDescriptor.shareHandle.trim() !== '') {
+    const handle = share.remoteDescriptor.shareHandle.trim().toLowerCase();
+    keys.add(`${share.provider}:share:${handle}`);
+    keys.add(`${share.provider}:remote:${handle}`);
+  }
+  if (typeof share.remoteDescriptor.rootHandle === 'string' && share.remoteDescriptor.rootHandle.trim() !== '') {
+    const handle = share.remoteDescriptor.rootHandle.trim().toLowerCase();
+    keys.add(`${share.provider}:remote:${handle}`);
+    keys.add(`${share.provider}:share:${handle}`);
+  }
   if (typeof share.remoteDescriptor.shareId === 'string' && share.remoteDescriptor.shareId.trim() !== '') {
     keys.add(`${share.provider}:share:${share.remoteDescriptor.shareId.trim().toLowerCase()}`);
   }
@@ -3604,6 +3659,16 @@ function supportsLiveSyncForMegaIncomingShare(_share: ManagedShare): boolean {
 
 function buildRemoteDescriptorMatchKeys(provider: string, descriptor: Record<string, unknown>): string[] {
   const keys = new Set<string>();
+  if (typeof descriptor.shareHandle === 'string' && descriptor.shareHandle.trim() !== '') {
+    const handle = descriptor.shareHandle.trim().toLowerCase();
+    keys.add(`${provider}:share:${handle}`);
+    keys.add(`${provider}:remote:${handle}`);
+  }
+  if (typeof descriptor.rootHandle === 'string' && descriptor.rootHandle.trim() !== '') {
+    const handle = descriptor.rootHandle.trim().toLowerCase();
+    keys.add(`${provider}:remote:${handle}`);
+    keys.add(`${provider}:share:${handle}`);
+  }
   if (typeof descriptor.remotePath === 'string' && descriptor.remotePath.trim() !== '') {
     keys.add(`${provider}:path:${descriptor.remotePath.trim().toLowerCase()}`);
   }
