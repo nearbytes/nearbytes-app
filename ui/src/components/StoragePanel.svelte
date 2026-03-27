@@ -2315,7 +2315,7 @@
   function managedShareNarrative(summary: ManagedShareSummary): string {
     if (summary.state.status === 'ready') {
       if (summary.share.provider === 'mega' && summary.share.role === 'owner') {
-        return 'This is your local Nearbytes root for this MEGA account. You can open it here, but provider-side writable MEGA sync is not implemented yet.';
+        return 'This is your local Nearbytes root for this MEGA account. Nearbytes keeps this writable folder in sync with MEGA and retries automatically after transient provider errors.';
       }
       if (summary.share.provider === 'mega' && summary.share.role === 'recipient') {
         const ownerEmail = managedShareOwnerEmail(summary);
@@ -2389,12 +2389,25 @@
   }
 
   function participantCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
-    return summary.collaborators
+    const active = summary.collaborators
       .filter((collaborator) => collaborator.status === 'active')
       .map((collaborator) => ({
         label: collaborator.email ?? collaborator.label,
         status: collaborator.status,
       }));
+    if (summary.share.role === 'owner') {
+      const accountEmail = managedShareAccountEmail(summary);
+      if (accountEmail) {
+        const alreadyListed = active.some((collaborator) => collaborator.label.toLowerCase() === accountEmail.toLowerCase());
+        if (!alreadyListed) {
+          active.unshift({
+            label: accountEmail,
+            status: 'active',
+          });
+        }
+      }
+    }
+    return active;
   }
 
   function pendingCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
