@@ -1710,7 +1710,7 @@ describe('ManagedShareService', () => {
     expect(shares.shares.filter((entry) => entry.share.remoteDescriptor.remotePath === '/nearbytes')).toHaveLength(1);
   });
 
-  it('reconnecting MEGA adopts remote incoming shares even when local managed-share state was lost', async () => {
+  it('reconnecting MEGA keeps remote incoming shares pending when local managed-share state was lost', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-incoming-reconnect-'));
     tempDirs.add(tempDir);
     const rootsConfigPath = path.join(tempDir, 'roots.json');
@@ -1788,17 +1788,17 @@ describe('ManagedShareService', () => {
     });
 
     const shares = await service.listManagedShares();
-    expect(shares.shares).toHaveLength(2);
+    expect(shares.shares).toHaveLength(1);
 
     const ownerShare = shares.shares.find((entry) => entry.share.role === 'owner');
     expect(ownerShare?.share.remoteDescriptor.remotePath).toBe('/nearbytes');
     expect(ownerShare?.share.localPath).toBe(path.resolve(path.join(managedRoot, 'mega', 'reader-example-com', 'nearbytes')));
 
-    const recipientShare = shares.shares.find((entry) => entry.share.role === 'recipient');
-    expect(recipientShare?.share.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
-    expect(recipientShare?.share.localPath).toBe(
-      path.resolve(path.join(managedRoot, 'mega', 'friend-example-com', `${'nearbytes'} ${recipientShare!.share.id.slice(-6)}`))
-    );
+    expect(shares.shares.find((entry) => entry.share.role === 'recipient')).toBeUndefined();
+
+    const incoming = await service.listIncomingManagedShares();
+    expect(incoming.shares).toHaveLength(1);
+    expect(incoming.shares[0]?.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
   });
 
   it('repairs accepted MEGA shares that were incorrectly stored on the account base folder', async () => {

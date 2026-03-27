@@ -571,17 +571,42 @@ export class ManagedShareService {
       await this.saveState(nextState);
     }
 
+    const rawOffers = offers.flatMap((entry) => entry.offers);
+    const filteredOffers = rawOffers.filter(
+      (offer) => !buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key))
+    );
+    const hiddenAsAttached = rawOffers.length - filteredOffers.length;
+    if (hiddenAsAttached > 0) {
+      const sample = rawOffers
+        .filter((offer) => buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key)))
+        .slice(0, 6)
+        .map((offer) => {
+          const keys = buildIncomingManagedShareOfferKeys(offer).filter((key) => attachedKeys.has(key));
+          return { id: offer.id, label: offer.label, matchedKeys: keys };
+        });
+      this.runtime.logger.log('Incoming managed shares hidden (already saved as locations).', {
+        hiddenCount: hiddenAsAttached,
+        sample,
+      });
+    }
+    this.runtime.logger.log('Incoming managed shares listing (API).', {
+      perAccount: offers.map((entry) => ({
+        accountId: entry.account.id,
+        provider: entry.account.provider,
+        offerCount: entry.offers.length,
+      })),
+      totalRaw: rawOffers.length,
+      totalListed: filteredOffers.length,
+    });
+
     return {
-      shares: offers
-        .flatMap((entry) => entry.offers)
-        .filter((offer) => !buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key)))
-        .sort((left, right) => {
-          const providerOrder = left.provider.localeCompare(right.provider);
-          if (providerOrder !== 0) {
-            return providerOrder;
-          }
-          return left.label.localeCompare(right.label);
-        }),
+      shares: filteredOffers.sort((left, right) => {
+        const providerOrder = left.provider.localeCompare(right.provider);
+        if (providerOrder !== 0) {
+          return providerOrder;
+        }
+        return left.label.localeCompare(right.label);
+      }),
     };
   }
 
@@ -1071,16 +1096,6 @@ export class ManagedShareService {
         state = await this.loadState();
         continue;
       }
-
-      await this.acceptManagedShare({
-        provider,
-        accountId: account.id,
-        label: offer.label,
-        localPath: offer.suggestedLocalPath,
-        remoteDescriptor: offer.remoteDescriptor,
-      });
-      state = await this.loadState();
-      adoptedShares += 1;
     }
 
     return {
@@ -1675,7 +1690,9 @@ export class ManagedShareService {
   }
 
   private providerIncomingShareDiscoveryTimeoutMs(provider: string): number {
-    return normalizeProvider(provider) === 'mega' ? 12_000 : 1_500;
+    // MEGA fetch-nodes + key manager can exceed a few seconds under load; racing with a short
+    // timeout makes `/integrations/shares/incoming` return [] while maintenance logs show offers.
+    return normalizeProvider(provider) === 'mega' ? 55_000 : 1_500;
   }
 
   private requestBackgroundMaintenance(reason: string, stateSnapshot: IntegrationStateSnapshot): void {

@@ -76,7 +76,7 @@ const MEGA_NODE_APPEAR_ATTEMPTS = 7;
 const MEGA_NODE_APPEAR_DELAYS_MS = [250, 500, 1_000, 1_500, 2_500, 4_000] as const;
 const EXPECTED_MEGA_TOP_LEVEL_NAMES = new Set(['blocks', 'channels', 'Nearbytes.html']);
 const MEGA_PUT_NODES_PLACEHOLDER_HANDLE = 'xxxxxxxx';
-const MEGA_WRITABLE_SHARE_ACCESS_LEVEL = 2;
+const MEGA_SHARE_ACCESS_LEVEL_READ_ONLY = 0;
 const megaSyncActivityTouchers = new WeakMap<AbortSignal, () => void>();
 
 interface MegaAdapterOptions {
@@ -330,10 +330,12 @@ export class MegaTransportAdapter {
       }
 
       const hasExistingShares = collaborators.length > 0;
+      const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root);
       for (const [index, email] of invitees.entries()) {
         await this.apiCommand(
-          buildMegaSetShareCommand(root, email, MEGA_WRITABLE_SHARE_ACCESS_LEVEL, {
+          buildMegaSetShareCommand(root, session, email, MEGA_SHARE_ACCESS_LEVEL_READ_ONLY, {
             createShareKey: !hasExistingShares && index === 0,
+            existingShareKey: shareCrypto?.shareKey,
           }),
           session
         );
@@ -355,13 +357,21 @@ export class MegaTransportAdapter {
       snapshot: await this.fetchNodesSnapshot(session),
       keyManager: await this.fetchKeyManagerState(session),
     }));
-    return listIncomingMegaShareOffers(
+    const { offers, diag } = listIncomingMegaShareOffersWithDiag(
       resolved.snapshot,
       resolved.session,
       resolved.keyManager.shareKeys,
       this.provider,
       account.id
     );
+    if (diag.nodesWithSharingUser > diag.offerCount) {
+      this.runtime.logger.log('MEGA incoming share discovery: not every tree node with a sharing user became an offer.', {
+        accountId: account.id,
+        email: account.email,
+        ...diag,
+      });
+    }
+    return offers;
   }
 
   async listManagedShareMirrors(account: ProviderAccount): Promise<ManagedShareMirrorEntry[]> {
@@ -1058,7 +1068,20 @@ export class MegaTransportAdapter {
       });
       this.shareRootHandles.set(share.id, root.root.handle);
       const worker = new MirrorWorker();
-      const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal);
+      let shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal);
+      if (shareCrypto && isZeroBuffer(shareCrypto.shareKey)) {
+        this.runtime.logger.warn(
+          'MEGA owner sync: detected corrupted (all-zero) share key — repairing the share.',
+          { shareId: share.id, shareHandle: root.root.shareHandle, email: session.email }
+        );
+        shareCrypto = await this.repairOwnerShareKey(session, root, signal);
+      }
+      if (!shareCrypto && root.root.shareHandle) {
+        this.runtime.logger.warn(
+          'MEGA owner sync: shared folder has no decryptable share key. Uploaded files will be undecryptable by collaborators.',
+          { shareId: share.id, shareHandle: root.root.shareHandle, email: session.email }
+        );
+      }
       const result = await worker.sync(
         share.localPath,
         new MegaOwnerRemoteAdapter(this.fetchImpl, this.apiClient, session, root, shareCrypto, signal)
@@ -1549,15 +1572,72 @@ export class MegaTransportAdapter {
     if (!shareHandle) {
       return undefined;
     }
+
     const keyManager = await this.fetchKeyManagerState(session, signal);
     const shareKey = keyManager.shareKeys.get(shareHandle);
-    if (!shareKey) {
+    if (shareKey) {
+      return { shareHandle, shareKey: Buffer.from(shareKey) };
+    }
+
+    // Fallback: look for the share key in the snapshot (outgoing shares `ok` field,
+    // or the `sk` field on the root node itself).
+    const snapshot = await this.fetchNodesSnapshot(session, signal);
+    const snapshotShareKeys = collectMegaShareKeys(snapshot, session);
+    const fallbackKey = snapshotShareKeys.get(shareHandle);
+    if (fallbackKey) {
+      this.runtime.logger.log('MEGA share crypto context resolved via snapshot fallback (key-manager miss).', {
+        shareHandle,
+        email: session.email,
+      });
+      return { shareHandle, shareKey: Buffer.from(fallbackKey) };
+    }
+
+    this.runtime.logger.warn('MEGA share crypto context could not be resolved — share key not found in key-manager or snapshot.', {
+      shareHandle,
+      email: session.email,
+      keyManagerShareCount: keyManager.shareKeys.size,
+      snapshotShareKeyCount: snapshotShareKeys.size,
+    });
+    return undefined;
+  }
+
+  /**
+   * Re-key an owner share whose share key was lost or stored as all-zeros.
+   * Issues a new `s2` command with a fresh share key and rebuilds `cr` records
+   * for every node already in the tree, making them decryptable by collaborators.
+   */
+  private async repairOwnerShareKey(
+    session: MegaSession,
+    root: MegaOwnerRemoteRoot,
+    signal?: AbortSignal
+  ): Promise<MegaShareCryptoContext | undefined> {
+    const shareHandle = root.root.shareHandle?.trim();
+    if (!shareHandle) {
       return undefined;
     }
-    return {
-      shareHandle,
-      shareKey: Buffer.from(shareKey),
+
+    const newShareKey = randomBytes(16);
+    const handleBytes = decodeMegaBase64Url(shareHandle);
+    const paddedHandle = Buffer.alloc(16, 0);
+    handleBytes.copy(paddedHandle, 0, 0, Math.min(handleBytes.length, 16));
+
+    const cr = buildMegaShareNodeKeyRecords(root, newShareKey);
+    const command: Record<string, unknown> = {
+      a: 's2',
+      n: shareHandle,
+      ok: encodeMegaBase64Url(encryptAesEcb(newShareKey, session.masterKey)),
+      ha: encodeMegaBase64Url(encryptAesEcb(paddedHandle, newShareKey)),
+      s: [],
+      cr,
     };
+    touchMegaSyncActivity(signal);
+    await this.apiClient.requestSingle(command, { sessionId: session.sid, signal });
+    this.runtime.logger.log('MEGA owner share key repaired — new share key set and cr records rebuilt.', {
+      shareHandle,
+      email: session.email,
+      nodeCount: root.tree.nodesByHandle.size,
+    });
+    return { shareHandle, shareKey: newShareKey };
   }
 }
 
@@ -1571,6 +1651,15 @@ function mirrorManifestKey(shareId: string): string {
 
 function createOpaqueId(prefix: string): string {
   return `${prefix}-${randomBytes(6).toString('hex')}`;
+}
+
+function isZeroBuffer(value: Buffer): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function xorBuffers(left: Buffer, right: Buffer): Buffer {
@@ -1905,17 +1994,23 @@ async function ensureTreePath(
 
 function buildMegaSetShareCommand(
   ownerRoot: MegaOwnerRemoteRoot,
+  session: MegaSession,
   email: string,
   accessLevel: number,
   options: {
     readonly createShareKey?: boolean;
+    readonly existingShareKey?: Buffer;
   } = {}
 ): Record<string, unknown> {
+  const shareKey = options.existingShareKey ?? randomBytes(16);
+  const handleBytes = decodeMegaBase64Url(ownerRoot.root.handle);
+  const paddedHandle = Buffer.alloc(16, 0);
+  handleBytes.copy(paddedHandle, 0, 0, Math.min(handleBytes.length, 16));
   const command: Record<string, unknown> = {
     a: 's2',
     n: ownerRoot.root.handle,
-    ok: encodeMegaBase64Url(Buffer.alloc(16, 0)),
-    ha: encodeMegaBase64Url(Buffer.alloc(16, 0)),
+    ok: encodeMegaBase64Url(encryptAesEcb(shareKey, session.masterKey)),
+    ha: encodeMegaBase64Url(encryptAesEcb(paddedHandle, shareKey)),
     s: [
       {
         u: email,
@@ -1924,7 +2019,7 @@ function buildMegaSetShareCommand(
     ],
   };
   if (options.createShareKey !== false) {
-    command.cr = buildMegaShareNodeKeyRecords(ownerRoot, randomBytes(16));
+    command.cr = buildMegaShareNodeKeyRecords(ownerRoot, shareKey);
   }
   return command;
 }
@@ -2098,7 +2193,7 @@ async function fetchMegaDecryptedTree(
   try {
     return {
       snapshot,
-      tree: decryptMegaTree(snapshot, session, expectedRootHandle, keyManager.shareKeys),
+      tree: decryptMegaTree(snapshot, session, expectedRootHandle, keyManager.shareKeys, logger),
     };
   } catch (error) {
     if (
@@ -2115,7 +2210,7 @@ async function fetchMegaDecryptedTree(
     const fullSnapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, options, signal);
     return {
       snapshot: fullSnapshot,
-      tree: decryptMegaTree(fullSnapshot, session, expectedRootHandle, keyManager.shareKeys),
+      tree: decryptMegaTree(fullSnapshot, session, expectedRootHandle, keyManager.shareKeys, logger),
     };
   }
 }
@@ -2668,11 +2763,7 @@ function extractMegaReusableCredentials(
   return { email, password, mfaCode };
 }
 
-function acceptedShareCapabilities(descriptor: Record<string, unknown>): string[] {
-  const accessLevel = (getStringDescriptor(descriptor, 'accessLevel') ?? '').trim().toLowerCase();
-  if (accessLevel === '2' || accessLevel === '3' || accessLevel === 'full' || accessLevel === 'full access' || accessLevel === 'owner') {
-    return ['mirror', 'read', 'write', 'accept'];
-  }
+function acceptedShareCapabilities(_descriptor: Record<string, unknown>): string[] {
   return ['mirror', 'read', 'accept'];
 }
 
@@ -2931,7 +3022,8 @@ function decryptMegaTree(
   snapshot: MegaFetchNodesSnapshot,
   session: MegaSession,
   expectedRootHandle?: string,
-  extraShareKeys: ReadonlyMap<string, Buffer> = new Map()
+  extraShareKeys: ReadonlyMap<string, Buffer> = new Map(),
+  logger?: Pick<IntegrationRuntime['logger'], 'warn'>
 ): DecryptedMegaTree {
   const usersByHandle = new Map<string, MegaUserRecord>();
   for (const user of snapshot.users) {
@@ -2954,13 +3046,13 @@ function decryptMegaTree(
       shareKeys.set(node.h, shareKey);
     }
   }
-  for (const shareRecord of snapshot.outgoingShares) {
+  for (const shareRecord of [...snapshot.outgoingShares, ...snapshot.pendingShares]) {
     const handle = typeof shareRecord.t === 'string'
-      ? shareRecord.t.trim()
+      ? (shareRecord.t as string).trim()
       : typeof shareRecord.h === 'string'
-        ? shareRecord.h.trim()
+        ? (shareRecord.h as string).trim()
         : '';
-    const encodedShareKey = typeof shareRecord.sk === 'string' ? shareRecord.sk.trim() : '';
+    const encodedShareKey = typeof shareRecord.sk === 'string' ? (shareRecord.sk as string).trim() : '';
     if (!handle || !encodedShareKey || shareKeys.has(handle)) {
       continue;
     }
@@ -2971,11 +3063,24 @@ function decryptMegaTree(
   }
 
   const nodesByHandle = new Map<string, DecryptedMegaNode>();
+  let undecryptedNodeCount = 0;
   for (const node of snapshot.nodes) {
     const decrypted = decryptNodeRecord(node, session, shareKeys, usersByHandle);
     if (decrypted) {
       nodesByHandle.set(decrypted.handle, decrypted);
+    } else if (typeof node.h === 'string') {
+      undecryptedNodeCount += 1;
     }
+  }
+  if (undecryptedNodeCount > 0 && logger) {
+    logger.warn('MEGA tree decryption: some nodes could not be decrypted.', {
+      undecryptedNodeCount,
+      totalNodes: snapshot.nodes.length,
+      decryptedNodes: nodesByHandle.size,
+      shareKeysAvailable: shareKeys.size,
+      hasPrivateKey: Boolean(session.privateKey),
+      expectedRootHandle,
+    });
   }
 
   const childrenByParent = new Map<string, DecryptedMegaNode[]>();
@@ -3001,25 +3106,47 @@ function decryptMegaTree(
   };
 }
 
-function listIncomingMegaShareOffers(
+interface MegaIncomingShareDiscoveryDiag {
+  readonly nodesWithSharingUser: number;
+  readonly skippedExplicitFile: number;
+  readonly skippedNoDecrypt: number;
+  readonly skippedShareHandleMismatch: number;
+  readonly offerCount: number;
+}
+
+function listIncomingMegaShareOffersWithDiag(
   snapshot: MegaFetchNodesSnapshot,
   session: MegaSession,
   extraShareKeys: ReadonlyMap<string, Buffer>,
   provider: string,
   accountId: string
-): IncomingManagedShareOffer[] {
+): { offers: IncomingManagedShareOffer[]; diag: MegaIncomingShareDiscoveryDiag } {
   const usersByHandle = buildMegaUsersByHandle(snapshot);
   const shareKeys = collectMegaShareKeys(snapshot, session, extraShareKeys);
   const offers: IncomingManagedShareOffer[] = [];
+  let skippedExplicitFile = 0;
+  let skippedNoDecrypt = 0;
+  let skippedShareHandleMismatch = 0;
+  let nodesWithSharingUser = 0;
 
   for (const node of snapshot.nodes) {
     const nodeMeta = node as Record<string, unknown>;
     const ownerHandle = typeof nodeMeta.su === 'string' ? nodeMeta.su.trim() : '';
-    if (!ownerHandle || Number(node.t ?? 0) === 0) {
+    if (!ownerHandle) {
+      continue;
+    }
+    nodesWithSharingUser += 1;
+    if (megaNodeExplicitFileType(nodeMeta)) {
+      skippedExplicitFile += 1;
       continue;
     }
     const decrypted = decryptNodeRecord(node, session, shareKeys, usersByHandle);
-    if (!decrypted || !decrypted.ownerHandle || decrypted.shareHandle !== decrypted.handle) {
+    if (!decrypted || !decrypted.ownerHandle) {
+      skippedNoDecrypt += 1;
+      continue;
+    }
+    if (decrypted.shareHandle !== decrypted.handle) {
+      skippedShareHandleMismatch += 1;
       continue;
     }
     const shareName = normalizeMegaIncomingShareName(decrypted.name, decrypted.handle);
@@ -3045,7 +3172,24 @@ function listIncomingMegaShareOffers(
   }
 
   offers.sort((left, right) => left.label.localeCompare(right.label));
-  return offers;
+  const diag: MegaIncomingShareDiscoveryDiag = {
+    nodesWithSharingUser,
+    skippedExplicitFile,
+    skippedNoDecrypt,
+    skippedShareHandleMismatch,
+    offerCount: offers.length,
+  };
+  return { offers, diag };
+}
+
+function listIncomingMegaShareOffers(
+  snapshot: MegaFetchNodesSnapshot,
+  session: MegaSession,
+  extraShareKeys: ReadonlyMap<string, Buffer>,
+  provider: string,
+  accountId: string
+): IncomingManagedShareOffer[] {
+  return listIncomingMegaShareOffersWithDiag(snapshot, session, extraShareKeys, provider, accountId).offers;
 }
 
 function buildMegaShareInventoryDebugEntries(
@@ -3143,6 +3287,24 @@ function collectMegaShareKeys(
           ? shareRecord.h.trim()
           : '';
     const encodedShareKey = typeof shareRecord.sk === 'string' ? shareRecord.sk.trim() : '';
+    if (!handle || !encodedShareKey || shareKeys.has(handle)) {
+      continue;
+    }
+    const shareKey = decryptShareKey(encodedShareKey, session);
+    if (shareKey) {
+      shareKeys.set(handle, shareKey);
+    }
+  }
+  // Pending shares (ps) can also carry share keys — MEGA uses this for shares whose
+  // invitation the recipient hasn't fully processed yet.
+  for (const shareRecord of snapshot.pendingShares) {
+    const handle =
+      typeof shareRecord.t === 'string'
+        ? (shareRecord.t as string).trim()
+        : typeof shareRecord.h === 'string'
+          ? (shareRecord.h as string).trim()
+          : '';
+    const encodedShareKey = typeof shareRecord.sk === 'string' ? (shareRecord.sk as string).trim() : '';
     if (!handle || !encodedShareKey || shareKeys.has(handle)) {
       continue;
     }
@@ -3255,7 +3417,7 @@ function decryptNodeRecord(
   const nodeMeta = node as Record<string, unknown>;
   const ownerHandle = typeof nodeMeta.su === 'string' ? nodeMeta.su.trim() : undefined;
   const ownerEmail = ownerHandle ? (typeof usersByHandle.get(ownerHandle)?.m === 'string' ? String(usersByHandle.get(ownerHandle)?.m) : undefined) : undefined;
-  const accessLevel = typeof nodeMeta.r === 'number' ? describeAccessLevel(nodeMeta.r) : undefined;
+  const accessLevel = megaIncomingAccessLevelFromMeta(nodeMeta);
   const shareHandle = ownerHandle ? handle : deriveShareHandle(typeof node.k === 'string' ? node.k : undefined, shareKeys);
 
     return {
@@ -3313,6 +3475,29 @@ function describeAccessLevel(level: number): string {
   }
 }
 
+/** MEGA sometimes omits `t` on incoming share roots; treating that as `t === 0` wrongly skipped folders. */
+function megaNodeExplicitFileType(nodeMeta: Record<string, unknown>): boolean {
+  if (!('t' in nodeMeta)) {
+    return false;
+  }
+  const raw = nodeMeta.t;
+  if (raw === undefined || raw === null) {
+    return false;
+  }
+  return Number(raw) === 0;
+}
+
+function megaIncomingAccessLevelFromMeta(nodeMeta: Record<string, unknown>): string | undefined {
+  const raw = nodeMeta.r;
+  const level =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim() !== ''
+        ? Number.parseInt(raw.trim(), 10)
+        : NaN;
+  return Number.isFinite(level) ? describeAccessLevel(level) : undefined;
+}
+
 function deriveShareHandle(encodedKey: string | undefined, shareKeys: ReadonlyMap<string, Buffer>): string | undefined {
   const key = encodedKey?.trim();
   if (!key) {
@@ -3331,6 +3516,8 @@ function deriveShareHandle(encodedKey: string | undefined, shareKeys: ReadonlyMa
   return undefined;
 }
 
+let warnedMissingPrivateKeyForShareKey = false;
+
 function decryptShareKey(value: string, session: MegaSession): Buffer | null {
   const payload = value.trim();
   if (!payload) {
@@ -3338,6 +3525,14 @@ function decryptShareKey(value: string, session: MegaSession): Buffer | null {
   }
   if (payload.length > 43) {
     if (!session.privateKey) {
+      if (!warnedMissingPrivateKeyForShareKey) {
+        warnedMissingPrivateKeyForShareKey = true;
+        console.warn(
+          '[MEGA] RSA-encrypted share key found but session has no private key.',
+          'This share cannot be decrypted — reconnect MEGA so Nearbytes can obtain the RSA private key.',
+          { email: session.email, skLength: payload.length }
+        );
+      }
       return null;
     }
     const cleartext = rsaRawDecryptMpi(decodeMegaBase64Url(payload), session.privateKey);

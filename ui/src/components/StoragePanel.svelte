@@ -16,6 +16,7 @@
     getStorageLocationRepairReport,
     getRootsConfig,
     hasDesktopDirectoryPicker,
+    hasDesktopRuntimeLogsBridge,
     installProviderHelper,
     inviteManagedShare,
     listIncomingManagedShares,
@@ -102,6 +103,13 @@
     facts: Array<{ label: string; value: string }>;
   };
 
+  type MegaLocationActivityStep = {
+    shareId: string;
+    name: string;
+    phase: string;
+    tone: 'good' | 'muted' | 'warn';
+  };
+
   type MegaStatusView = {
     headline: string;
     detail: string;
@@ -110,6 +118,9 @@
     progressPercent: number | null;
     progressLabel: string;
     selfRepairCopy: string;
+    showProgressBar: boolean;
+    /** Per-folder native sync phase; clearer than a single ready/total ratio. */
+    locationSteps: MegaLocationActivityStep[];
   };
 
   type MegaHelperView = {
@@ -285,7 +296,6 @@
 
   onMount(() => {
     void loadPanel();
-    void loadMegaRuntimeLogs();
 
     sourceWatchConnection = watchSources({
       onUpdate() {
@@ -1248,6 +1258,10 @@
     );
   }
 
+  function providerShowsIncomingShareSection(provider: string): boolean {
+    return provider === 'mega' || provider === 'gdrive';
+  }
+
   function providerPriority(provider: string): number {
     if (provider === 'mega') return 0;
     if (provider === 'gdrive') return 1;
@@ -1619,6 +1633,103 @@
     return summary.state.badges.some((badge) => badge.trim() === 'Preparing') || /prepar/i.test(summary.state.detail);
   }
 
+  function isMegaNativeOnlyRuntime(): boolean {
+    const entry = providerCatalog.find((e) => e.provider === 'mega');
+    if (!entry) {
+      return true;
+    }
+    const helperPath = entry.setup.config?.helperPath?.trim() || '';
+    return helperPath === '' || helperPath === 'PATH';
+  }
+
+  function showMegaDevBackendLogsAction(): boolean {
+    return hasDesktopRuntimeLogsBridge() && !isMegaNativeOnlyRuntime();
+  }
+
+  function megaShareActivityStep(summary: ManagedShareSummary): MegaLocationActivityStep {
+    const name = managedShareTitle(summary);
+    const status = summary.state.status;
+    const rawDetail = summary.state.diagnostic?.summary?.trim() || summary.state.detail.trim();
+    const detail = rawDetail ? summarizeMegaStateDetail(rawDetail) : '';
+    const shortDetail = detail.length > 140 ? `${detail.slice(0, 137).trimEnd()}…` : detail;
+
+    if (status === 'ready') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'Up to date with MEGA',
+        tone: 'good',
+      };
+    }
+    if (status === 'syncing') {
+      const preparing = isPreparingManagedShare(summary);
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: preparing ? 'Preparing local mirror…' : shortDetail || 'Syncing with MEGA…',
+        tone: 'muted',
+      };
+    }
+    if (status === 'idle') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'Checking connection and mirror health…',
+        tone: 'muted',
+      };
+    }
+    if (status === 'needs-auth') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'MEGA needs you to sign in again.',
+        tone: 'warn',
+      };
+    }
+    if (status === 'attention') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'This location needs attention.',
+        tone: 'warn',
+      };
+    }
+    if (status === 'unsupported') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'Not supported in this build.',
+        tone: 'warn',
+      };
+    }
+    return {
+      shareId: summary.share.id,
+      name,
+      phase: shortDetail || String(status),
+      tone: 'muted',
+    };
+  }
+
+  function megaOverallProgressLabel(shares: ManagedShareSummary[]): string {
+    const total = shares.length;
+    if (total === 0) {
+      return '';
+    }
+    const ready = shares.filter((s) => s.state.status === 'ready').length;
+    const working = shares.filter((s) => s.state.status === 'syncing' || s.state.status === 'idle').length;
+    const blocked = shares.filter((s) => s.state.status === 'attention' || s.state.status === 'needs-auth').length;
+    if (blocked > 0) {
+      return `${blocked} of ${total} need attention • ${ready} ready`;
+    }
+    if (ready === total) {
+      return `All ${total} ${total === 1 ? 'location' : 'locations'} ready`;
+    }
+    if (working > 0 && ready < total) {
+      return `${working} still connecting or syncing • ${ready} ready so far`;
+    }
+    return `${ready} of ${total} ready`;
+  }
+
   function megaRuntimeReconnectLine(detail: string): string | null {
     const lines = detail
       .split(/\r?\n/u)
@@ -1658,6 +1769,12 @@
     }
 
     if (!account || account.state !== 'connected') {
+      return null;
+    }
+
+    // Native MEGA uses in-process API + per-location status; stale dev log files must not
+    // trigger a false "reconnect" banner (previously tied to MEGA.cmd verification output).
+    if (isMegaNativeOnlyRuntime()) {
       return null;
     }
 
@@ -2069,109 +2186,144 @@
 
   function megaStatusView(): MegaStatusView {
     const shares = providerShares('mega');
+    const locationSteps = shares.map((s) => megaShareActivityStep(s));
     const total = shares.length;
     const ready = shares.filter((summary) => summary.state.status === 'ready').length;
     const syncing = shares.filter((summary) => summary.state.status === 'syncing').length;
     const preparing = shares.filter((summary) => summary.state.status === 'syncing' && isPreparingManagedShare(summary)).length;
     const checking = shares.filter((summary) => summary.state.status === 'idle').length;
+    const blocked = shares.filter((s) => s.state.status === 'attention' || s.state.status === 'needs-auth').length;
+    const working = syncing > 0 || checking > 0;
     const issue = megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
     const reconnectIssue = megaProviderReconnectIssue();
     const loading = providersLoading || sharesLoading || incomingLoading;
     const hasUsableMegaShare = shares.some((summary) => summary.state.status === 'ready');
     const hasBlockingError = shareLoadError || (!hasUsableMegaShare ? incomingLoadError : '');
     const inProgress = syncing > 0 || (loading && total === 0);
-    const progressPercent = total > 0 && inProgress ? Math.max(6, Math.min(98, Math.round((ready / total) * 100))) : null;
+    const progressSummary = megaOverallProgressLabel(shares);
+
+    let progressPercent: number | null = null;
+    if (total > 0 && ready < total && blocked === 0) {
+      if (ready === 0 && working) {
+        progressPercent = null;
+      } else {
+        progressPercent = Math.max(10, Math.min(94, Math.round((ready / total) * 100)));
+      }
+    }
+
+    const showProgressBar = total > 0 && ready < total && !reconnectIssue;
+
+    const base = {
+      locationSteps,
+      showProgressBar,
+    };
 
     if (reconnectIssue) {
       return {
+        ...base,
         headline: 'Finish MEGA account recovery',
         detail: conciseMegaDetail(reconnectIssue.diagnostic.detail),
-        tone: 'warn',
+        tone: 'warn' as const,
         syncing: false,
         progressPercent: null,
         progressLabel: 'Recovery required',
-        selfRepairCopy: 'Nearbytes retried the saved MEGA session. If MEGA locked the account, unlock it and complete the password change on mega.io. Nearbytes will retry the saved sign-in automatically; reconnect this account only if the credentials changed.',
+        showProgressBar: false,
+        selfRepairCopy:
+          'Nearbytes retried the saved MEGA session. If MEGA locked the account, unlock it and complete the password change on mega.io. Nearbytes will retry the saved sign-in automatically; reconnect this account only if the credentials changed.',
       };
     }
 
     if (issue) {
       const detail = conciseMegaDetail(issue.detail);
       return {
+        ...base,
         headline: issue.summary,
-        detail,
-        tone: 'warn',
+        detail: detail || (locationSteps[0]?.phase ?? ''),
+        tone: 'warn' as const,
         syncing: inProgress,
         progressPercent,
-        progressLabel: total > 0 ? `${ready}/${total} locations ready` : 'Recovering MEGA status',
-        selfRepairCopy: 'Nearbytes auto-retries common MEGA API and mirror state failures.',
+        progressLabel: progressSummary || (total > 0 ? 'Working on locations…' : 'Recovering MEGA status'),
+        showProgressBar,
+        selfRepairCopy:
+          'Details for each folder appear below. Nearbytes retries transient MEGA API issues; use Refresh if something stays stuck.',
       };
     }
 
     if (hasBlockingError) {
       return {
+        ...base,
         headline: hasBlockingError,
-        detail: '',
-        tone: 'warn',
+        detail: total > 0 ? 'Location status below reflects the last check once the panel finishes loading.' : '',
+        tone: 'warn' as const,
         syncing: false,
         progressPercent: null,
-        progressLabel: 'Status unavailable',
-        selfRepairCopy: 'Nearbytes keeps retrying in the background. Use refresh if status does not recover quickly.',
+        progressLabel: total > 0 ? progressSummary : 'Status unavailable',
+        showProgressBar: total > 0 && ready < total,
+        selfRepairCopy: 'Nearbytes keeps retrying in the background. Use Refresh if status does not recover quickly.',
       };
     }
 
-    if (checking > 0) {
+    if (checking > 0 && !inProgress && ready < total) {
       return {
+        ...base,
         headline: 'MEGA mirrors connected',
         detail:
           total > 0
-            ? `Nearbytes is verifying ${countLabel(total, 'shared location')} in the background.`
+            ? `Nearbytes is verifying ${countLabel(total, 'shared location')}. Progress for each folder is listed below.`
             : 'Nearbytes is verifying the connected MEGA account in the background.',
-        tone: 'muted',
+        tone: 'muted' as const,
         syncing: false,
-        progressPercent: null,
-        progressLabel: '',
-        selfRepairCopy: 'Nearbytes keeps checking shared-location health and will retry transient MEGA issues automatically.',
+        progressPercent,
+        progressLabel: progressSummary,
+        showProgressBar,
+        selfRepairCopy:
+          '“Idle” on a location usually means the app is still validating the mirror or waiting on MEGA; it should move to ready on its own.',
       };
     }
 
     if (inProgress) {
       return {
+        ...base,
         headline: preparing > 0 ? 'Preparing MEGA locations' : 'Syncing with MEGA',
         detail: loading
-          ? 'Checking account session and mirror health.'
+          ? 'Loading account, mirrors, and shared locations. Each folder shows its own step below.'
           : preparing > 0
-            ? 'Nearbytes is still creating or checking the local mirror. Open runtime logs to inspect startup progress.'
-            : 'Fetching updates for shared locations.',
-        tone: 'muted',
+            ? 'Nearbytes is creating or validating the local mirror. Watch the folder row below for the exact step.'
+            : 'Pulling updates from MEGA. Folder-level status is below.',
+        tone: 'muted' as const,
         syncing: true,
         progressPercent,
-        progressLabel: total > 0 ? `${ready}/${total} locations ready` : preparing > 0 ? 'Preparing local mirror' : 'Refreshing locations',
-        selfRepairCopy: preparing > 0
-          ? 'This state should clear automatically. If it stays here, inspect the MEGA runtime logs for the exact startup step or failure.'
-          : 'Nearbytes auto-repairs common MEGA transport failures during sync.',
+        progressLabel: progressSummary || (preparing > 0 ? 'Preparing local mirror' : 'Refreshing locations'),
+        showProgressBar,
+        selfRepairCopy:
+          'If a folder stays in “Preparing” or “Checking…”, wait for a full sync cycle or tap Refresh MEGA status.',
       };
     }
 
     if (total > 0) {
       return {
+        ...base,
         headline: `${countLabel(total, 'live location')} ready`,
         detail: 'All visible MEGA locations are healthy.',
-        tone: 'good',
+        tone: 'good' as const,
         syncing: false,
         progressPercent: null,
         progressLabel: '',
-        selfRepairCopy: 'Automatic MEGA recovery is enabled if native mirror state degrades.',
+        showProgressBar: false,
+        selfRepairCopy: 'Automatic MEGA recovery runs if a mirror reports a problem.',
       };
     }
 
     return {
+      ...base,
       headline: 'No MEGA locations yet',
       detail: 'Create or accept a MEGA location to start syncing.',
-      tone: 'muted',
+      tone: 'muted' as const,
       syncing: false,
       progressPercent: null,
       progressLabel: '',
-      selfRepairCopy: 'Automatic recovery is ready when MEGA sync starts.',
+      showProgressBar: false,
+      selfRepairCopy: 'Automatic recovery runs as soon as a MEGA location exists.',
     };
   }
 
@@ -2410,9 +2562,17 @@
     return active;
   }
 
+  function collaboratorDedupeKey(label: string): string {
+    return label.trim().toLowerCase();
+  }
+
   function pendingCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
+    const activeKeys = new Set(
+      participantCollaborators(summary).map((collaborator) => collaboratorDedupeKey(collaborator.label))
+    );
     return summary.collaborators
       .filter((collaborator) => collaborator.status === 'invited')
+      .filter((collaborator) => !activeKeys.has(collaboratorDedupeKey(collaborator.email ?? collaborator.label)))
       .map((collaborator) => ({
         label: collaborator.email ?? collaborator.label,
         status: collaborator.status,
@@ -2627,7 +2787,7 @@
   }
 
   function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
-    return volumeId ? 'Use this location' : 'Add storage location';
+    return volumeId ? 'Use in this hub' : 'Add mirror';
   }
 
   function incomingManagedShareTitle(offer: IncomingManagedShareOffer): string {
@@ -2643,22 +2803,6 @@
       }
     }
     return offer.label;
-  }
-
-  function incomingItemsBannerCopy(
-    incomingShares: readonly IncomingManagedShareOffer[],
-    incomingInvites: readonly IncomingProviderContactInvite[]
-  ): string {
-    if (incomingInvites.length > 0 && incomingShares.length > 0) {
-      return `${countLabel(incomingInvites.length, 'contact request')} and ${countLabel(incomingShares.length, 'shared location')} are available here.`;
-    }
-    if (incomingInvites.length > 0) {
-      return `${countLabel(incomingInvites.length, 'contact request')} need attention before shared locations can appear here.`;
-    }
-    if (incomingShares.length === 1) {
-      return `Shared location available: ${incomingManagedShareTitle(incomingShares[0])}.`;
-    }
-    return `${countLabel(incomingShares.length, 'shared location')} are available here.`;
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -3556,10 +3700,24 @@
           sharesLoading = false;
         });
 
+      await Promise.allSettled([rootsPromise, accountsPromise, sharesPromise]);
+
+      if (rootsLoadError) {
+        incomingLoading = false;
+        throw rootsLoadError;
+      }
+
+      // Always load real incoming offers and contact requests (never `fast: true` here).
+      // `fast` skips server work and returns empty lists; combined with scheduled refreshes
+      // that rarely set `keepVisible`, the UI never showed "Shared with you" or any Add action.
+      // Run after share summaries so we do not hit MEGA with a duplicate full-tree fetch in parallel
+      // with the same panel refresh (reduces transient API lock / -3 warnings in logs).
+      // MEGA fetch-nodes for incoming shares can take 10–50s under load; keep this above
+      // `providerIncomingShareDiscoveryTimeoutMs` in managedShares so we do not abort early.
       const incomingSharesPromise = withPanelRequestTimeout(
         'Incoming share discovery',
-        (signal) => listIncomingManagedShares({ signal, fast: !keepVisible }),
-        15_000
+        (signal) => listIncomingManagedShares({ signal, fast: false }),
+        65_000
       )
         .then((incomingSharesResponse) => {
           incomingManagedShareOffers = sortIncomingManagedShareOffers(incomingSharesResponse.shares);
@@ -3567,14 +3725,11 @@
         .catch((error) => {
           const detail = error instanceof Error ? error.message : String(error);
           incomingLoadError = `Incoming shares are delayed: ${detail}`;
-        })
-        .finally(() => {
-          incomingLoading = false;
         });
 
       const incomingInvitesPromise = withPanelRequestTimeout(
         'Incoming contact discovery',
-        (signal) => listIncomingProviderContactInvites({ signal, fast: !keepVisible })
+        (signal) => listIncomingProviderContactInvites({ signal, fast: false })
       )
         .then((incomingInvitesResponse) => {
           incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(incomingInvitesResponse.invites);
@@ -3582,17 +3737,11 @@
         .catch((error) => {
           const detail = error instanceof Error ? error.message : String(error);
           incomingLoadError = incomingLoadError || `Incoming invites are delayed: ${detail}`;
-        })
-        .finally(() => {
-          incomingLoading = false;
         });
 
-      void incomingInvitesPromise;
-      await Promise.allSettled([rootsPromise, accountsPromise, sharesPromise, incomingSharesPromise]);
-
-      if (rootsLoadError) {
-        throw rootsLoadError;
-      }
+      await incomingSharesPromise;
+      await incomingInvitesPromise;
+      incomingLoading = false;
 
       scheduleManagedShareStateRefresh(keepVisible ? 350 : 125);
 
@@ -4648,6 +4797,7 @@
             </div>
           {/snippet}
           {#snippet controls()}
+            <p class="muted-copy setting-list-preface">How Nearbytes uses this folder on this computer:</p>
             <div class="setting-list">
               <label class="setting-row">
                 <span>Use this location</span>
@@ -4755,13 +4905,14 @@
               </div>
 
               <div class="button-row storage-card-actions-right">
-                {#if summary.share.provider === 'mega' && (summary.state.status === 'syncing' || summary.state.status === 'attention' || summary.state.status === 'needs-auth')}
+                {#if summary.share.provider === 'mega' && showMegaDevBackendLogsAction() && (summary.state.status === 'syncing' || summary.state.status === 'attention' || summary.state.status === 'needs-auth')}
                   <button
                     type="button"
                     class="panel-btn subtle compact"
+                    title="Open legacy dev log viewer (stdout/stderr). Native MEGA status is in the summary above."
                     onclick={() => openMegaRuntimeLogsInspector()}
                   >
-                    <span>Inspect logs</span>
+                    <span>Dev logs</span>
                   </button>
                 {/if}
                 {#if view.onOpen}
@@ -4859,10 +5010,49 @@
             onclick={() => void acceptIncomingManagedShareOffer(offer)}
             disabled={integrationBusyKey === `accept-share:${offer.id}`}
           >
+            {#if integrationBusyKey !== `accept-share:${offer.id}`}
+              <Plus size={14} strokeWidth={2} />
+            {/if}
             <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
           </button>
         {/snippet}
       </ShareCard>
+    {/snippet}
+    {#snippet incomingFromOthersSection(providerKey: string)}
+      {@const incomingInvitesHere = incomingProviderInvitesForProvider(providerKey)}
+      {@const incomingSharesHere = incomingManagedSharesForProvider(providerKey)}
+      {#if providerCatalog.some((entry) => entry.provider === providerKey && entry.isConnected)}
+        <div class="provider-incoming-section">
+          <div class="provider-flow-status">
+            <p class="provider-flow-title">Folders others shared with you</p>
+            {#if incomingLoading}
+              <p class="muted-copy">Checking this account for contact requests and shared folders…</p>
+            {:else if incomingLoadError}
+              <p class="warning-copy">{incomingLoadError}</p>
+            {/if}
+            <p class="muted-copy">
+              These are folders shared <em>to</em> this account—they are not your personal Nearbytes root on {providerLabelForIncoming(providerKey)}. Accept any
+              <strong>contact request</strong> first, then use <strong>Add mirror</strong>. If you are in a hub, use <strong>Add another location</strong> after the mirror
+              appears under saved locations. If nothing lists here, confirm the owner shared to <strong>this</strong> account’s email, then open storage setup and refresh
+              {providerKey === 'mega' ? 'MEGA status' : 'this provider'}.
+            </p>
+          </div>
+          {#if incomingInvitesHere.length > 0 || incomingSharesHere.length > 0}
+            <div class="compact-share-grid">
+              {#each incomingInvitesHere as invite (invite.id)}
+                {@render incomingContactInviteCard(invite)}
+              {/each}
+              {#each incomingSharesHere as offer (offer.id)}
+                {@render incomingManagedShareCard(offer)}
+              {/each}
+            </div>
+          {:else if !incomingLoading}
+            <p class="managed-share-invite-copy">
+              No incoming folders detected yet. When the share is visible in {providerLabelForIncoming(providerKey)}, it will list here with an add action.
+            </p>
+          {/if}
+        </div>
+      {/if}
     {/snippet}
     {#snippet addLocationAction(label: string, title: string, onPress: () => void, disabled: boolean)}
       <button type="button" class="panel-btn subtle compact" onclick={onPress} {title} {disabled}>
@@ -5006,8 +5196,6 @@
       {:else}
         {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
         {@const shares = provider ? providerVisibleShares(provider.provider) : []}
-        {@const incomingInvites = provider ? incomingProviderInvitesForProvider(provider.provider) : []}
-        {@const incomingShares = provider ? incomingManagedSharesForProvider(provider.provider) : []}
         {#if provider}
           <section class="panel-section">
             <div class="section-head compact global-panel-head">
@@ -5099,13 +5287,6 @@
               </div>
             </div>
 
-            {#if incomingInvites.length > 0 || incomingShares.length > 0}
-              <div class="flow-note-card onboarding-note-card">
-                <p class="subheading">Shared with you</p>
-                <p class="managed-share-invite-copy">{incomingItemsBannerCopy(incomingShares, incomingInvites)}</p>
-              </div>
-            {/if}
-
             {#if provider.provider === 'mega'}
               {@const megaStatus = megaStatusView()}
               {@const megaHelper = megaHelperView(provider)}
@@ -5125,7 +5306,7 @@
                     <p class="provider-path-copy">{compactPath(megaHelper.pathValue)}</p>
                   {/if}
                 </div>
-                {#if megaStatus.syncing}
+                {#if megaStatus.showProgressBar && megaStatus.progressLabel}
                   <div
                     class="mega-sync-progress"
                     role="progressbar"
@@ -5141,6 +5322,19 @@
                     ></div>
                   </div>
                   <p class="mega-progress-copy">{megaStatus.progressLabel}</p>
+                {/if}
+                {#if megaStatus.locationSteps.length > 0}
+                  <div class="mega-location-activity">
+                    <p class="subheading">Folders</p>
+                    <ul class="mega-location-activity-list">
+                      {#each megaStatus.locationSteps as step (step.shareId)}
+                        <li class="mega-location-activity-item" data-tone={step.tone}>
+                          <span class="mega-location-activity-name">{step.name}</span>
+                          <span class="mega-location-activity-phase">{step.phase}</span>
+                        </li>
+                      {/each}
+                    </ul>
+                  </div>
                 {/if}
                 <p class="mega-self-repair-copy">{megaStatus.selfRepairCopy}</p>
                 <div class="button-row">
@@ -5162,13 +5356,16 @@
                     <RefreshCw size={14} strokeWidth={2} />
                     <span>{sharesLoading ? 'Checking...' : 'Refresh MEGA status'}</span>
                   </button>
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => toggleMegaRuntimeLogs()}
-                  >
-                    <span>{megaRuntimeLogsVisible ? 'Hide logs' : 'Show logs'}</span>
-                  </button>
+                  {#if showMegaDevBackendLogsAction()}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      title="Developer-only: backend stdout/stderr tails from the desktop app. Not required for native MEGA."
+                      onclick={() => toggleMegaRuntimeLogs()}
+                    >
+                      <span>{megaRuntimeLogsVisible ? 'Hide dev logs' : 'Dev backend logs'}</span>
+                    </button>
+                  {/if}
                 </div>
                 {#if megaRuntimeLogsVisible}
                   {@const visibleRuntimeLogs = visibleMegaRuntimeLogs()}
@@ -5176,21 +5373,32 @@
                   <div class="provider-path-card mega-runtime-log-card">
                     <div class="mega-runtime-log-header">
                       <div>
-                        <p class="subheading">Runtime logs</p>
+                        <p class="subheading">Developer backend logs</p>
                         <p class="provider-step-detail">
                           {megaRuntimeLogsUpdatedAt
                             ? `Updated ${formatMegaRuntimeLogTimestamp(megaRuntimeLogsUpdatedAt)}`
-                            : 'Reads the local desktop backend logs prepared for this workspace.'}
+                            : 'Tails from the desktop dev backend (stdout/stderr). Native MEGA sync does not write these; use Refresh and the folder list above for live status.'}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => void loadMegaRuntimeLogs()}
-                        disabled={megaRuntimeLogsLoading}
-                      >
-                        <span>{megaRuntimeLogsLoading ? 'Loading...' : 'Refresh logs'}</span>
-                      </button>
+                      <div class="mega-runtime-log-header-actions">
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => void loadMegaRuntimeLogs()}
+                          disabled={megaRuntimeLogsLoading}
+                        >
+                          <span>{megaRuntimeLogsLoading ? 'Loading...' : 'Refresh logs'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="panel-btn subtle compact"
+                          onclick={() => {
+                            megaRuntimeLogsVisible = false;
+                          }}
+                        >
+                          <span>Close</span>
+                        </button>
+                      </div>
                     </div>
                     <div class="mega-runtime-log-toolbar">
                       <label class="mega-runtime-log-search">
@@ -5239,7 +5447,9 @@
                     {#if megaRuntimeLogsError}
                       <p class="warning-copy">{megaRuntimeLogsError}</p>
                     {:else if visibleRuntimeLogs.length === 0}
-                      <p class="provider-step-detail">No desktop runtime logs are available yet.</p>
+                      <p class="provider-step-detail">
+                        No log files found yet. With the built-in MEGA runtime this is normal; use the folder status list for sync progress.
+                      </p>
                     {:else}
                       <div class="mega-runtime-log-layout">
                         <div class="mega-runtime-log-list">
@@ -5546,20 +5756,8 @@
               {/if}
             </div>
 
-            {#if incomingInvites.length > 0 || incomingShares.length > 0}
-              <div class="provider-flow-status">
-                <p class="provider-flow-title">Shared with you</p>
-                <p class="muted-copy">Accept contacts first, then add the incoming storage locations you want Nearbytes to mirror.</p>
-              </div>
-
-              <div class="compact-share-grid">
-                {#each incomingInvites as invite (invite.id)}
-                  {@render incomingContactInviteCard(invite)}
-                {/each}
-                {#each incomingShares as offer (offer.id)}
-                  {@render incomingManagedShareCard(offer)}
-                {/each}
-              </div>
+            {#if providerShowsIncomingShareSection(provider.provider)}
+              {@render incomingFromOthersSection(provider.provider)}
             {/if}
           </section>
         {/if}
@@ -5777,6 +5975,12 @@
             {/each}
           </div>
         </section>
+
+        {#each providerCatalog.filter((entry) => entry.isConnected && providerShowsIncomingShareSection(entry.provider)) as incomingProvider (incomingProvider.provider)}
+          <section class="panel-section provider-incoming-hub-wrap">
+            {@render incomingFromOthersSection(incomingProvider.provider)}
+          </section>
+        {/each}
 
         {#if hubLocationDialogVolumeId === volumeId}
           {@const availableSources = hubAvailableSources(volumeId)}
@@ -6510,6 +6714,26 @@
     gap: 0.42rem;
   }
 
+  .setting-list-preface {
+    margin: 0 0 0.25rem;
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+
+  .provider-incoming-section {
+    display: grid;
+    gap: 0.65rem;
+    margin-top: 0.75rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 75%, transparent);
+  }
+
+  .provider-incoming-hub-wrap .provider-incoming-section {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+  }
+
   .setting-row {
     min-height: 36px;
     padding: 0.48rem 0.06rem;
@@ -6859,6 +7083,14 @@
     align-items: start;
   }
 
+  .mega-runtime-log-header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
   .mega-runtime-log-header {
     display: flex;
     align-items: flex-start;
@@ -6976,6 +7208,50 @@
     color: var(--text-faint);
     font-size: 0.73rem;
     line-height: 1.35;
+  }
+
+  .mega-location-activity {
+    margin: 0.35rem 0 0;
+  }
+
+  .mega-location-activity-list {
+    margin: 0.35rem 0 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .mega-location-activity-item {
+    display: grid;
+    gap: 0.12rem;
+    padding: 0.45rem 0.55rem;
+    border-radius: 0.55rem;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.5));
+  }
+
+  .mega-location-activity-item[data-tone='warn'] {
+    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 35%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 75%, rgba(255, 250, 245, 0.96));
+  }
+
+  .mega-location-activity-item[data-tone='good'] {
+    border-color: color-mix(in srgb, var(--nb-success, #6aa975) 28%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+  }
+
+  .mega-location-activity-name {
+    font-size: 0.78rem;
+    font-weight: 640;
+    color: var(--text-main);
+    overflow-wrap: anywhere;
+  }
+
+  .mega-location-activity-phase {
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   .mega-log-view {
