@@ -1007,6 +1007,12 @@ export async function readDesktopRuntimeLogs(): Promise<DesktopRuntimeLogsRespon
   return bridge.readRuntimeLogs();
 }
 
+/** True when the desktop bridge can read dev backend log files (stdout/stderr tails). Not used for native MEGA sync state. */
+export function hasDesktopRuntimeLogsBridge(): boolean {
+  const bridge = getDesktopBridge();
+  return Boolean(bridge && typeof bridge.readRuntimeLogs === 'function');
+}
+
 function isElectronRenderer(): boolean {
   if (typeof navigator === 'undefined') {
     return false;
