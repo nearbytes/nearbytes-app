@@ -2467,6 +2467,77 @@ describe('ManagedShareService', () => {
     await expect(fs.readFile(path.join(megaRoot, 'blocks', '1'.repeat(64) + '.bin'), 'utf8')).rejects.toThrow();
   });
 
+  it('retires orphan provider-managed sources by migrating their data into the primary local root', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-orphan-source-'));
+    tempDirs.add(tempDir);
+    const localRoot = path.join(tempDir, 'local-root');
+    const orphanRoot = path.join(tempDir, 'orphan-root');
+    await fs.mkdir(path.join(localRoot, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(orphanRoot, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(orphanRoot, 'channels', 'b'.repeat(130)), { recursive: true });
+    await fs.writeFile(path.join(orphanRoot, 'blocks', '3'.repeat(64) + '.bin'), 'orphan-block', 'utf8');
+    await fs.writeFile(path.join(orphanRoot, 'channels', 'b'.repeat(130), 'event.bin'), 'orphan-event', 'utf8');
+
+    const rootsConfig: RootsConfig = {
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-orphan-managed',
+          provider: 'mega',
+          path: orphanRoot,
+          enabled: true,
+          writable: false,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'mega',
+            managedShareId: 'share-mega-missing',
+          },
+        },
+      ],
+      defaultVolume: { destinations: [] },
+      volumes: [],
+    };
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [],
+        managedShares: [],
+      },
+      integrationStatePath
+    );
+
+    const storage = new MultiRootStorageBackend(rootsConfig);
+    const service = new ManagedShareService({
+      storage,
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+    });
+
+    await service.listManagedShares();
+
+    const nextConfig = storage.getRootsConfig();
+    expect(nextConfig.sources.map((source) => source.id)).toEqual(['src-local']);
+    expect(await fs.readFile(path.join(localRoot, 'blocks', '3'.repeat(64) + '.bin'), 'utf8')).toBe('orphan-block');
+    expect(await fs.readFile(path.join(localRoot, 'channels', 'b'.repeat(130), 'event.bin'), 'utf8')).toBe('orphan-event');
+    await expect(fs.readFile(path.join(orphanRoot, 'blocks', '3'.repeat(64) + '.bin'), 'utf8')).rejects.toThrow();
+  });
+
   it('migrates MEGA share data into the primary local root before disconnecting the account', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-disconnect-migrate-'));
     tempDirs.add(tempDir);

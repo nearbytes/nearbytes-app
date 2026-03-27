@@ -1281,27 +1281,48 @@ export class ManagedShareService {
         migrated: false,
       };
     }
+    const retired = await this.retireSourceUsingStandardProcedure(source.id);
+    return {
+      state: await this.loadState(),
+      migrated: retired.migrated,
+    };
+  }
 
-    const target = await this.ensurePrimaryLocalMigrationSource(source.id);
-    if (
-      !target ||
-      target.id === source.id ||
-      normalizeComparablePath(target.path) === normalizeComparablePath(source.path)
-    ) {
+  private async retireSourceUsingStandardProcedure(sourceId: string): Promise<{
+    removed: boolean;
+    migrated: boolean;
+  }> {
+    const config = cloneConfig(this.options.storage.getRootsConfig());
+    const source = config.sources.find((entry) => entry.id === sourceId) ?? null;
+    if (!source) {
       return {
-        state: await this.loadState(),
+        removed: false,
         migrated: false,
       };
     }
 
-    const consolidated = await this.options.storage.consolidateRoot(source.id, target.id);
-    await this.persistRootsConfig(consolidated.config);
+    const target = await this.ensurePrimaryLocalMigrationSource(source.id);
+    if (
+      target &&
+      target.id !== source.id &&
+      normalizeComparablePath(target.path) !== normalizeComparablePath(source.path)
+    ) {
+      const consolidated = await this.options.storage.consolidateRoot(source.id, target.id);
+      await this.persistRootsConfig(consolidated.config);
+      return {
+        removed: true,
+        migrated:
+          consolidated.result.movedFiles > 0 ||
+          consolidated.result.removedSourceFiles > 0 ||
+          consolidated.result.skippedExisting > 0,
+      };
+    }
+
+    const nextConfig = removeSourceFromConfig(config, source.id);
+    await this.persistRootsConfig(nextConfig);
     return {
-      state: await this.loadState(),
-      migrated:
-        consolidated.result.movedFiles > 0 ||
-        consolidated.result.removedSourceFiles > 0 ||
-        consolidated.result.skippedExisting > 0,
+      removed: true,
+      migrated: false,
     };
   }
 
@@ -2305,7 +2326,52 @@ export class ManagedShareService {
       }
     }
 
+    state = await this.retireOrphanManagedShareSources(state);
     return state;
+  }
+
+  private async retireOrphanManagedShareSources(
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    const managedShareIds = new Set(
+      stateSnapshot.managedShares
+        .map((share) => share.id.trim().toLowerCase())
+        .filter((value) => value.length > 0)
+    );
+    const orphanSourceIds = this.options.storage
+      .getRootsConfig()
+      .sources
+      .filter((source) => {
+        if (source.integration?.kind !== 'provider-managed') {
+          return false;
+        }
+        const managedShareId = source.integration.managedShareId?.trim();
+        return Boolean(managedShareId) && !managedShareIds.has(managedShareId.toLowerCase());
+      })
+      .map((source) => source.id);
+    if (orphanSourceIds.length === 0) {
+      return stateSnapshot;
+    }
+
+    let removedSources = 0;
+    let migratedSources = 0;
+    for (const sourceId of orphanSourceIds) {
+      const retired = await this.retireSourceUsingStandardProcedure(sourceId);
+      if (retired.removed) {
+        removedSources += 1;
+      }
+      if (retired.migrated) {
+        migratedSources += 1;
+      }
+    }
+
+    if (removedSources > 0) {
+      this.runtime.logger.log('Retired orphan managed-share sources.', {
+        sourceCount: removedSources,
+        migratedSources,
+      });
+    }
+    return await this.loadState();
   }
 
   private async prepareManagedShareForSync(shareId: string): Promise<{
@@ -3399,6 +3465,22 @@ function removeManagedShareFromConfig(config: RootsConfig, shareId: string): Roo
       .map((volume) => ({
         volumeId: volume.volumeId,
         destinations: volume.destinations.filter((destination) => !sourceIds.has(destination.sourceId)),
+      }))
+      .filter((volume) => volume.destinations.length > 0),
+  };
+}
+
+function removeSourceFromConfig(config: RootsConfig, sourceId: string): RootsConfig {
+  return {
+    version: config.version,
+    sources: config.sources.filter((source) => source.id !== sourceId),
+    defaultVolume: {
+      destinations: config.defaultVolume.destinations.filter((destination) => destination.sourceId !== sourceId),
+    },
+    volumes: config.volumes
+      .map((volume) => ({
+        volumeId: volume.volumeId,
+        destinations: volume.destinations.filter((destination) => destination.sourceId !== sourceId),
       }))
       .filter((volume) => volume.destinations.length > 0),
   };
