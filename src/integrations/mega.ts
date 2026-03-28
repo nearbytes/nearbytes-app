@@ -255,6 +255,7 @@ export class MegaTransportAdapter {
     this.shareScsn.clear();
     this.shareKnownHandles.clear();
     this.shareRootHandles.clear();
+    this.accountShareKeyCache.clear();
     this.accountCloudDriveHandleCache.clear();
     this.incomingShareDiscoveryCache.clear();
     this.incomingShareDiscoveryTasks.clear();
@@ -344,6 +345,11 @@ export class MegaTransportAdapter {
 
   async disconnect(account: ProviderAccount): Promise<void> {
     this.clearAccountDiscoveryCaches(account.id);
+    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
+    if (isStoredMegaAccountSecret(secret) && typeof secret.userHandle === 'string' && secret.userHandle.trim()) {
+      this.accountShareKeyCache.delete(secret.userHandle.trim());
+      this.accountCloudDriveHandleCache.delete(secret.userHandle.trim());
+    }
     await this.runtime.secretStore.delete(secretKey(account.id));
   }
 
@@ -965,6 +971,7 @@ export class MegaTransportAdapter {
       if (incrementalScsn) {
         try {
           const actionBatch = await this.fetchActionPackets(session, incrementalScsn, signal);
+          const learnedShareKeyCount = this.rememberActionPacketShareKeys(session, actionBatch.packets);
           const touchesShare = actionPacketBatchTouchesShare(actionBatch.packets, rootHandle, manifest);
           if (actionBatch.packets.length) {
             this.runtime.logger.log('MEGA push update received.', {
@@ -972,6 +979,7 @@ export class MegaTransportAdapter {
               rootHandle,
               packetCount: actionBatch.packets.length,
               actions: summarizeActionPacketActions(actionBatch.packets),
+              learnedShareKeyCount,
               touchesShare,
               previousScsn: incrementalScsn,
               nextScsn: actionBatch.scsn,
@@ -1194,6 +1202,7 @@ export class MegaTransportAdapter {
         }
 
         if (actionBatch.packets.length > 0) {
+          const learnedShareKeyCount = this.rememberActionPacketShareKeys(session, actionBatch.packets);
           const actions = summarizeActionPacketActions(actionBatch.packets);
           const accountLevelOnly = allActionsAreAccountLevel(actions);
           const rootHandle = this.shareRootHandles.get(share.id);
@@ -1215,6 +1224,7 @@ export class MegaTransportAdapter {
               packetCount: actionBatch.packets.length,
               actions,
               accountLevelOnly,
+              learnedShareKeyCount,
               touchesShare,
               triggerOwnerSync,
               shouldTriggerSync,
@@ -1577,7 +1587,11 @@ export class MegaTransportAdapter {
       this.apiClient,
       session,
       rootHandle,
-      { useCache: false, allowTransientFullFallback: options.allowTransientFullFallback },
+      {
+        useCache: false,
+        allowTransientFullFallback: options.allowTransientFullFallback,
+        extraShareKeys: this.accountShareKeyCache.get(session.userHandle),
+      },
       signal,
       this.runtime.logger
     );
@@ -1636,7 +1650,7 @@ export class MegaTransportAdapter {
     );
     const resolved: MegaKeyManagerState = {
       ...mergedFetched,
-      shareKeys: resolvedShareKeys,
+      shareKeys: mergeMegaShareKeyMaps(cachedShareKeys, resolvedShareKeys),
     };
     if (resolved.shareKeys.size > 0) {
       this.accountShareKeyCache.set(session.userHandle, new Map(resolved.shareKeys));
@@ -1655,6 +1669,33 @@ export class MegaTransportAdapter {
       };
     }
     return resolved;
+  }
+
+  private rememberActionPacketShareKeys(session: MegaSession, packets: readonly Record<string, unknown>[]): number {
+    if (packets.length === 0) {
+      return 0;
+    }
+
+    const extractedShareKeys = extractMegaShareKeysFromActionPackets(packets, session);
+    if (extractedShareKeys.size === 0) {
+      return 0;
+    }
+
+    const mergedShareKeys = new Map(this.accountShareKeyCache.get(session.userHandle) ?? []);
+    let learnedShareKeyCount = 0;
+    for (const [handle, shareKey] of extractedShareKeys) {
+      const existing = mergedShareKeys.get(handle);
+      if (existing && existing.equals(shareKey)) {
+        continue;
+      }
+      mergedShareKeys.set(handle, Buffer.from(shareKey));
+      learnedShareKeyCount += 1;
+    }
+
+    if (learnedShareKeyCount > 0) {
+      this.accountShareKeyCache.set(session.userHandle, mergedShareKeys);
+    }
+    return learnedShareKeyCount;
   }
 
   private async fetchActionPackets(session: MegaSession, scsn: string, signal?: AbortSignal): Promise<MegaActionPacketBatch> {
@@ -2767,6 +2808,7 @@ async function fetchMegaDecryptedTree(
   options: {
     readonly useCache?: boolean;
     readonly allowTransientFullFallback?: boolean;
+    readonly extraShareKeys?: ReadonlyMap<string, Buffer>;
   } = {},
   signal?: AbortSignal,
   logger?: Pick<IntegrationRuntime['logger'], 'warn'>
@@ -2803,7 +2845,10 @@ async function fetchMegaDecryptedTree(
     ...keyManager,
     pendingInShares: mergeMegaPendingInShares(keyManager.pendingInShares, pendingKeys),
   };
-  const shareKeys = await resolveMegaKeyManagerShareKeys(apiClient, session, mergedKeyManager, signal, logger);
+  const shareKeys = mergeMegaShareKeyMaps(
+    options.extraShareKeys,
+    await resolveMegaKeyManagerShareKeys(apiClient, session, mergedKeyManager, signal, logger)
+  );
   const expectedRootHandle = rootHandle?.trim() || resolveMegaCloudDriveHandle(snapshot);
   try {
     return {
@@ -4050,6 +4095,31 @@ function registerMegaShareKeyHandlesForNode(shareKeys: Map<string, Buffer>, node
   }
 }
 
+function propagateMegaResolvedShareKeyAliases(
+  snapshot: MegaFetchNodesSnapshot,
+  session: MegaSession,
+  shareKeys: Map<string, Buffer>
+): void {
+  for (const node of snapshot.nodes) {
+    const nodeHandle = typeof node.h === 'string' ? node.h.trim() : '';
+    const ownerHandles = listMegaNodeKeyOwners(typeof node.k === 'string' ? node.k : undefined)
+      .filter((owner) => owner !== session.userHandle);
+    const hasIncomingShareMetadata = typeof (node as Record<string, unknown>).su === 'string'
+      && String((node as Record<string, unknown>).su).trim() !== '';
+    if (!hasIncomingShareMetadata && ownerHandles.length === 0) {
+      continue;
+    }
+
+    const shareKey =
+      (nodeHandle ? shareKeys.get(nodeHandle) : undefined)
+      ?? ownerHandles.map((owner) => shareKeys.get(owner)).find((candidate): candidate is Buffer => Buffer.isBuffer(candidate));
+    if (!shareKey) {
+      continue;
+    }
+    registerMegaShareKeyHandlesForNode(shareKeys, node, shareKey);
+  }
+}
+
 function collectMegaShareKeys(
   snapshot: MegaFetchNodesSnapshot,
   session: MegaSession,
@@ -4116,7 +4186,23 @@ function collectMegaShareKeys(
       }
     }
   }
+  propagateMegaResolvedShareKeyAliases(snapshot, session, shareKeys);
   return shareKeys;
+}
+
+function mergeMegaShareKeyMaps(
+  ...maps: Array<ReadonlyMap<string, Buffer> | undefined>
+): ReadonlyMap<string, Buffer> {
+  const merged = new Map<string, Buffer>();
+  for (const current of maps) {
+    if (!current || current.size === 0) {
+      continue;
+    }
+    for (const [handle, shareKey] of current.entries()) {
+      merged.set(handle, Buffer.from(shareKey));
+    }
+  }
+  return merged;
 }
 
 function createEmptyMegaKeyManagerState(): MegaKeyManagerState {
@@ -4662,6 +4748,7 @@ function decryptNodeKeys(
   shareKeys: ReadonlyMap<string, Buffer>
 ): Array<{ nodeKey: Buffer; keyOwner?: string }> {
   const encoded = typeof node.k === 'string' ? node.k.trim() : '';
+  const nodeHandle = typeof node.h === 'string' ? node.h.trim() : '';
   if (!encoded) {
     return [];
   }
@@ -4693,6 +4780,18 @@ function decryptNodeKeys(
       const candidate = encoded.slice(12).trim();
       if (owner === session.userHandle || shareKeys.has(owner)) {
         candidates.push({ keyOwner: owner, payload: candidate });
+      }
+    }
+
+    if (candidates.length === 0 && nodeHandle && shareKeys.has(nodeHandle)) {
+      for (const segment of ownedSegments) {
+        candidates.push({ keyOwner: nodeHandle, payload: segment.payload });
+      }
+      if (candidates.length === 0 && encoded.length > 12 && encoded[11] === ':') {
+        const candidate = encoded.slice(12).trim();
+        if (candidate) {
+          candidates.push({ keyOwner: nodeHandle, payload: candidate });
+        }
       }
     }
   }
@@ -4858,6 +4957,44 @@ function summarizeActionPacketActions(packets: readonly Record<string, unknown>[
     }
   }
   return [...actions];
+}
+
+function extractMegaShareKeysFromActionPackets(
+  packets: readonly Record<string, unknown>[],
+  session: MegaSession
+): Map<string, Buffer> {
+  const shareKeys = new Map<string, Buffer>();
+  for (const packet of packets) {
+    const action = typeof packet.a === 'string' ? packet.a.trim() : '';
+    if (action !== 's' && action !== 's2') {
+      continue;
+    }
+
+    const shareHandle = getActionPacketString(packet, 'n') ?? getActionPacketString(packet, 'h');
+    if (!shareHandle) {
+      continue;
+    }
+
+    const ownerHandle = getActionPacketString(packet, 'o');
+    const encodedShareKey = ownerHandle === session.userHandle
+      ? getActionPacketString(packet, 'ok') ?? getActionPacketString(packet, 'k')
+      : getActionPacketString(packet, 'k') ?? getActionPacketString(packet, 'ok');
+    if (!encodedShareKey) {
+      continue;
+    }
+
+    const shareKey = decryptShareKey(encodedShareKey, session);
+    if (!shareKey) {
+      continue;
+    }
+    shareKeys.set(shareHandle, Buffer.from(shareKey));
+  }
+  return shareKeys;
+}
+
+function getActionPacketString(packet: Record<string, unknown>, key: string): string | undefined {
+  const value = packet[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function collectPacketHandlesRecursive(value: unknown, result: Set<string>, key?: string): void {

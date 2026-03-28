@@ -3298,6 +3298,141 @@ describe('MegaTransportAdapter', () => {
     await adapter.dispose();
   });
 
+  it('uses an incoming share key learned from an sc share packet on the next sync attempt', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const ownerHandle = 'owner000001';
+    const shareHandle = 'cIVQ2bjB';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const shareKey = Buffer.from('3f1e2d4c5b6a79888796a5b4c3d2e1f0', 'hex');
+    const rootNodeKey = Buffer.from('402132435465768798a9babbdcddf0f1', 'hex');
+    const secretStore = createMemorySecretStore();
+
+    await secretStore.set('provider-account:mega:acct-mega-sc-share-key', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const partialSnapshot = {
+      f: [
+        {
+          h: shareHandle,
+          p: 'incoming001',
+          t: 1,
+          a: encryptAttributes('Team Space', rootNodeKey),
+          k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+          su: ownerHandle,
+          r: 0,
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+      sn: 'cursor-1',
+    };
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: userHandle, email }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'uga':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'pk':
+          return new Response(JSON.stringify([-9]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          return new Response(JSON.stringify([partialSnapshot]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-sc-share-key-'));
+    tempDirs.push(localPath);
+    const account: ProviderAccount = {
+      id: 'acct-mega-sc-share-key',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-sc-share-key',
+      provider: 'mega',
+      accountId: account.id,
+      label: `MEGA share ${shareHandle.slice(-6)}`,
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-sc-share-key',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: `MEGA share ${shareHandle.slice(-6)}`,
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
+
+    const session = await (adapter as any).getAccountSession(account);
+    const learnedShareKeyCount = (adapter as any).rememberActionPacketShareKeys(session, [
+      {
+        a: 's',
+        n: shareHandle,
+        o: ownerHandle,
+        u: userHandle,
+        r: 0,
+        ts: 1710000000,
+        k: encodeMegaBase64Url(encryptAesEcb(shareKey, masterKey)),
+      },
+    ]);
+    expect(learnedShareKeyCount).toBe(1);
+    expect((adapter as any).accountShareKeyCache.get(userHandle)?.get(shareHandle)?.equals(shareKey)).toBe(true);
+
+    await expect((adapter as any).runSyncLoop(share, account)).resolves.toBeUndefined();
+
+    const state = await adapter.getState(share, account);
+    expect(state.status).toBe('ready');
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
   it('lists incoming shares when the first decryptable node.k segment uses the wrong share key', async () => {
     const email = 'reader@example.com';
     const password = 'correct horse battery staple';
