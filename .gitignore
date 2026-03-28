@@ -13,6 +13,7 @@ electron-builder-debug.yml
 coverage/
 .env
 .env.local
+.env.e2e
 *.test.ts.snap
 .nyc_output/
 test-data/

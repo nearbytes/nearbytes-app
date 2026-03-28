@@ -20,6 +20,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "e2e:mega-wipe": "yarn build && node scripts/e2e-mega-wipe.mjs",
+    "e2e:mega-bidirectional-transport": "yarn build && node scripts/e2e-mega-bidirectional-transport.mjs",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write \"src/**/*.ts\" \"*.{json,md}\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"*.{json,md}\"",
@@ -64,6 +67,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.25",
     "@types/multer": "2.0.0",

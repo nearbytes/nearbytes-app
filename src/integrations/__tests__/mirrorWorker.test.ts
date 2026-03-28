@@ -37,6 +37,10 @@ class FakeRemote implements MirrorRemoteAdapter {
   async upload(relativePath: string, data: Uint8Array): Promise<void> {
     this.entries.set(relativePath, new Uint8Array(data));
   }
+
+  reconcileUploadsByRemoteSize(): boolean {
+    return true;
+  }
 }
 
 const crypto = createCryptoOperations();
@@ -110,12 +114,14 @@ describe('MirrorWorker', () => {
 
     const result = await worker.sync(tempDir, remote);
 
-    expect(result.uploaded).toEqual([`channels/${localEvent.volumeId}/${localEvent.eventHash}.bin`]);
+    expect(result.uploaded.sort()).toEqual(
+      [`blocks/${localBlock.hash}.bin`, `channels/${localEvent.volumeId}/${localEvent.eventHash}.bin`].sort()
+    );
     expect(result.downloaded).toEqual([
       `blocks/${remoteBlock.hash}.bin`,
       `channels/${remoteEvent.volumeId}/${remoteEvent.eventHash}.bin`,
     ]);
-    expect(result.skipped).toEqual([`blocks/${localBlock.hash}.bin`]);
+    expect(result.skipped).toEqual([]);
 
     expect(await fs.readFile(path.join(tempDir, 'blocks', `${remoteBlock.hash}.bin`), 'utf8')).toBe('remote-only');
     expect(
@@ -124,7 +130,7 @@ describe('MirrorWorker', () => {
     expect(
       new TextDecoder().decode(remote.entries.get(`channels/${localEvent.volumeId}/${localEvent.eventHash}.bin`)!)
     ).toContain('DELETE_FILE');
-    expect(new TextDecoder().decode(remote.entries.get(`blocks/${localBlock.hash}.bin`)!)).toBe('remote-ignored');
+    expect(new TextDecoder().decode(remote.entries.get(`blocks/${localBlock.hash}.bin`)!)).toBe('local-only');
   });
 
   it('skips invalid local and remote storage files', async () => {

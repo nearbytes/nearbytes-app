@@ -73,6 +73,8 @@ const FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 6_000;
 const FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 5_000;
 const FULL_MEGA_MANAGED_SHARE_COLLABORATORS_TIMEOUT_MS = 5_000;
 const MEGA_COLLABORATOR_LOOKUP_COOLDOWN_MS = 30_000;
+/** Avoid re-entrant `ensureSync` on every `getManagedShareState` poll (e.g. E2E / UI); that was resetting MEGA owner shares to `syncing` forever. */
+const GET_MANAGED_SHARE_STATE_ENSURE_SYNC_MIN_INTERVAL_MS = 120_000;
 const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
 const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
 
@@ -111,6 +113,7 @@ export class ManagedShareService {
   private readonly autoRepairCooldowns = new Map<string, number>();
   private readonly collaboratorLookupCooldowns = new Map<string, number>();
   private readonly pendingMarkerRefreshes = new Set<string>();
+  private readonly lastGetManagedShareScheduledSyncAt = new Map<string, number>();
   private maintenanceRequested = false;
   private maintenanceTask: Promise<void> | null = null;
 
@@ -876,7 +879,12 @@ export class ManagedShareService {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
     if (this.readMaintenanceMode === 'inline') {
-      this.scheduleManagedShareSync(share, state);
+      const now = this.runtime.now();
+      const last = this.lastGetManagedShareScheduledSyncAt.get(shareId) ?? 0;
+      if (now - last >= GET_MANAGED_SHARE_STATE_ENSURE_SYNC_MIN_INTERVAL_MS) {
+        this.lastGetManagedShareScheduledSyncAt.set(shareId, now);
+        this.scheduleManagedShareSync(share, state);
+      }
     }
     return this.buildManagedShareSummary(share);
   }

@@ -337,12 +337,12 @@ export class MegaTransportAdapter {
         return;
       }
 
-      const hasExistingShares = collaborators.length > 0;
       for (const [index, email] of invitees.entries()) {
         if (index > 0) {
           await waitForMegaRetry(400);
         }
         snapshot = await this.fetchNodesSnapshot(session);
+        const hasOutgoingForRoot = snapshotHasOutgoingShareForRoot(snapshot, root.root.handle, root.root.shareHandle);
         let cryptoNow = await this.resolveOwnerShareCryptoContext(session, root);
         for (let keyAttempt = 0; index > 0 && !cryptoNow?.shareKey && keyAttempt < 12; keyAttempt += 1) {
           await waitForMegaRetry(500 + keyAttempt * 200);
@@ -364,12 +364,12 @@ export class MegaTransportAdapter {
             }
           }
         }
-        const createShareKey = !hasExistingShares && index === 0 && !cryptoNow?.shareKey;
+        const createShareKey = !hasOutgoingForRoot && index === 0 && !cryptoNow?.shareKey;
         const existingShareKey =
           createShareKey || !cryptoNow?.shareKey ? undefined : Buffer.from(cryptoNow.shareKey);
         if (!createShareKey && !existingShareKey) {
           throw new Error(
-            'MEGA has collaborators listed for this folder but Nearbytes could not read the share encryption key. Reconnect MEGA or create the share once on mega.nz, then try inviting again.'
+            'MEGA already has an outgoing share on this folder (or Nearbytes could not tell), but the share encryption key is unavailable. Reconnect MEGA, or create/repair the share once on mega.nz, then try inviting again.'
           );
         }
         let target = resolveMegaShareInviteTarget(snapshot, email);
@@ -705,7 +705,10 @@ export class MegaTransportAdapter {
       await fs.mkdir(share.localPath, { recursive: true });
       await ensureMegaOwnerLocalStructure(share.localPath);
       void this.logDevShareInventoryIfChanged(account, 'boot');
-      await this.runSyncLoop(share, account);
+      const ownerLoopRunning = this.localWatchers.has(share.id);
+      if (!ownerLoopRunning) {
+        await this.runSyncLoop(share, account);
+      }
       this.startOwnerPushPullSync(share, account);
       return;
     }
@@ -1179,11 +1182,16 @@ export class MegaTransportAdapter {
       remotePath,
       localPath: share.localPath,
     });
-    this.syncStates.set(share.id, {
-      status: 'syncing',
-      detail: 'Syncing the MEGA writable owner folder.',
-      badges: ['Writable', 'Syncing'],
-    });
+    const priorOwnerState = this.syncStates.get(share.id);
+    const keepReadyWhileRefreshing =
+      priorOwnerState?.status === 'ready' && priorOwnerState.badges.includes('Synced');
+    if (!keepReadyWhileRefreshing) {
+      this.syncStates.set(share.id, {
+        status: 'syncing',
+        detail: 'Syncing the MEGA writable owner folder.',
+        badges: ['Writable', 'Syncing'],
+      });
+    }
 
     try {
       await fs.mkdir(share.localPath, { recursive: true });
@@ -1243,7 +1251,9 @@ export class MegaTransportAdapter {
         remotePath,
         error: error instanceof Error ? error.stack ?? error.message : String(error),
       });
-      if (isMegaTransientSyncError(error)) {
+      const ownerTransientRetry =
+        isMegaTransientSyncError(error) || (error instanceof Error && error.name === 'AbortError');
+      if (ownerTransientRetry) {
         this.markSyncCooldown(share.id);
         this.syncStates.set(share.id, {
           status: 'ready',
@@ -1377,80 +1387,7 @@ export class MegaTransportAdapter {
 
 
   private async loginWithPassword(email: string, password: string, mfaCode?: string): Promise<MegaSession> {
-    const prelogin = await this.apiCommand<{ v?: number; s?: string }>({ a: 'us0', user: email.trim() });
-    const version = Number(prelogin.v ?? 1) || 1;
-
-    let passwordKey: Buffer;
-    let uh: string;
-    let accountSalt: string | undefined;
-
-    if (version > 1) {
-      const salt = String(prelogin.s ?? '').trim();
-      if (!salt) {
-        throw new Error('MEGA did not return an authentication salt for this account.');
-      }
-      const derived = await deriveV2PasswordKey(password, salt);
-      passwordKey = derived.masterKey;
-      uh = encodeMegaBase64Url(derived.authKey);
-      accountSalt = salt;
-    } else {
-      passwordKey = prepareV1PasswordKey(password);
-      uh = stringHash(email.trim().toLowerCase(), passwordKey);
-    }
-
-    const response = await this.apiCommand<Record<string, unknown>>({
-      a: 'us',
-      user: email.trim(),
-      uh,
-      ...(mfaCode ? { mfa: mfaCode } : {}),
-    });
-
-    this.runtime.logger.log('MEGA login response received.', {
-      email: email.trim(),
-      hasTsid: typeof response.tsid === 'string' && response.tsid.trim().length > 0,
-      hasCsid: typeof response.csid === 'string' && response.csid.trim().length > 0,
-      hasPrivk: typeof response.privk === 'string' && response.privk.trim().length > 0,
-      hasSek: typeof response.sek === 'string' && response.sek.trim().length > 0,
-    });
-
-    const encryptedMasterKey = decodeMegaBase64Url(assertString(response.k, 'MEGA login response is missing the encrypted master key.'));
-    const masterKey = decryptAesEcb(encryptedMasterKey, passwordKey);
-    const userHandle = assertString(response.u, 'MEGA login response is missing the user handle.');
-
-    const encryptedPrivateKey = typeof response.privk === 'string' && response.privk.trim() ? response.privk.trim() : undefined;
-    const privateKey = encryptedPrivateKey
-      ? decodeMegaPrivateKey(decryptMegaPrivateKey(decodeMegaBase64Url(encryptedPrivateKey), masterKey))
-      : undefined;
-
-    let sid = typeof response.tsid === 'string' ? response.tsid.trim() : '';
-    if (sid) {
-      this.runtime.logger.log('Using temporary MEGA session identifier from login response.', {
-        email: email.trim(),
-      });
-      validateTemporarySessionId(sid, masterKey);
-    } else {
-      if (!privateKey) {
-        throw new Error('MEGA login response is missing the private key.');
-      }
-      const sidCiphertext = decodeMegaBase64Url(assertString(response.csid, 'MEGA login response is missing the session id.'));
-      sid = decryptSessionIdFromCsid(sidCiphertext, privateKey, userHandle);
-      this.runtime.logger.log('Using RSA-backed MEGA session identifier from login response.', {
-        email: email.trim(),
-      });
-    }
-
-    return {
-      email: email.trim(),
-      password,
-      mfaCode,
-      sid,
-      masterKey,
-      encryptedPrivateKey,
-      privateKey,
-      userHandle,
-      accountVersion: version,
-      accountSalt,
-    };
+    return createMegaPasswordSession(this.apiClient, this.runtime.logger, email, password, mfaCode);
   }
 
   private async fetchCurrentUser(session: MegaSession, signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -1822,7 +1759,8 @@ function uniqueTrimmedStrings(values: readonly string[]): string[] {
 
 function megaOutgoingShareRecordNodeHandles(record: Record<string, unknown>): string[] {
   const handles: string[] = [];
-  for (const key of ['t', 'h'] as const) {
+  // MEGA SDK `readoutshareelement` documents the shared node as `h`; older snapshots sometimes used `t`.
+  for (const key of ['h', 't'] as const) {
     const raw = record[key];
     if (typeof raw === 'string') {
       const trimmed = raw.trim();
@@ -2018,6 +1956,8 @@ class MegaOwnerRemoteAdapter {
   // Cache of created folders: key is `${parentHandle}/${name}`, value is the created handle.
   // Prevents duplicate folder creation within a single sync cycle.
   private readonly createdFolders = new Map<string, string>();
+  /** Tree from the latest `list()` in this sync cycle; `list()` used to fetch fresh data while `download()` used stale `ownerRoot.tree`. */
+  private listCycleTree: DecryptedMegaTree | null = null;
 
   constructor(
     private readonly fetchImpl: typeof fetch,
@@ -2027,6 +1967,10 @@ class MegaOwnerRemoteAdapter {
     private readonly shareCrypto: MegaShareCryptoContext | undefined,
     private readonly signal?: AbortSignal
   ) { }
+
+  reconcileUploadsByRemoteSize(): boolean {
+    return true;
+  }
 
   async list(): Promise<readonly MirrorRemoteEntry[]> {
     debugMegaLog('[MEGA:owner-adapter] listing remote entries.', {
@@ -2040,6 +1984,7 @@ class MegaOwnerRemoteAdapter {
       { useCache: false },
       this.signal
     );
+    this.listCycleTree = fetched.tree;
     const entries: MirrorRemoteEntry[] = [];
     await visitTree(fetched.tree, async (relativePath, node) => {
       if (!isMirrorRelativePath(relativePath)) {
@@ -2059,11 +2004,27 @@ class MegaOwnerRemoteAdapter {
   }
 
   async download(relativePath: string): Promise<Uint8Array> {
-    debugMegaLog('[MEGA:owner-adapter] downloading file from owner root.', { relativePath });
-    const node = findNodeByRelativePath(this.ownerRoot.tree, this.ownerRoot.root.handle, relativePath);
-    if (!node || node.isFolder) {
-      console.error('[MEGA:owner-adapter] download target not found in tree.', { relativePath });
-      throw new Error(`MEGA owner folder is missing ${relativePath}.`);
+    const normalized = normalizeRelativePath(relativePath);
+    debugMegaLog('[MEGA:owner-adapter] downloading file from owner root.', { relativePath: normalized });
+    const fromList = this.listCycleTree
+      ? findNodeByRelativePath(this.listCycleTree, this.ownerRoot.root.handle, normalized)
+      : undefined;
+    let node = fromList && !fromList.isFolder ? fromList : undefined;
+    if (!node) {
+      const fetched = await fetchMegaDecryptedTree(
+        this.apiClient,
+        this.session,
+        this.ownerRoot.root.handle,
+        { useCache: false },
+        this.signal
+      );
+      this.listCycleTree = fetched.tree;
+      const resolved = findNodeByRelativePath(fetched.tree, this.ownerRoot.root.handle, normalized);
+      node = resolved && !resolved.isFolder ? resolved : undefined;
+    }
+    if (!node) {
+      console.error('[MEGA:owner-adapter] download target not found in tree.', { relativePath: normalized });
+      throw new Error(`MEGA owner folder is missing ${normalized}.`);
     }
     const data = await downloadAuthenticatedMegaFileContent(
       this.fetchImpl,
@@ -2074,7 +2035,7 @@ class MegaOwnerRemoteAdapter {
       node.size,
       this.signal
     );
-    debugMegaLog('[MEGA:owner-adapter] download completed.', { relativePath, size: data.length });
+    debugMegaLog('[MEGA:owner-adapter] download completed.', { relativePath: normalized, size: data.length });
     return data;
   }
 
@@ -4454,5 +4415,209 @@ function decryptAesEcb(value: Buffer, key: Buffer): Buffer {
   const decipher = createDecipheriv('aes-128-ecb', key.subarray(0, 16), null);
   decipher.setAutoPadding(false);
   return Buffer.concat([decipher.update(value), decipher.final()]);
+}
+
+type MegaPasswordSessionLogger = Pick<IntegrationRuntime['logger'], 'log'> | undefined;
+
+async function megaApiCommandStandalone<T = Record<string, unknown>>(
+  apiClient: MegaApiClient,
+  command: Record<string, unknown>,
+  session?: MegaSession,
+  signal?: AbortSignal
+): Promise<T> {
+  return withMegaApiRetry(async () => {
+    const response = await apiClient.requestSingle<T | number>(command, {
+      sessionId: session?.sid,
+      signal,
+    });
+    if (typeof response === 'number') {
+      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
+      error.code = response;
+      throw error;
+    }
+    return response;
+  }, signal);
+}
+
+async function createMegaPasswordSession(
+  apiClient: MegaApiClient,
+  logger: MegaPasswordSessionLogger,
+  email: string,
+  password: string,
+  mfaCode?: string
+): Promise<MegaSession> {
+  const trimmedEmail = email.trim();
+  const prelogin = await megaApiCommandStandalone<{ v?: number; s?: string }>(apiClient, { a: 'us0', user: trimmedEmail });
+  const version = Number(prelogin.v ?? 1) || 1;
+
+  let passwordKey: Buffer;
+  let uh: string;
+  let accountSalt: string | undefined;
+
+  if (version > 1) {
+    const salt = String(prelogin.s ?? '').trim();
+    if (!salt) {
+      throw new Error('MEGA did not return an authentication salt for this account.');
+    }
+    const derived = await deriveV2PasswordKey(password, salt);
+    passwordKey = derived.masterKey;
+    uh = encodeMegaBase64Url(derived.authKey);
+    accountSalt = salt;
+  } else {
+    passwordKey = prepareV1PasswordKey(password);
+    uh = stringHash(trimmedEmail.toLowerCase(), passwordKey);
+  }
+
+  const response = await megaApiCommandStandalone<Record<string, unknown>>(apiClient, {
+    a: 'us',
+    user: trimmedEmail,
+    uh,
+    ...(mfaCode ? { mfa: mfaCode } : {}),
+  });
+
+  logger?.log('MEGA login response received.', {
+    email: trimmedEmail,
+    hasTsid: typeof response.tsid === 'string' && response.tsid.trim().length > 0,
+    hasCsid: typeof response.csid === 'string' && response.csid.trim().length > 0,
+    hasPrivk: typeof response.privk === 'string' && response.privk.trim().length > 0,
+    hasSek: typeof response.sek === 'string' && response.sek.trim().length > 0,
+  });
+
+  const encryptedMasterKey = decodeMegaBase64Url(assertString(response.k, 'MEGA login response is missing the encrypted master key.'));
+  const masterKey = decryptAesEcb(encryptedMasterKey, passwordKey);
+  const userHandle = assertString(response.u, 'MEGA login response is missing the user handle.');
+
+  const encryptedPrivateKey = typeof response.privk === 'string' && response.privk.trim() ? response.privk.trim() : undefined;
+  const privateKey = encryptedPrivateKey
+    ? decodeMegaPrivateKey(decryptMegaPrivateKey(decodeMegaBase64Url(encryptedPrivateKey), masterKey))
+    : undefined;
+
+  let sid = typeof response.tsid === 'string' ? response.tsid.trim() : '';
+  if (sid) {
+    logger?.log('Using temporary MEGA session identifier from login response.', {
+      email: trimmedEmail,
+    });
+    validateTemporarySessionId(sid, masterKey);
+  } else {
+    if (!privateKey) {
+      throw new Error('MEGA login response is missing the private key.');
+    }
+    const sidCiphertext = decodeMegaBase64Url(assertString(response.csid, 'MEGA login response is missing the session id.'));
+    sid = decryptSessionIdFromCsid(sidCiphertext, privateKey, userHandle);
+    logger?.log('Using RSA-backed MEGA session identifier from login response.', {
+      email: trimmedEmail,
+    });
+  }
+
+  return {
+    email: trimmedEmail,
+    password,
+    mfaCode,
+    sid,
+    masterKey,
+    encryptedPrivateKey,
+    privateKey,
+    userHandle,
+    accountVersion: version,
+    accountSalt,
+  };
+}
+
+function resolveRubbishBinHandle(snapshot: MegaFetchNodesSnapshot): string | undefined {
+  for (const node of snapshot.nodes) {
+    if (Number(node.t ?? 0) === 4 && typeof node.h === 'string' && node.h.trim()) {
+      return node.h.trim();
+    }
+  }
+  return undefined;
+}
+
+function collectSubtreeHandlesPostOrderDeletion(snapshot: MegaFetchNodesSnapshot, parentHandle: string): string[] {
+  const childrenByParent = new Map<string, MegaNodeRecord[]>();
+  for (const node of snapshot.nodes) {
+    const h = typeof node.h === 'string' ? node.h.trim() : '';
+    if (!h) {
+      continue;
+    }
+    const p = typeof node.p === 'string' ? node.p.trim() : '';
+    const list = childrenByParent.get(p) ?? [];
+    list.push(node);
+    childrenByParent.set(p, list);
+  }
+  const order: string[] = [];
+  const dfs = (parent: string) => {
+    for (const node of childrenByParent.get(parent) ?? []) {
+      const h = typeof node.h === 'string' ? node.h.trim() : '';
+      if (!h) {
+        continue;
+      }
+      dfs(h);
+      order.push(h);
+    }
+  };
+  dfs(parentHandle);
+  return order;
+}
+
+async function wipeMegaSubtreeHandles(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  handles: readonly string[],
+  signal?: AbortSignal
+): Promise<void> {
+  for (const handle of handles) {
+    await deleteMegaNode(apiClient, session, handle, signal);
+    await waitForMegaRetry(150, signal);
+  }
+}
+
+/**
+ * Deletes all user nodes under Cloud Drive and empties Rubbish Bin contents (e2e / dev only).
+ * Requires `NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE=1`.
+ */
+export async function wipeMegaCloudDriveContentsForE2e(options: {
+  email: string;
+  password: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<{ deletedNodeCount: number }> {
+  if (process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE?.trim() !== '1') {
+    throw new Error(
+      'Refusing to wipe MEGA: set NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE=1 (destructive; dev/e2e only).'
+    );
+  }
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const apiClient = new MegaApiClient({ fetchImpl });
+  const session = await createMegaPasswordSession(apiClient, undefined, options.email, options.password);
+
+  let deleted = 0;
+  const signal = options.signal;
+
+  for (let round = 0; round < 12; round += 1) {
+    const snapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, { useCache: false }, signal);
+    const cloudHandle = resolveMegaCloudDriveHandle(snapshot);
+    if (!cloudHandle) {
+      throw new Error('MEGA snapshot did not include a Cloud Drive root.');
+    }
+    const underDrive = collectSubtreeHandlesPostOrderDeletion(snapshot, cloudHandle);
+    if (underDrive.length > 0) {
+      await wipeMegaSubtreeHandles(apiClient, session, underDrive, signal);
+      deleted += underDrive.length;
+      continue;
+    }
+
+    const rubbish = resolveRubbishBinHandle(snapshot);
+    if (!rubbish) {
+      break;
+    }
+    const inRubbish = collectSubtreeHandlesPostOrderDeletion(snapshot, rubbish);
+    if (inRubbish.length === 0) {
+      break;
+    }
+    await wipeMegaSubtreeHandles(apiClient, session, inRubbish, signal);
+    deleted += inRubbish.length;
+  }
+
+  return { deletedNodeCount: deleted };
 }
 

@@ -52,6 +52,11 @@ export interface MirrorRemoteAdapter {
   list(): Promise<readonly MirrorRemoteEntry[]>;
   download(path: string): Promise<Uint8Array>;
   upload(path: string, data: Uint8Array): Promise<void>;
+  /**
+   * When true, replaces remote files when a path exists remotely but the stored size differs from local
+   * (MEGA owner writable mirror). Other mirrors keep the legacy behavior (skip if path exists).
+   */
+  reconcileUploadsByRemoteSize?(): boolean;
 }
 
 export interface TransportAdapter {

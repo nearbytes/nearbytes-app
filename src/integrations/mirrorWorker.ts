@@ -23,9 +23,11 @@ export class MirrorWorker {
     const downloaded: string[] = [];
     const skipped: string[] = [];
 
+    const sizeAwarePush = remote.reconcileUploadsByRemoteSize?.() === true;
     for (const entry of localEntries) {
-      if (remoteMap.has(entry.path)) {
-        debugMirrorLog('[MirrorWorker] skip (already remote).', { path: entry.path, size: entry.size });
+      const remoteEntry = remoteMap.get(entry.path);
+      if (remoteEntry && (!sizeAwarePush || remoteEntry.size === entry.size)) {
+        debugMirrorLog('[MirrorWorker] skip (already on remote).', { path: entry.path, size: entry.size, sizeAwarePush });
         skipped.push(entry.path);
         continue;
       }
@@ -63,7 +65,24 @@ export class MirrorWorker {
         continue;
       }
       const fullPath = path.join(localRoot, normalizedPath);
-      const remoteBytes = await remote.download(normalizedPath);
+      let remoteBytes: Uint8Array;
+      try {
+        remoteBytes = await remote.download(normalizedPath);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (
+          /^MEGA owner folder is missing /i.test(msg) ||
+          /^MEGA mirror entry not found:/i.test(msg)
+        ) {
+          debugMirrorWarn('[MirrorWorker] skip download; remote path not resolvable (tree skew or node removed).', {
+            path: normalizedPath,
+            detail: msg,
+          });
+          skipped.push(normalizedPath);
+          continue;
+        }
+        throw error;
+      }
       const remoteValidation = await validateCanonicalStorageFile(normalizedPath, remoteBytes);
       if (!remoteValidation.ok) {
         debugMirrorWarn('[MirrorWorker] skip invalid remote storage file.', {
