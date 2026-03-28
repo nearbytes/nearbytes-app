@@ -1,3 +1,61 @@
+# Handover — MEGA bidirectional transport (2026-03-28)
+
+This section is for the next developer or session: findings, what was tested, environment, and what to do next.
+
+## What the “Undecrypted” badge is (MEGA web UI)
+
+On **mega.nz** (Cloud Drive / shared folders), **Undecrypted** on directories means MEGA knows those nodes exist in the remote tree, but **your current session cannot decrypt them yet** — folder names and file contents stay hidden until the right keys are available. Common causes:
+
+- **Incoming folder share** where the share key has not been applied or has not propagated to this client/session.
+- **Contact / key-manager flow** incomplete (contact not accepted, or keys not loaded yet).
+- **Transient MEGA API issues** (for example temporary lock `-3`) so a key or tree fetch failed partway through.
+- **Stale or partial session** so the key snapshot does not include keys for nodes that show a sharing user (`su`).
+
+In **Nearbytes logs**, the same situation often appears as **`skippedNoDecrypt`** during incoming-share discovery, or messages like **MEGA tree decryption: some nodes could not be decrypted**. Stabilizing transport E2E means getting share keys into the key-manager snapshot before classifying incoming offers.
+
+## Status at handover
+
+- **Goal:** In-process bidirectional readonly MEGA transport (two accounts, no HTTP server) via `ManagedShareService` + `MegaTransportAdapter` (`yarn e2e:mega-bidirectional-transport`).
+- **Unit/integration tests** for `megaAdapter`, `mirrorWorker`, and `managedShares` passed after the hardening changes documented below; re-run them after any further edits to those modules.
+- **Live transport E2E** was **not** confirmed green at handover. Recent failure patterns included **`No incoming MEGA offer … within 300000ms`** and diagnostics showing **incoming nodes with `skippedNoDecrypt`** when a later key-manager fetch returned empty share keys. Mitigations in flight include throttled managed-share polling, idempotent owner `ensureSync`, scoped partial-tree fetch (avoid accidental full snapshot on `-3` for sensitive owner paths), **share-key cache** reuse per session when a fetch returns empty keys, longer MEGA contact-invite soft timeout, isolated E2E remote base path (`NEARBYTES_MEGA_REMOTE_BASE` / per-run `remoteBasePath`), and an abort timeout on the wipe script.
+- **Git:** The branch may still have **uncommitted** changes (`managedShares.ts`, `mega.ts`, e2e scripts, etc.). Run `git status`, review diffs, and commit when behavior is stable.
+
+## Findings (concise)
+
+| Area | Finding |
+|------|--------|
+| Polling vs owner sync | `getManagedShareState()` scheduled `ensureSync` on every poll → owner stuck “syncing”. **Mitigation:** throttle scheduling (~120s per share). |
+| Owner bootstrap | Repeated `ensureSync` re-ran heavy initial sync even with watchers active. **Mitigation:** skip blocking initial `runSyncLoop` when the owner loop is already active. |
+| List vs download | Different trees caused “listed but not downloadable”. **Mitigation:** `listCycleTree` + refetch fallback in owner adapter `download()`. |
+| Phantom `channels/` | Entries listed but not resolvable blocked the whole mirror pass. **Mitigation:** `MirrorWorker` skips vanished / missing owner paths. |
+| Partial fetch + `-3` | Full fallback after partial failure could enumerate huge trees. **Mitigation:** `allowTransientFullFallback` — readonly paths may full-fallback; owner folder operations use `false`. |
+| Incoming offers | Tree shows shared nodes but decrypt fails without share keys → `skippedNoDecrypt`. **Mitigation:** cache last non-empty share keys per `userHandle` in `fetchKeyManagerState` wrapper. |
+| Contact invites | Short lookup timeout was too tight for MEGA. **Mitigation:** longer `FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS` for MEGA. |
+| E2E isolation | Shared `/nearbytes` caused cross-run interference. **Mitigation:** per-run `remoteBasePath` (e.g. `/nearbytes-e2e-<id>`) and `NEARBYTES_MEGA_REMOTE_BASE`. |
+| Wipe script | Process could hang on unsettled awaits. **Mitigation:** abort timeout in `e2e-mega-wipe.mjs`. |
+
+## Testing phase (what was run)
+
+1. **Build + integration tests** — `yarn build` and `yarn test` on `src/integrations/__tests__/megaAdapter.test.ts`, `mirrorWorker.test.ts`, `managedShares.test.ts`.
+2. **Serial two-account transport script** — especially `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport` when accounts already contain legacy data; full wipe when chasing determinism.
+3. **Failure evolution observed:** wrong login email (HTTP 402), `-3` locks, unstable owner “ready”, stale list/download tree, then **incoming offer timeout** and **empty key manager** on later polls (addressed in code with key cache and longer invite timeout; end-to-end success not re-verified in the last tool run).
+
+## Commands and environment
+
+- **Secrets:** repo-root `.env.e2e` (gitignored). Two MEGA accounts as required by the script (owner/recipient roles per script contract).
+- **Primary transport E2E:**  
+  `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport`
+- **With wipe:** omit `NEARBYTES_E2E_SKIP_MEGA_WIPE=1` (slower; wipe uses its own timeout).
+- **Regression check after substantive changes:** `yarn build` plus the three integration test files above.
+
+## Next steps for the next owner
+
+1. Re-run **`yarn e2e:mega-bidirectional-transport`** (with or without skip-wipe as appropriate) and confirm a **green** run after the key-cache and script fixes. If offers still never appear, trace **`listIncomingMegaShareOffersWithDiag`** / decrypt for the relevant `su` nodes, contact acceptance timing, and consider a longer incoming poll than 300s or tighter offer matching (e.g. by owner email).
+2. **Commit** any pending changes; keep this file aligned with actual behavior.
+3. Optional: tie UI or support docs to the same concepts as **Undecrypted** / `skippedNoDecrypt` for easier diagnosis.
+
+---
+
 # MEGA Bidirectional Readonly Transport WIP
 
 ## Goal

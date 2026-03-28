@@ -187,6 +187,7 @@ export class MegaTransportAdapter {
   private readonly shareScsn = new Map<string, string>();
   private readonly shareKnownHandles = new Map<string, string[]>();
   private readonly shareRootHandles = new Map<string, string>();
+  private readonly accountShareKeyCache = new Map<string, ReadonlyMap<string, Buffer>>();
 
   constructor(
     private readonly runtime: IntegrationRuntime,
@@ -858,7 +859,9 @@ export class MegaTransportAdapter {
 
       const resolved = await this.withRecoveredAccountSession(account, async (activeSession) => ({
         session: activeSession,
-        fetched: await this.fetchPartialTreeWithSnapshot(activeSession, rootHandle, signal),
+        fetched: await this.fetchPartialTreeWithSnapshot(activeSession, rootHandle, signal, {
+          allowTransientFullFallback: true,
+        }),
       }));
       const topLevelEntryNames = listMegaTopLevelEntryNames(resolved.fetched.tree);
       this.runtime.logger.log('MEGA share top-level entries.', {
@@ -1406,13 +1409,38 @@ export class MegaTransportAdapter {
   private async fetchPartialTreeWithSnapshot(
     session: MegaSession,
     rootHandle: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options: {
+      readonly allowTransientFullFallback?: boolean;
+    } = {}
   ): Promise<MegaFetchedTree> {
-    return fetchMegaDecryptedTree(this.apiClient, session, rootHandle, { useCache: false }, signal, this.runtime.logger);
+    return fetchMegaDecryptedTree(
+      this.apiClient,
+      session,
+      rootHandle,
+      { useCache: false, allowTransientFullFallback: options.allowTransientFullFallback },
+      signal,
+      this.runtime.logger
+    );
   }
 
   private async fetchKeyManagerState(session: MegaSession, signal?: AbortSignal): Promise<MegaKeyManagerState> {
-    return fetchMegaKeyManagerState(this.apiClient, session, signal, this.runtime.logger);
+    const cachedShareKeys = this.accountShareKeyCache.get(session.userHandle);
+    const fetched = await fetchMegaKeyManagerState(this.apiClient, session, signal, this.runtime.logger);
+    if (fetched.shareKeys.size > 0) {
+      this.accountShareKeyCache.set(session.userHandle, new Map(fetched.shareKeys));
+      return fetched;
+    }
+    if (cachedShareKeys && cachedShareKeys.size > 0) {
+      this.runtime.logger.log('MEGA key-manager state fallback: using cached share keys after empty fetch result.', {
+        email: session.email,
+        keyCount: cachedShareKeys.size,
+      });
+      return {
+        shareKeys: new Map(cachedShareKeys),
+      };
+    }
+    return fetched;
   }
 
   private async fetchActionPackets(session: MegaSession, scsn: string, signal?: AbortSignal): Promise<MegaActionPacketBatch> {
@@ -1529,7 +1557,9 @@ export class MegaTransportAdapter {
     node: DecryptedMegaNode;
   }> {
     for (let attempt = 0; attempt < MEGA_CREATE_RECOVERY_ATTEMPTS; attempt += 1) {
-      const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal);
+      const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal, {
+        allowTransientFullFallback: false,
+      });
       const created = findChildNodeByName(fetched.tree, parentHandle, name, true);
       if (created) {
         return {
@@ -1571,7 +1601,9 @@ export class MegaTransportAdapter {
     fetched: MegaFetchedTree;
     node: DecryptedMegaNode;
   } | null> {
-    const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal);
+    const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal, {
+      allowTransientFullFallback: false,
+    });
     const node = findChildNodeByName(fetched.tree, parentHandle, name, true);
     if (!node) {
       return null;
@@ -1981,7 +2013,7 @@ class MegaOwnerRemoteAdapter {
       this.apiClient,
       this.session,
       this.ownerRoot.root.handle,
-      { useCache: false },
+      { useCache: false, allowTransientFullFallback: false },
       this.signal
     );
     this.listCycleTree = fetched.tree;
@@ -2015,7 +2047,7 @@ class MegaOwnerRemoteAdapter {
         this.apiClient,
         this.session,
         this.ownerRoot.root.handle,
-        { useCache: false },
+        { useCache: false, allowTransientFullFallback: false },
         this.signal
       );
       this.listCycleTree = fetched.tree;
@@ -2387,6 +2419,7 @@ async function fetchMegaDecryptedTree(
   rootHandle?: string,
   options: {
     readonly useCache?: boolean;
+    readonly allowTransientFullFallback?: boolean;
   } = {},
   signal?: AbortSignal,
   logger?: Pick<IntegrationRuntime['logger'], 'warn'>
@@ -2396,7 +2429,12 @@ async function fetchMegaDecryptedTree(
     try {
       snapshot = parseMegaFetchNodesSnapshot(await requestMegaNodesSnapshot(apiClient, session, rootHandle, options, signal));
     } catch (error) {
-      if (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error) && !isMegaAccessDeniedError(error)) {
+      const transientPartialFetchFailure =
+        isMegaTemporaryLockError(error) || isMegaRateLimitedError(error) || isMegaRetryableTransportError(error);
+      if (transientPartialFetchFailure && options.allowTransientFullFallback !== true) {
+        throw error;
+      }
+      if (!transientPartialFetchFailure && !isMegaAccessDeniedError(error)) {
         throw error;
       }
       logger?.warn?.('MEGA partial tree fetch failed; falling back to a full node snapshot.', {

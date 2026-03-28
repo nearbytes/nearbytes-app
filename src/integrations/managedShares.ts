@@ -72,6 +72,7 @@ const FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 750;
 const FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 6_000;
 const FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 5_000;
 const FULL_MEGA_MANAGED_SHARE_COLLABORATORS_TIMEOUT_MS = 5_000;
+const FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS = 10_000;
 const MEGA_COLLABORATOR_LOOKUP_COOLDOWN_MS = 30_000;
 /** Avoid re-entrant `ensureSync` on every `getManagedShareState` poll (e.g. E2E / UI); that was resetting MEGA owner shares to `syncing` forever. */
 const GET_MANAGED_SHARE_STATE_ENSURE_SYNC_MIN_INTERVAL_MS = 120_000;
@@ -634,7 +635,9 @@ export class ManagedShareService {
             return await this.withSoftTimeout(
               adapter.listIncomingContactInvites(account),
               [] satisfies IncomingProviderContactInvite[],
-              1_500,
+              normalizeProvider(account.provider) === 'mega'
+                ? FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS
+                : 1_500,
               `Incoming contact invite lookup timed out for ${account.provider}:${account.id}`
             );
           } catch (error) {
@@ -2576,16 +2579,18 @@ export class ManagedShareService {
       return;
     }
 
+    const baseRemotePath = normalizeManagedShareRemotePath('mega', this.runtime.mega.remoteBasePath);
+    const baseShareName = path.posix.basename(baseRemotePath) || MEGA_BASE_SHARE_FOLDER_NAME;
     const localPath = path.resolve(
       resolveManagedShareLocalPath(
         this.mirrorRoot,
         'mega',
         account,
-        'nearbytes',
+        baseShareName,
         'share-mega-legacy-placeholder',
         {
-          remotePath: '/nearbytes',
-          shareName: 'nearbytes',
+          remotePath: baseRemotePath,
+          shareName: baseShareName,
           legacyLocalMirror: true,
         },
         'owner'
@@ -2600,14 +2605,14 @@ export class ManagedShareService {
       id: shareId,
       provider: 'mega',
       accountId: account.id,
-      label: 'nearbytes',
+      label: baseShareName,
       role: 'owner',
       localPath,
       sourceId: undefined,
       syncMode: 'mirror',
       remoteDescriptor: {
-        remotePath: '/nearbytes',
-        shareName: 'nearbytes',
+        remotePath: baseRemotePath,
+        shareName: baseShareName,
         ...(inspection ? { legacyLocalMirror: true } : {}),
       },
       capabilities: ['mirror', 'read', 'write', 'invite'],
@@ -3098,7 +3103,14 @@ function isProviderBaseShare(
       : '';
   const ownerEmail =
     typeof remoteDescriptor?.ownerEmail === 'string' ? remoteDescriptor.ownerEmail.trim().toLowerCase() : '';
-  if (remotePath === '/nearbytes') {
+  const remoteBaseName = remotePath.startsWith('/') ? path.posix.basename(remotePath) : '';
+  const remoteDepth = remotePath.split('/').filter((segment) => segment.length > 0).length;
+  if (
+    !ownerEmail &&
+    remotePath.startsWith('/') &&
+    remoteDepth === 1 &&
+    (normalizedLabel === shareName || shareName === remoteBaseName)
+  ) {
     return true;
   }
   if (ownerEmail) {
@@ -3108,9 +3120,18 @@ function isProviderBaseShare(
 }
 
 function isMegaOwnerBaseShare(share: ManagedShare): boolean {
+  const remotePath = getManagedShareRemotePath('mega', share.remoteDescriptor) ?? '';
+  const shareName =
+    typeof share.remoteDescriptor?.shareName === 'string' ? share.remoteDescriptor.shareName.trim().toLowerCase() : '';
+  const remoteBaseName = remotePath.startsWith('/') ? path.posix.basename(remotePath).toLowerCase() : '';
+  const remoteDepth = remotePath.split('/').filter((segment) => segment.length > 0).length;
   return normalizeProvider(share.provider) === 'mega' &&
     share.role === 'owner' &&
-    getManagedShareRemotePath('mega', share.remoteDescriptor) === '/nearbytes';
+    typeof share.remoteDescriptor?.ownerEmail !== 'string' &&
+    remotePath.startsWith('/') &&
+    remoteDepth === 1 &&
+    (shareName === remoteBaseName ||
+      sanitizeManagedFolderLabel(share.label).toLowerCase() === shareName);
 }
 
 function sanitizeManagedFolderLabel(value: string): string {

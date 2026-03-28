@@ -41,6 +41,8 @@ process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = '1';
 
 const { wipeMegaCloudDriveContentsForE2e } = await import('../dist/integrations/mega.js');
 
+const WIPE_TIMEOUT_MS = 20 * 60 * 1000;
+
 const password = process.env.NEARBYTES_E2E_MEGA_PASSWORD ?? '';
 const fromList = process.env.NEARBYTES_E2E_MEGA_ACCOUNTS?.trim();
 const owner = process.env.NEARBYTES_E2E_MEGA_OWNER_EMAIL?.trim();
@@ -60,6 +62,12 @@ if (!password || emails.length === 0) {
 
 for (const email of emails) {
   console.error(`[e2e-mega-wipe] ${email} …`);
-  const { deletedNodeCount } = await wipeMegaCloudDriveContentsForE2e({ email, password });
-  console.error(`[e2e-mega-wipe] ${email} deleted ${deletedNodeCount} node(s).`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WIPE_TIMEOUT_MS);
+  try {
+    const { deletedNodeCount } = await wipeMegaCloudDriveContentsForE2e({ email, password, signal: controller.signal });
+    console.error(`[e2e-mega-wipe] ${email} deleted ${deletedNodeCount} node(s).`);
+  } finally {
+    clearTimeout(timer);
+  }
 }

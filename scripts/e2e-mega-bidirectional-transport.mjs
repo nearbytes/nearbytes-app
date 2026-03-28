@@ -45,6 +45,9 @@ if (existsSync(envE2ePath)) {
 const emailA = process.env.NEARBYTES_E2E_MEGA_OWNER_EMAIL?.trim();
 const emailB = process.env.NEARBYTES_E2E_MEGA_RECIPIENT_EMAIL?.trim();
 const password = process.env.NEARBYTES_E2E_MEGA_PASSWORD ?? '';
+const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const remoteBasePath = `/nearbytes-e2e-${runId}`;
+process.env.NEARBYTES_MEGA_REMOTE_BASE = remoteBasePath;
 
 if (!emailA || !emailB || !password) {
   console.error(
@@ -54,6 +57,7 @@ if (!emailA || !emailB || !password) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const WIPE_TIMEOUT_MS = 20 * 60 * 1000;
 
 function sha256Hex(buf) {
   return createHash('sha256').update(buf).digest('hex');
@@ -67,8 +71,14 @@ async function wipeBothIfEnabled() {
   const { wipeMegaCloudDriveContentsForE2e } = await import('../dist/integrations/mega.js');
   for (const email of [emailA, emailB]) {
     console.error(`[mega-bidir] wipe ${email}…`);
-    const { deletedNodeCount } = await wipeMegaCloudDriveContentsForE2e({ email, password });
-    console.error(`[mega-bidir] wipe ${email} deleted ${deletedNodeCount} node(s)`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WIPE_TIMEOUT_MS);
+    try {
+      const { deletedNodeCount } = await wipeMegaCloudDriveContentsForE2e({ email, password, signal: controller.signal });
+      console.error(`[mega-bidir] wipe ${email} deleted ${deletedNodeCount} node(s)`);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -120,7 +130,7 @@ async function createPeerTransport(peerLabel) {
   const runtime = createIntegrationRuntime({
     secretStore: new JsonFileSecretStore({ filePath: path.join(base, 'integration-secrets.json') }),
     mega: {
-      remoteBasePath: '/nearbytes',
+      remoteBasePath,
       /** Long interval reduces overlap with first full mirror while E2E polls `getManagedShareState`. */
       syncIntervalMs: 120_000,
       /** Default 180s is too tight when pulling a large existing Cloud drive /nearbytes tree. */
@@ -218,7 +228,7 @@ async function waitMirrorFile(filePath, expectedBytes, timeoutMs) {
 }
 
 async function main() {
-  await wipeBothIfEnabled();
+  console.error(`[mega-bidir] isolated remote root ${remoteBasePath}`);
 
   /** Two simultaneous MEGA sessions often hit API -3 (temporary lock); bring A to `ready` before connecting B. */
   let peerA;
