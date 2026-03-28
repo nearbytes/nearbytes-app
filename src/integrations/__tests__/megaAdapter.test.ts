@@ -3292,6 +3292,7 @@ describe('MegaTransportAdapter', () => {
     expect(state.status).toBe('syncing');
     expect(state.detail).toContain('decryption key');
     expect(state.badges).toEqual(expect.arrayContaining(['Readonly', 'Retrying']));
+    expect((adapter as any).shareScsn.get(share.id)).toBe('cursor-1');
 
     await adapter.detachManagedShare(share, account);
     await adapter.dispose();

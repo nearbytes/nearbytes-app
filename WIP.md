@@ -48,6 +48,8 @@ In **Nearbytes logs**, the same situation often appears as **`skippedNoDecrypt`*
   - usable key source from `sk`, `^!keys.pendinginshares`, and `pk`: **none**
   - incoming discovery result before the patch: **`offerCount: 0`** after 4 passes
 - **Latest live rerun (after the provisional-offer patch)** still timed out waiting for recipient B (`share-mega-2-b328ba`) to become ready. The SC listener was active and repeatedly logged packets, but the observed packets were only **`ua` account-level events**; no share-touching `s` / `s2` / `u` / `t` / `d` packets were seen on the mounted shares before timeout.
+- **Latest live reruns after seeding pending-root recipient cursors** showed a real improvement: recipient shares now **do** join the SC channel in both directions and log their own action-packet batches. After filtering out account-level noise, those recipient batches are still only **`ua`** events, not share-touching `s` / `s2` / `u` / `t` / `d` packets.
+- **Pending-root diagnostics now show the failing root is present but still keyless.** Example from the latest run on recipient A for incoming root **`JcsCiTSI`**: `nodePresent=true`, `hasSk=false`, `nodeKeyOwners=['JcsCiTSI']`, `hasShareKeyForRootHandle=false`, `pendingInShareCount=0`, `pendingInShareHasRootHandle=false`, and `matchingShareRowCount=0`.
 - **Git:** Run `git status` and commit when stable; this document describes code that may land as one or more commits.
 
 ## Official source reconciliation (2026-03-28)
@@ -123,7 +125,8 @@ Cleaning mega.nz for the two disposable accounts needs **two layers**: (1) **rev
 1. **Stale cross-shares were a real problem**, and revoke-only cleanup is necessary even when wipe is skipped. That part is now confirmed by the **13 -> 1** reduction in B's undecryptable incoming roots.  
 2. The **remaining** failure is **not** explained by stale pileup alone: the **fresh** inbound root **`cIVQ2bjB`** itself arrives on B without `sk` and without any usable key from current key-manager sources.  
 3. Nearbytes now matches the MEGA clients more closely at the **discovery** layer by exposing undecryptable `su` roots as provisional offers, so if the live rerun still stalls the remaining root cause is narrower: **share-row / action-packet key delivery or application**, not offer enumeration.  
-4. **`-3`** still adds noise, especially on B owner sync, but after cleanup it no longer explains the missing incoming offer by itself.
+4. The latest diagnostics further narrow the gap: for the failing incoming root, Nearbytes can now prove the root node itself exists in the `f` snapshot while **all currently consumed key channels remain empty** (`sk`, share rows, pending inshares, resolved share keys).  
+5. **`-3`** still adds noise, especially on B owner sync, but after cleanup it no longer explains the missing incoming offer by itself.
 
 ## Testing phase (what was run)
 
@@ -136,6 +139,7 @@ Cleaning mega.nz for the two disposable accounts needs **two layers**: (1) **rev
 7. **Long live pass before rebuilding `dist/`** — timed out, but it had already reached recipient readonly share sync attempts (`share-mega-2-*`) that failed with **`MEGA tree did not include the requested root node.`** That suggests the transport had progressed beyond the old zero-offer deadlock, but treat this only as a partial signal because `dist/` was rebuilt afterwards.
 8. **`yarn build` + short rebuilt live pass** — confirmed the new provisional-offer / pending-root strings exist in `dist/integrations/mega.js`; the short rerun exited during owner-A bootstrap with no decisive end-to-end result, so a full rebuilt live rerun is still required.
 9. **Fresh rebuilt live rerun** — `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport` again failed waiting for recipient B (`share-mega-2-b328ba`) to become ready. The SC channel listener was clearly alive, but the packets observed during the timeout window were only `ua` account-level actions; no share-affecting packet batch was observed on the mounted shares before the run ended in repeated **`MEGA tree did not include the requested root node.`** failures.
+10. **Recipient-cursor + pending-root-diagnostics live reruns** — recipient subscriptions now log their own SC batches in both directions, but those batches remain `ua`-only. The latest diagnostics show the failing root is present in `f` yet still has no `sk`, no share row, no pending-inshare entry, and no usable share key.
 
 ## Commands and environment
 
@@ -155,8 +159,8 @@ Cleaning mega.nz for the two disposable accounts needs **two layers**: (1) **rev
 1. Start from the **handover prompt** at the top of this file and keep the next session to **3 more attempts total**.  
 2. Re-run the live transport with revoke-only cleanup first and confirm whether the fresh root **`cIVQ2bjB`** now appears as a **provisional incoming offer** and whether accepting it transitions into a retrying recipient share instead of stalling at zero offers.  
 3. Instrument the **fresh inbound root path** rather than key-manager parsing. Focus on the live root **`cIVQ2bjB`** on B and compare Nearbytes with the webclient's inbound-share flow: `scparser.$add('s')`, `scinshare`, `process_f`, and `nodedec.crypto_decryptnode` inbound-share root handling after the offer has been surfaced.  
-4. In particular, explain why the SC listener is seeing only **`ua`** account-level packets during the timeout window and whether share packets are being missed, filtered out, or never delivered for the recreated inshare.  
-5. Verify whether MEGA ever sends a decryptable key for the fresh share root through action packets / share rows / follow-up fetches, or whether Nearbytes is failing to apply it after receipt.  
+4. In particular, explain why the recipient SC listeners now see only **`ua`** account-level packets and no share-affecting packets for the recreated inshare. Determine whether MEGA never delivers such packets for this case, or whether Nearbytes is seeding the cursor only after the relevant packet has already passed.  
+5. Verify whether MEGA ever sends a decryptable key for the fresh share root through any follow-up fetch path that Nearbytes is not yet consulting, or whether the accept/invite flow needs an additional post-accept materialization step.  
 6. Re-run the MEGA adapter and managed-shares tests after any code change; then rerun the live transport E2E with revoke-only cleanup first.  
 7. **Commit** `mega.ts`, `e2e-mega-wipe.mjs`, `e2e-mega-bidirectional-transport.mjs`, `WIP.md`, and any temporary debug helpers once the next narrow hypothesis is validated.  
 8. Optional: UI / ops text tying **Undecrypted** to **`skippedNoDecrypt`** and "remove share + reload" per [MEGA help](https://help.mega.io/files-folders/view-move/what-is-an-undecrypted-file-or-folder).

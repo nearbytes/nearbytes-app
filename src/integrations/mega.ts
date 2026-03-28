@@ -80,6 +80,7 @@ const MEGA_POST_UPLOAD_SETTLE_MS = 30_000;
 const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 500;
 const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
 const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
+const MEGA_PENDING_ROOT_DIAGNOSTIC_MIN_INTERVAL_MS = 60_000;
 const MEGA_OWNER_COLLABORATOR_CACHE_MS = 30_000;
 const MEGA_INCOMING_DISCOVERY_CACHE_MS = 5_000;
 const MEGA_CONTACT_INVITES_CACHE_MS = 5_000;
@@ -218,6 +219,7 @@ export class MegaTransportAdapter {
   private readonly shareScsn = new Map<string, string>();
   private readonly shareKnownHandles = new Map<string, string[]>();
   private readonly shareRootHandles = new Map<string, string>();
+  private readonly pendingRootDiagnosticAt = new Map<string, number>();
   private readonly accountShareKeyCache = new Map<string, ReadonlyMap<string, Buffer>>();
   private readonly accountCloudDriveHandleCache = new Map<string, string>();
   private readonly incomingShareDiscoveryCache = new Map<string, { expiresAt: number; offers: IncomingManagedShareOffer[] }>();
@@ -879,6 +881,7 @@ export class MegaTransportAdapter {
       if (!isMegaMissingRequestedRootError(error)) {
         throw error;
       }
+      await this.seedPendingRecipientShareCursor(share, account);
     }
     this.startScChannelListener(share, account);
     this.startRecurringSyncTimer(share, account);
@@ -1052,6 +1055,10 @@ export class MegaTransportAdapter {
       const needsAuth = /session|auth|credential|login|reconnect|MEGA API error -15/i.test(failure.detail);
       const localMirrorAvailable = await hasUsableMegaMirror(share.localPath);
       const shareKeyPending = failure.code === 'MEGA_SHARE_KEY_PENDING';
+      if (shareKeyPending) {
+        await this.seedPendingRecipientShareCursor(share, account, signal);
+        await this.logPendingRecipientRootDiagnostics(share, account, signal);
+      }
       const keepMirrorReady =
         localMirrorAvailable &&
         !needsAuth &&
@@ -1188,8 +1195,9 @@ export class MegaTransportAdapter {
 
         if (actionBatch.packets.length > 0) {
           const actions = summarizeActionPacketActions(actionBatch.packets);
+          const accountLevelOnly = allActionsAreAccountLevel(actions);
           const rootHandle = this.shareRootHandles.get(share.id);
-          let touchesShare = true;
+          let touchesShare = !accountLevelOnly;
           if (rootHandle) {
             const knownHandles = this.shareKnownHandles.get(share.id) ?? [];
             touchesShare = actionPacketBatchTouchesShare(actionBatch.packets, rootHandle, {
@@ -1197,7 +1205,7 @@ export class MegaTransportAdapter {
               knownHandles,
             });
           }
-          const triggerOwnerSync = share.role === 'owner' && !allActionsAreAccountLevel(actions);
+          const triggerOwnerSync = share.role === 'owner' && !accountLevelOnly;
           const shouldTriggerSync = touchesShare || triggerOwnerSync;
 
           if (actionBatch.packets.length) {
@@ -1206,6 +1214,7 @@ export class MegaTransportAdapter {
               rootHandle,
               packetCount: actionBatch.packets.length,
               actions,
+              accountLevelOnly,
               touchesShare,
               triggerOwnerSync,
               shouldTriggerSync,
@@ -1691,12 +1700,106 @@ export class MegaTransportAdapter {
     return (await this.runtime.secretStore.get<MegaMirrorManifest>(mirrorManifestKey(shareId))) ?? { entries: {} };
   }
 
+  private async seedPendingRecipientShareCursor(
+    share: ManagedShare,
+    account: ProviderAccount,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (share.role !== 'recipient' || this.shareScsn.has(share.id)) {
+      return;
+    }
+    try {
+      const session = await this.getAccountSession(account, signal);
+      const snapshot = await this.fetchNodesSnapshot(session, signal);
+      const scsn = snapshot.scsn?.trim();
+      if (!scsn) {
+        return;
+      }
+      this.shareScsn.set(share.id, scsn);
+      this.runtime.logger.log('Seeded MEGA recipient SC cursor while the incoming root key is pending.', {
+        shareId: share.id,
+        accountId: account.id,
+        scsn,
+      });
+    } catch (error) {
+      this.runtime.logger.warn('Failed to seed MEGA recipient SC cursor while the incoming root key is pending.', {
+        shareId: share.id,
+        accountId: account.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async updateManifestCursor(shareId: string, scsn: string): Promise<void> {
     const manifest = await this.loadManifest(shareId);
     await this.runtime.secretStore.set(mirrorManifestKey(shareId), {
       ...manifest,
       lastScsn: scsn.trim(),
     } satisfies MegaMirrorManifest);
+  }
+
+  private async logPendingRecipientRootDiagnostics(
+    share: ManagedShare,
+    account: ProviderAccount,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (share.role !== 'recipient') {
+      return;
+    }
+    const lastLoggedAt = this.pendingRootDiagnosticAt.get(share.id) ?? 0;
+    if (Date.now() - lastLoggedAt < MEGA_PENDING_ROOT_DIAGNOSTIC_MIN_INTERVAL_MS) {
+      return;
+    }
+    this.pendingRootDiagnosticAt.set(share.id, Date.now());
+
+    const rootHandle =
+      getStringDescriptor(share.remoteDescriptor, 'rootHandle') ?? getStringDescriptor(share.remoteDescriptor, 'shareHandle');
+    if (!rootHandle) {
+      return;
+    }
+
+    try {
+      const session = await this.getAccountSession(account, signal);
+      const snapshot = await this.fetchNodesSnapshot(session, signal);
+      const keyManager = await this.fetchKeyManagerState(session, signal, { includePendingInShareKeys: true });
+      const shareKeys = collectMegaShareKeys(snapshot, session, keyManager.shareKeys);
+      const node = snapshot.nodes.find((entry) => typeof entry.h === 'string' && entry.h.trim() === rootHandle);
+      const nodeMeta = (node as Record<string, unknown> | undefined) ?? {};
+      const nodeKeyOwners = listMegaNodeKeyOwners(typeof nodeMeta.k === 'string' ? nodeMeta.k : undefined);
+      const matchingShareRows = [...snapshot.outgoingShares, ...snapshot.pendingShares].filter((record) =>
+        megaOutgoingShareRecordNodeHandles(record).includes(rootHandle)
+      );
+
+      this.runtime.logger.log('MEGA pending recipient root diagnostics.', {
+        shareId: share.id,
+        accountId: account.id,
+        rootHandle,
+        snapshotScsn: snapshot.scsn?.trim(),
+        nodePresent: Boolean(node),
+        nodeParentHandle: typeof nodeMeta.p === 'string' ? nodeMeta.p.trim() || undefined : undefined,
+        nodeOwnerHandle: typeof nodeMeta.su === 'string' ? nodeMeta.su.trim() || undefined : undefined,
+        hasSk: typeof nodeMeta.sk === 'string' && nodeMeta.sk.trim() !== '',
+        nodeKeyOwners,
+        shareKeysAvailable: shareKeys.size,
+        hasShareKeyForRootHandle: shareKeys.has(rootHandle),
+        matchingNodeKeyOwners: nodeKeyOwners.filter((owner) => shareKeys.has(owner)),
+        pendingInShareCount: keyManager.pendingInShares.size,
+        pendingInShareHasRootHandle: keyManager.pendingInShares.has(rootHandle),
+        matchingShareRowCount: matchingShareRows.length,
+        shareRowTargets: matchingShareRows.map((record) => ({
+          u: typeof record.u === 'string' ? record.u.trim() || undefined : undefined,
+          p: typeof record.p === 'string' ? record.p.trim() || undefined : undefined,
+          n: typeof record.n === 'string' ? record.n.trim() || undefined : undefined,
+        })),
+      });
+    } catch (diagnosticError) {
+      this.runtime.logger.warn('MEGA pending recipient root diagnostics failed.', {
+        shareId: share.id,
+        accountId: account.id,
+        rootHandle,
+        message: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError),
+      });
+    }
   }
 
   private async apiCommand<T = Record<string, unknown>>(
