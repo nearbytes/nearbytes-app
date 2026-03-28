@@ -3719,39 +3719,7 @@ function decryptMegaTree(
     }
   }
 
-  const shareKeys = new Map<string, Buffer>();
-  for (const [handle, shareKey] of extraShareKeys.entries()) {
-    shareKeys.set(handle, shareKey);
-  }
-  for (const node of snapshot.nodes) {
-    if (typeof node.h !== 'string' || typeof (node as Record<string, unknown>).su !== 'string' || typeof (node as Record<string, unknown>).sk !== 'string') {
-      continue;
-    }
-    const shareKey = decryptShareKey(String((node as Record<string, unknown>).sk), session);
-    if (shareKey) {
-      registerMegaShareKeyHandlesForNode(shareKeys, node, shareKey);
-    }
-  }
-  for (const shareRecord of [...snapshot.outgoingShares, ...snapshot.pendingShares]) {
-    const handle = typeof shareRecord.t === 'string'
-      ? (shareRecord.t as string).trim()
-      : typeof shareRecord.h === 'string'
-        ? (shareRecord.h as string).trim()
-        : '';
-    const encodedShareKey = typeof shareRecord.sk === 'string' ? (shareRecord.sk as string).trim() : '';
-    if (!handle || !encodedShareKey || shareKeys.has(handle)) {
-      continue;
-    }
-    const shareKey = decryptShareKey(encodedShareKey, session);
-    if (shareKey) {
-      const node = snapshot.nodes.find((entry) => typeof entry.h === 'string' && entry.h.trim() === handle);
-      if (node) {
-        registerMegaShareKeyHandlesForNode(shareKeys, node, shareKey);
-      } else {
-        shareKeys.set(handle, shareKey);
-      }
-    }
-  }
+  const shareKeys = collectMegaShareKeys(snapshot, session, extraShareKeys);
 
   const nodesByHandle = new Map<string, DecryptedMegaNode>();
   let undecryptedNodeCount = 0;
