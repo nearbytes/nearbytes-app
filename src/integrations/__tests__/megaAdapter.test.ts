@@ -3084,6 +3084,219 @@ describe('MegaTransportAdapter', () => {
     await adapter.dispose();
   });
 
+  it('lists provisional incoming shares when MEGA exposes the root before the share key arrives', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const ownerHandle = 'owner000001';
+    const shareHandle = 'cIVQ2bjB';
+    const secretStore = createMemorySecretStore();
+    let fetchNodesCalls = 0;
+
+    await secretStore.set('provider-account:mega:acct-mega-provisional-inshare', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const fullSnapshot = {
+      f: [
+        {
+          h: shareHandle,
+          p: 'incoming001',
+          t: 1,
+          a: encodeMegaBase64Url(Buffer.alloc(16, 7)),
+          k: `${shareHandle}:${encodeMegaBase64Url(Buffer.alloc(16, 9))}`,
+          su: ownerHandle,
+          r: 0,
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+    };
+
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: userHandle, email }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'uga':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'pk':
+          return new Response(JSON.stringify([-9]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          fetchNodesCalls += 1;
+          return new Response(JSON.stringify([fullSnapshot]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const account: ProviderAccount = {
+      id: 'acct-mega-provisional-inshare',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const offers = await adapter.listIncomingShares(account);
+
+    expect(fetchNodesCalls).toBe(1);
+    expect(offers).toHaveLength(1);
+    expect(offers[0]).toMatchObject({
+      label: `MEGA share ${shareHandle.slice(-6)}`,
+      ownerLabel: 'owner@example.com',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        accessLevel: 'read',
+      },
+    });
+  });
+
+  it('keeps recipient sync retrying when the incoming root is visible before the share key arrives', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const ownerHandle = 'owner000001';
+    const shareHandle = 'cIVQ2bjB';
+    const secretStore = createMemorySecretStore();
+
+    await secretStore.set('provider-account:mega:acct-mega-pending-root', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const partialSnapshot = {
+      f: [
+        {
+          h: shareHandle,
+          p: 'incoming001',
+          t: 1,
+          a: encodeMegaBase64Url(Buffer.alloc(16, 7)),
+          k: `${shareHandle}:${encodeMegaBase64Url(Buffer.alloc(16, 9))}`,
+          su: ownerHandle,
+          r: 0,
+          sn: 'cursor-1',
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+      sn: 'cursor-1',
+    };
+
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: userHandle, email }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'uga':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'pk':
+          return new Response(JSON.stringify([-9]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          return new Response(JSON.stringify([partialSnapshot]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-pending-root-'));
+    tempDirs.push(localPath);
+    const account: ProviderAccount = {
+      id: 'acct-mega-pending-root',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-pending-root',
+      provider: 'mega',
+      accountId: account.id,
+      label: `MEGA share ${shareHandle.slice(-6)}`,
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-pending-root',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: `MEGA share ${shareHandle.slice(-6)}`,
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
+
+    const state = await adapter.getState(share, account);
+    expect(state.status).toBe('syncing');
+    expect(state.detail).toContain('decryption key');
+    expect(state.badges).toEqual(expect.arrayContaining(['Readonly', 'Retrying']));
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
   it('lists incoming shares when the first decryptable node.k segment uses the wrong share key', async () => {
     const email = 'reader@example.com';
     const password = 'correct horse battery staple';

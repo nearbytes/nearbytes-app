@@ -873,7 +873,13 @@ export class MegaTransportAdapter {
 
     await fs.mkdir(share.localPath, { recursive: true });
     void this.logDevShareInventoryIfChanged(account, 'boot');
-    await this.runSyncLoop(share, account);
+    try {
+      await this.runSyncLoop(share, account);
+    } catch (error) {
+      if (!isMegaMissingRequestedRootError(error)) {
+        throw error;
+      }
+    }
     this.startScChannelListener(share, account);
     this.startRecurringSyncTimer(share, account);
   }
@@ -1045,6 +1051,7 @@ export class MegaTransportAdapter {
       const failure = describeMegaSyncFailure(error, share.localPath, signal);
       const needsAuth = /session|auth|credential|login|reconnect|MEGA API error -15/i.test(failure.detail);
       const localMirrorAvailable = await hasUsableMegaMirror(share.localPath);
+      const shareKeyPending = failure.code === 'MEGA_SHARE_KEY_PENDING';
       const keepMirrorReady =
         localMirrorAvailable &&
         !needsAuth &&
@@ -1054,11 +1061,15 @@ export class MegaTransportAdapter {
           failure.code === 'MEGA_RATE_LIMITED' ||
           failure.code === 'MEGA_LOCAL_MIRROR_CHANGED');
       this.syncStates.set(share.id, {
-        status: keepMirrorReady ? 'ready' : needsAuth ? 'needs-auth' : 'attention',
+        status: keepMirrorReady ? 'ready' : shareKeyPending ? 'syncing' : needsAuth ? 'needs-auth' : 'attention',
         detail: keepMirrorReady
           ? 'MEGA readonly mirror is available locally. The latest refresh did not complete and will retry automatically.'
           : failure.detail,
-        badges: keepMirrorReady ? [...READONLY_BADGES, 'Retrying'] : [needsAuth ? 'Reconnect' : 'Repair'],
+        badges: keepMirrorReady
+          ? [...READONLY_BADGES, 'Retrying']
+          : shareKeyPending
+            ? [...READONLY_BADGES, 'Retrying']
+            : [needsAuth ? 'Reconnect' : 'Repair'],
         diagnostic: {
           code: failure.code,
           title: failure.summary,
@@ -3643,6 +3654,7 @@ interface MegaIncomingShareDiscoveryDiag {
   readonly skippedExplicitFile: number;
   readonly skippedNoDecrypt: number;
   readonly skippedShareHandleMismatch: number;
+  readonly provisionalOfferCount: number;
   readonly offerCount: number;
   readonly skippedNoDecryptSample: ReadonlyArray<{
     handle: string;
@@ -3664,10 +3676,11 @@ function listIncomingMegaShareOffersWithDiag(
 ): { offers: IncomingManagedShareOffer[]; diag: MegaIncomingShareDiscoveryDiag } {
   const usersByHandle = buildMegaUsersByHandle(snapshot);
   const shareKeys = collectMegaShareKeys(snapshot, session, extraShareKeys);
-  const offers: IncomingManagedShareOffer[] = [];
+  const offersByHandle = new Map<string, IncomingManagedShareOffer>();
   let skippedExplicitFile = 0;
   let skippedNoDecrypt = 0;
   let skippedShareHandleMismatch = 0;
+  let provisionalOfferCount = 0;
   let nodesWithSharingUser = 0;
   const skippedNoDecryptSample: Array<{
     handle: string;
@@ -3693,6 +3706,14 @@ function listIncomingMegaShareOffersWithDiag(
     const decrypted = decryptNodeRecord(node, session, shareKeys, usersByHandle);
     if (!decrypted || !decrypted.ownerHandle) {
       skippedNoDecrypt += 1;
+      const provisional = buildProvisionalIncomingMegaShareOffer(node, usersByHandle, provider, accountId);
+      const provisionalHandle = provisional
+        ? getStringDescriptor(provisional.remoteDescriptor, 'rootHandle') ?? getStringDescriptor(provisional.remoteDescriptor, 'shareHandle')
+        : undefined;
+      if (provisional && provisionalHandle && !offersByHandle.has(provisionalHandle)) {
+        offersByHandle.set(provisionalHandle, provisional);
+        provisionalOfferCount += 1;
+      }
       if (skippedNoDecryptSample.length < 5) {
         const nodeKeyOwners = listMegaNodeKeyOwners(typeof nodeMeta.k === 'string' ? nodeMeta.k : undefined);
         skippedNoDecryptSample.push({
@@ -3711,38 +3732,91 @@ function listIncomingMegaShareOffersWithDiag(
       skippedShareHandleMismatch += 1;
       continue;
     }
-    const shareName = normalizeMegaIncomingShareName(decrypted.name, decrypted.handle);
-    const ownerIdentity = normalizeMegaIncomingOwnerIdentity(decrypted.ownerEmail, decrypted.ownerHandle);
-    const ownerLabel = normalizeMegaIncomingOwnerLabel(decrypted.ownerEmail, decrypted.ownerHandle);
-    const remotePath = `${ownerIdentity}:${shareName}`;
-    offers.push({
-      id: `mega:incoming:${decrypted.handle}`,
-      provider,
-      accountId,
-      label: shareName,
-      ownerLabel,
-      detail: `${ownerLabel} shared this MEGA location${decrypted.accessLevel ? ` with ${decrypted.accessLevel}` : ''}.`,
-      remoteDescriptor: {
-        remotePath,
-        shareName,
-        ownerEmail: ownerIdentity,
-        accessLevel: decrypted.accessLevel ?? 'read',
-        shareHandle: decrypted.handle,
-        rootHandle: decrypted.handle,
-      },
-    });
+    offersByHandle.set(
+      decrypted.handle,
+      createIncomingMegaShareOffer(
+        decrypted.handle,
+        decrypted.name,
+        decrypted.ownerHandle,
+        decrypted.ownerEmail,
+        decrypted.accessLevel ?? 'read',
+        provider,
+        accountId
+      )
+    );
   }
 
-  offers.sort((left, right) => left.label.localeCompare(right.label));
+  const offers = Array.from(offersByHandle.values()).sort((left, right) => left.label.localeCompare(right.label));
   const diag: MegaIncomingShareDiscoveryDiag = {
     nodesWithSharingUser,
     skippedExplicitFile,
     skippedNoDecrypt,
     skippedShareHandleMismatch,
+    provisionalOfferCount,
     offerCount: offers.length,
     skippedNoDecryptSample,
   };
   return { offers, diag };
+}
+
+function createIncomingMegaShareOffer(
+  handle: string,
+  name: string | undefined,
+  ownerHandle: string | undefined,
+  ownerEmail: string | undefined,
+  accessLevel: string | undefined,
+  provider: string,
+  accountId: string
+): IncomingManagedShareOffer {
+  const shareName = normalizeMegaIncomingShareName(name, handle);
+  const ownerIdentity = normalizeMegaIncomingOwnerIdentity(ownerEmail, ownerHandle);
+  const ownerLabel = normalizeMegaIncomingOwnerLabel(ownerEmail, ownerHandle);
+  const remotePath = `${ownerIdentity}:${shareName}`;
+  return {
+    id: `mega:incoming:${handle}`,
+    provider,
+    accountId,
+    label: shareName,
+    ownerLabel,
+    detail: `${ownerLabel} shared this MEGA location${accessLevel ? ` with ${accessLevel}` : ''}.`,
+    remoteDescriptor: {
+      remotePath,
+      shareName,
+      ownerEmail: ownerIdentity,
+      accessLevel: accessLevel ?? 'read',
+      shareHandle: handle,
+      rootHandle: handle,
+    },
+  };
+}
+
+function buildProvisionalIncomingMegaShareOffer(
+  node: MegaNodeRecord,
+  usersByHandle: ReadonlyMap<string, MegaUserRecord>,
+  provider: string,
+  accountId: string
+): IncomingManagedShareOffer | null {
+  const handle = typeof node.h === 'string' ? node.h.trim() : '';
+  if (!handle) {
+    return null;
+  }
+  const nodeMeta = node as Record<string, unknown>;
+  const ownerHandle = typeof nodeMeta.su === 'string' ? nodeMeta.su.trim() : '';
+  if (!ownerHandle) {
+    return null;
+  }
+  const ownerEmail = typeof usersByHandle.get(ownerHandle)?.m === 'string'
+    ? String(usersByHandle.get(ownerHandle)?.m)
+    : undefined;
+  return createIncomingMegaShareOffer(
+    handle,
+    undefined,
+    ownerHandle,
+    ownerEmail,
+    megaIncomingAccessLevelFromMeta(nodeMeta) ?? 'read',
+    provider,
+    accountId
+  );
 }
 
 function listMegaNodeKeyOwners(encodedKey: string | undefined): string[] {
@@ -4935,6 +5009,15 @@ function describeMegaSyncFailure(
       summary: 'MEGA refresh request failed',
       detail:
         'Nearbytes could not complete a MEGA network request while refreshing this mirror. Check connectivity and inspect the runtime logs for the failing request.',
+    };
+  }
+
+  if (isMegaMissingRequestedRootError(error)) {
+    return {
+      code: 'MEGA_SHARE_KEY_PENDING',
+      summary: 'Waiting for MEGA share key',
+      detail:
+        'Nearbytes can see this incoming MEGA share, but MEGA has not delivered a usable decryption key for the root yet. Nearbytes will retry automatically.',
     };
   }
 
