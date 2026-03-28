@@ -338,7 +338,9 @@ export class ManagedShareService {
       });
       const refreshedState = await this.loadState();
       this.scheduleManagedShareSyncs(refreshedState);
-      this.requestBackgroundMaintenance(`connectAccount:${provider}`, refreshedState);
+      if (this.readMaintenanceMode !== 'background') {
+        this.requestBackgroundMaintenance(`connectAccount:${provider}`, refreshedState);
+      }
       return {
         status: 'connected',
         account: merged.account,
@@ -807,7 +809,10 @@ export class ManagedShareService {
     );
     await this.persistRootsConfig(config);
 
-    return this.buildManagedShareSummary(share);
+    return this.buildManagedShareSummary(share, {
+      preferFastRemoteDetails: this.readMaintenanceMode === 'background',
+      skipAncillaryRemoteDetails: this.readMaintenanceMode === 'background',
+    });
   }
 
   async removeManagedShare(shareId: string): Promise<void> {

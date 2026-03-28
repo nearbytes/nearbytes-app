@@ -1,3 +1,21 @@
+# Handover Prompt
+
+Paste this into a new chat:
+
+```text
+Continue debugging the JS-only MEGA bidirectional readonly-share transport in nearbytes-app. Read WIP.md first and treat it as authoritative state. You have 3 more attempts total. Do not restart the earlier ^!keys/pk investigation unless new evidence demands it.
+
+Current state:
+- local MEGA adapter tests and managed-shares tests were green before the last live-only script tweak
+- official MEGA docs + SDK + webclient have been reconciled with the live behavior
+- pk returning -9 / API_ENOENT is benign "no pending keys", not the main bug
+- stale cross-shares were real; revoke-only cleanup under skip-wipe reduced B's undecryptable incoming roots from 13 to 1
+- the remaining blocker is the fresh inbound root cIVQ2bjB from owner QGNK-vtVAPo: on B it appears as su=QGNK-vtVAPo, parent=QNkChQJJ, no sk, node.k owner cIVQ2bjB, and no usable key from sk, ^!keys.pendinginshares, or pk
+- B still reports offerCount: 0 after 4 discovery passes
+
+Focus the next attempt on live inbound-share action packets / share-row handling for the fresh share root, especially parity with the webclient's scparser 's' path, scinshare state, and nodedec inbound-share key application. Update WIP.md again before stopping.
+```
+
 # Handover — MEGA bidirectional transport (2026-03-28)
 
 This section is for the next developer or session: findings, what was tested, environment, and what to do next.
@@ -13,12 +31,69 @@ On **mega.nz** (Cloud Drive / shared folders), **Undecrypted** on directories me
 
 In **Nearbytes logs**, the same situation often appears as **`skippedNoDecrypt`** during incoming-share discovery, or messages like **MEGA tree decryption: some nodes could not be decrypted**. Stabilizing transport E2E means getting share keys into the key-manager snapshot before classifying incoming offers.
 
+**Important:** Orange **undecrypted** incoming rows on mega.nz for the disposable `+02` / `+03` pair were **produced by Nearbytes E2E / invite paths** (partial key handoff, aborted runs, many `nearbytes-e2e-*` roots), not by manual sharing alone. Cleaning **outgoing** access plus cloud data is required to stop the UI and API from surfacing stale share edges.
+
 ## Status at handover
 
 - **Goal:** In-process bidirectional readonly MEGA transport (two accounts, no HTTP server) via `ManagedShareService` + `MegaTransportAdapter` (`yarn e2e:mega-bidirectional-transport`).
-- **Unit/integration tests** for `megaAdapter`, `mirrorWorker`, and `managedShares` passed after the hardening changes documented below; re-run them after any further edits to those modules.
-- **Live transport E2E** was **not** confirmed green at handover. Recent failure patterns included **`No incoming MEGA offer … within 300000ms`** and diagnostics showing **incoming nodes with `skippedNoDecrypt`** when a later key-manager fetch returned empty share keys. Mitigations in flight include throttled managed-share polling, idempotent owner `ensureSync`, scoped partial-tree fetch (avoid accidental full snapshot on `-3` for sensitive owner paths), **share-key cache** reuse per session when a fetch returns empty keys, longer MEGA contact-invite soft timeout, isolated E2E remote base path (`NEARBYTES_MEGA_REMOTE_BASE` / per-run `remoteBasePath`), and an abort timeout on the wipe script.
-- **Git:** The branch may still have **uncommitted** changes (`managedShares.ts`, `mega.ts`, e2e scripts, etc.). Run `git status`, review diffs, and commit when behavior is stable.
+- **Unit/integration tests** for `megaAdapter`, `mirrorWorker`, and `managedShares` were passing after the MEGA adapter/key-manager changes; they were **not rerun** after the last live-only transport-script tweak, so rerun them before making more code changes.
+- **Live transport E2E** is still **not** confirmed green. The third pass materially improved the state: after revoke-only cleanup, recipient B's undecryptable incoming roots dropped from **13** to **1**, but the remaining fresh inbound root still never becomes an offer. Current live blocker on B:
+  - share root handle: **`cIVQ2bjB`**
+  - owner handle: **`QGNK-vtVAPo`**
+  - parent handle: **`QNkChQJJ`**
+  - `sk`: absent
+  - `node.k` owner: **`cIVQ2bjB`**
+  - usable key source from `sk`, `^!keys.pendinginshares`, and `pk`: **none**
+  - incoming discovery result: **`offerCount: 0`** after 4 passes
+- **Git:** Run `git status` and commit when stable; this document describes code that may land as one or more commits.
+
+## Official source reconciliation (2026-03-28)
+
+- **MEGA help**: undecrypted shared folders mean the recipient session is missing the right key; the documented remediation is logout/reload and, if needed, **remove and re-add the share**.
+- **MEGAcmd SDK**: `pk` is a supplemental pending-key path. `CommandPendingKeys("pk")` returns pending inbound keys when present, but the client also keeps separate missing-key / pending-share state and promotes shares later.
+- **MEGA webclient**: `pk` `ENOENT` is treated as ordinary "no pending inshare keys"; the client still keeps undecryptable `su` nodes as missing-key state. This matches the orange "Undecrypted" web UI rows and Nearbytes `skippedNoDecrypt` exactly.
+- **Practical conclusion**: the last parser additions were correct but not sufficient. The remaining issue is now more likely in **fresh inbound share delivery / application** than in key-manager parsing.
+
+## Wipe and revoke (disposable test storage)
+
+Cleaning mega.nz for the two disposable accounts needs **two layers**: (1) **revoke cross-outgoing folder shares** between those emails, (2) **delete owned nodes** under Cloud Drive and Rubbish.
+
+### Implemented methods
+
+1. **`revokeMegaOutgoingSharesForPeers`** (`src/integrations/mega.ts`, exported)  
+   - **Guard:** `NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE=1`.  
+   - Logs in as one account, loads `f` snapshot, scans **`s`** (outgoing) and **`ps`** (pending) rows; for any row whose resolved peer email is in the configured peer list, issues **`s2` without `ok`/`ha`/`r`** on the shared node handle — matching **MEGA SDK `ACCESS_UNKNOWN`** / **CommandSetShare** “remove share”.  
+   - Dedupes by `(nodeHandle, peerEmail)`; loops up to 10 rounds so MEGA can reflect revokes.  
+   - **Effect:** Removes the owner-side edge so the other account’s **Incoming shares** should drop those folders (stops accumulation of app-created undecrypted rows between `+02` and `+03`).
+
+2. **`wipeMegaCloudDriveContentsForE2e`** (existing)  
+   - Post-order delete of every node under **Cloud Drive** root, then **Rubbish Bin**, repeated until empty (same env guard).  
+   - **Per-delete delay** in `wipeMegaSubtreeHandles` was reduced (**150ms → 25ms**) so wiping very large trees (tens of thousands of nodes) is **practical**; still **O(n) API calls**, so a full wipe can take **tens of minutes** on huge `nearbytes` mirrors.
+
+3. **`yarn e2e:mega-wipe`** (`scripts/e2e-mega-wipe.mjs`)  
+   - For **each** email in `NEARBYTES_E2E_MEGA_ACCOUNTS` or owner+recipient: first **`revokeMegaOutgoingSharesForPeers`** against the *other* account(s), then **`wipeMegaCloudDriveContentsForE2e`**.
+
+4. **`yarn e2e:mega-bidirectional-transport`** when **`NEARBYTES_E2E_SKIP_MEGA_WIPE` is unset**  
+   - Runs the **same revoke-then-wipe** sequence for both env accounts before the test (shared helper pattern as the wipe script).
+
+5. **`NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport`**  
+  - **Still revokes** outgoing cross-shares for the two env accounts before the transport test, but skips the expensive Cloud Drive/Rubbish wipe.
+  - Set **`NEARBYTES_E2E_SKIP_MEGA_REVOKE=1`** only if you intentionally want to preserve stale incoming/outgoing share state too.
+
+### Results so far (cleanup)
+
+- **Revoke:** In a real run, **`+02` revoked 6** outgoing share rows to the peer; **`+03` revoked 4** — consistent with stacked E2E invites / folder shares.  
+- **Full wipe:** A **56k+ node** Cloud Drive makes **sequential `d` deletes** extremely slow; a long-running wipe was **aborted mid-account** in one session after revoke had already completed. **Partial wipe** leaves debris; **incoming empty + owner `-3`** can still dominate the next transport run if trees stay huge.  
+- **Third-pass live result:** Revoke-only preflight under `NEARBYTES_E2E_SKIP_MEGA_WIPE=1` reduced B's undecryptable incoming roots from **13** to **1**. This proved the bulk of the contamination was stale cross-shares, but it also isolated one **fresh** inbound root that still arrives without a usable key.
+- **Conclusion:** For **deterministic** transport tests, prefer **revoke + full wipe** when time allows, or **manually** clear mega.nz once; otherwise expect **heavy `f` / `-3`** noise. If revoke-only leaves exactly one undecryptable incoming root, the investigation should pivot from cleanup to **fresh inbound-share key application**.
+
+### Other related mitigations (incoming / keys)
+
+- **`registerMegaShareKeyHandlesForNode`:** after decrypting node **`sk`**, register the share key under **`node.h`** and **every owner handle parsed from `node.k`**, so **`decryptNodeKey`** can resolve incoming nodes (MEGA often keys by sharer handle, not recipient copy handle).  
+- **`fetchMegaPendingInShareKeys`:** `pk` returning **`-9` / `API_ENOENT`** is now treated as a benign "no pending keys" case, matching MEGA SDK/webclient behavior.  
+- **`listIncomingShares`:** up to **4 passes** with delays when `su` nodes exist but **`skippedNoDecrypt`** and **no offers**, to allow key-manager / propagation.  
+- **Transport script:** **`inviteManagedShareWithMegaRetry`** on **`-3`**; **12s settle** after both invites; **serial** incoming polls (**`INCOMING_OFFER_TIMEOUT_MS` = 720_000**) instead of **parallel** `Promise.all` to reduce concurrent **`f`** / `-3`; and **revoke-only cleanup** now runs even when wipe is skipped.  
+- **Not implemented / reverted:** Gmail “`+tag`” normalization for offer matching — test accounts use real addresses as-is; matching stays **trim + case-insensitive** equality only.
 
 ## Findings (concise)
 
@@ -29,30 +104,49 @@ In **Nearbytes logs**, the same situation often appears as **`skippedNoDecrypt`*
 | List vs download | Different trees caused “listed but not downloadable”. **Mitigation:** `listCycleTree` + refetch fallback in owner adapter `download()`. |
 | Phantom `channels/` | Entries listed but not resolvable blocked the whole mirror pass. **Mitigation:** `MirrorWorker` skips vanished / missing owner paths. |
 | Partial fetch + `-3` | Full fallback after partial failure could enumerate huge trees. **Mitigation:** `allowTransientFullFallback` — readonly paths may full-fallback; owner folder operations use `false`. |
-| Incoming offers | Tree shows shared nodes but decrypt fails without share keys → `skippedNoDecrypt`. **Mitigation:** cache last non-empty share keys per `userHandle` in `fetchKeyManagerState` wrapper. |
+| Incoming offers | Tree shows shared nodes but decrypt fails without share keys → `skippedNoDecrypt`. **Mitigation:** key-manager **cache** when a fetch returns empty; **multi-pass** `listIncomingShares`; **share-key handle aliases** on `k`/`h`. |
 | Contact invites | Short lookup timeout was too tight for MEGA. **Mitigation:** longer `FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS` for MEGA. |
 | E2E isolation | Shared `/nearbytes` caused cross-run interference. **Mitigation:** per-run `remoteBasePath` (e.g. `/nearbytes-e2e-<id>`) and `NEARBYTES_MEGA_REMOTE_BASE`. |
-| Wipe script | Process could hang on unsettled awaits. **Mitigation:** abort timeout in `e2e-mega-wipe.mjs`. |
+| Wipe script | Hang risk + huge trees. **Mitigation:** abort timeout; **faster inter-delete delay** (25ms); **revoke-before-wipe** so incoming share list is cleared between the two disposable accounts. |
+| Concurrent MEGA API | Two peers polling **incoming** in parallel plus multi-pass discovery amplifies **`-3`** and **empty** listings. **Mitigation:** **serial** incoming poll + longer timeout; invite **`-3` retries**. |
+| Official client parity | **`pk` `-9` / `API_ENOENT`** is a normal "nothing pending" case in MEGA clients; it is not evidence of a separate failure. |
+| Third-pass cleanup effect | Revoke-only cleanup cut B's stale undecryptable roots **13 -> 1**; the remaining failure is the **fresh** inbound root itself, not the old share pileup. |
+
+## Hypotheses (current)
+
+1. **Stale cross-shares were a real problem**, and revoke-only cleanup is necessary even when wipe is skipped. That part is now confirmed by the **13 -> 1** reduction in B's undecryptable incoming roots.  
+2. The **remaining** failure is **not** explained by stale pileup alone: the **fresh** inbound root **`cIVQ2bjB`** itself arrives on B without `sk` and without any usable key from current key-manager sources.  
+3. The next likely root cause is **inbound share delivery / application parity** with the MEGA clients: action packet handling, `s` share-row interpretation, `scinshare`-style state, or inbound-share root key application.  
+4. **`-3`** still adds noise, especially on B owner sync, but after cleanup it no longer explains the missing incoming offer by itself.
 
 ## Testing phase (what was run)
 
-1. **Build + integration tests** — `yarn build` and `yarn test` on `src/integrations/__tests__/megaAdapter.test.ts`, `mirrorWorker.test.ts`, `managedShares.test.ts`.
-2. **Serial two-account transport script** — especially `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport` when accounts already contain legacy data; full wipe when chasing determinism.
-3. **Failure evolution observed:** wrong login email (HTTP 402), `-3` locks, unstable owner “ready”, stale list/download tree, then **incoming offer timeout** and **empty key manager** on later polls (addressed in code with key cache and longer invite timeout; end-to-end success not re-verified in the last tool run).
+1. **Build + integration tests** — `yarn build` and `yarn test` on `megaAdapter`, `mirrorWorker`, `managedShares`.  
+2. **`yarn e2e:mega-wipe`** — revoke + wipe; revoke **succeeded**; wipe **slow / interrupted** on very large drive.  
+3. **Earlier `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport` runs** — before revoke-only skip-wipe behavior was restored, B accumulated many undecryptable stale incoming roots and still timed out on incoming offers.  
+4. **Final third-pass run with corrected revoke-only preflight** — `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport` first revoked stale cross-shares, then ran transport. Result: B's undecryptable incoming roots dropped to **1**, but the remaining root **`cIVQ2bjB`** still never became an offer; B stayed at **`offerCount: 0`**.
 
 ## Commands and environment
 
-- **Secrets:** repo-root `.env.e2e` (gitignored). Two MEGA accounts as required by the script (owner/recipient roles per script contract).
-- **Primary transport E2E:**  
-  `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport`
-- **With wipe:** omit `NEARBYTES_E2E_SKIP_MEGA_WIPE=1` (slower; wipe uses its own timeout).
-- **Regression check after substantive changes:** `yarn build` plus the three integration test files above.
+- **Secrets:** repo-root `.env.e2e` (gitignored). Two MEGA accounts (`NEARBYTES_E2E_MEGA_OWNER_EMAIL`, `NEARBYTES_E2E_MEGA_RECIPIENT_EMAIL`, `NEARBYTES_E2E_MEGA_PASSWORD`).  
+- **Revoke + wipe both accounts:**  
+  `yarn e2e:mega-wipe`  
+  (sets `NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE` internally via script.)  
+- **Transport only (no wipe):**  
+  `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport`  
+- **Transport with revoke skipped too (usually a bad idea while debugging stale shares):**  
+  `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 NEARBYTES_E2E_SKIP_MEGA_REVOKE=1 yarn e2e:mega-bidirectional-transport`  
+- **Transport with revoke+wipe first:** omit `NEARBYTES_E2E_SKIP_MEGA_WIPE=1` (long).  
+- **Regression:** `yarn build` + the three integration test files above.
 
 ## Next steps for the next owner
 
-1. Re-run **`yarn e2e:mega-bidirectional-transport`** (with or without skip-wipe as appropriate) and confirm a **green** run after the key-cache and script fixes. If offers still never appear, trace **`listIncomingMegaShareOffersWithDiag`** / decrypt for the relevant `su` nodes, contact acceptance timing, and consider a longer incoming poll than 300s or tighter offer matching (e.g. by owner email).
-2. **Commit** any pending changes; keep this file aligned with actual behavior.
-3. Optional: tie UI or support docs to the same concepts as **Undecrypted** / `skippedNoDecrypt` for easier diagnosis.
+1. Start from the **handover prompt** at the top of this file and keep the next session to **3 more attempts total**.  
+2. Instrument the **fresh inbound root path** rather than key-manager parsing. Focus on the live root **`cIVQ2bjB`** on B and compare Nearbytes with the webclient's inbound-share flow: `scparser.$add('s')`, `scinshare`, `process_f`, and `nodedec.crypto_decryptnode` inbound-share root handling.  
+3. Verify whether MEGA ever sends a decryptable key for the fresh share root through action packets / share rows / follow-up fetches, or whether Nearbytes is failing to apply it after receipt.  
+4. Re-run the MEGA adapter and managed-shares tests after any code change; then rerun the live transport E2E with revoke-only cleanup first.  
+5. **Commit** `mega.ts`, `e2e-mega-wipe.mjs`, `e2e-mega-bidirectional-transport.mjs`, `WIP.md`, and any temporary debug helpers once the next narrow hypothesis is validated.  
+6. Optional: UI / ops text tying **Undecrypted** to **`skippedNoDecrypt`** and "remove share + reload" per [MEGA help](https://help.mega.io/files-folders/view-move/what-is-an-undecrypted-file-or-folder).
 
 ---
 
@@ -82,7 +176,7 @@ yarn e2e:mega-bidirectional-transport
 
 ### Runner behavior
 - Loads repo-root `.env.e2e`
-- Optionally wipes both MEGA accounts unless `NEARBYTES_E2E_SKIP_MEGA_WIPE=1`
+- Unless `NEARBYTES_E2E_SKIP_MEGA_WIPE=1`, **revokes outgoing cross-shares** between the two env accounts, then **wipes** Cloud Drive + Rubbish on both (same sequence as `yarn e2e:mega-wipe`)
 - Creates two isolated temp peers, each with:
   - dedicated `roots.json`
   - dedicated `integrations.json`
@@ -104,6 +198,8 @@ yarn e2e:mega-bidirectional-transport
 
 ### Existing files changed
 - `package.json`
+- `scripts/e2e-mega-bidirectional-transport.mjs`
+- `scripts/e2e-mega-wipe.mjs`
 - `src/integrations/managedShares.ts`
 - `src/integrations/mega.ts`
 - `src/integrations/mirrorWorker.ts`

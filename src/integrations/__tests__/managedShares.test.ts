@@ -516,7 +516,7 @@ describe('ManagedShareService', () => {
     const result = await Promise.race([
       service.getManagedShareState('share-mega-1').then((summary) => ({ kind: 'summary' as const, summary })),
       new Promise<{ kind: 'timeout' }>((resolve) => {
-        setTimeout(() => resolve({ kind: 'timeout' }), 50);
+        setTimeout(() => resolve({ kind: 'timeout' }), 250);
       }),
     ]);
 
@@ -869,6 +869,31 @@ describe('ManagedShareService', () => {
       expect(result.shares.shares[0]?.state.status).toBe('idle');
     }
     expect(adapter.ensureSyncCalls).toBe(1);
+  });
+
+  it('does not start immediate MEGA background maintenance on connect in background mode', async () => {
+    const adapter = new BlockingMirrorInventoryAdapter();
+    const { service } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+
+    const result = await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      credentials: {
+        email: 'owner@example.com',
+        password: 'secret',
+      },
+    });
+
+    expect(result.status).toBe('connected');
+    await new Promise((resolve) => {
+      setTimeout(resolve, 20);
+    });
+    expect(adapter.inventoryCalls).toBe(0);
   });
 
   it('waits for slow non-fast transport state checks before falling back', async () => {

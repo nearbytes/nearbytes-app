@@ -58,18 +58,45 @@ if (!emailA || !emailB || !password) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const WIPE_TIMEOUT_MS = 20 * 60 * 1000;
+/** Serial incoming polls; MEGA `-3` is more likely if two accounts hammer `f` concurrently. */
+const INCOMING_OFFER_TIMEOUT_MS = 720_000;
+const SKIP_MEGA_WIPE = process.env.NEARBYTES_E2E_SKIP_MEGA_WIPE?.trim() === '1';
+const SKIP_MEGA_REVOKE = process.env.NEARBYTES_E2E_SKIP_MEGA_REVOKE?.trim() === '1';
 
 function sha256Hex(buf) {
   return createHash('sha256').update(buf).digest('hex');
 }
 
 async function wipeBothIfEnabled() {
-  if (process.env.NEARBYTES_E2E_SKIP_MEGA_WIPE?.trim() === '1') {
+  process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = '1';
+  const { revokeMegaOutgoingSharesForPeers, wipeMegaCloudDriveContentsForE2e } = await import('../dist/integrations/mega.js');
+  const pair = [emailA, emailB];
+  if (!SKIP_MEGA_REVOKE) {
+    for (const email of pair) {
+      const peers = pair.filter((e) => e !== email);
+      console.error(`[mega-bidir] revoke outgoing shares ${email} → peers…`);
+      const rc = new AbortController();
+      const rt = setTimeout(() => rc.abort(), WIPE_TIMEOUT_MS);
+      try {
+        const { revokedCount } = await revokeMegaOutgoingSharesForPeers({
+          email,
+          password,
+          peerEmails: peers,
+          signal: rc.signal,
+        });
+        console.error(`[mega-bidir] revoked ${revokedCount} row(s) for ${email}`);
+      } finally {
+        clearTimeout(rt);
+      }
+    }
+  }
+
+  if (SKIP_MEGA_WIPE) {
+    console.error('[mega-bidir] skip wipe enabled');
     return;
   }
-  process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = '1';
-  const { wipeMegaCloudDriveContentsForE2e } = await import('../dist/integrations/mega.js');
-  for (const email of [emailA, emailB]) {
+
+  for (const email of pair) {
     console.error(`[mega-bidir] wipe ${email}…`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), WIPE_TIMEOUT_MS);
@@ -117,6 +144,7 @@ async function createPeerTransport(peerLabel) {
   const base = await mkdtemp(path.join(tmpdir(), `nearbytes-mega-transport-${peerLabel}-`));
   const mainRoot = path.join(base, 'main-root');
   const rootsConfigPath = path.join(base, 'roots.json');
+  const integrationStatePath = path.join(base, 'integrations.json');
   await mkdir(mainRoot, { recursive: true });
   await writeFile(rootsConfigPath, `${JSON.stringify(createRootsConfig(mainRoot), null, 2)}\n`, 'utf8');
 
@@ -131,8 +159,8 @@ async function createPeerTransport(peerLabel) {
     secretStore: new JsonFileSecretStore({ filePath: path.join(base, 'integration-secrets.json') }),
     mega: {
       remoteBasePath,
-      /** Long interval reduces overlap with first full mirror while E2E polls `getManagedShareState`. */
-      syncIntervalMs: 120_000,
+      /** Keep non-trivial to avoid fighting `getManagedShareState` throttling; 60s is enough for small e2e trees. */
+      syncIntervalMs: 60_000,
       /** Default 180s is too tight when pulling a large existing Cloud drive /nearbytes tree. */
       syncTimeoutMs: 900_000,
     },
@@ -144,11 +172,11 @@ async function createPeerTransport(peerLabel) {
   const service = new ManagedShareService({
     storage,
     rootsConfigPath,
-    integrationStatePath: path.join(base, 'integrations.json'),
+    integrationStatePath,
     adapters: [new MegaTransportAdapter(runtime)],
-    readMaintenanceMode: 'inline',
+    readMaintenanceMode: 'background',
   });
-  return { base, service, mainRoot };
+  return { base, service, mainRoot, integrationStatePath };
 }
 
 async function waitShareReady(service, shareId, label, timeoutMs) {
@@ -158,26 +186,52 @@ async function waitShareReady(service, shareId, label, timeoutMs) {
     if (st.state?.status === 'ready') {
       return;
     }
-    await sleep(2_000);
+    await sleep(1_000);
   }
   throw new Error(`${label}: share ${shareId} not ready within ${timeoutMs}ms (last ${(await service.getManagedShareState(shareId)).state?.status})`);
 }
 
-async function pickOwnerShare(service) {
-  const { shares } = await service.listManagedShares({ fast: true });
-  const owner = shares.find((s) => s.share.provider === 'mega' && s.share.role === 'owner');
+async function pickOwnerShare(integrationStatePath) {
+  const state = JSON.parse(await readFile(integrationStatePath, 'utf8'));
+  const owner = state.managedShares?.find?.((share) => share?.provider === 'mega' && share?.role === 'owner');
   if (!owner) {
     throw new Error('No MEGA owner managed share after connect');
   }
-  return owner;
+  return { share: owner };
 }
 
 function offerFromOwner(offers, ownerEmail) {
-  const want = ownerEmail.toLowerCase();
+  const want = ownerEmail.trim().toLowerCase();
   return offers.find((o) => {
     const oe = o.remoteDescriptor?.ownerEmail;
-    return typeof oe === 'string' && oe.toLowerCase() === want;
+    return typeof oe === 'string' && oe.trim().toLowerCase() === want;
   });
+}
+
+function isMegaTransientLockError(err) {
+  if (typeof err?.code === 'number' && err.code === -3) {
+    return true;
+  }
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /MEGA API error -3\b/u.test(msg);
+}
+
+async function inviteManagedShareWithMegaRetry(service, shareId, emails, label) {
+  const maxAttempts = 12;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      await service.inviteManagedShare(shareId, emails);
+      return;
+    } catch (err) {
+      if (isMegaTransientLockError(err) && attempt + 1 < maxAttempts) {
+        const delay = Math.min(25_000, 2_000 + attempt * 2_000);
+        console.error(`[mega-bidir] ${label}: invite MEGA -3, backing off ${delay}ms (${attempt + 1}/${maxAttempts})`);
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 /** MEGA often requires accepting a contact request before the folder share appears in incoming. */
@@ -205,7 +259,7 @@ async function pollIncomingFromOwner(service, ownerEmail, timeoutMs) {
     if (offer) {
       return offer;
     }
-    await sleep(3_000);
+    await sleep(1_500);
   }
   throw new Error(`No incoming MEGA offer from ${ownerEmail} within ${timeoutMs}ms`);
 }
@@ -222,13 +276,14 @@ async function waitMirrorFile(filePath, expectedBytes, timeoutMs) {
     } catch {
       /* not yet */
     }
-    await sleep(4_000);
+    await sleep(2_000);
   }
   throw new Error(`Mirror file missing or mismatch: ${filePath}`);
 }
 
 async function main() {
   console.error(`[mega-bidir] isolated remote root ${remoteBasePath}`);
+  await wipeBothIfEnabled();
 
   /** Two simultaneous MEGA sessions often hit API -3 (temporary lock); bring A to `ready` before connecting B. */
   let peerA;
@@ -241,12 +296,12 @@ async function main() {
       credentials: { email: emailA, password },
       preferred: true,
     });
-    const ownerA = await pickOwnerShare(peerA.service);
+    const ownerA = await pickOwnerShare(peerA.integrationStatePath);
     console.error('[mega-bidir] wait owner A ready…');
     await waitShareReady(peerA.service, ownerA.share.id, 'ownerA', 960_000);
 
     console.error('[mega-bidir] cooldown before second MEGA account…');
-    await sleep(8_000);
+    await sleep(4_000);
 
     console.error('[mega-bidir] boot peer B…');
     peerB = await createPeerTransport('B');
@@ -255,20 +310,24 @@ async function main() {
       credentials: { email: emailB, password },
       preferred: true,
     });
-    const ownerB = await pickOwnerShare(peerB.service);
+    const ownerB = await pickOwnerShare(peerB.integrationStatePath);
     console.error('[mega-bidir] wait owner B ready…');
     await waitShareReady(peerB.service, ownerB.share.id, 'ownerB', 960_000);
 
     console.error('[mega-bidir] cross-invite readonly shares…');
-    await peerA.service.inviteManagedShare(ownerA.share.id, [emailB]);
-    await sleep(5_000);
+    await sleep(3_000);
+    await inviteManagedShareWithMegaRetry(peerA.service, ownerA.share.id, [emailB], 'A→B');
+    await sleep(2_500);
     await acceptAllMegaContactInvites(peerB.service, 'B after A invite');
-    await peerB.service.inviteManagedShare(ownerB.share.id, [emailA]);
-    await sleep(5_000);
+    await inviteManagedShareWithMegaRetry(peerB.service, ownerB.share.id, [emailA], 'B→A');
+    await sleep(2_500);
     await acceptAllMegaContactInvites(peerA.service, 'A after B invite');
 
-    const offerB = await pollIncomingFromOwner(peerB.service, emailA, 300_000);
-    const offerA = await pollIncomingFromOwner(peerA.service, emailB, 300_000);
+    await sleep(12_000);
+    console.error('[mega-bidir] poll incoming B←A (serial)…');
+    const offerB = await pollIncomingFromOwner(peerB.service, emailA, INCOMING_OFFER_TIMEOUT_MS);
+    console.error('[mega-bidir] poll incoming A←B (serial)…');
+    const offerA = await pollIncomingFromOwner(peerA.service, emailB, INCOMING_OFFER_TIMEOUT_MS);
 
     const mirrorB = await mkdtemp(path.join(tmpdir(), 'nb-mirror-b-reads-a-'));
     const mirrorA = await mkdtemp(path.join(tmpdir(), 'nb-mirror-a-reads-b-'));

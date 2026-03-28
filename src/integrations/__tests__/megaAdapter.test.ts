@@ -1,4 +1,14 @@
-import { createCipheriv, createDecipheriv, generateKeyPairSync, randomBytes } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  createPrivateKey,
+  createPublicKey,
+  diffieHellman,
+  generateKeyPairSync,
+  hkdfSync,
+  randomBytes,
+} from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -28,6 +38,9 @@ function createMemorySecretStore(): ProviderSecretStore {
 }
 
 const ZERO_IV = Buffer.alloc(16, 0);
+const MEGA_X25519_PRIVATE_KEY_DER_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
+const MEGA_X25519_PUBLIC_KEY_DER_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
+const MEGA_PAIRWISE_KEY_LABEL = Buffer.from('strongvelope pairwise key\x01', 'latin1');
 
 function encodeMegaBase64Url(value: Buffer): string {
   return value.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
@@ -116,6 +129,64 @@ function encryptAesCbc(value: Buffer, key: Buffer): Buffer {
   const cipher = createCipheriv('aes-128-cbc', key.subarray(0, 16), ZERO_IV);
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(value), cipher.final()]);
+}
+
+function deriveMegaKeyManagerKey(masterKey: Buffer): Buffer {
+  return Buffer.from(hkdfSync('sha256', masterKey, Buffer.alloc(0), Buffer.from([1]), 16));
+}
+
+function encodeMegaKeyManagerRecord(tag: number, payload: Buffer): Buffer {
+  const header = Buffer.from([
+    tag & 0xff,
+    (payload.length >>> 16) & 0xff,
+    (payload.length >>> 8) & 0xff,
+    payload.length & 0xff,
+  ]);
+  return Buffer.concat([header, payload]);
+}
+
+function encodeMegaLtlvRecord(tag: Buffer, payload: Buffer): Buffer {
+  if (payload.length >= 0xffff) {
+    const header = Buffer.alloc(1 + tag.length + 2 + 4);
+    header[0] = tag.length;
+    tag.copy(header, 1);
+    header.writeUInt16BE(0xffff, 1 + tag.length);
+    header.writeUInt32BE(payload.length, 1 + tag.length + 2);
+    return Buffer.concat([header, payload]);
+  }
+  const header = Buffer.alloc(1 + tag.length + 2);
+  header[0] = tag.length;
+  tag.copy(header, 1);
+  header.writeUInt16BE(payload.length, 1 + tag.length);
+  return Buffer.concat([header, payload]);
+}
+
+function encryptMegaKeyManagerContainer(masterKey: Buffer, plaintext: Buffer): string {
+  const iv = Buffer.from('00112233445566778899aabb', 'hex');
+  const cipher = createCipheriv('aes-128-gcm', deriveMegaKeyManagerKey(masterKey), iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return encodeMegaBase64Url(Buffer.concat([Buffer.from([20, 0]), iv, ciphertext, authTag]));
+}
+
+function deriveMegaPairwiseKey(privateCu25519: Buffer, publicCu25519: Buffer): Buffer {
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([MEGA_X25519_PRIVATE_KEY_DER_PREFIX, privateCu25519]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  const publicKey = createPublicKey({
+    key: Buffer.concat([MEGA_X25519_PUBLIC_KEY_DER_PREFIX, publicCu25519]),
+    format: 'der',
+    type: 'spki',
+  });
+  const sharedSecret = diffieHellman({ privateKey, publicKey });
+  const step1 = createHmac('sha256', Buffer.alloc(0)).update(sharedSecret).digest();
+  return createHmac('sha256', step1).update(MEGA_PAIRWISE_KEY_LABEL).digest().subarray(0, 16);
+}
+
+function encryptMegaPendingInShareKey(shareKey: Buffer, privateCu25519: Buffer, publicCu25519: Buffer): Buffer {
+  return encryptAesEcb(shareKey, deriveMegaPairwiseKey(privateCu25519, publicCu25519));
 }
 
 function encryptAttributes(name: string, nodeKey: Buffer): string {
@@ -2127,6 +2198,15 @@ describe('MegaTransportAdapter', () => {
         },
       },
     ]);
+    await expect(adapter.listIncomingShares(connected.account as ProviderAccount)).resolves.toMatchObject([
+      {
+        remoteDescriptor: {
+          ownerEmail: 'owner@example.com',
+          rootHandle: shareHandle,
+          shareName: 'Team Space',
+        },
+      },
+    ]);
     expect(preloginCount).toBe(2);
     expect(loginCount).toBe(2);
     expect(currentUserCount).toBe(1);
@@ -2569,6 +2649,541 @@ describe('MegaTransportAdapter', () => {
         rootHandle: shareHandle,
         accessLevel: 'read',
       },
+    });
+  });
+
+  it('lists and mirrors incoming shares when the share key exists only in ^!keys pending inshares', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const ownerHandle = encodeMegaBase64Url(Buffer.from('0011223344556677', 'hex'));
+    const shareHandle = encodeMegaBase64Url(Buffer.from('8899aabbccdd', 'hex'));
+    const blocksHandle = 'blocks0001';
+    const channelsHandle = 'chans00001';
+    const fileHandle = 'file000001';
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
+    const filePlaintext = Buffer.from('pending-inshare-key-manager-data', 'utf8');
+    const cryptoOps = createCryptoOperations();
+    const blockHash = await cryptoOps.computeHash(filePlaintext);
+    const blockFileName = `${blockHash}.bin`;
+    const fileCiphertext = encryptFileContent(filePlaintext, fileNodeKey);
+    const readerKeyPair = generateKeyPairSync('x25519' as any, {
+      privateKeyEncoding: { format: 'jwk' },
+      publicKeyEncoding: { format: 'jwk' },
+    });
+    const ownerKeyPair = generateKeyPairSync('x25519' as any, {
+      privateKeyEncoding: { format: 'jwk' },
+      publicKeyEncoding: { format: 'jwk' },
+    });
+    const readerPrivateCu25519 = decodeMegaBase64Url(String((readerKeyPair.privateKey as JsonWebKey).d));
+    const ownerPublicCu25519 = decodeMegaBase64Url(String((ownerKeyPair.publicKey as JsonWebKey).x));
+    const pendingInShareValue = Buffer.concat([
+      decodeMegaBase64Url(ownerHandle),
+      encryptMegaPendingInShareKey(shareKey, readerPrivateCu25519, ownerPublicCu25519),
+    ]);
+    const keyManagerPlaintext = Buffer.concat([
+      encodeMegaKeyManagerRecord(17, readerPrivateCu25519),
+      encodeMegaKeyManagerRecord(
+        32,
+        Buffer.concat([decodeMegaBase64Url(ownerHandle), Buffer.alloc(20, 7), Buffer.from([0])])
+      ),
+      encodeMegaKeyManagerRecord(65, encodeMegaLtlvRecord(decodeMegaBase64Url(shareHandle), pendingInShareValue)),
+    ]);
+    const encryptedKeyManagerState = encryptMegaKeyManagerContainer(masterKey, keyManagerPlaintext);
+    const fullSnapshot = {
+      f: [
+        {
+          h: shareHandle,
+          t: 1,
+          a: encryptAttributes('Team Space', rootNodeKey),
+          k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+          su: ownerHandle,
+          r: 0,
+        },
+        {
+          h: blocksHandle,
+          p: shareHandle,
+          t: 1,
+          a: encryptAttributes('blocks', blocksNodeKey),
+          k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: channelsHandle,
+          p: shareHandle,
+          t: 1,
+          a: encryptAttributes('channels', channelsNodeKey),
+          k: encryptNodeKey(channelsNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: fileHandle,
+          p: blocksHandle,
+          t: 0,
+          s: filePlaintext.length,
+          a: encryptAttributes(blockFileName, fileNodeKey),
+          k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+    };
+    const partialSnapshot = {
+      f: fullSnapshot.f,
+      u: fullSnapshot.u,
+      sn: 'cursor-1',
+    };
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-pending-inshare', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            if (payload.ua === '^!keys') {
+              return new Response(JSON.stringify([{ av: encryptedKeyManagerState }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            if (payload.ua === '+puCu255' && payload.u === ownerHandle) {
+              return new Response(JSON.stringify([{ av: encodeMegaBase64Url(ownerPublicCu25519) }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(JSON.stringify([payload.n ? partialSnapshot : fullSnapshot]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'g':
+            if (payload.n === fileHandle) {
+              return new Response(JSON.stringify([{ g: `https://download.test/${fileHandle}`, s: filePlaintext.length }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            throw new Error(`Unexpected MEGA file handle: ${String(payload.n)}`);
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://g.api.mega.co.nz/sc')) {
+        const currentCursor = new URL(url).searchParams.get('sn');
+        return new Response(JSON.stringify({ a: [], sn: currentCursor ?? 'cursor-1' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === `https://download.test/${fileHandle}`) {
+        return new Response(new Uint8Array(fileCiphertext), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const account: ProviderAccount = {
+      id: 'acct-mega-pending-inshare',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const offers = await adapter.listIncomingShares(account);
+    expect(offers).toHaveLength(1);
+    expect(offers[0]).toMatchObject({
+      label: 'Team Space',
+      ownerLabel: 'owner@example.com',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+      },
+    });
+
+    const accepted = await adapter.acceptInvite(
+      {
+        provider: 'mega',
+        accountId: account.id,
+        label: 'Team Space',
+        remoteDescriptor: offers[0]?.remoteDescriptor,
+      },
+      account
+    );
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-pending-inshare-'));
+    tempDirs.push(localPath);
+    const share: ManagedShare = {
+      id: 'share-mega-pending-inshare',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-pending-inshare',
+      syncMode: 'mirror',
+      remoteDescriptor: accepted.remoteDescriptor ?? offers[0]!.remoteDescriptor,
+      capabilities: accepted.capabilities ?? ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(localPath, 'blocks', blockFileName), 'utf8')).resolves.toBe(
+      filePlaintext.toString('utf8')
+    );
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
+  it('lists and mirrors incoming shares when the share key exists only in the MEGA pk response', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const ownerHandle = encodeMegaBase64Url(Buffer.from('1011223344556677', 'hex'));
+    const shareHandle = encodeMegaBase64Url(Buffer.from('9899aabbccdd', 'hex'));
+    const blocksHandle = 'blocks0002';
+    const fileHandle = 'file000002';
+    const shareKey = Buffer.from('1f2e3d4c5b6a798897a6b5c4d3e2f100', 'hex');
+    const rootNodeKey = Buffer.from('202132435465768798a9babbdcddf0f1', 'hex');
+    const blocksNodeKey = Buffer.from('21223344556677889900aabbccddeeff', 'hex');
+    const fileNodeKey = Buffer.from('10112233445566778899aabbccddeeff202132435465768798a9babbdcddf0f1', 'hex');
+    const filePlaintext = Buffer.from('pending-inshare-pk-data', 'utf8');
+    const cryptoOps = createCryptoOperations();
+    const blockHash = await cryptoOps.computeHash(filePlaintext);
+    const blockFileName = `${blockHash}.bin`;
+    const fileCiphertext = encryptFileContent(filePlaintext, fileNodeKey);
+    const readerKeyPair = generateKeyPairSync('x25519' as any, {
+      privateKeyEncoding: { format: 'jwk' },
+      publicKeyEncoding: { format: 'jwk' },
+    });
+    const ownerKeyPair = generateKeyPairSync('x25519' as any, {
+      privateKeyEncoding: { format: 'jwk' },
+      publicKeyEncoding: { format: 'jwk' },
+    });
+    const readerPrivateCu25519 = decodeMegaBase64Url(String((readerKeyPair.privateKey as JsonWebKey).d));
+    const ownerPublicCu25519 = decodeMegaBase64Url(String((ownerKeyPair.publicKey as JsonWebKey).x));
+    const keyManagerPlaintext = Buffer.concat([
+      encodeMegaKeyManagerRecord(17, readerPrivateCu25519),
+      encodeMegaKeyManagerRecord(
+        32,
+        Buffer.concat([decodeMegaBase64Url(ownerHandle), Buffer.alloc(20, 11), Buffer.from([0])])
+      ),
+    ]);
+    const encryptedKeyManagerState = encryptMegaKeyManagerContainer(masterKey, keyManagerPlaintext);
+    const pendingPkKey = encodeMegaBase64Url(encryptMegaPendingInShareKey(shareKey, readerPrivateCu25519, ownerPublicCu25519));
+    const fullSnapshot = {
+      f: [
+        {
+          h: shareHandle,
+          t: 1,
+          a: encryptAttributes('Team Space', rootNodeKey),
+          k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+          su: ownerHandle,
+          r: 0,
+        },
+        {
+          h: blocksHandle,
+          p: shareHandle,
+          t: 1,
+          a: encryptAttributes('blocks', blocksNodeKey),
+          k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+        },
+        {
+          h: fileHandle,
+          p: blocksHandle,
+          t: 0,
+          s: filePlaintext.length,
+          a: encryptAttributes(blockFileName, fileNodeKey),
+          k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+    };
+    const partialSnapshot = {
+      f: fullSnapshot.f,
+      u: fullSnapshot.u,
+      sn: 'cursor-1',
+    };
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-pk-inshare', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            if (payload.ua === '^!keys') {
+              return new Response(JSON.stringify([{ av: encryptedKeyManagerState }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            if (payload.ua === '+puCu255' && payload.u === ownerHandle) {
+              return new Response(JSON.stringify([{ av: encodeMegaBase64Url(ownerPublicCu25519) }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'pk':
+            return new Response(JSON.stringify([{ [ownerHandle]: { [shareHandle]: pendingPkKey } }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(JSON.stringify([payload.n ? partialSnapshot : fullSnapshot]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'g':
+            if (payload.n === fileHandle) {
+              return new Response(JSON.stringify([{ g: `https://download.test/${fileHandle}`, s: filePlaintext.length }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            throw new Error(`Unexpected MEGA file handle: ${String(payload.n)}`);
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://g.api.mega.co.nz/sc')) {
+        const currentCursor = new URL(url).searchParams.get('sn');
+        return new Response(JSON.stringify({ a: [], sn: currentCursor ?? 'cursor-1' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === `https://download.test/${fileHandle}`) {
+        return new Response(new Uint8Array(fileCiphertext), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const account: ProviderAccount = {
+      id: 'acct-mega-pk-inshare',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const offers = await adapter.listIncomingShares(account);
+    expect(offers).toHaveLength(1);
+    expect(offers[0]).toMatchObject({
+      label: 'Team Space',
+      ownerLabel: 'owner@example.com',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+      },
+    });
+
+    const accepted = await adapter.acceptInvite(
+      {
+        provider: 'mega',
+        accountId: account.id,
+        label: 'Team Space',
+        remoteDescriptor: offers[0]?.remoteDescriptor,
+      },
+      account
+    );
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-pk-inshare-'));
+    tempDirs.push(localPath);
+    const share: ManagedShare = {
+      id: 'share-mega-pk-inshare',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-pk-inshare',
+      syncMode: 'mirror',
+      remoteDescriptor: accepted.remoteDescriptor ?? offers[0]!.remoteDescriptor,
+      capabilities: accepted.capabilities ?? ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(localPath, 'blocks', blockFileName), 'utf8')).resolves.toBe(
+      filePlaintext.toString('utf8')
+    );
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
+  it('lists incoming shares when the first decryptable node.k segment uses the wrong share key', async () => {
+    const email = 'reader@example.com';
+    const password = 'correct horse battery staple';
+    const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
+    const passwordKey = await deriveV2MasterKey(password, salt);
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const encryptedMasterKey = encryptAesEcb(masterKey, passwordKey);
+    const tsidLeft = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
+    const userHandle = 'usrhandle01';
+    const ownerHandle = 'owner000001';
+    const wrongShareHandle = 'badShare001';
+    const shareHandle = 'hNtERb6T';
+    const wrongShareKey = Buffer.from('f0e1d2c3b4a5968778695a4b3c2d1e0f', 'hex');
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const wrongRootNodeKey = Buffer.from('908172635445362718190a0b1c2d3e4f', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+
+    const fullSnapshot = {
+      f: [
+        {
+          h: wrongShareHandle,
+          t: 1,
+          a: encryptAttributes('Wrong Space', wrongRootNodeKey),
+          k: encryptNodeKey(wrongRootNodeKey, wrongShareKey, wrongShareHandle),
+          su: ownerHandle,
+          sk: encodeMegaBase64Url(encryptAesEcb(wrongShareKey, masterKey)),
+          r: 0,
+        },
+        {
+          h: shareHandle,
+          t: 1,
+          a: encryptAttributes('Team Space', rootNodeKey),
+          k: `${encryptNodeKey(rootNodeKey, wrongShareKey, wrongShareHandle)}/${encryptNodeKey(rootNodeKey, shareKey, shareHandle)}`,
+          su: ownerHandle,
+          sk: encodeMegaBase64Url(encryptAesEcb(shareKey, masterKey)),
+          r: 0,
+        },
+      ],
+      u: [{ u: ownerHandle, m: 'owner@example.com' }],
+    };
+
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'us0':
+          return new Response(JSON.stringify([{ v: 2, s: salt }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'us':
+          return new Response(
+            JSON.stringify([
+              {
+                k: encodeMegaBase64Url(encryptedMasterKey),
+                u: userHandle,
+                tsid,
+              },
+            ]),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }
+          );
+        case 'ug':
+          return new Response(JSON.stringify([{ u: userHandle, email }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          return new Response(JSON.stringify([fullSnapshot]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const connected = await adapter.connect({
+      provider: 'mega',
+      label: 'MEGA',
+      credentials: { email, password },
+    });
+
+    expect(connected.status).toBe('connected');
+    const offers = await adapter.listIncomingShares(connected.account!);
+
+    expect(offers.find((offer) => offer.remoteDescriptor.shareHandle === shareHandle)).toMatchObject({
+      label: 'Team Space',
+      ownerLabel: 'owner@example.com',
     });
   });
 

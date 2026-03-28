@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Destructively clears MEGA Cloud Drive + Rubbish Bin for disposable e2e accounts.
+ * Destructively revokes outgoing cross-shares between listed accounts, then clears Cloud Drive + Rubbish Bin.
  *
  * Requires:
  *   - `yarn build`
@@ -39,7 +39,7 @@ if (existsSync(envE2ePath)) {
 
 process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = '1';
 
-const { wipeMegaCloudDriveContentsForE2e } = await import('../dist/integrations/mega.js');
+const { revokeMegaOutgoingSharesForPeers, wipeMegaCloudDriveContentsForE2e } = await import('../dist/integrations/mega.js');
 
 const WIPE_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -61,7 +61,25 @@ if (!password || emails.length === 0) {
 }
 
 for (const email of emails) {
-  console.error(`[e2e-mega-wipe] ${email} …`);
+  const peers = emails.filter((e) => e !== email);
+  console.error(`[e2e-mega-wipe] ${email}: revoke outgoing shares to peers…`);
+  const revokeController = new AbortController();
+  const revokeTimer = setTimeout(() => revokeController.abort(), WIPE_TIMEOUT_MS);
+  try {
+    const { revokedCount } = await revokeMegaOutgoingSharesForPeers({
+      email,
+      password,
+      peerEmails: peers,
+      signal: revokeController.signal,
+    });
+    console.error(`[e2e-mega-wipe] ${email} revoked ${revokedCount} outgoing share row(s).`);
+  } finally {
+    clearTimeout(revokeTimer);
+  }
+}
+
+for (const email of emails) {
+  console.error(`[e2e-mega-wipe] ${email}: wipe Cloud Drive + Rubbish…`);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WIPE_TIMEOUT_MS);
   try {

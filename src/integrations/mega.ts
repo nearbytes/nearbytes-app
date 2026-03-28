@@ -1,4 +1,15 @@
-import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, webcrypto } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  createPrivateKey,
+  createPublicKey,
+  diffieHellman,
+  hkdfSync,
+  randomBytes,
+  webcrypto,
+} from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import chokidar, { type FSWatcher } from 'chokidar';
@@ -70,6 +81,8 @@ const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 500;
 const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
 const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
 const MEGA_OWNER_COLLABORATOR_CACHE_MS = 30_000;
+const MEGA_INCOMING_DISCOVERY_CACHE_MS = 5_000;
+const MEGA_CONTACT_INVITES_CACHE_MS = 5_000;
 const MEGA_CREATE_RECOVERY_ATTEMPTS = 7;
 const MEGA_UPLOAD_RECOVERY_ATTEMPTS = 7;
 const MEGA_NODE_APPEAR_ATTEMPTS = 7;
@@ -79,6 +92,16 @@ const MEGA_PUT_NODES_PLACEHOLDER_HANDLE = 'xxxxxxxx';
 const MEGA_SHARE_ACCESS_LEVEL_READ_ONLY = 0;
 /** Placeholder `u` for share targets who are not yet contacts (see MegaClient::EXPORTEDLINK in meganz/sdk). */
 const MEGA_SHARE_INVITE_NON_CONTACT_USER = 'EXP';
+const MEGA_KEY_MANAGER_SHARE_KEYS_TAG = 48;
+const MEGA_KEY_MANAGER_AUTH_RING_ED25519_TAG = 32;
+const MEGA_KEY_MANAGER_PENDING_INSHARES_TAG = 65;
+const MEGA_KEY_MANAGER_PRIVATE_CU25519_TAG = 17;
+const MEGA_AUTH_METHOD_SEEN = 0;
+const MEGA_AUTH_RING_RECORD_SIZE = 29;
+const MEGA_SHARE_KEY_RECORD_SIZE = 23;
+const MEGA_X25519_PRIVATE_KEY_DER_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
+const MEGA_X25519_PUBLIC_KEY_DER_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
+const MEGA_PAIRWISE_KEY_LABEL = Buffer.from('strongvelope pairwise key\x01', 'latin1');
 const megaSyncActivityTouchers = new WeakMap<AbortSignal, () => void>();
 
 interface MegaShareInviteTarget {
@@ -153,6 +176,14 @@ interface DecryptedMegaTree {
 
 interface MegaKeyManagerState {
   readonly shareKeys: ReadonlyMap<string, Buffer>;
+  readonly pendingInShares: ReadonlyMap<string, MegaPendingInShareRecord>;
+  readonly authRingEd25519: ReadonlyMap<string, number>;
+  readonly privateCu25519?: Buffer;
+}
+
+interface MegaPendingInShareRecord {
+  readonly ownerHandle: string;
+  readonly encryptedShareKey: Buffer;
 }
 
 interface MegaApiError extends Error {
@@ -188,6 +219,11 @@ export class MegaTransportAdapter {
   private readonly shareKnownHandles = new Map<string, string[]>();
   private readonly shareRootHandles = new Map<string, string>();
   private readonly accountShareKeyCache = new Map<string, ReadonlyMap<string, Buffer>>();
+  private readonly accountCloudDriveHandleCache = new Map<string, string>();
+  private readonly incomingShareDiscoveryCache = new Map<string, { expiresAt: number; offers: IncomingManagedShareOffer[] }>();
+  private readonly incomingShareDiscoveryTasks = new Map<string, Promise<IncomingManagedShareOffer[]>>();
+  private readonly incomingContactInviteCache = new Map<string, { expiresAt: number; invites: IncomingProviderContactInvite[] }>();
+  private readonly incomingContactInviteTasks = new Map<string, Promise<IncomingProviderContactInvite[]>>();
 
   constructor(
     private readonly runtime: IntegrationRuntime,
@@ -217,6 +253,11 @@ export class MegaTransportAdapter {
     this.shareScsn.clear();
     this.shareKnownHandles.clear();
     this.shareRootHandles.clear();
+    this.accountCloudDriveHandleCache.clear();
+    this.incomingShareDiscoveryCache.clear();
+    this.incomingShareDiscoveryTasks.clear();
+    this.incomingContactInviteCache.clear();
+    this.incomingContactInviteTasks.clear();
   }
 
   async probe(endpoint: TransportEndpoint): Promise<TransportState> {
@@ -300,6 +341,7 @@ export class MegaTransportAdapter {
   }
 
   async disconnect(account: ProviderAccount): Promise<void> {
+    this.clearAccountDiscoveryCaches(account.id);
     await this.runtime.secretStore.delete(secretKey(account.id));
   }
 
@@ -427,6 +469,7 @@ export class MegaTransportAdapter {
       }
 
       this.collaboratorCache.delete(share.id);
+      this.incomingShareDiscoveryCache.delete(account.id);
       await this.waitForMegaOutgoingInviteReflection(session, root, invitees);
     });
   }
@@ -480,26 +523,86 @@ export class MegaTransportAdapter {
   }
 
   async listIncomingShares(account: ProviderAccount): Promise<IncomingManagedShareOffer[]> {
-    const resolved = await this.withRecoveredAccountSession(account, async (session) => ({
-      session,
-      snapshot: await this.fetchNodesSnapshot(session),
-      keyManager: await this.fetchKeyManagerState(session),
-    }));
-    const { offers, diag } = listIncomingMegaShareOffersWithDiag(
-      resolved.snapshot,
-      resolved.session,
-      resolved.keyManager.shareKeys,
-      this.provider,
-      account.id
-    );
-    if (diag.nodesWithSharingUser > diag.offerCount) {
-      this.runtime.logger.log('MEGA incoming share discovery: not every tree node with a sharing user became an offer.', {
+    const cached = this.incomingShareDiscoveryCache.get(account.id);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.offers.map((offer) => ({ ...offer, remoteDescriptor: { ...offer.remoteDescriptor } }));
+    }
+
+    const existingTask = this.incomingShareDiscoveryTasks.get(account.id);
+    if (existingTask) {
+      return existingTask;
+    }
+
+    const task = this.listIncomingSharesUncached(account)
+      .then((offers) => {
+        const cachedOffers = offers.map((offer) => ({
+          ...offer,
+          remoteDescriptor: { ...offer.remoteDescriptor },
+        }));
+        this.incomingShareDiscoveryCache.set(account.id, {
+          expiresAt: Date.now() + MEGA_INCOMING_DISCOVERY_CACHE_MS,
+          offers: cachedOffers,
+        });
+        return cachedOffers.map((offer) => ({ ...offer, remoteDescriptor: { ...offer.remoteDescriptor } }));
+      })
+      .finally(() => {
+        if (this.incomingShareDiscoveryTasks.get(account.id) === task) {
+          this.incomingShareDiscoveryTasks.delete(account.id);
+        }
+      });
+    this.incomingShareDiscoveryTasks.set(account.id, task);
+    return task;
+  }
+
+  private async listIncomingSharesUncached(account: ProviderAccount): Promise<IncomingManagedShareOffer[]> {
+    const passCount = 4;
+    const delayBeforePassMs = [0, 1_200, 3_000, 7_000] as const;
+
+    for (let pass = 0; pass < passCount; pass += 1) {
+      if (pass > 0) {
+        await waitForMegaRetry(delayBeforePassMs[pass] ?? 8_000);
+      }
+
+      const resolved = await this.withRecoveredAccountSession(account, async (session) => ({
+        session,
+        snapshot: await this.fetchNodesSnapshot(session),
+        keyManager: await this.fetchKeyManagerState(session, undefined, { includePendingInShareKeys: true }),
+      }));
+      const { offers, diag } = listIncomingMegaShareOffersWithDiag(
+        resolved.snapshot,
+        resolved.session,
+        resolved.keyManager.shareKeys,
+        this.provider,
+        account.id
+      );
+
+      const keysStillPropagating =
+        diag.nodesWithSharingUser > 0 &&
+        diag.offerCount === 0 &&
+        diag.skippedNoDecrypt > 0;
+
+      if (!keysStillPropagating || pass === passCount - 1) {
+        if (diag.nodesWithSharingUser > diag.offerCount) {
+          this.runtime.logger.log('MEGA incoming share discovery: not every tree node with a sharing user became an offer.', {
+            accountId: account.id,
+            email: account.email,
+            ...diag,
+            incomingDiscoveryPasses: pass + 1,
+          });
+        }
+        return offers;
+      }
+
+      this.runtime.logger.log('MEGA incoming share discovery: share keys not ready for some incoming nodes; retrying.', {
         accountId: account.id,
         email: account.email,
         ...diag,
+        pass: pass + 1,
+        nextDelayMs: delayBeforePassMs[pass + 1],
       });
     }
-    return offers;
+
+    return [];
   }
 
   async listManagedShareMirrors(account: ProviderAccount): Promise<ManagedShareMirrorEntry[]> {
@@ -514,7 +617,7 @@ export class MegaTransportAdapter {
     const resolved = await this.withRecoveredAccountSession(account, async (session) => ({
       session,
       snapshot: await this.fetchNodesSnapshot(session),
-      keyManager: await this.fetchKeyManagerState(session),
+      keyManager: await this.fetchKeyManagerState(session, undefined, { includePendingInShareKeys: true }),
     }));
     return buildMegaShareInventoryDebugEntries(
       resolved.snapshot,
@@ -524,11 +627,38 @@ export class MegaTransportAdapter {
   }
 
   async listIncomingContactInvites(account: ProviderAccount): Promise<IncomingProviderContactInvite[]> {
-    const snapshot = await this.withRecoveredAccountSession(account, (session) => this.fetchNodesSnapshot(session));
-    return snapshot.incomingPendingContacts
-      .map((invite) => mapIncomingMegaContactInvite(invite, account.id, this.provider))
-      .filter((value): value is IncomingProviderContactInvite => value !== null)
-      .sort((left, right) => left.label.localeCompare(right.label));
+    const cached = this.incomingContactInviteCache.get(account.id);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.invites.map((invite) => ({ ...invite }));
+    }
+
+    const existingTask = this.incomingContactInviteTasks.get(account.id);
+    if (existingTask) {
+      return existingTask;
+    }
+
+    const task = this.withRecoveredAccountSession(account, (session) => this.fetchNodesSnapshot(session))
+      .then((snapshot) =>
+        snapshot.incomingPendingContacts
+          .map((invite) => mapIncomingMegaContactInvite(invite, account.id, this.provider))
+          .filter((value): value is IncomingProviderContactInvite => value !== null)
+          .sort((left, right) => left.label.localeCompare(right.label))
+      )
+      .then((invites) => {
+        const cachedInvites = invites.map((invite) => ({ ...invite }));
+        this.incomingContactInviteCache.set(account.id, {
+          expiresAt: Date.now() + MEGA_CONTACT_INVITES_CACHE_MS,
+          invites: cachedInvites,
+        });
+        return cachedInvites.map((invite) => ({ ...invite }));
+      })
+      .finally(() => {
+        if (this.incomingContactInviteTasks.get(account.id) === task) {
+          this.incomingContactInviteTasks.delete(account.id);
+        }
+      });
+    this.incomingContactInviteTasks.set(account.id, task);
+    return task;
   }
 
   async acceptIncomingContactInvite(account: ProviderAccount, inviteId: string): Promise<void> {
@@ -546,6 +676,7 @@ export class MegaTransportAdapter {
         session
       )
     );
+    this.clearAccountDiscoveryCaches(account.id);
   }
 
   async getState(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState> {
@@ -1388,6 +1519,13 @@ export class MegaTransportAdapter {
     }
   }
 
+  private clearAccountDiscoveryCaches(accountId: string): void {
+    this.incomingShareDiscoveryCache.delete(accountId);
+    this.incomingShareDiscoveryTasks.delete(accountId);
+    this.incomingContactInviteCache.delete(accountId);
+    this.incomingContactInviteTasks.delete(accountId);
+  }
+
 
   private async loginWithPassword(email: string, password: string, mfaCode?: string): Promise<MegaSession> {
     return createMegaPasswordSession(this.apiClient, this.runtime.logger, email, password, mfaCode);
@@ -1399,11 +1537,12 @@ export class MegaTransportAdapter {
 
 
   private async fetchNodesSnapshot(session: MegaSession, signal?: AbortSignal): Promise<MegaFetchNodesSnapshot> {
-    return fetchMegaNodesSnapshot(this.apiClient, session, undefined, { useCache: false }, signal);
-  }
-
-  private async fetchCompleteTree(session: MegaSession, signal?: AbortSignal): Promise<MegaFetchedTree> {
-    return fetchMegaDecryptedTree(this.apiClient, session, undefined, { useCache: false }, signal);
+    const snapshot = await fetchMegaNodesSnapshot(this.apiClient, session, undefined, { useCache: false }, signal);
+    const cloudHandle = resolveMegaCloudDriveHandle(snapshot);
+    if (cloudHandle) {
+      this.accountCloudDriveHandleCache.set(session.userHandle, cloudHandle);
+    }
+    return snapshot;
   }
 
   private async fetchPartialTreeWithSnapshot(
@@ -1424,12 +1563,64 @@ export class MegaTransportAdapter {
     );
   }
 
-  private async fetchKeyManagerState(session: MegaSession, signal?: AbortSignal): Promise<MegaKeyManagerState> {
+  private async fetchPartialTreeWithRetry(
+    session: MegaSession,
+    rootHandle: string,
+    signal?: AbortSignal,
+    options: {
+      readonly allowTransientFullFallback?: boolean;
+    } = {}
+  ): Promise<MegaFetchedTree> {
+    for (let attempt = 0; attempt < MEGA_CREATE_RECOVERY_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.fetchPartialTreeWithSnapshot(session, rootHandle, signal, options);
+      } catch (error) {
+        if (
+          !isMegaRetryableApiError(error) &&
+          !isMegaRetryableTransportError(error) &&
+          !isMegaEventuallyConsistentMutationError(error)
+        ) {
+          throw error;
+        }
+        if (attempt >= MEGA_CREATE_RECOVERY_ATTEMPTS - 1) {
+          throw error;
+        }
+        await waitForMegaRetry(getMegaRetryDelayMs(error, attempt), signal);
+      }
+    }
+    throw new Error(`MEGA did not fetch subtree ${rootHandle}.`);
+  }
+
+  private async fetchKeyManagerState(
+    session: MegaSession,
+    signal?: AbortSignal,
+    options: {
+      readonly includePendingInShareKeys?: boolean;
+    } = {}
+  ): Promise<MegaKeyManagerState> {
     const cachedShareKeys = this.accountShareKeyCache.get(session.userHandle);
     const fetched = await fetchMegaKeyManagerState(this.apiClient, session, signal, this.runtime.logger);
-    if (fetched.shareKeys.size > 0) {
-      this.accountShareKeyCache.set(session.userHandle, new Map(fetched.shareKeys));
-      return fetched;
+    const pendingKeys = options.includePendingInShareKeys
+      ? await fetchMegaPendingInShareKeys(this.apiClient, session, signal, this.runtime.logger)
+      : new Map<string, MegaPendingInShareRecord>();
+    const mergedFetched: MegaKeyManagerState = {
+      ...fetched,
+      pendingInShares: mergeMegaPendingInShares(fetched.pendingInShares, pendingKeys),
+    };
+    const resolvedShareKeys = await resolveMegaKeyManagerShareKeys(
+      this.apiClient,
+      session,
+      mergedFetched,
+      signal,
+      this.runtime.logger
+    );
+    const resolved: MegaKeyManagerState = {
+      ...mergedFetched,
+      shareKeys: resolvedShareKeys,
+    };
+    if (resolved.shareKeys.size > 0) {
+      this.accountShareKeyCache.set(session.userHandle, new Map(resolved.shareKeys));
+      return resolved;
     }
     if (cachedShareKeys && cachedShareKeys.size > 0) {
       this.runtime.logger.log('MEGA key-manager state fallback: using cached share keys after empty fetch result.', {
@@ -1438,9 +1629,12 @@ export class MegaTransportAdapter {
       });
       return {
         shareKeys: new Map(cachedShareKeys),
+        pendingInShares: mergedFetched.pendingInShares,
+        authRingEd25519: mergedFetched.authRingEd25519,
+        privateCu25519: mergedFetched.privateCu25519,
       };
     }
-    return fetched;
+    return resolved;
   }
 
   private async fetchActionPackets(session: MegaSession, scsn: string, signal?: AbortSignal): Promise<MegaActionPacketBatch> {
@@ -1524,24 +1718,41 @@ export class MegaTransportAdapter {
   ): Promise<MegaOwnerRemoteRoot> {
     const normalizedPath = normalizeMegaRemoteDisplayPath(remotePath);
     const segments = normalizedPath.split('/').filter((segment) => segment.length > 0);
-    let fetched = await this.fetchCompleteTree(session, signal);
-    let current = fetched.tree.root;
+    let cloudHandle = this.accountCloudDriveHandleCache.get(session.userHandle);
+    if (!cloudHandle) {
+      const snapshot = await this.fetchNodesSnapshot(session, signal);
+      cloudHandle = resolveMegaCloudDriveHandle(snapshot);
+      if (cloudHandle) {
+        this.accountCloudDriveHandleCache.set(session.userHandle, cloudHandle);
+      }
+    }
+    if (!cloudHandle) {
+      throw new Error('MEGA snapshot did not include a Cloud Drive root.');
+    }
+
+    let currentHandle = cloudHandle;
 
     for (const segment of segments) {
-      const existing = findChildNodeByName(fetched.tree, current.handle, segment, true);
+      const fetched = await this.fetchPartialTreeWithRetry(session, currentHandle, signal, {
+        allowTransientFullFallback: false,
+      });
+      const existing = findChildNodeByName(fetched.tree, currentHandle, segment, true);
       if (existing) {
-        current = existing;
+        currentHandle = existing.handle;
         continue;
       }
-      const created = await this.ensureOwnerRemoteFolder(session, current.handle, segment, signal);
-      fetched = created.fetched;
-      current = created.node;
+      const created = await this.ensureOwnerRemoteFolder(session, currentHandle, segment, signal);
+      currentHandle = created.node.handle;
       continue;
     }
 
+    const fetched = await this.fetchPartialTreeWithRetry(session, currentHandle, signal, {
+      allowTransientFullFallback: false,
+    });
+
     return {
       path: normalizedPath,
-      root: current,
+      root: fetched.tree.root,
       tree: fetched.tree,
       scsn: fetched.snapshot.scsn?.trim(),
     };
@@ -1557,7 +1768,7 @@ export class MegaTransportAdapter {
     node: DecryptedMegaNode;
   }> {
     for (let attempt = 0; attempt < MEGA_CREATE_RECOVERY_ATTEMPTS; attempt += 1) {
-      const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal, {
+      const fetched = await this.fetchPartialTreeWithRetry(session, parentHandle, signal, {
         allowTransientFullFallback: false,
       });
       const created = findChildNodeByName(fetched.tree, parentHandle, name, true);
@@ -1601,7 +1812,7 @@ export class MegaTransportAdapter {
     fetched: MegaFetchedTree;
     node: DecryptedMegaNode;
   } | null> {
-    const fetched = await this.fetchPartialTreeWithSnapshot(session, parentHandle, signal, {
+    const fetched = await this.fetchPartialTreeWithRetry(session, parentHandle, signal, {
       allowTransientFullFallback: false,
     });
     const node = findChildNodeByName(fetched.tree, parentHandle, name, true);
@@ -2278,6 +2489,23 @@ function buildMegaSetShareCommand(
   return command;
 }
 
+/** MEGA SDK: `ACCESS_UNKNOWN` removes access — `s2` omits `ok`/`ha`/`r` (see CommandSetShare). */
+function buildMegaRevokeShareCommand(sharedFolderNodeHandle: string, invitee: MegaShareInviteTarget): Record<string, unknown> {
+  const command: Record<string, unknown> = {
+    a: 's2',
+    n: sharedFolderNodeHandle,
+    s: [
+      {
+        u: invitee.u,
+      },
+    ],
+  };
+  if (invitee.e) {
+    command.e = invitee.e;
+  }
+  return command;
+}
+
 function buildMegaShareNodeKeyRecords(ownerRoot: MegaOwnerRemoteRoot, shareKey: Buffer): readonly unknown[] {
   const shareHandles = [ownerRoot.root.handle];
   const itemHandles: string[] = [];
@@ -2409,7 +2637,12 @@ async function fetchMegaKeyManagerState(
       email: session.email,
       message: error instanceof Error ? error.message : String(error),
     });
-    return { shareKeys: new Map() };
+    return {
+      shareKeys: new Map(),
+      pendingInShares: new Map(),
+      authRingEd25519: new Map(),
+      privateCu25519: undefined,
+    };
   }
 }
 
@@ -2449,11 +2682,19 @@ async function fetchMegaDecryptedTree(
   }
 
   const keyManager = await fetchMegaKeyManagerState(apiClient, session, signal, logger);
+  const pendingKeys = snapshotIncludesIncomingShareNodes(snapshot)
+    ? await fetchMegaPendingInShareKeys(apiClient, session, signal, logger)
+    : new Map<string, MegaPendingInShareRecord>();
+  const mergedKeyManager: MegaKeyManagerState = {
+    ...keyManager,
+    pendingInShares: mergeMegaPendingInShares(keyManager.pendingInShares, pendingKeys),
+  };
+  const shareKeys = await resolveMegaKeyManagerShareKeys(apiClient, session, mergedKeyManager, signal, logger);
   const expectedRootHandle = rootHandle?.trim() || resolveMegaCloudDriveHandle(snapshot);
   try {
     return {
       snapshot,
-      tree: decryptMegaTree(snapshot, session, expectedRootHandle, keyManager.shareKeys, logger),
+      tree: decryptMegaTree(snapshot, session, expectedRootHandle, shareKeys, logger),
     };
   } catch (error) {
     if (
@@ -2470,7 +2711,7 @@ async function fetchMegaDecryptedTree(
     const fullSnapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, options, signal);
     return {
       snapshot: fullSnapshot,
-      tree: decryptMegaTree(fullSnapshot, session, expectedRootHandle, keyManager.shareKeys, logger),
+      tree: decryptMegaTree(fullSnapshot, session, expectedRootHandle, shareKeys, logger),
     };
   }
 }
@@ -2495,6 +2736,13 @@ async function findMegaRemoteChildNode(
   }
 }
 
+
+function snapshotIncludesIncomingShareNodes(snapshot: MegaFetchNodesSnapshot): boolean {
+  return snapshot.nodes.some((node) => {
+    const sharingUser = (node as Record<string, unknown>).su;
+    return typeof sharingUser === 'string' && sharingUser.trim() !== '';
+  });
+}
 async function findMegaRemoteChildNodeInFullSnapshot(
   apiClient: MegaApiClient,
   session: MegaSession,
@@ -2553,20 +2801,39 @@ async function fetchOwnerRootByPath(
   remotePath: string,
   signal?: AbortSignal
 ): Promise<MegaOwnerRemoteRoot> {
-  const fetched = await fetchMegaDecryptedTree(apiClient, session, undefined, {}, signal);
-  const tree = fetched.tree;
-  let current = tree.root;
+  const snapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, { useCache: false }, signal);
+  const cloudHandle = resolveMegaCloudDriveHandle(snapshot);
+  if (!cloudHandle) {
+    throw new Error('MEGA snapshot did not include a Cloud Drive root.');
+  }
+
+  let currentHandle = cloudHandle;
   const segments = normalizeMegaRemoteDisplayPath(remotePath).split('/').filter((entry) => entry.length > 0);
   for (const segment of segments) {
-    const next = findChildNodeByName(tree, current.handle, segment, true);
+    const fetched = await fetchMegaDecryptedTree(
+      apiClient,
+      session,
+      currentHandle,
+      { useCache: false, allowTransientFullFallback: false },
+      signal
+    );
+    const next = findChildNodeByName(fetched.tree, currentHandle, segment, true);
     if (!next) {
       throw new Error(`MEGA path ${remotePath} is missing ${segment}.`);
     }
-    current = next;
+    currentHandle = next.handle;
   }
+
+  const fetched = await fetchMegaDecryptedTree(
+    apiClient,
+    session,
+    currentHandle,
+    { useCache: false, allowTransientFullFallback: false },
+    signal
+  );
   return {
     path: normalizeMegaRemoteDisplayPath(remotePath),
-    root: current,
+    root: fetched.tree.root,
     tree: fetched.tree,
   };
 }
@@ -3303,7 +3570,7 @@ function decryptMegaTree(
     }
     const shareKey = decryptShareKey(String((node as Record<string, unknown>).sk), session);
     if (shareKey) {
-      shareKeys.set(node.h, shareKey);
+      registerMegaShareKeyHandlesForNode(shareKeys, node, shareKey);
     }
   }
   for (const shareRecord of [...snapshot.outgoingShares, ...snapshot.pendingShares]) {
@@ -3318,7 +3585,12 @@ function decryptMegaTree(
     }
     const shareKey = decryptShareKey(encodedShareKey, session);
     if (shareKey) {
-      shareKeys.set(handle, shareKey);
+      const node = snapshot.nodes.find((entry) => typeof entry.h === 'string' && entry.h.trim() === handle);
+      if (node) {
+        registerMegaShareKeyHandlesForNode(shareKeys, node, shareKey);
+      } else {
+        shareKeys.set(handle, shareKey);
+      }
     }
   }
 
@@ -3372,6 +3644,15 @@ interface MegaIncomingShareDiscoveryDiag {
   readonly skippedNoDecrypt: number;
   readonly skippedShareHandleMismatch: number;
   readonly offerCount: number;
+  readonly skippedNoDecryptSample: ReadonlyArray<{
+    handle: string;
+    ownerHandle?: string;
+    parentHandle?: string;
+    hasShareKey: boolean;
+    nodeKeyOwners: string;
+    matchedKeyOwners: string;
+    hasSk: boolean;
+  }>;
 }
 
 function listIncomingMegaShareOffersWithDiag(
@@ -3388,6 +3669,15 @@ function listIncomingMegaShareOffersWithDiag(
   let skippedNoDecrypt = 0;
   let skippedShareHandleMismatch = 0;
   let nodesWithSharingUser = 0;
+  const skippedNoDecryptSample: Array<{
+    handle: string;
+    ownerHandle?: string;
+    parentHandle?: string;
+    hasShareKey: boolean;
+    nodeKeyOwners: string;
+    matchedKeyOwners: string;
+    hasSk: boolean;
+  }> = [];
 
   for (const node of snapshot.nodes) {
     const nodeMeta = node as Record<string, unknown>;
@@ -3403,6 +3693,18 @@ function listIncomingMegaShareOffersWithDiag(
     const decrypted = decryptNodeRecord(node, session, shareKeys, usersByHandle);
     if (!decrypted || !decrypted.ownerHandle) {
       skippedNoDecrypt += 1;
+      if (skippedNoDecryptSample.length < 5) {
+        const nodeKeyOwners = listMegaNodeKeyOwners(typeof nodeMeta.k === 'string' ? nodeMeta.k : undefined);
+        skippedNoDecryptSample.push({
+          handle: typeof node.h === 'string' ? node.h.trim() : '',
+          ownerHandle: ownerHandle || undefined,
+          parentHandle: typeof node.p === 'string' && node.p.trim() ? node.p.trim() : undefined,
+          hasShareKey: nodeKeyOwners.some((candidateOwner) => shareKeys.has(candidateOwner)),
+          nodeKeyOwners: nodeKeyOwners.join(','),
+          matchedKeyOwners: nodeKeyOwners.filter((candidateOwner) => shareKeys.has(candidateOwner)).join(','),
+          hasSk: typeof nodeMeta.sk === 'string' && nodeMeta.sk.trim() !== '',
+        });
+      }
       continue;
     }
     if (decrypted.shareHandle !== decrypted.handle) {
@@ -3438,8 +3740,28 @@ function listIncomingMegaShareOffersWithDiag(
     skippedNoDecrypt,
     skippedShareHandleMismatch,
     offerCount: offers.length,
+    skippedNoDecryptSample,
   };
   return { offers, diag };
+}
+
+function listMegaNodeKeyOwners(encodedKey: string | undefined): string[] {
+  const encoded = encodedKey?.trim();
+  if (!encoded) {
+    return [];
+  }
+  const owners: string[] = [];
+  for (const segment of encoded.split('/')) {
+    const colonIndex = segment.indexOf(':');
+    if (colonIndex <= 0) {
+      continue;
+    }
+    const owner = segment.slice(0, colonIndex).trim();
+    if (owner && !owners.includes(owner)) {
+      owners.push(owner);
+    }
+  }
+  return owners;
 }
 
 function listIncomingMegaShareOffers(
@@ -3517,6 +3839,40 @@ function buildMegaUsersByHandle(snapshot: MegaFetchNodesSnapshot): Map<string, M
   return usersByHandle;
 }
 
+/**
+ * Incoming shared nodes use `node.k` segments whose owner handle is often the sharer's folder handle,
+ * not the recipient copy's `node.h`. `decryptNodeKey` looks up `shareKeys` by those segment owners,
+ * so we register the decrypted `sk` material under every handle that appears in `k` as well as `h`.
+ */
+function registerMegaShareKeyHandlesForNode(shareKeys: Map<string, Buffer>, node: MegaNodeRecord, shareKey: Buffer): void {
+  const handles = new Set<string>();
+  const h = typeof node.h === 'string' ? node.h.trim() : '';
+  if (h) {
+    handles.add(h);
+  }
+  const encoded = typeof node.k === 'string' ? node.k.trim() : '';
+  if (encoded) {
+    if (encoded.length > 12 && encoded[11] === ':') {
+      handles.add(encoded.slice(0, 11).trim());
+    }
+    for (const segment of encoded.split('/')) {
+      const colonIndex = segment.indexOf(':');
+      if (colonIndex <= 0) {
+        continue;
+      }
+      const owner = segment.slice(0, colonIndex).trim();
+      if (owner) {
+        handles.add(owner);
+      }
+    }
+  }
+  for (const handle of handles) {
+    if (handle) {
+      shareKeys.set(handle, shareKey);
+    }
+  }
+}
+
 function collectMegaShareKeys(
   snapshot: MegaFetchNodesSnapshot,
   session: MegaSession,
@@ -3536,7 +3892,7 @@ function collectMegaShareKeys(
     }
     const shareKey = decryptShareKey(String((node as Record<string, unknown>).sk), session);
     if (shareKey) {
-      shareKeys.set(node.h, shareKey);
+      registerMegaShareKeyHandlesForNode(shareKeys, node, shareKey);
     }
   }
   for (const shareRecord of snapshot.outgoingShares) {
@@ -3552,7 +3908,12 @@ function collectMegaShareKeys(
     }
     const shareKey = decryptShareKey(encodedShareKey, session);
     if (shareKey) {
-      shareKeys.set(handle, shareKey);
+      const node = snapshot.nodes.find((entry) => typeof entry.h === 'string' && entry.h.trim() === handle);
+      if (node) {
+        registerMegaShareKeyHandlesForNode(shareKeys, node, shareKey);
+      } else {
+        shareKeys.set(handle, shareKey);
+      }
     }
   }
   // Pending shares (ps) can also carry share keys — MEGA uses this for shares whose
@@ -3570,23 +3931,90 @@ function collectMegaShareKeys(
     }
     const shareKey = decryptShareKey(encodedShareKey, session);
     if (shareKey) {
-      shareKeys.set(handle, shareKey);
+      const node = snapshot.nodes.find((entry) => typeof entry.h === 'string' && entry.h.trim() === handle);
+      if (node) {
+        registerMegaShareKeyHandlesForNode(shareKeys, node, shareKey);
+      } else {
+        shareKeys.set(handle, shareKey);
+      }
     }
   }
   return shareKeys;
 }
 
+function createEmptyMegaKeyManagerState(): MegaKeyManagerState {
+  return {
+    shareKeys: new Map(),
+    pendingInShares: new Map(),
+    authRingEd25519: new Map(),
+    privateCu25519: undefined,
+  };
+}
+
 function parseMegaKeyManagerState(response: Record<string, unknown>, masterKey: Buffer): MegaKeyManagerState {
   const encodedValue = typeof response.av === 'string' ? response.av.trim() : '';
   if (!encodedValue) {
-    return { shareKeys: new Map() };
+    return createEmptyMegaKeyManagerState();
   }
 
   const container = decodeMegaBase64Url(encodedValue);
   const plaintext = decryptMegaKeyManagerContainer(container, masterKey);
+  const shareKeys = new Map<string, Buffer>();
+  const pendingInShares = new Map<string, MegaPendingInShareRecord>();
+  const authRingEd25519 = new Map<string, number>();
+  let privateCu25519: Buffer | undefined;
+
+  for (const { tag, payload } of iterateMegaKeyManagerRecords(plaintext)) {
+    switch (tag) {
+      case MEGA_KEY_MANAGER_SHARE_KEYS_TAG:
+        for (const [handle, shareKey] of parseMegaKeyManagerShareKeys(payload)) {
+          shareKeys.set(handle, shareKey);
+        }
+        break;
+      case MEGA_KEY_MANAGER_PENDING_INSHARES_TAG:
+        for (const [handle, record] of parseMegaKeyManagerPendingInShares(payload)) {
+          pendingInShares.set(handle, record);
+        }
+        break;
+      case MEGA_KEY_MANAGER_AUTH_RING_ED25519_TAG:
+        for (const [handle, authMethod] of parseMegaKeyManagerAuthRing(payload)) {
+          authRingEd25519.set(handle, authMethod);
+        }
+        break;
+      case MEGA_KEY_MANAGER_PRIVATE_CU25519_TAG:
+        privateCu25519 = Buffer.from(payload);
+        break;
+      default:
+        break;
+    }
+  }
+
   return {
-    shareKeys: parseMegaKeyManagerShareKeys(plaintext),
+    shareKeys,
+    pendingInShares,
+    authRingEd25519,
+    privateCu25519,
   };
+}
+
+function* iterateMegaKeyManagerRecords(value: Buffer): Generator<{ tag: number; payload: Buffer }> {
+  let offset = 0;
+  while (offset + 4 <= value.length) {
+    const tag = value[offset] ?? 0;
+    const length = ((value[offset + 1] ?? 0) << 16) | ((value[offset + 2] ?? 0) << 8) | (value[offset + 3] ?? 0);
+    offset += 4;
+    if (offset + length > value.length) {
+      throw new Error('MEGA key-manager record is malformed.');
+    }
+    yield {
+      tag,
+      payload: value.subarray(offset, offset + length),
+    };
+    offset += length;
+  }
+  if (offset !== value.length) {
+    throw new Error('MEGA key-manager payload is malformed.');
+  }
 }
 
 function decryptMegaKeyManagerContainer(container: Buffer, masterKey: Buffer): Buffer {
@@ -3616,26 +4044,254 @@ function deriveMegaKeyManagerKey(masterKey: Buffer): Buffer {
 
 function parseMegaKeyManagerShareKeys(value: Buffer): Map<string, Buffer> {
   const result = new Map<string, Buffer>();
-  let offset = 0;
-  while (offset + 4 <= value.length) {
-    const tag = value[offset] ?? 0;
-    const length = ((value[offset + 1] ?? 0) << 16) | ((value[offset + 2] ?? 0) << 8) | (value[offset + 3] ?? 0);
-    offset += 4;
-    if (offset + length > value.length) {
-      throw new Error('MEGA key-manager record is malformed.');
+  for (let entryOffset = 0; entryOffset + MEGA_SHARE_KEY_RECORD_SIZE <= value.length; entryOffset += MEGA_SHARE_KEY_RECORD_SIZE) {
+    const handle = encodeMegaBase64Url(value.subarray(entryOffset, entryOffset + 6));
+    const shareKey = value.subarray(entryOffset + 6, entryOffset + 22);
+    result.set(handle, Buffer.from(shareKey));
+  }
+  if (value.length % MEGA_SHARE_KEY_RECORD_SIZE !== 0) {
+    throw new Error('MEGA key-manager share-key payload is malformed.');
+  }
+  return result;
+}
+
+function parseMegaKeyManagerAuthRing(value: Buffer): Map<string, number> {
+  if (value.length % MEGA_AUTH_RING_RECORD_SIZE !== 0) {
+    throw new Error('MEGA key-manager auth-ring payload is malformed.');
+  }
+  const result = new Map<string, number>();
+  for (let offset = 0; offset < value.length; offset += MEGA_AUTH_RING_RECORD_SIZE) {
+    const handle = encodeMegaBase64Url(value.subarray(offset, offset + 8));
+    const authMethod = value.readInt8(offset + 28);
+    result.set(handle, authMethod);
+  }
+  return result;
+}
+
+function parseMegaKeyManagerPendingInShares(value: Buffer): Map<string, MegaPendingInShareRecord> {
+  const result = new Map<string, MegaPendingInShareRecord>();
+  for (const { tag, payload } of parseMegaLtlvRecords(value)) {
+    if (payload.length < 8) {
+      throw new Error('MEGA key-manager pending inshare payload is malformed.');
     }
-    const payload = value.subarray(offset, offset + length);
-    offset += length;
-    if (tag !== 48) {
+    result.set(encodeMegaBase64Url(tag), {
+      ownerHandle: encodeMegaBase64Url(payload.subarray(0, 8)),
+      encryptedShareKey: Buffer.from(payload.subarray(8)),
+    });
+  }
+  return result;
+}
+
+function parseMegaLtlvRecords(value: Buffer): Array<{ tag: Buffer; payload: Buffer }> {
+  const records: Array<{ tag: Buffer; payload: Buffer }> = [];
+  let offset = 0;
+  while (offset < value.length) {
+    const tagLength = value[offset];
+    if (tagLength === undefined) {
+      throw new Error('MEGA key-manager LTLV tag length is missing.');
+    }
+    offset += 1;
+    if (offset + tagLength + 2 > value.length) {
+      throw new Error('MEGA key-manager LTLV tag is malformed.');
+    }
+    const tag = Buffer.from(value.subarray(offset, offset + tagLength));
+    offset += tagLength;
+    let payloadLength = value.readUInt16BE(offset);
+    offset += 2;
+    if (payloadLength === 0xffff) {
+      if (offset + 4 > value.length) {
+        throw new Error('MEGA key-manager LTLV extended length is malformed.');
+      }
+      payloadLength = value.readUInt32BE(offset);
+      offset += 4;
+    }
+    if (offset + payloadLength > value.length) {
+      throw new Error('MEGA key-manager LTLV value is malformed.');
+    }
+    records.push({
+      tag,
+      payload: Buffer.from(value.subarray(offset, offset + payloadLength)),
+    });
+    offset += payloadLength;
+  }
+  return records;
+}
+
+async function resolveMegaKeyManagerShareKeys(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  keyManager: MegaKeyManagerState,
+  signal?: AbortSignal,
+  logger?: Pick<IntegrationRuntime['logger'], 'warn'>
+): Promise<ReadonlyMap<string, Buffer>> {
+  const resolved = new Map(keyManager.shareKeys);
+  if (
+    keyManager.pendingInShares.size === 0 ||
+    !keyManager.privateCu25519 ||
+    keyManager.privateCu25519.length !== 32
+  ) {
+    return resolved;
+  }
+
+  const publicKeyCache = new Map<string, Promise<Buffer | null>>();
+  const getOwnerPublicCu25519 = (ownerHandle: string): Promise<Buffer | null> => {
+    let task = publicKeyCache.get(ownerHandle);
+    if (!task) {
+      task = fetchMegaUserPublicCu25519(apiClient, session, ownerHandle, signal, logger);
+      publicKeyCache.set(ownerHandle, task);
+    }
+    return task;
+  };
+
+  for (const [shareHandle, pendingInShare] of keyManager.pendingInShares) {
+    if (resolved.has(shareHandle)) {
       continue;
     }
-    for (let entryOffset = 0; entryOffset + 23 <= payload.length; entryOffset += 23) {
-      const handle = encodeMegaBase64Url(payload.subarray(entryOffset, entryOffset + 6));
-      const shareKey = payload.subarray(entryOffset + 6, entryOffset + 22);
-      result.set(handle, Buffer.from(shareKey));
+    if (pendingInShare.encryptedShareKey.length === 0) {
+      continue;
+    }
+    const authMethod = keyManager.authRingEd25519.get(pendingInShare.ownerHandle) ?? -1;
+    if (authMethod < MEGA_AUTH_METHOD_SEEN) {
+      continue;
+    }
+
+    const ownerPublicKey = await getOwnerPublicCu25519(pendingInShare.ownerHandle);
+    if (!ownerPublicKey || ownerPublicKey.length !== 32) {
+      continue;
+    }
+
+    const pairwiseKey = deriveMegaPairwiseKey(keyManager.privateCu25519, ownerPublicKey);
+    const decryptedShareKey = decryptAesEcb(pendingInShare.encryptedShareKey, pairwiseKey);
+    if (decryptedShareKey.length < 16) {
+      continue;
+    }
+    resolved.set(shareHandle, Buffer.from(decryptedShareKey.subarray(0, 16)));
+  }
+
+  return resolved;
+}
+
+function mergeMegaPendingInShares(
+  base: ReadonlyMap<string, MegaPendingInShareRecord>,
+  extra: ReadonlyMap<string, MegaPendingInShareRecord>
+): ReadonlyMap<string, MegaPendingInShareRecord> {
+  if (extra.size === 0) {
+    return base;
+  }
+  const merged = new Map(base);
+  for (const [shareHandle, record] of extra.entries()) {
+    if (!merged.has(shareHandle)) {
+      merged.set(shareHandle, record);
+    }
+  }
+  return merged;
+}
+
+async function fetchMegaPendingInShareKeys(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  signal?: AbortSignal,
+  logger?: Pick<IntegrationRuntime['logger'], 'warn'>
+): Promise<ReadonlyMap<string, MegaPendingInShareRecord>> {
+  try {
+    const response = await withMegaApiRetry(async () => {
+      const result = await apiClient.requestSingle<Record<string, unknown>>(
+        { a: 'pk' },
+        { sessionId: session.sid, signal }
+      );
+      if (typeof result === 'number') {
+        const error = new Error(`MEGA API error ${result}.`) as MegaApiError;
+        error.code = result;
+        throw error;
+      }
+      return result;
+    }, signal);
+    return parseMegaPendingInShareKeysResponse(response);
+  } catch (error) {
+    const errorCode = typeof (error as MegaApiError | undefined)?.code === 'number'
+      ? (error as MegaApiError).code
+      : undefined;
+    if (errorCode === -9) {
+      return new Map();
+    }
+    logger?.warn?.('MEGA pending inshare key fetch failed.', {
+      email: session.email,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return new Map();
+  }
+}
+
+function parseMegaPendingInShareKeysResponse(response: Record<string, unknown>): Map<string, MegaPendingInShareRecord> {
+  const result = new Map<string, MegaPendingInShareRecord>();
+  for (const [ownerHandleRaw, pendingEntries] of Object.entries(response)) {
+    const ownerHandle = ownerHandleRaw.trim();
+    if (!ownerHandle || ownerHandle === 'd' || !pendingEntries || typeof pendingEntries !== 'object' || Array.isArray(pendingEntries)) {
+      continue;
+    }
+    for (const [shareHandleRaw, encodedKey] of Object.entries(pendingEntries as Record<string, unknown>)) {
+      const shareHandle = shareHandleRaw.trim();
+      if (!shareHandle || typeof encodedKey !== 'string' || !encodedKey.trim()) {
+        continue;
+      }
+      result.set(shareHandle, {
+        ownerHandle,
+        encryptedShareKey: decodeMegaBase64Url(encodedKey),
+      });
     }
   }
   return result;
+}
+
+async function fetchMegaUserPublicCu25519(
+  apiClient: MegaApiClient,
+  session: MegaSession,
+  userHandle: string,
+  signal?: AbortSignal,
+  logger?: Pick<IntegrationRuntime['logger'], 'warn'>
+): Promise<Buffer | null> {
+  try {
+    const response = await withMegaApiRetry(async () => {
+      const result = await apiClient.requestSingle<Record<string, unknown>>(
+        { a: 'uga', u: userHandle, ua: '+puCu255', v: 1 },
+        { sessionId: session.sid, signal }
+      );
+      if (typeof result === 'number') {
+        const error = new Error(`MEGA API error ${result}.`) as MegaApiError;
+        error.code = result;
+        throw error;
+      }
+      return result;
+    }, signal);
+    const encoded = typeof response.av === 'string' ? response.av.trim() : '';
+    if (!encoded) {
+      return null;
+    }
+    return decodeMegaBase64Url(encoded);
+  } catch (error) {
+    logger?.warn?.('MEGA failed to fetch a sharer Cu25519 public key for pending incoming shares.', {
+      email: session.email,
+      userHandle,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+function deriveMegaPairwiseKey(privateCu25519: Buffer, publicCu25519: Buffer): Buffer {
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([MEGA_X25519_PRIVATE_KEY_DER_PREFIX, privateCu25519]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  const publicKey = createPublicKey({
+    key: Buffer.concat([MEGA_X25519_PUBLIC_KEY_DER_PREFIX, publicCu25519]),
+    format: 'der',
+    type: 'spki',
+  });
+  const sharedSecret = diffieHellman({ privateKey, publicKey });
+  const step1 = createHmac('sha256', Buffer.alloc(0)).update(sharedSecret).digest();
+  return createHmac('sha256', step1).update(MEGA_PAIRWISE_KEY_LABEL).digest().subarray(0, 16);
 }
 
 function resolveTreeRootHandle(nodesByHandle: ReadonlyMap<string, DecryptedMegaNode>): string {
@@ -3665,12 +4321,21 @@ function decryptNodeRecord(
 
   const nodeType = Number(node.t ?? 0);
   const isSpecialRoot = nodeType === 2 || nodeType === 3 || nodeType === 4;
-  const nodeKey = decryptNodeKey(node, session, shareKeys) ?? (isSpecialRoot ? Buffer.alloc(16, 0) : null);
-  if (!nodeKey) {
-    return null;
+  const candidateKeys = decryptNodeKeys(node, session, shareKeys);
+  const nodeCandidates = candidateKeys.length > 0 ? candidateKeys : isSpecialRoot ? [{ nodeKey: Buffer.alloc(16, 0) }] : [];
+  let resolvedNodeKey: Buffer | null = null;
+  let name: string | undefined;
+  for (const candidate of nodeCandidates) {
+    const candidateName = decryptNodeName(typeof node.a === 'string' ? node.a : undefined, candidate.nodeKey)
+      ?? describeMegaSpecialNodeName(nodeType);
+    if (!candidateName) {
+      continue;
+    }
+    resolvedNodeKey = candidate.nodeKey;
+    name = candidateName;
+    break;
   }
-  const name = decryptNodeName(typeof node.a === 'string' ? node.a : undefined, nodeKey) ?? describeMegaSpecialNodeName(nodeType);
-  if (!name) {
+  if (!resolvedNodeKey || !name) {
     return null;
   }
 
@@ -3688,7 +4353,7 @@ function decryptNodeRecord(
       size: Number(node.s ?? 0) || 0,
       name,
       modifiedAt: typeof node.ts === 'number' && Number.isFinite(node.ts) ? Math.trunc(node.ts) : undefined,
-      nodeKey,
+      nodeKey: resolvedNodeKey,
       encodedKey: typeof node.k === 'string' ? node.k : undefined,
       encodedAttributes: typeof node.a === 'string' ? node.a : undefined,
       ownerHandle,
@@ -3702,6 +4367,14 @@ function resolveMegaCloudDriveHandle(snapshot: MegaFetchNodesSnapshot): string |
   for (const node of snapshot.nodes) {
     if (Number(node.t ?? 0) === 2 && typeof node.h === 'string' && node.h.trim()) {
       return node.h.trim();
+    }
+  }
+  for (const node of snapshot.nodes) {
+    const handle = typeof node.h === 'string' ? node.h.trim() : '';
+    const parent = typeof node.p === 'string' ? node.p.trim() : '';
+    const nodeType = Number(node.t ?? 0);
+    if (handle && !parent && nodeType !== 0) {
+      return handle;
     }
   }
   return undefined;
@@ -3806,21 +4479,19 @@ function decryptShareKey(value: string, session: MegaSession): Buffer | null {
   return decryptAesEcb(encrypted, session.masterKey);
 }
 
-function decryptNodeKey(
+function decryptNodeKeys(
   node: MegaNodeRecord,
   session: MegaSession,
   shareKeys: ReadonlyMap<string, Buffer>
-): Buffer | null {
+): Array<{ nodeKey: Buffer; keyOwner?: string }> {
   const encoded = typeof node.k === 'string' ? node.k.trim() : '';
   if (!encoded) {
-    return null;
+    return [];
   }
 
-  let keyOwner = '';
-  let payload = '';
+  const candidates: Array<{ keyOwner: string; payload: string }> = [];
   if (encoded.length === 22 || encoded.length === 43) {
-    keyOwner = session.userHandle;
-    payload = encoded;
+    candidates.push({ keyOwner: session.userHandle, payload: encoded });
   } else {
     const ownedSegments: Array<{ owner: string; payload: string }> = [];
     for (const segment of encoded.split('/')) {
@@ -3835,40 +4506,52 @@ function decryptNodeKey(
       }
       ownedSegments.push({ owner, payload: candidate });
     }
-    const preferredOwner = ownedSegments.find((segment) => segment.owner === session.userHandle)
-      ?? ownedSegments.find((segment) => shareKeys.has(segment.owner));
-    if (preferredOwner) {
-      keyOwner = preferredOwner.owner;
-      payload = preferredOwner.payload;
-    } else if (encoded.length > 12 && encoded[11] === ':') {
+    for (const segment of ownedSegments) {
+      if (segment.owner === session.userHandle || shareKeys.has(segment.owner)) {
+        candidates.push({ keyOwner: segment.owner, payload: segment.payload });
+      }
+    }
+    if (candidates.length === 0 && encoded.length > 12 && encoded[11] === ':') {
       const owner = encoded.slice(0, 11).trim();
       const candidate = encoded.slice(12).trim();
       if (owner === session.userHandle || shareKeys.has(owner)) {
-        keyOwner = owner;
-        payload = candidate;
+        candidates.push({ keyOwner: owner, payload: candidate });
       }
     }
   }
 
-  if (!payload) {
-    return null;
+  if (candidates.length === 0) {
+    return [];
   }
 
-  const encrypted = decodeMegaBase64Url(payload);
-  if (payload.length > 43) {
-    if (!session.privateKey) {
-      return null;
+  const seen = new Set<string>();
+  const decrypted: Array<{ nodeKey: Buffer; keyOwner?: string }> = [];
+  for (const candidate of candidates) {
+    const dedupeKey = `${candidate.keyOwner}:${candidate.payload}`;
+    if (seen.has(dedupeKey)) {
+      continue;
     }
-    const cleartext = rsaRawDecryptMpi(encrypted, session.privateKey);
-    const keyLength = Number(node.t ?? 0) !== 0 ? 16 : 32;
-    return cleartext.length >= keyLength ? cleartext.subarray(0, keyLength) : null;
-  }
+    seen.add(dedupeKey);
+    const encrypted = decodeMegaBase64Url(candidate.payload);
+    if (candidate.payload.length > 43) {
+      if (!session.privateKey) {
+        continue;
+      }
+      const cleartext = rsaRawDecryptMpi(encrypted, session.privateKey);
+      const keyLength = Number(node.t ?? 0) !== 0 ? 16 : 32;
+      if (cleartext.length >= keyLength) {
+        decrypted.push({ nodeKey: cleartext.subarray(0, keyLength), keyOwner: candidate.keyOwner });
+      }
+      continue;
+    }
 
-  const key = keyOwner === session.userHandle ? session.masterKey : shareKeys.get(keyOwner);
-  if (!key || encrypted.length === 0 || encrypted.length % 16 !== 0) {
-    return null;
+    const key = candidate.keyOwner === session.userHandle ? session.masterKey : shareKeys.get(candidate.keyOwner);
+    if (!key || encrypted.length === 0 || encrypted.length % 16 !== 0) {
+      continue;
+    }
+    decrypted.push({ nodeKey: decryptAesEcb(encrypted, key), keyOwner: candidate.keyOwner });
   }
-  return decryptAesEcb(encrypted, key);
+  return decrypted;
 }
 
 function decryptNodeName(attributes: string | undefined, nodeKey: Buffer): string | null {
@@ -4605,8 +5288,84 @@ async function wipeMegaSubtreeHandles(
 ): Promise<void> {
   for (const handle of handles) {
     await deleteMegaNode(apiClient, session, handle, signal);
-    await waitForMegaRetry(150, signal);
+    await waitForMegaRetry(25, signal);
   }
+}
+
+/**
+ * Revokes outgoing folder shares from this account to any of the given peer emails (e2e cleanup).
+ * Uses `s2` without access level (MEGA SDK ACCESS_UNKNOWN / remove share).
+ * Requires `NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE=1`.
+ */
+export async function revokeMegaOutgoingSharesForPeers(options: {
+  email: string;
+  password: string;
+  peerEmails: readonly string[];
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<{ revokedCount: number }> {
+  if (process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE?.trim() !== '1') {
+    throw new Error(
+      'Refusing to revoke MEGA shares: set NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE=1 (destructive; dev/e2e only).'
+    );
+  }
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const apiClient = new MegaApiClient({ fetchImpl });
+  const session = await createMegaPasswordSession(apiClient, undefined, options.email.trim(), options.password);
+  const peerSet = new Set(
+    options.peerEmails.map((entry) => entry.trim().toLowerCase()).filter((entry) => entry.length > 0)
+  );
+  if (peerSet.size === 0) {
+    return { revokedCount: 0 };
+  }
+
+  const doneKeys = new Set<string>();
+  let revokedCount = 0;
+  const signal = options.signal;
+
+  for (let round = 0; round < 10; round += 1) {
+    const snapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, { useCache: false }, signal);
+    const usersByHandle = buildMegaUsersByHandle(snapshot);
+    const pendingContactsByHandle = new Map<string, string>();
+    for (const pending of snapshot.outgoingPendingContacts) {
+      const handle = typeof pending.p === 'string' ? pending.p.trim() : '';
+      const mail = typeof pending.e === 'string' ? pending.e.trim() : '';
+      if (handle && mail) {
+        pendingContactsByHandle.set(handle, mail);
+      }
+    }
+
+    let revokedThisRound = 0;
+    for (const record of [...snapshot.outgoingShares, ...snapshot.pendingShares]) {
+      const peerRaw = resolveOutgoingSharePeerEmail(record, usersByHandle, pendingContactsByHandle)?.trim();
+      if (!peerRaw || !peerSet.has(peerRaw.toLowerCase())) {
+        continue;
+      }
+      const handles = megaOutgoingShareRecordNodeHandles(record);
+      const nodeHandle = handles[0];
+      if (!nodeHandle) {
+        continue;
+      }
+      const dedupeKey = `${nodeHandle}:${peerRaw.toLowerCase()}`;
+      if (doneKeys.has(dedupeKey)) {
+        continue;
+      }
+
+      const invitee = resolveMegaShareInviteTarget(snapshot, peerRaw);
+      const command = buildMegaRevokeShareCommand(nodeHandle, invitee);
+      await megaApiCommandStandalone(apiClient, command, session, signal);
+      doneKeys.add(dedupeKey);
+      revokedThisRound += 1;
+      revokedCount += 1;
+      await waitForMegaRetry(250, signal);
+    }
+
+    if (revokedThisRound === 0) {
+      break;
+    }
+  }
+
+  return { revokedCount };
 }
 
 /**
