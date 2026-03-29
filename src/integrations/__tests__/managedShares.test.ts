@@ -10,6 +10,7 @@ import { loadIntegrationState, saveIntegrationState } from '../store.js';
 import type {
   ConnectProviderAccountInput,
   ConnectProviderAccountResult,
+  IncomingProviderContactInvite,
   ManagedShare,
   ManagedShareCollaborator,
   ProviderAccount,
@@ -171,6 +172,48 @@ class IncomingShareAdapter extends FakeTransportAdapter {
       },
       capabilities: ['mirror', 'read', 'accept'],
     };
+  }
+}
+
+class ContactInviteIncomingShareAdapter extends IncomingShareAdapter {
+  acceptedInviteIds: string[] = [];
+  private contactAccepted = false;
+
+  constructor(
+    offers: Array<{ label: string; remoteDescriptor: Record<string, unknown> }>,
+    private readonly invites: IncomingProviderContactInvite[] = [
+      {
+        id: 'invite-1',
+        provider: 'mega',
+        accountId: 'acct-mega-1',
+        label: 'friend@example.com',
+        detail: 'Incoming MEGA contact invite',
+      },
+    ]
+  ) {
+    super(offers);
+  }
+
+  async listIncomingContactInvites(account: ProviderAccount) {
+    if (this.contactAccepted) {
+      return [];
+    }
+    return this.invites.map((invite) => ({
+      ...invite,
+      accountId: account.id,
+    }));
+  }
+
+  async acceptIncomingContactInvite(_account: ProviderAccount, inviteId: string): Promise<void> {
+    this.acceptedInviteIds.push(inviteId);
+    this.contactAccepted = true;
+  }
+
+  override async listIncomingShares(account: ProviderAccount) {
+    if (!this.contactAccepted) {
+      return [];
+    }
+    return super.listIncomingShares(account);
   }
 }
 
@@ -1755,7 +1798,7 @@ describe('ManagedShareService', () => {
     expect(shares.shares.filter((entry) => entry.share.remoteDescriptor.remotePath === '/nearbytes')).toHaveLength(1);
   });
 
-  it('reconnecting MEGA keeps remote incoming shares pending when local managed-share state was lost', async () => {
+  it('reconnecting MEGA auto-adopts the canonical incoming nearbytes share when local managed-share state was lost', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-incoming-reconnect-'));
     tempDirs.add(tempDir);
     const rootsConfigPath = path.join(tempDir, 'roots.json');
@@ -1833,17 +1876,99 @@ describe('ManagedShareService', () => {
     });
 
     const shares = await service.listManagedShares();
-    expect(shares.shares).toHaveLength(1);
+    expect(shares.shares).toHaveLength(2);
 
     const ownerShare = shares.shares.find((entry) => entry.share.role === 'owner');
     expect(ownerShare?.share.remoteDescriptor.remotePath).toBe('/nearbytes');
     expect(ownerShare?.share.localPath).toBe(path.resolve(path.join(managedRoot, 'mega', 'reader-example-com', 'nearbytes')));
 
-    expect(shares.shares.find((entry) => entry.share.role === 'recipient')).toBeUndefined();
+    const recipientShare = shares.shares.find((entry) => entry.share.role === 'recipient');
+    expect(recipientShare?.share.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
+    expect(recipientShare?.share.localPath).toContain(path.join('mega', 'friend-example-com', 'nearbytes'));
+
+    const incoming = await service.listIncomingManagedShares();
+    expect(incoming.shares).toHaveLength(0);
+  });
+
+  it('accepting a MEGA contact invite auto-adopts the canonical nearbytes incoming share', async () => {
+    const adapter = new ContactInviteIncomingShareAdapter([
+      {
+        label: 'nearbytes',
+        remoteDescriptor: {
+          remotePath: 'friend@example.com:nearbytes',
+          shareName: 'nearbytes',
+          ownerEmail: 'friend@example.com',
+          rootHandle: 'share-root-1',
+          shareHandle: 'share-root-1',
+          accessLevel: 'read',
+        },
+      },
+    ]);
+    const { service } = await createHarness({ adapters: [adapter] });
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      credentials: {
+        email: 'reader@example.com',
+        password: 'secret',
+      },
+    });
+
+    await service.acceptIncomingProviderContactInvite('mega', 'acct-mega-1', 'invite-1');
+
+    expect(adapter.acceptedInviteIds).toEqual(['invite-1']);
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(2);
+
+    const recipientShare = shares.shares.find((entry) => entry.share.role === 'recipient');
+    expect(recipientShare?.share.label).toBe('nearbytes');
+    expect(recipientShare?.share.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
+    expect(recipientShare?.share.localPath).toContain(path.join('mega', 'friend-example-com', 'nearbytes'));
+
+    const incoming = await service.listIncomingManagedShares();
+    expect(incoming.shares).toHaveLength(0);
+  });
+
+  it('accepting a MEGA contact invite keeps non-canonical incoming shares pending', async () => {
+    const adapter = new ContactInviteIncomingShareAdapter([
+      {
+        label: 'shared-demo',
+        remoteDescriptor: {
+          remotePath: 'friend@example.com:shared-demo',
+          shareName: 'shared-demo',
+          ownerEmail: 'friend@example.com',
+          rootHandle: 'share-root-2',
+          shareHandle: 'share-root-2',
+          accessLevel: 'read',
+        },
+      },
+    ]);
+    const { service } = await createHarness({ adapters: [adapter] });
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      credentials: {
+        email: 'reader@example.com',
+        password: 'secret',
+      },
+    });
+
+    await service.acceptIncomingProviderContactInvite('mega', 'acct-mega-1', 'invite-1');
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(1);
+    expect(shares.shares[0]?.share.role).toBe('owner');
 
     const incoming = await service.listIncomingManagedShares();
     expect(incoming.shares).toHaveLength(1);
-    expect(incoming.shares[0]?.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
+    expect(incoming.shares[0]?.label).toBe('shared-demo');
   });
 
   it('repairs accepted MEGA shares that were incorrectly stored on the account base folder', async () => {

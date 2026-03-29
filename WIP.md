@@ -55,6 +55,71 @@ In **Nearbytes logs**, the same situation often appears as **`skippedNoDecrypt`*
 - **X-Hashcash:** Implemented and working. MEGA's proof-of-work challenge is now solved on every response (matching megajs reference behavior). The previous `-3` rate-limit storms are resolved.
 - **Unit tests (30 adapter + 44 managed shares):** Pass, but these use mocks and prove nothing about whether the live flow works. Do not spend time on them unless a code change breaks them.
 
+## Status update (2026-03-29, later)
+
+- **Latest strongest artifact:** `test-results/mega-two-way-unidirectional-progress-mnc7nr0w-nxh3ih.json`
+- **What it proves:** the single-file live harness now proves **A -> B** end to end, including a fast second packet, and fails only on **B -> A**.
+- **Passed evidence from the artifact:**
+  - step 11: A invites B in **54.5s**
+  - step 14: A outgoing descriptor resolved in **29.7s**
+  - step 20: B outgoing descriptor resolved in **8.8s**
+  - step 23: **A -> B passed**
+    - first payload: upload **5366ms**, mirror **2002ms**
+    - second payload: upload **2953ms**, mirror **1001ms**
+- **Remaining failure from the artifact:**
+  - step 24: **B -> A failed** after **64797ms**
+  - error: `Mirror file missing or mismatched: .../blocks/fb64c67203807dac9409e280603d6afa2d79b9ae9bef5b6be345c3a3a47238f6.bin`
+
+## False-positive check (completed)
+
+The reverse failure is **not** a harness-only false positive.
+
+Independent MEGAcmd checks against the same two live accounts showed:
+
+1. **No blacklist / blocked-contact asymmetry**
+   - `mega-users -h -s` on both accounts shows the peer as **Visible**, not blocked or hidden.
+   - Both accounts list the peer as a contact since `Fri, 27 Mar 2026 20:29:43 +0100`.
+   - `mega-showpcr` and `mega-ipc` are empty on both accounts, so there is no pending-contact-request skew left.
+
+2. **Share relationship exists in both directions**
+   - On A: `Folders shared with vincenzoml+03@gmail.com` includes `nearbytes-live-seq-mnc7nr0w-nxh3ih`.
+   - On A: `Folders shared by vincenzoml+03@gmail.com` includes `//from/vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih`.
+   - On B: `Folders shared with vincenzoml+02@gmail.com` includes `nearbytes-live-seq-mnc7nr0w-nxh3ih`.
+   - On B: `Folders shared by vincenzoml+02@gmail.com` includes `//from/vincenzoml+02@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih`.
+
+3. **The missing reverse block really exists on MEGA owner side**
+   - Logged in as B, `mega-ls nearbytes-live-seq-mnc7nr0w-nxh3ih/blocks` shows:
+     - `fb64c67203807dac9409e280603d6afa2d79b9ae9bef5b6be345c3a3a47238f6.bin`
+   - So `forceManagedShareUpload()` was not lying about B's upload completing.
+
+4. **The proven forward direction is visible end to end outside Nearbytes**
+   - Logged in as B, `mega-ls //from/vincenzoml+02@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih/blocks` shows both forward files:
+     - `ff03aaed7a56893fdadaf57af488106e8366f0fa9a5d703edbe5d823a24622cd.bin`
+     - `14559f2fb1c688277b90a39a3ead37ec926cc1c5fa2cf870a99a0bb90bdf1116.bin`
+
+5. **The reverse direction is broken before Nearbytes can mirror it locally**
+   - Logged in as A, `mega-ls //from/vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih` returns:
+     - `NO_KEY`
+   - Logged in as A, `mega-find //from/vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih` returns:
+     - `vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih/NO_KEY/NO_KEY`
+     - `vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih/NO_KEY`
+     - `vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih`
+   - Logged in as A, `mega-ls //from/vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih/blocks` fails because the child path is not decryptable.
+
+## Current interpretation
+
+- Communication is **not symmetric in practice** for the current live account state, even though the Nearbytes code path is largely symmetric.
+- The strongest evidence points to a **MEGA incoming-share key availability problem on A for B-owned shares**, not to a local mirror bug and not to a test harness artifact.
+- More precisely:
+  - **B owner root is healthy** and contains the uploaded block.
+  - **A incoming share edge exists**, so the share is present at the account relationship level.
+  - **A cannot decrypt the incoming root subtree** (`NO_KEY`), so neither MEGAcmd nor Nearbytes can see `blocks/` there.
+- That makes the remaining bug narrower than “reverse sync is flaky”: it is a **one-sided incoming-share key delivery / application failure** for B -> A.
+- The fact that A can successfully share to B while B's reciprocal share lands on A as `NO_KEY` means the next investigation should focus on:
+  - secure `s2` payload parity for B-owned outgoing shares,
+  - `^!keys` pending-outshare state around B -> A,
+  - whether A's session is missing a required inshare key promotion step for B-owned shares.
+
 ## Official source reconciliation (2026-03-28)
 
 - **MEGA help**: undecrypted shared folders mean the recipient session is missing the right key; the documented remediation is logout/reload and, if needed, **remove and re-add the share**.

@@ -1011,6 +1011,133 @@ describe('MegaTransportAdapter', () => {
     expect(s2Payload?.cr).toBeUndefined();
   });
 
+  it('does not fail owner invite when MEGA reflection stays delayed after s2 succeeds', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-owner-slow-reflection', {
+      email: 'owner@example.com',
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'ownerhandle',
+      accountVersion: 2,
+    });
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const nearbytesNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.startsWith('https://g.api.mega.co.nz/cs')) {
+        throw new Error(`Unexpected request URL: ${url}`);
+      }
+      const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: 'ownerhandle', email: 'owner@example.com' }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'uga':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          return new Response(
+            JSON.stringify([
+              {
+                f: [
+                  {
+                    h: 'root000001',
+                    t: 1,
+                    a: encryptAttributes('Cloud Drive', rootNodeKey),
+                    k: encodeMegaBase64Url(encryptAesEcb(rootNodeKey, masterKey)),
+                  },
+                  {
+                    h: 'nearbytes0',
+                    p: 'root000001',
+                    t: 1,
+                    a: encryptAttributes('nearbytes', nearbytesNodeKey),
+                    k: encodeMegaBase64Url(encryptAesEcb(nearbytesNodeKey, masterKey)),
+                  },
+                  {
+                    h: 'blocks0001',
+                    p: 'nearbytes0',
+                    t: 1,
+                    a: encryptAttributes('blocks', blocksNodeKey),
+                    k: encodeMegaBase64Url(encryptAesEcb(blocksNodeKey, masterKey)),
+                  },
+                  {
+                    h: 'chans00001',
+                    p: 'nearbytes0',
+                    t: 1,
+                    a: encryptAttributes('channels', channelsNodeKey),
+                    k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
+                  },
+                ],
+                s: [],
+                u: [],
+              },
+            ]),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }
+          );
+        case 's2':
+          return new Response(JSON.stringify([{}]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    });
+
+    const warn = vi.fn();
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      logger: { log() {}, warn },
+      mega: { inviteReflectionTimeoutMs: 250, inviteReflectionPollMs: 250 },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner-slow-reflection',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner-slow-reflection',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/tmp/nearbytes',
+      sourceId: 'src-mega-owner-slow-reflection',
+      syncMode: 'mirror',
+      remoteDescriptor: { remotePath: '/nearbytes' },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.invite(share, { emails: ['slow@example.com'] }, account)).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('MEGA invite reflection timed out for slow@example.com'));
+
+    const s2Payload = fetchImpl.mock.calls
+      .map(([, init]) => JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>)
+      .find((p) => p.a === 's2');
+    expect(s2Payload).toBeDefined();
+  });
+
   it('sends contact email in s2.u for owner invites when the invitee is an existing contact', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-owner-inv', {

@@ -44,7 +44,7 @@ export interface MegaRuntimeConfig {
   readonly remoteBasePath: string;
   readonly syncIntervalMs: number;
   readonly syncTimeoutMs: number;
-  /** After `s2` invites, poll fetch-nodes until collaborators include invitees (MEGA is eventually consistent). 0 = skip wait. */
+  /** After `s2` invites, briefly poll fetch-nodes for collaborator reflection as a best-effort diagnostic. 0 = skip wait. */
   readonly inviteReflectionTimeoutMs: number;
   readonly inviteReflectionPollMs: number;
 }
@@ -86,7 +86,7 @@ const DEFAULT_GITHUB_SCOPES = ['repo', 'read:user', 'user:email'] as const;
 const DEFAULT_SYNC_INTERVAL_MS = 20_000;
 const DEFAULT_MEGA_SYNC_INTERVAL_MS = 300_000;
 const DEFAULT_MEGA_SYNC_TIMEOUT_MS = 180_000;
-const DEFAULT_MEGA_INVITE_REFLECTION_TIMEOUT_MS = 60_000;
+const DEFAULT_MEGA_INVITE_REFLECTION_TIMEOUT_MS = 5_000;
 const DEFAULT_MEGA_INVITE_REFLECTION_POLL_MS = 1_500;
 export const DEFAULT_GOOGLE_DESKTOP_CLIENT_ID =
   '381193316033-b1g7h9dovqs5j22fi7obc4jug4o77vmi.apps.googleusercontent.com';

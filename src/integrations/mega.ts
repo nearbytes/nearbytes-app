@@ -396,9 +396,23 @@ export class MegaTransportAdapter {
     }
     const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
     const accessLevel = resolveMegaInviteAccessLevel(input.accessLevel);
+    this.runtime.logger.log('MEGA invite: requesting exclusive share task.', {
+      shareId: share.id,
+      accountId: account.id,
+      emailCount: emails.length,
+    });
     await this.withExclusiveShareTask(share.id, async () => {
+      this.runtime.logger.log('MEGA invite: exclusive share task acquired.', {
+        shareId: share.id,
+        accountId: account.id,
+      });
       await this.withRecoveredAccountSession(account, async (session) => {
-        const root = await this.ensureOwnerRemoteRoot(session, remotePath);
+        this.runtime.logger.log('MEGA invite: active session ready.', {
+          shareId: share.id,
+          accountId: account.id,
+          email: session.email,
+        });
+        const root = await this.resolveOwnerRemoteRootForShare(share, session, remotePath);
         let snapshot = await this.fetchNodesSnapshot(session);
         const collaborators = collectMegaOwnerCollaborators(snapshot, root.root.handle, root.root.shareHandle);
         const existingEmails = new Set(
@@ -414,37 +428,70 @@ export class MegaTransportAdapter {
         for (const [index, email] of invitees.entries()) {
           if (index > 0) {
             await waitForMegaRetry(400);
+            snapshot = await this.fetchNodesSnapshot(session);
           }
-          snapshot = await this.fetchNodesSnapshot(session);
           const hasOutgoingForRoot = snapshotHasOutgoingShareForRoot(snapshot, root.root.handle, root.root.shareHandle);
           const isNewShare = !hasOutgoingForRoot && index === 0;
           let target = resolveMegaShareInviteTarget(snapshot, email);
-          let cryptoNow = await this.resolveOwnerShareCryptoContext(session, root);
-          for (let keyAttempt = 0; index > 0 && !cryptoNow?.shareKey && keyAttempt < 12; keyAttempt += 1) {
-            await waitForMegaRetry(500 + keyAttempt * 200);
+          this.runtime.logger.log('MEGA invite: resolved invite target.', {
+            email: email.trim(),
+            index,
+            isNewShare,
+            inviteTarget: target.u === MEGA_SHARE_INVITE_NON_CONTACT_USER ? 'EXP' : 'contact',
+          });
+          const cryptoResolveStartedAt = this.runtime.now();
+          let cryptoNow: MegaShareCryptoContext | undefined;
+          if (!isNewShare) {
             cryptoNow = await this.resolveOwnerShareCryptoContext(session, root);
-          }
-          if (!cryptoNow?.shareKey) {
-            const snap = await this.fetchNodesSnapshot(session);
-            const km = await this.fetchKeyManagerState(session);
-            const keys = collectMegaShareKeys(snap, session, km.shareKeys);
-            for (const handle of [root.root.shareHandle, root.root.handle]) {
-              const trimmed = typeof handle === 'string' ? handle.trim() : '';
-              if (!trimmed) {
-                continue;
-              }
-              const material = keys.get(trimmed);
-              if (material) {
-                cryptoNow = { shareHandle: trimmed, shareKey: Buffer.from(material) };
-                break;
+            for (let keyAttempt = 0; index > 0 && !cryptoNow?.shareKey && keyAttempt < 12; keyAttempt += 1) {
+              await waitForMegaRetry(500 + keyAttempt * 200);
+              cryptoNow = await this.resolveOwnerShareCryptoContext(session, root);
+            }
+            if (!cryptoNow?.shareKey) {
+              const snap = await this.fetchNodesSnapshot(session);
+              const km = await this.fetchKeyManagerState(session);
+              const keys = collectMegaShareKeys(snap, session, km.shareKeys);
+              for (const handle of [root.root.shareHandle, root.root.handle]) {
+                const trimmed = typeof handle === 'string' ? handle.trim() : '';
+                if (!trimmed) {
+                  continue;
+                }
+                const material = keys.get(trimmed);
+                if (material) {
+                  cryptoNow = { shareHandle: trimmed, shareKey: Buffer.from(material) };
+                  break;
+                }
               }
             }
           }
+          this.runtime.logger.log('MEGA invite: owner crypto context ready.', {
+            email: email.trim(),
+            index,
+            durationMs: this.runtime.now() - cryptoResolveStartedAt,
+            hasShareKey: Boolean(cryptoNow?.shareKey),
+            shareHandle: cryptoNow?.shareHandle,
+          });
           const shareKeyForInvite = Buffer.from(cryptoNow?.shareKey ?? randomBytes(16));
+          const keyManagerStartedAt = this.runtime.now();
           const keyManager = await this.fetchKeyManagerState(session);
+          this.runtime.logger.log('MEGA invite: key-manager state loaded.', {
+            email: email.trim(),
+            index,
+            durationMs: this.runtime.now() - keyManagerStartedAt,
+            recordCount: keyManager.records.length,
+            shareKeyCount: keyManager.shareKeys.size,
+            hasPrivateCu25519: Boolean(keyManager.privateCu25519),
+          });
           const useSecureKeyManagerShareFlow = keyManager.records.length > 0;
           if (useSecureKeyManagerShareFlow) {
+            const prepareStartedAt = this.runtime.now();
             await this.prepareOwnerOutgoingInviteInKeyManager(session, root, shareKeyForInvite, target, keyManager, {
+              trusted: isNewShare,
+            });
+            this.runtime.logger.log('MEGA invite: secure key-manager state prepared.', {
+              email: email.trim(),
+              index,
+              durationMs: this.runtime.now() - prepareStartedAt,
               trusted: isNewShare,
             });
             cryptoNow = {
@@ -459,9 +506,11 @@ export class MegaTransportAdapter {
           }
           if (target.u === MEGA_SHARE_INVITE_NON_CONTACT_USER && target.e) {
             try {
+              const pendingContactStartedAt = this.runtime.now();
               await this.apiCommand({ a: 'upc', u: target.e, aa: 'a' }, session);
               this.runtime.logger.log('MEGA invite: sent pending-contact request before share invite.', {
                 email: target.e,
+                durationMs: this.runtime.now() - pendingContactStartedAt,
               });
             } catch (error) {
               // Ignore transient/duplicate contact-request failures and continue with s2.
@@ -473,6 +522,7 @@ export class MegaTransportAdapter {
           }
           let sentPendingShareKeyToContact = false;
           if (useSecureKeyManagerShareFlow) {
+            const pendingKeyStartedAt = this.runtime.now();
             sentPendingShareKeyToContact = await this.sendMegaPendingOutShareKeyToContact(
               session,
               root.root.handle,
@@ -480,6 +530,12 @@ export class MegaTransportAdapter {
               target,
               keyManager
             );
+            this.runtime.logger.log('MEGA invite: secure pending outshare key attempt completed.', {
+              email: email.trim(),
+              index,
+              durationMs: this.runtime.now() - pendingKeyStartedAt,
+              sentPendingShareKeyToContact,
+            });
           }
           this.runtime.logger.log('MEGA invite: issuing s2 set-share.', {
             email: email.trim(),
@@ -571,8 +627,8 @@ export class MegaTransportAdapter {
       );
       return;
     }
-    throw new Error(
-      `MEGA did not list ${expected.join(', ')} on outgoing shares within ${Math.round(timeoutMs / 1000)}s (fetch-nodes never reflected the invite). Check mega.nz while logged in as the same account, or try again.`
+    this.runtime.logger.warn(
+      `MEGA invite reflection timed out for ${expected.join(', ')} after ${Math.round(timeoutMs / 1000)}s — the share API call succeeded, but fetch-nodes never reflected the outgoing share yet. Continuing without blocking on reflection.`
     );
   }
 
@@ -887,7 +943,11 @@ export class MegaTransportAdapter {
         const resolved =
           share.role === 'owner'
             ? await (async () => {
-                const root = await this.ensureOwnerRemoteRoot(session, getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath));
+                const root = await this.resolveOwnerRemoteRootForShare(
+                  share,
+                  session,
+                  getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath)
+                );
                 const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root);
                 return {
                   root,
@@ -1054,11 +1114,21 @@ export class MegaTransportAdapter {
 
   private async withExclusiveShareTask<T>(shareId: string, operation: () => Promise<T>): Promise<T> {
     const existingController = this.syncControllers.get(shareId);
-    existingController?.abort();
     const existingTask = this.syncTasks.get(shareId);
+    this.runtime.logger.log('MEGA exclusive share task requested.', {
+      shareId,
+      hadExistingController: Boolean(existingController),
+      hadExistingTask: Boolean(existingTask),
+    });
+    existingController?.abort();
     if (existingTask) {
+      const waitStartedAt = this.runtime.now();
       await existingTask.catch(() => {
         // Exclusive operations should still proceed even if the displaced sync failed.
+      });
+      this.runtime.logger.log('MEGA exclusive share task wait completed.', {
+        shareId,
+        durationMs: this.runtime.now() - waitStartedAt,
       });
     }
 
@@ -2457,6 +2527,39 @@ export class MegaTransportAdapter {
     };
   }
 
+  private async resolveOwnerRemoteRootForShare(
+    share: ManagedShare,
+    session: MegaSession,
+    remotePath: string,
+    signal?: AbortSignal
+  ): Promise<MegaOwnerRemoteRoot> {
+    const cachedRootHandle = this.shareRootHandles.get(share.id)?.trim();
+    const normalizedPath = normalizeMegaRemoteDisplayPath(remotePath);
+    const expectedRootName = path.posix.basename(normalizedPath);
+    if (cachedRootHandle) {
+      try {
+        const fetched = await this.fetchPartialTreeWithRetry(session, cachedRootHandle, signal, {
+          allowTransientFullFallback: false,
+          expectedRootName,
+        });
+        return {
+          path: normalizedPath,
+          root: fetched.tree.root,
+          tree: fetched.tree,
+          scsn: fetched.snapshot.scsn?.trim(),
+        };
+      } catch (error) {
+        this.runtime.logger.warn('MEGA invite: cached owner root handle lookup failed; falling back to path resolution.', {
+          shareId: share.id,
+          accountEmail: session.email,
+          cachedRootHandle,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return this.ensureOwnerRemoteRoot(session, remotePath, signal);
+  }
+
   private async ensureOwnerRemoteFolder(
     session: MegaSession,
     parentHandle: string,
@@ -2584,6 +2687,16 @@ export class MegaTransportAdapter {
     const shareHandleCandidates = [...new Set([shareHandle, explicitShareHandle].filter((value): value is string => Boolean(value)))];
     if (shareHandleCandidates.length === 0) {
       return undefined;
+    }
+
+    const cachedShareKeys = this.accountShareKeyCache.get(session.userHandle);
+    if (cachedShareKeys) {
+      for (const handle of shareHandleCandidates) {
+        const shareKey = cachedShareKeys.get(handle);
+        if (shareKey) {
+          return { shareHandle: handle, shareKey: Buffer.from(shareKey) };
+        }
+      }
     }
 
     const keyManager = await this.fetchKeyManagerState(session, signal);
@@ -3673,25 +3786,13 @@ async function createMegaFolder(
       if (!committedNode || !committedNode.isFolder) {
         throw new Error(`MEGA did not make the created folder visible for ${name}.`);
       }
-      const globallyVisibleNode = await waitForMegaChildNodeInFullSnapshot(
-        apiClient,
-        session,
-        parentHandle,
-        name,
-        true,
-        signal,
-        extraShareKeys
-      );
-      if (!globallyVisibleNode || !globallyVisibleNode.isFolder) {
-        throw new Error(`MEGA did not make the created folder globally visible for ${name}.`);
-      }
-      debugMegaLog('[MEGA:create-folder] folder became globally visible.', {
+      debugMegaLog('[MEGA:create-folder] folder became visible in the target subtree.', {
         parentHandle,
         name,
         attempt,
-        handle: globallyVisibleNode.handle,
+        handle: committedNode.handle,
       });
-      return globallyVisibleNode.handle;
+      return committedNode.handle;
     } catch (error) {
       console.warn('[MEGA:create-folder] create attempt failed.', {
         parentHandle,
@@ -3709,18 +3810,7 @@ async function createMegaFolder(
         extraShareKeys
       );
       if (recovered?.isFolder) {
-        const globallyVisibleNode = await tryFindMegaRemoteChildNodeInFullSnapshot(
-          apiClient,
-          session,
-          parentHandle,
-          name,
-          true,
-          signal,
-          extraShareKeys
-        );
-        if (globallyVisibleNode?.isFolder) {
-          return globallyVisibleNode.handle;
-        }
+        return recovered.handle;
       }
       if (
         !isMegaRetryableApiError(error) &&
@@ -3819,19 +3909,7 @@ async function uploadMegaOwnerFile(
       if (!committedNode || committedNode.isFolder) {
         throw new Error(`MEGA did not make the uploaded file visible for ${name}.`);
       }
-      const globallyVisibleNode = await waitForMegaChildNodeInFullSnapshot(
-        apiClient,
-        session,
-        parentHandle,
-        name,
-        false,
-        signal,
-        extraShareKeys
-      );
-      if (!globallyVisibleNode || globallyVisibleNode.isFolder) {
-        throw new Error(`MEGA did not make the uploaded file globally visible for ${name}.`);
-      }
-      return globallyVisibleNode;
+      return committedNode;
     } catch (error) {
       const recovered = await tryFindMegaRemoteChildNode(
         apiClient,
@@ -3843,18 +3921,7 @@ async function uploadMegaOwnerFile(
         extraShareKeys
       );
       if (recovered && !recovered.isFolder) {
-        const globallyVisibleNode = await tryFindMegaRemoteChildNodeInFullSnapshot(
-          apiClient,
-          session,
-          parentHandle,
-          name,
-          false,
-          signal,
-          extraShareKeys
-        );
-        if (globallyVisibleNode && !globallyVisibleNode.isFolder) {
-          return globallyVisibleNode;
-        }
+        return recovered;
       }
       if (
         !isMegaRetryableApiError(error) &&

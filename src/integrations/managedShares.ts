@@ -666,6 +666,21 @@ export class ManagedShareService {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${accountId}`);
     }
     await adapter.acceptIncomingContactInvite(account, inviteId);
+    if (adapter.listIncomingShares && this.isOperationalAccount(account)) {
+      await this.withSoftTimeout(
+        this.reconcileIncomingManagedShares(provider, account, state),
+        {
+          state,
+          adoptedShares: 0,
+        },
+        normalizeProvider(provider) === 'mega'
+          ? FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS
+          : 1_500,
+        `Incoming managed share discovery timed out after accepting contact invite for ${provider}:${account.id}`
+      );
+    }
+    const latestState = await this.loadState();
+    this.requestBackgroundMaintenance(`acceptIncomingProviderContactInvite:${provider}`, latestState);
   }
 
   async createManagedShare(input: CreateManagedShareInput): Promise<ManagedShareSummary> {
@@ -1115,6 +1130,31 @@ export class ManagedShareService {
         await this.prepareManagedShareForSync(existing.id);
         state = await this.loadState();
         continue;
+      }
+      if (!shouldAutoAdoptIncomingManagedShareOffer(provider, offer)) {
+        continue;
+      }
+      try {
+        await this.acceptManagedShare({
+          provider,
+          accountId: account.id,
+          label: offer.label,
+          localPath: offer.suggestedLocalPath,
+          remoteDescriptor: offer.remoteDescriptor,
+        });
+        adoptedShares += 1;
+        state = await this.loadState();
+        this.runtime.logger.log('Managed share incoming offer auto-adopted.', {
+          provider,
+          accountId: account.id,
+          offerId: offer.id,
+          label: offer.label,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(
+          `Incoming managed share auto-adoption failed for ${provider}:${account.id}:${offer.id}: ${message}`
+        );
       }
     }
 
@@ -3888,6 +3928,21 @@ function buildRepositoryMatchKey(provider: string, descriptor: Record<string, un
 function isMegaIncomingRemotePath(value: string | null | undefined): boolean {
   const normalized = value?.trim() ?? '';
   return normalized !== '' && !normalized.startsWith('/') && normalized.includes(':');
+}
+
+function shouldAutoAdoptIncomingManagedShareOffer(provider: string, offer: IncomingManagedShareOffer): boolean {
+  if (normalizeProvider(provider) !== 'mega') {
+    return false;
+  }
+  const remotePath = getManagedShareRemotePath(provider, offer.remoteDescriptor);
+  if (!isMegaIncomingRemotePath(remotePath)) {
+    return false;
+  }
+  const shareNameCandidate =
+    typeof offer.remoteDescriptor.shareName === 'string' && offer.remoteDescriptor.shareName.trim() !== ''
+      ? offer.remoteDescriptor.shareName
+      : offer.label;
+  return sanitizeManagedFolderLabel(shareNameCandidate).toLowerCase() === MEGA_BASE_SHARE_FOLDER_NAME;
 }
 
 function mergePreferredProviders(existing: readonly string[], provider: string, preferred: boolean): string[] {
