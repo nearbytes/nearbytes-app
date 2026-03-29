@@ -2,7 +2,8 @@
 /**
  * End-to-end: MEGA as transport only (no Nearbytes HTTP server).
  * Two isolated peers (separate storage + integration state); each connects one MEGA account,
- * cross-invites read-only shares, exchanges a small payload in BOTH directions, then exits.
+ * cross-invites writable shares, and validates owner->recipient plus recipient->owner bytes
+ * on both shared folders before exiting.
  *
  * This is a fast smoke test by default: it is meant to replicate the first minute or two of
  * app behavior, not a long soak. Override the env timeouts below only when doing slower manual
@@ -95,6 +96,7 @@ const SKIP_MEGA_WIPE = process.env.NEARBYTES_E2E_SKIP_MEGA_WIPE?.trim() === '1';
 const SKIP_MEGA_REVOKE = process.env.NEARBYTES_E2E_SKIP_MEGA_REVOKE
   ? process.env.NEARBYTES_E2E_SKIP_MEGA_REVOKE.trim() === '1'
   : true;
+const WRITABLE_INVITE_ACCESS_LEVEL = 'read/write';
 
 function sha256Hex(buf) {
   return createHash('sha256').update(buf).digest('hex');
@@ -285,11 +287,11 @@ function isMegaTransientLockError(err) {
   return /MEGA API error -3\b/u.test(msg);
 }
 
-async function inviteManagedShareWithMegaRetry(service, shareId, emails, label) {
+async function inviteManagedShareWithMegaRetry(service, shareId, emails, label, accessLevel) {
   const maxAttempts = 12;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
-      await service.inviteManagedShare(shareId, emails);
+      await service.inviteManagedShare(shareId, emails, accessLevel);
       return;
     } catch (err) {
       if (isMegaTransientLockError(err) && attempt + 1 < maxAttempts) {
@@ -319,7 +321,7 @@ async function acceptAllMegaContactInvites(service, label) {
   }
 }
 
-async function waitOutgoingShareDescriptor(service, ownerEmail, shareName, timeoutMs) {
+async function waitOutgoingShareDescriptor(service, ownerEmail, shareName, accessLevel, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const inventory = await service.debugProviderShareInventory('mega');
@@ -333,7 +335,7 @@ async function waitOutgoingShareDescriptor(service, ownerEmail, shareName, timeo
         remotePath: `${ownerEmail}:${shareName}`,
         shareName,
         ownerEmail,
-        accessLevel: 'read',
+        accessLevel,
         shareHandle,
         rootHandle,
       };
@@ -341,6 +343,29 @@ async function waitOutgoingShareDescriptor(service, ownerEmail, shareName, timeo
     await sleep(1_500);
   }
   throw new Error(`No outgoing MEGA share descriptor for ${ownerEmail}:${shareName} within ${timeoutMs}ms`);
+}
+
+async function waitIncomingShareDescriptor(service, ownerEmail, shareName, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { shares } = await service.listIncomingManagedShares();
+    const match = shares.find((offer) => {
+      if (offer.provider !== 'mega') {
+        return false;
+      }
+      const descriptor = offer.remoteDescriptor ?? {};
+      return (
+        descriptor.ownerEmail === ownerEmail &&
+        descriptor.shareName === shareName &&
+        offer.label === shareName
+      );
+    });
+    if (match?.remoteDescriptor) {
+      return match.remoteDescriptor;
+    }
+    await sleep(1_500);
+  }
+  throw new Error(`No incoming MEGA share offer for ${ownerEmail}:${shareName} within ${timeoutMs}ms`);
 }
 
 async function waitMirrorFile(filePath, expectedBytes, timeoutMs) {
@@ -373,6 +398,7 @@ async function main() {
     cleanupTimeoutMs: CLEANUP_TIMEOUT_MS,
     payloadBytes: PAYLOAD_BYTES,
     remoteShareName,
+    writableInviteAccessLevel: WRITABLE_INVITE_ACCESS_LEVEL,
     skipMegaRevoke: SKIP_MEGA_REVOKE,
   });
   await wipeBothIfEnabled();
@@ -410,21 +436,59 @@ async function main() {
     console.error('[mega-bidir] wait owner B bootstrap…');
     await waitShareStarted(peerB.service, ownerB.share.id, 'ownerB', OWNER_READY_TIMEOUT_MS);
 
-    console.error('[mega-bidir] cross-invite readonly shares…');
+    console.error('[mega-bidir] cross-invite writable shares…');
     await sleep(PRE_INVITE_DELAY_MS);
-    await inviteManagedShareWithMegaRetry(peerA.service, ownerA.share.id, [emailB], 'A→B');
+    await inviteManagedShareWithMegaRetry(
+      peerA.service,
+      ownerA.share.id,
+      [emailB],
+      'A→B',
+      WRITABLE_INVITE_ACCESS_LEVEL
+    );
     await sleep(POST_INVITE_CONTACT_DELAY_MS);
     await acceptAllMegaContactInvites(peerB.service, 'B after A invite');
     await sleep(BETWEEN_INVITES_DELAY_MS);
-    await inviteManagedShareWithMegaRetry(peerB.service, ownerB.share.id, [emailA], 'B→A');
+    await inviteManagedShareWithMegaRetry(
+      peerB.service,
+      ownerB.share.id,
+      [emailA],
+      'B→A',
+      WRITABLE_INVITE_ACCESS_LEVEL
+    );
     await sleep(POST_INVITE_CONTACT_DELAY_MS);
     await acceptAllMegaContactInvites(peerA.service, 'A after B invite');
 
     await sleep(POST_INVITE_SETTLE_MS);
     console.error('[mega-bidir] resolve outgoing A→B share descriptor…');
-    const descriptorAToB = await waitOutgoingShareDescriptor(peerA.service, emailA, remoteShareName, INCOMING_OFFER_TIMEOUT_MS);
+    const descriptorAToB = await waitOutgoingShareDescriptor(
+      peerA.service,
+      emailA,
+      remoteShareName,
+      WRITABLE_INVITE_ACCESS_LEVEL,
+      INCOMING_OFFER_TIMEOUT_MS
+    );
     console.error('[mega-bidir] resolve outgoing B→A share descriptor…');
-    const descriptorBToA = await waitOutgoingShareDescriptor(peerB.service, emailB, remoteShareName, INCOMING_OFFER_TIMEOUT_MS);
+    const descriptorBToA = await waitOutgoingShareDescriptor(
+      peerB.service,
+      emailB,
+      remoteShareName,
+      WRITABLE_INVITE_ACCESS_LEVEL,
+      INCOMING_OFFER_TIMEOUT_MS
+    );
+    console.error('[mega-bidir] wait recipient B to list the incoming A→B share…');
+    const incomingDescriptorAToB = await waitIncomingShareDescriptor(
+      peerB.service,
+      emailA,
+      descriptorAToB.shareName,
+      INCOMING_OFFER_TIMEOUT_MS
+    );
+    console.error('[mega-bidir] wait recipient A to list the incoming B→A share…');
+    const incomingDescriptorBToA = await waitIncomingShareDescriptor(
+      peerA.service,
+      emailB,
+      descriptorBToA.shareName,
+      INCOMING_OFFER_TIMEOUT_MS
+    );
 
     const mirrorB = await mkdtemp(path.join(tmpdir(), 'nb-mirror-b-reads-a-'));
     const mirrorA = await mkdtemp(path.join(tmpdir(), 'nb-mirror-a-reads-b-'));
@@ -435,7 +499,7 @@ async function main() {
         accountId: ownerB.share.accountId,
         label: descriptorAToB.shareName,
         localPath: mirrorB,
-        remoteDescriptor: descriptorAToB,
+        remoteDescriptor: incomingDescriptorAToB,
       })
     );
     const acceptedA = await withTimeout('accept share A←B', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
@@ -444,37 +508,73 @@ async function main() {
         accountId: ownerA.share.accountId,
         label: descriptorBToA.shareName,
         localPath: mirrorA,
-        remoteDescriptor: descriptorBToA,
+        remoteDescriptor: incomingDescriptorBToA,
       })
     );
 
-    console.error('[mega-bidir] wait readonly mirrors ready…');
+    console.error('[mega-bidir] wait writable incoming shares ready…');
     await Promise.all([
       waitShareReady(peerB.service, acceptedB.share.id, 'recipient B (A→B)', RECIPIENT_READY_TIMEOUT_MS),
       waitShareReady(peerA.service, acceptedA.share.id, 'recipient A (B→A)', RECIPIENT_READY_TIMEOUT_MS),
     ]);
 
-    const bytesAToB = createPayload('A→B');
-    const relAToB = `blocks/${sha256Hex(bytesAToB)}.bin`;
+    const bytesOwnerAToRecipientB = createPayload('A owner→B recipient');
+    const relOwnerAToRecipientB = `blocks/${sha256Hex(bytesOwnerAToRecipientB)}.bin`;
     await mkdir(path.join(ownerA.share.localPath, 'blocks'), { recursive: true });
-    await writeFile(path.join(ownerA.share.localPath, relAToB), bytesAToB);
-    console.error('[mega-bidir] A force-push → expect B mirror…');
+    await writeFile(path.join(ownerA.share.localPath, relOwnerAToRecipientB), bytesOwnerAToRecipientB);
+    console.error('[mega-bidir] A owner force-push → expect B recipient copy…');
     await withTimeout('force upload A→B', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
-      peerA.service.forceManagedShareUpload(ownerA.share.id, relAToB)
+      peerA.service.forceManagedShareUpload(ownerA.share.id, relOwnerAToRecipientB)
     );
-    await waitMirrorFile(path.join(mirrorB, relAToB), bytesAToB, MIRROR_FILE_TIMEOUT_MS);
+    await waitMirrorFile(
+      path.join(mirrorB, relOwnerAToRecipientB),
+      bytesOwnerAToRecipientB,
+      MIRROR_FILE_TIMEOUT_MS
+    );
 
-    const bytesBToA = createPayload('B→A');
-    const relBToA = `blocks/${sha256Hex(bytesBToA)}.bin`;
+    const bytesRecipientBToOwnerA = createPayload('B recipient→A owner');
+    const relRecipientBToOwnerA = `blocks/${sha256Hex(bytesRecipientBToOwnerA)}.bin`;
+    await mkdir(path.join(mirrorB, 'blocks'), { recursive: true });
+    await writeFile(path.join(mirrorB, relRecipientBToOwnerA), bytesRecipientBToOwnerA);
+    console.error('[mega-bidir] B recipient force-push on A share → expect A owner copy…');
+    await withTimeout('force upload B recipient→A owner', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
+      peerB.service.forceManagedShareUpload(acceptedB.share.id, relRecipientBToOwnerA)
+    );
+    await waitMirrorFile(
+      path.join(ownerA.share.localPath, relRecipientBToOwnerA),
+      bytesRecipientBToOwnerA,
+      MIRROR_FILE_TIMEOUT_MS
+    );
+
+    const bytesOwnerBToRecipientA = createPayload('B owner→A recipient');
+    const relOwnerBToRecipientA = `blocks/${sha256Hex(bytesOwnerBToRecipientA)}.bin`;
     await mkdir(path.join(ownerB.share.localPath, 'blocks'), { recursive: true });
-    await writeFile(path.join(ownerB.share.localPath, relBToA), bytesBToA);
-    console.error('[mega-bidir] B force-push → expect A mirror…');
+    await writeFile(path.join(ownerB.share.localPath, relOwnerBToRecipientA), bytesOwnerBToRecipientA);
+    console.error('[mega-bidir] B owner force-push → expect A recipient copy…');
     await withTimeout('force upload B→A', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
-      peerB.service.forceManagedShareUpload(ownerB.share.id, relBToA)
+      peerB.service.forceManagedShareUpload(ownerB.share.id, relOwnerBToRecipientA)
     );
-    await waitMirrorFile(path.join(mirrorA, relBToA), bytesBToA, MIRROR_FILE_TIMEOUT_MS);
+    await waitMirrorFile(
+      path.join(mirrorA, relOwnerBToRecipientA),
+      bytesOwnerBToRecipientA,
+      MIRROR_FILE_TIMEOUT_MS
+    );
 
-    console.error('[mega-bidir] OK bidirectional readonly mirror via MEGA transport (no HTTP server).');
+    const bytesRecipientAToOwnerB = createPayload('A recipient→B owner');
+    const relRecipientAToOwnerB = `blocks/${sha256Hex(bytesRecipientAToOwnerB)}.bin`;
+    await mkdir(path.join(mirrorA, 'blocks'), { recursive: true });
+    await writeFile(path.join(mirrorA, relRecipientAToOwnerB), bytesRecipientAToOwnerB);
+    console.error('[mega-bidir] A recipient force-push on B share → expect B owner copy…');
+    await withTimeout('force upload A recipient→B owner', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
+      peerA.service.forceManagedShareUpload(acceptedA.share.id, relRecipientAToOwnerB)
+    );
+    await waitMirrorFile(
+      path.join(ownerB.share.localPath, relRecipientAToOwnerB),
+      bytesRecipientAToOwnerB,
+      MIRROR_FILE_TIMEOUT_MS
+    );
+
+    console.error('[mega-bidir] OK writable bidirectional MEGA shared-folder sync via transport (no HTTP server).');
   } finally {
     await Promise.allSettled([cleanupPeer(peerA, 'peer A'), cleanupPeer(peerB, 'peer B')]);
   }

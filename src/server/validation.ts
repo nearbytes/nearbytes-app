@@ -152,6 +152,7 @@ export const createManagedShareBodySchema = z.object({
 
 export const inviteManagedShareBodySchema = z.object({
   emails: z.array(z.string().trim().email('Invite emails must be valid')).min(1, 'At least one email is required'),
+  accessLevel: z.enum(['read', 'read/write', 'full access']).optional(),
 });
 
 export const attachManagedShareBodySchema = z.object({

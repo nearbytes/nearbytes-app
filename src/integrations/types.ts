@@ -259,6 +259,7 @@ export interface CreateManagedShareInput {
 
 export interface InviteManagedShareInput {
   readonly emails: string[];
+  readonly accessLevel?: 'read' | 'read/write' | 'full access';
 }
 
 export interface AttachManagedShareInput {

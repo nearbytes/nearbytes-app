@@ -395,7 +395,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
     const input = parseWithSchema(inviteManagedShareBodySchema, req.body);
     res.json({
-      summary: await service.inviteManagedShare(shareId, input.emails),
+      summary: await service.inviteManagedShare(shareId, input.emails, input.accessLevel),
     });
   }));
 

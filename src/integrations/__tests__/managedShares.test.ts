@@ -331,6 +331,26 @@ class CountingMirrorInventoryAdapter extends FakeTransportAdapter {
   }
 }
 
+class RecordingInviteAdapter extends FakeTransportAdapter {
+  lastInviteInput:
+    | {
+        emails: string[];
+        accessLevel?: 'read' | 'read/write' | 'full access';
+      }
+    | undefined;
+
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  async invite(_share: ManagedShare, input: { emails: string[]; accessLevel?: 'read' | 'read/write' | 'full access' }) {
+    this.lastInviteInput = {
+      emails: [...input.emails],
+      accessLevel: input.accessLevel,
+    };
+  }
+}
+
 const tempDirs = new Set<string>();
 
 async function createHarness(options?: {
@@ -2040,6 +2060,7 @@ describe('ManagedShareService', () => {
               remotePath: 'owner@example.com:nearbytes',
               ownerEmail: 'owner@example.com',
               shareName: 'nearbytes',
+              accessLevel: 'read',
             },
             capabilities: ['mirror', 'read', 'write', 'accept'],
             invitationEmails: [],
@@ -2055,6 +2076,157 @@ describe('ManagedShareService', () => {
     const recipientShare = shares.shares.find((entry) => entry.share.id === 'share-mega-readonly-1');
     expect(recipientShare?.share.capabilities).toEqual(['mirror', 'read', 'accept']);
     expect(recipientShare?.storage?.writable).toBe(false);
+  });
+
+  it('repairs accepted incoming MEGA shares into writable local copies when access level allows writes', async () => {
+    const { integrationStatePath, service } = await createHarness();
+    const incomingLocalPath = path.join(path.dirname(integrationStatePath), 'incoming-mega-writable-share');
+    await fs.mkdir(incomingLocalPath, { recursive: true });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'reader@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-writable-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'recipient',
+            localPath: incomingLocalPath,
+            syncMode: 'mirror',
+            remoteDescriptor: {
+              remotePath: 'owner@example.com:nearbytes',
+              ownerEmail: 'owner@example.com',
+              shareName: 'nearbytes',
+              accessLevel: 'full access',
+            },
+            capabilities: ['mirror', 'read', 'accept'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const shares = await service.listManagedShares();
+    const recipientShare = shares.shares.find((entry) => entry.share.id === 'share-mega-writable-1');
+    expect(recipientShare?.share.capabilities).toEqual(['mirror', 'read', 'write', 'accept']);
+    expect(recipientShare?.storage?.writable).toBe(true);
+  });
+
+  it('keeps legacy accepted incoming MEGA shares writable when persisted capabilities already allow writes', async () => {
+    const { integrationStatePath, service } = await createHarness();
+    const incomingLocalPath = path.join(path.dirname(integrationStatePath), 'incoming-mega-legacy-writable-share');
+    await fs.mkdir(incomingLocalPath, { recursive: true });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'reader@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-legacy-writable-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'recipient',
+            localPath: incomingLocalPath,
+            syncMode: 'mirror',
+            remoteDescriptor: {
+              remotePath: 'owner@example.com:nearbytes',
+              ownerEmail: 'owner@example.com',
+              shareName: 'nearbytes',
+            },
+            capabilities: ['mirror', 'read', 'write', 'accept'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const shares = await service.listManagedShares();
+    const recipientShare = shares.shares.find((entry) => entry.share.id === 'share-mega-legacy-writable-1');
+    expect(recipientShare?.share.capabilities).toEqual(['mirror', 'read', 'write', 'accept']);
+    expect(recipientShare?.storage?.writable).toBe(true);
+  });
+
+  it('forwards optional invite access level to the provider adapter', async () => {
+    const adapter = new RecordingInviteAdapter();
+    const { integrationStatePath, service } = await createHarness({ adapters: [adapter] });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'owner@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-owner-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'owner',
+            localPath: path.join(path.dirname(integrationStatePath), 'owner-share'),
+            syncMode: 'mirror',
+            remoteDescriptor: {
+              remotePath: '/nearbytes',
+              shareName: 'nearbytes',
+            },
+            capabilities: ['mirror', 'read', 'write', 'invite'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    await service.inviteManagedShare('share-mega-owner-1', ['friend@example.com'], 'read/write');
+
+    expect(adapter.lastInviteInput).toEqual({
+      emails: ['friend@example.com'],
+      accessLevel: 'read/write',
+    });
   });
 
   it('persists the adapter-resolved local path when creating a managed share', async () => {

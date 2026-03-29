@@ -768,7 +768,11 @@ export class ManagedShareService {
     return this.buildManagedShareSummary(nextShare);
   }
 
-  async inviteManagedShare(shareId: string, emails: readonly string[]): Promise<ManagedShareSummary> {
+  async inviteManagedShare(
+    shareId: string,
+    emails: readonly string[],
+    accessLevel?: 'read' | 'read/write' | 'full access'
+  ): Promise<ManagedShareSummary> {
     const state = await this.loadState();
     const share = state.managedShares.find((entry) => entry.id === shareId);
     if (!share) {
@@ -782,7 +786,7 @@ export class ManagedShareService {
     if (!account) {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${share.accountId}`);
     }
-    await adapter.invite?.(share, { emails: [...emails] }, account);
+    await adapter.invite?.(share, { emails: [...emails], accessLevel }, account);
     const nextShare: ManagedShare = {
       ...share,
       invitationEmails: uniqueStrings([...share.invitationEmails, ...emails]),
@@ -3729,8 +3733,27 @@ function managedShareAllowsWrites(share: ManagedShare): boolean {
   return true;
 }
 
-function supportsLiveSyncForMegaIncomingShare(_share: ManagedShare): boolean {
-  return false;
+function supportsLiveSyncForMegaIncomingShare(share: ManagedShare): boolean {
+  if (
+    normalizeProvider(share.provider) !== 'mega' ||
+    share.role !== 'recipient' ||
+    !isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor))
+  ) {
+    return false;
+  }
+  const accessLevel =
+    typeof share.remoteDescriptor.accessLevel === 'string'
+      ? share.remoteDescriptor.accessLevel.trim().toLowerCase()
+      : '';
+  if (accessLevel === 'read') {
+    return false;
+  }
+  if (accessLevel === 'read/write' || accessLevel === 'full access' || accessLevel === 'owner') {
+    return true;
+  }
+  return (
+    share.capabilities.includes('write')
+  );
 }
 
 function buildRemoteDescriptorMatchKeys(provider: string, descriptor: Record<string, unknown>): string[] {

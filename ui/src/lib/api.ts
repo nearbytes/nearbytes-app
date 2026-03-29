@@ -1606,12 +1606,13 @@ export async function createManagedShare(input: {
 
 export async function inviteManagedShare(
   shareId: string,
-  emails: string[]
+  emails: string[],
+  accessLevel?: 'read' | 'read/write' | 'full access'
 ): Promise<ManagedShareMutationResponse> {
   const encoded = encodeURIComponent(shareId);
   return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/invite`, {
     method: 'POST',
-    body: JSON.stringify({ emails }),
+    body: JSON.stringify({ emails, accessLevel }),
   });
 }
 
