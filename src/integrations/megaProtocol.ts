@@ -1,10 +1,16 @@
 import { createDecipheriv, createCipheriv, subtle } from 'crypto';
+import { release as osRelease } from 'os';
 
 export const MEGA_API_URL = 'https://g.api.mega.co.nz/cs';
 export const MEGA_SC_URL = 'https://g.api.mega.co.nz/sc';
 export const MEGA_MASTER_KEY_BYTES = 16;
 export const MEGA_SESSION_KEY_BYTES = 16;
 export const MEGA_SID_BYTES = 43;
+export const MEGA_OFFICIAL_APP_KEY = 'BdARkQSQ';
+export const MEGA_OFFICIAL_PROTOCOL_VERSION = 2;
+
+const MEGA_OFFICIAL_MEGACMD_VERSION = '2.4.0.0';
+const MEGA_OFFICIAL_MEGACLIENT_VERSION = '10.3.1';
 
 /**
  * Maximum number of hashcash-challenged retries before giving up.
@@ -17,6 +23,9 @@ export interface MegaApiClientOptions {
   readonly apiUrl?: string;
   readonly fetchImpl?: typeof fetch;
   readonly initialRequestId?: number;
+  readonly appKey?: string;
+  readonly protocolVersion?: number;
+  readonly userAgent?: string;
 }
 
 export interface MegaRequestOptions {
@@ -83,11 +92,19 @@ export class MegaApiClient {
   private requestId: number;
   private readonly apiUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly appKey: string;
+  private readonly protocolVersion: number;
+  private readonly userAgent: string;
 
   constructor(options: MegaApiClientOptions = {}) {
     this.apiUrl = options.apiUrl ?? MEGA_API_URL;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.requestId = Number.isFinite(options.initialRequestId) ? Math.trunc(options.initialRequestId!) : 0;
+    this.appKey = options.appKey?.trim() || MEGA_OFFICIAL_APP_KEY;
+    this.protocolVersion = Number.isFinite(options.protocolVersion)
+      ? Math.max(1, Math.trunc(options.protocolVersion!))
+      : MEGA_OFFICIAL_PROTOCOL_VERSION;
+    this.userAgent = options.userAgent?.trim() || buildMegaOfficialUserAgent();
   }
 
   async request<T = unknown>(
@@ -106,13 +123,17 @@ export class MegaApiClient {
       apiUrl: this.apiUrl,
       requestId,
       sessionId: options.sessionId,
+      appKey: this.appKey,
+      protocolVersion: this.protocolVersion,
     });
     const body = JSON.stringify(commands);
 
     let hashcashToken: string | undefined;
     for (let attempt = 0; attempt <= MAX_HASHCASH_RETRIES; attempt++) {
       const headers: Record<string, string> = {
+        accept: 'application/json',
         'content-type': 'application/json',
+        'user-agent': this.userAgent,
       };
       if (hashcashToken) {
         headers['X-Hashcash'] = hashcashToken;
@@ -179,13 +200,42 @@ export function buildMegaCsUrl(options: {
   apiUrl?: string;
   requestId: number;
   sessionId?: string | Buffer;
+  appKey?: string;
+  protocolVersion?: number;
 }): string {
   const url = new URL(options.apiUrl ?? MEGA_API_URL);
   url.searchParams.set('id', String(Math.trunc(options.requestId)));
   if (options.sessionId) {
     url.searchParams.set('sid', normalizeSessionId(options.sessionId));
   }
+  const appKey = options.appKey?.trim();
+  if (appKey) {
+    url.searchParams.set('ak', appKey);
+  }
+  const protocolVersion = Number.isFinite(options.protocolVersion)
+    ? Math.max(1, Math.trunc(options.protocolVersion!))
+    : MEGA_OFFICIAL_PROTOCOL_VERSION;
+  url.searchParams.set('v', String(protocolVersion));
   return url.toString();
+}
+
+export function buildMegaOfficialUserAgent(): string {
+  const platformLabel = resolveMegaOfficialPlatformLabel(process.platform);
+  const pointerWidth = process.arch === 'x64' || process.arch === 'arm64' ? '64' : '32';
+  return `MEGAcmd/${MEGA_OFFICIAL_MEGACMD_VERSION} (${platformLabel} ${osRelease()} ${process.arch}) MegaClient/${MEGA_OFFICIAL_MEGACLIENT_VERSION}/${pointerWidth}`;
+}
+
+function resolveMegaOfficialPlatformLabel(platform: NodeJS.Platform): string {
+  switch (platform) {
+    case 'darwin':
+      return 'Darwin';
+    case 'win32':
+      return 'Windows';
+    case 'linux':
+      return 'Linux';
+    default:
+      return platform;
+  }
 }
 
 export function buildMegaScChannelUrl(options: {

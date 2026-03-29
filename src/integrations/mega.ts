@@ -99,6 +99,7 @@ const MEGA_SHARE_ACCESS_LEVEL_FULL = 2;
 const MEGA_SHARE_INVITE_NON_CONTACT_USER = 'EXP';
 const MEGA_KEY_MANAGER_GENERATION_TAG = 4;
 const MEGA_KEY_MANAGER_SHARE_KEYS_TAG = 48;
+const MEGA_KEY_MANAGER_PENDING_OUTSHARES_TAG = 64;
 const MEGA_KEY_MANAGER_AUTH_RING_ED25519_TAG = 32;
 const MEGA_KEY_MANAGER_PENDING_INSHARES_TAG = 65;
 const MEGA_KEY_MANAGER_PRIVATE_CU25519_TAG = 17;
@@ -332,6 +333,7 @@ export class MegaTransportAdapter {
     let session: MegaSession;
     try {
       session = await this.loginWithPassword(email, password, mfaCode);
+      await this.fetchNodesSnapshot(session);
     } catch (error) {
       throw normalizeMegaConnectError(error, email);
     }
@@ -416,6 +418,7 @@ export class MegaTransportAdapter {
           snapshot = await this.fetchNodesSnapshot(session);
           const hasOutgoingForRoot = snapshotHasOutgoingShareForRoot(snapshot, root.root.handle, root.root.shareHandle);
           const isNewShare = !hasOutgoingForRoot && index === 0;
+          let target = resolveMegaShareInviteTarget(snapshot, email);
           let cryptoNow = await this.resolveOwnerShareCryptoContext(session, root);
           for (let keyAttempt = 0; index > 0 && !cryptoNow?.shareKey && keyAttempt < 12; keyAttempt += 1) {
             await waitForMegaRetry(500 + keyAttempt * 200);
@@ -438,8 +441,12 @@ export class MegaTransportAdapter {
             }
           }
           const shareKeyForInvite = Buffer.from(cryptoNow?.shareKey ?? randomBytes(16));
-          if (isNewShare) {
-            await this.persistOwnerShareKeyInKeyManager(session, root, shareKeyForInvite);
+          const keyManager = await this.fetchKeyManagerState(session);
+          const useSecureKeyManagerShareFlow = keyManager.records.length > 0;
+          if (useSecureKeyManagerShareFlow) {
+            await this.prepareOwnerOutgoingInviteInKeyManager(session, root, shareKeyForInvite, target, keyManager, {
+              trusted: isNewShare,
+            });
             cryptoNow = {
               shareHandle: root.root.handle,
               shareKey: Buffer.from(shareKeyForInvite),
@@ -450,7 +457,6 @@ export class MegaTransportAdapter {
               'MEGA already has an outgoing share on this folder (or Nearbytes could not tell), but the share encryption key is unavailable. Reconnect MEGA, or create/repair the share once on mega.nz, then try inviting again.'
             );
           }
-          let target = resolveMegaShareInviteTarget(snapshot, email);
           if (target.u === MEGA_SHARE_INVITE_NON_CONTACT_USER && target.e) {
             try {
               await this.apiCommand({ a: 'upc', u: target.e, aa: 'a' }, session);
@@ -465,6 +471,16 @@ export class MegaTransportAdapter {
               });
             }
           }
+          let sentPendingShareKeyToContact = false;
+          if (useSecureKeyManagerShareFlow) {
+            sentPendingShareKeyToContact = await this.sendMegaPendingOutShareKeyToContact(
+              session,
+              root.root.handle,
+              shareKeyForInvite,
+              target,
+              keyManager
+            );
+          }
           this.runtime.logger.log('MEGA invite: issuing s2 set-share.', {
             email: email.trim(),
             index,
@@ -474,10 +490,16 @@ export class MegaTransportAdapter {
           const shareCommand = buildMegaSetShareCommand(root, session, target, accessLevel, {
             includeNodeKeyRecords: isNewShare,
             shareKey: shareKeyForInvite,
+            secureMode: useSecureKeyManagerShareFlow,
           });
           try {
             await this.apiCommand(shareCommand.command, session);
             this.rememberOwnerShareKey(session, root, shareCommand.shareKey);
+            if (useSecureKeyManagerShareFlow) {
+              await this.finalizeOwnerOutgoingInviteInKeyManager(session, root, shareCommand.shareKey, target, {
+                removePendingOutShare: sentPendingShareKeyToContact,
+              });
+            }
           } catch (error) {
             const code = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
             const canFallbackToDirectEmail =
@@ -492,12 +514,18 @@ export class MegaTransportAdapter {
             const fallbackCommand = buildMegaSetShareCommand(root, session, fallbackTarget, accessLevel, {
               includeNodeKeyRecords: isNewShare,
               shareKey: shareCommand.shareKey,
+              secureMode: useSecureKeyManagerShareFlow,
             });
             this.runtime.logger.warn('MEGA invite: EXP target returned API -3, retrying with direct email target.', {
               email: email.trim(),
             });
             await this.apiCommand(fallbackCommand.command, session);
             this.rememberOwnerShareKey(session, root, fallbackCommand.shareKey);
+            if (useSecureKeyManagerShareFlow) {
+              await this.finalizeOwnerOutgoingInviteInKeyManager(session, root, fallbackCommand.shareKey, fallbackTarget, {
+                removePendingOutShare: false,
+              });
+            }
           }
         }
 
@@ -1993,10 +2021,15 @@ export class MegaTransportAdapter {
     return resolved;
   }
 
-  private async persistOwnerShareKeyInKeyManager(
+  private async prepareOwnerOutgoingInviteInKeyManager(
     session: MegaSession,
     root: MegaOwnerRemoteRoot,
     shareKey: Buffer,
+    invitee: MegaShareInviteTarget,
+    keyManager: MegaKeyManagerState,
+    options: {
+      readonly trusted?: boolean;
+    } = {},
     signal?: AbortSignal
   ): Promise<void> {
     const shareHandle = root.root.handle.trim();
@@ -2004,16 +2037,18 @@ export class MegaTransportAdapter {
       throw new Error('MEGA owner root is missing a handle; cannot prepare a share key.');
     }
 
-    const keyManager = await fetchMegaKeyManagerState(this.apiClient, session, signal, this.runtime.logger);
     const updatedContainer = buildMegaKeyManagerContainerWithShareKey(
       keyManager,
       shareHandle,
       shareKey,
-      { trusted: true },
+      {
+        trusted: options.trusted,
+        pendingOutShareTarget: resolveMegaPendingOutShareTarget(invitee),
+      },
       session.masterKey
     );
     if (updatedContainer === null) {
-      throw new Error('MEGA key-manager state is unavailable; cannot prepare a share key for a new outgoing share.');
+      throw new Error('MEGA key-manager state is unavailable; cannot prepare an outgoing share in secure mode.');
     }
     if (updatedContainer.length > 0) {
       await this.apiCommand(
@@ -2026,11 +2061,111 @@ export class MegaTransportAdapter {
       );
     }
     this.rememberOwnerShareKey(session, root, shareKey);
-    this.runtime.logger.log('MEGA owner share key prepared in ^!keys before issuing a new share.', {
+    this.runtime.logger.log('MEGA owner outgoing share state prepared in ^!keys before issuing s2.', {
       shareHandle,
       email: session.email,
       wroteAttribute: updatedContainer.length > 0,
     });
+  }
+
+  private async finalizeOwnerOutgoingInviteInKeyManager(
+    session: MegaSession,
+    root: MegaOwnerRemoteRoot,
+    shareKey: Buffer,
+    invitee: MegaShareInviteTarget,
+    options: {
+      readonly removePendingOutShare?: boolean;
+    } = {},
+    signal?: AbortSignal
+  ): Promise<void> {
+    const shareHandle = root.root.handle.trim();
+    if (!shareHandle) {
+      return;
+    }
+
+    const keyManager = await this.fetchKeyManagerState(session, signal);
+    if (keyManager.records.length === 0) {
+      return;
+    }
+
+    const updatedContainer = buildMegaKeyManagerContainerWithShareKey(
+      keyManager,
+      shareHandle,
+      shareKey,
+      {
+        inUse: true,
+        pendingOutShareTarget: resolveMegaPendingOutShareTarget(invitee),
+        removePendingOutShare: options.removePendingOutShare,
+      },
+      session.masterKey
+    );
+    if (updatedContainer === null || updatedContainer.length === 0) {
+      return;
+    }
+
+    await this.apiCommand(
+      {
+        a: 'up2',
+        '^!keys': encodeMegaBase64Url(updatedContainer),
+      },
+      session,
+      signal
+    );
+  }
+
+  private async sendMegaPendingOutShareKeyToContact(
+    session: MegaSession,
+    shareHandle: string,
+    shareKey: Buffer,
+    invitee: MegaShareInviteTarget,
+    keyManager: MegaKeyManagerState,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    const userHandle = invitee.u.trim();
+    if (!isMegaUserHandle(userHandle)) {
+      return false;
+    }
+    if (!keyManager.privateCu25519 || keyManager.privateCu25519.length !== 32) {
+      return false;
+    }
+    const authMethod = keyManager.authRingEd25519.get(userHandle) ?? -1;
+    if (authMethod < MEGA_AUTH_METHOD_SEEN) {
+      return false;
+    }
+
+    try {
+      const publicCu25519 = await fetchMegaUserPublicCu25519(
+        this.apiClient,
+        session,
+        userHandle,
+        signal,
+        this.runtime.logger
+      );
+      if (!publicCu25519 || publicCu25519.length !== 32) {
+        return false;
+      }
+
+      const pairwiseKey = deriveMegaPairwiseKey(keyManager.privateCu25519, publicCu25519);
+      await this.apiCommand(
+        {
+          a: 'pk',
+          u: userHandle,
+          h: shareHandle,
+          k: encodeMegaBase64Url(encryptAesEcb(shareKey, pairwiseKey)),
+        },
+        session,
+        signal
+      );
+      return true;
+    } catch (error) {
+      this.runtime.logger.warn('MEGA failed to send a secure pending outshare key to the invitee.', {
+        email: session.email,
+        invitee: userHandle,
+        shareHandle,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
   }
 
   private rememberShareKeys(session: MegaSession, shareKeys: ReadonlyMap<string, Buffer>): number {
@@ -2260,6 +2395,9 @@ export class MegaTransportAdapter {
         signal,
       });
       if (typeof response === 'number') {
+        if (response === 0) {
+          return response as T;
+        }
         const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
         error.code = response;
         throw error;
@@ -2442,7 +2580,8 @@ export class MegaTransportAdapter {
     signal?: AbortSignal
   ): Promise<MegaShareCryptoContext | undefined> {
     const shareHandle = root.root.handle.trim();
-    const shareHandleCandidates = [...new Set([shareHandle, root.root.shareHandle?.trim()].filter((value): value is string => Boolean(value)))];
+    const explicitShareHandle = root.root.shareHandle?.trim();
+    const shareHandleCandidates = [...new Set([shareHandle, explicitShareHandle].filter((value): value is string => Boolean(value)))];
     if (shareHandleCandidates.length === 0) {
       return undefined;
     }
@@ -2453,6 +2592,10 @@ export class MegaTransportAdapter {
       if (shareKey) {
         return { shareHandle, shareKey: Buffer.from(shareKey) };
       }
+    }
+
+    if (!explicitShareHandle) {
+      return undefined;
     }
 
     // Fallback: look for the share key in the snapshot (outgoing shares `ok` field,
@@ -2596,6 +2739,18 @@ function resolveMegaShareInviteTarget(snapshot: MegaFetchNodesSnapshot, email: s
   }
   const trimmed = email.trim();
   return trimmed ? { u: MEGA_SHARE_INVITE_NON_CONTACT_USER, e: trimmed } : { u: MEGA_SHARE_INVITE_NON_CONTACT_USER };
+}
+
+function resolveMegaPendingOutShareTarget(invitee: MegaShareInviteTarget): string {
+  const user = invitee.u.trim();
+  if (user && user !== MEGA_SHARE_INVITE_NON_CONTACT_USER) {
+    return user;
+  }
+  return invitee.e?.trim() ?? '';
+}
+
+function isMegaUserHandle(value: string): boolean {
+  return /^[A-Za-z0-9_-]{11}$/u.test(value.trim());
 }
 
 function resolveOutgoingSharePeerEmail(
@@ -2925,19 +3080,6 @@ class MegaOwnerRemoteAdapter {
       this.signal,
       this.extraShareKeys
     );
-    // Keep a hard visibility check so uploads only count once the final name is visible in MEGA snapshots.
-    const visibleNode = await waitForMegaChildNodeInFullSnapshot(
-      this.apiClient,
-      this.session,
-      parent.handle,
-      name,
-      false,
-      this.signal,
-      this.extraShareKeys
-    );
-    if (!visibleNode || visibleNode.isFolder) {
-      throw new Error(`MEGA did not make the uploaded file visible for ${name}.`);
-    }
     debugMegaLog('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
   }
 }
@@ -3070,20 +3212,19 @@ function buildMegaSetShareCommand(
   options: {
     readonly includeNodeKeyRecords?: boolean;
     readonly shareKey?: Buffer;
+    readonly secureMode?: boolean;
   } = {}
 ): {
   readonly command: Record<string, unknown>;
   readonly shareKey: Buffer;
 } {
   const shareKey = Buffer.from(options.shareKey ?? randomBytes(16));
-  const shareHandleBytes = decodeMegaBase64Url(ownerRoot.root.handle);
-  const paddedShareHandle = Buffer.alloc(16, 0);
-  shareHandleBytes.copy(paddedShareHandle, 0, 0, Math.min(shareHandleBytes.length, 16));
+  const zeroOwnerKey = encodeMegaBase64Url(Buffer.alloc(16, 0));
   const command: Record<string, unknown> = {
     a: 's2',
     n: ownerRoot.root.handle,
-    ok: encodeMegaBase64Url(encryptAesEcb(shareKey, session.masterKey)),
-    ha: encodeMegaBase64Url(encryptAesEcb(paddedShareHandle, shareKey)),
+    ok: zeroOwnerKey,
+    ha: zeroOwnerKey,
     s: [
       {
         u: invitee.u,
@@ -3091,6 +3232,13 @@ function buildMegaSetShareCommand(
       },
     ],
   };
+  if (!options.secureMode) {
+    const shareHandleBytes = decodeMegaBase64Url(ownerRoot.root.handle);
+    const paddedShareHandle = Buffer.alloc(16, 0);
+    shareHandleBytes.copy(paddedShareHandle, 0, 0, Math.min(shareHandleBytes.length, 16));
+    command.ok = encodeMegaBase64Url(encryptAesEcb(shareKey, session.masterKey));
+    command.ha = encodeMegaBase64Url(encryptAesEcb(paddedShareHandle, shareKey));
+  }
   if (invitee.e) {
     command.e = invitee.e;
   }
@@ -4977,6 +5125,40 @@ function parseMegaKeyManagerShareKeyEntries(
   return result;
 }
 
+function parseMegaKeyManagerPendingOutShares(value: Buffer): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  let offset = 0;
+  while (offset < value.length) {
+    const targetLength = value[offset];
+    if (targetLength === undefined || offset + 7 > value.length) {
+      throw new Error('MEGA key-manager pending outshare payload is malformed.');
+    }
+    offset += 1;
+    const handle = encodeMegaBase64Url(value.subarray(offset, offset + 6));
+    offset += 6;
+
+    let target: string;
+    if (targetLength === 0) {
+      if (offset + 8 > value.length) {
+        throw new Error('MEGA key-manager pending outshare payload is malformed.');
+      }
+      target = encodeMegaBase64Url(value.subarray(offset, offset + 8));
+      offset += 8;
+    } else {
+      if (offset + targetLength > value.length) {
+        throw new Error('MEGA key-manager pending outshare payload is malformed.');
+      }
+      target = value.subarray(offset, offset + targetLength).toString('utf8');
+      offset += targetLength;
+    }
+
+    const targets = result.get(handle) ?? new Set<string>();
+    targets.add(target);
+    result.set(handle, targets);
+  }
+  return result;
+}
+
 function serializeMegaKeyManagerShareKeyEntries(
   entries: ReadonlyArray<{ handle: string; shareKey: Buffer; flags: number }>
 ): Buffer {
@@ -4991,6 +5173,37 @@ function serializeMegaKeyManagerShareKeyEntries(
       throw new Error(`MEGA key-manager share key has invalid length for ${handle}: ${entry.shareKey.length}`);
     }
     buffers.push(handleBytes, Buffer.from(entry.shareKey), Buffer.from([entry.flags & 0xff]));
+  }
+  return Buffer.concat(buffers);
+}
+
+function serializeMegaKeyManagerPendingOutShares(entries: ReadonlyMap<string, ReadonlySet<string>>): Buffer {
+  const buffers: Buffer[] = [];
+  for (const handle of [...entries.keys()].sort()) {
+    const handleBytes = decodeMegaBase64Url(handle);
+    if (handleBytes.length !== 6) {
+      throw new Error(`MEGA key-manager pending outshare handle is invalid: ${handle}`);
+    }
+    const targets = [...(entries.get(handle) ?? new Set<string>())].sort();
+    for (const target of targets) {
+      const normalizedTarget = target.trim();
+      if (!normalizedTarget) {
+        continue;
+      }
+      if (isMegaUserHandle(normalizedTarget)) {
+        const targetBytes = decodeMegaBase64Url(normalizedTarget);
+        if (targetBytes.length !== 8) {
+          throw new Error(`MEGA key-manager pending outshare user handle is invalid: ${normalizedTarget}`);
+        }
+        buffers.push(Buffer.from([0]), handleBytes, targetBytes);
+        continue;
+      }
+      const targetBytes = Buffer.from(normalizedTarget, 'utf8');
+      if (targetBytes.length >= 0x100) {
+        throw new Error(`MEGA key-manager pending outshare email is too long: ${normalizedTarget}`);
+      }
+      buffers.push(Buffer.from([targetBytes.length]), handleBytes, targetBytes);
+    }
   }
   return Buffer.concat(buffers);
 }
@@ -5022,6 +5235,8 @@ function buildMegaKeyManagerContainerWithShareKey(
   options: {
     readonly trusted?: boolean;
     readonly inUse?: boolean;
+    readonly pendingOutShareTarget?: string;
+    readonly removePendingOutShare?: boolean;
   },
   masterKey: Buffer
 ): Buffer | null {
@@ -5039,10 +5254,15 @@ function buildMegaKeyManagerContainerWithShareKey(
   }
 
   const shareKeyIndex = updatedRecords.findIndex((record) => record.tag === MEGA_KEY_MANAGER_SHARE_KEYS_TAG);
+  const pendingOutShareIndex = updatedRecords.findIndex((record) => record.tag === MEGA_KEY_MANAGER_PENDING_OUTSHARES_TAG);
   const shareKeyEntries =
     shareKeyIndex >= 0
       ? parseMegaKeyManagerShareKeyEntries(updatedRecords[shareKeyIndex]!.payload)
       : [];
+  const pendingOutShares =
+    pendingOutShareIndex >= 0
+      ? parseMegaKeyManagerPendingOutShares(updatedRecords[pendingOutShareIndex]!.payload)
+      : new Map<string, Set<string>>();
   const normalizedHandle = shareHandle.trim();
   const applyFlags = (currentFlags: number): number => {
     let nextFlags = currentFlags;
@@ -5058,6 +5278,7 @@ function buildMegaKeyManagerContainerWithShareKey(
     }
     return nextFlags;
   };
+  const pendingOutShareTarget = options.pendingOutShareTarget?.trim() ?? '';
 
   let changed = false;
   const existingEntry = shareKeyEntries.find((entry) => entry.handle === normalizedHandle);
@@ -5075,6 +5296,24 @@ function buildMegaKeyManagerContainerWithShareKey(
       flags: applyFlags(0),
     });
     changed = true;
+  }
+
+  if (pendingOutShareTarget) {
+    const targets = new Set(pendingOutShares.get(normalizedHandle) ?? []);
+    if (options.removePendingOutShare) {
+      if (targets.delete(pendingOutShareTarget)) {
+        changed = true;
+      }
+    } else if (!targets.has(pendingOutShareTarget)) {
+      targets.add(pendingOutShareTarget);
+      changed = true;
+    }
+
+    if (targets.size > 0) {
+      pendingOutShares.set(normalizedHandle, targets);
+    } else {
+      pendingOutShares.delete(normalizedHandle);
+    }
   }
 
   if (!changed) {
@@ -5102,6 +5341,26 @@ function buildMegaKeyManagerContainerWithShareKey(
     } else {
       updatedRecords.push(shareKeyRecord);
     }
+  }
+
+  const pendingOutSharePayload = serializeMegaKeyManagerPendingOutShares(pendingOutShares);
+  if (pendingOutSharePayload.length > 0) {
+    const pendingOutShareRecord: MegaKeyManagerRecord = {
+      tag: MEGA_KEY_MANAGER_PENDING_OUTSHARES_TAG,
+      payload: pendingOutSharePayload,
+    };
+    if (pendingOutShareIndex >= 0) {
+      updatedRecords[pendingOutShareIndex] = pendingOutShareRecord;
+    } else {
+      const insertionIndex = updatedRecords.findIndex((record) => record.tag > MEGA_KEY_MANAGER_PENDING_OUTSHARES_TAG);
+      if (insertionIndex >= 0) {
+        updatedRecords.splice(insertionIndex, 0, pendingOutShareRecord);
+      } else {
+        updatedRecords.push(pendingOutShareRecord);
+      }
+    }
+  } else if (pendingOutShareIndex >= 0) {
+    updatedRecords.splice(pendingOutShareIndex, 1);
   }
 
   return encryptMegaKeyManagerContainer(serializeMegaKeyManagerRecords(updatedRecords), masterKey);
@@ -6365,31 +6624,19 @@ function resolveRubbishBinHandle(snapshot: MegaFetchNodesSnapshot): string | und
   return undefined;
 }
 
-function collectSubtreeHandlesPostOrderDeletion(snapshot: MegaFetchNodesSnapshot, parentHandle: string): string[] {
-  const childrenByParent = new Map<string, MegaNodeRecord[]>();
+function collectDirectChildHandles(snapshot: MegaFetchNodesSnapshot, parentHandle: string): string[] {
+  const directChildren: string[] = [];
   for (const node of snapshot.nodes) {
     const h = typeof node.h === 'string' ? node.h.trim() : '';
     if (!h) {
       continue;
     }
     const p = typeof node.p === 'string' ? node.p.trim() : '';
-    const list = childrenByParent.get(p) ?? [];
-    list.push(node);
-    childrenByParent.set(p, list);
-  }
-  const order: string[] = [];
-  const dfs = (parent: string) => {
-    for (const node of childrenByParent.get(parent) ?? []) {
-      const h = typeof node.h === 'string' ? node.h.trim() : '';
-      if (!h) {
-        continue;
-      }
-      dfs(h);
-      order.push(h);
+    if (p === parentHandle) {
+      directChildren.push(h);
     }
   };
-  dfs(parentHandle);
-  return order;
+  return directChildren;
 }
 
 async function wipeMegaSubtreeHandles(
@@ -6508,7 +6755,7 @@ export async function wipeMegaCloudDriveContentsForE2e(options: {
     if (!cloudHandle) {
       throw new Error('MEGA snapshot did not include a Cloud Drive root.');
     }
-    const underDrive = collectSubtreeHandlesPostOrderDeletion(snapshot, cloudHandle);
+    const underDrive = collectDirectChildHandles(snapshot, cloudHandle);
     if (underDrive.length > 0) {
       await wipeMegaSubtreeHandles(apiClient, session, underDrive, signal);
       deleted += underDrive.length;
@@ -6519,7 +6766,7 @@ export async function wipeMegaCloudDriveContentsForE2e(options: {
     if (!rubbish) {
       break;
     }
-    const inRubbish = collectSubtreeHandlesPostOrderDeletion(snapshot, rubbish);
+    const inRubbish = collectDirectChildHandles(snapshot, rubbish);
     if (inRubbish.length === 0) {
       break;
     }
