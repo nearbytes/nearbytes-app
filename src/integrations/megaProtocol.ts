@@ -1,10 +1,17 @@
-import { createDecipheriv, createCipheriv } from 'crypto';
+import { createDecipheriv, createCipheriv, subtle } from 'crypto';
 
 export const MEGA_API_URL = 'https://g.api.mega.co.nz/cs';
 export const MEGA_SC_URL = 'https://g.api.mega.co.nz/sc';
 export const MEGA_MASTER_KEY_BYTES = 16;
 export const MEGA_SESSION_KEY_BYTES = 16;
 export const MEGA_SID_BYTES = 43;
+
+/**
+ * Maximum number of hashcash-challenged retries before giving up.
+ * MEGA returns `-3` (EAGAIN) along with an `X-Hashcash` challenge header
+ * when it wants proof-of-work before serving the request.
+ */
+const MAX_HASHCASH_RETRIES = 4;
 
 export interface MegaApiClientOptions {
   readonly apiUrl?: string;
@@ -100,25 +107,55 @@ export class MegaApiClient {
       requestId,
       sessionId: options.sessionId,
     });
+    const body = JSON.stringify(commands);
 
-    const response = await this.fetchImpl(url, {
-      method: 'POST',
-      headers: {
+    let hashcashToken: string | undefined;
+    for (let attempt = 0; attempt <= MAX_HASHCASH_RETRIES; attempt++) {
+      const headers: Record<string, string> = {
         'content-type': 'application/json',
-      },
-      body: JSON.stringify(commands),
-      signal: options.signal,
-    });
+      };
+      if (hashcashToken) {
+        headers['X-Hashcash'] = hashcashToken;
+      }
 
-    if (!response.ok) {
-      throw new Error(`MEGA API request failed with HTTP ${response.status}.`);
+      const response = await this.fetchImpl(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal: options.signal,
+      });
+
+      // MEGA sends X-Hashcash on ANY response (even 200 OK) as a challenge.
+      // When present, we must solve the proof-of-work and retry — the body is irrelevant.
+      const challenge = response.headers.get('X-Hashcash');
+      if (challenge && attempt < MAX_HASHCASH_RETRIES) {
+        hashcashToken = await solveMegaHashcashChallenge(challenge);
+        continue;
+      }
+
+      if (response.statusText === 'Server Too Busy') {
+        throw Object.assign(new Error('MEGA API error -3.'), { code: -3 });
+      }
+
+      if (!response.ok) {
+        throw new Error(`MEGA API request failed with HTTP ${response.status}.`);
+      }
+
+      const payload = await parseMegaJsonResponse(response, 'MEGA API');
+
+      // MEGA can return -3 inside the JSON body without a hashcash header — genuine rate limit.
+      const payloadNum = typeof payload === 'number' ? payload : Array.isArray(payload) && payload.length === 1 && typeof payload[0] === 'number' ? payload[0] : undefined;
+      if (payloadNum === -3) {
+        throw Object.assign(new Error('MEGA API error -3.'), { code: -3 });
+      }
+
+      if (Array.isArray(payload)) {
+        return payload as readonly T[];
+      }
+      return [payload as T];
     }
 
-    const payload = await parseMegaJsonResponse(response, 'MEGA API');
-    if (Array.isArray(payload)) {
-      return payload as readonly T[];
-    }
-    return [payload as T];
+    throw Object.assign(new Error('MEGA API error -3.'), { code: -3 });
   }
 
   async requestSingle<T = unknown>(
@@ -336,4 +373,48 @@ function summarizeMegaPayloadPreview(raw: string): string {
   }
   const preview = normalized.slice(0, 48);
   return JSON.stringify(preview);
+}
+
+/**
+ * Solve a MEGA X-Hashcash proof-of-work challenge.
+ *
+ * The challenge format is `1:<easiness>:<unused>:<token_base64>`.
+ * We must find a 4-byte nonce such that SHA-256 of (nonce ++ token×262144)
+ * has a leading 32-bit value ≤ threshold derived from easiness.
+ *
+ * @see https://github.com/nicehash/nicehash-megajs — reference implementation
+ */
+export async function solveMegaHashcashChallenge(challenge: string): Promise<string> {
+  const parts = challenge.split(':');
+  const version = Number(parts[0]);
+  if (version !== 1) {
+    throw new Error(`Unsupported MEGA hashcash challenge version: ${version}`);
+  }
+  const easiness = Number(parts[1]);
+  const tokenStr = parts[3];
+  const base = ((easiness & 63) << 1) + 1;
+  const shifts = (easiness >> 6) * 7 + 3;
+  const threshold = base << shifts;
+  const token = decodeMegaBase64Url(tokenStr);
+
+  const COPIES = 262144;
+  const buffer = Buffer.alloc(4 + COPIES * 48);
+  for (let i = 0; i < COPIES; i++) {
+    token.copy(buffer, 4 + i * 48);
+  }
+
+  // Brute-force the 4-byte nonce.
+  for (;;) {
+    const digest = Buffer.from(await subtle.digest('SHA-256', buffer));
+    if (digest.readUInt32BE(0) <= threshold) {
+      return `1:${tokenStr}:${encodeMegaBase64Url(buffer.subarray(0, 4))}`;
+    }
+    // Increment nonce (little-endian).
+    let j = 0;
+    while (j < 4) {
+      buffer[j]++;
+      if (buffer[j] !== 0) break;
+      j++;
+    }
+  }
 }
