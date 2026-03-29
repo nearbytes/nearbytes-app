@@ -4572,12 +4572,32 @@ function decryptMegaTree(
 
   const nodesByHandle = new Map<string, DecryptedMegaNode>();
   let undecryptedNodeCount = 0;
+  const undecryptedNodes: Array<{
+    handle: string;
+    parentHandle?: string;
+    keyOwners: string[];
+    knownOwners: string[];
+    hasNodeHandleKey: boolean;
+    hasSharingUser: boolean;
+  }> = [];
   for (const node of snapshot.nodes) {
     const decrypted = decryptNodeRecord(node, session, shareKeys, usersByHandle);
     if (decrypted) {
       nodesByHandle.set(decrypted.handle, decrypted);
     } else if (typeof node.h === 'string') {
       undecryptedNodeCount += 1;
+      const handle = node.h.trim();
+      if (handle && undecryptedNodes.length < 8) {
+        const keyOwners = listMegaNodeKeyOwners(typeof node.k === 'string' ? node.k : undefined);
+        undecryptedNodes.push({
+          handle,
+          parentHandle: typeof node.p === 'string' && node.p.trim() ? node.p.trim() : undefined,
+          keyOwners,
+          knownOwners: keyOwners.filter((owner) => shareKeys.has(owner)),
+          hasNodeHandleKey: shareKeys.has(handle),
+          hasSharingUser: typeof (node as Record<string, unknown>).su === 'string' && String((node as Record<string, unknown>).su).trim() !== '',
+        });
+      }
     }
   }
   if (undecryptedNodeCount > 0 && logger) {
@@ -4588,6 +4608,7 @@ function decryptMegaTree(
       shareKeysAvailable: shareKeys.size,
       hasPrivateKey: Boolean(session.privateKey),
       expectedRootHandle,
+      undecryptedNodes,
     });
   }
 

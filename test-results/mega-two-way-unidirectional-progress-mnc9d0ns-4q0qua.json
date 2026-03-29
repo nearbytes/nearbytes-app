@@ -1,0 +1,618 @@
+{
+  "result": "failed",
+  "runId": "mnc9d0ns-4q0qua",
+  "remoteBasePath": "/nearbytes-live-seq-mnc9d0ns-4q0qua",
+  "remoteShareName": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+  "reportPath": "/Users/vincenzo/data/local/repos/nearbytes-app/test-results/mega-two-way-unidirectional-progress-mnc9d0ns-4q0qua.json",
+  "config": {
+    "connectTimeoutMs": 45000,
+    "ownerReadyTimeoutMs": 60000,
+    "descriptorTimeoutMs": 45000,
+    "contactSettleTimeoutMs": 12000,
+    "recipientReadyTimeoutMs": 60000,
+    "mirrorFileTimeoutMs": 60000,
+    "forceUploadTimeoutMs": 60000,
+    "serviceCallTimeoutMs": 10000,
+    "inviteTimeoutMs": 90000,
+    "contactInviteTimeoutMs": 30000,
+    "inventoryTimeoutMs": 60000,
+    "syncIntervalMs": 300000,
+    "syncTimeoutMs": 60000,
+    "payloadBytes": 1024,
+    "skipMegaWipe": true,
+    "skipMegaRevoke": true
+  },
+  "steps": [
+    {
+      "index": 1,
+      "name": "optional revoke/wipe cleanup",
+      "status": "passed",
+      "startedAt": 1774818921883,
+      "finishedAt": 1774818921885,
+      "durationMs": 2,
+      "detail": {
+        "skippedWipe": true,
+        "skippedRevoke": true
+      }
+    },
+    {
+      "index": 2,
+      "name": "create peer A sandbox",
+      "status": "passed",
+      "startedAt": 1774818921885,
+      "finishedAt": 1774818921887,
+      "durationMs": 2,
+      "detail": {
+        "label": "A",
+        "base": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-A-LvrExA",
+        "mainRoot": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-A-LvrExA/main-root",
+        "integrationStatePath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-A-LvrExA/integrations.json"
+      }
+    },
+    {
+      "index": 3,
+      "name": "connect peer A to MEGA",
+      "status": "passed",
+      "startedAt": 1774818921887,
+      "finishedAt": 1774818955725,
+      "durationMs": 33838,
+      "detail": {
+        "status": "connected",
+        "accountId": "acct-mega-1-bb3442",
+        "email": "vincenzoml+02@gmail.com"
+      }
+    },
+    {
+      "index": 4,
+      "name": "resolve peer A owner share",
+      "status": "passed",
+      "startedAt": 1774818955726,
+      "finishedAt": 1774818955730,
+      "durationMs": 4,
+      "detail": {
+        "id": "share-mega-1-2a21a8",
+        "provider": "mega",
+        "accountId": "acct-mega-1-bb3442",
+        "label": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+        "role": "owner",
+        "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-A-LvrExA/main-root/mega/vincenzoml-02-gmail-com/nearbytes",
+        "sourceId": "src-mega-managed-2",
+        "syncMode": "mirror",
+        "remoteDescriptor": {
+          "remotePath": "/nearbytes-live-seq-mnc9d0ns-4q0qua",
+          "shareName": "nearbytes-live-seq-mnc9d0ns-4q0qua"
+        },
+        "capabilities": [
+          "mirror",
+          "read",
+          "write",
+          "invite"
+        ],
+        "invitationEmails": [],
+        "createdAt": 1774818955720,
+        "updatedAt": 1774818955720
+      }
+    },
+    {
+      "index": 5,
+      "name": "wait peer A owner share ready",
+      "status": "passed",
+      "startedAt": 1774818955730,
+      "finishedAt": 1774818961736,
+      "durationMs": 6006,
+      "detail": {
+        "shareId": "share-mega-1-2a21a8",
+        "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-A-LvrExA/main-root/mega/vincenzoml-02-gmail-com/nearbytes",
+        "state": {
+          "status": "ready",
+          "detail": "MEGA owner sync is active for /nearbytes-live-seq-mnc9d0ns-4q0qua.",
+          "badges": [
+            "Writable",
+            "Synced"
+          ],
+          "lastSyncAt": 1774818957155
+        }
+      }
+    },
+    {
+      "index": 6,
+      "name": "cool down before second MEGA account",
+      "status": "passed",
+      "startedAt": 1774818961737,
+      "finishedAt": 1774818963737,
+      "durationMs": 2000,
+      "detail": {
+        "cooldownMs": 2000
+      }
+    },
+    {
+      "index": 7,
+      "name": "create peer B sandbox",
+      "status": "passed",
+      "startedAt": 1774818963738,
+      "finishedAt": 1774818963739,
+      "durationMs": 1,
+      "detail": {
+        "label": "B",
+        "base": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-B-KWgQfq",
+        "mainRoot": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-B-KWgQfq/main-root",
+        "integrationStatePath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-B-KWgQfq/integrations.json"
+      }
+    },
+    {
+      "index": 8,
+      "name": "connect peer B to MEGA",
+      "status": "passed",
+      "startedAt": 1774818963740,
+      "finishedAt": 1774818972078,
+      "durationMs": 8338,
+      "detail": {
+        "status": "connected",
+        "accountId": "acct-mega-1-993776",
+        "email": "vincenzoml+03@gmail.com"
+      }
+    },
+    {
+      "index": 9,
+      "name": "resolve peer B owner share",
+      "status": "passed",
+      "startedAt": 1774818972079,
+      "finishedAt": 1774818972079,
+      "durationMs": 0,
+      "detail": {
+        "id": "share-mega-1-fa5634",
+        "provider": "mega",
+        "accountId": "acct-mega-1-993776",
+        "label": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+        "role": "owner",
+        "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-B-KWgQfq/main-root/mega/vincenzoml-03-gmail-com/nearbytes",
+        "sourceId": "src-mega-managed-2",
+        "syncMode": "mirror",
+        "remoteDescriptor": {
+          "remotePath": "/nearbytes-live-seq-mnc9d0ns-4q0qua",
+          "shareName": "nearbytes-live-seq-mnc9d0ns-4q0qua"
+        },
+        "capabilities": [
+          "mirror",
+          "read",
+          "write",
+          "invite"
+        ],
+        "invitationEmails": [],
+        "createdAt": 1774818972075,
+        "updatedAt": 1774818972075
+      }
+    },
+    {
+      "index": 10,
+      "name": "wait peer B owner share ready",
+      "status": "passed",
+      "startedAt": 1774818972080,
+      "finishedAt": 1774818975424,
+      "durationMs": 3344,
+      "detail": {
+        "shareId": "share-mega-1-fa5634",
+        "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-B-KWgQfq/main-root/mega/vincenzoml-03-gmail-com/nearbytes",
+        "state": {
+          "status": "ready",
+          "detail": "MEGA owner sync is active for /nearbytes-live-seq-mnc9d0ns-4q0qua.",
+          "badges": [
+            "Writable",
+            "Synced"
+          ],
+          "lastSyncAt": 1774818974788
+        }
+      }
+    },
+    {
+      "index": 11,
+      "name": "invite A owner share to B as read-only",
+      "status": "passed",
+      "startedAt": 1774818975424,
+      "finishedAt": 1774819029746,
+      "durationMs": 54322,
+      "detail": {
+        "invitee": "vincenzoml+03@gmail.com",
+        "accessLevel": "read"
+      }
+    },
+    {
+      "index": 12,
+      "name": "accept B-side MEGA contact invites",
+      "status": "passed",
+      "startedAt": 1774819029747,
+      "finishedAt": 1774819041742,
+      "durationMs": 11995,
+      "detail": {
+        "accepted": 0,
+        "settleMs": 2000
+      }
+    },
+    {
+      "index": 13,
+      "name": "observe whether B auto-attaches A channel",
+      "status": "passed",
+      "startedAt": 1774819041743,
+      "finishedAt": 1774819051872,
+      "durationMs": 10129,
+      "detail": {
+        "status": "not-attached"
+      }
+    },
+    {
+      "index": 14,
+      "name": "resolve outgoing descriptor for A channel",
+      "status": "passed",
+      "startedAt": 1774819051876,
+      "finishedAt": 1774819077045,
+      "durationMs": 25169,
+      "detail": {
+        "remotePath": "vincenzoml+02@gmail.com:nearbytes-live-seq-mnc9d0ns-4q0qua",
+        "shareName": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+        "ownerEmail": "vincenzoml+02@gmail.com",
+        "accessLevel": "read",
+        "shareHandle": "kZlxxDbB",
+        "rootHandle": "kZlxxDbB"
+      }
+    },
+    {
+      "index": 15,
+      "name": "materialize B recipient mirror for A channel",
+      "status": "passed",
+      "startedAt": 1774819077046,
+      "finishedAt": 1774819077057,
+      "durationMs": 11,
+      "detail": {
+        "requestedMirrorDir": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-a-to-b-recipient-ld5wps",
+        "actualShareId": "share-mega-2-af5353",
+        "actualLocalPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-a-to-b-recipient-ld5wps",
+        "observation": {
+          "status": "not-attached"
+        }
+      }
+    },
+    {
+      "index": 16,
+      "name": "wait B recipient share ready for A channel",
+      "status": "passed",
+      "startedAt": 1774819077057,
+      "finishedAt": 1774819078060,
+      "durationMs": 1003,
+      "detail": {
+        "shareId": "share-mega-2-af5353",
+        "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-a-to-b-recipient-ld5wps",
+        "state": {
+          "status": "ready",
+          "detail": "MEGA readonly mirror is up to date.",
+          "badges": [
+            "Readonly"
+          ],
+          "lastSyncAt": 1774819077680
+        }
+      }
+    },
+    {
+      "index": 17,
+      "name": "invite B owner share to A as read-only",
+      "status": "passed",
+      "startedAt": 1774819078061,
+      "finishedAt": 1774819081074,
+      "durationMs": 3013,
+      "detail": {
+        "invitee": "vincenzoml+02@gmail.com",
+        "accessLevel": "read"
+      }
+    },
+    {
+      "index": 18,
+      "name": "accept A-side MEGA contact invites",
+      "status": "passed",
+      "startedAt": 1774819081074,
+      "finishedAt": 1774819093077,
+      "durationMs": 12003,
+      "detail": {
+        "accepted": 0,
+        "settleMs": 2000
+      }
+    },
+    {
+      "index": 19,
+      "name": "observe whether A auto-attaches B channel",
+      "status": "passed",
+      "startedAt": 1774819093080,
+      "finishedAt": 1774819103110,
+      "durationMs": 10030,
+      "detail": {
+        "status": "not-attached"
+      }
+    },
+    {
+      "index": 20,
+      "name": "resolve outgoing descriptor for B channel",
+      "status": "passed",
+      "startedAt": 1774819103110,
+      "finishedAt": 1774819104071,
+      "durationMs": 961,
+      "detail": {
+        "remotePath": "vincenzoml+03@gmail.com:nearbytes-live-seq-mnc9d0ns-4q0qua",
+        "shareName": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+        "ownerEmail": "vincenzoml+03@gmail.com",
+        "accessLevel": "read",
+        "shareHandle": "QcUGGZxD",
+        "rootHandle": "QcUGGZxD"
+      }
+    },
+    {
+      "index": 21,
+      "name": "materialize A recipient mirror for B channel",
+      "status": "passed",
+      "startedAt": 1774819104071,
+      "finishedAt": 1774819104080,
+      "durationMs": 9,
+      "detail": {
+        "requestedMirrorDir": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-b-to-a-recipient-esC2oy",
+        "actualShareId": "share-mega-2-397e9c",
+        "actualLocalPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-b-to-a-recipient-esC2oy",
+        "observation": {
+          "status": "not-attached"
+        }
+      }
+    },
+    {
+      "index": 22,
+      "name": "wait A recipient share ready for B channel",
+      "status": "passed",
+      "startedAt": 1774819104080,
+      "finishedAt": 1774819105083,
+      "durationMs": 1003,
+      "detail": {
+        "shareId": "share-mega-2-397e9c",
+        "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-b-to-a-recipient-esC2oy",
+        "state": {
+          "status": "ready",
+          "detail": "MEGA readonly mirror is up to date.",
+          "badges": [
+            "Readonly"
+          ],
+          "lastSyncAt": 1774819104958
+        }
+      }
+    },
+    {
+      "index": 23,
+      "name": "prove A owner sends two sequential payloads to B recipient",
+      "status": "passed",
+      "startedAt": 1774819105083,
+      "finishedAt": 1774819116246,
+      "durationMs": 11163,
+      "detail": {
+        "first": {
+          "relativePath": "blocks/6442aad54ec4fee2161f0075edc98a70f94a5f763a908df3ca04f40b8b46b043.bin",
+          "sha256": "6442aad54ec4fee2161f0075edc98a70f94a5f763a908df3ca04f40b8b46b043",
+          "uploadDurationMs": 5377,
+          "mirrorDurationMs": 1000
+        },
+        "second": {
+          "relativePath": "blocks/0f62bdd1997439b04d6d61db2eed07e213acffb45da484e5744baee7cd100bcc.bin",
+          "sha256": "0f62bdd1997439b04d6d61db2eed07e213acffb45da484e5744baee7cd100bcc",
+          "uploadDurationMs": 2761,
+          "mirrorDurationMs": 2023
+        }
+      }
+    },
+    {
+      "index": 24,
+      "name": "prove B owner sends two sequential payloads to A recipient",
+      "status": "failed",
+      "startedAt": 1774819116248,
+      "finishedAt": 1774819180922,
+      "durationMs": 64674,
+      "error": "Mirror file missing or mismatched: /var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-b-to-a-recipient-esC2oy/blocks/38d841ec61f835cbfa272b1e903abe39b847f6826c9ee6712ac9423dbcb2d71b.bin"
+    }
+  ],
+  "error": "Mirror file missing or mismatched: /var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-b-to-a-recipient-esC2oy/blocks/38d841ec61f835cbfa272b1e903abe39b847f6826c9ee6712ac9423dbcb2d71b.bin",
+  "diagnostics": {
+    "peerA": {
+      "label": "A",
+      "integrationStatePath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-A-LvrExA/integrations.json",
+      "accounts": [
+        {
+          "id": "acct-mega-1-bb3442",
+          "provider": "mega",
+          "label": "MEGA",
+          "email": "vincenzoml+02@gmail.com",
+          "state": "connected",
+          "detail": "MEGA native session is connected.",
+          "createdAt": 1774818955717,
+          "updatedAt": 1774818955717
+        }
+      ],
+      "shares": [
+        {
+          "id": "share-mega-1-2a21a8",
+          "role": "owner",
+          "label": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+          "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-A-LvrExA/main-root/mega/vincenzoml-02-gmail-com/nearbytes",
+          "remoteDescriptor": {
+            "remotePath": "/nearbytes-live-seq-mnc9d0ns-4q0qua",
+            "shareName": "nearbytes-live-seq-mnc9d0ns-4q0qua"
+          },
+          "state": {
+            "status": "idle",
+            "detail": "MEGA shared storage is being checked.",
+            "badges": [
+              "Checking"
+            ]
+          }
+        },
+        {
+          "id": "share-mega-2-397e9c",
+          "role": "recipient",
+          "label": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+          "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-b-to-a-recipient-esC2oy",
+          "remoteDescriptor": {
+            "managedShareId": "share-mega-2-397e9c",
+            "remotePath": "vincenzoml+03@gmail.com:nearbytes-live-seq-mnc9d0ns-4q0qua",
+            "shareName": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+            "ownerEmail": "vincenzoml+03@gmail.com",
+            "accessLevel": "read",
+            "shareHandle": "QcUGGZxD",
+            "rootHandle": "QcUGGZxD"
+          },
+          "state": {
+            "status": "idle",
+            "detail": "MEGA shared storage is being checked.",
+            "badges": [
+              "Checking"
+            ]
+          }
+        }
+      ],
+      "inventory": {
+        "error": "diag inventory A timed out within 10000ms"
+      }
+    },
+    "peerB": {
+      "label": "B",
+      "integrationStatePath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-B-KWgQfq/integrations.json",
+      "accounts": [
+        {
+          "id": "acct-mega-1-993776",
+          "provider": "mega",
+          "label": "MEGA",
+          "email": "vincenzoml+03@gmail.com",
+          "state": "connected",
+          "detail": "MEGA native session is connected.",
+          "createdAt": 1774818972074,
+          "updatedAt": 1774818972074
+        }
+      ],
+      "shares": [
+        {
+          "id": "share-mega-1-fa5634",
+          "role": "owner",
+          "label": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+          "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-mega-live-seq-B-KWgQfq/main-root/mega/vincenzoml-03-gmail-com/nearbytes",
+          "remoteDescriptor": {
+            "remotePath": "/nearbytes-live-seq-mnc9d0ns-4q0qua",
+            "shareName": "nearbytes-live-seq-mnc9d0ns-4q0qua"
+          },
+          "state": {
+            "status": "idle",
+            "detail": "MEGA shared storage is being checked.",
+            "badges": [
+              "Checking"
+            ]
+          }
+        },
+        {
+          "id": "share-mega-2-af5353",
+          "role": "recipient",
+          "label": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+          "localPath": "/var/folders/k0/ykhtbddn2vs268vc0qdb6ytw0000gn/T/nearbytes-a-to-b-recipient-ld5wps",
+          "remoteDescriptor": {
+            "managedShareId": "share-mega-2-af5353",
+            "remotePath": "vincenzoml+02@gmail.com:nearbytes-live-seq-mnc9d0ns-4q0qua",
+            "shareName": "nearbytes-live-seq-mnc9d0ns-4q0qua",
+            "ownerEmail": "vincenzoml+02@gmail.com",
+            "accessLevel": "read",
+            "shareHandle": "kZlxxDbB",
+            "rootHandle": "kZlxxDbB"
+          },
+          "state": {
+            "status": "idle",
+            "detail": "MEGA shared storage is being checked.",
+            "badges": [
+              "Checking"
+            ]
+          }
+        }
+      ],
+      "inventory": {
+        "provider": "mega",
+        "accounts": [
+          {
+            "accountId": "acct-mega-1-993776",
+            "email": "vincenzoml+03@gmail.com",
+            "incoming": [
+              {
+                "shareHandle": "1Ak0WboJ",
+                "rootHandle": "1Ak0WboJ",
+                "ownerEmail": "vincenzoml+02@gmail.com",
+                "label": "nearbytes-live-seq-mnc6wk0g-mqos88"
+              },
+              {
+                "shareHandle": "VU1UHb4Q",
+                "rootHandle": "VU1UHb4Q",
+                "ownerEmail": "vincenzoml+02@gmail.com",
+                "label": "nearbytes-live-seq-mnc6z5f4-66401o"
+              },
+              {
+                "shareHandle": "5RkwEZBb",
+                "rootHandle": "5RkwEZBb",
+                "ownerEmail": "vincenzoml+02@gmail.com",
+                "label": "nearbytes-live-seq-mnc73zo9-vqq5w4"
+              },
+              {
+                "shareHandle": "QcVVURpY",
+                "rootHandle": "QcVVURpY",
+                "ownerEmail": "vincenzoml+02@gmail.com",
+                "label": "nearbytes-live-seq-mnc7a2lc-pdvyha"
+              },
+              {
+                "shareHandle": "4NdDnR6Q",
+                "rootHandle": "4NdDnR6Q",
+                "ownerEmail": "vincenzoml+02@gmail.com",
+                "label": "nearbytes-live-seq-mnc7gwat-lrvmke"
+              },
+              {
+                "shareHandle": "4IlFwYiR",
+                "rootHandle": "4IlFwYiR",
+                "ownerEmail": "vincenzoml+02@gmail.com",
+                "label": "nearbytes-live-seq-mnc7nr0w-nxh3ih"
+              },
+              {
+                "shareHandle": "kZlxxDbB",
+                "rootHandle": "kZlxxDbB",
+                "ownerEmail": "vincenzoml+02@gmail.com",
+                "label": "nearbytes-live-seq-mnc9d0ns-4q0qua"
+              }
+            ],
+            "outgoing": [
+              {
+                "shareHandle": "BdsmDDrZ",
+                "rootHandle": "BdsmDDrZ",
+                "ownerEmail": "vincenzoml+03@gmail.com",
+                "label": "nearbytes-live-seq-mnc73zo9-vqq5w4"
+              },
+              {
+                "shareHandle": "sA83lZLb",
+                "rootHandle": "sA83lZLb",
+                "ownerEmail": "vincenzoml+03@gmail.com",
+                "label": "nearbytes-live-seq-mnc7a2lc-pdvyha"
+              },
+              {
+                "shareHandle": "oRdSRBBC",
+                "rootHandle": "oRdSRBBC",
+                "ownerEmail": "vincenzoml+03@gmail.com",
+                "label": "nearbytes-live-seq-mnc7gwat-lrvmke"
+              },
+              {
+                "shareHandle": "BRcVhDIJ",
+                "rootHandle": "BRcVhDIJ",
+                "ownerEmail": "vincenzoml+03@gmail.com",
+                "label": "nearbytes-live-seq-mnc7nr0w-nxh3ih"
+              },
+              {
+                "shareHandle": "QcUGGZxD",
+                "rootHandle": "QcUGGZxD",
+                "ownerEmail": "vincenzoml+03@gmail.com",
+                "label": "nearbytes-live-seq-mnc9d0ns-4q0qua"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
