@@ -2193,13 +2193,31 @@ export class MegaTransportAdapter {
   ): Promise<boolean> {
     const userHandle = invitee.u.trim();
     if (!isMegaUserHandle(userHandle)) {
+      this.runtime.logger.log('MEGA secure pending outshare key skipped: invitee is not a resolved user handle.', {
+        email: session.email,
+        invitee: invitee.u,
+        shareHandle,
+      });
       return false;
     }
     if (!keyManager.privateCu25519 || keyManager.privateCu25519.length !== 32) {
+      this.runtime.logger.warn('MEGA secure pending outshare key skipped: sender key-manager lacks a usable private Cu25519 key.', {
+        email: session.email,
+        invitee: userHandle,
+        shareHandle,
+        hasPrivateCu25519: Boolean(keyManager.privateCu25519),
+        privateCu25519Length: keyManager.privateCu25519?.length ?? 0,
+      });
       return false;
     }
     const authMethod = keyManager.authRingEd25519.get(userHandle) ?? -1;
     if (authMethod < MEGA_AUTH_METHOD_SEEN) {
+      this.runtime.logger.warn('MEGA secure pending outshare key skipped: invitee auth ring is below SEEN.', {
+        email: session.email,
+        invitee: userHandle,
+        shareHandle,
+        authMethod,
+      });
       return false;
     }
 
@@ -2212,6 +2230,12 @@ export class MegaTransportAdapter {
         this.runtime.logger
       );
       if (!publicCu25519 || publicCu25519.length !== 32) {
+        this.runtime.logger.warn('MEGA secure pending outshare key skipped: invitee public Cu25519 key is unavailable.', {
+          email: session.email,
+          invitee: userHandle,
+          shareHandle,
+          publicCu25519Length: publicCu25519?.length ?? 0,
+        });
         return false;
       }
 
@@ -2226,6 +2250,11 @@ export class MegaTransportAdapter {
         session,
         signal
       );
+      this.runtime.logger.log('MEGA secure pending outshare key published for invitee.', {
+        email: session.email,
+        invitee: userHandle,
+        shareHandle,
+      });
       return true;
     } catch (error) {
       this.runtime.logger.warn('MEGA failed to send a secure pending outshare key to the invitee.', {
@@ -5508,6 +5537,14 @@ async function resolveMegaKeyManagerShareKeys(
     !keyManager.privateCu25519 ||
     keyManager.privateCu25519.length !== 32
   ) {
+    if (keyManager.pendingInShares.size > 0) {
+      logger?.warn?.('MEGA pending inshare keys are present but recipient key-manager state cannot decrypt them.', {
+        email: session.email,
+        pendingInShareCount: keyManager.pendingInShares.size,
+        hasPrivateCu25519: Boolean(keyManager.privateCu25519),
+        privateCu25519Length: keyManager.privateCu25519?.length ?? 0,
+      });
+    }
     return resolved;
   }
 
@@ -5526,24 +5563,52 @@ async function resolveMegaKeyManagerShareKeys(
       continue;
     }
     if (pendingInShare.encryptedShareKey.length === 0) {
+      logger?.warn?.('MEGA pending inshare entry has no encrypted share key payload.', {
+        email: session.email,
+        shareHandle,
+        ownerHandle: pendingInShare.ownerHandle,
+      });
       continue;
     }
     const authMethod = keyManager.authRingEd25519.get(pendingInShare.ownerHandle) ?? -1;
     if (authMethod < MEGA_AUTH_METHOD_SEEN) {
+      logger?.warn?.('MEGA pending inshare key skipped because the sharer auth ring is below SEEN.', {
+        email: session.email,
+        shareHandle,
+        ownerHandle: pendingInShare.ownerHandle,
+        authMethod,
+      });
       continue;
     }
 
     const ownerPublicKey = await getOwnerPublicCu25519(pendingInShare.ownerHandle);
     if (!ownerPublicKey || ownerPublicKey.length !== 32) {
+      logger?.warn?.('MEGA pending inshare key skipped because the sharer public Cu25519 key is unavailable.', {
+        email: session.email,
+        shareHandle,
+        ownerHandle: pendingInShare.ownerHandle,
+        publicCu25519Length: ownerPublicKey?.length ?? 0,
+      });
       continue;
     }
 
     const pairwiseKey = deriveMegaPairwiseKey(keyManager.privateCu25519, ownerPublicKey);
     const decryptedShareKey = decryptAesEcb(pendingInShare.encryptedShareKey, pairwiseKey);
     if (decryptedShareKey.length < 16) {
+      logger?.warn?.('MEGA pending inshare key decrypted to an invalid length.', {
+        email: session.email,
+        shareHandle,
+        ownerHandle: pendingInShare.ownerHandle,
+        decryptedLength: decryptedShareKey.length,
+      });
       continue;
     }
     resolved.set(shareHandle, Buffer.from(decryptedShareKey.subarray(0, 16)));
+    logger?.log?.('MEGA pending inshare key resolved from pairwise encryption.', {
+      email: session.email,
+      shareHandle,
+      ownerHandle: pendingInShare.ownerHandle,
+    });
   }
 
   return resolved;
