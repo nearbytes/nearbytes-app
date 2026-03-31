@@ -78,7 +78,6 @@ const MEGA_RATE_LIMIT_RETRY_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 18_
 const MEGA_TRANSIENT_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 const MEGA_TRANSIENT_SYNC_COOLDOWN_MS = 30_000;
 const MEGA_POST_UPLOAD_SETTLE_MS = 30_000;
-const MEGA_PENDING_SHARE_KEY_RETRY_MS = 5_000;
 const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 500;
 const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
 const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
@@ -1578,36 +1577,6 @@ export class MegaTransportAdapter {
     return true;
   }
 
-  private schedulePromptSyncRetry(
-    share: ManagedShare,
-    account: ProviderAccount,
-    delayMs = MEGA_PENDING_SHARE_KEY_RETRY_MS
-  ): void {
-    if (this.pendingSyncRetryTimers.has(share.id)) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      this.pendingSyncRetryTimers.delete(share.id);
-      if (this.isSyncCoolingDown(share.id)) {
-        return;
-      }
-      this.runSyncLoop(share, account).catch((error) => {
-        this.runtime.logger.warn('MEGA pending shared-folder retry failed.', error);
-      });
-    }, delayMs);
-    timer.unref?.();
-    this.pendingSyncRetryTimers.set(share.id, timer);
-  }
-
-  private clearPromptSyncRetry(shareId: string): void {
-    const timer = this.pendingSyncRetryTimers.get(shareId);
-    if (!timer) {
-      return;
-    }
-    clearTimeout(timer);
-    this.pendingSyncRetryTimers.delete(shareId);
-  }
-
   private async logDevShareInventoryIfChanged(account: ProviderAccount, reason: 'boot' | 'change'): Promise<void> {
     if (!isDevLogsEnabled()) {
       return;
@@ -1772,178 +1741,6 @@ export class MegaTransportAdapter {
       });
       throw error;
     }
-  }
-
-  private async syncWritableIncomingShare(share: ManagedShare, account: ProviderAccount, signal?: AbortSignal): Promise<void> {
-    const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
-    console.log('[MEGA:recipient-sync] starting writable shared-folder sync.', {
-      shareId: share.id,
-      accountId: account.id,
-      remotePath,
-      localPath: share.localPath,
-    });
-    const priorState = this.syncStates.get(share.id);
-    const keepReadyWhileRefreshing = priorState?.status === 'ready' && priorState.badges.includes('Synced');
-    if (!keepReadyWhileRefreshing) {
-      this.syncStates.set(share.id, {
-        status: 'syncing',
-        detail: 'Syncing the MEGA shared folder.',
-        badges: ['Writable', 'Syncing'],
-      });
-    }
-
-    try {
-      await fs.mkdir(share.localPath, { recursive: true });
-      await ensureMegaOwnerLocalStructure(share.localPath);
-      const session = await this.getAccountSession(account, signal);
-      const resolved = await this.resolveWritableIncomingShareContext(share, account, session, signal);
-      console.log('[MEGA:recipient-sync] remote root resolved.', {
-        shareId: share.id,
-        rootHandle: resolved.root.root.handle,
-        rootName: resolved.root.root.name,
-        remotePath: resolved.root.path,
-        scsn: resolved.root.scsn,
-        accessLevel: getStringDescriptor(resolved.descriptor, 'accessLevel'),
-      });
-      this.shareRootHandles.set(share.id, resolved.root.root.handle);
-      const worker = new MirrorWorker();
-      if (!resolved.shareCrypto && resolved.root.root.shareHandle) {
-        this.runtime.logger.warn(
-          'MEGA recipient sync: shared folder has no decryptable share key. Uploaded files may be undecryptable by collaborators.',
-          { shareId: share.id, shareHandle: resolved.root.root.shareHandle, email: session.email }
-        );
-      }
-      const result = await worker.sync(
-        share.localPath,
-        new MegaOwnerRemoteAdapter(
-          this.fetchImpl,
-          this.apiClient,
-          session,
-          resolved.root,
-          resolved.shareCrypto,
-          signal,
-          resolved.extraShareKeys
-        )
-      );
-      console.log('[MEGA:recipient-sync] writable shared-folder sync completed.', {
-        shareId: share.id,
-        uploaded: result.uploaded,
-        downloaded: result.downloaded,
-      });
-      if (resolved.root.scsn) {
-        this.shareScsn.set(share.id, resolved.root.scsn);
-      }
-      this.shareKnownHandles.set(share.id, collectTreeHandles(resolved.root.tree));
-      if (result.uploaded.length > 0) {
-        this.markSyncCooldown(share.id, MEGA_POST_UPLOAD_SETTLE_MS);
-      } else {
-        this.syncRetryCooldowns.delete(share.id);
-      }
-      this.clearPromptSyncRetry(share.id);
-      this.syncStates.set(share.id, {
-        status: 'ready',
-        detail: summarizeWritableRecipientMirrorResult(remotePath, result),
-        badges: ['Writable', 'Synced'],
-        lastSyncAt: this.runtime.now(),
-      });
-    } catch (error) {
-      console.error('[MEGA:recipient-sync] writable shared-folder sync FAILED.', {
-        shareId: share.id,
-        remotePath,
-        error: error instanceof Error ? error.stack ?? error.message : String(error),
-      });
-      const transientRetry = isMegaTransientSyncError(error) || (error instanceof Error && error.name === 'AbortError');
-      if (transientRetry) {
-        this.markSyncCooldown(share.id);
-        this.syncStates.set(share.id, {
-          status: 'ready',
-          detail:
-            'MEGA temporarily asked Nearbytes to retry shared-folder sync. The local writable mirror stays available and the next sync cycle will retry automatically.',
-          badges: ['Writable', 'Retrying'],
-          diagnostic: {
-            code: 'MEGA_SHARED_SYNC_RETRYING',
-            title: 'MEGA shared-folder sync retry scheduled',
-            summary: 'Retrying automatically',
-            detail:
-              'MEGA returned a transient lock, rate limit, or network error while syncing this shared folder. Nearbytes will retry automatically.',
-          },
-        });
-        return;
-      }
-      const failure = describeMegaSyncFailure(error, share.localPath, signal);
-      const needsAuth = /session|auth|credential|login|reconnect|MEGA API error -15/i.test(failure.detail);
-      const localMirrorAvailable = await hasUsableMegaMirror(share.localPath);
-      const shareKeyPending = failure.code === 'MEGA_SHARE_KEY_PENDING';
-      if (shareKeyPending) {
-        await this.seedPendingRecipientShareCursor(share, account, signal);
-        await this.logPendingRecipientRootDiagnostics(share, account, signal);
-        this.schedulePromptSyncRetry(share, account);
-      }
-      const keepMirrorReady =
-        localMirrorAvailable &&
-        !needsAuth &&
-        (failure.code === MEGA_SYNC_TIMEOUT_CODE ||
-          failure.code === 'MEGA_FETCH_FAILED' ||
-          failure.code === 'MEGA_API_LOCKED' ||
-          failure.code === 'MEGA_RATE_LIMITED' ||
-          failure.code === 'MEGA_LOCAL_MIRROR_CHANGED');
-      this.syncStates.set(share.id, {
-        status: keepMirrorReady ? 'ready' : shareKeyPending ? 'syncing' : needsAuth ? 'needs-auth' : 'attention',
-        detail: keepMirrorReady
-          ? 'MEGA shared folder is available locally. The latest sync did not complete and will retry automatically.'
-          : shareKeyPending
-            ? failure.detail
-            : describeMegaWritableShareSyncFailure(error, remotePath),
-        badges: keepMirrorReady
-          ? ['Writable', 'Retrying']
-          : shareKeyPending
-            ? ['Writable', 'Retrying']
-            : ['Writable', needsAuth ? 'Reconnect' : 'Repair'],
-        diagnostic: {
-          code: failure.code,
-          title: failure.summary,
-          summary: failure.summary,
-          detail: shareKeyPending ? failure.detail : describeMegaWritableShareSyncFailure(error, remotePath),
-        },
-      });
-      throw error;
-    }
-  }
-
-  private async resolveWritableIncomingShareContext(
-    share: ManagedShare,
-    account: ProviderAccount,
-    session: MegaSession,
-    signal?: AbortSignal
-  ): Promise<{
-    descriptor: Record<string, unknown>;
-    root: MegaOwnerRemoteRoot;
-    shareCrypto: MegaShareCryptoContext | undefined;
-    extraShareKeys: ReadonlyMap<string, Buffer>;
-  }> {
-    const descriptor = await this.resolveIncomingShareDescriptor(account, share.remoteDescriptor);
-    const rootHandle = getStringDescriptor(descriptor, 'rootHandle') ?? getStringDescriptor(descriptor, 'shareHandle');
-    if (!rootHandle) {
-      throw new Error('MEGA share descriptor is missing a root handle.');
-    }
-
-    const fetched = await this.fetchPartialTreeWithSnapshot(session, rootHandle, signal, {
-      allowTransientFullFallback: true,
-      expectedRootName: getStringDescriptor(descriptor, 'shareName'),
-    });
-    const keyManager = await this.fetchKeyManagerState(session, signal, { includePendingInShareKeys: true });
-    const extraShareKeys = collectMegaShareKeys(fetched.snapshot, session, keyManager.shareKeys);
-    return {
-      descriptor,
-      root: {
-        path: getStringDescriptor(descriptor, 'remotePath') ?? fetched.tree.root.name,
-        root: fetched.tree.root,
-        tree: fetched.tree,
-        scsn: fetched.snapshot.scsn?.trim(),
-      },
-      shareCrypto: resolveWritableMegaShareCryptoContext(descriptor, fetched.tree.root, extraShareKeys),
-      extraShareKeys,
-    };
   }
 
   private async getAccountSession(account: ProviderAccount, signal?: AbortSignal): Promise<MegaSession> {
@@ -3329,22 +3126,6 @@ function summarizeOwnerMirrorResult(
     : `MEGA owner sync is active for ${remotePath}.`;
 }
 
-function summarizeWritableRecipientMirrorResult(
-  remotePath: string,
-  result: { uploaded: readonly string[]; downloaded: readonly string[] }
-): string {
-  const parts: string[] = [];
-  if (result.uploaded.length > 0) {
-    parts.push(`${result.uploaded.length} uploaded`);
-  }
-  if (result.downloaded.length > 0) {
-    parts.push(`${result.downloaded.length} downloaded`);
-  }
-  return parts.length > 0
-    ? `MEGA shared-folder sync is active for ${remotePath}. ${parts.join(', ')}.`
-    : `MEGA shared-folder sync is active for ${remotePath}.`;
-}
-
 function findChildNodeByName(
   tree: DecryptedMegaTree,
   parentHandle: string,
@@ -4182,17 +3963,6 @@ function describeMegaOwnerSyncFailure(error: unknown, remotePath: string): strin
   return `Nearbytes could not sync the writable MEGA owner folder ${remotePath}. ${message}`.trim();
 }
 
-function describeMegaWritableShareSyncFailure(error: unknown, remotePath: string): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/timed out/i.test(message)) {
-    return `Nearbytes timed out while syncing the MEGA shared folder ${remotePath}. Open the runtime logs and retry.`;
-  }
-  if (/login|session|auth|credential|password/i.test(message)) {
-    return `Reconnect MEGA to resume the writable shared-folder sync for ${remotePath}. ${message}`.trim();
-  }
-  return `Nearbytes could not sync the writable MEGA shared folder ${remotePath}. ${message}`.trim();
-}
-
 function normalizeMegaRemoteDisplayPath(value: string): string {
   const trimmed = value.trim().replace(/\\/g, '/');
   if (!trimmed) {
@@ -4297,38 +4067,6 @@ function resolveMegaInviteAccessLevel(accessLevel: string | undefined): number {
 function megaAccessLevelAllowsWrites(accessLevel: string | undefined): boolean {
   const normalized = accessLevel?.trim().toLowerCase() ?? '';
   return normalized === 'read/write' || normalized === 'full access' || normalized === 'owner';
-}
-
-function isWritableIncomingMegaShare(share: ManagedShare): boolean {
-  // Nearbytes now treats every accepted incoming MEGA share as a local read-only input.
-  // Provider-level MEGA permissions are preserved for presentation, but runtime publication
-  // remains owner-only through the account's own writable root.
-  return false;
-}
-
-function resolveWritableMegaShareCryptoContext(
-  descriptor: Record<string, unknown>,
-  root: DecryptedMegaNode,
-  shareKeys: ReadonlyMap<string, Buffer>
-): MegaShareCryptoContext | undefined {
-  const candidateHandles = uniqueTrimmedStrings([
-    getStringDescriptor(descriptor, 'shareHandle') ?? '',
-    getStringDescriptor(descriptor, 'rootHandle') ?? '',
-    root.shareHandle ?? '',
-    root.handle,
-    ...listMegaNodeKeyOwners(root.encodedKey),
-  ]);
-
-  for (const handle of candidateHandles) {
-    const shareKey = shareKeys.get(handle);
-    if (shareKey) {
-      return {
-        shareHandle: root.shareHandle?.trim() || handle,
-        shareKey: Buffer.from(shareKey),
-      };
-    }
-  }
-  return undefined;
 }
 
 function incomingShareMatches(candidate: Record<string, unknown>, target: Record<string, unknown>): boolean {
