@@ -152,7 +152,7 @@
   const DEFAULT_RESERVE_PERCENT = 5;
   const DISCOVERY_SCAN_MAX_DEPTH = 1;
   const DISCOVERY_SCAN_MAX_DIRECTORIES = 600;
-  const PANEL_REQUEST_TIMEOUT_MS = 8_000;
+  const PANEL_REQUEST_TIMEOUT_MS: number | null = null;
   const INITIAL_ROOTS_REQUEST_TIMEOUT_MS = 2_500;
   const BACKGROUND_ROOTS_FALLBACK_TIMEOUT_MS = 2_500;
   const INITIAL_ROOTS_REQUEST_MAX_WAIT_MS = 20_000;
@@ -750,7 +750,7 @@
     if (pending) {
       return pending.detail || 'Pending signup confirmations are no longer supported in-app. Complete setup on mega.io, then sign in here.';
     }
-    return 'Sign in here so Nearbytes can create live mirror locations, keep them synced, and send MEGA storage invites.';
+    return 'Sign in here so Nearbytes can create or reuse your writable MEGA Nearbytes root, keep incoming shares refreshed locally, and send storage invites.';
   }
 
   async function submitMegaAction(provider: ProviderCatalogEntry): Promise<void> {
@@ -1227,8 +1227,8 @@
       return entry.isConnected
         ? megaProviderReconnectIssue()
           ? 'Nearbytes can see the MEGA account, but MEGA requires account recovery before incoming-share mirroring can resume.'
-          : 'Mirror incoming MEGA shares and public links in Nearbytes, and expose your local MEGA owner root here for quick access.'
-        : 'Mirror incoming MEGA shares and public links in Nearbytes.';
+          : 'Use MEGA as a Nearbytes publication channel: your own account stays writable, while incoming shares are refreshed here as local read-only inputs.'
+        : 'Use MEGA for Nearbytes publication and incoming-share reads.';
     }
     return entry.setup.detail || entry.description;
   }
@@ -2087,18 +2087,24 @@
     timeoutMs = PANEL_REQUEST_TIMEOUT_MS
   ): Promise<T> {
     const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
+    const timer =
+      timeoutMs !== null && timeoutMs > 0
+        ? setTimeout(() => {
+            controller.abort();
+          }, timeoutMs)
+        : null;
     try {
       return await run(controller.signal);
     } catch (error) {
       if (isAbortError(error)) {
-        throw new Error(`${label} timed out after ${Math.ceil(timeoutMs / 1000)}s.`);
+        const timeoutLabel = timeoutMs !== null && timeoutMs > 0 ? `${Math.ceil(timeoutMs / 1000)}s` : 'the request window';
+        throw new Error(`${label} timed out after ${timeoutLabel}.`);
       }
       throw error;
     } finally {
-      clearTimeout(timer);
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
     }
   }
 
@@ -2321,7 +2327,7 @@
     if (!helperPath) {
       return {
         headline: 'Using the built-in MEGA runtime',
-        detail: provider.setup.detail || 'Nearbytes talks to MEGA directly, mirrors read-only shares, and syncs writable shared folders.',
+        detail: provider.setup.detail || 'Nearbytes talks to MEGA directly, publishes through your own writable MEGA root, and refreshes incoming shares as local copies.',
         pathValue: null,
       };
     }
@@ -2468,20 +2474,15 @@
   function managedShareNarrative(summary: ManagedShareSummary): string {
     if (summary.state.status === 'ready') {
       if (summary.share.provider === 'mega' && summary.share.role === 'owner') {
-        return 'This is your local Nearbytes root for this MEGA account. Nearbytes keeps this writable folder in sync with MEGA and retries automatically after transient provider errors.';
+        return 'This is your writable Nearbytes publication root for this MEGA account. Nearbytes publishes your updates here, keeps it synced with MEGA, and retries automatically after transient provider errors.';
       }
       if (summary.share.provider === 'mega' && summary.share.role === 'recipient') {
         const ownerEmail = managedShareOwnerEmail(summary);
-        if (!summary.share.capabilities.includes('write')) {
-          return ownerEmail
-            ? `This is an automatic local read-only copy of the MEGA location shared with you by ${ownerEmail}. Nearbytes refreshes it from MEGA automatically, but it does not upload changes from this folder back to MEGA.`
-            : 'This is an automatic local read-only copy of a MEGA location shared with you. Nearbytes refreshes it from MEGA automatically, but it does not upload changes from this folder back to MEGA.';
-        }
         return ownerEmail
-          ? `This is the local mirror of the MEGA location shared with you by ${ownerEmail}. The folder below should stay in sync with the provider copy.`
-          : 'This is the local mirror of a MEGA location shared with you. The folder below should stay in sync with the provider copy.';
+          ? `This is an automatic local copy of the MEGA location shared with you by ${ownerEmail}. Nearbytes reads from it here, but it never publishes your changes back into ${ownerEmail}'s folder directly.`
+          : 'This is an automatic local copy of a MEGA location shared with you. Nearbytes reads from it here, but it never publishes your changes back into the other account directly.';
       }
-      return 'This live location is ready. The folder below is the local mirror that should stay in sync with the provider copy.';
+      return 'This live location is ready. Nearbytes keeps the local copy aligned with the provider and uses your configured writable destinations for publication.';
     }
     if (summary.state.status === 'attention') {
       return summary.state.detail || 'This live location needs attention before Nearbytes can rely on it.';
@@ -2646,7 +2647,7 @@
       return `Connect ${provider.label} first, then Nearbytes will manage its shares here.`;
     }
     if (provider.provider === 'mega') {
-      return 'Accepted incoming MEGA shares appear here as synced local folders. Your own MEGA Nearbytes root also appears here for local access.';
+      return 'Accepted incoming MEGA shares appear here as local copies for reading and merge input. Your own writable MEGA Nearbytes root also appears here as the publication destination.';
     }
     return 'Create a storage location here to make it available in Nearbytes.';
   }
@@ -2819,7 +2820,7 @@
   }
 
   function incomingShareKindLabel(offer: IncomingManagedShareOffer): string {
-    return incomingShareActionLabel(offer) === 'Add shared folder' ? 'shared folder' : 'mirror';
+    return incomingShareActionLabel(offer) === 'Add mirror' ? 'mirror' : 'incoming share';
   }
 
   function incomingManagedShareTitle(offer: IncomingManagedShareOffer): string {
@@ -3818,7 +3819,7 @@
     }, delayMs);
   }
 
-  async function requestRootsConfig(includeUsage: boolean, timeoutMs: number) {
+  async function requestRootsConfig(includeUsage: boolean, timeoutMs: number | null) {
     return withPanelRequestTimeout(
       'Storage configuration',
       (signal) => getRootsConfig({ signal, includeUsage }),
@@ -3828,11 +3829,11 @@
 
   async function loadRootsConfigWithRetry(options: { keepVisible: boolean }) {
     const timeoutMs = options.keepVisible ? PANEL_REQUEST_TIMEOUT_MS : INITIAL_ROOTS_REQUEST_TIMEOUT_MS;
-    const maxWaitMs = options.keepVisible ? timeoutMs : INITIAL_ROOTS_REQUEST_MAX_WAIT_MS;
+    const maxWaitMs = options.keepVisible ? null : INITIAL_ROOTS_REQUEST_MAX_WAIT_MS;
     const startedAt = Date.now();
     let lastError: unknown = null;
 
-    while (Date.now() - startedAt < maxWaitMs) {
+    while (maxWaitMs === null || Date.now() - startedAt < maxWaitMs) {
       try {
         return await requestRootsConfig(options.keepVisible, timeoutMs);
       } catch (error) {
@@ -4567,7 +4568,7 @@
       successMessage = response.summary.attachments.length > 0
         ? `${offer.label} is attached and ready in this hub.`
         : writable
-          ? `${offer.label} is connected as a writable shared folder. Nearbytes can sync changes both ways now.`
+          ? `${offer.label} is connected as an incoming share. Nearbytes reads from this local copy, while your own updates still publish through your MEGA Nearbytes root.`
           : `${offer.label} is connected as a read-only mirror. Nearbytes can read from it now.`;
       await loadPanel();
       if (response.summary.state.status === 'syncing') {
@@ -5111,6 +5112,11 @@
               appears under saved locations. If nothing lists here, confirm the owner shared to <strong>this</strong> account’s email, then open storage setup and refresh
               {providerKey === 'mega' ? 'MEGA status' : 'this provider'}.
             </p>
+            {#if providerKey === 'mega'}
+              <p class="muted-copy">
+                Nearbytes treats accepted MEGA shares as local read-only inputs. It reads and merges from them here, but it publishes your own updates only through your MEGA Nearbytes root.
+              </p>
+            {/if}
           </div>
           {#if incomingInvitesHere.length > 0 || incomingSharesHere.length > 0}
             <div class="compact-share-grid">

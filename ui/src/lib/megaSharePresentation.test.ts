@@ -31,7 +31,7 @@ describe('mega share presentation', () => {
     ).toBe('Full access');
   });
 
-  it('describes writable incoming MEGA shares before acceptance', () => {
+  it('describes writable incoming MEGA shares as local copies before acceptance', () => {
     expect(
       getIncomingSharePresentation(
         {
@@ -41,8 +41,8 @@ describe('mega share presentation', () => {
         { hasVolumeTarget: false }
       )
     ).toEqual({
-      actionLabel: 'Add shared folder',
-      metaDetail: 'Saved as a shared folder',
+      actionLabel: 'Add incoming share',
+      metaDetail: 'Saved as a local copy',
       statusBadge: {
         label: 'Read and write',
         tone: 'good',

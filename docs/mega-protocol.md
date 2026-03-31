@@ -142,7 +142,7 @@ For readonly block ingestion the minimal useful subset is `u`, `t`, `d`, and sha
 
 ## Share Commands
 
-Writable and invitation flows are separate from readonly sync and should be layered on after authenticated readonly resume works.
+Writable owner-share flows and invitation handling are now implemented on top of the authenticated sync path. Incoming shares are still materialized as local read-only inputs in Nearbytes even when the provider granted broader write permissions.
 
 Relevant command builders:
 
@@ -154,7 +154,7 @@ Relevant command builders:
 
 Important detail:
 
-- Share packets can contain owner keys, share keys, signatures, and pending-share state. Nearbytes should not improvise this cryptography; it needs to follow the SDK structures exactly when the writable path is implemented.
+- Share packets can contain owner keys, share keys, signatures, and pending-share state. Nearbytes should not improvise this cryptography; it needs to follow the SDK structures exactly, including the already-implemented writable owner-share and invite flows.
 
 ## Implementation Order
 
@@ -166,4 +166,4 @@ Nearbytes should replace the CLI in this order:
 4. Readonly incoming-share materialization into local `blocks/` and `channels/` roots.
 5. Writable node mutations and share management.
 
-That order matches the SDK architecture and directly addresses the main product requirement: efficient readonly reconnect and transparent block gathering from saved app-side connection data.
+That order matched the SDK architecture and directly addressed the first product requirement: efficient readonly reconnect and transparent block gathering from saved app-side connection data. The current product layer now builds writable publication and invite handling on top of that base.

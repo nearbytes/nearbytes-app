@@ -2851,17 +2851,10 @@ export class ManagedShareService {
       return stateSnapshot;
     }
 
-    const liveSyncIncomingShare = supportsLiveSyncForMegaIncomingShare(share);
     const nextCapabilities = uniqueStrings(
-      share.capabilities.filter((capability) => capability !== 'invite' && (liveSyncIncomingShare || capability !== 'write'))
+      share.capabilities.filter((capability) => capability !== 'invite' && capability !== 'write')
     );
-    const normalizedCapabilities = uniqueStrings([
-      'mirror',
-      'read',
-      liveSyncIncomingShare ? 'write' : 'accept',
-      ...nextCapabilities,
-      ...(liveSyncIncomingShare ? ['accept'] : []),
-    ]);
+    const normalizedCapabilities = uniqueStrings(['mirror', 'read', 'accept', ...nextCapabilities]);
     const capabilitiesChanged =
       normalizedCapabilities.length !== share.capabilities.length ||
       normalizedCapabilities.some((capability, index) => capability !== share.capabilities[index]);
@@ -3765,35 +3758,11 @@ function managedShareAllowsWrites(share: ManagedShare): boolean {
   if (
     normalizeProvider(share.provider) === 'mega' &&
     share.role === 'recipient' &&
-    isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor)) &&
-    !supportsLiveSyncForMegaIncomingShare(share)
+    isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor))
   ) {
     return false;
   }
   return true;
-}
-
-function supportsLiveSyncForMegaIncomingShare(share: ManagedShare): boolean {
-  if (
-    normalizeProvider(share.provider) !== 'mega' ||
-    share.role !== 'recipient' ||
-    !isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor))
-  ) {
-    return false;
-  }
-  const accessLevel =
-    typeof share.remoteDescriptor.accessLevel === 'string'
-      ? share.remoteDescriptor.accessLevel.trim().toLowerCase()
-      : '';
-  if (accessLevel === 'read') {
-    return false;
-  }
-  if (accessLevel === 'read/write' || accessLevel === 'full access' || accessLevel === 'owner') {
-    return true;
-  }
-  return (
-    share.capabilities.includes('write')
-  );
 }
 
 function buildRemoteDescriptorMatchKeys(provider: string, descriptor: Record<string, unknown>): string[] {

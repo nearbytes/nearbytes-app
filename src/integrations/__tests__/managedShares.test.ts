@@ -2203,7 +2203,7 @@ describe('ManagedShareService', () => {
     expect(recipientShare?.storage?.writable).toBe(false);
   });
 
-  it('repairs accepted incoming MEGA shares into writable local copies when access level allows writes', async () => {
+  it('keeps accepted incoming MEGA shares read-only locally even when provider access allows writes', async () => {
     const { integrationStatePath, service } = await createHarness();
     const incomingLocalPath = path.join(path.dirname(integrationStatePath), 'incoming-mega-writable-share');
     await fs.mkdir(incomingLocalPath, { recursive: true });
@@ -2250,11 +2250,11 @@ describe('ManagedShareService', () => {
 
     const shares = await service.listManagedShares();
     const recipientShare = shares.shares.find((entry) => entry.share.id === 'share-mega-writable-1');
-    expect(recipientShare?.share.capabilities).toEqual(['mirror', 'read', 'write', 'accept']);
-    expect(recipientShare?.storage?.writable).toBe(true);
+    expect(recipientShare?.share.capabilities).toEqual(['mirror', 'read', 'accept']);
+    expect(recipientShare?.storage?.writable).toBe(false);
   });
 
-  it('keeps legacy accepted incoming MEGA shares writable when persisted capabilities already allow writes', async () => {
+  it('repairs legacy accepted incoming MEGA shares into read-only local copies', async () => {
     const { integrationStatePath, service } = await createHarness();
     const incomingLocalPath = path.join(path.dirname(integrationStatePath), 'incoming-mega-legacy-writable-share');
     await fs.mkdir(incomingLocalPath, { recursive: true });
@@ -2300,8 +2300,8 @@ describe('ManagedShareService', () => {
 
     const shares = await service.listManagedShares();
     const recipientShare = shares.shares.find((entry) => entry.share.id === 'share-mega-legacy-writable-1');
-    expect(recipientShare?.share.capabilities).toEqual(['mirror', 'read', 'write', 'accept']);
-    expect(recipientShare?.storage?.writable).toBe(true);
+    expect(recipientShare?.share.capabilities).toEqual(['mirror', 'read', 'accept']);
+    expect(recipientShare?.storage?.writable).toBe(false);
   });
 
   it('forwards optional invite access level to the provider adapter', async () => {

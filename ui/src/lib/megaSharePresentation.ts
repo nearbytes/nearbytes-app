@@ -60,8 +60,8 @@ export function getIncomingSharePresentation(
   if (offer.provider === 'mega' && accessLevel) {
     const writable = isWritableAccessLevel(accessLevel);
     return {
-      actionLabel: options.hasVolumeTarget ? 'Use in this hub' : writable ? 'Add shared folder' : 'Add mirror',
-      metaDetail: options.hasVolumeTarget ? 'Ready to add' : writable ? 'Saved as a shared folder' : 'Saved as a mirror',
+      actionLabel: options.hasVolumeTarget ? 'Use in this hub' : writable ? 'Add incoming share' : 'Add mirror',
+      metaDetail: options.hasVolumeTarget ? 'Ready to add' : writable ? 'Saved as a local copy' : 'Saved as a mirror',
       statusBadge: {
         label: formatAccessLevelLabel(accessLevel),
         tone: writable ? 'good' : 'muted',
