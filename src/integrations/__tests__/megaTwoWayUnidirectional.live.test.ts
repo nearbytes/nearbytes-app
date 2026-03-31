@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { describe, expect, it } from 'vitest';
+import type { RootsConfig } from '../../config/roots.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import { ManagedShareService } from '../managedShares.js';
 import {
@@ -42,6 +43,8 @@ for (const rawLine of existsSync(envE2ePath) ? readFileSync(envE2ePath, 'utf8').
 const emailA = process.env.NEARBYTES_E2E_MEGA_OWNER_EMAIL?.trim() ?? '';
 const emailB = process.env.NEARBYTES_E2E_MEGA_RECIPIENT_EMAIL?.trim() ?? '';
 const password = process.env.NEARBYTES_E2E_MEGA_PASSWORD?.trim() ?? '';
+const CACHE_KEY = process.env.NEARBYTES_E2E_MEGA_CACHE_KEY?.trim() ?? '';
+const USE_CACHE = CACHE_KEY.length > 0;
 
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
@@ -63,7 +66,9 @@ function normalizeRemoteBasePath(input: string): string {
   return normalized.startsWith('/') ? normalized : `/${normalized}`;
 }
 
-const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const runId = USE_CACHE
+  ? CACHE_KEY
+  : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const remoteBasePath = normalizeRemoteBasePath(
   process.env.NEARBYTES_E2E_MEGA_REMOTE_BASE?.trim() || `/nearbytes-live-seq-${runId}`
 );
@@ -104,6 +109,8 @@ type LivePeer = {
   base: string;
   mainRoot: string;
   integrationStatePath: string;
+  secretsPath: string;
+  reusedCache: boolean;
   service: ManagedShareService;
 };
 
@@ -122,9 +129,16 @@ type ChannelDescriptor = {
   remotePath: string;
   shareName: string;
   ownerEmail: string;
-  accessLevel: 'read';
-  shareHandle: string;
-  rootHandle: string;
+  accessLevel: 'read' | 'read/write' | 'full access';
+  shareHandle?: string;
+  rootHandle?: string;
+};
+
+type MaterializedRecipient = {
+  shareId: string;
+  localPath: string;
+  requestedMirrorDir: string;
+  reused: boolean;
 };
 
 type PayloadResult = {
@@ -134,6 +148,11 @@ type PayloadResult = {
   mirrorDurationMs: number;
 };
 
+type ShareReadyResult = {
+  summary: ManagedShareSummary;
+  reusedCachedState: boolean;
+};
+
 function sha256Hex(data: Uint8Array): string {
   return createHash('sha256').update(data).digest('hex');
 }
@@ -141,6 +160,22 @@ function sha256Hex(data: Uint8Array): string {
 function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+function readMegaInviteAccessLevelEnv(
+  name: string,
+  fallback: 'read' | 'read/write' | 'full access'
+): 'read' | 'read/write' | 'full access' {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+  if (raw === 'read' || raw === 'read/write' || raw === 'full access') {
+    return raw;
+  }
+  throw new Error(`${name} must be one of: read, read/write, full access.`);
+}
+
+const INVITE_ACCESS_LEVEL = readMegaInviteAccessLevelEnv('NEARBYTES_E2E_MEGA_SHARE_ACCESS_LEVEL', 'read');
 
 async function withTimeout<T>(label: string, timeoutMs: number, operation: () => Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -158,7 +193,7 @@ async function withTimeout<T>(label: string, timeoutMs: number, operation: () =>
   }
 }
 
-function createRootsConfig(mainRoot: string) {
+function createRootsConfig(mainRoot: string): RootsConfig {
   return {
     version: 2,
     sources: [
@@ -189,17 +224,31 @@ function createRootsConfig(mainRoot: string) {
   };
 }
 
+function loadRootsConfig(mainRoot: string, rootsConfigPath: string) {
+  if (!existsSync(rootsConfigPath)) {
+    return createRootsConfig(mainRoot);
+  }
+  return JSON.parse(readFileSync(rootsConfigPath, 'utf8')) as ReturnType<typeof createRootsConfig>;
+}
+
 async function createPeer(label: 'A' | 'B'): Promise<LivePeer> {
-  const base = await mkdtemp(path.join(tmpdir(), `nearbytes-mega-live-seq-${label}-`));
+  const base = USE_CACHE
+    ? path.join(workspaceRoot, 'test-results', 'mega-live-cache', CACHE_KEY, label)
+    : await mkdtemp(path.join(tmpdir(), `nearbytes-mega-live-seq-${label}-`));
   const mainRoot = path.join(base, 'main-root');
   const rootsConfigPath = path.join(base, 'roots.json');
   const integrationStatePath = path.join(base, 'integrations.json');
+  const secretsPath = path.join(base, 'integration-secrets.json');
+  const reusedCache = USE_CACHE && (existsSync(integrationStatePath) || existsSync(secretsPath));
   await mkdir(mainRoot, { recursive: true });
-  await writeFile(rootsConfigPath, `${JSON.stringify(createRootsConfig(mainRoot), null, 2)}\n`, 'utf8');
+  if (!existsSync(rootsConfigPath)) {
+    await writeFile(rootsConfigPath, `${JSON.stringify(createRootsConfig(mainRoot), null, 2)}\n`, 'utf8');
+  }
+  const rootsConfig = loadRootsConfig(mainRoot, rootsConfigPath);
 
-  const storage = new MultiRootStorageBackend(createRootsConfig(mainRoot));
+  const storage = new MultiRootStorageBackend(rootsConfig);
   const runtime = createIntegrationRuntime({
-    secretStore: new JsonFileSecretStore({ filePath: path.join(base, 'integration-secrets.json') }),
+    secretStore: new JsonFileSecretStore({ filePath: secretsPath }),
     mega: {
       remoteBasePath,
       syncIntervalMs: SYNC_INTERVAL_MS,
@@ -208,17 +257,17 @@ async function createPeer(label: 'A' | 'B'): Promise<LivePeer> {
     logger: {
       log: (...args: unknown[]) => console.error(`[mega-seq][${label}]`, ...args),
       warn: (...args: unknown[]) => console.error(`[mega-seq][${label}] WARN`, ...args),
-      error: (...args: unknown[]) => console.error(`[mega-seq][${label}] ERROR`, ...args),
     },
   });
   const service = new ManagedShareService({
     storage,
     rootsConfigPath,
     integrationStatePath,
+    mirrorRoot: mainRoot,
     adapters: [new MegaTransportAdapter(runtime)],
     readMaintenanceMode: 'background',
   });
-  return { label, base, mainRoot, integrationStatePath, service };
+  return { label, base, mainRoot, integrationStatePath, secretsPath, reusedCache, service };
 }
 
 async function cleanupPeer(peer: LivePeer | undefined): Promise<void> {
@@ -226,7 +275,9 @@ async function cleanupPeer(peer: LivePeer | undefined): Promise<void> {
     return;
   }
   await withTimeout(`dispose ${peer.label}`, CLEANUP_TIMEOUT_MS, () => peer.service.dispose()).catch(() => {});
-  await withTimeout(`rm ${peer.label}`, CLEANUP_TIMEOUT_MS, () => rm(peer.base, { recursive: true, force: true })).catch(() => {});
+  if (!USE_CACHE) {
+    await withTimeout(`rm ${peer.label}`, CLEANUP_TIMEOUT_MS, () => rm(peer.base, { recursive: true, force: true })).catch(() => {});
+  }
 }
 
 function summarizePeer(peer: LivePeer): Record<string, string> {
@@ -235,6 +286,8 @@ function summarizePeer(peer: LivePeer): Record<string, string> {
     base: peer.base,
     mainRoot: peer.mainRoot,
     integrationStatePath: peer.integrationStatePath,
+    secretsPath: peer.secretsPath,
+    reusedCache: String(peer.reusedCache),
   };
 }
 
@@ -251,6 +304,32 @@ async function pickOwnerShare(peer: LivePeer): Promise<ManagedShare> {
     throw new Error(`Peer ${peer.label} has no persisted MEGA owner share.`);
   }
   return owner;
+}
+
+async function ensureConnectedPeer(peer: LivePeer, email: string): Promise<{ status: string; accountId?: string; email?: string; reused: boolean }> {
+  const accounts = await serviceCall(`list accounts ${peer.label}`, () => peer.service.listAccounts({ fast: true }));
+  const existing = accounts.accounts.find((account) => account.provider === 'mega');
+  if (existing) {
+    return {
+      status: existing.state === 'connected' ? 'reused-connected' : `reused-${existing.state}`,
+      accountId: existing.id,
+      email: existing.email,
+      reused: true,
+    };
+  }
+  const connected = await withTimeout(`connect peer ${peer.label}`, CONNECT_TIMEOUT_MS, () =>
+    peer.service.connectAccount({
+      provider: 'mega',
+      credentials: { email, password },
+      preferred: true,
+    })
+  );
+  return {
+    status: connected.status,
+    accountId: connected.account?.id,
+    email: connected.account?.email,
+    reused: false,
+  };
 }
 
 async function serviceCall<T>(label: string, operation: () => Promise<T>): Promise<T> {
@@ -286,7 +365,18 @@ function isTerminalShareState(summary: ManagedShareSummary): boolean {
   );
 }
 
-async function waitForShareReady(peer: LivePeer, shareId: string, timeoutMs: number): Promise<ManagedShareSummary> {
+function canReuseCachedShareState(peer: LivePeer, summary: ManagedShareSummary): boolean {
+  if (!peer.reusedCache || !USE_CACHE || isTerminalShareState(summary)) {
+    return false;
+  }
+  const localPath = summary.share.localPath?.trim();
+  if (!localPath || !existsSync(localPath)) {
+    return false;
+  }
+  return path.resolve(localPath).startsWith(path.resolve(peer.base));
+}
+
+async function waitForShareReady(peer: LivePeer, shareId: string, timeoutMs: number): Promise<ShareReadyResult> {
   const deadline = Date.now() + timeoutMs;
   let lastSummary: ManagedShareSummary | undefined;
   while (Date.now() < deadline) {
@@ -295,7 +385,10 @@ async function waitForShareReady(peer: LivePeer, shareId: string, timeoutMs: num
     );
     lastSummary = summary;
     if (summary.state.status === 'ready') {
-      return summary;
+      return { summary, reusedCachedState: false };
+    }
+    if (canReuseCachedShareState(peer, summary)) {
+      return { summary, reusedCachedState: true };
     }
     if (isTerminalShareState(summary)) {
       throw new Error(`Peer ${peer.label} share ${shareId} failed before ready: ${formatShareState(summary)}`);
@@ -319,7 +412,7 @@ async function inviteManagedShareWithRetry(
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       await withTimeout(`invite from ${peer.label}`, INVITE_TIMEOUT_MS, () =>
-        peer.service.inviteManagedShare(shareId, emails, 'read')
+        peer.service.inviteManagedShare(shareId, emails, INVITE_ACCESS_LEVEL)
       );
       return;
     } catch (error) {
@@ -356,6 +449,11 @@ function normalizeIdentity(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
+function readDescriptorString(descriptor: Record<string, unknown>, key: string): string | undefined {
+  const value = descriptor[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
 function matchesRecipientShare(summary: ManagedShareSummary, ownerEmail: string, shareName: string): boolean {
   return summary.share.provider === 'mega' &&
     summary.share.role === 'recipient' &&
@@ -386,42 +484,42 @@ async function observeAutoAdoptedRecipientShare(
   return { status: 'not-attached' };
 }
 
-async function waitOutgoingDescriptor(
+async function waitIncomingOfferDescriptor(
   peer: LivePeer,
   ownerEmail: string,
   shareName: string,
   timeoutMs: number
 ): Promise<ChannelDescriptor> {
   const deadline = Date.now() + timeoutMs;
-  let seenLabels: string[] = [];
+  let seenOffers: string[] = [];
   while (Date.now() < deadline) {
-    const inventory = await withTimeout(`debug inventory ${peer.label}`, INVENTORY_TIMEOUT_MS, () =>
-      peer.service.debugProviderShareInventory('mega')
+    const incoming = await withTimeout(`list incoming shares ${peer.label}`, INVENTORY_TIMEOUT_MS, () =>
+      peer.service.listIncomingManagedShares()
     );
-    seenLabels = inventory.accounts.flatMap((account) => account.outgoing.map((entry) => entry.label));
-    const match = inventory.accounts
-      .flatMap((account) => account.outgoing)
-      .find((entry) => entry.label === shareName && (entry.shareHandle || entry.rootHandle));
+    seenOffers = incoming.shares
+      .filter((offer) => offer.provider === 'mega')
+      .map((offer) => `${normalizeIdentity(offer.remoteDescriptor.ownerEmail)}:${normalizeIdentity(offer.remoteDescriptor.shareName ?? offer.label)}`);
+    const match = incoming.shares.find((offer) =>
+      offer.provider === 'mega' &&
+      normalizeIdentity(offer.remoteDescriptor.ownerEmail) === normalizeIdentity(ownerEmail) &&
+      normalizeIdentity(offer.remoteDescriptor.shareName ?? offer.label) === normalizeIdentity(shareName)
+    );
     if (match) {
-      const shareHandle = match.shareHandle?.trim() || match.rootHandle?.trim() || '';
-      const rootHandle = match.rootHandle?.trim() || match.shareHandle?.trim() || '';
-      if (shareHandle && rootHandle) {
-        return {
-          remotePath: `${ownerEmail}:${shareName}`,
-          shareName,
-          ownerEmail,
-          accessLevel: 'read',
-          shareHandle,
-          rootHandle,
-        };
-      }
+      return {
+        remotePath: readDescriptorString(match.remoteDescriptor, 'remotePath') ?? `${ownerEmail}:${shareName}`,
+        shareName: readDescriptorString(match.remoteDescriptor, 'shareName') ?? shareName,
+        ownerEmail: readDescriptorString(match.remoteDescriptor, 'ownerEmail') ?? ownerEmail,
+        accessLevel: INVITE_ACCESS_LEVEL,
+        shareHandle: readDescriptorString(match.remoteDescriptor, 'shareHandle'),
+        rootHandle: readDescriptorString(match.remoteDescriptor, 'rootHandle'),
+      };
     }
     await assertMegaAccountHealthy(peer);
     await sleep(1_500);
   }
   throw new Error(
-    `Peer ${peer.label} did not expose an outgoing descriptor for ${shareName} within ${timeoutMs}ms${
-      seenLabels.length > 0 ? ` (seen labels: ${seenLabels.join(', ')})` : ''
+    `Peer ${peer.label} did not expose an incoming MEGA share offer for ${ownerEmail}:${shareName} within ${timeoutMs}ms${
+      seenOffers.length > 0 ? ` (seen offers: ${seenOffers.join(', ')})` : ''
     }`
   );
 }
@@ -441,6 +539,46 @@ async function materializeRecipientShare(
       remoteDescriptor: descriptor,
     })
   );
+}
+
+async function findExistingRecipientShare(
+  peer: LivePeer,
+  ownerEmail: string,
+  shareName: string
+): Promise<ManagedShareSummary | undefined> {
+  const shares = await serviceCall(`list managed shares ${peer.label}`, () => peer.service.listManagedShares({ fast: true }));
+  return shares.shares.find((summary) => matchesRecipientShare(summary, ownerEmail, shareName));
+}
+
+function cachedMirrorDir(direction: 'a-to-b' | 'b-to-a'): string {
+  return path.join(workspaceRoot, 'test-results', 'mega-live-cache', CACHE_KEY, direction);
+}
+
+async function getOrCreateRecipientShare(
+  peer: LivePeer,
+  accountId: string,
+  descriptor: ChannelDescriptor,
+  requestedMirrorDir: string
+): Promise<MaterializedRecipient> {
+  const existing = USE_CACHE
+    ? await findExistingRecipientShare(peer, descriptor.ownerEmail, descriptor.shareName)
+    : undefined;
+  if (existing) {
+    return {
+      shareId: existing.share.id,
+      localPath: existing.share.localPath,
+      requestedMirrorDir,
+      reused: true,
+    };
+  }
+  await mkdir(requestedMirrorDir, { recursive: true });
+  const summary = await materializeRecipientShare(peer, accountId, descriptor, requestedMirrorDir);
+  return {
+    shareId: summary.share.id,
+    localPath: summary.share.localPath,
+    requestedMirrorDir,
+    reused: false,
+  };
 }
 
 function createPayload(tag: string): Buffer {
@@ -602,6 +740,7 @@ describe('MEGA live two-way one-directional transport progress', () => {
                 syncIntervalMs: SYNC_INTERVAL_MS,
                 syncTimeoutMs: SYNC_TIMEOUT_MS,
                 payloadBytes: PAYLOAD_BYTES,
+                inviteAccessLevel: INVITE_ACCESS_LEVEL,
                 skipMegaWipe: SKIP_MEGA_WIPE,
                 skipMegaRevoke: SKIP_MEGA_REVOKE,
               },
@@ -668,27 +807,18 @@ describe('MEGA live two-way one-directional transport progress', () => {
           return summarizePeer(peerA);
         });
         await runStep('connect peer A to MEGA', async () => {
-          const connected = await withTimeout('connect peer A', CONNECT_TIMEOUT_MS, () =>
-            peerA!.service.connectAccount({
-              provider: 'mega',
-              credentials: { email: emailA, password },
-              preferred: true,
-            })
-          );
-          return {
-            status: connected.status,
-            accountId: connected.account?.id,
-            email: connected.account?.email,
-          };
+          return await ensureConnectedPeer(peerA!, emailA);
         });
 
-        const ownerA = await runStep('resolve peer A owner share', async () => await pickOwnerShare(peerA));
+        const ownerA = await runStep('resolve peer A owner share', async () => await pickOwnerShare(peerA!));
         await runStep('wait peer A owner share ready', async () => {
-          const summary = await waitForShareReady(peerA!, ownerA.id, OWNER_READY_TIMEOUT_MS);
+          const result = await waitForShareReady(peerA!, ownerA.id, OWNER_READY_TIMEOUT_MS);
+          const summary = result.summary;
           return {
             shareId: summary.share.id,
             localPath: summary.share.localPath,
             state: summary.state,
+            reusedCachedState: result.reusedCachedState,
           };
         });
 
@@ -702,37 +832,40 @@ describe('MEGA live two-way one-directional transport progress', () => {
           return summarizePeer(peerB);
         });
         await runStep('connect peer B to MEGA', async () => {
-          const connected = await withTimeout('connect peer B', CONNECT_TIMEOUT_MS, () =>
-            peerB!.service.connectAccount({
-              provider: 'mega',
-              credentials: { email: emailB, password },
-              preferred: true,
-            })
-          );
-          return {
-            status: connected.status,
-            accountId: connected.account?.id,
-            email: connected.account?.email,
-          };
+          return await ensureConnectedPeer(peerB!, emailB);
         });
 
-        const ownerB = await runStep('resolve peer B owner share', async () => await pickOwnerShare(peerB));
+        const ownerB = await runStep('resolve peer B owner share', async () => await pickOwnerShare(peerB!));
         await runStep('wait peer B owner share ready', async () => {
-          const summary = await waitForShareReady(peerB!, ownerB.id, OWNER_READY_TIMEOUT_MS);
+          const result = await waitForShareReady(peerB!, ownerB.id, OWNER_READY_TIMEOUT_MS);
+          const summary = result.summary;
           return {
             shareId: summary.share.id,
             localPath: summary.share.localPath,
             state: summary.state,
+            reusedCachedState: result.reusedCachedState,
           };
         });
 
-        await runStep('invite A owner share to B as read-only', async () => {
+        await runStep(`invite A owner share to B with ${INVITE_ACCESS_LEVEL} access`, async () => {
+          if (USE_CACHE) {
+            const existing = await findExistingRecipientShare(peerB!, emailA, remoteShareName);
+            if (existing) {
+              return { invitee: emailB, accessLevel: INVITE_ACCESS_LEVEL, reused: true, shareId: existing.share.id };
+            }
+          }
           await sleep(PRE_INVITE_DELAY_MS);
           await inviteManagedShareWithRetry(peerA!, ownerA.id, [emailB]);
-          return { invitee: emailB, accessLevel: 'read' };
+          return { invitee: emailB, accessLevel: INVITE_ACCESS_LEVEL };
         });
 
         await runStep('accept B-side MEGA contact invites', async () => {
+          if (USE_CACHE) {
+            const existing = await findExistingRecipientShare(peerB!, emailA, remoteShareName);
+            if (existing) {
+              return { accepted: 0, settleMs: 0, reused: true };
+            }
+          }
           const accepted = await acceptAllMegaContactInvites(peerB!);
           await sleep(POST_CONTACT_SETTLE_MS);
           return { accepted, settleMs: POST_CONTACT_SETTLE_MS };
@@ -742,37 +875,54 @@ describe('MEGA live two-way one-directional transport progress', () => {
           await observeAutoAdoptedRecipientShare(peerB!, emailA, remoteShareName, AUTO_DISCOVERY_OBSERVE_MS)
         );
 
-        const descriptorAtoB = await runStep('resolve outgoing descriptor for A channel', async () =>
-          await waitOutgoingDescriptor(peerA!, emailA, remoteShareName, DESCRIPTOR_TIMEOUT_MS)
+        const descriptorAtoB = await runStep('resolve incoming offer for A channel on B', async () =>
+          await waitIncomingOfferDescriptor(peerB!, emailA, remoteShareName, DESCRIPTOR_TIMEOUT_MS)
         );
 
         const mirrorB = await runStep('materialize B recipient mirror for A channel', async () => {
-          const mirrorDir = await mkdtemp(path.join(tmpdir(), 'nearbytes-a-to-b-recipient-'));
-          const summary = await materializeRecipientShare(peerB!, ownerB.accountId, descriptorAtoB, mirrorDir);
+          const mirrorDir = USE_CACHE
+            ? cachedMirrorDir('a-to-b')
+            : await mkdtemp(path.join(tmpdir(), 'nearbytes-a-to-b-recipient-'));
+          const summary = await getOrCreateRecipientShare(peerB!, ownerB.accountId, descriptorAtoB, mirrorDir);
           return {
-            requestedMirrorDir: mirrorDir,
-            actualShareId: summary.share.id,
-            actualLocalPath: summary.share.localPath,
+            requestedMirrorDir: summary.requestedMirrorDir,
+            actualShareId: summary.shareId,
+            actualLocalPath: summary.localPath,
+            reused: summary.reused,
             observation: autoAtoB,
           };
         });
 
         await runStep('wait B recipient share ready for A channel', async () => {
-          const summary = await waitForShareReady(peerB!, String(mirrorB.actualShareId), RECIPIENT_READY_TIMEOUT_MS);
+          const result = await waitForShareReady(peerB!, String(mirrorB.actualShareId), RECIPIENT_READY_TIMEOUT_MS);
+          const summary = result.summary;
           return {
             shareId: summary.share.id,
             localPath: summary.share.localPath,
             state: summary.state,
+            reusedCachedState: result.reusedCachedState,
           };
         });
 
-        await runStep('invite B owner share to A as read-only', async () => {
+        await runStep(`invite B owner share to A with ${INVITE_ACCESS_LEVEL} access`, async () => {
+          if (USE_CACHE) {
+            const existing = await findExistingRecipientShare(peerA!, emailB, remoteShareName);
+            if (existing) {
+              return { invitee: emailA, accessLevel: INVITE_ACCESS_LEVEL, reused: true, shareId: existing.share.id };
+            }
+          }
           await sleep(PRE_INVITE_DELAY_MS);
           await inviteManagedShareWithRetry(peerB!, ownerB.id, [emailA]);
-          return { invitee: emailA, accessLevel: 'read' };
+          return { invitee: emailA, accessLevel: INVITE_ACCESS_LEVEL };
         });
 
         await runStep('accept A-side MEGA contact invites', async () => {
+          if (USE_CACHE) {
+            const existing = await findExistingRecipientShare(peerA!, emailB, remoteShareName);
+            if (existing) {
+              return { accepted: 0, settleMs: 0, reused: true };
+            }
+          }
           const accepted = await acceptAllMegaContactInvites(peerA!);
           await sleep(POST_CONTACT_SETTLE_MS);
           return { accepted, settleMs: POST_CONTACT_SETTLE_MS };
@@ -782,27 +932,32 @@ describe('MEGA live two-way one-directional transport progress', () => {
           await observeAutoAdoptedRecipientShare(peerA!, emailB, remoteShareName, AUTO_DISCOVERY_OBSERVE_MS)
         );
 
-        const descriptorBtoA = await runStep('resolve outgoing descriptor for B channel', async () =>
-          await waitOutgoingDescriptor(peerB!, emailB, remoteShareName, DESCRIPTOR_TIMEOUT_MS)
+        const descriptorBtoA = await runStep('resolve incoming offer for B channel on A', async () =>
+          await waitIncomingOfferDescriptor(peerA!, emailB, remoteShareName, DESCRIPTOR_TIMEOUT_MS)
         );
 
         const mirrorA = await runStep('materialize A recipient mirror for B channel', async () => {
-          const mirrorDir = await mkdtemp(path.join(tmpdir(), 'nearbytes-b-to-a-recipient-'));
-          const summary = await materializeRecipientShare(peerA!, ownerA.accountId, descriptorBtoA, mirrorDir);
+          const mirrorDir = USE_CACHE
+            ? cachedMirrorDir('b-to-a')
+            : await mkdtemp(path.join(tmpdir(), 'nearbytes-b-to-a-recipient-'));
+          const summary = await getOrCreateRecipientShare(peerA!, ownerA.accountId, descriptorBtoA, mirrorDir);
           return {
-            requestedMirrorDir: mirrorDir,
-            actualShareId: summary.share.id,
-            actualLocalPath: summary.share.localPath,
+            requestedMirrorDir: summary.requestedMirrorDir,
+            actualShareId: summary.shareId,
+            actualLocalPath: summary.localPath,
+            reused: summary.reused,
             observation: autoBtoA,
           };
         });
 
         await runStep('wait A recipient share ready for B channel', async () => {
-          const summary = await waitForShareReady(peerA!, String(mirrorA.actualShareId), RECIPIENT_READY_TIMEOUT_MS);
+          const result = await waitForShareReady(peerA!, String(mirrorA.actualShareId), RECIPIENT_READY_TIMEOUT_MS);
+          const summary = result.summary;
           return {
             shareId: summary.share.id,
             localPath: summary.share.localPath,
             state: summary.state,
+            reusedCachedState: result.reusedCachedState,
           };
         });
 

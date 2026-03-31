@@ -25,6 +25,7 @@
     "e2e:mega-wipe": "yarn build && node scripts/e2e-mega-wipe.mjs",
     "e2e:mega-bidirectional-transport": "yarn build && node scripts/e2e-mega-bidirectional-transport.mjs",
     "e2e:mega-readonly-share": "yarn build && node scripts/e2e-mega-readonly-share.mjs",
+    "mega:debug-server": "yarn build && node scripts/mega-debug-server.mjs",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write \"src/**/*.ts\" \"*.{json,md}\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"*.{json,md}\"",

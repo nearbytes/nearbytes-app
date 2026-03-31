@@ -46,6 +46,14 @@
     type VolumePolicyEntry,
     updateRootsConfig,
   } from '../lib/api.js';
+  import {
+    formatAccessLevelLabel,
+    getCollaboratorDedupeKey,
+    getCollaboratorDisplayLabel,
+    getCollaboratorRoleLabel,
+    getIncomingSharePresentation,
+    getManagedShareAccessLabel,
+  } from '../lib/megaSharePresentation.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
   import ShareCard from './ShareCard.svelte';
   import {
@@ -130,9 +138,14 @@
   };
 
   type CollaboratorView = {
+    key: string;
     label: string;
+    role?: string;
     status: 'active' | 'invited';
+    source: 'provider' | 'nearbytes';
   };
+
+  type ManagedShareInviteAccessLevel = 'read' | 'read/write' | 'full access';
 
   const DISMISSED_DISCOVERY_KEY = 'nearbytes-source-discovery-dismissed-v1';
   const RESERVE_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
@@ -197,6 +210,7 @@
   let providerLocationNameDrafts = $state<Record<string, string>>({});
   let providerCreateComposerOpen = $state<Record<string, boolean>>({});
   let managedShareInviteDrafts = $state<Record<string, string>>({});
+  let managedShareInviteAccessLevels = $state<Record<string, ManagedShareInviteAccessLevel>>({});
   let megaIssueLogExpanded = $state<Record<string, boolean>>({});
   let megaRuntimeLogsVisible = $state(false);
   let megaRuntimeLogs = $state<DesktopRuntimeLogEntry[]>([]);
@@ -815,44 +829,19 @@
   }
 
   function shareStatusLabel(summary: ManagedShareSummary): string {
-    const primaryBadge = summary.state.badges[0]?.trim();
-    if (primaryBadge === 'Repair') {
-      if (!summary.storage?.sourcePath?.trim()) {
-        return 'Storage unavailable';
-      }
-      return compactShareStatusDetail(summary.state.detail) ?? 'Needs repair';
-    }
-    if (primaryBadge === 'Reconnect') return 'Sign-in needed';
-    if (primaryBadge === 'Preparing') return 'Preparing';
-    if (primaryBadge === 'Syncing') return 'Syncing';
-    if (primaryBadge === 'Share') return 'Connected';
     if (summary.state.status === 'ready') return 'Connected';
-    if (summary.state.status === 'syncing' && /prepar/i.test(summary.state.detail)) return 'Preparing';
-    if (summary.state.status === 'syncing') return 'Syncing';
     if (summary.state.status === 'idle') return 'Available';
-    if (summary.state.status === 'needs-auth') return 'Sign-in needed';
-    if (summary.state.status === 'unsupported') return 'Unsupported';
-    return 'Check details';
-  }
-
-  function shareAttachmentSummary(summary: ManagedShareSummary): string {
-    const count = shareAttachmentLabels(summary).length;
-    if (count === 0) {
-      return summary.storage?.keepFullCopy
-        ? 'Ready for hub writes by default. No hub is using it yet.'
-        : 'Readable now. No hub is using it yet.';
-    }
-    return `Used in ${countLabel(count, 'place')}.`;
+    if (summary.state.status === 'syncing') return compactShareStatusDetail(summary.state.detail) ?? 'Syncing';
+    if (summary.state.status === 'needs-auth') return 'Reconnect';
+    if (summary.state.status === 'attention') return compactShareStatusDetail(summary.state.detail) ?? 'Needs attention';
+    return summary.state.status === 'unsupported' ? 'Unsupported' : 'Available';
   }
 
   function expectedVolumeBytes(targetVolumeId: string): number {
-    if (!runtime) {
-      return 0;
-    }
     let historyBytes = 0;
     let fileBytes = 0;
-    for (const source of runtime.sources) {
-      const entry = source.usage.volumeUsages.find((item) => item.volumeId === targetVolumeId);
+    for (const source of runtime?.sources ?? []) {
+      const entry = source.usage?.volumeUsages.find((item) => item.volumeId === targetVolumeId);
       if (!entry) {
         continue;
       }
@@ -1285,7 +1274,7 @@
       label: provider === 'mega' ? 'MEGA' : 'GitHub',
       description:
         provider === 'mega'
-          ? 'Native MEGA readonly mirroring for public links and incoming shares.'
+          ? 'Native MEGA syncing for public links plus incoming read-only and writable shares.'
           : 'Managed repo-backed shares synced through a configurable nearbytes subdirectory.',
       badges: provider === 'github' ? ['Device flow'] : [],
       isConnected: false,
@@ -2332,7 +2321,7 @@
     if (!helperPath) {
       return {
         headline: 'Using the built-in MEGA runtime',
-        detail: provider.setup.detail || 'Nearbytes talks to MEGA directly and keeps incoming shares read-only.',
+        detail: provider.setup.detail || 'Nearbytes talks to MEGA directly, mirrors read-only shares, and syncs writable shared folders.',
         pathValue: null,
       };
     }
@@ -2397,10 +2386,7 @@
   }
 
   function managedShareAccessLabel(summary: ManagedShareSummary): string {
-    if (summary.storage?.writable === false) {
-      return 'Read only';
-    }
-    return summary.share.capabilities.includes('write') ? 'Read and write' : 'Read only';
+    return getManagedShareAccessLabel(summary);
   }
 
   function summarySourcePath(summary: ManagedShareSummary): string {
@@ -2418,6 +2404,21 @@
       ? summary.share.remoteDescriptor.ownerEmail.trim()
       : '';
     return ownerEmail || null;
+  }
+
+  function managedShareDefaultInviteAccessLevel(summary: ManagedShareSummary): ManagedShareInviteAccessLevel {
+    return summary.share.provider === 'mega' ? 'read/write' : 'read';
+  }
+
+  function managedShareInviteAccessLevel(shareId: string, summary: ManagedShareSummary): ManagedShareInviteAccessLevel {
+    return managedShareInviteAccessLevels[shareId] ?? managedShareDefaultInviteAccessLevel(summary);
+  }
+
+  function setManagedShareInviteAccessLevel(shareId: string, accessLevel: ManagedShareInviteAccessLevel): void {
+    managedShareInviteAccessLevels = {
+      ...managedShareInviteAccessLevels,
+      [shareId]: accessLevel,
+    };
   }
 
   function managedShareRemoteName(summary: ManagedShareSummary): string | null {
@@ -2514,6 +2515,14 @@
     return facts.filter((value): value is string => Boolean(value));
   }
 
+  function shareAttachmentSummary(summary: ManagedShareSummary): string {
+    const count = summary.attachments.length;
+    if (count === 0) {
+      return summary.storage?.keepFullCopy ? 'Ready for hub writes by default. No hub is using it yet.' : 'Readable now. No hub is using it yet.';
+    }
+    return `Used in ${countLabel(count, 'place')}.`;
+  }
+
   function canInviteManagedShare(summary: ManagedShareSummary): boolean {
     return summary.share.capabilities.includes('invite');
   }
@@ -2527,6 +2536,22 @@
       ...managedShareInviteDrafts,
       [shareId]: value,
     };
+  }
+
+  function toCollaboratorView(
+    collaborator: { label: string; email?: string; role?: string; status: 'active' | 'invited'; source: 'provider' | 'nearbytes' }
+  ): CollaboratorView {
+    return {
+      key: getCollaboratorDedupeKey(collaborator),
+      label: getCollaboratorDisplayLabel(collaborator),
+      role: collaborator.role,
+      status: collaborator.status,
+      source: collaborator.source,
+    };
+  }
+
+  function collaboratorRoleLabel(collaborator: CollaboratorView): string | null {
+    return getCollaboratorRoleLabel(collaborator);
   }
 
   function parseInviteEmails(value: string): string[] {
@@ -2543,18 +2568,18 @@
   function participantCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
     const active = summary.collaborators
       .filter((collaborator) => collaborator.status === 'active')
-      .map((collaborator) => ({
-        label: collaborator.email ?? collaborator.label,
-        status: collaborator.status,
-      }));
+      .map((collaborator) => toCollaboratorView(collaborator));
     if (summary.share.role === 'owner') {
       const accountEmail = managedShareAccountEmail(summary);
       if (accountEmail) {
-        const alreadyListed = active.some((collaborator) => collaborator.label.toLowerCase() === accountEmail.toLowerCase());
+        const alreadyListed = active.some((collaborator) => collaborator.key === accountEmail.toLowerCase());
         if (!alreadyListed) {
           active.unshift({
+            key: accountEmail.toLowerCase(),
             label: accountEmail,
+            role: 'owner',
             status: 'active',
+            source: 'nearbytes',
           });
         }
       }
@@ -2562,21 +2587,12 @@
     return active;
   }
 
-  function collaboratorDedupeKey(label: string): string {
-    return label.trim().toLowerCase();
-  }
-
   function pendingCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
-    const activeKeys = new Set(
-      participantCollaborators(summary).map((collaborator) => collaboratorDedupeKey(collaborator.label))
-    );
+    const activeKeys = new Set(participantCollaborators(summary).map((collaborator) => collaborator.key));
     return summary.collaborators
       .filter((collaborator) => collaborator.status === 'invited')
-      .filter((collaborator) => !activeKeys.has(collaboratorDedupeKey(collaborator.email ?? collaborator.label)))
-      .map((collaborator) => ({
-        label: collaborator.email ?? collaborator.label,
-        status: collaborator.status,
-      }));
+        .filter((collaborator) => !activeKeys.has(getCollaboratorDedupeKey(collaborator)))
+      .map((collaborator) => toCollaboratorView(collaborator));
   }
 
   function sourceById(sourceId: string | undefined): SourceConfigEntry | null {
@@ -2630,7 +2646,7 @@
       return `Connect ${provider.label} first, then Nearbytes will manage its shares here.`;
     }
     if (provider.provider === 'mega') {
-      return 'Accepted incoming MEGA shares appear here as local mirrors. Your own MEGA Nearbytes root also appears here for local access.';
+      return 'Accepted incoming MEGA shares appear here as synced local folders. Your own MEGA Nearbytes root also appears here for local access.';
     }
     return 'Create a storage location here to make it available in Nearbytes.';
   }
@@ -2786,8 +2802,24 @@
     return provider;
   }
 
+  function incomingSharePresentation(offer: IncomingManagedShareOffer): ReturnType<typeof getIncomingSharePresentation> {
+    return getIncomingSharePresentation(offer, { hasVolumeTarget: Boolean(volumeId) });
+  }
+
   function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
-    return volumeId ? 'Use in this hub' : 'Add mirror';
+    return incomingSharePresentation(offer).actionLabel;
+  }
+
+  function incomingShareMetaDetail(offer: IncomingManagedShareOffer): string {
+    return incomingSharePresentation(offer).metaDetail;
+  }
+
+  function incomingShareStatusBadge(offer: IncomingManagedShareOffer): { label: string; tone: 'good' | 'muted' } {
+    return incomingSharePresentation(offer).statusBadge;
+  }
+
+  function incomingShareKindLabel(offer: IncomingManagedShareOffer): string {
+    return incomingShareActionLabel(offer) === 'Add shared folder' ? 'shared folder' : 'mirror';
   }
 
   function incomingManagedShareTitle(offer: IncomingManagedShareOffer): string {
@@ -4478,13 +4510,19 @@
       errorMessage = 'Enter at least one email address to invite.';
       return;
     }
+    const accessLevel = summary.share.provider === 'mega'
+      ? managedShareInviteAccessLevel(summary.share.id, summary)
+      : undefined;
     integrationBusyKey = `invite:${summary.share.id}`;
     errorMessage = '';
     successMessage = '';
     try {
-      await inviteManagedShare(summary.share.id, emails);
+      await inviteManagedShare(summary.share.id, emails, accessLevel);
       setManagedShareInviteDraft(summary.share.id, '');
-      successMessage = `${summary.share.label} location shared with ${emails.join(', ')}.`;
+      setManagedShareInviteAccessLevel(summary.share.id, managedShareDefaultInviteAccessLevel(summary));
+      successMessage = accessLevel
+        ? `${summary.share.label} location shared with ${emails.join(', ')} as ${formatAccessLevelLabel(accessLevel)}.`
+        : `${summary.share.label} location shared with ${emails.join(', ')}.`;
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to invite people to this location';
@@ -4525,9 +4563,12 @@
         localPath: offer.suggestedLocalPath,
         remoteDescriptor: offer.remoteDescriptor,
       });
+      const writable = response.summary.share.capabilities.includes('write');
       successMessage = response.summary.attachments.length > 0
         ? `${offer.label} is attached and ready in this hub.`
-        : `${offer.label} is connected as a read-only mirror. Nearbytes can read from it now.`;
+        : writable
+          ? `${offer.label} is connected as a writable shared folder. Nearbytes can sync changes both ways now.`
+          : `${offer.label} is connected as a read-only mirror. Nearbytes can read from it now.`;
       await loadPanel();
       if (response.summary.state.status === 'syncing') {
         successMessage = `${offer.label} is attached. Nearbytes is preparing the local mirror now.`;
@@ -4836,6 +4877,24 @@
                       setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
                   />
                 </label>
+                {#if summary.share.provider === 'mega'}
+                  <label class="field-block managed-share-invite-access">
+                    <span>Access</span>
+                    <select
+                      class="panel-input"
+                      value={managedShareInviteAccessLevel(summary.share.id, summary)}
+                      onchange={(event) =>
+                        setManagedShareInviteAccessLevel(
+                          summary.share.id,
+                          (event.currentTarget as HTMLSelectElement).value as ManagedShareInviteAccessLevel
+                        )}
+                    >
+                      <option value="read">Read only</option>
+                      <option value="read/write">Read and write</option>
+                      <option value="full access">Full access</option>
+                    </select>
+                  </label>
+                {/if}
                 <button
                   type="submit"
                   class="panel-btn subtle compact"
@@ -4844,15 +4903,26 @@
                   <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
                 </button>
               </form>
-              <p class="managed-share-invite-copy">Invite people here if you want to share this storage location directly.</p>
+              <p class="managed-share-invite-copy">
+                {#if summary.share.provider === 'mega'}
+                  Invite people here and choose whether they should get read-only, read/write, or full access in MEGA.
+                {:else}
+                  Invite people here if you want to share this storage location directly.
+                {/if}
+              </p>
             {/if}
 
             <div class="managed-share-members">
               <p class="subheading">Joined</p>
               {#if participantCollaborators(summary).length > 0}
                 <div class="managed-share-members-list">
-                  {#each participantCollaborators(summary) as collaborator (collaborator.label)}
-                    <span class="mini-pill">{collaborator.label}</span>
+                  {#each participantCollaborators(summary) as collaborator (collaborator.key)}
+                    <span class="mini-pill">
+                      <span>{collaborator.label}</span>
+                      {#if collaboratorRoleLabel(collaborator)}
+                        <span class="mini-pill-metric">{collaboratorRoleLabel(collaborator)}</span>
+                      {/if}
+                    </span>
                   {/each}
                 </div>
               {:else}
@@ -4865,8 +4935,13 @@
                 <p class="subheading">Invited</p>
                 {#if pendingCollaborators(summary).length > 0}
                   <div class="managed-share-members-list">
-                    {#each pendingCollaborators(summary) as collaborator (collaborator.label)}
-                      <span class="mini-pill">{collaborator.label}</span>
+                    {#each pendingCollaborators(summary) as collaborator (collaborator.key)}
+                      <span class="mini-pill">
+                        <span>{collaborator.label}</span>
+                        {#if collaboratorRoleLabel(collaborator)}
+                          <span class="mini-pill-metric">{collaboratorRoleLabel(collaborator)}</span>
+                        {/if}
+                      </span>
                     {/each}
                   </div>
                 {:else}
@@ -4989,16 +5064,16 @@
         provider={providerLabelForIncoming(offer.provider)}
         title={incomingManagedShareTitle(offer)}
         copy={offer.detail}
-        statusBadges={[{ label: 'Incoming storage', tone: 'muted' }]}
+        statusBadges={[incomingShareStatusBadge(offer)]}
         meta={[
           `Shared by ${offer.ownerLabel}`,
-          volumeId ? 'Ready to add' : 'Saved as a storage location',
+          incomingShareMetaDetail(offer),
         ]}
       >
         {#snippet details()}
           {#if offer.suggestedLocalPath}
             <div class="provider-path-card managed-share-path-card">
-              <p class="subheading">Suggested local mirror</p>
+              <p class="subheading">Suggested local {incomingShareKindLabel(offer)}</p>
               <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
             </div>
           {/if}
@@ -5032,7 +5107,7 @@
             {/if}
             <p class="muted-copy">
               These are folders shared <em>to</em> this account—they are not your personal Nearbytes root on {providerLabelForIncoming(providerKey)}. Accept any
-              <strong>contact request</strong> first, then use <strong>Add mirror</strong>. If you are in a hub, use <strong>Add another location</strong> after the mirror
+              <strong>contact request</strong> first, then use the accept button shown on the shared folder or mirror below. If you are in a hub, use <strong>Add another location</strong> after the incoming
               appears under saved locations. If nothing lists here, confirm the owner shared to <strong>this</strong> account’s email, then open storage setup and refresh
               {providerKey === 'mega' ? 'MEGA status' : 'this provider'}.
             </p>
@@ -6917,12 +6992,16 @@
 
   .managed-share-invite-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 180px) auto;
     gap: 0.65rem;
     align-items: end;
   }
 
   .managed-share-invite-field {
+    min-width: 0;
+  }
+
+  .managed-share-invite-access {
     min-width: 0;
   }
 
@@ -6967,6 +7046,12 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
+  }
+
+  @media (max-width: 720px) {
+    .managed-share-invite-row {
+      grid-template-columns: 1fr;
+    }
   }
 
   .provider-credentials {

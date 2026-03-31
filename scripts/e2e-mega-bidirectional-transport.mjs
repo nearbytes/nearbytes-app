@@ -76,6 +76,17 @@ function readPositiveIntEnv(name, fallback) {
   return parsed;
 }
 
+function readMegaInviteAccessLevelEnv(name, fallback) {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+  if (raw === 'read' || raw === 'read/write' || raw === 'full access') {
+    return raw;
+  }
+  throw new Error(`${name} must be one of: read, read/write, full access.`);
+}
+
 const WIPE_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_WIPE_TIMEOUT_MS', 20 * 60 * 1000);
 const CONNECT_ACCOUNT_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_CONNECT_TIMEOUT_MS', 20_000);
 const OWNER_READY_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_OWNER_READY_TIMEOUT_MS', 45_000);
@@ -96,7 +107,10 @@ const SKIP_MEGA_WIPE = process.env.NEARBYTES_E2E_SKIP_MEGA_WIPE?.trim() === '1';
 const SKIP_MEGA_REVOKE = process.env.NEARBYTES_E2E_SKIP_MEGA_REVOKE
   ? process.env.NEARBYTES_E2E_SKIP_MEGA_REVOKE.trim() === '1'
   : true;
-const WRITABLE_INVITE_ACCESS_LEVEL = 'read/write';
+const WRITABLE_INVITE_ACCESS_LEVEL = readMegaInviteAccessLevelEnv(
+  'NEARBYTES_E2E_MEGA_SHARE_ACCESS_LEVEL',
+  'read/write'
+);
 
 function sha256Hex(buf) {
   return createHash('sha256').update(buf).digest('hex');

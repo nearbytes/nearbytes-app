@@ -69,6 +69,13 @@ function readPositiveIntEnv(name, fallback) {
   return parsed;
 }
 
+function readMegaInviteAccessLevelEnv(name, fallback) {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === 'read' || raw === 'read/write' || raw === 'full access') return raw;
+  throw new Error(`${name} must be one of: read, read/write, full access.`);
+}
+
 const CONNECT_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_CONNECT_TIMEOUT_MS', 180_000);
 const OWNER_READY_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_OWNER_READY_TIMEOUT_MS', 180_000);
 const INCOMING_OFFER_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_INCOMING_OFFER_TIMEOUT_MS', 180_000);
@@ -79,6 +86,7 @@ const SYNC_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_SYNC_TIMEOUT_MS',
 const UPLOAD_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_UPLOAD_TIMEOUT_MS', 180_000);
 const CLEANUP_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_CLEANUP_TIMEOUT_MS', 5_000);
 const PAYLOAD_BYTES = readPositiveIntEnv('NEARBYTES_E2E_MEGA_PAYLOAD_BYTES', 1024);
+const INVITE_ACCESS_LEVEL = readMegaInviteAccessLevelEnv('NEARBYTES_E2E_MEGA_SHARE_ACCESS_LEVEL', 'read');
 const skipMegaWipeRaw = process.env.NEARBYTES_E2E_SKIP_MEGA_WIPE?.trim();
 const SKIP_MEGA_WIPE = skipMegaWipeRaw === undefined ? true : skipMegaWipeRaw === '1';
 const SECOND_ACCOUNT_COOLDOWN_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_SECOND_ACCOUNT_COOLDOWN_MS', 2_000);
@@ -197,7 +205,7 @@ async function waitShareReady(service, shareId, label, timeoutMs) {
 async function inviteWithRetry(service, shareId, emails, label) {
   for (let attempt = 0; attempt < 12; attempt++) {
     try {
-      await service.inviteManagedShare(shareId, emails, 'read');
+      await service.inviteManagedShare(shareId, emails, INVITE_ACCESS_LEVEL);
       return;
     } catch (err) {
       if (isMegaTransientLockError(err) && attempt < 11) {
@@ -265,6 +273,7 @@ async function main() {
     syncIntervalMs: SYNC_INTERVAL_MS,
     payloadBytes: PAYLOAD_BYTES,
     remoteShareName,
+    inviteAccessLevel: INVITE_ACCESS_LEVEL,
     skipMegaWipe: SKIP_MEGA_WIPE,
   });
 
@@ -315,8 +324,8 @@ async function main() {
       peerB.service.connectAccount({ provider: 'mega', credentials: { email: emailB, password }, preferred: true })
     );
 
-    // ── 4. Invite B with read-only access ──
-    console.error('[ro-share] 5/8 invite B (read-only)…');
+    // ── 4. Invite B with configured access ──
+    console.error(`[ro-share] 5/8 invite B (${INVITE_ACCESS_LEVEL})…`);
     await sleep(1_000);
     await inviteWithRetry(peerA.service, ownerShare.id, [emailB], 'A→B');
     await sleep(1_000);
@@ -358,7 +367,7 @@ async function main() {
     await waitMirrorFile(path.join(mirrorDir, rel2), payload2, MIRROR_FILE_TIMEOUT_MS);
     console.error(`[ro-share]    ✓ file-2 mirrored to B`);
 
-    console.error('[ro-share] ✓ READ-ONLY SHARE SYNC OK — owner uploads, recipient mirrors in real-time.');
+    console.error(`[ro-share] ✓ ${INVITE_ACCESS_LEVEL.toUpperCase()} SHARE SYNC OK — owner uploads, recipient mirrors in real-time.`);
   } finally {
     await Promise.allSettled([cleanupPeer(peerA, 'A'), cleanupPeer(peerB, 'B')]);
   }

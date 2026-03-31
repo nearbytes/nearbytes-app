@@ -21,3 +21,4 @@ test-data/
 .nearbytes-dev/
 .yarn/install-state.gz
 nearbytes
+test-results

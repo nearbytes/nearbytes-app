@@ -28,6 +28,7 @@ export interface ProviderRefreshResult {
   readonly downloaded: string[];
   readonly removed: string[];
   readonly skipped: string[];
+  readonly skippedDetails: Record<string, { code?: string; detail?: string }>;
   readonly manifest: ProviderRefreshManifest;
 }
 
@@ -47,6 +48,7 @@ export class ProviderRefreshWorker {
 
     const downloaded: string[] = [];
     const skipped: string[] = [];
+    const skippedDetails: Record<string, { code?: string; detail?: string }> = {};
     const desiredPaths = new Set<string>();
     const nextEntries = new Map<string, ProviderRefreshManifestEntry>();
 
@@ -85,6 +87,10 @@ export class ProviderRefreshWorker {
       const remoteValidation = await validateCanonicalStorageFile(entry.path, remoteBytes);
       if (!remoteValidation.ok) {
         skipped.push(entry.path);
+        skippedDetails[entry.path] = {
+          code: remoteValidation.code,
+          detail: remoteValidation.detail,
+        };
         continue;
       }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
@@ -98,6 +104,7 @@ export class ProviderRefreshWorker {
       downloaded,
       removed,
       skipped,
+      skippedDetails,
       manifest: {
         entries: Object.fromEntries(nextEntries.entries()),
       },
