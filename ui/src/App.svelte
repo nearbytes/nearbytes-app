@@ -6349,6 +6349,17 @@
               <button
                 type="button"
                 class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showVolumeStoragePanel}
+                onclick={toggleVolumeStoragePanel}
+                disabled={!activeMount && !shareableVolumeId}
+                title="Choose storage locations for this hub"
+              >
+                <HardDrive class="button-icon" size={15} strokeWidth={2} />
+                <span>Storage</span>
+              </button>
+              <button
+                type="button"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
                 class:active={showVolumeShareDialog}
                 onclick={openVolumeShareDialog}
                 disabled={!activeMount && !shareableVolumeId}
@@ -7529,8 +7540,8 @@
               />
               <HubStorageButton
                 active={showVolumeStoragePanel}
-                badge="Hub"
-                label="Storage locations"
+                badge="Setup"
+                label="Hub storage"
                 onclick={() => {
                   openVolumeStoragePanel();
                   collapseMount(mountDialogMount.id);

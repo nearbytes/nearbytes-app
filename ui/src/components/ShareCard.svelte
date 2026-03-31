@@ -128,6 +128,7 @@
     display: flex;
     gap: 0.58rem;
     min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .card-head {
@@ -135,6 +136,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.68rem;
     align-items: start;
+    overflow-wrap: anywhere;
   }
 
   .card-title {
@@ -189,6 +191,7 @@
     font-size: 0.72rem;
     letter-spacing: 0.18em;
     text-transform: uppercase;
+    overflow-wrap: anywhere;
   }
 
   h4 {
@@ -196,6 +199,7 @@
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font-size: 1rem;
     line-height: 1.18;
+    overflow-wrap: anywhere;
   }
 
   .card-copy,

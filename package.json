@@ -23,6 +23,7 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "e2e:mega-wipe": "yarn build && node scripts/e2e-mega-wipe.mjs",
+    "e2e:mega-reset": "yarn build && node scripts/e2e-mega-reset.mjs",
     "e2e:mega-bidirectional-transport": "yarn build && node scripts/e2e-mega-bidirectional-transport.mjs",
     "e2e:mega-readonly-share": "yarn build && node scripts/e2e-mega-readonly-share.mjs",
     "mega:debug-server": "yarn build && node scripts/mega-debug-server.mjs",

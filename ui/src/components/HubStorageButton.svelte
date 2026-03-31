@@ -4,8 +4,8 @@
   let {
     active = false,
     disabled = false,
-    badge = 'Hub',
-    label = 'Storage locations',
+    badge = 'This hub',
+    label = 'Hub storage',
     onclick,
   } = $props<{
     active?: boolean;
@@ -30,12 +30,12 @@
 
 <style>
   .hub-storage-button {
-    border: 1px solid var(--nb-btn-border, rgba(56, 189, 248, 0.24));
-    background: var(--nb-btn-bg, rgba(12, 24, 43, 0.82));
-    color: var(--nb-btn-color, rgba(226, 232, 240, 0.92));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.94));
     border-radius: 999px;
-    padding: 0 0.72rem;
-    min-height: 28px;
+    padding: 0 0.82rem;
+    min-height: 32px;
     min-width: 0;
     max-width: 100%;
     display: inline-flex;
@@ -43,24 +43,26 @@
     justify-content: center;
     gap: 0.46rem;
     font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 0.74rem;
+    font-size: 0.76rem;
     font-weight: 600;
     letter-spacing: 0.01em;
     line-height: 1;
     white-space: nowrap;
     cursor: pointer;
-    transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+    box-shadow: 0 1px 2px rgba(82, 53, 33, 0.04);
+    transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
   }
 
   .hub-storage-button:hover:not(:disabled) {
-    background: var(--nb-btn-hover-bg, rgba(18, 34, 60, 0.94));
-    border-color: var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34));
-    color: var(--nb-btn-hover-color, rgba(224, 242, 254, 0.96));
+    transform: translateY(-1px);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 12%, rgba(60, 60, 67, 0.14));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
   }
 
   .hub-storage-button:focus-visible {
     outline: none;
-    box-shadow: var(--nb-btn-focus-ring, inset 0 0 0 1px rgba(125, 211, 252, 0.18));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-panel-bg, #ffffff) 72%, rgba(240, 232, 226, 0.8));
   }
 
   .hub-storage-button:disabled {
@@ -69,10 +71,10 @@
   }
 
   .hub-storage-button.active {
-    border-color: var(--nb-btn-active-border, rgba(34, 211, 238, 0.48));
-    background: var(--nb-btn-active-bg, linear-gradient(180deg, rgba(16, 66, 91, 0.96), rgba(10, 44, 66, 0.96)));
-    color: var(--nb-btn-active-color, #ecfeff);
-    box-shadow: var(--nb-btn-active-shadow, 0 10px 24px rgba(6, 182, 212, 0.16));
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
   }
 
   .hub-storage-button-label,
@@ -82,11 +84,13 @@
   }
 
   .hub-storage-button-badge {
-    padding: 0.24rem 0.5rem;
+    padding: 0.22rem 0.56rem;
     border-radius: 999px;
-    background: color-mix(in srgb, currentColor 18%, transparent);
-    font-size: 0.66rem;
-    letter-spacing: 0.08em;
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, rgba(248, 243, 239, 0.96));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.8));
+    font-size: 0.64rem;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
   }
 

@@ -162,9 +162,8 @@
     source: 'provider' | 'nearbytes';
   };
 
-  type ManagedShareInviteAccessLevel = 'read' | 'read/write' | 'full access';
-
   const DISMISSED_DISCOVERY_KEY = 'nearbytes-source-discovery-dismissed-v1';
+  const DISMISSED_INCOMING_OFFERS_KEY = 'nearbytes-incoming-share-dismissed-v1';
   const RESERVE_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
   const DEFAULT_RESERVE_PERCENT = 5;
   const DISCOVERY_SCAN_MAX_DEPTH = 1;
@@ -197,6 +196,7 @@
   let discoveryError = $state('');
   let discoveredSources = $state<DiscoveredNearbytesSource[]>([]);
   let dismissedDiscoveries = $state<string[]>(loadDismissedDiscoveries());
+  let dismissedIncomingOffers = $state<string[]>(loadDismissedIncomingOffers());
   let movingSourceId = $state<string | null>(null);
   let repairingSourceId = $state<string | null>(null);
   let providerAccounts = $state<ProviderAccount[]>([]);
@@ -227,7 +227,6 @@
   let providerLocationNameDrafts = $state<Record<string, string>>({});
   let providerCreateComposerOpen = $state<Record<string, boolean>>({});
   let managedShareInviteDrafts = $state<Record<string, string>>({});
-  let managedShareInviteAccessLevels = $state<Record<string, ManagedShareInviteAccessLevel>>({});
   let megaIssueLogExpanded = $state<Record<string, boolean>>({});
   let megaRuntimeLogsVisible = $state(false);
   let megaRuntimeLogs = $state<DesktopRuntimeLogEntry[]>([]);
@@ -395,6 +394,10 @@
   });
 
   $effect(() => {
+    persistDismissedIncomingOffers(dismissedIncomingOffers);
+  });
+
+  $effect(() => {
     if (megaRuntimeLogCopyFeedback === '') return;
     const timer = setTimeout(() => {
       megaRuntimeLogCopyFeedback = '';
@@ -472,6 +475,37 @@
   function persistDismissedDiscoveries(values: string[]): void {
     try {
       localStorage.setItem(DISMISSED_DISCOVERY_KEY, JSON.stringify(values));
+    } catch {
+      // Ignore local storage failures.
+    }
+  }
+
+  function normalizeDismissedIncomingOfferKey(value: string): string {
+    return value.trim().toLowerCase();
+  }
+
+  function incomingOfferDismissKey(offer: Pick<IncomingManagedShareOffer, 'provider' | 'accountId' | 'id'>): string {
+    return normalizeDismissedIncomingOfferKey(`${offer.provider}:${offer.accountId}:${offer.id}`);
+  }
+
+  function loadDismissedIncomingOffers(): string[] {
+    try {
+      const raw = localStorage.getItem(DISMISSED_INCOMING_OFFERS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((value) => typeof value === 'string')
+        .map((value) => normalizeDismissedIncomingOfferKey(value))
+        .filter((value, index, values) => value !== '' && values.indexOf(value) === index);
+    } catch {
+      return [];
+    }
+  }
+
+  function persistDismissedIncomingOffers(values: string[]): void {
+    try {
+      localStorage.setItem(DISMISSED_INCOMING_OFFERS_KEY, JSON.stringify(values));
     } catch {
       // Ignore local storage failures.
     }
@@ -572,6 +606,68 @@
 
   function activeFolderCount(): number {
     return localShares().filter((source) => source.enabled).length;
+  }
+
+  function totalIncomingReviewCount(): number {
+    return incomingManagedShareOffers.length + incomingProviderContactInvites.length;
+  }
+
+  function providerIncomingActionableCount(provider: string): number {
+    return incomingManagedSharesForProvider(provider).length + incomingProviderInvitesForProvider(provider).length;
+  }
+
+  function isIncomingManagedShareOfferDismissed(offer: IncomingManagedShareOffer): boolean {
+    return dismissedIncomingOffers.includes(incomingOfferDismissKey(offer));
+  }
+
+  function dismissedIncomingManagedShareCount(provider: string): number {
+    return incomingManagedShareOffers.filter(
+      (offer) => offer.provider === provider && isIncomingManagedShareOfferDismissed(offer)
+    ).length;
+  }
+
+  function dismissIncomingManagedShareOffer(offer: IncomingManagedShareOffer): void {
+    const key = incomingOfferDismissKey(offer);
+    if (dismissedIncomingOffers.includes(key)) {
+      return;
+    }
+    dismissedIncomingOffers = [...dismissedIncomingOffers, key];
+    successMessage = `${incomingManagedShareTitle(offer)} hidden on this device.`;
+  }
+
+  function restoreDismissedIncomingManagedShares(provider: string): void {
+    const prefix = normalizeDismissedIncomingOfferKey(`${provider}:`);
+    const nextValues = dismissedIncomingOffers.filter((key) => !key.startsWith(prefix));
+    if (nextValues.length === dismissedIncomingOffers.length) {
+      return;
+    }
+    dismissedIncomingOffers = nextValues;
+    successMessage = `Hidden ${providerLabelForIncoming(provider)} shares are visible again.`;
+  }
+
+  function incomingReviewTargetProvider(): string | null {
+    for (const provider of providerCatalog) {
+      if (providerIncomingActionableCount(provider.provider) > 0) {
+        return provider.provider;
+      }
+    }
+    return providerCatalog.find((entry) => entry.isConnected && providerShowsIncomingShareSection(entry.provider))?.provider ?? null;
+  }
+
+  function providerSelectionDetail(entry: ProviderCatalogEntry): string {
+    if (!entry.isConnected) {
+      if (entry.provider === 'mega') {
+        return 'Connect this if you want Nearbytes to publish through MEGA or read folders shared to your MEGA account.';
+      }
+      return `Connect ${entry.label} only if you want a storage location there.`;
+    }
+    if (entry.provider === 'mega') {
+      return 'Nearbytes keeps your own MEGA root separate from folders other people shared with you.';
+    }
+    if (providerShowsIncomingShareSection(entry.provider)) {
+      return 'Your own locations stay separate from folders other people shared with you.';
+    }
+    return 'Use this service only for the storage locations you choose here.';
   }
 
   function connectedAccountForProvider(provider: string): ProviderAccount | null {
@@ -1261,7 +1357,11 @@
   }
 
   function incomingManagedSharesForProvider(provider: string): IncomingManagedShareOffer[] {
-    return sortIncomingManagedShareOffers(incomingManagedShareOffers.filter((offer) => offer.provider === provider));
+    return sortIncomingManagedShareOffers(
+      incomingManagedShareOffers.filter(
+        (offer) => offer.provider === provider && !isIncomingManagedShareOfferDismissed(offer)
+      )
+    );
   }
 
   function incomingProviderInvitesForProvider(provider: string): IncomingProviderContactInvite[] {
@@ -2599,21 +2699,6 @@
     return ownerEmail || null;
   }
 
-  function managedShareDefaultInviteAccessLevel(summary: ManagedShareSummary): ManagedShareInviteAccessLevel {
-    return summary.share.provider === 'mega' ? 'read/write' : 'read';
-  }
-
-  function managedShareInviteAccessLevel(shareId: string, summary: ManagedShareSummary): ManagedShareInviteAccessLevel {
-    return managedShareInviteAccessLevels[shareId] ?? managedShareDefaultInviteAccessLevel(summary);
-  }
-
-  function setManagedShareInviteAccessLevel(shareId: string, accessLevel: ManagedShareInviteAccessLevel): void {
-    managedShareInviteAccessLevels = {
-      ...managedShareInviteAccessLevels,
-      [shareId]: accessLevel,
-    };
-  }
-
   function managedShareRemoteName(summary: ManagedShareSummary): string | null {
     const shareName = typeof summary.share.remoteDescriptor.shareName === 'string'
       ? summary.share.remoteDescriptor.shareName.trim()
@@ -3012,17 +3097,18 @@
 
   function incomingManagedShareTitle(offer: IncomingManagedShareOffer): string {
     if (offer.provider === 'mega') {
-      const ownerEmail = typeof offer.remoteDescriptor.ownerEmail === 'string'
-        ? offer.remoteDescriptor.ownerEmail.trim()
-        : '';
       const shareName = typeof offer.remoteDescriptor.shareName === 'string'
         ? offer.remoteDescriptor.shareName.trim()
         : offer.label;
-      if (ownerEmail && shareName) {
-        return `${ownerEmail}/${shareName}`;
+      if (shareName) {
+        return shareName;
       }
     }
-    return offer.label;
+    const label = offer.label.trim();
+    if (label) {
+      return label;
+    }
+    return offer.ownerLabel;
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -3430,6 +3516,34 @@
     return (configDraft?.sources ?? []).filter((source) => hubLocationMode(targetVolumeId, source.id) !== 'off');
   }
 
+  function hubFullCopyCount(targetVolumeId: string): number {
+    return hubAttachedSources(targetVolumeId).filter((source) => hubLocationMode(targetVolumeId, source.id) === 'store').length;
+  }
+
+  function hubWriteOnlyCount(targetVolumeId: string): number {
+    return hubAttachedSources(targetVolumeId).filter((source) => hubLocationMode(targetVolumeId, source.id) === 'publish').length;
+  }
+
+  function hubModeLabel(mode: HubLocationMode): string {
+    if (mode === 'store') {
+      return 'Full copy';
+    }
+    if (mode === 'publish') {
+      return 'Save new items only';
+    }
+    return 'Not used';
+  }
+
+  function hubModeCopy(mode: HubLocationMode): string {
+    if (mode === 'store') {
+      return 'This location keeps the full hub available here.';
+    }
+    if (mode === 'publish') {
+      return 'This location stores new uploads without keeping a complete copy.';
+    }
+    return 'This location is not part of this hub right now.';
+  }
+
   function hubAvailableSources(targetVolumeId: string): SourceConfigEntry[] {
     return (configDraft?.sources ?? []).filter((source) => hubLocationMode(targetVolumeId, source.id) === 'off');
   }
@@ -3669,7 +3783,7 @@
   function usageSummary(sourceId: string): string {
     const totalBytes = sourceStatus(sourceId)?.usage.totalBytes ?? 0;
     if (totalBytes <= 0) {
-      return 'Nothing is stored here yet.';
+      return 'Local usage has not been measured here yet.';
     }
     return `Using ${formatSize(totalBytes)} here.`;
   }
@@ -4702,16 +4816,13 @@
       errorMessage = 'Enter at least one email address to invite.';
       return;
     }
-    const accessLevel = summary.share.provider === 'mega'
-      ? managedShareInviteAccessLevel(summary.share.id, summary)
-      : undefined;
+    const accessLevel = summary.share.provider === 'mega' ? 'read/write' : undefined;
     integrationBusyKey = `invite:${summary.share.id}`;
     errorMessage = '';
     successMessage = '';
     try {
       await inviteManagedShare(summary.share.id, emails, accessLevel);
       setManagedShareInviteDraft(summary.share.id, '');
-      setManagedShareInviteAccessLevel(summary.share.id, managedShareDefaultInviteAccessLevel(summary));
       successMessage = accessLevel
         ? `${summary.share.label} location shared with ${emails.join(', ')} as ${formatAccessLevelLabel(accessLevel)}.`
         : `${summary.share.label} location shared with ${emails.join(', ')}.`;
@@ -5100,24 +5211,6 @@
                       setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
                   />
                 </label>
-                {#if summary.share.provider === 'mega'}
-                  <label class="field-block managed-share-invite-access">
-                    <span>Access</span>
-                    <select
-                      class="panel-input"
-                      value={managedShareInviteAccessLevel(summary.share.id, summary)}
-                      onchange={(event) =>
-                        setManagedShareInviteAccessLevel(
-                          summary.share.id,
-                          (event.currentTarget as HTMLSelectElement).value as ManagedShareInviteAccessLevel
-                        )}
-                    >
-                      <option value="read">Read only</option>
-                      <option value="read/write">Read and write</option>
-                      <option value="full access">Full access</option>
-                    </select>
-                  </label>
-                {/if}
                 <button
                   type="submit"
                   class="panel-btn subtle compact"
@@ -5128,7 +5221,7 @@
               </form>
               <p class="managed-share-invite-copy">
                 {#if summary.share.provider === 'mega'}
-                  Invite people here and choose whether they should get read-only, read/write, or full access in MEGA.
+                  Invite people here with read and write access in MEGA.
                 {:else}
                   Invite people here if you want to share this storage location directly.
                 {/if}
@@ -5302,23 +5395,35 @@
           {/if}
         {/snippet}
         {#snippet actions()}
-          <button
-            type="button"
-            class="panel-btn subtle compact"
-            onclick={() => void acceptIncomingManagedShareOffer(offer)}
-            disabled={integrationBusyKey === `accept-share:${offer.id}`}
-          >
-            {#if integrationBusyKey !== `accept-share:${offer.id}`}
-              <Plus size={14} strokeWidth={2} />
-            {/if}
-            <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
-          </button>
+          <div class="button-row incoming-share-actions">
+            <button
+              type="button"
+              class="panel-btn subtle compact"
+              onclick={() => void acceptIncomingManagedShareOffer(offer)}
+              disabled={integrationBusyKey === `accept-share:${offer.id}`}
+            >
+              {#if integrationBusyKey !== `accept-share:${offer.id}`}
+                <Plus size={14} strokeWidth={2} />
+              {/if}
+              <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
+            </button>
+            <button
+              type="button"
+              class="panel-btn subtle compact danger"
+              onclick={() => dismissIncomingManagedShareOffer(offer)}
+              disabled={integrationBusyKey === `accept-share:${offer.id}`}
+              title="Hide this incoming share on this device"
+            >
+              <span>Hide</span>
+            </button>
+          </div>
         {/snippet}
       </ShareCard>
     {/snippet}
     {#snippet incomingFromOthersSection(providerKey: string)}
       {@const incomingInvitesHere = incomingProviderInvitesForProvider(providerKey)}
       {@const incomingSharesHere = incomingManagedSharesForProvider(providerKey)}
+      {@const hiddenIncomingSharesHere = dismissedIncomingManagedShareCount(providerKey)}
       {#if providerCatalog.some((entry) => entry.provider === providerKey && entry.isConnected)}
         <div class="provider-incoming-section">
           <div class="provider-flow-status">
@@ -5337,6 +5442,17 @@
                 Accepted MEGA shares become local read-only inputs. Nearbytes reads and merges from them here, while your own updates still publish only through your MEGA Nearbytes root.
               </p>
             {/if}
+            {#if hiddenIncomingSharesHere > 0}
+              <div class="button-row">
+                <button
+                  type="button"
+                  class="panel-btn subtle compact"
+                  onclick={() => restoreDismissedIncomingManagedShares(providerKey)}
+                >
+                  <span>Show hidden {countLabel(hiddenIncomingSharesHere, 'share')}</span>
+                </button>
+              </div>
+            {/if}
           </div>
           {#if incomingInvitesHere.length > 0 || incomingSharesHere.length > 0}
             <div class="compact-share-grid">
@@ -5349,7 +5465,11 @@
             </div>
           {:else if !incomingLoading}
             <p class="managed-share-invite-copy">
-              No incoming folders detected yet. When the share is visible in {providerLabelForIncoming(providerKey)}, it will list here with an add action.
+              {#if hiddenIncomingSharesHere > 0}
+                No incoming folders are visible right now. {countLabel(hiddenIncomingSharesHere, 'hidden share')} can be shown again from the button above.
+              {:else}
+                No incoming folders detected yet. When the share is visible in {providerLabelForIncoming(providerKey)}, it will list here with an add action.
+              {/if}
             </p>
           {/if}
         </div>
@@ -5391,36 +5511,98 @@
       </form>
     {/snippet}
     {#if mode === 'global'}
-      <div class="provider-tabs" role="tablist" aria-label="Storage providers">
+      <div class="storage-shell-intro">
+        <div class="storage-shell-copy">
+          <p class="eyebrow">Storage setup</p>
+          <h2 class="storage-shell-title">Choose where Nearbytes keeps your data</h2>
+          <p class="storage-shell-note">
+            Start with folders on this device. Connect a cloud service only when you need one. Folders other people share with you stay separate so it is always clear what belongs to you and what is incoming.
+          </p>
+        </div>
+        <div class="storage-shell-facts">
+          <span class="summary-pill">{countLabel(localMachineShareCount(), 'saved location')}</span>
+          <span class="summary-pill">{countLabel(connectedProviderCount(), 'connected service')}</span>
+          <span class="summary-pill">{countLabel(totalIncomingReviewCount(), 'incoming item')}</span>
+        </div>
+      </div>
+
+      <div class="provider-choice-grid" role="group" aria-label="Choose a storage provider">
         <button
           type="button"
-          class="provider-tab"
+          class="provider-choice-card"
           class:active={selectedGlobalProvider === 'local'}
+          aria-pressed={selectedGlobalProvider === 'local'}
           onclick={() => (selectedGlobalProvider = 'local')}
         >
-          <span class="provider-tab-label">This device</span>
-          <span class="provider-tab-copy">{countLabel(localMachineShareCount(), 'location')}</span>
+          <span class="provider-choice-eyebrow">Start here</span>
+          <span class="provider-choice-head">
+            <span class="provider-choice-title">This Mac</span>
+            <span class="status-pill tone-good">{countLabel(localMachineShareCount(), 'saved location')}</span>
+          </span>
+          <span class="provider-choice-copy">
+            {sourceSuggestionRows().length > 0
+              ? `${countLabel(sourceSuggestionRows().length, 'suggestion')} ready to review`
+              : 'Choose folders already on this Mac'}
+          </span>
+          <span class="provider-choice-detail">Best for most people. Keep storage locations local first, then add cloud services only if you need them.</span>
         </button>
+
         {#each providerCatalog as provider (provider.provider)}
           {@const tabLoadingState = providerTabLoadingState(provider)}
           <button
             type="button"
-            class="provider-tab"
+            class="provider-choice-card"
             class:active={selectedGlobalProvider === provider.provider}
+            aria-pressed={selectedGlobalProvider === provider.provider}
             onclick={() => (selectedGlobalProvider = provider.provider)}
           >
-            <span class="provider-tab-heading">
-              <span class="provider-tab-label">{provider.label}</span>
+            <span class="provider-choice-eyebrow">{provider.isConnected ? 'Connected service' : 'Optional service'}</span>
+            <span class="provider-choice-head">
+              <span class="provider-choice-title">{provider.label}</span>
+              <span class={`status-pill tone-${provider.isConnected ? 'good' : provider.setup.status === 'unsupported' ? 'warn' : 'muted'}`}>
+                {providerCardStatus(provider)}
+              </span>
+            </span>
+            <span class="provider-choice-copy">
               {#if tabLoadingState}
-                <span class="provider-tab-loading" aria-live="polite">
-                  <span class="provider-tab-spinner" aria-hidden="true"></span>
-                  <span>{tabLoadingState.label}</span>
-                </span>
+                {tabLoadingState.detail}
+              {:else}
+                {providerTabCopy(provider)}
               {/if}
             </span>
-            <span class="provider-tab-copy">{providerTabCopy(provider)}</span>
+            <span class="provider-choice-detail">{providerSelectionDetail(provider)}</span>
           </button>
         {/each}
+
+        <button
+          type="button"
+          class="provider-choice-card incoming-choice-card"
+          class:active={incomingReviewTargetProvider() !== null && selectedGlobalProvider === incomingReviewTargetProvider()}
+          aria-pressed={incomingReviewTargetProvider() !== null && selectedGlobalProvider === incomingReviewTargetProvider()}
+          onclick={() => {
+            const provider = incomingReviewTargetProvider();
+            if (provider) {
+              selectedGlobalProvider = provider;
+            }
+          }}
+          disabled={incomingReviewTargetProvider() === null}
+        >
+          <span class="provider-choice-eyebrow">Shared with you</span>
+          <span class="provider-choice-head">
+            <span class="provider-choice-title">Incoming folders</span>
+            <span class={`status-pill tone-${totalIncomingReviewCount() > 0 ? 'warn' : 'muted'}`}>
+              {countLabel(totalIncomingReviewCount(), 'item')}
+            </span>
+          </span>
+          <span class="provider-choice-copy">
+            {totalIncomingReviewCount() > 0
+              ? 'Review contact requests and shared folders here'
+              : 'No incoming folders right now'}
+          </span>
+          <span class="provider-choice-detail">
+            Accept incoming provider invitations separately from your own storage locations so the setup stays easy to understand.
+          </span>
+        </button>
       </div>
 
       {#if errorMessage}
@@ -5434,8 +5616,8 @@
       <section class="panel-section">
         <div class="section-head compact global-panel-head">
           <div>
-            <h3>Saved locations</h3>
-            <p class="section-copy">{activeFolderCount()} active on this device.</p>
+            <h3>Storage locations on this Mac</h3>
+            <p class="section-copy">Choose folders Nearbytes can use on this device. {activeFolderCount()} currently active.</p>
           </div>
           <div class="button-row compact-panel-actions">
             {@render addLocationAction('Add a location', 'Add a storage location manually', addSourceCard, false)}
@@ -5460,38 +5642,69 @@
           <p class="warning-copy">{discoveryError}</p>
         {/if}
 
-        <div class="compact-share-grid">
-          {#each localShares() as source (source.id)}
-            {@render unifiedShareCard(localShareView(source))}
-          {/each}
-          {#each sourceSuggestionRows() as row (row.source.path)}
-            <article class="location-card suggestion-card">
-              <div class="card-head">
-                <div class="card-title">
-                  <div class="card-icon" title={row.source.path}>
-                    <Search size={16} strokeWidth={2.1} />
-                  </div>
-                  <div title={row.source.path}>
-                    <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                    <h4>{compactPath(row.source.path)}</h4>
-                  </div>
-                </div>
-              </div>
+        <div class="section-stack">
+          <div class="section-copy-stack">
+            <p class="subheading">Saved locations</p>
+            <p class="managed-share-invite-copy">These are the folders Nearbytes can already use on this Mac.</p>
+          </div>
 
-              <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
-
-              <div class="button-row">
-                <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
+          {#if localShares().length > 0}
+            <div class="compact-share-grid">
+              {#each localShares() as source (source.id)}
+                {@render unifiedShareCard(localShareView(source))}
+              {/each}
+            </div>
+          {:else}
+            <article class="rule-card">
+              <p class="card-copy">No storage locations are saved on this Mac yet.</p>
+              <div class="button-row inline-dialog-actions">
+                <button type="button" class="panel-btn subtle compact" onclick={addSourceCard}>
                   <Plus size={14} strokeWidth={2} />
-                  <span>Use folder</span>
-                </button>
-                <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
-                  <span>Hide</span>
+                  <span>Add a location</span>
                 </button>
               </div>
             </article>
-          {/each}
+          {/if}
         </div>
+
+        {#if sourceSuggestionRows().length > 0}
+          <div class="section-stack section-stack-secondary">
+            <div class="section-copy-stack">
+              <p class="subheading">Suggested locations</p>
+              <p class="managed-share-invite-copy">Nearbytes found folders that already look like storage locations. Review them and add only the ones you want.</p>
+            </div>
+
+            <div class="compact-share-grid">
+              {#each sourceSuggestionRows() as row (row.source.path)}
+                <article class="location-card suggestion-card">
+                  <div class="card-head">
+                    <div class="card-title">
+                      <div class="card-icon" title={row.source.path}>
+                        <Search size={16} strokeWidth={2.1} />
+                      </div>
+                      <div title={row.source.path}>
+                        <p class="provider-label">{formatProvider(row.source.provider)}</p>
+                        <h4>{compactPath(row.source.path)}</h4>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
+
+                  <div class="button-row">
+                    <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
+                      <Plus size={14} strokeWidth={2} />
+                      <span>Use this location</span>
+                    </button>
+                    <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
+                      <span>Hide</span>
+                    </button>
+                  </div>
+                </article>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </section>
 
       {:else}
@@ -5587,6 +5800,29 @@
                 {/if}
               </div>
             </div>
+
+            {#if provider.provider !== 'mega'}
+              <div class="provider-overview-grid">
+                <article class="setup-guidance-card">
+                  <p class="subheading">What this service is for</p>
+                  <p class="provider-step-detail">{providerSelectionDetail(provider)}</p>
+                </article>
+
+                <article class="setup-guidance-card">
+                  <p class="subheading">Status</p>
+                  <p class="provider-overview-value">{providerCardStatus(provider)}</p>
+                  <p class="provider-step-detail">{providerTabCopy(provider)}</p>
+                </article>
+
+                {#if providerShowsIncomingShareSection(provider.provider)}
+                  <article class="setup-guidance-card">
+                    <p class="subheading">Shared with you</p>
+                    <p class="provider-overview-value">{countLabel(providerIncomingActionableCount(provider.provider), 'item')}</p>
+                    <p class="provider-step-detail">Incoming contact requests and shared folders stay separate from your own storage locations.</p>
+                  </article>
+                {/if}
+              </div>
+            {/if}
 
             {#if provider.provider === 'mega'}
               {@const megaStatus = megaStatusView()}
@@ -5692,6 +5928,182 @@
                       </button>
                     {/if}
                   </div>
+
+                  <div class="mega-inline-status-grid">
+                    <div class="provider-path-card mega-helper-card">
+                      <p class="subheading">MEGA runtime</p>
+                      <p class="provider-step-title">{megaHelper.headline}</p>
+                      <p class="provider-step-detail">{megaHelper.detail}</p>
+                      {#if megaHelper.pathValue}
+                        <p class="provider-path-copy">{compactPath(megaHelper.pathValue)}</p>
+                      {/if}
+                    </div>
+
+                    <div class="provider-path-card mega-detail-card" data-tone={megaStatus.tone}>
+                      <p class="subheading">Current status</p>
+                      <p class="managed-share-invite-copy mega-status-headline">{megaStatus.headline}</p>
+                      {#if megaStatus.detail}
+                        <p class="provider-step-detail">{megaStatus.detail}</p>
+                      {/if}
+                      {#if megaStatus.showProgressBar && megaStatus.progressLabel}
+                        <div
+                          class="mega-sync-progress"
+                          role="progressbar"
+                          aria-label="MEGA sync progress"
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={megaStatus.progressPercent ?? undefined}
+                        >
+                          <div
+                            class="mega-sync-progress-bar"
+                            class:indeterminate={megaStatus.progressPercent === null}
+                            style={megaStatus.progressPercent === null ? undefined : `width: ${megaStatus.progressPercent}%`}
+                          ></div>
+                        </div>
+                        <p class="mega-progress-copy">{megaStatus.progressLabel}</p>
+                      {/if}
+                      {#if megaStatus.locationSteps.length > 0}
+                        <div class="mega-location-activity">
+                          <p class="subheading">Folders</p>
+                          <ul class="mega-location-activity-list">
+                            {#each megaStatus.locationSteps as step (step.shareId)}
+                              <li class="mega-location-activity-item" data-tone={step.tone}>
+                                <span class="mega-location-activity-name">{step.name}</span>
+                                <span class="mega-location-activity-phase">{step.phase}</span>
+                              </li>
+                            {/each}
+                          </ul>
+                        </div>
+                      {/if}
+                      <p class="mega-self-repair-copy">{megaStatus.selfRepairCopy}</p>
+                    </div>
+                  </div>
+
+                  {#if megaRuntimeLogsVisible}
+                    {@const visibleRuntimeLogs = visibleMegaRuntimeLogs()}
+                    {@const activeRuntimeLog = activeMegaRuntimeLog()}
+                    <div class="provider-path-card mega-runtime-log-card">
+                      <div class="mega-runtime-log-header">
+                        <div>
+                          <p class="subheading">Developer backend logs</p>
+                          <p class="provider-step-detail">
+                            {megaRuntimeLogsUpdatedAt
+                              ? `Updated ${formatMegaRuntimeLogTimestamp(megaRuntimeLogsUpdatedAt)}`
+                              : 'Tails from the desktop dev backend (stdout/stderr). Native MEGA sync does not write these; use Refresh and the folder list above for live status.'}
+                          </p>
+                        </div>
+                        <div class="mega-runtime-log-header-actions">
+                          <button
+                            type="button"
+                            class="panel-btn subtle compact"
+                            onclick={() => void loadMegaRuntimeLogs()}
+                            disabled={megaRuntimeLogsLoading}
+                          >
+                            <span>{megaRuntimeLogsLoading ? 'Loading...' : 'Refresh logs'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="panel-btn subtle compact"
+                            onclick={() => {
+                              megaRuntimeLogsVisible = false;
+                            }}
+                          >
+                            <span>Close</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="mega-runtime-log-toolbar">
+                        <label class="mega-runtime-log-search">
+                          <span class="subheading">Filter</span>
+                          <input
+                            class="panel-input"
+                            type="text"
+                            value={megaRuntimeLogFilter}
+                            placeholder="Search paths or log text"
+                            oninput={(event) => {
+                              megaRuntimeLogFilter = (event.currentTarget as HTMLInputElement).value;
+                            }}
+                          />
+                        </label>
+                        <div class="mega-runtime-log-toggle-row">
+                          <button
+                            type="button"
+                            class:primary={megaRuntimeLogAutoRefresh}
+                            class="panel-btn subtle compact"
+                            onclick={() => {
+                              megaRuntimeLogAutoRefresh = !megaRuntimeLogAutoRefresh;
+                            }}
+                          >
+                            <span>{megaRuntimeLogAutoRefresh ? 'Auto-refresh on' : 'Auto-refresh off'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class:primary={megaRuntimeLogWrap}
+                            class="panel-btn subtle compact"
+                            onclick={() => {
+                              megaRuntimeLogWrap = !megaRuntimeLogWrap;
+                            }}
+                          >
+                            <span>{megaRuntimeLogWrap ? 'Wrap on' : 'Wrap off'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="panel-btn subtle compact"
+                            onclick={() => void copyMegaRuntimeLog(activeRuntimeLog)}
+                            disabled={!activeRuntimeLog}
+                          >
+                            <span>{megaRuntimeLogCopyFeedback || 'Copy active log'}</span>
+                          </button>
+                        </div>
+                      </div>
+                      {#if megaRuntimeLogsError}
+                        <p class="warning-copy">{megaRuntimeLogsError}</p>
+                      {:else if visibleRuntimeLogs.length === 0}
+                        <p class="provider-step-detail">
+                          No log files found yet. With the built-in MEGA runtime this is normal; use the folder status list for sync progress.
+                        </p>
+                      {:else}
+                        <div class="mega-runtime-log-layout">
+                          <div class="mega-runtime-log-list">
+                            {#each visibleRuntimeLogs as entry}
+                              <button
+                                type="button"
+                                class="mega-runtime-log-tab"
+                                class:active={activeRuntimeLog?.id === entry.id}
+                                onclick={() => selectMegaRuntimeLog(entry.id)}
+                              >
+                                <span class="mega-runtime-log-tab-title">{entry.label}</span>
+                                <span class="mega-runtime-log-tab-meta">
+                                  {entry.exists
+                                    ? `${compactPath(entry.path)} • ${formatSize(entry.size)}`
+                                    : `${compactPath(entry.path)} • waiting`}
+                                </span>
+                              </button>
+                            {/each}
+                          </div>
+                          {#if activeRuntimeLog}
+                            <div class="provider-path-card mega-runtime-log-entry">
+                              <div class="mega-runtime-log-entry-head">
+                                <div>
+                                  <p class="provider-step-title">{activeRuntimeLog.label}</p>
+                                  <p class="provider-step-detail">{activeRuntimeLog.path}</p>
+                                </div>
+                                <div class="provider-fact-list">
+                                  <p class="provider-step-detail">
+                                    {activeRuntimeLog.exists ? formatMegaRuntimeLogTimestamp(activeRuntimeLog.updatedAt) : 'Not written yet'}
+                                  </p>
+                                  <p class="provider-step-detail">
+                                    {countLabel(megaRuntimeLogLineCount(activeRuntimeLog), 'line')}
+                                  </p>
+                                </div>
+                              </div>
+                              <pre class:wrap={megaRuntimeLogWrap} class="mega-log-view mega-log-view-large">{#if activeRuntimeLog.exists && megaRuntimeLogContent(activeRuntimeLog).trim() !== ''}{@html megaRuntimeLogHtml(activeRuntimeLog)}{:else}No log content yet.{/if}</pre>
+                            </div>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
                 </div>
 
                 <div class="mega-automation-note-grid">
@@ -5704,207 +6116,6 @@
                     <p class="provider-step-detail">Mirror checks, owner-root reuse, and incoming-share refresh all run automatically. The MEGA tab is the recovery surface if something stalls.</p>
                   </div>
                 </div>
-              </div>
-              <div class="provider-story-card compact-provider-card mega-status-card" data-tone={megaStatus.tone}>
-                <p class="subheading">Current status</p>
-                <p class="managed-share-invite-copy mega-status-headline">{megaStatus.headline}</p>
-                {#if megaStatus.detail}
-                  <p class="provider-step-detail">{megaStatus.detail}</p>
-                {/if}
-                <div class="provider-path-card mega-helper-card">
-                  <p class="subheading">MEGA runtime</p>
-                  <p class="provider-step-title">{megaHelper.headline}</p>
-                  <p class="provider-step-detail">{megaHelper.detail}</p>
-                  {#if megaHelper.pathValue}
-                    <p class="provider-path-copy">{compactPath(megaHelper.pathValue)}</p>
-                  {/if}
-                </div>
-                {#if megaStatus.showProgressBar && megaStatus.progressLabel}
-                  <div
-                    class="mega-sync-progress"
-                    role="progressbar"
-                    aria-label="MEGA sync progress"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={megaStatus.progressPercent ?? undefined}
-                  >
-                    <div
-                      class="mega-sync-progress-bar"
-                      class:indeterminate={megaStatus.progressPercent === null}
-                      style={megaStatus.progressPercent === null ? undefined : `width: ${megaStatus.progressPercent}%`}
-                    ></div>
-                  </div>
-                  <p class="mega-progress-copy">{megaStatus.progressLabel}</p>
-                {/if}
-                {#if megaStatus.locationSteps.length > 0}
-                  <div class="mega-location-activity">
-                    <p class="subheading">Folders</p>
-                    <ul class="mega-location-activity-list">
-                      {#each megaStatus.locationSteps as step (step.shareId)}
-                        <li class="mega-location-activity-item" data-tone={step.tone}>
-                          <span class="mega-location-activity-name">{step.name}</span>
-                          <span class="mega-location-activity-phase">{step.phase}</span>
-                        </li>
-                      {/each}
-                    </ul>
-                  </div>
-                {/if}
-                <p class="mega-self-repair-copy">{megaStatus.selfRepairCopy}</p>
-                <div class="button-row">
-                  {#if megaReconnectIssue}
-                    <button
-                      type="button"
-                      class="panel-btn primary compact"
-                      onclick={() => openProviderConnectionDialog(provider.provider)}
-                    >
-                      <span>Reconnect account</span>
-                    </button>
-                  {/if}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => void loadPanel({ background: configDraft !== null })}
-                    disabled={sharesLoading || providersLoading}
-                  >
-                    <RefreshCw size={14} strokeWidth={2} />
-                    <span>{sharesLoading ? 'Checking...' : 'Refresh MEGA status'}</span>
-                  </button>
-                  {#if showMegaDevBackendLogsAction()}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      title="Developer-only: backend stdout/stderr tails from the desktop app. Not required for native MEGA."
-                      onclick={() => toggleMegaRuntimeLogs()}
-                    >
-                      <span>{megaRuntimeLogsVisible ? 'Hide dev logs' : 'Dev backend logs'}</span>
-                    </button>
-                  {/if}
-                </div>
-                {#if megaRuntimeLogsVisible}
-                  {@const visibleRuntimeLogs = visibleMegaRuntimeLogs()}
-                  {@const activeRuntimeLog = activeMegaRuntimeLog()}
-                  <div class="provider-path-card mega-runtime-log-card">
-                    <div class="mega-runtime-log-header">
-                      <div>
-                        <p class="subheading">Developer backend logs</p>
-                        <p class="provider-step-detail">
-                          {megaRuntimeLogsUpdatedAt
-                            ? `Updated ${formatMegaRuntimeLogTimestamp(megaRuntimeLogsUpdatedAt)}`
-                            : 'Tails from the desktop dev backend (stdout/stderr). Native MEGA sync does not write these; use Refresh and the folder list above for live status.'}
-                        </p>
-                      </div>
-                      <div class="mega-runtime-log-header-actions">
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => void loadMegaRuntimeLogs()}
-                          disabled={megaRuntimeLogsLoading}
-                        >
-                          <span>{megaRuntimeLogsLoading ? 'Loading...' : 'Refresh logs'}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => {
-                            megaRuntimeLogsVisible = false;
-                          }}
-                        >
-                          <span>Close</span>
-                        </button>
-                      </div>
-                    </div>
-                    <div class="mega-runtime-log-toolbar">
-                      <label class="mega-runtime-log-search">
-                        <span class="subheading">Filter</span>
-                        <input
-                          class="panel-input"
-                          type="text"
-                          value={megaRuntimeLogFilter}
-                          placeholder="Search paths or log text"
-                          oninput={(event) => {
-                            megaRuntimeLogFilter = (event.currentTarget as HTMLInputElement).value;
-                          }}
-                        />
-                      </label>
-                      <div class="mega-runtime-log-toggle-row">
-                        <button
-                          type="button"
-                          class:primary={megaRuntimeLogAutoRefresh}
-                          class="panel-btn subtle compact"
-                          onclick={() => {
-                            megaRuntimeLogAutoRefresh = !megaRuntimeLogAutoRefresh;
-                          }}
-                        >
-                          <span>{megaRuntimeLogAutoRefresh ? 'Auto-refresh on' : 'Auto-refresh off'}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class:primary={megaRuntimeLogWrap}
-                          class="panel-btn subtle compact"
-                          onclick={() => {
-                            megaRuntimeLogWrap = !megaRuntimeLogWrap;
-                          }}
-                        >
-                          <span>{megaRuntimeLogWrap ? 'Wrap on' : 'Wrap off'}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => void copyMegaRuntimeLog(activeRuntimeLog)}
-                          disabled={!activeRuntimeLog}
-                        >
-                          <span>{megaRuntimeLogCopyFeedback || 'Copy active log'}</span>
-                        </button>
-                      </div>
-                    </div>
-                    {#if megaRuntimeLogsError}
-                      <p class="warning-copy">{megaRuntimeLogsError}</p>
-                    {:else if visibleRuntimeLogs.length === 0}
-                      <p class="provider-step-detail">
-                        No log files found yet. With the built-in MEGA runtime this is normal; use the folder status list for sync progress.
-                      </p>
-                    {:else}
-                      <div class="mega-runtime-log-layout">
-                        <div class="mega-runtime-log-list">
-                          {#each visibleRuntimeLogs as entry}
-                            <button
-                              type="button"
-                              class="mega-runtime-log-tab"
-                              class:active={activeRuntimeLog?.id === entry.id}
-                              onclick={() => selectMegaRuntimeLog(entry.id)}
-                            >
-                              <span class="mega-runtime-log-tab-title">{entry.label}</span>
-                              <span class="mega-runtime-log-tab-meta">
-                                {entry.exists
-                                  ? `${compactPath(entry.path)} • ${formatSize(entry.size)}`
-                                  : `${compactPath(entry.path)} • waiting`}
-                              </span>
-                            </button>
-                          {/each}
-                        </div>
-                        {#if activeRuntimeLog}
-                          <div class="provider-path-card mega-runtime-log-entry">
-                            <div class="mega-runtime-log-entry-head">
-                              <div>
-                                <p class="provider-step-title">{activeRuntimeLog.label}</p>
-                                <p class="provider-step-detail">{activeRuntimeLog.path}</p>
-                              </div>
-                              <div class="provider-fact-list">
-                                <p class="provider-step-detail">
-                                  {activeRuntimeLog.exists ? formatMegaRuntimeLogTimestamp(activeRuntimeLog.updatedAt) : 'Not written yet'}
-                                </p>
-                                <p class="provider-step-detail">
-                                  {countLabel(megaRuntimeLogLineCount(activeRuntimeLog), 'line')}
-                                </p>
-                              </div>
-                            </div>
-                            <pre class:wrap={megaRuntimeLogWrap} class="mega-log-view mega-log-view-large">{#if activeRuntimeLog.exists && megaRuntimeLogContent(activeRuntimeLog).trim() !== ''}{@html megaRuntimeLogHtml(activeRuntimeLog)}{:else}No log content yet.{/if}</pre>
-                          </div>
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-                {/if}
               </div>
 
               {#if megaIssue}
@@ -6153,20 +6364,31 @@
               </div>
             {/if}
 
-            <div class="compact-share-grid">
-              {#if shares.length === 0}
-                <ShareCard
-                  provider={provider.label}
-                  title="No shares yet"
-                  copy={providerEmptyShareCopy(provider)}
-                  statusBadges={[]}
-                  meta={[]}
-                />
-              {:else}
-                {#each shares as summary (summary.share.id)}
-                  {@render managedShareCard(summary)}
-                {/each}
-              {/if}
+            <div class="section-stack">
+              <div class="section-copy-stack">
+                <p class="subheading">{provider.provider === 'mega' ? 'Your MEGA locations' : `Your ${provider.label} locations`}</p>
+                <p class="managed-share-invite-copy">
+                  {provider.provider === 'mega'
+                    ? 'These are the places Nearbytes publishes through or keeps mirrored from MEGA.'
+                    : 'These are the storage locations Nearbytes uses for this service.'}
+                </p>
+              </div>
+
+              <div class="compact-share-grid">
+                {#if shares.length === 0}
+                  <ShareCard
+                    provider={provider.label}
+                    title="No storage locations yet"
+                    copy={providerEmptyShareCopy(provider)}
+                    statusBadges={[]}
+                    meta={[]}
+                  />
+                {:else}
+                  {#each shares as summary (summary.share.id)}
+                    {@render managedShareCard(summary)}
+                  {/each}
+                {/if}
+              </div>
             </div>
 
             {#if providerShowsIncomingShareSection(provider.provider)}
@@ -6176,6 +6398,38 @@
         {/if}
       {/if}
     {:else}
+      <div class="storage-shell-intro storage-shell-intro-volume">
+        <div class="storage-shell-copy">
+          <p class="eyebrow">Hub storage</p>
+          <h2 class="storage-shell-title">Choose where this hub keeps its data</h2>
+          <p class="storage-shell-note">
+            Each hub can use one or more storage locations. Keep at least one full copy if you want everything available here without depending on another location.
+          </p>
+        </div>
+        {#if volumeId}
+          <div class="storage-shell-facts">
+            <span class="summary-pill">{countLabel(hubAttachedSources(volumeId).length, 'location')}</span>
+            <span class="summary-pill">{countLabel(hubFullCopyCount(volumeId), 'full copy')}</span>
+            <span class="summary-pill">{countLabel(hubWriteOnlyCount(volumeId), 'save-only location')}</span>
+          </div>
+        {/if}
+      </div>
+
+      <div class="setup-guidance-grid">
+        <article class="setup-guidance-card">
+          <p class="subheading">Keep a full copy</p>
+          <p class="provider-step-detail">Best when this hub should stay fully available from this location, even if another location is offline.</p>
+        </article>
+        <article class="setup-guidance-card">
+          <p class="subheading">Save new items only</p>
+          <p class="provider-step-detail">Use this when new uploads should land here, but you do not want this location to keep the full hub.</p>
+        </article>
+        <article class="setup-guidance-card">
+          <p class="subheading">Need another place?</p>
+          <p class="provider-step-detail">Add another saved storage location here, or open storage setup if you need to create one first.</p>
+        </article>
+      </div>
+
       <div class="toolbar-row">
         <button
           type="button"
@@ -6234,7 +6488,7 @@
           <div class="rule-grid">
             {#if hubAttachedSources(volumeId).length === 0}
               <article class="rule-card">
-                <p class="card-copy">Nothing is using a storage location here yet. Add one of your saved locations here, or open storage setup to create another.</p>
+                <p class="card-copy">This hub is not using any storage locations yet. Add one of your saved locations here, or open storage setup if you need to create another first.</p>
                 <div class="button-row inline-dialog-actions">
                   <button type="button" class="panel-btn subtle compact" onclick={() => openHubLocationDialog(volumeId)}>
                     <Plus size={14} strokeWidth={2} />
@@ -6263,31 +6517,32 @@
                   </div>
                 </div>
 
-                <div class="toggle-stack">
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="radio"
-                      name={`hub-location-mode-${source.id}`}
-                      checked={mode === 'store'}
-                      onchange={() => setHubLocationMode(volumeId, source.id, 'store')}
-                    />
-                    <div>
-                      <span class="toggle-title">Store everything here</span>
-                      <span class="toggle-copy">Keep a full copy in this location.</span>
-                    </div>
-                  </label>
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="radio"
-                      name={`hub-location-mode-${source.id}`}
-                      checked={mode === 'publish'}
-                      onchange={() => setHubLocationMode(volumeId, source.id, 'publish')}
-                    />
-                    <div>
-                      <span class="toggle-title">Write new updates here</span>
-                      <span class="toggle-copy">Write new updates here without keeping a full copy in this location.</span>
-                    </div>
-                  </label>
+                <div class="hub-mode-panel">
+                  <div class="hub-mode-summary">
+                    <span class={`status-pill tone-${mode === 'store' ? 'durable' : mode === 'publish' ? 'muted' : 'off'}`}>
+                      {hubModeLabel(mode)}
+                    </span>
+                    <p class="managed-share-invite-copy">{hubModeCopy(mode)}</p>
+                  </div>
+
+                  <div class="segmented-toggle" role="group" aria-label={`How ${sourceDisplayTitle(source)} is used in this hub`}>
+                    <button
+                      type="button"
+                      class="segmented-toggle-btn"
+                      class:active={mode === 'store'}
+                      onclick={() => setHubLocationMode(volumeId, source.id, 'store')}
+                    >
+                      Keep a full copy
+                    </button>
+                    <button
+                      type="button"
+                      class="segmented-toggle-btn"
+                      class:active={mode === 'publish'}
+                      onclick={() => setHubLocationMode(volumeId, source.id, 'publish')}
+                    >
+                      Save new items only
+                    </button>
+                  </div>
                 </div>
 
                 {#if note}
@@ -6616,6 +6871,194 @@
     margin-bottom: 0.15rem;
   }
 
+  .storage-shell-intro,
+  .storage-shell-copy,
+  .section-stack,
+  .section-copy-stack,
+  .provider-overview-grid,
+  .setup-guidance-grid,
+  .hub-mode-panel,
+  .hub-mode-summary,
+  .mega-inline-status-grid {
+    display: grid;
+  }
+
+  .storage-shell-intro {
+    gap: 0.9rem;
+    padding: 0.1rem 0 0.15rem;
+  }
+
+  .storage-shell-intro-volume {
+    padding-top: 0;
+  }
+
+  .storage-shell-copy {
+    gap: 0.34rem;
+    max-width: 76ch;
+  }
+
+  .storage-shell-title,
+  .storage-shell-note,
+  .provider-choice-copy,
+  .provider-choice-detail,
+  .provider-overview-value {
+    margin: 0;
+  }
+
+  .storage-shell-title {
+    color: var(--text-main);
+    font-size: 1.16rem;
+    line-height: 1.24;
+    font-weight: 700;
+  }
+
+  .storage-shell-note {
+    color: var(--text-soft);
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+
+  .storage-shell-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .provider-choice-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .provider-choice-card {
+    display: grid;
+    gap: 0.36rem;
+    padding: 0.9rem;
+    border-radius: 16px;
+    border: 1px solid var(--panel-soft-border);
+    background: var(--card-bg);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  }
+
+  .provider-choice-card:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--card-bg) 96%, rgba(255, 252, 249, 0.94));
+  }
+
+  .provider-choice-card.active {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--card-bg-strong) 96%, rgba(255, 255, 255, 0.94));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
+  }
+
+  .provider-choice-card:disabled {
+    opacity: 0.62;
+    cursor: default;
+    transform: none;
+  }
+
+  .provider-choice-eyebrow {
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .provider-choice-head {
+    display: flex;
+    gap: 0.55rem;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .provider-choice-title {
+    color: var(--text-main);
+    font-size: 0.94rem;
+    line-height: 1.3;
+    font-weight: 700;
+  }
+
+  .provider-choice-copy {
+    color: var(--text-main);
+    font-size: 0.78rem;
+    line-height: 1.35;
+    font-weight: 600;
+  }
+
+  .provider-choice-detail {
+    color: var(--text-soft);
+    font-size: 0.76rem;
+    line-height: 1.45;
+  }
+
+  .section-stack {
+    gap: 0.72rem;
+  }
+
+  .section-stack-secondary {
+    padding-top: 0.2rem;
+    border-top: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 75%, transparent);
+  }
+
+  .section-copy-stack {
+    gap: 0.22rem;
+  }
+
+  .provider-overview-grid,
+  .setup-guidance-grid,
+  .mega-inline-status-grid {
+    gap: 0.72rem;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .setup-guidance-card {
+    gap: 0.28rem;
+    padding: 0.78rem 0.82rem;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
+  }
+
+  .provider-overview-value {
+    color: var(--text-main);
+    font-size: 0.96rem;
+    line-height: 1.3;
+    font-weight: 700;
+  }
+
+  .hub-mode-panel {
+    gap: 0.62rem;
+  }
+
+  .hub-mode-summary {
+    gap: 0.28rem;
+  }
+
+  .hub-mode-summary .status-pill {
+    width: fit-content;
+  }
+
+  .mega-detail-card {
+    gap: 0.45rem;
+  }
+
+  .mega-detail-card[data-tone='good'] {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.92));
+  }
+
+  .mega-detail-card[data-tone='warn'] {
+    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 30%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 80%, rgba(255, 250, 245, 0.97));
+  }
+
   .provider-tabs {
     display: flex;
     flex-wrap: wrap;
@@ -6902,7 +7345,6 @@
   .card-title > div,
   .card-head,
   .card-status,
-  .inline-toggle > div,
   .usage-main,
   .field-block {
     min-width: 0;
@@ -7213,11 +7655,6 @@
     accent-color: var(--nb-accent-strong, #8f6a3b);
   }
 
-  .toggle-stack {
-    display: grid;
-    gap: 0.55rem;
-  }
-
   .card-control-row {
     display: flex;
     flex-wrap: wrap;
@@ -7235,39 +7672,6 @@
     max-width: 148px;
   }
 
-  .inline-toggle {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.55rem;
-    align-items: start;
-  }
-
-  .inline-toggle input {
-    margin-top: 0.22rem;
-    width: 17px;
-    height: 17px;
-    accent-color: var(--nb-accent-strong, #8f6a3b);
-  }
-
-  .inline-toggle > div {
-    display: grid;
-    gap: 0.12rem;
-  }
-
-  .compact-toggle-line {
-    padding: 0.68rem 0.74rem;
-    border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
-  }
-
-  .toggle-title {
-    color: var(--text-main);
-    font-size: 0.82rem;
-    font-weight: 600;
-  }
-
-  .toggle-copy,
   .fact-row,
   .usage-meta,
   .subheading {
@@ -7633,10 +8037,6 @@
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
   }
 
-  .mega-status-card {
-    gap: 0.52rem;
-  }
-
   .mega-helper-card {
     gap: 0.32rem;
   }
@@ -7732,16 +8132,6 @@
     gap: 0.75rem;
     align-items: flex-start;
     flex-wrap: wrap;
-  }
-
-  .mega-status-card[data-tone='good'] {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.9));
-  }
-
-  .mega-status-card[data-tone='warn'] {
-    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 30%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 80%, rgba(255, 250, 245, 0.97));
   }
 
   .mega-status-headline {
@@ -8171,6 +8561,13 @@
     .storage-panel {
       padding: 0.85rem;
       border-radius: 18px;
+    }
+
+    .provider-choice-grid,
+    .provider-overview-grid,
+    .setup-guidance-grid,
+    .mega-inline-status-grid {
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .storage-card-actions {

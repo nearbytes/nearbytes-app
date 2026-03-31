@@ -1,0 +1,13 @@
+- generic [active]:
+  - generic [ref=e2]:
+    - list [ref=e5]:
+      - listitem [ref=e6]:
+        - paragraph [ref=e7]
+      - listitem [ref=e9]:
+        - paragraph [ref=e10]
+    - generic [ref=e13]:
+      - link [ref=e14] [cursor=pointer]:
+        - /url: https://www.facebook.com/MEGAprivacy
+      - link [ref=e15] [cursor=pointer]:
+        - /url: https://www.twitter.com/MEGAprivacy
+  - textbox "copy" [ref=e16]

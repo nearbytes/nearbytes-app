@@ -18,7 +18,7 @@ import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
 import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
 import { createSecret } from '../../types/keys.js';
-import { MegaTransportAdapter } from '../mega.js';
+import { MegaTransportAdapter, rebuildMegaSecurityAttributeForE2e } from '../mega.js';
 import { createIntegrationRuntime, type ProviderSecretStore } from '../runtime.js';
 import type { ManagedShare, ProviderAccount } from '../types.js';
 
@@ -180,6 +180,26 @@ function decryptMegaKeyManagerContainer(masterKey: Buffer, encoded: string): Buf
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 }
 
+function encodeMegaPrivateAttributeRecord(name: string, payload: Buffer): Buffer {
+  if (payload.length > 0xffff) {
+    throw new Error(`Private attribute payload is too large in test fixture: ${name}`);
+  }
+  const key = Buffer.from(name, 'ascii');
+  const header = Buffer.alloc(key.length + 3);
+  key.copy(header, 0);
+  header[key.length] = 0;
+  header.writeUInt16BE(payload.length, key.length + 1);
+  return Buffer.concat([header, payload]);
+}
+
+function encryptMegaPrivateAttribute(records: ReadonlyArray<readonly [string, Buffer]>, masterKey: Buffer): string {
+  const nonce = Buffer.from('102132435465768798a9babb', 'hex');
+  const plaintext = Buffer.concat(records.map(([name, payload]) => encodeMegaPrivateAttributeRecord(name, payload)));
+  const cipher = createCipheriv('aes-128-gcm', masterKey.subarray(0, 16), nonce);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return encodeMegaBase64Url(Buffer.concat([Buffer.from([0x10]), nonce, ciphertext, cipher.getAuthTag()]));
+}
+
 function parseMegaKeyManagerRecords(value: Buffer): Array<{ tag: number; payload: Buffer }> {
   const records: Array<{ tag: number; payload: Buffer }> = [];
   let offset = 0;
@@ -205,6 +225,16 @@ function parseMegaKeyManagerShareKeyEntries(
     });
   }
   return entries;
+}
+
+function encodeMegaKeyManagerPendingOutShareEntry(shareHandle: string, target: string): Buffer {
+  const shareHandleBytes = decodeMegaBase64Url(shareHandle);
+  if (shareHandleBytes.length !== 6) {
+    throw new Error(`Invalid MEGA share handle in test fixture: ${shareHandle}`);
+  }
+  const trimmedTarget = target.trim();
+  const targetBytes = Buffer.from(trimmedTarget, 'utf8');
+  return Buffer.concat([Buffer.from([targetBytes.length]), shareHandleBytes, targetBytes]);
 }
 
 function deriveMegaPairwiseKey(privateCu25519: Buffer, publicCu25519: Buffer): Buffer {
@@ -1299,6 +1329,7 @@ describe('MegaTransportAdapter', () => {
     const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
     const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
     const secureShareHandle = encodeMegaBase64Url(Buffer.from('001122334455', 'hex'));
+    const existingPendingShareHandle = encodeMegaBase64Url(Buffer.from('a1b2c3d4e5f6', 'hex'));
     const friendHandle = encodeMegaBase64Url(Buffer.from('1122334455667788', 'hex'));
     const ownerKeyPair = generateKeyPairSync('x25519' as any, {
       privateKeyEncoding: { format: 'jwk' },
@@ -1323,6 +1354,7 @@ describe('MegaTransportAdapter', () => {
         encodeMegaKeyManagerRecord(4, generation),
         encodeMegaKeyManagerRecord(17, ownerPrivateCu25519),
         encodeMegaKeyManagerRecord(32, authRingPayload),
+        encodeMegaKeyManagerRecord(64, encodeMegaKeyManagerPendingOutShareEntry(existingPendingShareHandle, 'older@example.com')),
       ])
     );
     let ugaKeysCalls = 0;
@@ -1474,6 +1506,7 @@ describe('MegaTransportAdapter', () => {
 
     const decryptedKeyManager = decryptMegaKeyManagerContainer(masterKey, currentKeyManagerState);
     const keyManagerRecords = parseMegaKeyManagerRecords(decryptedKeyManager);
+    expect(keyManagerRecords.map((record) => record.tag)).toEqual([4, 17, 32, 48, 64]);
     const shareKeyRecord = keyManagerRecords.find((record) => record.tag === 48);
     expect(shareKeyRecord).toBeDefined();
     const shareKeyEntries = parseMegaKeyManagerShareKeyEntries(shareKeyRecord!.payload);
@@ -4804,6 +4837,162 @@ describe('MegaTransportAdapter', () => {
       label: 'Team Space',
       ownerLabel: 'owner@example.com',
     });
+  });
+
+  it('rebuilds ^!keys from keyring and login keys during e2e reset recovery', async () => {
+    const previousAllowDestructive = process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE;
+    process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = '1';
+
+    try {
+      const email = 'repair@example.com';
+      const password = 'correct horse battery staple';
+      const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
+      const passwordKey = await deriveV2MasterKey(password, salt);
+      const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+      const encryptedMasterKey = encryptAesEcb(masterKey, passwordKey);
+      const tsidLeft = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+      const tsid = encodeMegaBase64Url(Buffer.concat([tsidLeft, encryptAesEcb(tsidLeft, masterKey)]));
+      const userHandle = 'usrhandle01';
+      const privateEd25519 = Buffer.from('11'.repeat(32), 'hex');
+      const privateCu25519 = Buffer.from('22'.repeat(32), 'hex');
+      const authRingEd25519 = Buffer.concat([Buffer.from('peerAuth', 'latin1'), Buffer.alloc(20, 0xab), Buffer.from([0])]);
+      const encodedKeyring = encryptMegaPrivateAttribute(
+        [
+          ['prEd255', privateEd25519],
+          ['prCu255', privateCu25519],
+        ],
+        masterKey
+      );
+      const encodedAuthRingEd25519 = encryptMegaPrivateAttribute([['', authRingEd25519]], masterKey);
+
+      const { privateKey: privateKeyObject } = generateKeyPairSync('rsa' as any, {
+        modulusLength: 2048,
+        publicExponent: 0x10001,
+        privateKeyEncoding: { format: 'jwk' },
+        publicKeyEncoding: { format: 'jwk' },
+      });
+      const privateJwk = privateKeyObject as JsonWebKey;
+      const q = decodeMegaBase64Url(String(privateJwk.q));
+      const p = decodeMegaBase64Url(String(privateJwk.p));
+      const d = decodeMegaBase64Url(String(privateJwk.d));
+      const qi = decodeMegaBase64Url(String(privateJwk.qi));
+      const expectedPrivateRsa = Buffer.concat([
+        encodeMegaPrivateKeyComponent(q),
+        encodeMegaPrivateKeyComponent(p),
+        encodeMegaPrivateKeyComponent(d),
+      ]);
+      const privateKeyPayload = Buffer.concat([
+        expectedPrivateRsa,
+        encodeMegaPrivateKeyComponent(qi),
+        Buffer.alloc(8, 0),
+      ]);
+      const paddedPrivateKeyPayload = Buffer.concat([
+        privateKeyPayload,
+        Buffer.alloc((16 - (privateKeyPayload.length % 16)) % 16, 0),
+      ]);
+      const encryptedPrivateKey = encryptAesEcb(paddedPrivateKeyPayload, masterKey);
+
+      let rebuiltKeysValue: string | null = null;
+      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'us0':
+            return new Response(JSON.stringify([{ v: 2, s: salt }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'us':
+            return new Response(
+              JSON.stringify([
+                {
+                  k: encodeMegaBase64Url(encryptedMasterKey),
+                  u: userHandle,
+                  tsid,
+                  privk: encodeMegaBase64Url(encryptedPrivateKey),
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          case 'uga': {
+            switch (payload.ua) {
+              case '^!keys':
+                return new Response(JSON.stringify([rebuiltKeysValue ? { av: rebuiltKeysValue } : -9]), {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                });
+              case '*keyring':
+                return new Response(JSON.stringify([{ av: encodedKeyring }]), {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                });
+              case '*!authring':
+                return new Response(JSON.stringify([{ av: encodedAuthRingEd25519 }]), {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                });
+              case '*!authCu255':
+                return new Response(JSON.stringify([-9]), {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                });
+              default:
+                throw new Error(`Unexpected MEGA attribute fetch in recovery test: ${String(payload.ua)}`);
+            }
+          }
+          case 'up2': {
+            const encodedKeys = payload['^!keys'];
+            if (typeof encodedKeys !== 'string' || !encodedKeys.trim()) {
+              throw new Error('Recovery test expected an encoded ^!keys payload.');
+            }
+            rebuiltKeysValue = encodedKeys;
+            return new Response(JSON.stringify([0]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          default:
+            throw new Error(`Unexpected MEGA API payload in recovery test: ${JSON.stringify(payload)}`);
+        }
+      }) as typeof fetch;
+
+      const result = await rebuildMegaSecurityAttributeForE2e({
+        email,
+        password,
+        fetchImpl,
+      });
+
+      expect(rebuiltKeysValue).toBeTruthy();
+
+      const records = parseMegaKeyManagerRecords(decryptMegaKeyManagerContainer(masterKey, rebuiltKeysValue!));
+      const recordMap = new Map(records.map((record) => [record.tag, record.payload]));
+
+      expect(records.map((record) => record.tag)).toEqual([1, 2, 3, 4, 5, 16, 17, 18, 32, 33, 48, 64, 65, 80, 96]);
+      expect(recordMap.get(1)).toEqual(Buffer.from([1]));
+      expect(recordMap.get(2)?.length).toBe(4);
+      expect(recordMap.get(3)?.equals(decodeMegaBase64Url(userHandle))).toBe(true);
+      expect(recordMap.get(4)?.readUInt32BE(0)).toBe(result.generation);
+      expect(result.generation).toBeGreaterThan(0);
+      expect(recordMap.get(5)?.length).toBe(0);
+      expect(recordMap.get(16)?.equals(privateEd25519)).toBe(true);
+      expect(recordMap.get(17)?.equals(privateCu25519)).toBe(true);
+      expect(recordMap.get(18)?.equals(expectedPrivateRsa)).toBe(true);
+      expect(recordMap.get(32)?.equals(authRingEd25519)).toBe(true);
+      expect(recordMap.get(33)?.length).toBe(0);
+      expect(recordMap.get(48)?.length).toBe(0);
+      expect(recordMap.get(64)?.length).toBe(0);
+      expect(recordMap.get(65)?.length).toBe(0);
+      expect(recordMap.get(80)?.length).toBe(0);
+      expect(recordMap.get(96)?.length).toBe(0);
+    } finally {
+      if (previousAllowDestructive === undefined) {
+        delete process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE;
+      } else {
+        process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = previousAllowDestructive;
+      }
+    }
   });
 
 });

@@ -88,6 +88,8 @@ If the MEGA storage panel looks stalled:
 
 If a share appears writable in MEGA but read-only in Nearbytes, that is expected for incoming shares. Nearbytes intentionally reads from those local copies and publishes only through the connected account’s own Nearbytes root.
 
+If a dev or E2E account was previously repaired with the old destructive reset flow and now shows the MEGA browser error about missing cryptographic keys, use the documented rebuild procedure in `docs/mega-key-manager-recovery.md` instead of deleting `^!keys` again.
+
 ## Recommendations
 
 1. Use one connected MEGA account per user as that user’s publication root.
@@ -98,5 +100,6 @@ If a share appears writable in MEGA but read-only in Nearbytes, that is expected
 ## See Also
 
 - [verify-mega.md](verify-mega.md)
+- [mega-key-manager-recovery.md](mega-key-manager-recovery.md)
 - [mega-protocol.md](mega-protocol.md)
 - [file-system.md](file-system.md)
