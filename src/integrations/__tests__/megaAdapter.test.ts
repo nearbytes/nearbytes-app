@@ -3004,7 +3004,7 @@ describe('MegaTransportAdapter', () => {
     expect(accepted.capabilities).toEqual(['mirror', 'read', 'write', 'accept']);
   });
 
-  it('forces upload for writable incoming MEGA shares', async () => {
+  it('rejects forced upload for incoming MEGA shares even when MEGA granted write access', async () => {
     const secretStore = createMemorySecretStore();
     const email = 'reader@example.com';
     const userHandle = 'usrhandle01';
@@ -3191,19 +3191,14 @@ describe('MegaTransportAdapter', () => {
       updatedAt: Date.now(),
     };
 
-    await expect(adapter.forceManagedShareUpload(share, account, 'blocks/upload.bin')).resolves.toBeUndefined();
-    const recordedCommitPayload = ((value: Record<string, unknown> | null): Record<string, unknown> => {
-      if (!value) {
-        throw new Error('Expected MEGA upload commit payload to be recorded.');
-      }
-      return value;
-    })(commitPayload);
-    expect(recordedCommitPayload.sm).toBe(1);
-    expect(recordedCommitPayload.cr).toBeDefined();
-    expect(uploadedFileVisible).toBe(true);
+    await expect(adapter.forceManagedShareUpload(share, account, 'blocks/upload.bin')).rejects.toThrow(
+      'Forced upload is supported only for your own MEGA publication root.'
+    );
+    expect(commitPayload).toBeNull();
+    expect(uploadedFileVisible).toBe(false);
   });
 
-  it('forces upload for writable incoming MEGA shares when the root attributes cannot be decrypted', async () => {
+  it('rejects forced upload for incoming MEGA shares when the root attributes cannot be decrypted', async () => {
     const secretStore = createMemorySecretStore();
     const email = 'reader@example.com';
     const userHandle = 'usrhandle01';
@@ -3389,16 +3384,11 @@ describe('MegaTransportAdapter', () => {
       updatedAt: Date.now(),
     };
 
-    await expect(adapter.forceManagedShareUpload(share, account, 'blocks/upload.bin')).resolves.toBeUndefined();
-    const recordedCommitPayload = ((value: Record<string, unknown> | null): Record<string, unknown> => {
-      if (!value) {
-        throw new Error('Expected MEGA upload commit payload to be recorded.');
-      }
-      return value;
-    })(commitPayload);
-    expect(recordedCommitPayload.sm).toBe(1);
-    expect(recordedCommitPayload.cr).toBeDefined();
-    expect(uploadedFileVisible).toBe(true);
+    await expect(adapter.forceManagedShareUpload(share, account, 'blocks/upload.bin')).rejects.toThrow(
+      'Forced upload is supported only for your own MEGA publication root.'
+    );
+    expect(commitPayload).toBeNull();
+    expect(uploadedFileVisible).toBe(false);
   });
 
   it('resolves owner share crypto from cached root-handle share keys', async () => {

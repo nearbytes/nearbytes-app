@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import {
     acceptManagedShare,
     acceptIncomingProviderContactInvite,
@@ -137,6 +137,23 @@
     pathValue: string | null;
   };
 
+  type MegaTabFocusTarget = 'overview' | 'account' | 'publishing' | 'incoming';
+
+  type MegaToastAction = {
+    label: string;
+    kind: 'focus' | 'refresh' | 'logs';
+    target?: MegaTabFocusTarget;
+  };
+
+  type MegaToast = {
+    key: string;
+    tone: 'good' | 'muted' | 'warn';
+    title: string;
+    detail: string;
+    action: MegaToastAction | null;
+    persistent: boolean;
+  };
+
   type CollaboratorView = {
     key: string;
     label: string;
@@ -227,11 +244,17 @@
   let sourceRepairReports = $state<Record<string, StorageLocationRepairReport>>({});
   let hubLocationDialogVolumeId = $state<string | null>(null);
   let selectedGlobalProvider = $state('local');
+  let megaToastDismissals = $state<Record<string, string>>({});
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
   let lastRefreshToken = $state(0);
   let activeReserveEditorKey = $state<string | null>(null);
   let discoveryRunId = 0;
+
+  let megaOverviewSection = $state<HTMLDivElement | null>(null);
+  let megaAccountSection = $state<HTMLButtonElement | null>(null);
+  let megaPublishingSection = $state<HTMLButtonElement | null>(null);
+  let megaIncomingSection = $state<HTMLButtonElement | null>(null);
 
   type ShareBadge = {
     label: string;
@@ -750,7 +773,7 @@
     if (pending) {
       return pending.detail || 'Pending signup confirmations are no longer supported in-app. Complete setup on mega.io, then sign in here.';
     }
-    return 'Sign in here so Nearbytes can create or reuse your writable MEGA Nearbytes root, keep incoming shares refreshed locally, and send storage invites.';
+    return 'Sign in once. Nearbytes creates or reuses your writable MEGA root, refreshes incoming shares locally, and keeps publishing isolated to your own account.';
   }
 
   async function submitMegaAction(provider: ProviderCatalogEntry): Promise<void> {
@@ -1251,6 +1274,157 @@
     return provider === 'mega' || provider === 'gdrive';
   }
 
+  function megaOwnerShares(): ManagedShareSummary[] {
+    return providerVisibleShares('mega').filter((summary) => summary.share.role === 'owner');
+  }
+
+  function megaRecipientShares(): ManagedShareSummary[] {
+    return providerVisibleShares('mega').filter((summary) => summary.share.role === 'recipient');
+  }
+
+  function megaPendingIncomingCount(): number {
+    return incomingManagedSharesForProvider('mega').length + incomingProviderInvitesForProvider('mega').length;
+  }
+
+  function megaIncomingSummaryLabel(): string {
+    const readyCount = megaRecipientShares().length;
+    return countLabel(readyCount, 'shared folder', 'shared folders');
+  }
+
+  function megaIncomingPendingLabel(): string | null {
+    const pendingCount = megaPendingIncomingCount();
+    if (pendingCount === 0) {
+      return null;
+    }
+    return `${countLabel(pendingCount, 'item')} still being checked`;
+  }
+
+  function megaToastSignature(toast: MegaToast): string {
+    return `${toast.tone}|${toast.title}|${toast.detail}|${toast.action?.kind ?? ''}|${toast.action?.label ?? ''}|${toast.action?.target ?? ''}`;
+  }
+
+  function dismissMegaToast(toast: MegaToast): void {
+    megaToastDismissals = {
+      ...megaToastDismissals,
+      [toast.key]: megaToastSignature(toast),
+    };
+  }
+
+  function megaToastList(): MegaToast[] {
+    const reconnectIssue = megaProviderReconnectIssue();
+    const flow = providerFlowState('mega');
+    const issue = reconnectIssue ? null : megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
+    const account = connectedAccountForProvider('mega');
+    const hasWorkingShares = providerShares('mega').some(
+      (summary) => summary.state.status === 'syncing' || summary.state.status === 'idle'
+    );
+    const status = megaStatusView();
+    const toasts: MegaToast[] = [];
+
+    if (flow) {
+      toasts.push({
+        key: 'mega-flow',
+        tone: flow.phase === 'cancelled' ? 'warn' : 'muted',
+        title: flow.title,
+        detail: flow.detail,
+        action: {
+          label: flow.phase === 'cancelled' ? 'Open account' : 'Show sign-in',
+          kind: 'focus',
+          target: 'account',
+        },
+        persistent: true,
+      });
+    }
+
+    if (reconnectIssue) {
+      toasts.push({
+        key: 'mega-reconnect',
+        tone: 'warn',
+        title: reconnectIssue.diagnostic.title,
+        detail: reconnectIssue.diagnostic.summary,
+        action: {
+          label: 'Open recovery',
+          kind: 'focus',
+          target: 'account',
+        },
+        persistent: true,
+      });
+    } else if (issue) {
+      toasts.push({
+        key: 'mega-diagnostic',
+        tone: 'warn',
+        title: issue.summary,
+        detail: issue.title,
+        action: {
+          label: 'Review status',
+          kind: 'focus',
+          target: 'overview',
+        },
+        persistent: true,
+      });
+    }
+
+    if (account !== null && (providersLoading || sharesLoading || incomingLoading || hasWorkingShares) && !reconnectIssue) {
+      toasts.push({
+        key: 'mega-progress',
+        tone: 'muted',
+        title: status.headline,
+        detail: status.progressLabel || status.detail || 'Nearbytes is checking your MEGA account and local copies.',
+        action: {
+          label: incomingLoading ? 'Open inbox' : 'Open status',
+          kind: 'focus',
+          target: incomingLoading ? 'incoming' : 'overview',
+        },
+        persistent: true,
+      });
+    }
+
+    return toasts.filter((toast) => megaToastDismissals[toast.key] !== megaToastSignature(toast));
+  }
+
+  function megaFocusElement(target: MegaTabFocusTarget): HTMLElement | null {
+    switch (target) {
+      case 'account':
+        return megaAccountSection;
+      case 'publishing':
+        return megaPublishingSection;
+      case 'incoming':
+        return megaIncomingSection;
+      case 'overview':
+      default:
+        return megaOverviewSection;
+    }
+  }
+
+  async function focusMegaArea(target: MegaTabFocusTarget): Promise<void> {
+    if (mode === 'global' && selectedGlobalProvider !== 'mega') {
+      selectedGlobalProvider = 'mega';
+      await tick();
+    }
+    const element = megaFocusElement(target);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+  }
+
+  async function runMegaToastAction(action: MegaToastAction): Promise<void> {
+    if (action.kind === 'focus') {
+      if (action.target) {
+        await focusMegaArea(action.target);
+      }
+      return;
+    }
+    if (action.kind === 'logs') {
+      if (action.target) {
+        await focusMegaArea(action.target);
+      }
+      openMegaRuntimeLogsInspector();
+      return;
+    }
+    if (action.target) {
+      await focusMegaArea(action.target);
+    }
+    await loadPanel({ background: configDraft !== null });
+  }
+
   function providerPriority(provider: string): number {
     if (provider === 'mega') return 0;
     if (provider === 'gdrive') return 1;
@@ -1456,6 +1630,19 @@
     }
     if (!entry.isConnected) {
       return providerCardStatus(entry);
+    }
+    if (entry.provider === 'mega') {
+      const publishCount = megaOwnerShares().length;
+      const incomingCount = megaRecipientShares().length;
+      const pendingCount = megaPendingIncomingCount();
+      const parts = [
+        countLabel(publishCount, 'publish root'),
+        countLabel(incomingCount, 'shared folder', 'shared folders'),
+      ];
+      if (pendingCount > 0) {
+        parts.push(`${countLabel(pendingCount, 'item')} checking`);
+      }
+      return parts.join(' • ');
     }
     const locationCopy = countLabel(
       providerVisibleShareCount(entry.provider),
@@ -1708,15 +1895,15 @@
     const working = shares.filter((s) => s.state.status === 'syncing' || s.state.status === 'idle').length;
     const blocked = shares.filter((s) => s.state.status === 'attention' || s.state.status === 'needs-auth').length;
     if (blocked > 0) {
-      return `${blocked} of ${total} need attention • ${ready} ready`;
+      return `${countLabel(blocked, 'shared folder', 'shared folders')} need attention`;
     }
     if (ready === total) {
-      return `All ${total} ${total === 1 ? 'location' : 'locations'} ready`;
+      return `All ${countLabel(total, 'shared folder', 'shared folders')} ready`;
     }
     if (working > 0 && ready < total) {
-      return `${working} still connecting or syncing • ${ready} ready so far`;
+      return `${countLabel(working, 'shared folder', 'shared folders')} still being checked`;
     }
-    return `${ready} of ${total} ready`;
+    return `${countLabel(ready, 'shared folder', 'shared folders')} ready`;
   }
 
   function megaRuntimeReconnectLine(detail: string): string | null {
@@ -2261,10 +2448,10 @@
     if (checking > 0 && !inProgress && ready < total) {
       return {
         ...base,
-        headline: 'MEGA mirrors connected',
+        headline: 'Checking MEGA shared folders',
         detail:
           total > 0
-            ? `Nearbytes is verifying ${countLabel(total, 'shared location')}. Progress for each folder is listed below.`
+            ? `Nearbytes is verifying ${countLabel(total, 'shared folder', 'shared folders')}. Progress for each folder is listed below.`
             : 'Nearbytes is verifying the connected MEGA account in the background.',
         tone: 'muted' as const,
         syncing: false,
@@ -2298,7 +2485,7 @@
     if (total > 0) {
       return {
         ...base,
-        headline: `${countLabel(total, 'live location')} ready`,
+        headline: `${countLabel(total, 'shared folder', 'shared folders')} ready`,
         detail: 'All visible MEGA locations are healthy.',
         tone: 'good' as const,
         syncing: false,
@@ -2647,7 +2834,7 @@
       return `Connect ${provider.label} first, then Nearbytes will manage its shares here.`;
     }
     if (provider.provider === 'mega') {
-      return 'Accepted incoming MEGA shares appear here as local copies for reading and merge input. Your own writable MEGA Nearbytes root also appears here as the publication destination.';
+      return 'No MEGA locations yet. After sign-in, Nearbytes will show your writable publication root here and any accepted incoming shares as local read-only copies.';
     }
     return 'Create a storage location here to make it available in Nearbytes.';
   }
@@ -3772,9 +3959,13 @@
           incomingLoadError = incomingLoadError || `Incoming invites are delayed: ${detail}`;
         });
 
-      await incomingSharesPromise;
-      await incomingInvitesPromise;
-      incomingLoading = false;
+      void Promise.allSettled([incomingSharesPromise, incomingInvitesPromise]).finally(() => {
+        incomingLoading = false;
+      });
+
+      if (!keepVisible) {
+        loading = false;
+      }
 
       scheduleManagedShareStateRefresh(keepVisible ? 350 : 125);
 
@@ -4631,6 +4822,37 @@
   </section>
 {:else if configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
+    {#if mode === 'global'}
+      {@const visibleMegaToasts = megaToastList()}
+      {#if visibleMegaToasts.length > 0}
+        <div class="mega-toast-region" aria-live="polite" aria-label="MEGA activity">
+          {#each visibleMegaToasts as toast (toast.key)}
+            <article class="mega-toast" data-tone={toast.tone}>
+              <div class="mega-toast-copy">
+                <p class="subheading">MEGA</p>
+                <p class="mega-toast-title">{toast.title}</p>
+                <p class="provider-step-detail">{toast.detail}</p>
+              </div>
+              <div class="mega-toast-actions">
+                {#if toast.action}
+                  {@const action = toast.action}
+                  <button
+                    type="button"
+                    class="panel-btn primary compact"
+                    onclick={() => void runMegaToastAction(action)}
+                  >
+                    <span>{action.label}</span>
+                  </button>
+                {/if}
+                <button type="button" class="panel-btn subtle compact" onclick={() => dismissMegaToast(toast)}>
+                  <span>Hide</span>
+                </button>
+              </div>
+            </article>
+          {/each}
+        </div>
+      {/if}
+    {/if}
     {#snippet unifiedShareCard(view: UnifiedShareView)}
       <ShareCard
         provider={view.provider}
@@ -5107,14 +5329,12 @@
               <p class="warning-copy">{incomingLoadError}</p>
             {/if}
             <p class="muted-copy">
-              These are folders shared <em>to</em> this account—they are not your personal Nearbytes root on {providerLabelForIncoming(providerKey)}. Accept any
-              <strong>contact request</strong> first, then use the accept button shown on the shared folder or mirror below. If you are in a hub, use <strong>Add another location</strong> after the incoming
-              appears under saved locations. If nothing lists here, confirm the owner shared to <strong>this</strong> account’s email, then open storage setup and refresh
-              {providerKey === 'mega' ? 'MEGA status' : 'this provider'}.
+              These folders were shared <em>to</em> this account. They are separate from your own Nearbytes publication root. Accept any
+              <strong>contact request</strong> first, then accept the shared folder below. Nearbytes will create the local copy and keep checking for it here.
             </p>
             {#if providerKey === 'mega'}
               <p class="muted-copy">
-                Nearbytes treats accepted MEGA shares as local read-only inputs. It reads and merges from them here, but it publishes your own updates only through your MEGA Nearbytes root.
+                Accepted MEGA shares become local read-only inputs. Nearbytes reads and merges from them here, while your own updates still publish only through your MEGA Nearbytes root.
               </p>
             {/if}
           </div>
@@ -5373,6 +5593,118 @@
               {@const megaHelper = megaHelperView(provider)}
               {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}
               {@const megaReconnectIssue = megaProviderReconnectIssue()}
+              {@const megaAccount = connectedAccountForProvider('mega')}
+              {@const megaOwnerLocations = megaOwnerShares()}
+              {@const megaIncomingLocations = megaRecipientShares()}
+              {@const megaPendingCount = megaPendingIncomingCount()}
+              {@const megaFlow = providerFlowState('mega')}
+              <div class="mega-command-deck">
+                <div class="provider-story-card compact-provider-card mega-command-card" data-tone={megaStatus.tone} bind:this={megaOverviewSection}>
+                  <div class="mega-command-head">
+                    <div>
+                      <p class="subheading">Automatic MEGA</p>
+                      <h4 class="mega-command-title">{megaStatus.headline}</h4>
+                      <p class="provider-step-detail">
+                        {megaStatus.detail || 'Nearbytes keeps this account in automatic mode: publish through your root, read incoming copies locally, retry in the background.'}
+                      </p>
+                    </div>
+                    <div class="mega-command-badges">
+                      <span class={`status-pill tone-${megaStatus.tone === 'good' ? 'good' : megaStatus.tone === 'warn' ? 'warn' : 'muted'}`}>
+                        {megaStatus.tone === 'good' ? 'Auto-managing' : megaStatus.tone === 'warn' ? 'Needs attention' : 'Working'}
+                      </span>
+                      {#if megaStatus.progressLabel}
+                        <span class="status-pill tone-muted">{megaStatus.progressLabel}</span>
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div class="mega-command-metrics">
+                    <button type="button" class="mega-metric-card" bind:this={megaAccountSection} onclick={() => openProviderConnectionDialog(provider.provider)}>
+                      <span class="subheading">Account</span>
+                      <strong class="mega-metric-value">{megaAccount?.email ?? 'Sign in required'}</strong>
+                      <span class="mega-metric-detail">
+                        {#if megaReconnectIssue}
+                          Recovery required before incoming shares can refresh.
+                        {:else if megaFlow}
+                          {megaFlow.title}
+                        {:else if megaAccount}
+                          Connected and maintained automatically.
+                        {:else}
+                          Sign in once. Nearbytes handles the rest.
+                        {/if}
+                      </span>
+                    </button>
+
+                    <button type="button" class="mega-metric-card" bind:this={megaPublishingSection} onclick={() => void focusMegaArea('publishing')}>
+                      <span class="subheading">Publishing</span>
+                      <strong class="mega-metric-value">{countLabel(megaOwnerLocations.length, 'publish root')}</strong>
+                      <span class="mega-metric-detail">
+                        {#if megaOwnerLocations.length > 0}
+                          Nearbytes sends your updates only through your own writable MEGA root.
+                        {:else}
+                          Your writable publication root will appear here after sign-in.
+                        {/if}
+                      </span>
+                    </button>
+
+                    <button type="button" class="mega-metric-card" bind:this={megaIncomingSection} onclick={() => void focusMegaArea('incoming')}>
+                      <span class="subheading">Incoming</span>
+                      <strong class="mega-metric-value">{megaIncomingSummaryLabel()}</strong>
+                      {#if megaIncomingPendingLabel()}
+                        <span class="mega-metric-pending">{megaIncomingPendingLabel()}</span>
+                      {/if}
+                      <span class="mega-metric-detail">
+                        Accepted MEGA shares appear here as read-only shared folders. Nearbytes reads and merges from them automatically.
+                      </span>
+                    </button>
+                  </div>
+
+                  <div class="button-row mega-command-actions">
+                    {#if megaReconnectIssue}
+                      <button
+                        type="button"
+                        class="panel-btn primary compact"
+                        onclick={() => openProviderConnectionDialog(provider.provider)}
+                      >
+                        <span>Reconnect account</span>
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => void loadPanel({ background: configDraft !== null })}
+                      disabled={sharesLoading || providersLoading}
+                    >
+                      <RefreshCw size={14} strokeWidth={2} />
+                      <span>{sharesLoading ? 'Checking...' : 'Refresh MEGA'}</span>
+                    </button>
+                    <button type="button" class="panel-btn subtle compact" onclick={() => void focusMegaArea('incoming')}>
+                      <span>{megaPendingCount > 0 ? 'Review shared folders' : 'Open shared folders'}</span>
+                    </button>
+                    {#if showMegaDevBackendLogsAction()}
+                      <button
+                        type="button"
+                        class="panel-btn subtle compact"
+                        title="Developer-only: backend stdout/stderr tails from the desktop app. Not required for native MEGA."
+                        onclick={() => toggleMegaRuntimeLogs()}
+                      >
+                        <span>{megaRuntimeLogsVisible ? 'Hide dev logs' : 'Dev backend logs'}</span>
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+
+                <div class="mega-automation-note-grid">
+                  <div class="provider-path-card mega-note-card">
+                    <p class="subheading">How Nearbytes uses MEGA</p>
+                    <p class="provider-step-detail">Your account is the publication channel. Incoming folders never become a write target.</p>
+                  </div>
+                  <div class="provider-path-card mega-note-card">
+                    <p class="subheading">No manual babysitting</p>
+                    <p class="provider-step-detail">Mirror checks, owner-root reuse, and incoming-share refresh all run automatically. The MEGA tab is the recovery surface if something stalls.</p>
+                  </div>
+                </div>
+              </div>
               <div class="provider-story-card compact-provider-card mega-status-card" data-tone={megaStatus.tone}>
                 <p class="subheading">Current status</p>
                 <p class="managed-share-invite-copy mega-status-headline">{megaStatus.headline}</p>
@@ -6783,6 +7115,53 @@
     background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 82%, rgba(255, 250, 245, 0.96));
   }
 
+  .mega-toast-region {
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .mega-toast {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.8rem;
+    align-items: center;
+    padding: 0.82rem 0.9rem;
+    border-radius: 16px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(210, 122, 84, 0.08));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(250, 246, 243, 0.94)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 240, 234, 0.92))),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #d27a54) 10%, transparent), transparent 62%);
+  }
+
+  .mega-toast[data-tone='warn'] {
+    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 32%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, rgba(255, 250, 245, 0.98) 92%, rgba(253, 230, 138, 0.12)), color-mix(in srgb, rgba(255, 248, 242, 0.96) 90%, rgba(253, 230, 138, 0.16))),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-warning, #d4945f) 10%, transparent), transparent 58%);
+  }
+
+  .mega-toast-copy {
+    display: grid;
+    gap: 0.22rem;
+    min-width: 0;
+  }
+
+  .mega-toast-title {
+    margin: 0;
+    color: var(--text-main);
+    font-size: 0.92rem;
+    line-height: 1.3;
+    font-weight: 650;
+  }
+
+  .mega-toast-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
   .toggle-list,
   .usage-list,
   .danger-block {
@@ -7071,6 +7450,107 @@
     padding: 0.82rem 0.88rem;
     border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 12%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
+  }
+
+  .mega-command-deck {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .mega-command-card {
+    gap: 0.8rem;
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(249, 244, 240, 0.94)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(247, 239, 233, 0.94))),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #d27a54) 11%, transparent), transparent 58%);
+  }
+
+  .mega-command-card[data-tone='warn'] {
+    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 30%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, rgba(255, 250, 245, 0.98) 92%, rgba(253, 230, 138, 0.1)), color-mix(in srgb, rgba(255, 248, 242, 0.96) 90%, rgba(253, 230, 138, 0.14))),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-warning, #d4945f) 10%, transparent), transparent 58%);
+  }
+
+  .mega-command-head {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .mega-command-title {
+    margin: 0;
+    color: var(--text-main);
+    font-size: 1rem;
+    line-height: 1.3;
+    font-weight: 700;
+  }
+
+  .mega-command-badges {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .mega-command-metrics,
+  .mega-automation-note-grid {
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .mega-metric-card {
+    display: grid;
+    gap: 0.32rem;
+    min-width: 0;
+    padding: 0.8rem 0.82rem;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(251, 247, 244, 0.9));
+    text-align: left;
+    cursor: pointer;
+    transition:
+      transform 140ms ease,
+      border-color 140ms ease,
+      background 140ms ease;
+  }
+
+  .mega-metric-card:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
+  }
+
+  .mega-metric-value {
+    color: var(--text-main);
+    font-size: 0.95rem;
+    line-height: 1.3;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+
+  .mega-metric-detail,
+  .mega-metric-pending {
+    color: var(--text-soft);
+    font-size: 0.76rem;
+    line-height: 1.4;
+  }
+
+  .mega-metric-pending {
+    margin-left: 0.35rem;
+    font-weight: 600;
+  }
+
+  .mega-command-actions {
+    gap: 0.55rem;
+    align-items: center;
+  }
+
+  .mega-note-card {
+    min-height: 100%;
   }
 
   .mega-onboarding-head {
@@ -7488,6 +7968,14 @@
   }
 
   @media (max-width: 640px) {
+    .mega-toast {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .mega-toast-actions {
+      justify-content: flex-start;
+    }
+
     .mega-runtime-log-layout {
       grid-template-columns: minmax(0, 1fr);
     }

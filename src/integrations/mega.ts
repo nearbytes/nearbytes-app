@@ -931,22 +931,13 @@ export class MegaTransportAdapter {
     if (!account) {
       return {
         status: 'needs-auth',
-        detail: isWritableIncomingMegaShare(share)
-          ? 'Reconnect MEGA to resume this writable shared folder sync. If MEGA asked you to unlock the account or change the password first, complete that on mega.io and then reconnect here.'
-          : 'Reconnect MEGA to resume this readonly mirror. If MEGA asked you to unlock the account or change the password first, complete that on mega.io and then reconnect here.',
-        badges: isWritableIncomingMegaShare(share) ? ['Writable', 'Reconnect'] : ['Reconnect'],
-      };
-    }
-    if (isWritableIncomingMegaShare(share)) {
-      return {
-        status: 'idle',
-        detail: 'MEGA shared folder sync is ready to start.',
-        badges: ['Writable'],
+        detail: 'Reconnect MEGA to resume this incoming shared-folder mirror. If MEGA asked you to unlock the account or change the password first, complete that on mega.io and then reconnect here.',
+        badges: ['Reconnect'],
       };
     }
     return {
       status: 'idle',
-      detail: 'MEGA readonly mirror has not started yet.',
+      detail: 'MEGA incoming shared-folder mirror is ready to start.',
       badges: READONLY_BADGES,
     };
   }
@@ -1026,8 +1017,8 @@ export class MegaTransportAdapter {
     if (!account) {
       throw new Error('Reconnect MEGA to upload to the remote share.');
     }
-    if (share.role !== 'owner' && !isWritableIncomingMegaShare(share)) {
-      throw new Error('Forced upload is supported only for writable MEGA shares.');
+    if (share.role !== 'owner') {
+      throw new Error('Forced upload is supported only for your own MEGA publication root.');
     }
     const normalizedPath = normalizeRelativePath(relativePath);
     if (!isMirrorRelativePath(normalizedPath)) {
@@ -1038,22 +1029,19 @@ export class MegaTransportAdapter {
     const localBytes = new Uint8Array(await fs.readFile(localFilePath));
     await this.withExclusiveShareTask(share.id, async () => {
       await this.withRecoveredAccountSession(account, async (session) => {
-        const resolved =
-          share.role === 'owner'
-            ? await (async () => {
-                const root = await this.resolveOwnerRemoteRootForShare(
-                  share,
-                  session,
-                  getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath)
-                );
-                const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root);
-                return {
-                  root,
-                  shareCrypto,
-                  extraShareKeys: createMegaShareCryptoExtraKeys(shareCrypto),
-                };
-              })()
-            : await this.resolveWritableIncomingShareContext(share, account, session);
+        const resolved = await (async () => {
+          const root = await this.resolveOwnerRemoteRootForShare(
+            share,
+            session,
+            getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath)
+          );
+          const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root);
+          return {
+            root,
+            shareCrypto,
+            extraShareKeys: createMegaShareCryptoExtraKeys(shareCrypto),
+          };
+        })();
         const adapter = new MegaOwnerRemoteAdapter(
           this.fetchImpl,
           this.apiClient,
@@ -1088,25 +1076,6 @@ export class MegaTransportAdapter {
       const ownerLoopRunning = this.localWatchers.has(share.id);
       if (!ownerLoopRunning) {
         await this.runSyncLoop(share, account);
-      }
-      this.startOwnerPushPullSync(share, account);
-      return;
-    }
-    if (isWritableIncomingMegaShare(share)) {
-      await fs.mkdir(share.localPath, { recursive: true });
-      await ensureMegaOwnerLocalStructure(share.localPath);
-      void this.logDevShareInventoryIfChanged(account, 'boot');
-      const writableLoopRunning = this.localWatchers.has(share.id);
-      if (!writableLoopRunning) {
-        try {
-          await this.runSyncLoop(share, account);
-        } catch (error) {
-          if (!isMegaMissingRequestedRootError(error)) {
-            throw error;
-          }
-          await this.seedPendingRecipientShareCursor(share, account);
-          this.schedulePromptSyncRetry(share, account);
-        }
       }
       this.startOwnerPushPullSync(share, account);
       return;
@@ -1248,11 +1217,6 @@ export class MegaTransportAdapter {
   private async syncShare(share: ManagedShare, account: ProviderAccount, signal?: AbortSignal): Promise<void> {
     if (share.role === 'owner') {
       await this.syncOwnerShare(share, account, signal);
-      return;
-    }
-
-    if (isWritableIncomingMegaShare(share)) {
-      await this.syncWritableIncomingShare(share, account, signal);
       return;
     }
 
@@ -4336,10 +4300,10 @@ function megaAccessLevelAllowsWrites(accessLevel: string | undefined): boolean {
 }
 
 function isWritableIncomingMegaShare(share: ManagedShare): boolean {
-  return (
-    share.role === 'recipient' &&
-    (share.capabilities.includes('write') || megaAccessLevelAllowsWrites(getStringDescriptor(share.remoteDescriptor, 'accessLevel')))
-  );
+  // Nearbytes now treats every accepted incoming MEGA share as a local read-only input.
+  // Provider-level MEGA permissions are preserved for presentation, but runtime publication
+  // remains owner-only through the account's own writable root.
+  return false;
 }
 
 function resolveWritableMegaShareCryptoContext(
