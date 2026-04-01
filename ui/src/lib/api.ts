@@ -878,6 +878,7 @@ interface NearbytesDesktopBridge {
   getApiBaseUrl?: () => Promise<string>;
   getDesktopToken?: () => Promise<string>;
   chooseDirectory?: (initialPath?: string) => Promise<string | null>;
+  revealPathInFileManager?: (targetPath: string) => Promise<unknown>;
   readRuntimeLogs?: () => Promise<DesktopRuntimeLogsResponse>;
   isDesktop?: (() => boolean) | boolean;
 }
@@ -1444,6 +1445,11 @@ export async function repairStorageLocation(
  * Opens an explicit path in the OS file manager.
  */
 export async function openPathInFileManager(targetPath: string): Promise<void> {
+  const bridge = getDesktopBridge();
+  if (bridge && typeof bridge.revealPathInFileManager === 'function') {
+    await bridge.revealPathInFileManager(targetPath);
+    return;
+  }
   await apiRequest('/config/open-path-in-file-manager', {
     method: 'POST',
     body: JSON.stringify({ path: targetPath }),

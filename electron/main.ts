@@ -1244,6 +1244,23 @@ function registerIpc(): void {
     }
     return result.filePaths[0] ?? null;
   });
+  ipcMain.handle('nearbytes-desktop:reveal-path-in-file-manager', async (_event, rawTargetPath: unknown) => {
+    if (typeof rawTargetPath !== 'string' || rawTargetPath.trim().length === 0) {
+      throw new Error('A target path is required.');
+    }
+    const targetPath = rawTargetPath.trim();
+    const stat = await fs.stat(targetPath).catch(() => null);
+    if (stat?.isFile()) {
+      shell.showItemInFolder(targetPath);
+      return { path: targetPath, selected: true };
+    }
+    const openTarget = stat?.isDirectory() ? targetPath : path.dirname(targetPath);
+    const error = await shell.openPath(openTarget);
+    if (error) {
+      throw new Error(error);
+    }
+    return { path: openTarget, selected: false };
+  });
   ipcMain.handle('nearbytes-desktop:read-runtime-logs', async () => {
     return readDesktopRuntimeLogs();
   });

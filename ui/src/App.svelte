@@ -277,6 +277,7 @@
     onUpdaterState?: (listener: (state: DesktopUpdaterState) => void) => (() => void) | void;
     saveUiState?: (state: PersistedUiState) => Promise<unknown>;
     saveThemeRegistry?: (registry: NearbytesThemeRegistry) => Promise<{ path?: string } | null>;
+    revealPathInFileManager?: (targetPath: string) => Promise<unknown>;
   };
 
   type ThemeDialogSection = 'preset' | 'material' | 'accent' | 'logo';
@@ -4561,7 +4562,10 @@
   }
 
   function timelineStorageLocationPath(location: TimelineStorageLocationView): string {
-    if (location.hasDataBlock && location.dataPath) {
+    if (location.eventPath) {
+      return location.eventPath;
+    }
+    if (location.dataPath) {
       return location.dataPath;
     }
     return location.eventPath;

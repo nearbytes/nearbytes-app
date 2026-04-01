@@ -314,6 +314,10 @@ export class MegaTransportAdapter {
       clearInterval(timer);
     }
     this.syncTimers.clear();
+    for (const timer of this.pendingSyncRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingSyncRetryTimers.clear();
     for (const watcher of this.localWatchers.values()) {
       void watcher.close();
     }
@@ -1440,10 +1444,7 @@ export class MegaTransportAdapter {
       if (isDevLogsEnabled() && this.shouldRefreshDevInventory(account, share)) {
         void this.logDevShareInventoryIfChanged(account, 'change');
       }
-      if (this.isSyncCoolingDown(share.id)) {
-        return;
-      }
-      this.runSyncLoop(share, account).catch((error) => {
+      this.requestSyncLoop(share, account).catch((error) => {
         this.runtime.logger.warn('MEGA sync loop failed.', error);
       });
     }, this.runtime.mega.syncIntervalMs);
@@ -1473,11 +1474,8 @@ export class MegaTransportAdapter {
       }
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        if (this.isSyncCoolingDown(share.id)) {
-          return;
-        }
         console.log('[MEGA:push] local change detected, triggering writable sync.', { shareId: share.id });
-        this.runSyncLoop(share, account).catch((error) => {
+        this.requestSyncLoop(share, account).catch((error) => {
           this.runtime.logger.warn('MEGA writable push sync failed.', error);
         });
       }, MEGA_LOCAL_WATCH_DEBOUNCE_MS);
@@ -1564,7 +1562,7 @@ export class MegaTransportAdapter {
           if (shouldTriggerSync) {
             console.log('[MEGA:sc] remote change detected, triggering sync.', { shareId: share.id });
             try {
-              await this.runSyncLoop(share, account);
+              await this.requestSyncLoop(share, account);
             } catch {
               // sync failure is logged inside runSyncLoop; listener continues
             }
@@ -1630,6 +1628,56 @@ export class MegaTransportAdapter {
       return false;
     }
     return true;
+  }
+
+  private getSyncCooldownRemainingMs(shareId: string): number {
+    const until = this.syncRetryCooldowns.get(shareId);
+    if (!until) {
+      return 0;
+    }
+    const remainingMs = until - Date.now();
+    if (remainingMs <= 0) {
+      this.syncRetryCooldowns.delete(shareId);
+      return 0;
+    }
+    return remainingMs;
+  }
+
+  private schedulePendingSyncRetry(share: ManagedShare, account: ProviderAccount, delayMs = 0): void {
+    const existingTimer = this.pendingSyncRetryTimers.get(share.id);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const cooldownDelayMs = this.getSyncCooldownRemainingMs(share.id);
+    const waitMs = Math.max(delayMs, cooldownDelayMs, 100);
+    const timer = setTimeout(() => {
+      if (this.pendingSyncRetryTimers.get(share.id) !== timer) {
+        return;
+      }
+      this.pendingSyncRetryTimers.delete(share.id);
+      this.requestSyncLoop(share, account).catch((error) => {
+        this.runtime.logger.warn('MEGA deferred sync retry failed.', error);
+      });
+    }, waitMs);
+    timer.unref?.();
+    this.pendingSyncRetryTimers.set(share.id, timer);
+  }
+
+  private async requestSyncLoop(share: ManagedShare, account: ProviderAccount): Promise<void> {
+    const cooldownDelayMs = this.getSyncCooldownRemainingMs(share.id);
+    if (cooldownDelayMs > 0) {
+      this.schedulePendingSyncRetry(share, account, cooldownDelayMs);
+      return;
+    }
+
+    const existing = this.syncTasks.get(share.id);
+    if (existing) {
+      this.schedulePendingSyncRetry(share, account, 100);
+      return existing;
+    }
+
+    await this.runSyncLoop(share, account);
   }
 
   private async logDevShareInventoryIfChanged(account: ProviderAccount, reason: 'boot' | 'change'): Promise<void> {

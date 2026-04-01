@@ -1,9 +1,8 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { Router } from 'express';
-import { spawn } from 'child_process';
 import { timingSafeEqual } from 'crypto';
 import { promises as fs, constants as fsConstants } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { join, resolve } from 'path';
 import os from 'os';
 import multer from 'multer';
 import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
@@ -24,6 +23,7 @@ import { isProviderEnabled } from '../config/appConfig.js';
 import { bytesToHex } from '../utils/encoding.js';
 import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import { ApiError } from './errors.js';
+import { openInFileManager as revealPathInFileManager } from './fileManager.js';
 import { encodeSecretToken, getSecretFromRequest, validateSecret } from './auth.js';
 import type { SecretSessionStore } from './secretSessions.js';
 import { VolumeWatchHub } from './volumeWatchHub.js';
@@ -1285,44 +1285,7 @@ function isDesktopProtectedApiPath(pathname: string): boolean {
 }
 
 async function openInFileManager(targetPath: string): Promise<void> {
-  const resolvedTargetPath = resolve(targetPath);
-  const existingStat = await fs.stat(resolvedTargetPath).catch(() => null);
-  const fallbackDirectory = existingStat
-    ? existingStat.isDirectory()
-      ? resolvedTargetPath
-      : dirname(resolvedTargetPath)
-    : await findNearestExistingDirectory(resolvedTargetPath);
-
-  if (!fallbackDirectory) {
-    throw new ApiError(404, 'NOT_FOUND', 'Target path does not exist and no parent directory could be opened.');
-  }
-
-  const launcher =
-    process.platform === 'darwin'
-      ? existingStat?.isFile()
-        ? { command: 'open', args: ['-R', resolvedTargetPath] }
-        : { command: 'open', args: [fallbackDirectory] }
-      : process.platform === 'win32'
-        ? existingStat?.isFile()
-          ? { command: 'explorer', args: [`/select,${resolvedTargetPath}`] }
-          : { command: 'explorer', args: [fallbackDirectory] }
-        : { command: 'xdg-open', args: [fallbackDirectory] };
-
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(launcher.command, launcher.args, {
-      stdio: 'ignore',
-      detached: true,
-    });
-
-    child.once('error', (error) => reject(error));
-    child.once('spawn', () => {
-      child.unref();
-      resolve();
-    });
-  }).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ApiError(500, 'INTERNAL_ERROR', `Failed to open file manager: ${message}`);
-  });
+  await revealPathInFileManager(targetPath);
 }
 
 function getAllowedFileManagerRoots(deps: RouteDependencies): string[] {
@@ -1352,18 +1315,3 @@ function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
   return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
 }
 
-async function findNearestExistingDirectory(targetPath: string): Promise<string | null> {
-  let current = resolve(targetPath);
-
-  while (true) {
-    const stat = await fs.stat(current).catch(() => null);
-    if (stat) {
-      return stat.isDirectory() ? current : dirname(current);
-    }
-    const parent = dirname(current);
-    if (parent === current) {
-      return null;
-    }
-    current = parent;
-  }
-}
