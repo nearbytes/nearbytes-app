@@ -212,7 +212,7 @@ function createAutoSource(config: RootsConfig, provider: RootProvider, sourcePat
     enabled: true,
     writable: true,
     reservePercent: DEFAULT_RESERVE_PERCENT,
-    opportunisticPolicy: 'drop-older-blocks',
+    opportunisticPolicy: 'block-writes',
   };
 }
 

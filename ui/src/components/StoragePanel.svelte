@@ -41,7 +41,6 @@
     type SourceConfigEntry,
     type SourceProvider,
     type StorageLocationRepairReport,
-    type StorageFullPolicy,
     type VolumeDestinationConfig,
     type VolumePolicyEntry,
     updateRootsConfig,
@@ -55,15 +54,19 @@
     getManagedShareAccessLabel,
   } from '../lib/megaSharePresentation.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
+  import AppDialog from './AppDialog.svelte';
+  import IconToggle from './IconToggle.svelte';
   import ShareCard from './ShareCard.svelte';
   import {
     ArrowRightLeft,
+    BookOpen,
     FolderOpen,
     HardDrive,
     Link2,
     Plus,
     RefreshCw,
     Search,
+    SquarePen,
     Trash2,
   } from 'lucide-svelte';
 
@@ -96,7 +99,7 @@
   }>();
 
   type StatusTone = 'good' | 'warn' | 'muted';
-  type HubLocationMode = 'store' | 'publish' | 'off';
+  type HubLocationMode = 'store' | 'off';
 
   type ProviderTabLoadingState = {
     label: string;
@@ -184,6 +187,40 @@
     reservePercent: DEFAULT_RESERVE_PERCENT,
     fullPolicy: 'block-writes',
   };
+
+  function sanitizeSource(source: SourceConfigEntry): SourceConfigEntry {
+    return {
+      ...source,
+      reservePercent: source.reservePercent ?? DEFAULT_RESERVE_PERCENT,
+      opportunisticPolicy: 'block-writes',
+    };
+  }
+
+  function sanitizeDestination(destination: VolumeDestinationConfig): VolumeDestinationConfig {
+    return {
+      ...destination,
+      enabled: destination.enabled,
+      storeEvents: destination.enabled,
+      storeBlocks: destination.enabled,
+      copySourceBlocks: destination.enabled,
+      reservePercent: destination.reservePercent ?? DEFAULT_RESERVE_PERCENT,
+      fullPolicy: 'block-writes',
+    };
+  }
+
+  function sanitizeConfig(config: RootsConfig): RootsConfig {
+    return {
+      version: 2,
+      sources: config.sources.map((source) => sanitizeSource(source)),
+      defaultVolume: {
+        destinations: config.defaultVolume.destinations.map((destination) => sanitizeDestination(destination)),
+      },
+      volumes: config.volumes.map((volume) => ({
+        volumeId: volume.volumeId,
+        destinations: volume.destinations.map((destination) => sanitizeDestination(destination)),
+      })),
+    };
+  }
 
   let configPath = $state<string | null>(null);
   let configDraft = $state<RootsConfig | null>(null);
@@ -291,7 +328,6 @@
     writable: boolean;
     writableDisabled?: boolean;
     writableTitle?: string;
-    defaultEnabled: boolean;
     reservePercent: number;
     reserveKey: string;
     warning?: string;
@@ -300,7 +336,6 @@
     attachments: ShareAttachmentChip[];
     onToggleReadable: () => void;
     onToggleWritable: () => void;
-    onToggleDefault: () => void;
     onReserveChange: (nextValue: number) => void;
     onOpen?: () => void;
     openDisabled?: boolean;
@@ -512,26 +547,7 @@
   }
 
   function cloneConfig(config: RootsConfig): RootsConfig {
-    return {
-      version: 2,
-      sources: config.sources.map((source) => ({
-        ...source,
-        reservePercent: source.reservePercent ?? DEFAULT_RESERVE_PERCENT,
-      })),
-      defaultVolume: {
-        destinations: config.defaultVolume.destinations.map((destination) => ({
-          ...destination,
-          reservePercent: destination.reservePercent ?? DEFAULT_RESERVE_PERCENT,
-        })),
-      },
-      volumes: config.volumes.map((volume) => ({
-        volumeId: volume.volumeId,
-        destinations: volume.destinations.map((destination) => ({
-          ...destination,
-          reservePercent: destination.reservePercent ?? DEFAULT_RESERVE_PERCENT,
-        })),
-      })),
-    };
+    return sanitizeConfig(config);
   }
 
   function serializeConfig(config: RootsConfig): string {
@@ -1035,9 +1051,7 @@
   function sourceAttachmentSummary(sourceId: string): string {
     const count = sourceAttachmentLabels(sourceId).length;
     if (count === 0) {
-      return keepsFullCopy(destinationFor(null, sourceId))
-        ? 'Ready for hub writes by default. No hub is using it yet.'
-        : 'Readable now. No hub is using it yet.';
+      return 'Available to attach to a hub. No hub is using it yet.';
     }
     return `Used in ${countLabel(count, 'place')}.`;
   }
@@ -1627,6 +1641,14 @@
 
   function providerVisibleShares(provider: string): ManagedShareSummary[] {
     return providerShares(provider).filter((summary) => visibleManagedShare(summary));
+  }
+
+  function providerOwnedVisibleShares(provider: string): ManagedShareSummary[] {
+    return providerVisibleShares(provider).filter((summary) => summary.share.role !== 'recipient');
+  }
+
+  function providerReceivedVisibleShares(provider: string): ManagedShareSummary[] {
+    return providerVisibleShares(provider).filter((summary) => summary.share.role === 'recipient');
   }
 
   function providerVisibleShareCount(provider: string): number {
@@ -2953,7 +2975,7 @@
       provider: formatProvider(source.provider),
       title: compactPath(source.path),
       copy: locationSummary(source),
-      active: protectionTone(defaultDestination, source.id) === 'durable',
+      active: source.enabled,
       statusBadges: shareCardBadgeForSource(source),
       meta: [
         status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown',
@@ -2962,7 +2984,6 @@
       ],
       readable: source.enabled,
       writable: source.writable,
-      defaultEnabled: keepsFullCopy(defaultDestination),
       reservePercent: Number.isFinite(defaultDestination?.reservePercent)
         ? defaultDestination!.reservePercent
         : Number.isFinite(source.reservePercent)
@@ -2975,7 +2996,6 @@
       attachments,
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
-      onToggleDefault: () => setKeepFullCopy(null, source.id, !keepsFullCopy(defaultDestination)),
       onReserveChange: (nextValue) => {
         updateSourceField(source.id, 'reservePercent', nextValue);
         updateDestinationField(null, source.id, 'reservePercent', nextValue);
@@ -3001,7 +3021,6 @@
       return null;
     }
     const defaultDestination = destinationFor(null, source.id);
-    const keepFullCopy = keepsFullCopy(defaultDestination);
     const repairSummary = sourceRepairSummary(source.id);
     const repairReport = sourceRepairReport(source.id);
     return {
@@ -3031,7 +3050,6 @@
       writableTitle: summary.storage?.writable === false
         ? 'This shared location is read-only here. Nearbytes refreshes it from the provider but does not upload changes from this folder.'
         : undefined,
-      defaultEnabled: keepFullCopy,
       reservePercent: Number.isFinite(defaultDestination?.reservePercent)
         ? defaultDestination!.reservePercent
         : Number.isFinite(source.reservePercent)
@@ -3044,7 +3062,6 @@
       attachments: shareAttachmentLabels(summary),
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
-      onToggleDefault: () => setKeepFullCopy(null, source.id, !keepFullCopy),
       onReserveChange: (nextValue) => {
         updateSourceField(source.id, 'reservePercent', nextValue);
         updateDestinationField(null, source.id, 'reservePercent', nextValue);
@@ -3130,7 +3147,7 @@
       enabled: true,
       writable: true,
       reservePercent: DEFAULT_RESERVE_PERCENT,
-      opportunisticPolicy: 'drop-older-blocks',
+      opportunisticPolicy: 'block-writes',
     };
   }
 
@@ -3420,14 +3437,12 @@
   function protectionTone(destination: VolumeDestinationConfig | null, sourceId: string): 'durable' | 'replica' | 'off' {
     if (!destination || !destination.enabled) return 'off';
     if (isDurableDestination(destination, sourceId)) return 'durable';
-    if (keepsFullCopy(destination)) return 'replica';
     return 'off';
   }
 
   function protectionLabel(destination: VolumeDestinationConfig | null, sourceId: string): string {
     const tone = protectionTone(destination, sourceId);
     if (tone === 'durable') return 'Full copy';
-    if (tone === 'replica') return 'Full copy with trimming';
     return 'Not a full copy';
   }
 
@@ -3436,10 +3451,7 @@
     if (!destination || !destination.enabled || !destination.storeEvents) {
       return 'off';
     }
-    if (keepsFullCopy(destination)) {
-      return 'store';
-    }
-    return destination.storeBlocks ? 'publish' : 'off';
+    return 'store';
   }
 
   function setHubLocationMode(targetVolumeId: string, sourceId: string, mode: HubLocationMode): void {
@@ -3452,15 +3464,6 @@
           enabled: false,
           storeEvents: false,
           storeBlocks: false,
-          copySourceBlocks: false,
-        };
-      }
-      if (mode === 'publish') {
-        return {
-          ...destination,
-          enabled: true,
-          storeEvents: true,
-          storeBlocks: true,
           copySourceBlocks: false,
         };
       }
@@ -3502,14 +3505,14 @@
 
   function hubStorageHeading(targetVolumeId: string): string {
     return hasMeaningfulExplicitVolumePolicy(targetVolumeId)
-      ? 'Custom storage locations'
-      : 'Default storage locations';
+      ? 'Storage locations for this hub'
+      : 'Saved storage locations';
   }
 
   function hubStorageIntro(targetVolumeId: string): string {
     return hasMeaningfulExplicitVolumePolicy(targetVolumeId)
       ? 'These choices apply only here.'
-      : 'These choices come from your default storage locations. Change any location below if you want different behavior here.';
+      : 'These choices start from your saved locations. Change any location below if this hub needs something different.';
   }
 
   function hubAttachedSources(targetVolumeId: string): SourceConfigEntry[] {
@@ -3521,15 +3524,12 @@
   }
 
   function hubWriteOnlyCount(targetVolumeId: string): number {
-    return hubAttachedSources(targetVolumeId).filter((source) => hubLocationMode(targetVolumeId, source.id) === 'publish').length;
+    return 0;
   }
 
   function hubModeLabel(mode: HubLocationMode): string {
     if (mode === 'store') {
       return 'Full copy';
-    }
-    if (mode === 'publish') {
-      return 'Save new items only';
     }
     return 'Not used';
   }
@@ -3537,9 +3537,6 @@
   function hubModeCopy(mode: HubLocationMode): string {
     if (mode === 'store') {
       return 'This location keeps the full hub available here.';
-    }
-    if (mode === 'publish') {
-      return 'This location stores new uploads without keeping a complete copy.';
     }
     return 'This location is not part of this hub right now.';
   }
@@ -3633,8 +3630,8 @@
     };
   }
 
-  function canReuseOtherGuaranteedCopies(destination: VolumeDestinationConfig | null): boolean {
-    return keepsFullCopy(destination) && destination?.fullPolicy === 'drop-older-blocks';
+  function canReuseOtherGuaranteedCopies(_destination: VolumeDestinationConfig | null): boolean {
+    return false;
   }
 
   function knownManagedMirrorPaths(): Set<string> {
@@ -3817,9 +3814,7 @@
     const destination = destinationFor(targetVolumeId, source.id);
     const status = sourceStatus(source.id);
     if (!keepsFullCopy(destination)) {
-      return targetVolumeId
-        ? 'This location is not keeping a full copy here.'
-        : 'New storage setups will not keep a full copy here by default.';
+      return 'This location is not currently attached here.';
     }
     if (!source.enabled) {
       return 'This location is chosen, but it is disabled across Nearbytes right now. Turn it back on before Nearbytes can keep a full copy here.';
@@ -3832,9 +3827,6 @@
     }
     if (status && status.exists && !status.canWrite) {
       return 'This location is chosen, but Nearbytes cannot write to this folder right now.';
-    }
-    if (canReuseOtherGuaranteedCopies(destination)) {
-      return 'If this location runs low on room, Nearbytes may trim older data here, but only after another full copy already has it.';
     }
     return 'This location keeps a full copy.';
   }
@@ -3854,9 +3846,7 @@
     if (!source.enabled) {
       return mode === 'store'
         ? 'This location is set to keep a full copy here, but it is disabled across Nearbytes right now.'
-        : mode === 'publish'
-          ? 'This location is set to receive updates here, but it is disabled across Nearbytes right now.'
-          : 'This location is disabled across Nearbytes right now.';
+        : 'This location is disabled across Nearbytes right now.';
     }
     if (status?.exists === false) {
       return 'This folder is not available right now.';
@@ -3865,17 +3855,10 @@
       return 'This path exists, but it is not a folder.';
     }
     if (mode !== 'off' && !source.writable) {
-      return mode === 'store'
-        ? 'Writing is turned off here, so this location cannot keep a full copy yet.'
-        : 'Writing is turned off here, so this location cannot publish updates yet.';
+      return 'Writing is turned off here, so this location cannot keep a full copy yet.';
     }
     if (mode !== 'off' && status?.canWrite === false) {
-      return mode === 'store'
-        ? 'Nearbytes cannot write to this folder right now, so it cannot keep a full copy yet.'
-        : 'Nearbytes cannot write to this folder right now, so it cannot publish updates yet.';
-    }
-    if (mode === 'publish') {
-      return 'This location will receive new updates here, but it is not keeping a full copy.';
+      return 'Nearbytes cannot write to this folder right now, so it cannot keep a full copy yet.';
     }
     if (mode === 'off') {
       return 'This location is available, but it is not in use here.';
@@ -3889,9 +3872,9 @@
     runtime: RootsRuntimeSnapshot;
   }): void {
     configPath = response.configPath;
-    configDraft = cloneConfig(response.config);
+    configDraft = cloneConfig(sanitizeConfig(response.config));
     runtime = response.runtime;
-    lastSavedSignature = serializeConfig(cloneConfig(response.config));
+    lastSavedSignature = serializeConfig(cloneConfig(sanitizeConfig(response.config)));
     updateBackfillPolling();
     void loadSourceRepairReports(response.config.sources.map((source) => source.id));
   }
@@ -4194,7 +4177,7 @@
     errorMessage = '';
     autosaveStatus = 'saving';
     try {
-      const response = await updateRootsConfig(configDraft);
+      const response = await updateRootsConfig(sanitizeConfig(configDraft));
       applyRootsResponse(response);
       autosaveStatus = lastSavedSignature === expectedSignature ? 'saved' : 'pending';
       successMessage = '';
@@ -4977,6 +4960,7 @@
         title={view.title}
         copy={view.copy}
         active={view.active}
+        compact={true}
         statusBadges={view.statusBadges}
         meta={view.meta}
       >
@@ -5007,25 +4991,16 @@
           </div>
         {/snippet}
         {#snippet controls()}
-          <div class="setting-list">
-            <label class="setting-row">
-              <span>Use this location</span>
-              <input type="checkbox" checked={view.readable} onchange={view.onToggleReadable} />
-            </label>
-            <label class="setting-row">
-              <span>Store here</span>
-              <input
-                type="checkbox"
-                checked={view.writable}
-                onchange={view.onToggleWritable}
-                disabled={view.writableDisabled}
-                title={view.writableTitle}
-              />
-            </label>
-            <label class="setting-row">
-              <span>Default full copy</span>
-              <input type="checkbox" checked={view.defaultEnabled} onchange={view.onToggleDefault} />
-            </label>
+          <div class="setting-list compact-toggle-row">
+            <IconToggle icon={BookOpen} label="Read" active={view.readable} onclick={view.onToggleReadable} />
+            <IconToggle
+              icon={SquarePen}
+              label="Write"
+              active={view.writable}
+              onclick={view.onToggleWritable}
+              disabled={view.writableDisabled}
+              title={view.writableTitle ?? 'Allow writes here'}
+            />
           </div>
         {/snippet}
         {#snippet actions()}
@@ -5148,6 +5123,7 @@
             provider={view.provider}
             title={view.title}
             active={view.active}
+            compact={true}
             statusBadges={view.statusBadges}
             meta={view.meta}
           >
@@ -5178,25 +5154,16 @@
             </div>
           {/snippet}
           {#snippet controls()}
-            <div class="setting-list">
-              <label class="setting-row">
-                <span>Use this location</span>
-                <input type="checkbox" checked={view.readable} onchange={view.onToggleReadable} />
-              </label>
-              <label class="setting-row">
-                <span>Store here</span>
-                <input
-                  type="checkbox"
-                  checked={view.writable}
-                  onchange={view.onToggleWritable}
-                  disabled={view.writableDisabled}
-                  title={view.writableTitle}
-                />
-              </label>
-              <label class="setting-row">
-                <span>Default full copy</span>
-                <input type="checkbox" checked={view.defaultEnabled} onchange={view.onToggleDefault} />
-              </label>
+            <div class="setting-list compact-toggle-row">
+              <IconToggle icon={BookOpen} label="Read" active={view.readable} onclick={view.onToggleReadable} />
+              <IconToggle
+                icon={SquarePen}
+                label="Write"
+                active={view.writable}
+                onclick={view.onToggleWritable}
+                disabled={view.writableDisabled}
+                title={view.writableTitle ?? 'Allow writes here'}
+              />
             </div>
           {/snippet}
           {#snippet details()}
@@ -5353,6 +5320,7 @@
       <ShareCard
         provider={providerLabelForIncoming(invite.provider)}
         title={invite.label}
+        compact={true}
         statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
         meta={[]}
       >
@@ -5372,6 +5340,7 @@
       <ShareCard
         provider={providerLabelForIncoming(offer.provider)}
         title={incomingManagedShareTitle(offer)}
+        compact={true}
         statusBadges={[incomingShareStatusBadge(offer)]}
         meta={[
           `Shared by ${offer.ownerLabel}`,
@@ -5412,14 +5381,14 @@
         {/snippet}
       </ShareCard>
     {/snippet}
-    {#snippet incomingFromOthersSection(providerKey: string)}
+    {#snippet incomingFromOthersSection(providerKey: string, heading: string)}
       {@const incomingInvitesHere = incomingProviderInvitesForProvider(providerKey)}
       {@const incomingSharesHere = incomingManagedSharesForProvider(providerKey)}
       {@const hiddenIncomingSharesHere = dismissedIncomingManagedShareCount(providerKey)}
       {#if providerCatalog.some((entry) => entry.provider === providerKey && entry.isConnected)}
         <div class="provider-incoming-section">
           <div class="provider-flow-status">
-            <p class="provider-flow-title">Shared with you</p>
+            <p class="provider-flow-title">{heading}</p>
             {#if incomingLoading}
               <p class="muted-copy">Checking…</p>
             {:else if incomingLoadError}
@@ -5677,8 +5646,17 @@
 
       {:else}
         {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
-        {@const shares = provider ? providerVisibleShares(provider.provider) : []}
         {#if provider}
+          {@const ownedShares = providerOwnedVisibleShares(provider.provider)}
+          {@const receivedShares = providerReceivedVisibleShares(provider.provider)}
+          {@const hasIncomingReviewState = providerShowsIncomingShareSection(provider.provider)
+            && (
+              incomingProviderInvitesForProvider(provider.provider).length > 0
+              || incomingManagedSharesForProvider(provider.provider).length > 0
+              || dismissedIncomingManagedShareCount(provider.provider) > 0
+              || incomingLoading
+              || Boolean(incomingLoadError)
+            )}
           <section class="panel-section">
             <div class="section-head compact global-panel-head">
               <div>
@@ -6274,26 +6252,47 @@
             {/if}
 
             <div class="section-stack">
+              <div class="section-copy-stack">
+                <p class="subheading">Your locations</p>
+                <p class="managed-share-invite-copy">Locations you manage in {provider.label} stay here.</p>
+              </div>
 
               <div class="compact-share-grid">
-                {#if shares.length === 0}
+                {#if ownedShares.length === 0}
                   <ShareCard
                     provider={provider.label}
-                    title="No storage locations yet"
+                    title="No locations from this account yet"
                     copy={providerEmptyShareCopy(provider)}
                     statusBadges={[]}
                     meta={[]}
                   />
                 {:else}
-                  {#each shares as summary (summary.share.id)}
+                  {#each ownedShares as summary (summary.share.id)}
                     {@render managedShareCard(summary)}
                   {/each}
                 {/if}
               </div>
             </div>
 
-            {#if providerShowsIncomingShareSection(provider.provider)}
-              {@render incomingFromOthersSection(provider.provider)}
+            {#if receivedShares.length > 0 || hasIncomingReviewState}
+              <div class="section-stack section-stack-secondary">
+                <div class="section-copy-stack">
+                  <p class="subheading">Shared with you</p>
+                  <p class="managed-share-invite-copy">Locations someone else shared into this account stay separate from the ones you manage yourself.</p>
+                </div>
+
+                {#if receivedShares.length > 0}
+                  <div class="compact-share-grid">
+                    {#each receivedShares as summary (summary.share.id)}
+                      {@render managedShareCard(summary)}
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if hasIncomingReviewState}
+                  {@render incomingFromOthersSection(provider.provider, receivedShares.length > 0 ? 'Still to review' : 'Shared with you')}
+                {/if}
+              </div>
             {/if}
           </section>
         {/if}
@@ -6376,26 +6375,7 @@
                   </div>
                 </div>
 
-                <div class="hub-mode-panel">
-                  <div class="segmented-toggle" role="group" aria-label={`How ${sourceDisplayTitle(source)} is used in this hub`}>
-                    <button
-                      type="button"
-                      class="segmented-toggle-btn"
-                      class:active={mode === 'store'}
-                      onclick={() => setHubLocationMode(volumeId, source.id, 'store')}
-                    >
-                      Keep a full copy
-                    </button>
-                    <button
-                      type="button"
-                      class="segmented-toggle-btn"
-                      class:active={mode === 'publish'}
-                      onclick={() => setHubLocationMode(volumeId, source.id, 'publish')}
-                    >
-                      Save new items only
-                    </button>
-                  </div>
-                </div>
+                <p class="managed-share-invite-copy">{hubLocationNote(volumeId, source) ?? 'This location keeps a best-effort full copy for this hub.'}</p>
 
                 {#if !source.enabled}
                   <div class="button-row inline-dialog-actions">
@@ -6470,23 +6450,6 @@
                     </button>
                   </div>
                 </div>
-
-                {#if mode === 'store'}
-                  <div class="field-grid compact-visible-fields">
-                    <label class="field-block">
-                      <span>When this location gets full</span>
-                      <select
-                        class="panel-input"
-                        value={destination?.fullPolicy ?? 'block-writes'}
-                        onchange={(event) =>
-                          updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
-                      >
-                        <option value="block-writes">Keep everything here</option>
-                        <option value="drop-older-blocks">Trim older data after another full copy exists</option>
-                      </select>
-                    </label>
-                  </div>
-                {/if}
               </article>
             {/each}
           </div>
@@ -6494,63 +6457,55 @@
 
         {#each providerCatalog.filter((entry) => entry.isConnected && providerShowsIncomingShareSection(entry.provider) && (incomingProviderInvitesForProvider(entry.provider).length > 0 || incomingManagedSharesForProvider(entry.provider).length > 0)) as incomingProvider (incomingProvider.provider)}
           <section class="panel-section provider-incoming-hub-wrap">
-            {@render incomingFromOthersSection(incomingProvider.provider)}
+            {@render incomingFromOthersSection(incomingProvider.provider, 'Shared with you')}
           </section>
         {/each}
 
         {#if hubLocationDialogVolumeId === volumeId}
           {@const availableSources = hubAvailableSources(volumeId)}
-          <div class="provider-dialog-backdrop" role="presentation" onclick={closeHubLocationDialog}></div>
-          <div class="provider-dialog" role="dialog" aria-modal="true" aria-label="Add storage location">
-            <div class="section-head compact provider-dialog-head">
-              <div>
-                <p class="section-step">Storage</p>
-                <h3>Add another location</h3>
-              </div>
-              <button type="button" class="panel-btn subtle compact" onclick={closeHubLocationDialog}>
-                <span>Close</span>
-              </button>
-            </div>
-
-            {#if availableSources.length > 0}
-              <div class="rule-grid dialog-rule-grid">
-                {#each availableSources as source (source.id)}
-                  {@const status = sourceStatus(source.id)}
-                  <article class="rule-card active">
-                    <div class="card-head">
-                      <div class="card-title">
-                        <div>
-                          <p class="provider-label">{formatProvider(source.provider)}</p>
-                          <h4>{sourceDisplayTitle(source)}</h4>
+          <AppDialog
+            ariaLabel="Add storage location"
+            eyebrow="Storage"
+            title="Add another location"
+            width="wide"
+            onClose={closeHubLocationDialog}
+          >
+            {#snippet body()}
+              {#if availableSources.length > 0}
+                <div class="rule-grid dialog-rule-grid">
+                  {#each availableSources as source (source.id)}
+                    {@const status = sourceStatus(source.id)}
+                    <article class="rule-card active">
+                      <div class="card-head">
+                        <div class="card-title">
+                          <div>
+                            <p class="provider-label">{formatProvider(source.provider)}</p>
+                            <h4>{sourceDisplayTitle(source)}</h4>
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div class="fact-row">
-                      <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
-                      <span>{usageSummary(source.id)}</span>
-                    </div>
+                      <div class="fact-row">
+                        <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
+                        <span>{usageSummary(source.id)}</span>
+                      </div>
 
-                    <div class="button-row inline-dialog-actions">
-                      <button type="button" class="panel-btn subtle compact" onclick={() => addSourceToHub(volumeId, source.id)}>
-                        <Plus size={14} strokeWidth={2} />
-                        <span>Use this location</span>
-                      </button>
-                    </div>
-                  </article>
-                {/each}
-              </div>
-            {:else}
-              <article class="rule-card active">
-                <p class="card-copy">You do not have any saved storage locations left to add here.</p>
-                <div class="button-row inline-dialog-actions">
-                  <button type="button" class="panel-btn subtle compact" onclick={closeHubLocationDialog}>
-                    <span>Not now</span>
-                  </button>
+                      <div class="button-row inline-dialog-actions">
+                        <button type="button" class="panel-btn subtle compact" onclick={() => addSourceToHub(volumeId, source.id)}>
+                          <Plus size={14} strokeWidth={2} />
+                          <span>Add to this hub</span>
+                        </button>
+                      </div>
+                    </article>
+                  {/each}
                 </div>
-              </article>
-            {/if}
-          </div>
+              {:else}
+                <article class="rule-card active">
+                  <p class="card-copy">You do not have any saved storage locations left to add here.</p>
+                </article>
+              {/if}
+            {/snippet}
+          </AppDialog>
         {/if}
 
       {/if}
@@ -6562,103 +6517,100 @@
       {@const dialogAccount = dialogProvider ? connectedAccountForProvider(dialogProvider.provider) : null}
       {#if dialogProvider}
         {@const dialogMegaReconnectIssue = dialogProvider.provider === 'mega' ? megaProviderReconnectIssue() : null}
-        <div class="provider-dialog-backdrop" role="presentation" onclick={closeProviderConnectionDialog}></div>
-        <div class="provider-dialog" role="dialog" aria-modal="true" aria-label={`${dialogProvider.label} connection`}>
-          <div class="section-head compact provider-dialog-head">
-            <div>
-              <h3>{dialogProvider.label}</h3>
-              <p class="section-copy">Connection details</p>
-            </div>
-            <button type="button" class="panel-btn subtle compact" onclick={closeProviderConnectionDialog}>
-              <span>Close</span>
-            </button>
-          </div>
+        <AppDialog
+          ariaLabel={`${dialogProvider.label} connection`}
+          eyebrow={dialogProvider.label}
+          title="Connection details"
+          width="wide"
+          onClose={closeProviderConnectionDialog}
+        >
+          {#snippet body()}
+            <div class="provider-dialog-grid">
+              <div class="provider-path-card">
+                <p class="subheading">Account</p>
+                <p class="provider-path-copy">{dialogAccount?.email ?? dialogAccount?.label ?? 'No account connected'}</p>
+              </div>
 
-          <div class="provider-dialog-grid">
-            <div class="provider-path-card">
-              <p class="subheading">Account</p>
-              <p class="provider-path-copy">{dialogAccount?.email ?? dialogAccount?.label ?? 'No account connected'}</p>
-            </div>
-
-            <div class="provider-path-card">
-              <p class="subheading">Mirror settings</p>
-              <div class="provider-fact-list">
-                {#each providerTransparencyFacts(dialogProvider) as fact}
-                  <p class="provider-story-copy">{fact}</p>
-                {/each}
+              <div class="provider-path-card">
+                <p class="subheading">Mirror settings</p>
+                <div class="provider-fact-list">
+                  {#each providerTransparencyFacts(dialogProvider) as fact}
+                    <p class="provider-story-copy">{fact}</p>
+                  {/each}
+                </div>
               </div>
             </div>
-          </div>
 
-          {#if providerMirrorPathEntries(dialogProvider).length > 0}
-            <div class="provider-dialog-path-list">
-              {#each providerMirrorPathEntries(dialogProvider) as mirrorEntry}
-                <div class="provider-path-card">
-                  <p class="subheading">{mirrorEntry.heading}</p>
-                  <p class="provider-step-title">{mirrorEntry.title}</p>
-                  <p class="provider-path-copy">{mirrorEntry.path}</p>
-                </div>
-              {/each}
-            </div>
-          {/if}
+            {#if providerMirrorPathEntries(dialogProvider).length > 0}
+              <div class="provider-dialog-path-list">
+                {#each providerMirrorPathEntries(dialogProvider) as mirrorEntry}
+                  <div class="provider-path-card">
+                    <p class="subheading">{mirrorEntry.heading}</p>
+                    <p class="provider-step-title">{mirrorEntry.title}</p>
+                    <p class="provider-path-copy">{mirrorEntry.path}</p>
+                  </div>
+                {/each}
+              </div>
+            {/if}
 
-          {#if dialogMegaReconnectIssue}
-            <p class="panel-error">
-              Nearbytes cannot discover incoming MEGA shares until this MEGA account is recovered. If MEGA locked it, finish the unlock and password-change flow on mega.io first. Nearbytes will retry the saved sign-in automatically; reconnect here only if the credentials changed.
-            </p>
-          {/if}
+            {#if dialogMegaReconnectIssue}
+              <p class="panel-error">
+                Nearbytes cannot discover incoming MEGA shares until this MEGA account is recovered. If MEGA locked it, finish the unlock and password-change flow on mega.io first. Nearbytes will retry the saved sign-in automatically; reconnect here only if the credentials changed.
+              </p>
+            {/if}
 
-          {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
-            <p class="panel-error">
-              {#if dialogDisconnectImpact.inaccessibleSpaces.length > 0}
-                Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'hub')} not accessible until you reconnect it.
-              {:else}
-                Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'location')} from {countLabel(dialogDisconnectImpact.spaces, 'hub')}, but those hubs will stay accessible.
-              {/if}
-            </p>
-          {/if}
-
-          {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.inaccessibleSpaces.some((targetVolumeId) => knownVolumeLabel(targetVolumeId))}
-            <div class="fact-row share-volume-row">
-              {#each dialogDisconnectImpact.inaccessibleSpaces as targetVolumeId}
-                {@const label = knownVolumeLabel(targetVolumeId)}
-                {#if label}
-                  <button
-                    type="button"
-                    class="mini-pill mini-pill-button"
-                    onclick={() => onOpenVolumeRouting?.(targetVolumeId)}
-                  >
-                    {label}
-                  </button>
+            {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
+              <p class="panel-error">
+                {#if dialogDisconnectImpact.inaccessibleSpaces.length > 0}
+                  Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'hub')} not accessible until you reconnect it.
+                {:else}
+                  Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'location')} from {countLabel(dialogDisconnectImpact.spaces, 'hub')}, but those hubs will stay accessible.
                 {/if}
-              {/each}
-            </div>
-          {/if}
+              </p>
+            {/if}
 
-          <div class="button-row provider-dialog-actions">
-            <button
-              type="button"
-              class={`panel-btn subtle compact ${providerDisconnectArmed[dialogProvider.provider] ? 'danger' : ''}`}
-              onclick={async () => {
-                if (providerDisconnectArmed[dialogProvider.provider]) {
-                  await disconnectProvider(dialogProvider);
-                  closeProviderConnectionDialog();
-                  return;
-                }
-                setProviderDisconnectArmed(dialogProvider.provider, true);
-              }}
-              disabled={integrationBusyKey === `disconnect:${dialogProvider.provider}`}
-            >
-              {integrationBusyKey === `disconnect:${dialogProvider.provider}`
-                ? 'Disconnecting...'
-                : providerDisconnectArmed[dialogProvider.provider]
-                  ? 'Confirm disconnect'
-                  : dialogMegaReconnectIssue
-                    ? 'Disconnect to recover'
-                    : 'Disconnect'}
-            </button>
-          </div>
-        </div>
+            {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.inaccessibleSpaces.some((targetVolumeId) => knownVolumeLabel(targetVolumeId))}
+              <div class="fact-row share-volume-row">
+                {#each dialogDisconnectImpact.inaccessibleSpaces as targetVolumeId}
+                  {@const label = knownVolumeLabel(targetVolumeId)}
+                  {#if label}
+                    <button
+                      type="button"
+                      class="mini-pill mini-pill-button"
+                      onclick={() => onOpenVolumeRouting?.(targetVolumeId)}
+                    >
+                      {label}
+                    </button>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+
+            <div class="button-row provider-dialog-actions">
+              <button
+                type="button"
+                class={`panel-btn subtle compact ${providerDisconnectArmed[dialogProvider.provider] ? 'danger' : ''}`}
+                onclick={async () => {
+                  if (providerDisconnectArmed[dialogProvider.provider]) {
+                    await disconnectProvider(dialogProvider);
+                    closeProviderConnectionDialog();
+                    return;
+                  }
+                  setProviderDisconnectArmed(dialogProvider.provider, true);
+                }}
+                disabled={integrationBusyKey === `disconnect:${dialogProvider.provider}`}
+              >
+                {integrationBusyKey === `disconnect:${dialogProvider.provider}`
+                  ? 'Disconnecting...'
+                  : providerDisconnectArmed[dialogProvider.provider]
+                    ? 'Confirm disconnect'
+                    : dialogMegaReconnectIssue
+                      ? 'Disconnect to recover'
+                      : 'Disconnect'}
+              </button>
+            </div>
+          {/snippet}
+        </AppDialog>
       {/if}
     {/if}
   </section>
@@ -7482,13 +7434,6 @@
     color: var(--text-main);
     font-size: 0.79rem;
     font-weight: 600;
-  }
-
-  .setting-row input {
-    width: 16px;
-    height: 16px;
-    margin: 0;
-    accent-color: var(--nb-accent-strong, #8f6a3b);
   }
 
   .card-control-row {

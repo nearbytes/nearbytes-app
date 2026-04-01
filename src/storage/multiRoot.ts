@@ -760,7 +760,7 @@ export class MultiRootStorageBackend implements StorageBackend {
   async createDirectory(relativePath: string): Promise<void> {
     const parsedChannel = this.parseChannelKeyFromPath(relativePath);
     if (parsedChannel) {
-      const targets = this.getWritableVolumeDestinationTargets(parsedChannel, { requireBlocks: false });
+      const targets = this.getWritableVolumeDestinationTargets(parsedChannel);
       if (targets.length === 0) {
         throw new StorageError(`No writable destinations configured for volume ${parsedChannel}`);
       }
@@ -1106,10 +1106,7 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   private async writeToChannelTargets(relativePath: string, data: Uint8Array, channelKeyHex: string): Promise<void> {
     const isBlockWrite = BLOCK_PATH_REGEX.test(normalizeRelativePath(relativePath));
-    const targets = this.getWritableVolumeDestinationTargets(channelKeyHex, {
-      requireBlocks: isBlockWrite,
-      allowPublishedBlocks: isBlockWrite,
-    });
+    const targets = this.getWritableVolumeDestinationTargets(channelKeyHex);
     if (targets.length === 0) {
       throw new StorageError(
         `No writable ${isBlockWrite ? 'block' : 'event'} destinations configured for volume ${channelKeyHex}`
@@ -1118,7 +1115,7 @@ export class MultiRootStorageBackend implements StorageBackend {
 
     const successCount = await this.writeToDestinations(targets, relativePath, data, channelKeyHex);
     const durableTargets = targets.filter((target) =>
-      isBlockWrite ? isDurableDestination(target.policy) : target.policy.enabled && target.policy.storeEvents
+      isBlockWrite ? isDurableDestination(target.policy) : target.policy.enabled
     );
     const durableSuccessCount = durableTargets.filter(
       (target) => !this.lastWriteFailures.has(target.state.config.id)
@@ -1227,7 +1224,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     const prioritized: RootState[] = [];
     const fallback: RootState[] = [];
     const prioritizedSourceIds = new Set(
-      this.getVolumeDestinationTargets(channelKeyHex, { requireBlocks: false }).map((target) => target.state.config.id)
+      this.getVolumeDestinationTargets(channelKeyHex).map((target) => target.state.config.id)
     );
 
     for (const state of this.getEnabledRootStates()) {
@@ -1249,10 +1246,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     return this.rootStates.filter((state) => state.config.enabled && state.config.writable);
   }
 
-  private getVolumeDestinationTargets(
-    channelKeyHex: string,
-    options: { requireBlocks: boolean; allowPublishedBlocks?: boolean }
-  ): VolumeDestinationTarget[] {
+  private getVolumeDestinationTargets(channelKeyHex: string): VolumeDestinationTarget[] {
     const destinations = resolveVolumeDestinations(this.config, channelKeyHex);
     const targets: VolumeDestinationTarget[] = [];
     for (const destination of destinations) {
@@ -1263,25 +1257,13 @@ export class MultiRootStorageBackend implements StorageBackend {
       if (!state.config.enabled || !state.config.writable || !destination.enabled) {
         continue;
       }
-      if (!destination.storeEvents) {
-        continue;
-      }
-      if (options.requireBlocks && !destination.storeBlocks) {
-        continue;
-      }
-      if (options.requireBlocks && !options.allowPublishedBlocks && !destination.copySourceBlocks) {
-        continue;
-      }
       targets.push({ state, policy: destination });
     }
     return targets;
   }
 
-  private getWritableVolumeDestinationTargets(
-    channelKeyHex: string,
-    options: { requireBlocks: boolean; allowPublishedBlocks?: boolean }
-  ): VolumeDestinationTarget[] {
-    return this.getVolumeDestinationTargets(channelKeyHex, options);
+  private getWritableVolumeDestinationTargets(channelKeyHex: string): VolumeDestinationTarget[] {
+    return this.getVolumeDestinationTargets(channelKeyHex);
   }
 
   private emitWriteEvent(event: StorageWriteEvent): void {
@@ -1319,16 +1301,6 @@ export class MultiRootStorageBackend implements StorageBackend {
       return;
     }
 
-    if (target.policy.fullPolicy === 'drop-older-blocks') {
-      await this.pruneSourceBlocks(target.state.config.id, reservedBytes + bytesToWrite, channelKeyHex, {
-        preserveReplicaBlocks: false,
-      });
-      const nextAvailableBytes = await getAvailableBytes(target.state.config.path);
-      if (nextAvailableBytes !== undefined && nextAvailableBytes - bytesToWrite >= reservedBytes) {
-        return;
-      }
-    }
-
     throw new StorageError(
       `Destination ${target.state.config.id} does not have enough free space for volume ${channelKeyHex}`
     );
@@ -1340,7 +1312,7 @@ export class MultiRootStorageBackend implements StorageBackend {
   }
 
   private async reconcileVolumeEvents(volumeId: string): Promise<void> {
-    const eventTargets = this.getWritableVolumeDestinationTargets(volumeId, { requireBlocks: false });
+    const eventTargets = this.getWritableVolumeDestinationTargets(volumeId);
     if (eventTargets.length === 0) {
       return;
     }
@@ -1398,10 +1370,7 @@ export class MultiRootStorageBackend implements StorageBackend {
       return;
     }
 
-    const blockTargets = this.getWritableVolumeDestinationTargets(volumeId, {
-      requireBlocks: true,
-      allowPublishedBlocks: false,
-    });
+    const blockTargets = this.getWritableVolumeDestinationTargets(volumeId);
     for (const target of blockTargets) {
       for (const hash of referencedHashes) {
         const relativePath = `blocks/${hash}.bin`;
@@ -1583,9 +1552,7 @@ export class MultiRootStorageBackend implements StorageBackend {
       const destinations = resolveVolumeDestinations(this.config, volumeId).filter(
         (destination) =>
           destination.sourceId === sourceId &&
-          destination.enabled &&
-          destination.storeEvents &&
-          destination.storeBlocks
+          destination.enabled
       );
       if (destinations.length === 0) {
         continue;

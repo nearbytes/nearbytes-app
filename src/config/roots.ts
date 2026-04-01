@@ -70,7 +70,7 @@ const sourceConfigEntrySchema = z.object({
   enabled: z.boolean().default(true),
   writable: z.boolean().default(true),
   reservePercent: z.number().int().min(0).max(95).default(5),
-  opportunisticPolicy: fullPolicySchema.default('drop-older-blocks'),
+  opportunisticPolicy: fullPolicySchema.default('block-writes'),
   moveFromSourceId: z.string().trim().min(1).optional(),
   integration: providerManagedSourceIntegrationSchema.optional(),
 });
@@ -100,6 +100,26 @@ const rootsConfigSchema = z.object({
   defaultVolume: defaultVolumePolicySchema.default({ destinations: [] }),
   volumes: z.array(volumePolicyEntrySchema).default([]),
 });
+
+function sanitizeSourceConfigEntry(source: SourceConfigEntry): SourceConfigEntry {
+  return {
+    ...source,
+    opportunisticPolicy: 'block-writes',
+  };
+}
+
+function sanitizeVolumeDestination(destination: VolumeDestinationConfig): VolumeDestinationConfig {
+  const enabled = destination.enabled;
+  return {
+    sourceId: destination.sourceId,
+    enabled,
+    storeEvents: enabled,
+    storeBlocks: enabled,
+    copySourceBlocks: enabled,
+    reservePercent: destination.reservePercent,
+    fullPolicy: 'block-writes',
+  };
+}
 
 const legacyAllKeysStrategySchema = z.object({
   name: z.literal('all-keys'),
@@ -145,7 +165,7 @@ export function createDefaultRootsConfig(defaultRootPath: string): RootsConfig {
         enabled: true,
         writable: true,
         reservePercent: 5,
-        opportunisticPolicy: 'drop-older-blocks',
+        opportunisticPolicy: 'block-writes',
       },
     ],
     defaultVolume: {
@@ -178,7 +198,7 @@ export function parseRootsConfig(value: unknown): RootsConfig {
     }
     seenSourceIds.add(id);
     sourceIds.add(id);
-    return {
+    return sanitizeSourceConfigEntry({
       id,
       provider: source.provider,
       path: path.resolve(source.path),
@@ -194,7 +214,7 @@ export function parseRootsConfig(value: unknown): RootsConfig {
             managedShareId: source.integration.managedShareId.trim(),
           }
         : undefined,
-    } satisfies SourceConfigEntry;
+    } satisfies SourceConfigEntry);
   });
 
   for (const source of normalizedSources) {
@@ -295,7 +315,7 @@ export function resolveVolumeDestinations(config: RootsConfig, volumeId: string)
   const merged = new Map<string, VolumeDestinationConfig>();
 
   for (const destination of config.defaultVolume.destinations) {
-    merged.set(destination.sourceId, { ...destination });
+    merged.set(destination.sourceId, sanitizeVolumeDestination({ ...destination }));
   }
 
   const explicit = config.volumes.find((entry) => entry.volumeId === normalizedVolumeId);
@@ -304,7 +324,7 @@ export function resolveVolumeDestinations(config: RootsConfig, volumeId: string)
   }
 
   for (const destination of explicit.destinations) {
-    merged.set(destination.sourceId, { ...destination });
+    merged.set(destination.sourceId, sanitizeVolumeDestination({ ...destination }));
   }
 
   return Array.from(merged.values());
@@ -321,10 +341,10 @@ function resolveMergedVolumeDestinations(
 ): VolumeDestinationConfig[] {
   const merged = new Map<string, VolumeDestinationConfig>();
   for (const destination of defaultVolume.destinations) {
-    merged.set(destination.sourceId, { ...destination });
+    merged.set(destination.sourceId, sanitizeVolumeDestination({ ...destination }));
   }
   for (const destination of explicit.destinations) {
-    merged.set(destination.sourceId, { ...destination });
+    merged.set(destination.sourceId, sanitizeVolumeDestination({ ...destination }));
   }
   return Array.from(merged.values());
 }
@@ -343,15 +363,7 @@ function destinationsEqual(
 
 function destinationComparisonKeys(destinations: readonly VolumeDestinationConfig[]): string[] {
   return [...destinations]
-    .map((destination) => JSON.stringify({
-      sourceId: destination.sourceId,
-      enabled: destination.enabled,
-      storeEvents: destination.storeEvents,
-      storeBlocks: destination.storeBlocks,
-      copySourceBlocks: destination.copySourceBlocks,
-      reservePercent: destination.reservePercent,
-      fullPolicy: destination.fullPolicy,
-    }))
+    .map((destination) => JSON.stringify(sanitizeVolumeDestination(destination)))
     .sort((left, right) => left.localeCompare(right));
 }
 
@@ -360,13 +372,7 @@ export function getSourceById(config: RootsConfig, sourceId: string): SourceConf
 }
 
 export function isDurableDestination(destination: VolumeDestinationConfig): boolean {
-  return (
-    destination.enabled &&
-    destination.storeEvents &&
-    destination.storeBlocks &&
-    destination.copySourceBlocks &&
-    destination.fullPolicy === 'block-writes'
-  );
+  return destination.enabled;
 }
 
 function ensureBootstrapSourceOnRawConfig(value: unknown, defaultRootPath: string): unknown {
@@ -436,7 +442,7 @@ function ensureBootstrapSourceOnRawConfig(value: unknown, defaultRootPath: strin
             enabled: true,
             writable: true,
             reservePercent: 5,
-            opportunisticPolicy: 'drop-older-blocks',
+            opportunisticPolicy: 'block-writes',
           },
         ];
 
@@ -492,7 +498,7 @@ function ensureBootstrapSourceAndDefaultDestination(
       enabled: true,
       writable: true,
       reservePercent: 5,
-      opportunisticPolicy: 'drop-older-blocks',
+      opportunisticPolicy: 'block-writes',
     } satisfies SourceConfigEntry);
 
   const nextSources = existingBootstrapSource ? config.sources : [...config.sources, bootstrapSource];
@@ -533,7 +539,7 @@ function ensureBootstrapSourceAndDefaultDestination(
 function dedupeDestinationList(destinations: readonly VolumeDestinationConfig[]): VolumeDestinationConfig[] {
   const deduped = new Map<string, VolumeDestinationConfig>();
   for (const destination of destinations) {
-    deduped.set(destination.sourceId, { ...destination });
+    deduped.set(destination.sourceId, sanitizeVolumeDestination(destination));
   }
   return Array.from(deduped.values());
 }
@@ -556,7 +562,7 @@ function normalizeDestinationList(
     if (!sourceIds.has(sourceId)) {
       throw new Error(`Unknown destination sourceId: ${sourceId}`);
     }
-    deduped.set(sourceId, {
+    deduped.set(sourceId, sanitizeVolumeDestination({
       sourceId,
       enabled: destination.enabled,
       storeEvents: destination.storeEvents,
@@ -564,7 +570,7 @@ function normalizeDestinationList(
       copySourceBlocks: destination.copySourceBlocks,
       reservePercent: destination.reservePercent,
       fullPolicy: destination.fullPolicy,
-    });
+    }));
   }
   return Array.from(deduped.values());
 }
@@ -596,7 +602,7 @@ function migrateLegacyRootsConfig(value: unknown): unknown {
     enabled: root.enabled,
     writable: root.writable,
     reservePercent: 5,
-    opportunisticPolicy: 'drop-older-blocks',
+    opportunisticPolicy: 'block-writes',
   }));
 
   const defaultDestinations: VolumeDestinationConfig[] = legacy.roots

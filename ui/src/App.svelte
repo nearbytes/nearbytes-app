@@ -55,6 +55,7 @@
   } from './lib/nearbytesReferenceTransfer.js';
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
+  import AppDialog from './components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
   import HubStorageButton from './components/HubStorageButton.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
@@ -577,6 +578,18 @@
     sourceDiscoveryPanelFocus = null;
     showVolumeStoragePanel = true;
     showSourcesPanel = false;
+  }
+
+  function openMountStorageDialog(): void {
+    if (!activeMount && !shareableVolumeId) {
+      return;
+    }
+    sourceDiscoveryPanelFocus = null;
+    showMountStorageDialog = true;
+  }
+
+  function closeMountStorageDialog(): void {
+    showMountStorageDialog = false;
   }
 
   function stopSourceDiscoveryWatch(): void {
@@ -1489,6 +1502,7 @@
   let showTimeMachinePanel = $state(false);
   let showSourcesPanel = $state(false);
   let showVolumeStoragePanel = $state(false);
+  let showMountStorageDialog = $state(false);
   let showEventFlowPanel = $state(false);
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
@@ -6752,13 +6766,46 @@
         {/if}
       </div>
       {/if}
+      {#if showMountStorageDialog}
+        <AppDialog
+          ariaLabel="Storage for current hub"
+          eyebrow="Current hub"
+          title={currentMountedVolumePresentation ? `Storage for ${currentMountedVolumePresentation.label}` : 'Storage for current hub'}
+          subtitle="Choose which locations this hub can read from and write to."
+          width="full"
+          closeLabel="Close hub storage"
+          onClose={closeMountStorageDialog}
+        >
+          {#snippet body()}
+            <StoragePanel
+              mode="volume"
+              volumeId={shareableVolumeId}
+              currentVolumePresentation={currentMountedVolumePresentation}
+              knownVolumes={knownMountedVolumes}
+              onOpenVolumeRouting={openMountedVolumeRouting}
+              onOpenStorageSetup={() => {
+                closeMountStorageDialog();
+                openSourcesPanelWithFocus(null);
+              }}
+              refreshToken={sourceDiscoveryRefreshToken}
+            />
+          {/snippet}
+        </AppDialog>
+      {/if}
       {#if showEventFlowPanel}
         <div
           class="flow-overlay"
           role="dialog"
           aria-modal="true"
           aria-label="Event flow"
+          tabindex="-1"
           onclick={(e) => { if (e.target === e.currentTarget) showEventFlowPanel = false; }}
+          onkeydown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              showEventFlowPanel = false;
+            }
+          }}
         >
           <div class="flow-overlay-panel panel-surface">
             <button
@@ -6861,9 +6908,20 @@
       role="dialog"
       aria-modal="true"
       aria-label="Timeline event details"
-      onclick={closeTimelineDetails}
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeTimelineDetails();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeTimelineDetails();
+        }
+      }}
     >
-      <div class="tm-details-modal panel-surface" onclick={(event) => event.stopPropagation()}>
+      <div class="tm-details-modal panel-surface">
         <div class="tm-details-header">
           <div class="tm-details-head-meta">
             <p class="tm-details-eyebrow">Timeline details</p>
@@ -7311,9 +7369,20 @@
       role="dialog"
       aria-modal="true"
       aria-label="Spec details"
-      onclick={closeSpecDoc}
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeSpecDoc();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeSpecDoc();
+        }
+      }}
     >
-      <div class="tm-spec-modal panel-surface" onclick={(event) => event.stopPropagation()}>
+      <div class="tm-spec-modal panel-surface">
         <div class="tm-spec-header">
           <div class="tm-spec-head-meta">
             <p class="tm-spec-title">{specModalDoc.title}</p>
@@ -7353,6 +7422,9 @@
         <div class="mount-dialog-header">
           <div class="mount-dialog-head-meta">
             <p class="mount-dialog-eyebrow">Hub properties</p>
+            {#if !isMountEmpty(mountDialogMount)}
+              <p class="mount-dialog-title">Current hub: {mountLabel(mountDialogMount) || 'Unnamed hub'}</p>
+            {/if}
             {#if isMountEmpty(mountDialogMount)}
               <div class="mount-dialog-mode-switch" role="tablist" aria-label="Create hub mode">
                 <button
@@ -7571,11 +7643,11 @@
                 ariaLabel="Remove hub"
               />
               <HubStorageButton
-                active={showVolumeStoragePanel}
-                badge="Setup"
-                label="Hub storage"
+                active={showMountStorageDialog}
+                badge="Current hub"
+                label="Storage"
                 onclick={() => {
-                  openVolumeStoragePanel();
+                  openMountStorageDialog();
                 }}
               />
               <button

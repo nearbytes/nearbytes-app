@@ -10,6 +10,7 @@
     title,
     copy = '',
     active = false,
+    compact = false,
     statusBadges = [],
     meta = [],
     metaActions,
@@ -24,6 +25,7 @@
     title: string;
     copy?: string;
     active?: boolean;
+    compact?: boolean;
     statusBadges?: Array<{ label: string; tone?: ShareCardBadgeTone; description?: string }>;
     meta?: string[];
     metaActions?: Snippet;
@@ -35,7 +37,7 @@
   }>();
 </script>
 
-<article class="share-card" class:active>
+<article class="share-card" class:active class:compact>
   <div class="card-head">
     <div class="card-title">
       <div class="card-icon">
@@ -111,13 +113,27 @@
     padding: 0.82rem;
     border-radius: 16px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(255, 250, 247, 0.96)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(249, 242, 237, 0.92))),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #d27a54) 8%, transparent), transparent 60%);
+    box-shadow:
+      0 8px 18px rgba(82, 53, 33, 0.08),
+      0 2px 5px rgba(82, 53, 33, 0.05);
   }
 
   .share-card.active {
     border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 74%, rgba(210, 122, 84, 0.08));
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 74%, rgba(210, 122, 84, 0.08)),
+      0 12px 28px rgba(82, 53, 33, 0.1),
+      0 3px 8px rgba(82, 53, 33, 0.08);
+  }
+
+  .share-card.compact {
+    gap: 0.56rem;
+    padding: 0.74rem;
+    border-radius: 15px;
   }
 
   .card-head,
@@ -185,6 +201,12 @@
     flex: 0 0 auto;
   }
 
+  .share-card.compact .card-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 10px;
+  }
+
   .provider-label {
     margin: 0 0 0.18rem;
     color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
@@ -202,12 +224,23 @@
     overflow-wrap: anywhere;
   }
 
+  .share-card.compact h4 {
+    font-size: 0.92rem;
+    line-height: 1.24;
+  }
+
   .card-copy,
   .fact-row {
     margin: 0;
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
     font-size: 0.8rem;
     line-height: 1.38;
+  }
+
+  .share-card.compact .card-copy,
+  .share-card.compact .fact-row {
+    font-size: 0.75rem;
+    line-height: 1.34;
   }
 
   .card-copy {
@@ -241,6 +274,12 @@
 
   .status-pill.ready-badge {
     padding-inline: 1.22rem;
+  }
+
+  .share-card.compact .status-pill {
+    min-height: 24px;
+    padding: 0.18rem 0.82rem;
+    font-size: 0.64rem;
   }
 
   .tone-good,
