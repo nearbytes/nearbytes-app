@@ -3572,6 +3572,216 @@ describe('MegaTransportAdapter', () => {
     expect(shareCrypto?.shareKey).toEqual(shareKey);
   });
 
+  it('caches owner upload state and skips duplicate immutable uploads without extra MEGA discovery', async () => {
+    const secretStore = createMemorySecretStore();
+    const email = 'owner@example.com';
+    const userHandle = 'owner001';
+    const driveHandle = 'root0001';
+    const shareHandle = 'nearbyt0';
+    const blocksHandle = 'blocks01';
+    const channelsHandle = 'chans001';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const driveNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const rootNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const localBytes = Buffer.from('hello-upload', 'utf8');
+    const uploadedFiles = new Map<string, { handle: string; size: number; attributes: string; nodeKey: Buffer }>();
+    let treeFetchCount = 0;
+    let uploadReservationCount = 0;
+    let uploadCommitCount = 0;
+
+    await secretStore.set('provider-account:mega:acct-mega-owner-upload-cache', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'pk':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f': {
+            treeFetchCount += 1;
+            const requestedRoot = typeof payload.n === 'string' ? payload.n : undefined;
+            const nodes = [
+              {
+                h: driveHandle,
+                t: 1,
+                a: encryptAttributes('Cloud Drive', driveNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(driveNodeKey, masterKey)),
+              },
+              {
+                h: shareHandle,
+                p: driveHandle,
+                t: 1,
+                a: encryptAttributes('nearbytes', rootNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(rootNodeKey, masterKey)),
+              },
+              {
+                h: blocksHandle,
+                p: shareHandle,
+                t: 1,
+                a: encryptAttributes('blocks', blocksNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(blocksNodeKey, masterKey)),
+              },
+              {
+                h: channelsHandle,
+                p: shareHandle,
+                t: 1,
+                a: encryptAttributes('channels', channelsNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
+              },
+              ...Array.from(uploadedFiles.values()).map((entry) => ({
+                h: entry.handle,
+                p: blocksHandle,
+                t: 0,
+                s: entry.size,
+                a: entry.attributes,
+                k: encryptNodeKey(entry.nodeKey, shareKey, shareHandle),
+              })),
+            ];
+            const partialNodes = requestedRoot
+              ? nodes.filter((node) => node.h === requestedRoot || node.p === requestedRoot)
+              : nodes;
+            return new Response(
+              JSON.stringify([
+                {
+                  f: partialNodes,
+                  s: [{ h: shareHandle, u: 'peer00001', r: 0, ts: 1710000000 }],
+                  u: [{ u: 'peer00001', m: 'peer@example.com' }],
+                  sn: 'cursor-1',
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          }
+          case 'u':
+            uploadReservationCount += 1;
+            return new Response(JSON.stringify([{ p: 'https://upload.test/file' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'p': {
+            uploadCommitCount += 1;
+            const nodes = Array.isArray(payload.n) ? payload.n : [];
+            const node = nodes[0] && typeof nodes[0] === 'object' ? (nodes[0] as Record<string, unknown>) : null;
+            const handle = typeof node?.h === 'string' ? node.h : 'uploadtok01';
+            const attributes = typeof node?.a === 'string' ? node.a : '';
+            const cr = Array.isArray(payload.cr) ? payload.cr : [];
+            const records = Array.isArray(cr[2]) ? cr[2] : [];
+            const encodedShareKeyRecord = typeof records[2] === 'string' ? records[2] : '';
+            const nodeKey = encodedShareKeyRecord
+              ? decryptAesEcb(decodeMegaBase64Url(encodedShareKeyRecord), shareKey)
+              : Buffer.alloc(32);
+            uploadedFiles.set('blocks/upload.bin', {
+              handle,
+              size: localBytes.length,
+              attributes,
+              nodeKey,
+            });
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://upload.test/file/0?d=')) {
+        return new Response(Buffer.from('uploadtok01'), { status: 200 });
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    (adapter as unknown as {
+      accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+    }).accountShareKeyCache.set(userHandle, new Map([[shareHandle, shareKey]]));
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-upload-cache-'));
+    tempDirs.push(localPath);
+    await fs.mkdir(path.join(localPath, 'blocks'), { recursive: true });
+    await fs.writeFile(path.join(localPath, 'blocks', 'upload.bin'), localBytes);
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner-upload-cache',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner-upload-cache',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath,
+      sourceId: 'src-mega-owner-upload-cache',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await adapter.forceManagedShareUpload(share, account, 'blocks/upload.bin');
+    const firstTreeFetchCount = treeFetchCount;
+    const firstUploadReservationCount = uploadReservationCount;
+    const firstUploadCommitCount = uploadCommitCount;
+
+    await adapter.forceManagedShareUpload(share, account, 'blocks/upload.bin');
+
+    expect(firstTreeFetchCount).toBeGreaterThan(0);
+    expect(firstUploadReservationCount).toBe(1);
+    expect(firstUploadCommitCount).toBe(1);
+    expect(treeFetchCount).toBe(firstTreeFetchCount);
+    expect(uploadReservationCount).toBe(1);
+    expect(uploadCommitCount).toBe(1);
+  });
+
   it('derives the authenticated sid from csid responses using MEGA-compatible encoding', async () => {
     const email = 'reader@example.com';
     const password = 'correct horse battery staple';

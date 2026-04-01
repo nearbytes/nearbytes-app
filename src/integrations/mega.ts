@@ -37,7 +37,9 @@ import { validateCanonicalStorageFile } from '../storage/integrity.js';
 import { MirrorWorker } from './mirrorWorker.js';
 import type {
   ManagedShareMirrorEntry,
+  ManagedShareReceiveProbe,
   ManagedShareRemoteEntryProbe,
+  ManagedShareUploadProbe,
   MirrorRemoteEntry,
   ProviderShareInventoryDebugEntry,
 } from './adapters.js';
@@ -79,7 +81,7 @@ const MEGA_RATE_LIMIT_RETRY_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 18_
 const MEGA_TRANSIENT_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 const MEGA_TRANSIENT_SYNC_COOLDOWN_MS = 30_000;
 const MEGA_POST_UPLOAD_SETTLE_MS = 30_000;
-const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 500;
+const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 75;
 const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
 const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
 const MEGA_PENDING_ROOT_DIAGNOSTIC_MIN_INTERVAL_MS = 60_000;
@@ -90,6 +92,10 @@ const MEGA_CREATE_RECOVERY_ATTEMPTS = 7;
 const MEGA_UPLOAD_RECOVERY_ATTEMPTS = 7;
 const MEGA_NODE_APPEAR_ATTEMPTS = 7;
 const MEGA_NODE_APPEAR_DELAYS_MS = [250, 500, 1_000, 1_500, 2_500, 4_000] as const;
+const MEGA_UPLOAD_PROBE_TIMEOUT_MS = 15_000;
+const MEGA_UPLOAD_PROBE_DELAYS_MS = [0, 100, 150, 250, 500, 1_000, 1_500, 2_000, 3_000, 4_000] as const;
+const MEGA_UPLOAD_PROBE_HISTORY_LIMIT = 50;
+const MEGA_LOCAL_WRITE_SUPPRESSION_MS = 5_000;
 const EXPECTED_MEGA_TOP_LEVEL_NAMES = new Set(['blocks', 'channels', 'Nearbytes.html']);
 const MEGA_PUT_NODES_PLACEHOLDER_HANDLE = 'xxxxxxxx';
 const MEGA_SHARE_ACCESS_LEVEL_READ_ONLY = 0;
@@ -196,6 +202,16 @@ interface MegaMirrorManifest {
   readonly entries: Record<string, ProviderRefreshManifestEntry>;
 }
 
+interface MegaRecipientProbeContext {
+  readonly source: 'sc' | 'sync';
+  readonly rootHandle: string;
+  readonly triggerHandle: string;
+  readonly packetReceivedAt: number;
+  readonly scsn?: string;
+  readonly fetchStartedAt?: number;
+  readonly fetchCompletedAt?: number;
+}
+
 interface MegaFetchedTree {
   readonly snapshot: MegaFetchNodesSnapshot;
   readonly tree: DecryptedMegaTree;
@@ -295,12 +311,18 @@ export class MegaTransportAdapter {
   private readonly shareKnownHandles = new Map<string, string[]>();
   private readonly shareRootHandles = new Map<string, string>();
   private readonly pendingRootDiagnosticAt = new Map<string, number>();
+  private readonly uploadProbeHistory = new Map<string, ManagedShareUploadProbe[]>();
+  private readonly receiveProbeHistory = new Map<string, ManagedShareReceiveProbe[]>();
+  private readonly suppressedWatcherPaths = new Map<string, Map<string, number>>();
+  private readonly ownerUploadStates = new Map<string, MegaOwnerUploadState>();
   private readonly accountShareKeyCache = new Map<string, ReadonlyMap<string, Buffer>>();
   private readonly accountCloudDriveHandleCache = new Map<string, string>();
   private readonly incomingShareDiscoveryCache = new Map<string, { expiresAt: number; offers: IncomingManagedShareOffer[] }>();
   private readonly incomingShareDiscoveryTasks = new Map<string, Promise<IncomingManagedShareOffer[]>>();
   private readonly incomingContactInviteCache = new Map<string, { expiresAt: number; invites: IncomingProviderContactInvite[] }>();
   private readonly incomingContactInviteTasks = new Map<string, Promise<IncomingProviderContactInvite[]>>();
+  private uploadProbeSequence = 0;
+  private receiveProbeSequence = 0;
 
   constructor(
     private readonly runtime: IntegrationRuntime,
@@ -334,6 +356,10 @@ export class MegaTransportAdapter {
     this.shareScsn.clear();
     this.shareKnownHandles.clear();
     this.shareRootHandles.clear();
+    this.uploadProbeHistory.clear();
+    this.receiveProbeHistory.clear();
+    this.suppressedWatcherPaths.clear();
+    this.ownerUploadStates.clear();
     this.accountShareKeyCache.clear();
     this.accountCloudDriveHandleCache.clear();
     this.incomingShareDiscoveryCache.clear();
@@ -1086,32 +1112,234 @@ export class MegaTransportAdapter {
 
     const localFilePath = path.join(share.localPath, normalizedPath);
     const localBytes = new Uint8Array(await fs.readFile(localFilePath));
-    await this.withExclusiveShareTask(share.id, async () => {
-      await this.withRecoveredAccountSession(account, async (session) => {
-        const resolved = await (async () => {
-          const root = await this.resolveOwnerRemoteRootForShare(
-            share,
+    const uploadStartedAt = this.runtime.now();
+    try {
+      await this.withExclusiveShareTask(share.id, async () => {
+        await this.withRecoveredAccountSession(account, async (session) => {
+          const ownerUploadState = await this.getOwnerUploadState(share, session);
+          const adapter = new MegaOwnerRemoteAdapter(
+            this.fetchImpl,
+            this.apiClient,
             session,
-            getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath)
+            ownerUploadState,
+            undefined
           );
-          const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root);
-          return {
-            root,
-            shareCrypto,
-            extraShareKeys: createMegaShareCryptoExtraKeys(shareCrypto),
-          };
-        })();
-        const adapter = new MegaOwnerRemoteAdapter(
-          this.fetchImpl,
-          this.apiClient,
-          session,
-          resolved.root,
-          resolved.shareCrypto,
-          undefined,
-          resolved.extraShareKeys
-        );
-        await adapter.upload(normalizedPath, localBytes);
+          await adapter.upload(normalizedPath, localBytes);
+        });
       });
+    } catch (error) {
+      this.ownerUploadStates.delete(share.id);
+      throw error;
+    }
+    this.scheduleManagedShareUploadProbe({
+      share,
+      account,
+      relativePath: normalizedPath,
+      localSize: localBytes.length,
+      startedAt: uploadStartedAt,
+      committedAt: this.runtime.now(),
+    });
+  }
+
+  async handleManagedShareLocalWrite(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void> {
+    const normalizedPath = normalizeRelativePath(relativePath);
+    if (!isMirrorRelativePath(normalizedPath)) {
+      return;
+    }
+
+    this.suppressWatcherPath(share.id, normalizedPath);
+    await this.forceManagedShareUpload(share, account, normalizedPath);
+  }
+
+  async getManagedShareUploadProbes(
+    share: ManagedShare,
+    _account: ProviderAccount | null,
+    relativePath?: string,
+    limit = 20
+  ): Promise<ManagedShareUploadProbe[]> {
+    const probes = this.uploadProbeHistory.get(share.id) ?? [];
+    const normalizedPath = relativePath?.trim().replace(/^\/+/, '');
+    const cappedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(Math.trunc(limit), 100)) : 20;
+    return probes
+      .filter((probe) => !normalizedPath || probe.path === normalizedPath)
+      .slice(0, cappedLimit);
+  }
+
+  async getManagedShareReceiveProbes(
+    share: ManagedShare,
+    _account: ProviderAccount | null,
+    relativePath?: string,
+    limit = 20
+  ): Promise<ManagedShareReceiveProbe[]> {
+    const probes = this.receiveProbeHistory.get(share.id) ?? [];
+    const normalizedPath = relativePath?.trim().replace(/^\/+/, '');
+    const cappedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(Math.trunc(limit), 100)) : 20;
+    return probes
+      .filter((probe) => !normalizedPath || probe.path === normalizedPath)
+      .slice(0, cappedLimit);
+  }
+
+  private scheduleManagedShareUploadProbe(input: {
+    share: ManagedShare;
+    account: ProviderAccount | null;
+    relativePath: string;
+    localSize: number;
+    startedAt: number;
+    committedAt: number;
+  }): void {
+    if (!isMegaUploadProbeEnabled() || input.share.role !== 'owner' || !input.account) {
+      return;
+    }
+
+    const probe: ManagedShareUploadProbe = {
+      id: `mega-upload-probe-${++this.uploadProbeSequence}`,
+      shareId: input.share.id,
+      path: input.relativePath,
+      localSize: input.localSize,
+      startedAt: input.startedAt,
+      committedAt: input.committedAt,
+      timeoutMs: MEGA_UPLOAD_PROBE_TIMEOUT_MS,
+      attempts: 0,
+      status: 'pending',
+    };
+    this.rememberManagedShareUploadProbe(probe);
+    debugMegaLog('[MEGA:probe] queued owner upload visibility probe.', {
+      shareId: input.share.id,
+      path: input.relativePath,
+      startedAt: input.startedAt,
+      committedAt: input.committedAt,
+    });
+
+    void this.runManagedShareUploadProbe(probe, input.share, input.account);
+  }
+
+  private rememberManagedShareUploadProbe(probe: ManagedShareUploadProbe): void {
+    const existing = this.uploadProbeHistory.get(probe.shareId) ?? [];
+    this.uploadProbeHistory.set(probe.shareId, [probe, ...existing].slice(0, MEGA_UPLOAD_PROBE_HISTORY_LIMIT));
+  }
+
+  private updateManagedShareUploadProbe(
+    shareId: string,
+    probeId: string,
+    patch: Partial<ManagedShareUploadProbe>
+  ): ManagedShareUploadProbe | null {
+    const existing = this.uploadProbeHistory.get(shareId);
+    if (!existing) {
+      return null;
+    }
+    let updated: ManagedShareUploadProbe | null = null;
+    const next = existing.map((probe) => {
+      if (probe.id !== probeId) {
+        return probe;
+      }
+      updated = {
+        ...probe,
+        ...patch,
+      };
+      return updated;
+    });
+    this.uploadProbeHistory.set(shareId, next);
+    return updated;
+  }
+
+  private async runManagedShareUploadProbe(
+    probe: ManagedShareUploadProbe,
+    share: ManagedShare,
+    account: ProviderAccount
+  ): Promise<void> {
+    const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+    let attempt = 0;
+
+    while (this.runtime.now() - probe.committedAt <= probe.timeoutMs) {
+      const delayMs = MEGA_UPLOAD_PROBE_DELAYS_MS[Math.min(attempt, MEGA_UPLOAD_PROBE_DELAYS_MS.length - 1)] ?? 4_000;
+      if (delayMs > 0) {
+        await waitForMegaRetry(delayMs);
+      }
+
+      const checkStartedAt = this.runtime.now();
+      const probeBeforeCheck = this.updateManagedShareUploadProbe(
+        share.id,
+        probe.id,
+        attempt === 0
+          ? {
+              attempts: attempt + 1,
+              firstCheckStartedAt: checkStartedAt,
+            }
+          : {
+              attempts: attempt + 1,
+            }
+      );
+
+      try {
+        const node = await this.withRecoveredAccountSession(account, async (session) => {
+          const root = await fetchOwnerRootByPath(this.apiClient, session, remotePath);
+          return findNodeByRelativePath(root.tree, root.root.handle, probe.path);
+        });
+        const checkCompletedAt = this.runtime.now();
+        const firstCheckStartedAt = probeBeforeCheck?.firstCheckStartedAt ?? checkStartedAt;
+        const basePatch: Partial<ManagedShareUploadProbe> = {
+          firstCheckCompletedAt: probeBeforeCheck?.firstCheckCompletedAt ?? checkCompletedAt,
+          firstCheckDurationMs:
+            probeBeforeCheck?.firstCheckDurationMs ?? Math.max(0, checkCompletedAt - firstCheckStartedAt),
+          lastCheckedAt: checkCompletedAt,
+          lastError: undefined,
+        };
+
+        if (node) {
+          this.updateManagedShareUploadProbe(share.id, probe.id, {
+            ...basePatch,
+            status: 'available',
+            availableAt: checkCompletedAt,
+            availabilityDelayMs: Math.max(0, checkCompletedAt - probe.committedAt),
+            remoteHandle: node.handle,
+          });
+          debugMegaLog('[MEGA:probe] owner upload became visible on MEGA.', {
+            shareId: share.id,
+            path: probe.path,
+            attempts: attempt + 1,
+            availabilityDelayMs: Math.max(0, checkCompletedAt - probe.committedAt),
+            firstCheckDurationMs: Math.max(0, checkCompletedAt - firstCheckStartedAt),
+            remoteHandle: node.handle,
+          });
+          return;
+        }
+
+        this.updateManagedShareUploadProbe(share.id, probe.id, basePatch);
+      } catch (error) {
+        const checkCompletedAt = this.runtime.now();
+        const firstCheckStartedAt = probeBeforeCheck?.firstCheckStartedAt ?? checkStartedAt;
+        const message = error instanceof Error ? error.message : String(error);
+        this.updateManagedShareUploadProbe(share.id, probe.id, {
+          status: 'error',
+          firstCheckCompletedAt: probeBeforeCheck?.firstCheckCompletedAt ?? checkCompletedAt,
+          firstCheckDurationMs:
+            probeBeforeCheck?.firstCheckDurationMs ?? Math.max(0, checkCompletedAt - firstCheckStartedAt),
+          lastCheckedAt: checkCompletedAt,
+          lastError: message,
+        });
+        debugMegaLog('[MEGA:probe] owner upload visibility check failed.', {
+          shareId: share.id,
+          path: probe.path,
+          attempts: attempt + 1,
+          error: message,
+        });
+      }
+
+      attempt += 1;
+    }
+
+    this.updateManagedShareUploadProbe(share.id, probe.id, {
+      status: 'timeout',
+      lastCheckedAt: this.runtime.now(),
+    });
+    debugMegaLog('[MEGA:probe] owner upload visibility probe timed out.', {
+      shareId: share.id,
+      path: probe.path,
+      timeoutMs: probe.timeoutMs,
     });
   }
 
@@ -1213,6 +1441,7 @@ export class MegaTransportAdapter {
     this.shareScsn.delete(share.id);
     this.shareKnownHandles.delete(share.id);
     this.shareRootHandles.delete(share.id);
+    this.ownerUploadStates.delete(share.id);
   }
 
   private async runSyncLoop(share: ManagedShare, account: ProviderAccount): Promise<void> {
@@ -1298,6 +1527,7 @@ export class MegaTransportAdapter {
       if (incrementalScsn) {
         try {
           const actionBatch = await this.fetchActionPackets(session, incrementalScsn, signal);
+          const packetReceivedAt = this.runtime.now();
           const learnedShareKeyCount = this.rememberActionPacketShareKeys(session, actionBatch.packets);
           const touchesShare = actionPacketBatchTouchesShare(actionBatch.packets, rootHandle, manifest);
           if (actionBatch.packets.length) {
@@ -1325,7 +1555,13 @@ export class MegaTransportAdapter {
             });
             return;
           }
-          if (await this.tryApplyRecipientActionPackets(share, account, rootHandle, manifest, actionBatch)) {
+          if (await this.tryApplyRecipientActionPackets(share, account, rootHandle, manifest, actionBatch, {
+            source: 'sync',
+            rootHandle,
+            triggerHandle: rootHandle,
+            packetReceivedAt,
+            scsn: actionBatch.scsn?.trim() || incrementalScsn,
+          })) {
             return;
           }
         } catch (error) {
@@ -1468,7 +1704,6 @@ export class MegaTransportAdapter {
         persistent: true,
         ignoreInitial: true,
         depth: 10,
-        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
       }
     );
 
@@ -1482,7 +1717,8 @@ export class MegaTransportAdapter {
       const canPushImmediately =
         (eventName === 'add' || eventName === 'change') &&
         relativePath.length > 0 &&
-        isMirrorRelativePath(relativePath);
+        isMirrorRelativePath(relativePath) &&
+        !this.shouldSuppressWatcherPath(share.id, relativePath);
       if (canPushImmediately) {
         pendingRelativePaths.add(relativePath);
       } else {
@@ -1545,6 +1781,37 @@ export class MegaTransportAdapter {
     });
   }
 
+  private suppressWatcherPath(shareId: string, relativePath: string): void {
+    const normalizedPath = normalizeRelativePath(relativePath);
+    const existing = this.suppressedWatcherPaths.get(shareId) ?? new Map<string, number>();
+    existing.set(normalizedPath, this.runtime.now() + MEGA_LOCAL_WRITE_SUPPRESSION_MS);
+    this.suppressedWatcherPaths.set(shareId, existing);
+  }
+
+  private shouldSuppressWatcherPath(shareId: string, relativePath: string): boolean {
+    const existing = this.suppressedWatcherPaths.get(shareId);
+    if (!existing) {
+      return false;
+    }
+
+    const normalizedPath = normalizeRelativePath(relativePath);
+    const expiresAt = existing.get(normalizedPath);
+    if (!expiresAt) {
+      return false;
+    }
+
+    const now = this.runtime.now();
+    if (now >= expiresAt) {
+      existing.delete(normalizedPath);
+      if (existing.size === 0) {
+        this.suppressedWatcherPaths.delete(shareId);
+      }
+      return false;
+    }
+
+    return true;
+  }
+
   private async runScChannelLoop(share: ManagedShare, account: ProviderAccount, signal: AbortSignal): Promise<void> {
     let backoffMs = 0;
 
@@ -1562,6 +1829,7 @@ export class MegaTransportAdapter {
 
         const session = await this.getAccountSession(account, signal);
         const actionBatch = await this.fetchActionPackets(session, scsn, signal);
+        const packetReceivedAt = this.runtime.now();
 
         if (actionBatch.scsn) {
           this.shareScsn.set(share.id, actionBatch.scsn);
@@ -1608,7 +1876,14 @@ export class MegaTransportAdapter {
                   account,
                   rootHandle,
                   await this.loadManifest(share.id),
-                  actionBatch
+                  actionBatch,
+                  {
+                    source: 'sc',
+                    rootHandle,
+                    triggerHandle: rootHandle,
+                    packetReceivedAt,
+                    scsn: actionBatch.scsn?.trim() || scsn,
+                  }
                 )
               ) {
                 backoffMs = 0;
@@ -1824,16 +2099,16 @@ export class MegaTransportAdapter {
           { shareId: share.id, shareHandle: root.root.shareHandle, email: session.email }
         );
       }
+      const ownerUploadState = buildMegaOwnerUploadState(root, shareCrypto);
+      this.ownerUploadStates.set(share.id, ownerUploadState);
       const result = await worker.sync(
         share.localPath,
         new MegaOwnerRemoteAdapter(
           this.fetchImpl,
           this.apiClient,
           session,
-          root,
-          shareCrypto,
-          signal,
-          createMegaShareCryptoExtraKeys(shareCrypto)
+          ownerUploadState,
+          signal
         )
       );
       console.log('[MEGA:owner-sync] owner share sync completed.', {
@@ -2455,7 +2730,8 @@ export class MegaTransportAdapter {
     account: ProviderAccount,
     rootHandle: string,
     manifest: MegaMirrorManifest,
-    actionBatch: MegaActionPacketBatch
+    actionBatch: MegaActionPacketBatch,
+    baseProbeContext?: MegaRecipientProbeContext
   ): Promise<boolean> {
     if (share.role !== 'recipient') {
       return false;
@@ -2477,7 +2753,14 @@ export class MegaTransportAdapter {
             rootHandle,
             handle,
             nextEntries,
-            handlePathIndex
+            handlePathIndex,
+            {
+              source: baseProbeContext?.source ?? 'sync',
+              rootHandle,
+              triggerHandle: handle,
+              packetReceivedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
+              scsn: baseProbeContext?.scsn ?? actionBatch.scsn?.trim(),
+            }
           );
           if (!applied) {
             return false;
@@ -2532,23 +2815,48 @@ export class MegaTransportAdapter {
     rootHandle: string,
     handle: string,
     entries: Record<string, ProviderRefreshManifestEntry>,
-    handlePathIndex: Map<string, string>
+    handlePathIndex: Map<string, string>,
+    probeContext: MegaRecipientProbeContext
   ): Promise<boolean> {
+    const fetchStartedAt = this.runtime.now();
     const fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
       allowTransientFullFallback: true,
     });
+    const fetchCompletedAt = this.runtime.now();
     const baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
     if (!baseRelativePath || !isMirrorRelativePath(baseRelativePath)) {
       return false;
     }
 
-    await this.applyRecipientFetchedNode(share, session, fetched.tree.root, baseRelativePath, entries, handlePathIndex);
+    const resolvedProbeContext: MegaRecipientProbeContext = {
+      ...probeContext,
+      fetchStartedAt,
+      fetchCompletedAt,
+    };
+
+    await this.applyRecipientFetchedNode(
+      share,
+      session,
+      fetched.tree.root,
+      baseRelativePath,
+      entries,
+      handlePathIndex,
+      resolvedProbeContext
+    );
     await visitTree(fetched.tree, async (relativePath, node) => {
       const fullRelativePath = normalizeRelativePath(path.join(baseRelativePath, relativePath));
       if (!isMirrorRelativePath(fullRelativePath)) {
         return;
       }
-      await this.applyRecipientFetchedNode(share, session, node, fullRelativePath, entries, handlePathIndex);
+      await this.applyRecipientFetchedNode(
+        share,
+        session,
+        node,
+        fullRelativePath,
+        entries,
+        handlePathIndex,
+        resolvedProbeContext
+      );
     });
     return true;
   }
@@ -2559,7 +2867,8 @@ export class MegaTransportAdapter {
     node: DecryptedMegaNode,
     relativePath: string,
     entries: Record<string, ProviderRefreshManifestEntry>,
-    handlePathIndex: Map<string, string>
+    handlePathIndex: Map<string, string>,
+    probeContext: MegaRecipientProbeContext
   ): Promise<void> {
     const existingPath = handlePathIndex.get(node.handle);
     if (existingPath && existingPath !== relativePath) {
@@ -2576,6 +2885,7 @@ export class MegaTransportAdapter {
       return;
     }
 
+    const receiveProbe = this.createManagedShareReceiveProbe(share.id, relativePath, node, probeContext);
     const remoteBytes = await downloadAuthenticatedMegaFileContent(
       this.fetchImpl,
       this.apiClient,
@@ -2584,14 +2894,101 @@ export class MegaTransportAdapter {
       node.nodeKey,
       node.size
     );
+    this.updateManagedShareReceiveProbe(share.id, receiveProbe.id, {
+      downloadCompletedAt: this.runtime.now(),
+    });
     const remoteValidation = await validateCanonicalStorageFile(relativePath, remoteBytes);
     if (!remoteValidation.ok) {
+      this.updateManagedShareReceiveProbe(share.id, receiveProbe.id, {
+        status: 'error',
+        validationCompletedAt: this.runtime.now(),
+        lastError: remoteValidation.detail ?? `Invalid MEGA canonical file for ${relativePath}`,
+      });
       throw new Error(remoteValidation.detail ?? `Invalid MEGA canonical file for ${relativePath}`);
     }
+    this.updateManagedShareReceiveProbe(share.id, receiveProbe.id, {
+      validationCompletedAt: this.runtime.now(),
+      localWriteStartedAt: this.runtime.now(),
+    });
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, remoteBytes);
+    const localWriteCompletedAt = this.runtime.now();
+    await fs.access(targetPath);
+    const localVisibleAt = this.runtime.now();
+    this.updateManagedShareReceiveProbe(share.id, receiveProbe.id, {
+      localWriteCompletedAt,
+      localVisibleAt,
+      applyCompletedAt: localVisibleAt,
+      totalApplyMs: Math.max(0, localVisibleAt - receiveProbe.applyStartedAt),
+      packetToLocalVisibleMs: Math.max(0, localVisibleAt - receiveProbe.packetReceivedAt),
+      status: 'applied',
+    });
     entries[relativePath] = createProviderRefreshManifestEntry(node);
     handlePathIndex.set(node.handle, relativePath);
+  }
+
+  private createManagedShareReceiveProbe(
+    shareId: string,
+    relativePath: string,
+    node: DecryptedMegaNode,
+    context: MegaRecipientProbeContext
+  ): ManagedShareReceiveProbe {
+    const now = this.runtime.now();
+    const probe: ManagedShareReceiveProbe = {
+      id: `mega-receive-probe-${++this.receiveProbeSequence}`,
+      shareId,
+      path: relativePath,
+      trigger: context.source,
+      triggerHandle: context.triggerHandle,
+      rootHandle: context.rootHandle,
+      packetReceivedAt: context.packetReceivedAt,
+      applyStartedAt: now,
+      remoteHandle: node.handle,
+      scsn: context.scsn,
+      fetchStartedAt: context.fetchStartedAt ?? now,
+      fetchCompletedAt: context.fetchCompletedAt ?? now,
+      downloadStartedAt: now,
+      status: 'pending',
+    };
+    this.rememberManagedShareReceiveProbe(probe);
+    debugMegaLog('[MEGA:probe] queued recipient apply probe.', {
+      shareId,
+      path: relativePath,
+      trigger: context.source,
+      triggerHandle: context.triggerHandle,
+      packetReceivedAt: context.packetReceivedAt,
+      remoteHandle: node.handle,
+    });
+    return probe;
+  }
+
+  private rememberManagedShareReceiveProbe(probe: ManagedShareReceiveProbe): void {
+    const existing = this.receiveProbeHistory.get(probe.shareId) ?? [];
+    this.receiveProbeHistory.set(probe.shareId, [probe, ...existing].slice(0, MEGA_UPLOAD_PROBE_HISTORY_LIMIT));
+  }
+
+  private updateManagedShareReceiveProbe(
+    shareId: string,
+    probeId: string,
+    patch: Partial<ManagedShareReceiveProbe>
+  ): ManagedShareReceiveProbe | null {
+    const existing = this.receiveProbeHistory.get(shareId);
+    if (!existing) {
+      return null;
+    }
+    let updated: ManagedShareReceiveProbe | null = null;
+    const next = existing.map((probe) => {
+      if (probe.id !== probeId) {
+        return probe;
+      }
+      updated = {
+        ...probe,
+        ...patch,
+      };
+      return updated;
+    });
+    this.receiveProbeHistory.set(shareId, next);
+    return updated;
   }
 
   private async logPendingRecipientRootDiagnostics(
@@ -2942,6 +3339,25 @@ export class MegaTransportAdapter {
     return undefined;
   }
 
+  private async getOwnerUploadState(
+    share: ManagedShare,
+    session: MegaSession,
+    signal?: AbortSignal
+  ): Promise<MegaOwnerUploadState> {
+    const cached = this.ownerUploadStates.get(share.id);
+    if (cached) {
+      return cached;
+    }
+
+    const remotePath = getMegaShareRemotePath(share, this.runtime.mega.remoteBasePath);
+    const root = await this.resolveOwnerRemoteRootForShare(share, session, remotePath, signal);
+    this.shareRootHandles.set(share.id, root.root.handle);
+    const shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal);
+    const ownerUploadState = buildMegaOwnerUploadState(root, shareCrypto);
+    this.ownerUploadStates.set(share.id, ownerUploadState);
+    return ownerUploadState;
+  }
+
   /**
    * Re-key an owner share whose share key was lost or stored as all-zeros.
    * Issues a new `s2` command with a fresh share key and rebuilds `cr` records
@@ -3241,6 +3657,19 @@ interface MegaShareCryptoContext {
   readonly shareKey: Buffer;
 }
 
+interface MegaKnownRemoteFile {
+  readonly handle: string;
+  readonly size: number;
+}
+
+interface MegaOwnerUploadState {
+  readonly root: MegaOwnerRemoteRoot;
+  readonly shareCrypto: MegaShareCryptoContext | undefined;
+  readonly extraShareKeys: ReadonlyMap<string, Buffer> | undefined;
+  readonly folderHandlesByPath: Map<string, string>;
+  readonly filesByPath: Map<string, MegaKnownRemoteFile>;
+}
+
 function createMegaShareCryptoExtraKeys(
   shareCrypto: MegaShareCryptoContext | undefined
 ): ReadonlyMap<string, Buffer> | undefined {
@@ -3251,20 +3680,12 @@ function createMegaShareCryptoExtraKeys(
 }
 
 class MegaOwnerRemoteAdapter {
-  // Cache of created folders: key is `${parentHandle}/${name}`, value is the created handle.
-  // Prevents duplicate folder creation within a single sync cycle.
-  private readonly createdFolders = new Map<string, string>();
-  /** Tree from the latest `list()` in this sync cycle; `list()` used to fetch fresh data while `download()` used stale `ownerRoot.tree`. */
-  private listCycleTree: DecryptedMegaTree | null = null;
-
   constructor(
     private readonly fetchImpl: typeof fetch,
     private readonly apiClient: MegaApiClient,
     private readonly session: MegaSession,
-    private readonly ownerRoot: MegaOwnerRemoteRoot,
-    private readonly shareCrypto: MegaShareCryptoContext | undefined,
-    private readonly signal?: AbortSignal,
-    private readonly extraShareKeys?: ReadonlyMap<string, Buffer>
+    private readonly ownerUploadState: MegaOwnerUploadState,
+    private readonly signal?: AbortSignal
   ) { }
 
   reconcileUploadsByRemoteSize(): boolean {
@@ -3273,17 +3694,17 @@ class MegaOwnerRemoteAdapter {
 
   async list(): Promise<readonly MirrorRemoteEntry[]> {
     debugMegaLog('[MEGA:owner-adapter] listing remote entries.', {
-      rootHandle: this.ownerRoot.root.handle,
-      rootPath: this.ownerRoot.path,
+      rootHandle: this.ownerUploadState.root.root.handle,
+      rootPath: this.ownerUploadState.root.path,
     });
     const fetched = await fetchMegaDecryptedTree(
       this.apiClient,
       this.session,
-      this.ownerRoot.root.handle,
-      { useCache: false, allowTransientFullFallback: false, extraShareKeys: this.extraShareKeys },
+      this.ownerUploadState.root.root.handle,
+      { useCache: false, allowTransientFullFallback: false, extraShareKeys: this.ownerUploadState.extraShareKeys },
       this.signal
     );
-    this.listCycleTree = fetched.tree;
+    replaceMegaOwnerUploadStateFromTree(this.ownerUploadState, fetched.tree);
     const entries: MirrorRemoteEntry[] = [];
     await visitTree(fetched.tree, async (relativePath, node) => {
       if (!isMirrorRelativePath(relativePath)) {
@@ -3305,20 +3726,18 @@ class MegaOwnerRemoteAdapter {
   async download(relativePath: string): Promise<Uint8Array> {
     const normalized = normalizeRelativePath(relativePath);
     debugMegaLog('[MEGA:owner-adapter] downloading file from owner root.', { relativePath: normalized });
-    const fromList = this.listCycleTree
-      ? findNodeByRelativePath(this.listCycleTree, this.ownerRoot.root.handle, normalized)
-      : undefined;
-    let node = fromList && !fromList.isFolder ? fromList : undefined;
+    let node = findNodeByRelativePath(this.ownerUploadState.root.tree, this.ownerUploadState.root.root.handle, normalized);
+    node = node && !node.isFolder ? node : undefined;
     if (!node) {
       const fetched = await fetchMegaDecryptedTree(
         this.apiClient,
         this.session,
-        this.ownerRoot.root.handle,
-        { useCache: false, allowTransientFullFallback: false, extraShareKeys: this.extraShareKeys },
+        this.ownerUploadState.root.root.handle,
+        { useCache: false, allowTransientFullFallback: false, extraShareKeys: this.ownerUploadState.extraShareKeys },
         this.signal
       );
-      this.listCycleTree = fetched.tree;
-      const resolved = findNodeByRelativePath(fetched.tree, this.ownerRoot.root.handle, normalized);
+      replaceMegaOwnerUploadStateFromTree(this.ownerUploadState, fetched.tree);
+      const resolved = findNodeByRelativePath(fetched.tree, this.ownerUploadState.root.root.handle, normalized);
       node = resolved && !resolved.isFolder ? resolved : undefined;
     }
     if (!node) {
@@ -3353,26 +3772,14 @@ class MegaOwnerRemoteAdapter {
       dataSize: data.length,
     });
 
-    const parent = await ensureTreePath(
+    const parent = await ensureTreePathWithCache(
       this.apiClient,
       this.session,
-      this.ownerRoot,
+      this.ownerUploadState,
       folderSegments,
-      this.createdFolders,
-      this.shareCrypto,
       this.signal,
-      this.extraShareKeys
     );
-    debugMegaLog('[MEGA:owner-adapter] checking remote for existing file via live tree.', { parentHandle: parent.handle, name });
-    const existing = await findMegaRemoteChildNode(
-      this.apiClient,
-      this.session,
-      parent.handle,
-      name,
-      false,
-      this.signal,
-      this.extraShareKeys
-    );
+    const existing = this.ownerUploadState.filesByPath.get(normalized);
     if (existing && existing.size === data.length) {
       debugMegaLog('[MEGA:owner-adapter] upload skipped (already exists on remote).', {
         relativePath: normalized,
@@ -3382,6 +3789,7 @@ class MegaOwnerRemoteAdapter {
     }
     if (existing && existing.size !== data.length) {
       await deleteMegaNode(this.apiClient, this.session, existing.handle, this.signal);
+      this.ownerUploadState.filesByPath.delete(normalized);
     }
 
     debugMegaLog('[MEGA:owner-adapter] uploading file to MEGA.', {
@@ -3390,18 +3798,22 @@ class MegaOwnerRemoteAdapter {
       name,
       dataSize: data.length,
     });
-    await uploadMegaOwnerFile(
+    const uploaded = await uploadMegaOwnerFile(
       this.fetchImpl,
       this.apiClient,
       this.session,
       parent.handle,
       name,
       Buffer.from(data),
-      this.shareCrypto,
+      this.ownerUploadState.shareCrypto,
       this.signal,
-      this.extraShareKeys,
+      this.ownerUploadState.extraShareKeys,
       { waitForVisibility: false }
     );
+    this.ownerUploadState.filesByPath.set(normalized, {
+      handle: uploaded.handle,
+      size: data.length,
+    });
     debugMegaLog('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
   }
 }
@@ -3460,27 +3872,19 @@ function findNodeByRelativePath(
   return current;
 }
 
-async function ensureTreePath(
+async function ensureTreePathWithCache(
   apiClient: MegaApiClient,
   session: MegaSession,
-  ownerRoot: MegaOwnerRemoteRoot,
+  ownerUploadState: MegaOwnerUploadState,
   segments: readonly string[],
-  createdFolders: Map<string, string>,
-  shareCrypto: MegaShareCryptoContext | undefined,
   signal?: AbortSignal,
-  extraShareKeys?: ReadonlyMap<string, Buffer>
 ): Promise<DecryptedMegaNode> {
-  let current = ownerRoot.root;
+  const root = ownerUploadState.root.root;
+  let current = root;
+  let currentPath = '';
   for (const segment of segments) {
-    // First check the initial tree snapshot.
-    const existing = findChildNodeByName(ownerRoot.tree, current.handle, segment, true);
-    if (existing) {
-      current = existing;
-      continue;
-    }
-    // Then check the cache of folders created during this sync cycle.
-    const cacheKey = `${current.handle}/${segment}`;
-    const cachedHandle = createdFolders.get(cacheKey);
+    currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+    const cachedHandle = ownerUploadState.folderHandlesByPath.get(currentPath);
     if (cachedHandle) {
       current = {
         handle: cachedHandle,
@@ -3490,12 +3894,36 @@ async function ensureTreePath(
         size: 0,
         name: segment,
         nodeKey: Buffer.alloc(16),
+        shareHandle: ownerUploadState.shareCrypto?.shareHandle ?? root.shareHandle,
       };
       continue;
     }
-    // Create the folder and cache the handle.
-    const createdHandle = await createMegaFolder(apiClient, session, current.handle, segment, shareCrypto, signal, extraShareKeys);
-    createdFolders.set(cacheKey, createdHandle);
+
+    const existing = await findMegaRemoteChildNode(
+      apiClient,
+      session,
+      current.handle,
+      segment,
+      true,
+      signal,
+      ownerUploadState.extraShareKeys
+    );
+    if (existing) {
+      ownerUploadState.folderHandlesByPath.set(currentPath, existing.handle);
+      current = existing;
+      continue;
+    }
+
+    const createdHandle = await createMegaFolder(
+      apiClient,
+      session,
+      current.handle,
+      segment,
+      ownerUploadState.shareCrypto,
+      signal,
+      ownerUploadState.extraShareKeys
+    );
+    ownerUploadState.folderHandlesByPath.set(currentPath, createdHandle);
     debugMegaLog('[MEGA:ensureTreePath] folder created.', { segment, parentHandle: current.handle, createdHandle });
     current = {
       handle: createdHandle,
@@ -3505,9 +3933,67 @@ async function ensureTreePath(
       size: 0,
       name: segment,
       nodeKey: Buffer.alloc(16),
+      shareHandle: ownerUploadState.shareCrypto?.shareHandle ?? root.shareHandle,
     };
   }
   return current;
+}
+
+function buildMegaOwnerUploadState(
+  root: MegaOwnerRemoteRoot,
+  shareCrypto: MegaShareCryptoContext | undefined
+): MegaOwnerUploadState {
+  const ownerUploadState: MegaOwnerUploadState = {
+    root,
+    shareCrypto,
+    extraShareKeys: createMegaShareCryptoExtraKeys(shareCrypto),
+    folderHandlesByPath: new Map<string, string>([['', root.root.handle]]),
+    filesByPath: new Map<string, MegaKnownRemoteFile>(),
+  };
+  replaceMegaOwnerUploadStateFromTree(ownerUploadState, root.tree);
+  return ownerUploadState;
+}
+
+function replaceMegaOwnerUploadStateFromTree(
+  ownerUploadState: MegaOwnerUploadState,
+  tree: DecryptedMegaTree
+): void {
+  ownerUploadState.folderHandlesByPath.clear();
+  ownerUploadState.filesByPath.clear();
+  ownerUploadState.folderHandlesByPath.set('', tree.root.handle);
+  visitMegaTreeSync(tree, tree.root.handle, '', (relativePath, node) => {
+    if (!relativePath) {
+      return;
+    }
+    if (node.isFolder) {
+      ownerUploadState.folderHandlesByPath.set(relativePath, node.handle);
+      return;
+    }
+    if (isMirrorRelativePath(relativePath)) {
+      ownerUploadState.filesByPath.set(relativePath, {
+        handle: node.handle,
+        size: node.size,
+      });
+    }
+  });
+}
+
+function visitMegaTreeSync(
+  tree: DecryptedMegaTree,
+  parentHandle: string,
+  parentPath: string,
+  visitor: (relativePath: string, node: DecryptedMegaNode) => void
+): void {
+  const children = [...(tree.childrenByParent.get(parentHandle) ?? [])].sort((left, right) =>
+    compareMegaNodeCandidates(tree, left, right)
+  );
+  for (const child of children) {
+    const relativePath = parentPath ? `${parentPath}/${child.name}` : child.name;
+    visitor(relativePath, child);
+    if (child.isFolder) {
+      visitMegaTreeSync(tree, child.handle, relativePath, visitor);
+    }
+  }
 }
 
 function buildMegaSetShareCommand(
@@ -4495,6 +4981,31 @@ function debugMegaLog(...args: unknown[]): void {
   if ((process.env.DEBUG ?? '').trim() !== '') {
     console.log(...args);
   }
+}
+
+function isMegaUploadProbeEnabled(): boolean {
+  return matchesMegaDebugScope(process.env.DEBUG, 'mega');
+}
+
+function matchesMegaDebugScope(rawValue: string | undefined, scope?: string): boolean {
+  const value = rawValue?.trim();
+  if (!value) {
+    return false;
+  }
+  const normalizedScope = scope?.trim().toLowerCase();
+  return value
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+    .some((token) => {
+      if (token === '1' || token === 'true' || token === '*') {
+        return true;
+      }
+      if (!normalizedScope) {
+        return false;
+      }
+      return token === normalizedScope || token === `nearbytes:${normalizedScope}`;
+    });
 }
 
 function getMegaHttpStatus(error: unknown): number | null {

@@ -15,11 +15,14 @@ import { normalizeVolumeId } from '../storage/integrity.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
 import { getDefaultStorageDir, getDefaultStorageHomeDir, getProviderStorageFolderName, resolveStorageHomeDir } from '../storagePath.js';
+import type { StorageWriteEvent } from '../types/storage.js';
 import {
   createDefaultTransportAdapters,
   createProviderCatalog,
   type ManagedShareMirrorEntry,
+  type ManagedShareReceiveProbe,
   type ManagedShareRemoteEntryProbe,
+  type ManagedShareUploadProbe,
   type TransportAdapter,
 } from './adapters.js';
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
@@ -115,6 +118,7 @@ export class ManagedShareService {
   private readonly collaboratorLookupCooldowns = new Map<string, number>();
   private readonly pendingMarkerRefreshes = new Set<string>();
   private readonly lastGetManagedShareScheduledSyncAt = new Map<string, number>();
+  private readonly stopStorageWriteSubscription: (() => void) | null;
   private maintenanceRequested = false;
   private maintenanceTask: Promise<void> | null = null;
 
@@ -135,10 +139,17 @@ export class ManagedShareService {
     );
     this.mirrorRoot = path.resolve(options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig()));
     this.readMaintenanceMode = options.readMaintenanceMode ?? 'inline';
+    this.stopStorageWriteSubscription = options.storage.onWrite((event) => {
+      void this.handleStorageWrite(event).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share local write handling failed for ${event.path}: ${message}`);
+      });
+    });
   }
 
   async dispose(): Promise<void> {
     this.maintenanceRequested = false;
+    this.stopStorageWriteSubscription?.();
     await Promise.all(
       Array.from(this.adapters.values(), async (adapter) => {
         await adapter.dispose?.();
@@ -964,6 +975,187 @@ export class ManagedShareService {
 
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
     await adapter.forceManagedShareUpload(share, account, normalizedPath);
+  }
+
+  private async handleStorageWrite(event: StorageWriteEvent): Promise<void> {
+    const normalizedPath = event.path.trim().replace(/^\/+/, '');
+    if (!isCanonicalMirrorRelativePath(normalizedPath)) {
+      return;
+    }
+
+    const state = await this.loadState();
+    const matchingShares = state.managedShares.filter(
+      (share) =>
+        share.sourceId === event.sourceId &&
+        share.role === 'owner' &&
+        isProviderEnabled(share.provider)
+    );
+
+    await Promise.all(
+      matchingShares.map(async (share) => {
+        const adapter = this.adapters.get(normalizeProvider(share.provider));
+        if (!adapter?.handleManagedShareLocalWrite) {
+          return;
+        }
+
+        const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+        await adapter.handleManagedShareLocalWrite(share, account, normalizedPath);
+      })
+    );
+  }
+
+  async getManagedShareUploadProbes(
+    shareId: string,
+    options: { relativePath?: string; limit?: number } = {}
+  ): Promise<ManagedShareUploadProbe[]> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.getManagedShareUploadProbes) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Managed share upload probing is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    return adapter.getManagedShareUploadProbes(share, account, options.relativePath, options.limit);
+  }
+
+  async getManagedShareReceiveProbes(
+    shareId: string,
+    options: { relativePath?: string; limit?: number } = {}
+  ): Promise<ManagedShareReceiveProbe[]> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.getManagedShareReceiveProbes) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Managed share receive probing is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    return adapter.getManagedShareReceiveProbes(share, account, options.relativePath, options.limit);
+  }
+
+  async getManagedShareRoundtripProbes(
+    options: { relativePath: string; limit?: number }
+  ): Promise<{
+    path: string;
+    summary: {
+      latestUploadCommittedAt?: number;
+      latestUploadVisibleAt?: number;
+      latestReceivePacketAt?: number;
+      latestReceiveLocalVisibleAt?: number;
+      uploadCommitToReceivePacketMs?: number;
+      uploadVisibleToReceivePacketMs?: number;
+      uploadCommitToReceiveVisibleMs?: number;
+      sendSchedulingPlusReceiveMs?: number;
+    };
+    uploads: Array<{ shareId: string; provider: string; role: ManagedShare['role']; label: string; probe: ManagedShareUploadProbe }>;
+    receives: Array<{ shareId: string; provider: string; role: ManagedShare['role']; label: string; probe: ManagedShareReceiveProbe }>;
+  }> {
+    const relativePath = options.relativePath.trim().replace(/^\/+/, '');
+    if (!relativePath) {
+      throw new ManagedShareServiceError(400, 'INVALID_REQUEST', 'A relative path is required.');
+    }
+
+    const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(Math.trunc(options.limit!), 100)) : 20;
+    const state = await this.loadState();
+    const uploads: Array<{
+      shareId: string;
+      provider: string;
+      role: ManagedShare['role'];
+      label: string;
+      probe: ManagedShareUploadProbe;
+    }> = [];
+    const receives: Array<{
+      shareId: string;
+      provider: string;
+      role: ManagedShare['role'];
+      label: string;
+      probe: ManagedShareReceiveProbe;
+    }> = [];
+
+    for (const share of state.managedShares) {
+      if (!isProviderEnabled(share.provider)) {
+        continue;
+      }
+      const adapter = this.adapters.get(normalizeProvider(share.provider));
+      const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+
+      if (adapter?.getManagedShareUploadProbes) {
+        const shareUploads = await adapter.getManagedShareUploadProbes(share, account, relativePath, limit);
+        for (const probe of shareUploads) {
+          uploads.push({
+            shareId: share.id,
+            provider: share.provider,
+            role: share.role,
+            label: share.label,
+            probe,
+          });
+        }
+      }
+
+      if (adapter?.getManagedShareReceiveProbes) {
+        const shareReceives = await adapter.getManagedShareReceiveProbes(share, account, relativePath, limit);
+        for (const probe of shareReceives) {
+          receives.push({
+            shareId: share.id,
+            provider: share.provider,
+            role: share.role,
+            label: share.label,
+            probe,
+          });
+        }
+      }
+    }
+
+    uploads.sort((left, right) => right.probe.committedAt - left.probe.committedAt);
+    receives.sort((left, right) => right.probe.packetReceivedAt - left.probe.packetReceivedAt);
+
+    const latestUpload = uploads[0]?.probe;
+    const latestReceive = receives[0]?.probe;
+
+    return {
+      path: relativePath,
+      summary: {
+        latestUploadCommittedAt: latestUpload?.committedAt,
+        latestUploadVisibleAt: latestUpload?.availableAt,
+        latestReceivePacketAt: latestReceive?.packetReceivedAt,
+        latestReceiveLocalVisibleAt: latestReceive?.localVisibleAt,
+        uploadCommitToReceivePacketMs:
+          latestUpload && latestReceive
+            ? Math.max(0, latestReceive.packetReceivedAt - latestUpload.committedAt)
+            : undefined,
+        uploadVisibleToReceivePacketMs:
+          latestUpload?.availableAt !== undefined && latestReceive
+            ? Math.max(0, latestReceive.packetReceivedAt - latestUpload.availableAt)
+            : undefined,
+        uploadCommitToReceiveVisibleMs:
+          latestUpload && latestReceive?.localVisibleAt !== undefined
+            ? Math.max(0, latestReceive.localVisibleAt - latestUpload.committedAt)
+            : undefined,
+        sendSchedulingPlusReceiveMs:
+          latestUpload && latestReceive?.localVisibleAt !== undefined
+            ? Math.max(0, latestReceive.localVisibleAt - latestUpload.startedAt)
+            : undefined,
+      },
+      uploads,
+      receives,
+    };
   }
 
   async debugProviderShareInventory(providerInput: string): Promise<{
@@ -2977,6 +3169,10 @@ export class ManagedShareService {
 
 function normalizeProvider(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function isCanonicalMirrorRelativePath(relativePath: string): boolean {
+  return /^blocks\/[^/]+$/u.test(relativePath) || /^channels\/[^/]+\/[^/]+$/u.test(relativePath);
 }
 
 function isMegaTransientCollaboratorError(error: unknown): boolean {

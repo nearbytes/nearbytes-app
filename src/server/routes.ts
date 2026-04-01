@@ -598,6 +598,81 @@ export function createRoutes(deps: RouteDependencies): Router {
     });
   }));
 
+  router.get('/__debug/integrations/shares/:shareId/upload-probes', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const pathQuery = req.query.path;
+    const relativePath = typeof pathQuery === 'string'
+      ? pathQuery
+      : Array.isArray(pathQuery) && typeof pathQuery[0] === 'string'
+        ? pathQuery[0]
+        : undefined;
+    const limitQuery = req.query.limit;
+    const rawLimit = typeof limitQuery === 'string'
+      ? Number.parseInt(limitQuery, 10)
+      : Array.isArray(limitQuery) && typeof limitQuery[0] === 'string'
+        ? Number.parseInt(limitQuery[0], 10)
+        : Number.NaN;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    res.json({
+      probes: await service.getManagedShareUploadProbes(shareId, {
+        relativePath,
+        limit,
+      }),
+    });
+  }));
+
+  router.get('/__debug/integrations/shares/:shareId/receive-probes', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const pathQuery = req.query.path;
+    const relativePath = typeof pathQuery === 'string'
+      ? pathQuery
+      : Array.isArray(pathQuery) && typeof pathQuery[0] === 'string'
+        ? pathQuery[0]
+        : undefined;
+    const limitQuery = req.query.limit;
+    const rawLimit = typeof limitQuery === 'string'
+      ? Number.parseInt(limitQuery, 10)
+      : Array.isArray(limitQuery) && typeof limitQuery[0] === 'string'
+        ? Number.parseInt(limitQuery[0], 10)
+        : Number.NaN;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    res.json({
+      probes: await service.getManagedShareReceiveProbes(shareId, {
+        relativePath,
+        limit,
+      }),
+    });
+  }));
+
+  router.get('/__debug/integrations/probes/roundtrip', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const pathQuery = req.query.path;
+    const relativePath = typeof pathQuery === 'string'
+      ? pathQuery
+      : Array.isArray(pathQuery) && typeof pathQuery[0] === 'string'
+        ? pathQuery[0]
+        : '';
+    if (!relativePath.trim()) {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Query parameter "path" is required.');
+    }
+    const limitQuery = req.query.limit;
+    const rawLimit = typeof limitQuery === 'string'
+      ? Number.parseInt(limitQuery, 10)
+      : Array.isArray(limitQuery) && typeof limitQuery[0] === 'string'
+        ? Number.parseInt(limitQuery[0], 10)
+        : Number.NaN;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    res.json(await service.getManagedShareRoundtripProbes({
+      relativePath,
+      limit,
+    }));
+  }));
+
   router.post('/__debug/integrations/shares/:shareId/push-path', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);

@@ -48,6 +48,52 @@ export interface ProviderShareInventoryDebugEntry {
   readonly label: string;
 }
 
+export interface ManagedShareUploadProbe {
+  readonly id: string;
+  readonly shareId: string;
+  readonly path: string;
+  readonly localSize: number;
+  readonly startedAt: number;
+  readonly committedAt: number;
+  readonly timeoutMs: number;
+  readonly attempts: number;
+  readonly status: 'pending' | 'available' | 'timeout' | 'error';
+  readonly firstCheckStartedAt?: number;
+  readonly firstCheckCompletedAt?: number;
+  readonly firstCheckDurationMs?: number;
+  readonly lastCheckedAt?: number;
+  readonly availableAt?: number;
+  readonly availabilityDelayMs?: number;
+  readonly remoteHandle?: string;
+  readonly lastError?: string;
+}
+
+export interface ManagedShareReceiveProbe {
+  readonly id: string;
+  readonly shareId: string;
+  readonly path: string;
+  readonly trigger: 'sc' | 'sync';
+  readonly triggerHandle: string;
+  readonly rootHandle: string;
+  readonly packetReceivedAt: number;
+  readonly applyStartedAt: number;
+  readonly remoteHandle?: string;
+  readonly scsn?: string;
+  readonly fetchStartedAt?: number;
+  readonly fetchCompletedAt?: number;
+  readonly downloadStartedAt?: number;
+  readonly downloadCompletedAt?: number;
+  readonly validationCompletedAt?: number;
+  readonly localWriteStartedAt?: number;
+  readonly localWriteCompletedAt?: number;
+  readonly localVisibleAt?: number;
+  readonly applyCompletedAt?: number;
+  readonly totalApplyMs?: number;
+  readonly packetToLocalVisibleMs?: number;
+  readonly status: 'pending' | 'applied' | 'error';
+  readonly lastError?: string;
+}
+
 export interface MirrorRemoteAdapter {
   list(): Promise<readonly MirrorRemoteEntry[]>;
   download(path: string): Promise<Uint8Array>;
@@ -97,6 +143,23 @@ export interface TransportAdapter {
     account: ProviderAccount | null,
     relativePath: string
   ): Promise<void>;
+  handleManagedShareLocalWrite?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void>;
+  getManagedShareUploadProbes?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath?: string,
+    limit?: number
+  ): Promise<ManagedShareUploadProbe[]>;
+  getManagedShareReceiveProbes?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath?: string,
+    limit?: number
+  ): Promise<ManagedShareReceiveProbe[]>;
   getShareInventoryDebug?(account: ProviderAccount): Promise<{
     incoming: ProviderShareInventoryDebugEntry[];
     outgoing: ProviderShareInventoryDebugEntry[];

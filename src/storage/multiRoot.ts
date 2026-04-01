@@ -16,7 +16,7 @@ import {
 } from '../config/sourceDiscovery.js';
 import { EventType, type SerializedEvent } from '../types/events.js';
 import { StorageError } from '../types/errors.js';
-import type { StorageBackend } from '../types/storage.js';
+import type { StorageBackend, StorageWriteEvent, StorageWriteListener } from '../types/storage.js';
 import { FilesystemStorageBackend } from './filesystem.js';
 import {
   normalizeVolumeId,
@@ -200,6 +200,7 @@ interface VolumeDestinationTarget {
 export class MultiRootStorageBackend implements StorageBackend {
   private config: RootsConfig;
   private rootStates: RootState[];
+  private readonly writeListeners = new Set<StorageWriteListener>();
   private readonly lastWriteFailures = new Map<string, RootWriteFailure>();
   private reconcileInFlight: Promise<void> | null = null;
   private runtimeSnapshotInFlight: Promise<MultiRootRuntimeSnapshot> | null = null;
@@ -238,6 +239,13 @@ export class MultiRootStorageBackend implements StorageBackend {
         this.lastWriteFailures.delete(rootId);
       }
     }
+  }
+
+  onWrite(listener: StorageWriteListener): () => void {
+    this.writeListeners.add(listener);
+    return () => {
+      this.writeListeners.delete(listener);
+    };
   }
 
   async reconcileConfiguredVolumes(): Promise<void> {
@@ -1166,6 +1174,12 @@ export class MultiRootStorageBackend implements StorageBackend {
           await ensureNearbytesMarker(state.config.path);
           await state.backend.writeFile(relativePath, data);
           this.lastWriteFailures.delete(state.config.id);
+          this.emitWriteEvent({
+            sourceId: state.config.id,
+            path: relativePath,
+            size: data.byteLength,
+            channelKeyHex,
+          });
           successCount += 1;
         } catch (error) {
           const failure = this.toWriteFailure(state.config.id, relativePath, error, channelKeyHex);
@@ -1192,6 +1206,12 @@ export class MultiRootStorageBackend implements StorageBackend {
           await ensureNearbytesMarker(target.state.config.path);
           await target.state.backend.writeFile(relativePath, data);
           this.lastWriteFailures.delete(target.state.config.id);
+          this.emitWriteEvent({
+            sourceId: target.state.config.id,
+            path: relativePath,
+            size: data.byteLength,
+            channelKeyHex,
+          });
           successCount += 1;
         } catch (error) {
           const failure = this.toWriteFailure(target.state.config.id, relativePath, error, channelKeyHex);
@@ -1262,6 +1282,16 @@ export class MultiRootStorageBackend implements StorageBackend {
     options: { requireBlocks: boolean; allowPublishedBlocks?: boolean }
   ): VolumeDestinationTarget[] {
     return this.getVolumeDestinationTargets(channelKeyHex, options);
+  }
+
+  private emitWriteEvent(event: StorageWriteEvent): void {
+    for (const listener of this.writeListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Keep observer failures from affecting durable storage writes.
+      }
+    }
   }
 
   private async prepareDestinationWrite(
