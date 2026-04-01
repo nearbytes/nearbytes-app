@@ -1088,7 +1088,10 @@ describe('ManagedShareService', () => {
 
   it('does not block account connect by waiting for MEGA incoming-share discovery', async () => {
     const adapter = new BlockingIncomingShareAdapter();
-    const { service } = await createHarness({ adapters: [adapter] });
+    const trackedVolumeId = '0448eb9656ceaca3817f9375f65320fcf67710ec46f4064635f42733deda447ca5018dc71f949ff8f9e3c8a80346f12fb45060ee9b9a0119d4942b7c3d1ad2df05';
+    const { localRoot, service } = await createHarness({ adapters: [adapter] });
+
+    await fs.mkdir(path.join(localRoot, 'channels', trackedVolumeId), { recursive: true });
     vi.spyOn(service as never, 'providerIncomingShareDiscoveryTimeoutMs' as never).mockReturnValue(10);
 
     const result = await service.connectAccount({
@@ -1121,7 +1124,10 @@ describe('ManagedShareService', () => {
         },
       },
     ]);
-    const { service } = await createHarness({ adapters: [adapter] });
+    const trackedVolumeId = '0448eb9656ceaca3817f9375f65320fcf67710ec46f4064635f42733deda447ca5018dc71f949ff8f9e3c8a80346f12fb45060ee9b9a0119d4942b7c3d1ad2df05';
+    const { localRoot, service } = await createHarness({ adapters: [adapter] });
+
+    await fs.mkdir(path.join(localRoot, 'channels', trackedVolumeId), { recursive: true });
 
     const result = await Promise.race([
       service.connectAccount({
@@ -1904,7 +1910,11 @@ describe('ManagedShareService', () => {
         },
       },
     ]);
-    const { service } = await createHarness({ adapters: [adapter] });
+    const trackedVolumeId =
+      '0448eb9656ceaca3817f9375f65320fcf67710ec46f4064635f42733deda447ca5018dc71f949ff8f9e3c8a80346f12fb45060ee9b9a0119d4942b7c3d1ad2df05';
+    const { localRoot, rootsConfigPath, service } = await createHarness({ adapters: [adapter] });
+
+    await fs.mkdir(path.join(localRoot, 'channels', trackedVolumeId), { recursive: true });
 
     await service.connectAccount({
       provider: 'mega',
@@ -1928,6 +1938,12 @@ describe('ManagedShareService', () => {
     expect(recipientShare?.share.label).toBe('nearbytes');
     expect(recipientShare?.share.remoteDescriptor.remotePath).toBe('friend@example.com:nearbytes');
     expect(recipientShare?.share.localPath).toContain(path.join('mega', 'friend-example-com', 'nearbytes'));
+    const updatedConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    expect(
+      updatedConfig.volumes.find((volume) => volume.volumeId === trackedVolumeId)?.destinations.some(
+        (destination) => destination.sourceId === recipientShare?.share.sourceId
+      )
+    ).toBe(true);
 
     const incoming = await service.listIncomingManagedShares();
     expect(incoming.shares).toHaveLength(0);

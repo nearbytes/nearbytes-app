@@ -3648,6 +3648,10 @@
     return known;
   }
 
+  function providerHasManagedStorage(provider: string): boolean {
+    return providerShares(provider).length > 0;
+  }
+
   function sourceSuggestionRows(): Array<{
     source: DiscoveredNearbytesSource;
     alreadyAdded: boolean;
@@ -3657,6 +3661,9 @@
     const unique = new Map<string, DiscoveredNearbytesSource>();
     const managedMirrorPaths = knownManagedMirrorPaths();
     for (const source of discoveredSources) {
+      if (source.sourceType === 'suggested' && providerHasManagedStorage(source.provider)) {
+        continue;
+      }
       const key = normalizeComparablePath(source.path);
       if (managedMirrorPaths.has(key)) {
         continue;

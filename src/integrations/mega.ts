@@ -1374,7 +1374,8 @@ export class MegaTransportAdapter {
         rootHandle: resolved.fetched.tree.root.handle,
         downloadedCount: refreshResult.downloaded.length,
         removedCount: refreshResult.removed.length,
-        skippedCount: refreshResult.skipped.length,
+        skippedUnchangedCount: refreshResult.skipped.length - refreshResult.invalid.length,
+        invalidCount: refreshResult.invalid.length,
         downloaded: refreshResult.downloaded,
       });
       logMegaMirrorRefreshEvents(this.runtime, share.id, manifest.entries, refreshResult);
@@ -6739,11 +6740,12 @@ function logMegaMirrorRefreshEvents(
   result: {
     downloaded: string[];
     skipped: string[];
+    invalid?: string[];
     skippedDetails?: Record<string, { code?: string; detail?: string }>;
     manifest: { entries: Record<string, ProviderRefreshManifestEntry> };
   }
 ): void {
-  for (const relativePath of result.skipped) {
+  for (const relativePath of result.invalid ?? []) {
     const detail = result.skippedDetails?.[relativePath];
     runtime.logger.warn('MEGA readonly share skipped invalid entry.', {
       shareId,

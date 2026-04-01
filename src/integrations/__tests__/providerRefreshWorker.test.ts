@@ -127,6 +127,7 @@ describe('ProviderRefreshWorker', () => {
     ]);
     expect(result.removed).toEqual([`blocks/${staleBlock.hash}.bin`]);
     expect(result.skipped).toEqual([`blocks/${keepBlock.hash}.bin`]);
+    expect(result.invalid).toEqual([]);
 
     await expect(fs.readFile(path.join(localRoot, 'blocks', `${keepBlock.hash}.bin`), 'utf8')).resolves.toBe('keep');
     await expect(fs.readFile(path.join(localRoot, 'blocks', `${replaceBlock.hash}.bin`), 'utf8')).resolves.toBe('new-value-2');
@@ -157,6 +158,10 @@ describe('ProviderRefreshWorker', () => {
 
     expect(result.downloaded).toEqual([]);
     expect(result.skipped).toEqual([invalidPath]);
+    expect(result.invalid).toEqual([invalidPath]);
+    expect(result.skippedDetails[invalidPath]).toMatchObject({
+      code: 'invalid-storage-path',
+    });
     await expect(fs.readFile(path.join(localRoot, invalidPath), 'utf8')).rejects.toThrow();
   });
 });

@@ -2746,6 +2746,12 @@ export class ManagedShareService {
   private async attachTrackedLocalVolumesToMegaOwnerBaseShare(
     share: ManagedShare
   ): Promise<RootsConfig | null> {
+    return this.attachTrackedLocalVolumesToManagedShare(share);
+  }
+
+  private async attachTrackedLocalVolumesToManagedShare(
+    share: ManagedShare
+  ): Promise<RootsConfig | null> {
     const sourceId =
       share.sourceId ??
       this.options.storage.getRootsConfig().sources.find((source) => source.integration?.managedShareId === share.id)?.id;
@@ -2874,7 +2880,14 @@ export class ManagedShareService {
       nextShare,
       path.resolve(nextShare.localPath)
     );
-    const nextConfigSignature = JSON.stringify(nextConfig);
+    let finalConfig = nextConfig;
+    if (isMegaIncomingBaseShare(nextShare)) {
+      const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(finalConfig.sources, sourceId);
+      for (const volumeId of trackedVolumeIds) {
+        finalConfig = ensureVolumeAttachment(finalConfig, volumeId, sourceId);
+      }
+    }
+    const nextConfigSignature = JSON.stringify(finalConfig);
     const repairedShare =
       nextShare.sourceId === sourceId
         ? nextShare
@@ -2889,7 +2902,7 @@ export class ManagedShareService {
     }
 
     if (nextConfigSignature !== currentConfigSignature) {
-      await this.persistRootsConfig(nextConfig);
+      await this.persistRootsConfig(finalConfig);
     }
 
     const nextState: IntegrationStateSnapshot = {
@@ -3174,6 +3187,20 @@ function isMegaOwnerBaseShare(share: ManagedShare): boolean {
     remoteDepth === 1 &&
     (shareName === remoteBaseName ||
       sanitizeManagedFolderLabel(share.label).toLowerCase() === shareName);
+}
+
+function isMegaIncomingBaseShare(share: ManagedShare): boolean {
+  if (normalizeProvider(share.provider) !== 'mega' || share.role !== 'recipient') {
+    return false;
+  }
+  const remotePath = getManagedShareRemotePath('mega', share.remoteDescriptor);
+  if (!isMegaIncomingRemotePath(remotePath)) {
+    return false;
+  }
+  const shareName =
+    typeof share.remoteDescriptor?.shareName === 'string' ? sanitizeManagedFolderLabel(share.remoteDescriptor.shareName) : '';
+  const normalizedLabel = sanitizeManagedFolderLabel(share.label).toLowerCase();
+  return shareName.toLowerCase() === MEGA_BASE_SHARE_FOLDER_NAME || normalizedLabel === MEGA_BASE_SHARE_FOLDER_NAME;
 }
 
 function sanitizeManagedFolderLabel(value: string): string {
