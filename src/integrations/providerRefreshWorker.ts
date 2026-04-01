@@ -7,12 +7,16 @@ export interface ProviderRefreshRemoteEntry {
   readonly kind: 'file' | 'folder';
   readonly fingerprint: string;
   readonly size?: number;
+  readonly handle?: string;
+  readonly parentHandle?: string;
 }
 
 export interface ProviderRefreshManifestEntry {
   readonly fingerprint: string;
   readonly kind: 'file' | 'folder';
   readonly size?: number;
+  readonly handle?: string;
+  readonly parentHandle?: string;
 }
 
 export interface ProviderRefreshManifest {
@@ -60,6 +64,8 @@ export class ProviderRefreshWorker {
         fingerprint: entry.fingerprint,
         kind: entry.kind,
         size: entry.kind === 'file' ? entry.size ?? 0 : undefined,
+        ...(entry.handle ? { handle: entry.handle } : {}),
+        ...(entry.parentHandle ? { parentHandle: entry.parentHandle } : {}),
       });
 
       const targetPath = path.join(localRoot, entry.path);

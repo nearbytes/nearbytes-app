@@ -33,6 +33,7 @@ import {
   normalizeMegaPublicLinkDescriptor,
   resolveMegaPublicLinkTarget,
 } from './megaPublicLink.js';
+import { validateCanonicalStorageFile } from '../storage/integrity.js';
 import { MirrorWorker } from './mirrorWorker.js';
 import type {
   ManagedShareMirrorEntry,
@@ -1324,6 +1325,9 @@ export class MegaTransportAdapter {
             });
             return;
           }
+          if (await this.tryApplyRecipientActionPackets(share, account, rootHandle, manifest, actionBatch)) {
+            return;
+          }
         } catch (error) {
           if (!shouldResetScCursor(error)) {
             throw error;
@@ -1468,16 +1472,49 @@ export class MegaTransportAdapter {
     );
 
     let debounceTimer: NodeJS.Timeout | null = null;
-    watcher.on('all', () => {
+    const pendingRelativePaths = new Set<string>();
+    let requiresFullSync = false;
+    watcher.on('all', (eventName, changedPath) => {
+      const relativePath = typeof changedPath === 'string'
+        ? normalizeRelativePath(path.relative(share.localPath, changedPath))
+        : '';
+      const canPushImmediately =
+        (eventName === 'add' || eventName === 'change') &&
+        relativePath.length > 0 &&
+        isMirrorRelativePath(relativePath);
+      if (canPushImmediately) {
+        pendingRelativePaths.add(relativePath);
+      } else {
+        requiresFullSync = true;
+      }
       if (debounceTimer) {
         clearTimeout(debounceTimer);
       }
-      debounceTimer = setTimeout(() => {
+      debounceTimer = setTimeout(async () => {
         debounceTimer = null;
-        console.log('[MEGA:push] local change detected, triggering writable sync.', { shareId: share.id });
-        this.requestSyncLoop(share, account).catch((error) => {
-          this.runtime.logger.warn('MEGA writable push sync failed.', error);
-        });
+        const relativePaths = [...pendingRelativePaths];
+        pendingRelativePaths.clear();
+        const runFullSync = requiresFullSync || relativePaths.length === 0;
+        requiresFullSync = false;
+
+        if (runFullSync) {
+          console.log('[MEGA:push] local change detected, triggering writable sync.', { shareId: share.id });
+          this.requestSyncLoop(share, account).catch((error) => {
+            this.runtime.logger.warn('MEGA writable push sync failed.', error);
+          });
+          return;
+        }
+
+        try {
+          for (const relativePath of relativePaths) {
+            await this.forceManagedShareUpload(share, account, relativePath);
+          }
+        } catch (error) {
+          this.runtime.logger.warn('MEGA immediate per-path push failed; falling back to writable sync.', error);
+          this.requestSyncLoop(share, account).catch((syncError) => {
+            this.runtime.logger.warn('MEGA writable push sync failed.', syncError);
+          });
+        }
       }, MEGA_LOCAL_WATCH_DEBOUNCE_MS);
     });
     this.localWatchers.set(share.id, watcher);
@@ -1562,6 +1599,20 @@ export class MegaTransportAdapter {
           if (shouldTriggerSync) {
             console.log('[MEGA:sc] remote change detected, triggering sync.', { shareId: share.id });
             try {
+              if (
+                share.role === 'recipient' &&
+                rootHandle &&
+                await this.tryApplyRecipientActionPackets(
+                  share,
+                  account,
+                  rootHandle,
+                  await this.loadManifest(share.id),
+                  actionBatch
+                )
+              ) {
+                backoffMs = 0;
+                continue;
+              }
               await this.requestSyncLoop(share, account);
             } catch {
               // sync failure is logged inside runSyncLoop; listener continues
@@ -2396,6 +2447,150 @@ export class MegaTransportAdapter {
       ...manifest,
       lastScsn: scsn.trim(),
     } satisfies MegaMirrorManifest);
+  }
+
+  private async tryApplyRecipientActionPackets(
+    share: ManagedShare,
+    account: ProviderAccount,
+    rootHandle: string,
+    manifest: MegaMirrorManifest,
+    actionBatch: MegaActionPacketBatch
+  ): Promise<boolean> {
+    if (share.role !== 'recipient') {
+      return false;
+    }
+    const handles = collectRecipientImmediatePacketHandles(actionBatch.packets, rootHandle);
+    if (handles.length === 0) {
+      return false;
+    }
+
+    const applyUpdates = async () => {
+      return this.withRecoveredAccountSession(account, async (session) => {
+        const nextEntries = { ...manifest.entries };
+        const handlePathIndex = buildManifestHandlePathIndex(nextEntries);
+
+        for (const handle of handles) {
+          const applied = await this.applyRecipientHandleUpdate(
+            share,
+            session,
+            rootHandle,
+            handle,
+            nextEntries,
+            handlePathIndex
+          );
+          if (!applied) {
+            return false;
+          }
+        }
+
+        const nextManifest: MegaMirrorManifest = {
+          ...manifest,
+          rootHandle,
+          lastScsn: actionBatch.scsn?.trim() || manifest.lastScsn,
+          knownHandles: collectManifestHandles(nextEntries, rootHandle),
+          entries: nextEntries,
+        };
+        await this.runtime.secretStore.set(mirrorManifestKey(share.id), nextManifest);
+        this.shareRootHandles.set(share.id, rootHandle);
+        this.shareKnownHandles.set(share.id, [...(nextManifest.knownHandles ?? [])]);
+        if (nextManifest.lastScsn) {
+          this.shareScsn.set(share.id, nextManifest.lastScsn);
+        }
+        this.syncStates.set(share.id, {
+          status: 'ready',
+          detail: `MEGA readonly mirror applied ${handles.length} immediate update${handles.length === 1 ? '' : 's'}.`,
+          badges: READONLY_BADGES,
+          lastSyncAt: this.runtime.now(),
+        });
+        return true;
+      });
+    };
+
+    const runApply = async (): Promise<boolean> => {
+      try {
+        return await applyUpdates();
+      } catch (error) {
+        this.runtime.logger.warn('MEGA immediate readonly apply failed; falling back to mirror refresh.', {
+          shareId: share.id,
+          accountId: account.id,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    };
+
+    if (this.syncTasks.has(share.id)) {
+      return runApply();
+    }
+    return this.withExclusiveShareTask(share.id, runApply);
+  }
+
+  private async applyRecipientHandleUpdate(
+    share: ManagedShare,
+    session: MegaSession,
+    rootHandle: string,
+    handle: string,
+    entries: Record<string, ProviderRefreshManifestEntry>,
+    handlePathIndex: Map<string, string>
+  ): Promise<boolean> {
+    const fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
+      allowTransientFullFallback: true,
+    });
+    const baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
+    if (!baseRelativePath || !isMirrorRelativePath(baseRelativePath)) {
+      return false;
+    }
+
+    await this.applyRecipientFetchedNode(share, session, fetched.tree.root, baseRelativePath, entries, handlePathIndex);
+    await visitTree(fetched.tree, async (relativePath, node) => {
+      const fullRelativePath = normalizeRelativePath(path.join(baseRelativePath, relativePath));
+      if (!isMirrorRelativePath(fullRelativePath)) {
+        return;
+      }
+      await this.applyRecipientFetchedNode(share, session, node, fullRelativePath, entries, handlePathIndex);
+    });
+    return true;
+  }
+
+  private async applyRecipientFetchedNode(
+    share: ManagedShare,
+    session: MegaSession,
+    node: DecryptedMegaNode,
+    relativePath: string,
+    entries: Record<string, ProviderRefreshManifestEntry>,
+    handlePathIndex: Map<string, string>
+  ): Promise<void> {
+    const existingPath = handlePathIndex.get(node.handle);
+    if (existingPath && existingPath !== relativePath) {
+      delete entries[existingPath];
+      handlePathIndex.delete(node.handle);
+      await fs.rm(path.join(share.localPath, existingPath), { recursive: true, force: true }).catch(() => undefined);
+    }
+
+    const targetPath = path.join(share.localPath, relativePath);
+    if (node.isFolder) {
+      await fs.mkdir(targetPath, { recursive: true });
+      entries[relativePath] = createProviderRefreshManifestEntry(node);
+      handlePathIndex.set(node.handle, relativePath);
+      return;
+    }
+
+    const remoteBytes = await downloadAuthenticatedMegaFileContent(
+      this.fetchImpl,
+      this.apiClient,
+      session,
+      node.handle,
+      node.nodeKey,
+      node.size
+    );
+    const remoteValidation = await validateCanonicalStorageFile(relativePath, remoteBytes);
+    if (!remoteValidation.ok) {
+      throw new Error(remoteValidation.detail ?? `Invalid MEGA canonical file for ${relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, remoteBytes);
+    entries[relativePath] = createProviderRefreshManifestEntry(node);
+    handlePathIndex.set(node.handle, relativePath);
   }
 
   private async logPendingRecipientRootDiagnostics(
@@ -6324,6 +6519,25 @@ function summarizeActionPacketActions(packets: readonly Record<string, unknown>[
   return [...actions];
 }
 
+function collectRecipientImmediatePacketHandles(
+  packets: readonly Record<string, unknown>[],
+  rootHandle: string
+): string[] {
+  const handles = new Set<string>();
+  for (const packet of packets) {
+    const action = typeof packet.a === 'string' ? packet.a.trim() : '';
+    if (action === 't') {
+      return [];
+    }
+    for (const handle of collectActionPacketHandles(packet)) {
+      if (handle !== rootHandle) {
+        handles.add(handle);
+      }
+    }
+  }
+  return [...handles];
+}
+
 function extractMegaShareKeysFromActionPackets(
   packets: readonly Record<string, unknown>[],
   session: MegaSession
@@ -6409,6 +6623,56 @@ function createNodeFingerprint(node: DecryptedMegaNode): string {
   hash.update('\n');
   hash.update(node.encodedKey ?? '');
   return hash.digest('hex');
+}
+
+function createProviderRefreshManifestEntry(node: DecryptedMegaNode): ProviderRefreshManifestEntry {
+  return {
+    fingerprint: createNodeFingerprint(node),
+    kind: node.isFolder ? 'folder' : 'file',
+    ...(node.isFolder ? {} : { size: node.size }),
+    handle: node.handle,
+    ...(node.parentHandle ? { parentHandle: node.parentHandle } : {}),
+  };
+}
+
+function buildManifestHandlePathIndex(entries: Record<string, ProviderRefreshManifestEntry>): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const [relativePath, entry] of Object.entries(entries)) {
+    if (entry.handle) {
+      index.set(entry.handle, relativePath);
+    }
+  }
+  return index;
+}
+
+function collectManifestHandles(entries: Record<string, ProviderRefreshManifestEntry>, rootHandle: string): string[] {
+  const handles = new Set<string>([rootHandle]);
+  for (const entry of Object.values(entries)) {
+    if (entry.handle) {
+      handles.add(entry.handle);
+    }
+    if (entry.parentHandle) {
+      handles.add(entry.parentHandle);
+    }
+  }
+  return [...handles].sort();
+}
+
+function resolveRecipientFetchedNodePath(
+  node: DecryptedMegaNode,
+  rootHandle: string,
+  handlePathIndex: ReadonlyMap<string, string>
+): string | undefined {
+  if (node.parentHandle === rootHandle) {
+    return sanitizePathSegment(node.name);
+  }
+  if (node.parentHandle) {
+    const parentPath = handlePathIndex.get(node.parentHandle);
+    if (parentPath) {
+      return normalizeRelativePath(path.join(parentPath, sanitizePathSegment(node.name)));
+    }
+  }
+  return handlePathIndex.get(node.handle);
 }
 
 function collectTreeHandles(tree: DecryptedMegaTree): string[] {
@@ -6542,6 +6806,8 @@ class MegaReadonlyRemoteAdapter implements ProviderRefreshRemoteAdapter {
         kind: node.isFolder ? 'folder' : 'file',
         fingerprint: createNodeFingerprint(node),
         size: node.isFolder ? undefined : node.size,
+        handle: node.handle,
+        parentHandle: node.parentHandle,
       });
     });
     return entries;
