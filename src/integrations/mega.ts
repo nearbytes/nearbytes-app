@@ -3399,7 +3399,8 @@ class MegaOwnerRemoteAdapter {
       Buffer.from(data),
       this.shareCrypto,
       this.signal,
-      this.extraShareKeys
+      this.extraShareKeys,
+      { waitForVisibility: false }
     );
     debugMegaLog('[MEGA:owner-adapter] upload completed.', { relativePath: normalized });
   }
@@ -4048,8 +4049,12 @@ async function uploadMegaOwnerFile(
   data: Buffer,
   shareCrypto: MegaShareCryptoContext | undefined,
   signal?: AbortSignal,
-  extraShareKeys?: ReadonlyMap<string, Buffer>
+  extraShareKeys?: ReadonlyMap<string, Buffer>,
+  options: {
+    readonly waitForVisibility?: boolean;
+  } = {}
 ): Promise<DecryptedMegaNode> {
+  const waitForVisibility = options.waitForVisibility !== false;
   for (let attempt = 0; attempt < MEGA_UPLOAD_RECOVERY_ATTEMPTS; attempt += 1) {
     try {
       const transferKey = randomBytes(16);
@@ -4123,6 +4128,17 @@ async function uploadMegaOwnerFile(
         const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
         error.code = response;
         throw error;
+      }
+      if (!waitForVisibility) {
+        return {
+          handle: uploadHandle,
+          parentHandle,
+          nodeType: 0,
+          isFolder: false,
+          size: data.length,
+          name,
+          nodeKey: sentNodeKey,
+        };
       }
       const committedNode = await waitForMegaChildNode(apiClient, session, parentHandle, name, false, signal, extraShareKeys);
       if (!committedNode || committedNode.isFolder) {
