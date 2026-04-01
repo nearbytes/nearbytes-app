@@ -5147,7 +5147,6 @@
           <ShareCard
             provider={view.provider}
             title={view.title}
-            copy={view.copy}
             active={view.active}
             statusBadges={view.statusBadges}
             meta={view.meta}
@@ -5240,8 +5239,6 @@
                     </span>
                   {/each}
                 </div>
-              {:else}
-                <p class="managed-share-invite-copy">No one has joined this location yet.</p>
               {/if}
             </div>
 
@@ -5259,8 +5256,6 @@
                       </span>
                     {/each}
                   </div>
-                {:else}
-                  <p class="managed-share-invite-copy">No pending invitations.</p>
                 {/if}
               </div>
             {/if}
@@ -5358,7 +5353,6 @@
       <ShareCard
         provider={providerLabelForIncoming(invite.provider)}
         title={invite.label}
-        copy={invite.detail}
         statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
         meta={[]}
       >
@@ -5378,7 +5372,6 @@
       <ShareCard
         provider={providerLabelForIncoming(offer.provider)}
         title={incomingManagedShareTitle(offer)}
-        copy={offer.detail}
         statusBadges={[incomingShareStatusBadge(offer)]}
         meta={[
           `Shared by ${offer.ownerLabel}`,
@@ -6306,29 +6299,13 @@
         {/if}
       {/if}
     {:else}
-      {#if volumeId}
-        <div class="storage-shell-facts">
-          <span class="summary-pill">{countLabel(hubAttachedSources(volumeId).length, 'location')}</span>
-          {#if hubFullCopyCount(volumeId) > 0}<span class="summary-pill">{countLabel(hubFullCopyCount(volumeId), 'full copy')}</span>{/if}
-        </div>
-      {/if}
-
-      <div class="toolbar-row">
-        <button
-          type="button"
-          class="panel-btn subtle compact icon-btn"
-          onclick={() => void refreshDiscoverySuggestions()}
-          disabled={discoveryLoading}
-          title="Scan again"
-        >
-          <RefreshCw size={14} strokeWidth={2} />
-        </button>
-        {#if dismissedSuggestionCount() > 0}
+      {#if dismissedSuggestionCount() > 0}
+        <div class="toolbar-row">
           <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
             <span>Restore hidden suggestions</span>
           </button>
-        {/if}
-      </div>
+        </div>
+      {/if}
 
       {#if errorMessage}
         <p class="panel-error">{errorMessage}</p>
@@ -6347,8 +6324,8 @@
         <section class="panel-section">
           <div class="section-head">
             <div>
-              <h3>{hubStorageHeading(volumeId)}</h3>
-              <p class="section-copy">{hubStorageIntro(volumeId)}</p>
+              {#if knownVolumeLabel(volumeId)}<p class="subheading">{knownVolumeLabel(volumeId)}</p>{/if}
+              <h3>Storage locations</h3>
             </div>
             <div class="section-actions">
               <button type="button" class="panel-btn subtle compact" onclick={() => openHubLocationDialog(volumeId)}>
@@ -6388,7 +6365,6 @@
             {#each hubAttachedSources(volumeId) as source (source.id)}
               {@const destination = destinationFor(volumeId, source.id)}
               {@const mode = hubLocationMode(volumeId, source.id)}
-              {@const note = hubLocationNote(volumeId, source)}
               {@const status = sourceStatus(source.id)}
               <article class="rule-card" class:active={mode !== 'off'}>
                 <div class="card-head">
@@ -6401,13 +6377,6 @@
                 </div>
 
                 <div class="hub-mode-panel">
-                  <div class="hub-mode-summary">
-                    <span class={`status-pill tone-${mode === 'store' ? 'durable' : mode === 'publish' ? 'muted' : 'off'}`}>
-                      {hubModeLabel(mode)}
-                    </span>
-                    <p class="managed-share-invite-copy">{hubModeCopy(mode)}</p>
-                  </div>
-
                   <div class="segmented-toggle" role="group" aria-label={`How ${sourceDisplayTitle(source)} is used in this hub`}>
                     <button
                       type="button"
@@ -6427,10 +6396,6 @@
                     </button>
                   </div>
                 </div>
-
-                {#if note}
-                  <p class="card-copy">{note}</p>
-                {/if}
 
                 {#if !source.enabled}
                   <div class="button-row inline-dialog-actions">
@@ -6527,7 +6492,7 @@
           </div>
         </section>
 
-        {#each providerCatalog.filter((entry) => entry.isConnected && providerShowsIncomingShareSection(entry.provider)) as incomingProvider (incomingProvider.provider)}
+        {#each providerCatalog.filter((entry) => entry.isConnected && providerShowsIncomingShareSection(entry.provider) && (incomingProviderInvitesForProvider(entry.provider).length > 0 || incomingManagedSharesForProvider(entry.provider).length > 0)) as incomingProvider (incomingProvider.provider)}
           <section class="panel-section provider-incoming-hub-wrap">
             {@render incomingFromOthersSection(incomingProvider.provider)}
           </section>
@@ -6547,8 +6512,6 @@
               </button>
             </div>
 
-            <p class="section-copy">Choose one of your saved storage locations. Nearbytes will add it as a full copy here, and you can fine-tune it right after.</p>
-
             {#if availableSources.length > 0}
               <div class="rule-grid dialog-rule-grid">
                 {#each availableSources as source (source.id)}
@@ -6562,8 +6525,6 @@
                         </div>
                       </div>
                     </div>
-
-                    <p class="card-copy">{locationSummary(source)}</p>
 
                     <div class="fact-row">
                       <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
@@ -6918,14 +6879,6 @@
 
   .hub-mode-panel {
     gap: 0.62rem;
-  }
-
-  .hub-mode-summary {
-    gap: 0.28rem;
-  }
-
-  .hub-mode-summary .status-pill {
-    width: fit-content;
   }
 
   .mega-detail-card {

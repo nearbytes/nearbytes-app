@@ -7353,7 +7353,6 @@
         <div class="mount-dialog-header">
           <div class="mount-dialog-head-meta">
             <p class="mount-dialog-eyebrow">Hub properties</p>
-            <p class="mount-dialog-title">{isMountEmpty(mountDialogMount) ? 'Create or open a hub' : 'Edit this hub'}</p>
             {#if isMountEmpty(mountDialogMount)}
               <div class="mount-dialog-mode-switch" role="tablist" aria-label="Create hub mode">
                 <button
@@ -7498,24 +7497,7 @@
                     <span class="status-value">{formatDate(lastRefresh)}</span>
                   </div>
                 {/if}
-                {#if volumeId}
-                  <div class="status-item mount-dialog-status-item">
-                    <span class="status-label">Sync</span>
-                    <span class="status-value">
-                      {#if autoSyncStatus === 'connecting'}
-                        Connecting…
-                      {:else if autoSyncEnabled}
-                        Auto
-                      {:else if autoSyncStatus === 'unsupported'}
-                        Manual
-                      {:else if autoSyncStatus === 'error'}
-                        Manual (watch offline)
-                      {:else}
-                        Manual
-                      {/if}
-                    </span>
-                  </div>
-                {/if}
+
                 {#if isHistoryMode}
                   <div class="status-item mount-dialog-status-item history-indicator">
                     <span>History mode (read-only)</span>
@@ -7532,14 +7514,7 @@
                   </div>
                 {/if}
               </div>
-              {#if volumeId && !isLoading && !autoSyncEnabled}
-                <div class="mount-dialog-status-actions">
-                  <button class="refresh-btn" onclick={refreshFiles} title="Refresh file list">
-                    <RefreshCw class="button-icon" size={15} strokeWidth={2} />
-                    <span>Refresh</span>
-                  </button>
-                </div>
-              {/if}
+
             </section>
           {/if}
 
@@ -7601,7 +7576,6 @@
                 label="Hub storage"
                 onclick={() => {
                   openVolumeStoragePanel();
-                  collapseMount(mountDialogMount.id);
                 }}
               />
               <button
