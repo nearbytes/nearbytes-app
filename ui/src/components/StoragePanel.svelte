@@ -16,13 +16,13 @@
     getStorageLocationRepairReport,
     getRootsConfig,
     hasDesktopDirectoryPicker,
-    hasDesktopRuntimeLogsBridge,
     installProviderHelper,
     inviteManagedShare,
     listIncomingManagedShares,
     listIncomingProviderContactInvites,
     listManagedShares,
     listProviderAccounts,
+    openPathInFileManager,
     openRootInFileManager,
     repairStorageLocation,
     removeManagedShare,
@@ -132,12 +132,6 @@
     showProgressBar: boolean;
     /** Per-folder native sync phase; clearer than a single ready/total ratio. */
     locationSteps: MegaLocationActivityStep[];
-  };
-
-  type MegaHelperView = {
-    headline: string;
-    detail: string;
-    pathValue: string | null;
   };
 
   type MegaTabFocusTarget = 'overview' | 'account' | 'publishing' | 'incoming';
@@ -1023,7 +1017,7 @@
         const usage = sourceVolumeUsage(sourceId, targetVolumeId);
         return {
           volumeId: targetVolumeId,
-          label: knownLabel ?? `Space ${targetVolumeId.slice(0, 8)}`,
+          label: knownLabel ?? `Hub ${targetVolumeId.slice(0, 8)}`,
           known: Boolean(knownLabel),
           usageBytes: usage.usageBytes,
           usagePercent: usage.usagePercent,
@@ -1053,7 +1047,7 @@
     if (count === 0) {
       return 'Available to attach to a hub. No hub is using it yet.';
     }
-    return `Used in ${countLabel(count, 'place')}.`;
+    return `Used by ${countLabel(count, 'hub')}.`;
   }
 
   function sourceRepairReport(sourceId: string): StorageLocationRepairReport | null {
@@ -1398,19 +1392,6 @@
 
   function megaPendingIncomingCount(): number {
     return incomingManagedSharesForProvider('mega').length + incomingProviderInvitesForProvider('mega').length;
-  }
-
-  function megaIncomingSummaryLabel(): string {
-    const readyCount = megaRecipientShares().length;
-    return countLabel(readyCount, 'shared folder', 'shared folders');
-  }
-
-  function megaIncomingPendingLabel(): string | null {
-    const pendingCount = megaPendingIncomingCount();
-    if (pendingCount === 0) {
-      return null;
-    }
-    return `${countLabel(pendingCount, 'item')} still being checked`;
   }
 
   function megaToastSignature(toast: MegaToast): string {
@@ -1940,10 +1921,6 @@
     return helperPath === '' || helperPath === 'PATH';
   }
 
-  function showMegaDevBackendLogsAction(): boolean {
-    return hasDesktopRuntimeLogsBridge() && !isMegaNativeOnlyRuntime();
-  }
-
   function megaShareActivityStep(summary: ManagedShareSummary): MegaLocationActivityStep {
     const name = managedShareTitle(summary);
     const status = summary.state.status;
@@ -2129,13 +2106,6 @@
       ...megaIssueLogExpanded,
       [issueId]: !(megaIssueLogExpanded[issueId] ?? false),
     };
-  }
-
-  function toggleMegaRuntimeLogs(): void {
-    megaRuntimeLogsVisible = !megaRuntimeLogsVisible;
-    if (megaRuntimeLogsVisible) {
-      void loadMegaRuntimeLogs();
-    }
   }
 
   function selectMegaRuntimeLog(entryId: string): void {
@@ -2631,48 +2601,6 @@
     };
   }
 
-  function megaHelperView(provider: ProviderCatalogEntry): MegaHelperView {
-    const helperPath = provider.setup.config?.helperPath?.trim() || '';
-    if (!helperPath) {
-      return {
-        headline: 'Using the built-in MEGA runtime',
-        detail: provider.setup.detail || 'Nearbytes talks to MEGA directly, publishes through your own writable MEGA root, and refreshes incoming shares as local copies.',
-        pathValue: null,
-      };
-    }
-
-    const normalizedPath = helperPath.replace(/\\/gu, '/').toLowerCase();
-    if (helperPath === 'PATH') {
-      return {
-        headline: 'External MEGA tools are on PATH',
-        detail: 'Nearbytes uses its built-in native runtime. External MEGA tools on this machine are ignored.',
-        pathValue: 'System PATH',
-      };
-    }
-
-    if (/\/\.nearbytes-dev\/.*mega.*\//u.test(normalizedPath)) {
-      return {
-        headline: 'Legacy MEGA development path detected',
-        detail: 'A development-era MEGA tool path is still configured, but Nearbytes uses the native adapter instead.',
-        pathValue: helperPath,
-      };
-    }
-
-    if (/\/\.nearbytes\/helpers\/.*mega/u.test(normalizedPath)) {
-      return {
-        headline: 'Legacy MEGA tool path detected',
-        detail: 'A previous local MEGA tool install is still present on disk, but Nearbytes no longer requires it for MEGA mirroring.',
-        pathValue: helperPath,
-      };
-    }
-
-    return {
-      headline: 'Custom external MEGA path detected',
-      detail: 'A custom MEGA tool path is configured, but the current adapter uses direct API access instead.',
-      pathValue: helperPath,
-    };
-  }
-
   function localMachineShareCount(): number {
     return localShares().length;
   }
@@ -3000,7 +2928,7 @@
         updateSourceField(source.id, 'reservePercent', nextValue);
         updateDestinationField(null, source.id, 'reservePercent', nextValue);
       },
-      onOpen: hasSourcePath(source) ? () => openSourceFolder(source.id) : undefined,
+      onOpen: hasSourcePath(source) ? () => openSourceFolder(source.id, source.path) : undefined,
       openDisabled: !hasSourcePath(source),
       openTitle: source.path || 'Open folder',
       onTrashIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'trash') : undefined,
@@ -3039,10 +2967,6 @@
         typeof summary.storage?.usageTotalBytes === 'number'
           ? `Using ${formatSize(summary.storage.usageTotalBytes)} here.`
           : managedShareOpenLabel(summary),
-        summary.storage?.remoteAvailableBytes !== undefined
-          && summary.storage?.availableBytes !== undefined
-          ? `${formatSize(summary.storage.remoteAvailableBytes)} available in ${providerLabelForManagedShare(summary)}`
-          : null,
       ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
@@ -3066,7 +2990,9 @@
         updateSourceField(source.id, 'reservePercent', nextValue);
         updateDestinationField(null, source.id, 'reservePercent', nextValue);
       },
-      onOpen: summary.share.sourceId ? () => openSourceFolder(summary.share.sourceId!) : undefined,
+      onOpen: summary.share.sourceId
+        ? () => openSourceFolder(summary.share.sourceId!, summarySourcePath(summary))
+        : undefined,
       openDisabled: !summary.share.sourceId,
       openTitle: source.path || summary.share.localPath,
       onTrashIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'trash') : undefined,
@@ -4324,12 +4250,18 @@
     dismissedDiscoveries = [...dismissedDiscoveries, normalized];
   }
 
-  async function openSourceFolder(sourceId: string) {
+  async function openSourceFolder(sourceId: string, explicitPath?: string | null) {
     errorMessage = '';
     successMessage = '';
     try {
-      await openRootInFileManager(sourceId);
-      successMessage = 'Opened folder.';
+      const targetPath = explicitPath?.trim() || '';
+      if (targetPath) {
+        await openPathInFileManager(targetPath);
+        successMessage = `Opened ${compactPath(targetPath)}.`;
+      } else {
+        await openRootInFileManager(sourceId);
+        successMessage = 'Opened folder.';
+      }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to open folder';
     }
@@ -4958,7 +4890,7 @@
       <ShareCard
         provider={view.provider}
         title={view.title}
-        copy={view.copy}
+        copy={view.active && !view.warning && !view.repairSummary ? '' : view.copy}
         active={view.active}
         compact={true}
         statusBadges={view.statusBadges}
@@ -4992,11 +4924,19 @@
         {/snippet}
         {#snippet controls()}
           <div class="setting-list compact-toggle-row">
-            <IconToggle icon={BookOpen} label="Read" active={view.readable} onclick={view.onToggleReadable} />
+            <IconToggle
+              icon={BookOpen}
+              label="Read"
+              active={view.readable}
+              layout="stacked"
+              title="Allow this location to serve this app"
+              onclick={view.onToggleReadable}
+            />
             <IconToggle
               icon={SquarePen}
               label="Write"
               active={view.writable}
+              layout="stacked"
               onclick={view.onToggleWritable}
               disabled={view.writableDisabled}
               title={view.writableTitle ?? 'Allow writes here'}
@@ -5004,35 +4944,50 @@
           </div>
         {/snippet}
         {#snippet actions()}
-          <div class="storage-card-actions">
-            <div class="button-row storage-card-actions-left">
-              {#if view.onRemove && view.canRemove}
-                <ArmedActionButton
-                  class="panel-btn subtle compact icon-btn armed-icon-danger"
-                  icon={Trash2}
-                  text=""
-                  armed={true}
-                  autoDisarmMs={3000}
-                  title="Remove"
-                  ariaLabel="Remove"
-                  resetKey={view.removeResetKey}
-                  onPress={view.onRemove}
-                />
-              {/if}
-              {#if view.onMove}
-                <button
-                  type="button"
-                  class="panel-btn subtle compact"
-                  onclick={view.onMove}
-                  disabled={view.moveDisabled}
-                >
-                  <ArrowRightLeft size={14} strokeWidth={2} />
-                  <span>{view.moveLabel ?? 'Move'}</span>
-                </button>
-              {/if}
-            </div>
-
-            <div class="button-row storage-card-actions-right">
+          {#if view.onOpen}
+            <button
+              type="button"
+              class="panel-btn subtle compact"
+              onclick={view.onOpen}
+              disabled={view.openDisabled}
+              title={view.openTitle}
+            >
+              <FolderOpen size={14} strokeWidth={2} />
+              <span>Open</span>
+            </button>
+          {/if}
+          {#if view.onMove}
+            <button
+              type="button"
+              class="panel-btn subtle compact"
+              onclick={view.onMove}
+              disabled={view.moveDisabled}
+            >
+              <ArrowRightLeft size={14} strokeWidth={2} />
+              <span>{view.moveLabel ?? 'Move'}</span>
+            </button>
+          {/if}
+          {#if view.onRemove && view.canRemove}
+            <ArmedActionButton
+              class="panel-btn subtle compact icon-btn armed-icon-danger"
+              icon={Trash2}
+              text=""
+              armed={true}
+              autoDisarmMs={3000}
+              title="Remove location"
+              ariaLabel="Remove location"
+              resetKey={view.removeResetKey}
+              onPress={view.onRemove}
+            />
+          {/if}
+        {/snippet}
+        {#snippet footer()}
+          {#if view.warning}
+            <p class="warning-copy">Last write problem: {view.warning}</p>
+          {/if}
+          {#if view.repairSummary}
+            <div class="card-inline-warning">
+              <p class="warning-copy">{view.repairSummary}</p>
               {#if view.onTrashIssues}
                 <button
                   type="button"
@@ -5041,50 +4996,9 @@
                   disabled={view.repairBusy}
                   title="Move unexpected or invalid files to the system trash"
                 >
-                  <Trash2 size={14} strokeWidth={2} />
-                  <span>{view.repairBusy ? 'Cleaning...' : 'Trash issues'}</span>
+                  <span>{view.repairBusy ? 'Cleaning...' : 'Clean up'}</span>
                 </button>
               {/if}
-              {#if view.onDeleteIssues}
-                <button
-                  type="button"
-                  class="panel-btn subtle compact danger"
-                  onclick={view.onDeleteIssues}
-                  disabled={view.repairBusy}
-                  title="Permanently delete unexpected or invalid files"
-                >
-                  <span>Delete issues</span>
-                </button>
-              {/if}
-              {#if view.onOpen}
-                <button
-                  type="button"
-                  class="panel-btn subtle compact"
-                  onclick={view.onOpen}
-                  disabled={view.openDisabled}
-                  title={view.openTitle}
-                >
-                  <FolderOpen size={14} strokeWidth={2} />
-                  <span>Open</span>
-                </button>
-              {/if}
-            </div>
-          </div>
-        {/snippet}
-        {#snippet footer()}
-          {#if view.warning}
-            <p class="warning-copy">Last write problem: {view.warning}</p>
-          {/if}
-          {#if view.repairSummary}
-            <p class="warning-copy">{view.repairSummary}</p>
-          {/if}
-          {#if view.repairDetails && view.repairDetails.length > 0}
-            <div class="fact-row share-volume-row">
-              {#each view.repairDetails as detail}
-                <span class="mini-pill" title={detail}>
-                  <span>{detail}</span>
-                </span>
-              {/each}
             </div>
           {/if}
           {#if view.attachments.length > 0}
@@ -5155,11 +5069,19 @@
           {/snippet}
           {#snippet controls()}
             <div class="setting-list compact-toggle-row">
-              <IconToggle icon={BookOpen} label="Read" active={view.readable} onclick={view.onToggleReadable} />
+              <IconToggle
+                icon={BookOpen}
+                label="Read"
+                active={view.readable}
+                layout="stacked"
+                title="Allow this location to serve this app"
+                onclick={view.onToggleReadable}
+              />
               <IconToggle
                 icon={SquarePen}
                 label="Write"
                 active={view.writable}
+                layout="stacked"
                 onclick={view.onToggleWritable}
                 disabled={view.writableDisabled}
                 title={view.writableTitle ?? 'Allow writes here'}
@@ -5167,13 +5089,37 @@
             </div>
           {/snippet}
           {#snippet details()}
+            {@const activeCollaborators = participantCollaborators(summary)}
+            {@const invitedCollaboratorViews = pendingCollaborators(summary)}
+            {#if activeCollaborators.length > 0 || invitedCollaboratorViews.length > 0}
+              <div class="managed-share-members managed-share-members-inline">
+                <p class="subheading">{summary.share.role === 'owner' ? 'People' : 'Shared with'}</p>
+                <div class="managed-share-members-list">
+                  {#each activeCollaborators as collaborator (collaborator.key)}
+                    <span class="mini-pill">
+                      <span>{collaborator.label}</span>
+                      {#if collaboratorRoleLabel(collaborator)}
+                        <span class="mini-pill-metric">{collaboratorRoleLabel(collaborator)}</span>
+                      {/if}
+                    </span>
+                  {/each}
+                  {#each invitedCollaboratorViews as collaborator (collaborator.key)}
+                    <span class="mini-pill">
+                      <span>{collaborator.label}</span>
+                      <span class="mini-pill-metric">Invited</span>
+                    </span>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
             {#if canInviteManagedShare(summary)}
-              <form class="managed-share-invite-row" onsubmit={(event) => {
+              <form class="managed-share-invite-row managed-share-invite-row-compact" onsubmit={(event) => {
                 event.preventDefault();
                 void inviteManagedSharePeers(summary);
               }}>
                 <label class="field-block managed-share-invite-field">
-                  <span>Invite people</span>
+                  <span>Invite</span>
                   <input
                     class="panel-input"
                     type="text"
@@ -5188,103 +5134,57 @@
                   class="panel-btn subtle compact"
                   disabled={integrationBusyKey === `invite:${summary.share.id}`}
                 >
-                  <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
+                  <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Invite'}</span>
                 </button>
               </form>
             {/if}
-
-            <div class="managed-share-members">
-              <p class="subheading">Joined</p>
-              {#if participantCollaborators(summary).length > 0}
-                <div class="managed-share-members-list">
-                  {#each participantCollaborators(summary) as collaborator (collaborator.key)}
-                    <span class="mini-pill">
-                      <span>{collaborator.label}</span>
-                      {#if collaboratorRoleLabel(collaborator)}
-                        <span class="mini-pill-metric">{collaboratorRoleLabel(collaborator)}</span>
-                      {/if}
-                    </span>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-
-            {#if canInviteManagedShare(summary) || pendingCollaborators(summary).length > 0}
-              <div class="managed-share-members">
-                <p class="subheading">Invited</p>
-                {#if pendingCollaborators(summary).length > 0}
-                  <div class="managed-share-members-list">
-                    {#each pendingCollaborators(summary) as collaborator (collaborator.key)}
-                      <span class="mini-pill">
-                        <span>{collaborator.label}</span>
-                        {#if collaboratorRoleLabel(collaborator)}
-                          <span class="mini-pill-metric">{collaboratorRoleLabel(collaborator)}</span>
-                        {/if}
-                      </span>
-                    {/each}
-                  </div>
-                {/if}
-              </div>
-            {/if}
           {/snippet}
           {#snippet actions()}
-            <div class="storage-card-actions">
-              <div class="button-row storage-card-actions-left">
-                {#if view.onRemove && view.canRemove}
-                  <ArmedActionButton
-                    class="panel-btn subtle compact icon-btn armed-icon-danger"
-                    icon={Trash2}
-                    text=""
-                    armed={true}
-                    autoDisarmMs={3000}
-                    title="Remove"
-                    ariaLabel="Remove"
-                    resetKey={view.removeResetKey}
-                    onPress={view.onRemove}
-                  />
-                {/if}
-                {#if view.onMove}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={view.onMove}
-                    disabled={view.moveDisabled}
-                  >
-                    <ArrowRightLeft size={14} strokeWidth={2} />
-                    <span>{view.moveLabel ?? 'Move'}</span>
-                  </button>
-                {/if}
-              </div>
-
-              <div class="button-row storage-card-actions-right">
-                {#if summary.share.provider === 'mega' && showMegaDevBackendLogsAction() && (summary.state.status === 'syncing' || summary.state.status === 'attention' || summary.state.status === 'needs-auth')}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    title="Open legacy dev log viewer (stdout/stderr). Native MEGA status is in the summary above."
-                    onclick={() => openMegaRuntimeLogsInspector()}
-                  >
-                    <span>Dev logs</span>
-                  </button>
-                {/if}
-                {#if view.onOpen}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={view.onOpen}
-                    disabled={view.openDisabled}
-                    title={view.openTitle}
-                  >
-                    <FolderOpen size={14} strokeWidth={2} />
-                    <span>Open</span>
-                  </button>
-                {/if}
-              </div>
-            </div>
+            {#if view.onOpen}
+              <button
+                type="button"
+                class="panel-btn subtle compact"
+                onclick={view.onOpen}
+                disabled={view.openDisabled}
+                title={view.openTitle}
+              >
+                <FolderOpen size={14} strokeWidth={2} />
+                <span>Open</span>
+              </button>
+            {/if}
+            {#if view.onRemove && view.canRemove}
+              <ArmedActionButton
+                class="panel-btn subtle compact icon-btn armed-icon-danger"
+                icon={Trash2}
+                text=""
+                armed={true}
+                autoDisarmMs={3000}
+                title="Remove location"
+                ariaLabel="Remove location"
+                resetKey={view.removeResetKey}
+                onPress={view.onRemove}
+              />
+            {/if}
           {/snippet}
           {#snippet footer()}
             {#if view.warning}
               <p class="warning-copy">Last write problem: {view.warning}</p>
+            {/if}
+            {#if view.repairSummary}
+              <div class="card-inline-warning">
+                <p class="warning-copy">{view.repairSummary}</p>
+                {#if view.onTrashIssues}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={view.onTrashIssues}
+                    disabled={view.repairBusy}
+                    title="Move unexpected or invalid files to the system trash"
+                  >
+                    <span>{view.repairBusy ? 'Cleaning...' : 'Clean up'}</span>
+                  </button>
+                {/if}
+              </div>
             {/if}
             {#if view.attachments.length > 0}
               <div class="fact-row share-volume-row">
@@ -5554,7 +5454,7 @@
       <section class="panel-section">
         <div class="section-head compact global-panel-head">
           <div>
-            <h3>Storage locations</h3>
+            <h3>Your locations</h3>
           </div>
           <div class="button-row compact-panel-actions">
             {@render addLocationAction('Add a location', 'Add a storage location manually', addSourceCard, false)}
@@ -5582,7 +5482,7 @@
         <div class="section-stack">
           <div class="section-copy-stack">
             <p class="subheading">Saved locations</p>
-            <p class="managed-share-invite-copy">These are the folders Nearbytes can already use on this Mac.</p>
+            <p class="managed-share-invite-copy">Folders on this Mac that can already serve your hubs.</p>
           </div>
 
           {#if localShares().length > 0}
@@ -5608,7 +5508,7 @@
           <div class="section-stack section-stack-secondary">
             <div class="section-copy-stack">
               <p class="subheading">Suggested locations</p>
-              <p class="managed-share-invite-copy">Nearbytes found folders that already look like storage locations. Review them and add only the ones you want.</p>
+              <p class="managed-share-invite-copy">Folders that already look ready. Add only the ones you want.</p>
             </div>
 
             <div class="compact-share-grid">
@@ -5751,7 +5651,6 @@
 
             {#if provider.provider === 'mega'}
               {@const megaStatus = megaStatusView()}
-              {@const megaHelper = megaHelperView(provider)}
               {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}
               {@const megaReconnectIssue = megaProviderReconnectIssue()}
               {@const megaAccount = connectedAccountForProvider('mega')}
@@ -5770,37 +5669,35 @@
                       <span class={`status-pill tone-${megaStatus.tone === 'good' ? 'good' : megaStatus.tone === 'warn' ? 'warn' : 'muted'}`}>
                         {megaStatus.tone === 'good' ? 'Auto-managing' : megaStatus.tone === 'warn' ? 'Needs attention' : 'Working'}
                       </span>
-                      {#if megaStatus.progressLabel}
+                      {#if megaStatus.progressLabel && !megaStatus.showProgressBar}
                         <span class="status-pill tone-muted">{megaStatus.progressLabel}</span>
                       {/if}
                     </div>
                   </div>
 
-                  <div class="mega-command-metrics">
-                    <button type="button" class="mega-metric-card" bind:this={megaAccountSection} onclick={() => openProviderConnectionDialog(provider.provider)}>
+                  <div class="mega-summary-strip">
+                    <button type="button" class="mega-summary-chip" bind:this={megaAccountSection} onclick={() => openProviderConnectionDialog(provider.provider)}>
                       <span class="subheading">Account</span>
-                      <strong class="mega-metric-value">{megaAccount?.email ?? 'Sign in required'}</strong>
-                      {#if megaReconnectIssue || megaFlow}<span class="mega-metric-detail">{megaReconnectIssue ? 'Recovery required' : megaFlow?.title ?? ''}</span>{/if}
+                      <strong>{megaAccount?.email ?? 'Sign in required'}</strong>
+                      {#if megaReconnectIssue || megaFlow}<span class="mega-summary-note">{megaReconnectIssue ? 'Recovery required' : megaFlow?.title ?? 'Manage account'}</span>{/if}
                     </button>
 
-                    <button type="button" class="mega-metric-card" bind:this={megaPublishingSection} onclick={() => void focusMegaArea('publishing')}>
-                      <span class="subheading">Publishing</span>
-                      <strong class="mega-metric-value">{countLabel(megaOwnerLocations.length, 'publish root')}</strong>
-
+                    <button type="button" class="mega-summary-chip" bind:this={megaPublishingSection} onclick={() => void focusMegaArea('publishing')}>
+                      <span class="subheading">Your locations</span>
+                      <strong>{countLabel(megaOwnerLocations.length, 'location')}</strong>
                     </button>
 
-                    <button type="button" class="mega-metric-card" bind:this={megaIncomingSection} onclick={() => void focusMegaArea('incoming')}>
-                      <span class="subheading">Incoming</span>
-                      <strong class="mega-metric-value">{megaIncomingSummaryLabel()}</strong>
-                      {#if megaIncomingPendingLabel()}
-                        <span class="mega-metric-pending">{megaIncomingPendingLabel()}</span>
+                    <button type="button" class="mega-summary-chip" bind:this={megaIncomingSection} onclick={() => void focusMegaArea('incoming')}>
+                      <span class="subheading">Shared with you</span>
+                      <strong>{countLabel(megaIncomingLocations.length, 'location')}</strong>
+                      {#if megaPendingCount > 0}
+                        <span class="mega-summary-note">{countLabel(megaPendingCount, 'waiting item')}</span>
                       {/if}
-
                     </button>
                   </div>
 
-                  <div class="button-row mega-command-actions">
-                    {#if megaReconnectIssue}
+                  {#if megaReconnectIssue}
+                    <div class="button-row mega-command-actions">
                       <button
                         type="button"
                         class="panel-btn primary compact"
@@ -5808,78 +5705,40 @@
                       >
                         <span>Reconnect account</span>
                       </button>
-                    {/if}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void loadPanel({ background: configDraft !== null })}
-                      disabled={sharesLoading || providersLoading}
-                    >
-                      <RefreshCw size={14} strokeWidth={2} />
-                      <span>{sharesLoading ? 'Checking...' : 'Refresh MEGA'}</span>
-                    </button>
-                    <button type="button" class="panel-btn subtle compact" onclick={() => void focusMegaArea('incoming')}>
-                      <span>{megaPendingCount > 0 ? 'Review shared folders' : 'Open shared folders'}</span>
-                    </button>
-                    {#if showMegaDevBackendLogsAction()}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        title="Developer-only: backend stdout/stderr tails from the desktop app. Not required for native MEGA."
-                        onclick={() => toggleMegaRuntimeLogs()}
+                    </div>
+                  {/if}
+
+                  <div class="provider-path-card mega-detail-card" data-tone={megaStatus.tone}>
+                    {#if megaStatus.showProgressBar && megaStatus.progressLabel}
+                      <div
+                        class="mega-sync-progress"
+                        role="progressbar"
+                        aria-label="MEGA sync progress"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={megaStatus.progressPercent ?? undefined}
                       >
-                        <span>{megaRuntimeLogsVisible ? 'Hide dev logs' : 'Dev backend logs'}</span>
-                      </button>
-                    {/if}
-                  </div>
-
-                  <div class="mega-inline-status-grid">
-                    <div class="provider-path-card mega-helper-card">
-                      <p class="subheading">Runtime</p>
-                      <p class="provider-step-title">{megaHelper.headline}</p>
-                      {#if megaHelper.pathValue}
-                        <p class="provider-path-copy">{compactPath(megaHelper.pathValue)}</p>
-                      {/if}
-                    </div>
-
-                    <div class="provider-path-card mega-detail-card" data-tone={megaStatus.tone}>
-                      <p class="subheading">Current status</p>
-                      <p class="managed-share-invite-copy mega-status-headline">{megaStatus.headline}</p>
-                      {#if megaStatus.detail}
-                        <p class="provider-step-detail">{megaStatus.detail}</p>
-                      {/if}
-                      {#if megaStatus.showProgressBar && megaStatus.progressLabel}
                         <div
-                          class="mega-sync-progress"
-                          role="progressbar"
-                          aria-label="MEGA sync progress"
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          aria-valuenow={megaStatus.progressPercent ?? undefined}
-                        >
-                          <div
-                            class="mega-sync-progress-bar"
-                            class:indeterminate={megaStatus.progressPercent === null}
-                            style={megaStatus.progressPercent === null ? undefined : `width: ${megaStatus.progressPercent}%`}
-                          ></div>
-                        </div>
-                        <p class="mega-progress-copy">{megaStatus.progressLabel}</p>
-                      {/if}
-                      {#if megaStatus.locationSteps.length > 0}
-                        <div class="mega-location-activity">
-                          <p class="subheading">Folders</p>
-                          <ul class="mega-location-activity-list">
-                            {#each megaStatus.locationSteps as step (step.shareId)}
-                              <li class="mega-location-activity-item" data-tone={step.tone}>
-                                <span class="mega-location-activity-name">{step.name}</span>
-                                <span class="mega-location-activity-phase">{step.phase}</span>
-                              </li>
-                            {/each}
-                          </ul>
-                        </div>
-                      {/if}
-
-                    </div>
+                          class="mega-sync-progress-bar"
+                          class:indeterminate={megaStatus.progressPercent === null}
+                          style={megaStatus.progressPercent === null ? undefined : `width: ${megaStatus.progressPercent}%`}
+                        ></div>
+                      </div>
+                      <p class="mega-progress-copy">{megaStatus.progressLabel}</p>
+                    {/if}
+                    {#if megaStatus.locationSteps.length > 0}
+                      <div class="mega-location-activity">
+                        <p class="subheading">Locations</p>
+                        <ul class="mega-location-activity-list">
+                          {#each megaStatus.locationSteps as step (step.shareId)}
+                            <li class="mega-location-activity-item" data-tone={step.tone}>
+                              <span class="mega-location-activity-name">{step.name}</span>
+                              <span class="mega-location-activity-phase">{step.phase}</span>
+                            </li>
+                          {/each}
+                        </ul>
+                      </div>
+                    {/if}
                   </div>
 
                   {#if megaRuntimeLogsVisible}
@@ -6370,7 +6229,18 @@
                   <div class="card-title">
                     <div>
                       <p class="provider-label">{formatProvider(source.provider)}</p>
-                      <h4>{compactPath(source.path)}</h4>
+                      {#if hasSourcePath(source)}
+                        <button
+                          type="button"
+                          class="storage-title-link"
+                          onclick={() => openSourceFolder(source.id, source.path)}
+                          title={source.path}
+                        >
+                          <span class="storage-title-link-text">{compactPath(source.path)}</span>
+                        </button>
+                      {:else}
+                        <h4>{compactPath(source.path)}</h4>
+                      {/if}
                     </div>
                   </div>
                 </div>
@@ -6444,7 +6314,7 @@
                   </div>
 
                   <div class="button-row storage-card-actions-right">
-                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id)} disabled={!hasSourcePath(source)}>
+                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id, source.path)} disabled={!hasSourcePath(source)}>
                       <FolderOpen size={14} strokeWidth={2} />
                       <span>Open</span>
                     </button>
@@ -6734,6 +6604,9 @@
     border-radius: 16px;
     border: 1px solid var(--panel-soft-border);
     background: var(--card-bg);
+    box-shadow:
+      0 8px 18px rgba(82, 53, 33, 0.06),
+      0 2px 5px rgba(82, 53, 33, 0.04);
     text-align: left;
     font: inherit;
     cursor: pointer;
@@ -6744,12 +6617,18 @@
     transform: translateY(-1px);
     border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--card-bg) 96%, rgba(255, 252, 249, 0.94));
+    box-shadow:
+      0 12px 24px rgba(82, 53, 33, 0.08),
+      0 3px 8px rgba(82, 53, 33, 0.05);
   }
 
   .provider-choice-card.active {
     border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--card-bg-strong) 96%, rgba(255, 255, 255, 0.94));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08)),
+      0 12px 28px rgba(82, 53, 33, 0.09),
+      0 3px 8px rgba(82, 53, 33, 0.06);
   }
 
   .provider-choice-card:disabled {
@@ -7052,6 +6931,30 @@
 
   h4 {
     font-size: 0.92rem;
+  }
+
+  .storage-title-link {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .storage-title-link:hover .storage-title-link-text {
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, transparent);
+  }
+
+  .storage-title-link-text {
+    display: block;
+    color: var(--text-main);
+    font-size: 0.92rem;
+    line-height: 1.24;
+    font-weight: 700;
+    overflow-wrap: anywhere;
   }
 
   .hero-text,
@@ -7404,6 +7307,12 @@
     gap: 0.42rem;
   }
 
+  .compact-toggle-row {
+    grid-template-columns: repeat(2, minmax(0, auto));
+    justify-content: start;
+    gap: 0.52rem;
+  }
+
   .setting-list-preface {
     margin: 0 0 0.25rem;
     font-size: 0.78rem;
@@ -7463,6 +7372,14 @@
 
   .fact-row {
     gap: 0.5rem 1rem;
+  }
+
+  .card-inline-warning {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    align-items: center;
+    justify-content: space-between;
   }
 
   .fact-row span {
@@ -7612,10 +7529,19 @@
     gap: 0.42rem;
   }
 
+  .managed-share-members-inline {
+    gap: 0.34rem;
+  }
+
   .managed-share-members-list {
     display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
+  }
+
+  .managed-share-invite-row-compact {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
   }
 
   @media (max-width: 720px) {
@@ -7678,6 +7604,50 @@
     gap: 0.45rem;
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .mega-summary-strip {
+    display: grid;
+    gap: 0.58rem;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .mega-summary-chip {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+    padding: 0.68rem 0.74rem;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(251, 247, 244, 0.9));
+    text-align: left;
+    cursor: pointer;
+    transition:
+      transform 140ms ease,
+      border-color 140ms ease,
+      background 140ms ease,
+      box-shadow 140ms ease;
+  }
+
+  .mega-summary-chip:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
+    box-shadow: 0 8px 18px rgba(82, 53, 33, 0.06);
+  }
+
+  .mega-summary-chip strong {
+    color: var(--text-main);
+    font-size: 0.92rem;
+    line-height: 1.28;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+
+  .mega-summary-note {
+    color: var(--text-soft);
+    font-size: 0.74rem;
+    line-height: 1.35;
   }
 
   .mega-command-metrics,
@@ -8160,7 +8130,7 @@
   .compact-share-grid {
     display: grid;
     gap: 0.72rem;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(244px, 1fr));
   }
 
   .field-block {
