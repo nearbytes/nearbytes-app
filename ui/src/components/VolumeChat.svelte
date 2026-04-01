@@ -597,11 +597,11 @@
     --chat-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
     --chat-bg-deep: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
     --chat-bg-soft: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, var(--nb-shell-bottom, #f4f4f7));
-    --chat-card: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
-    --chat-card-own: color-mix(in srgb, var(--nb-accent, #d27a54) 6%, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, #fff6ef));
+    --chat-card: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, var(--nb-shell-bottom, #f4f4f7));
+    --chat-card-own: color-mix(in srgb, var(--nb-accent, #d27a54) 10%, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, #fff6ef));
     --chat-button-bg: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
     --chat-button-hover: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, color-mix(in srgb, var(--nb-accent, #d27a54) 6%, #fff4ec)));
-    --chat-input-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
+    --chat-input-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, var(--nb-shell-bottom, #f4f4f7));
     --chat-text-main: var(--nb-text-main, rgba(239, 246, 255, 0.94));
     --chat-text-soft: var(--nb-text-soft, rgba(191, 219, 254, 0.7));
     --chat-text-faint: var(--nb-text-faint, rgba(186, 230, 253, 0.64));
@@ -616,8 +616,8 @@
     padding: 0;
     overflow: hidden;
     position: relative;
-    border: 1px solid var(--chat-border);
-    border-radius: 18px;
+    border: 1px solid color-mix(in srgb, var(--chat-border) 70%, transparent);
+    border-radius: 16px;
     background: var(--chat-bg);
   }
 
@@ -642,8 +642,8 @@
   }
 
   .chat-header {
-    padding: 0.95rem 1rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--chat-border) 90%, transparent);
+    padding: 0.82rem 1rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--chat-border) 60%, transparent);
     background: var(--chat-bg-soft);
   }
 
@@ -756,10 +756,10 @@
   .chat-feed {
     min-height: 0;
     overflow: auto;
-    padding: 0.85rem 1rem;
+    padding: 0.7rem 1rem;
     display: flex;
     flex-direction: column;
-    gap: 0.48rem;
+    gap: 0.38rem;
   }
 
   .chat-empty {
@@ -779,19 +779,20 @@
 
   .chat-message-bubble {
     min-width: 0;
-    padding: 0.58rem 0.72rem;
+    padding: 0.5rem 0.7rem;
     border-radius: 14px;
     background: var(--chat-card);
-    border: 1px solid color-mix(in srgb, var(--chat-border) 58%, transparent);
+    border: none;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.34rem;
+    gap: 0.28rem;
   }
 
   .chat-message-card.own .chat-message-bubble {
     background: var(--chat-card-own);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 16%, transparent);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   }
 
   .chat-message-head {
@@ -825,12 +826,12 @@
   }
 
   .chat-composer {
-    border-top: 1px solid color-mix(in srgb, var(--chat-border) 90%, transparent);
+    border-top: 1px solid color-mix(in srgb, var(--chat-border) 60%, transparent);
     background: color-mix(in srgb, var(--chat-bg-soft) 98%, transparent);
-    padding: 0.82rem 1rem 0.95rem;
+    padding: 0.7rem 1rem 0.85rem;
     display: flex;
     flex-direction: column;
-    gap: 0.56rem;
+    gap: 0.5rem;
     overflow: visible;
   }
 
@@ -842,12 +843,12 @@
   .chat-textarea,
   .chat-composer textarea {
     width: 100%;
-    border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--chat-border) 84%, transparent);
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--chat-border) 70%, transparent);
     background: var(--chat-input-bg);
     color: var(--chat-text-main);
     font: inherit;
-    padding: 0.75rem 0.82rem;
+    padding: 0.65rem 0.78rem;
   }
 
   .chat-textarea {

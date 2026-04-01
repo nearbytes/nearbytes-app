@@ -5179,7 +5179,6 @@
             </div>
           {/snippet}
           {#snippet controls()}
-            <p class="muted-copy setting-list-preface">How Nearbytes uses this folder on this computer:</p>
             <div class="setting-list">
               <label class="setting-row">
                 <span>Use this location</span>
@@ -5226,13 +5225,6 @@
                   <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
                 </button>
               </form>
-              <p class="managed-share-invite-copy">
-                {#if summary.share.provider === 'mega'}
-                  Invite people here with read and write access in MEGA.
-                {:else}
-                  Invite people here if you want to share this storage location directly.
-                {/if}
-              </p>
             {/if}
 
             <div class="managed-share-members">
@@ -5368,7 +5360,7 @@
         title={invite.label}
         copy={invite.detail}
         statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
-        meta={[`Accept this first so ${providerLabelForIncoming(invite.provider)} can show any storage locations shared with you.`]}
+        meta={[]}
       >
         {#snippet actions()}
           <button
@@ -5434,20 +5426,11 @@
       {#if providerCatalog.some((entry) => entry.provider === providerKey && entry.isConnected)}
         <div class="provider-incoming-section">
           <div class="provider-flow-status">
-            <p class="provider-flow-title">Folders others shared with you</p>
+            <p class="provider-flow-title">Shared with you</p>
             {#if incomingLoading}
-              <p class="muted-copy">Checking this account for contact requests and shared folders…</p>
+              <p class="muted-copy">Checking…</p>
             {:else if incomingLoadError}
               <p class="warning-copy">{incomingLoadError}</p>
-            {/if}
-            <p class="muted-copy">
-              These folders were shared <em>to</em> this account. They are separate from your own Nearbytes publication root. Accept any
-              <strong>contact request</strong> first, then accept the shared folder below. Nearbytes will create the local copy and keep checking for it here.
-            </p>
-            {#if providerKey === 'mega'}
-              <p class="muted-copy">
-                Accepted MEGA shares become local read-only inputs. Nearbytes reads and merges from them here, while your own updates still publish only through your MEGA Nearbytes root.
-              </p>
             {/if}
             {#if hiddenIncomingSharesHere > 0}
               <div class="button-row">
@@ -5518,20 +5501,11 @@
       </form>
     {/snippet}
     {#if mode === 'global'}
-      <div class="storage-shell-intro">
-        <div class="storage-shell-copy">
-          <p class="eyebrow">Storage setup</p>
-          <h2 class="storage-shell-title">Choose where Nearbytes keeps your data</h2>
-          <p class="storage-shell-note">
-            Start with folders on this device. Connect a cloud service only when you need one. Folders other people share with you stay separate so it is always clear what belongs to you and what is incoming.
-          </p>
-        </div>
-        <div class="storage-shell-facts">
+      <div class="storage-shell-facts">
           <span class="summary-pill">{countLabel(localMachineShareCount(), 'saved location')}</span>
           <span class="summary-pill">{countLabel(connectedProviderCount(), 'connected service')}</span>
-          <span class="summary-pill">{countLabel(totalIncomingReviewCount(), 'incoming item')}</span>
+          {#if totalIncomingReviewCount() > 0}<span class="summary-pill tone-warn">{countLabel(totalIncomingReviewCount(), 'incoming item')}</span>{/if}
         </div>
-      </div>
 
       <div class="provider-choice-grid" role="group" aria-label="Choose a storage provider">
         <button
@@ -5551,7 +5525,6 @@
               ? `${countLabel(sourceSuggestionRows().length, 'suggestion')} ready to review`
               : 'Choose folders already on this Mac'}
           </span>
-          <span class="provider-choice-detail">Best for most people. Keep storage locations local first, then add cloud services only if you need them.</span>
         </button>
 
         {#each providerCatalog as provider (provider.provider)}
@@ -5577,7 +5550,6 @@
                 {providerTabCopy(provider)}
               {/if}
             </span>
-            <span class="provider-choice-detail">{providerSelectionDetail(provider)}</span>
           </button>
         {/each}
 
@@ -5606,9 +5578,6 @@
               ? 'Review contact requests and shared folders here'
               : 'No incoming folders right now'}
           </span>
-          <span class="provider-choice-detail">
-            Accept incoming provider invitations separately from your own storage locations so the setup stays easy to understand.
-          </span>
         </button>
       </div>
 
@@ -5623,8 +5592,7 @@
       <section class="panel-section">
         <div class="section-head compact global-panel-head">
           <div>
-            <h3>Storage locations on this Mac</h3>
-            <p class="section-copy">Choose folders Nearbytes can use on this device. {activeFolderCount()} currently active.</p>
+            <h3>Storage locations</h3>
           </div>
           <div class="button-row compact-panel-actions">
             {@render addLocationAction('Add a location', 'Add a storage location manually', addSourceCard, false)}
@@ -5808,28 +5776,7 @@
               </div>
             </div>
 
-            {#if provider.provider !== 'mega'}
-              <div class="provider-overview-grid">
-                <article class="setup-guidance-card">
-                  <p class="subheading">What this service is for</p>
-                  <p class="provider-step-detail">{providerSelectionDetail(provider)}</p>
-                </article>
 
-                <article class="setup-guidance-card">
-                  <p class="subheading">Status</p>
-                  <p class="provider-overview-value">{providerCardStatus(provider)}</p>
-                  <p class="provider-step-detail">{providerTabCopy(provider)}</p>
-                </article>
-
-                {#if providerShowsIncomingShareSection(provider.provider)}
-                  <article class="setup-guidance-card">
-                    <p class="subheading">Shared with you</p>
-                    <p class="provider-overview-value">{countLabel(providerIncomingActionableCount(provider.provider), 'item')}</p>
-                    <p class="provider-step-detail">Incoming contact requests and shared folders stay separate from your own storage locations.</p>
-                  </article>
-                {/if}
-              </div>
-            {/if}
 
             {#if provider.provider === 'mega'}
               {@const megaStatus = megaStatusView()}
@@ -5845,11 +5792,8 @@
                 <div class="provider-story-card compact-provider-card mega-command-card" data-tone={megaStatus.tone} bind:this={megaOverviewSection}>
                   <div class="mega-command-head">
                     <div>
-                      <p class="subheading">Automatic MEGA</p>
                       <h4 class="mega-command-title">{megaStatus.headline}</h4>
-                      <p class="provider-step-detail">
-                        {megaStatus.detail || 'Nearbytes keeps this account in automatic mode: publish through your root, read incoming copies locally, retry in the background.'}
-                      </p>
+                      {#if megaStatus.detail}<p class="provider-step-detail">{megaStatus.detail}</p>{/if}
                     </div>
                     <div class="mega-command-badges">
                       <span class={`status-pill tone-${megaStatus.tone === 'good' ? 'good' : megaStatus.tone === 'warn' ? 'warn' : 'muted'}`}>
@@ -5865,29 +5809,13 @@
                     <button type="button" class="mega-metric-card" bind:this={megaAccountSection} onclick={() => openProviderConnectionDialog(provider.provider)}>
                       <span class="subheading">Account</span>
                       <strong class="mega-metric-value">{megaAccount?.email ?? 'Sign in required'}</strong>
-                      <span class="mega-metric-detail">
-                        {#if megaReconnectIssue}
-                          Recovery required before incoming shares can refresh.
-                        {:else if megaFlow}
-                          {megaFlow.title}
-                        {:else if megaAccount}
-                          Connected and maintained automatically.
-                        {:else}
-                          Sign in once. Nearbytes handles the rest.
-                        {/if}
-                      </span>
+                      {#if megaReconnectIssue || megaFlow}<span class="mega-metric-detail">{megaReconnectIssue ? 'Recovery required' : megaFlow?.title ?? ''}</span>{/if}
                     </button>
 
                     <button type="button" class="mega-metric-card" bind:this={megaPublishingSection} onclick={() => void focusMegaArea('publishing')}>
                       <span class="subheading">Publishing</span>
                       <strong class="mega-metric-value">{countLabel(megaOwnerLocations.length, 'publish root')}</strong>
-                      <span class="mega-metric-detail">
-                        {#if megaOwnerLocations.length > 0}
-                          Nearbytes sends your updates only through your own writable MEGA root.
-                        {:else}
-                          Your writable publication root will appear here after sign-in.
-                        {/if}
-                      </span>
+
                     </button>
 
                     <button type="button" class="mega-metric-card" bind:this={megaIncomingSection} onclick={() => void focusMegaArea('incoming')}>
@@ -5896,9 +5824,7 @@
                       {#if megaIncomingPendingLabel()}
                         <span class="mega-metric-pending">{megaIncomingPendingLabel()}</span>
                       {/if}
-                      <span class="mega-metric-detail">
-                        Accepted MEGA shares appear here as read-only shared folders. Nearbytes reads and merges from them automatically.
-                      </span>
+
                     </button>
                   </div>
 
@@ -5938,9 +5864,8 @@
 
                   <div class="mega-inline-status-grid">
                     <div class="provider-path-card mega-helper-card">
-                      <p class="subheading">MEGA runtime</p>
+                      <p class="subheading">Runtime</p>
                       <p class="provider-step-title">{megaHelper.headline}</p>
-                      <p class="provider-step-detail">{megaHelper.detail}</p>
                       {#if megaHelper.pathValue}
                         <p class="provider-path-copy">{compactPath(megaHelper.pathValue)}</p>
                       {/if}
@@ -5982,7 +5907,7 @@
                           </ul>
                         </div>
                       {/if}
-                      <p class="mega-self-repair-copy">{megaStatus.selfRepairCopy}</p>
+
                     </div>
                   </div>
 
@@ -5994,9 +5919,7 @@
                         <div>
                           <p class="subheading">Developer backend logs</p>
                           <p class="provider-step-detail">
-                            {megaRuntimeLogsUpdatedAt
-                              ? `Updated ${formatMegaRuntimeLogTimestamp(megaRuntimeLogsUpdatedAt)}`
-                              : 'Tails from the desktop dev backend (stdout/stderr). Native MEGA sync does not write these; use Refresh and the folder list above for live status.'}
+                            {megaRuntimeLogsUpdatedAt ? `Updated ${formatMegaRuntimeLogTimestamp(megaRuntimeLogsUpdatedAt)}` : ''}
                           </p>
                         </div>
                         <div class="mega-runtime-log-header-actions">
@@ -6113,16 +6036,7 @@
                   {/if}
                 </div>
 
-                <div class="mega-automation-note-grid">
-                  <div class="provider-path-card mega-note-card">
-                    <p class="subheading">How Nearbytes uses MEGA</p>
-                    <p class="provider-step-detail">Your account is the publication channel. Incoming folders never become a write target.</p>
-                  </div>
-                  <div class="provider-path-card mega-note-card">
-                    <p class="subheading">No manual babysitting</p>
-                    <p class="provider-step-detail">Mirror checks, owner-root reuse, and incoming-share refresh all run automatically. The MEGA tab is the recovery surface if something stalls.</p>
-                  </div>
-                </div>
+
               </div>
 
               {#if megaIssue}
@@ -6178,7 +6092,6 @@
                       oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
                     />
                   </label>
-                  <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client ID here.</p>
                 </div>
             {/if}
 
@@ -6195,7 +6108,6 @@
                       oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
                     />
                   </label>
-                  <p class="muted-copy">Create a GitHub OAuth app, enable device flow, then paste the client ID here.</p>
                 </div>
             {/if}
 
@@ -6207,10 +6119,7 @@
                   void submitMegaAction(provider);
                 }}>
                   <div class="mega-onboarding-head">
-                    <div>
-                      <h4>MEGA account</h4>
-                      <p class="provider-story-copy">{megaOnboardingCopy(provider.provider)}</p>
-                    </div>
+                    <h4>MEGA account</h4>
                     <p class="muted-copy compact-mode-copy">{pendingSession ? 'Email confirmation' : 'Sign in'}</p>
                   </div>
 
@@ -6372,14 +6281,6 @@
             {/if}
 
             <div class="section-stack">
-              <div class="section-copy-stack">
-                <p class="subheading">{provider.provider === 'mega' ? 'Your MEGA locations' : `Your ${provider.label} locations`}</p>
-                <p class="managed-share-invite-copy">
-                  {provider.provider === 'mega'
-                    ? 'These are the places Nearbytes publishes through or keeps mirrored from MEGA.'
-                    : 'These are the storage locations Nearbytes uses for this service.'}
-                </p>
-              </div>
 
               <div class="compact-share-grid">
                 {#if shares.length === 0}
@@ -6405,37 +6306,12 @@
         {/if}
       {/if}
     {:else}
-      <div class="storage-shell-intro storage-shell-intro-volume">
-        <div class="storage-shell-copy">
-          <p class="eyebrow">Hub storage</p>
-          <h2 class="storage-shell-title">Choose where this hub keeps its data</h2>
-          <p class="storage-shell-note">
-            Each hub can use one or more storage locations. Keep at least one full copy if you want everything available here without depending on another location.
-          </p>
+      {#if volumeId}
+        <div class="storage-shell-facts">
+          <span class="summary-pill">{countLabel(hubAttachedSources(volumeId).length, 'location')}</span>
+          {#if hubFullCopyCount(volumeId) > 0}<span class="summary-pill">{countLabel(hubFullCopyCount(volumeId), 'full copy')}</span>{/if}
         </div>
-        {#if volumeId}
-          <div class="storage-shell-facts">
-            <span class="summary-pill">{countLabel(hubAttachedSources(volumeId).length, 'location')}</span>
-            <span class="summary-pill">{countLabel(hubFullCopyCount(volumeId), 'full copy')}</span>
-            <span class="summary-pill">{countLabel(hubWriteOnlyCount(volumeId), 'save-only location')}</span>
-          </div>
-        {/if}
-      </div>
-
-      <div class="setup-guidance-grid">
-        <article class="setup-guidance-card">
-          <p class="subheading">Keep a full copy</p>
-          <p class="provider-step-detail">Best when this hub should stay fully available from this location, even if another location is offline.</p>
-        </article>
-        <article class="setup-guidance-card">
-          <p class="subheading">Save new items only</p>
-          <p class="provider-step-detail">Use this when new uploads should land here, but you do not want this location to keep the full hub.</p>
-        </article>
-        <article class="setup-guidance-card">
-          <p class="subheading">Need another place?</p>
-          <p class="provider-step-detail">Add another saved storage location here, or open storage setup if you need to create one first.</p>
-        </article>
-      </div>
+      {/if}
 
       <div class="toolbar-row">
         <button
@@ -7967,11 +7843,6 @@
   .mega-onboarding-head {
     display: grid;
     gap: 0.28rem;
-  }
-
-  .mega-onboarding-head > div {
-    display: grid;
-    gap: 0.22rem;
   }
 
   .compact-mode-copy {

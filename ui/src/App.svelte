@@ -1455,6 +1455,9 @@
   let specModalContent = $state('');
   let currentPreviewObjectUrl: string | null = null;
   const previewBlobCache = new Map<string, Blob>();
+  const thumbnailLoadGuard = new Set<string>();
+  let thumbnailUrls = $state(new Map<string, string>());
+  const thumbnailBlobUrls: string[] = [];
   const initialMounts = loadVolumeMounts();
   let mounts = $state<VolumeMount[]>(initialMounts);
   let activeMountId = $state(initialMounts[0]?.id ?? '');
@@ -2756,6 +2759,7 @@
     previewFileOverride = null;
     previewBlobCache.clear();
     revokePreviewUrl();
+    revokeThumbnails();
     pendingMountId = null;
   }
 
@@ -4136,6 +4140,15 @@
     previewUrl = '';
   }
 
+  function revokeThumbnails(): void {
+    for (const url of thumbnailBlobUrls) {
+      URL.revokeObjectURL(url);
+    }
+    thumbnailBlobUrls.length = 0;
+    thumbnailLoadGuard.clear();
+    thumbnailUrls = new Map();
+  }
+
   function detectPreviewKind(file: FileMetadata): PreviewKind {
     const mime = file.mimeType ?? '';
     const filename = file.filename.toLowerCase();
@@ -4160,6 +4173,33 @@
     }
     return 'unsupported';
   }
+
+  function queueThumbnailLoad(file: FileMetadata): void {
+    if (!auth || thumbnailLoadGuard.has(file.blobHash)) return;
+    if (detectPreviewKind(file) !== 'image') return;
+    thumbnailLoadGuard.add(file.blobHash);
+    void (async () => {
+      try {
+        let blob = previewBlobCache.get(file.blobHash);
+        if (!blob) {
+          blob = await downloadFile(auth!, file.blobHash);
+          previewBlobCache.set(file.blobHash, blob);
+        }
+        const url = URL.createObjectURL(blob);
+        thumbnailBlobUrls.push(url);
+        thumbnailUrls = new Map(thumbnailUrls).set(file.blobHash, url);
+      } catch {
+        thumbnailLoadGuard.delete(file.blobHash);
+      }
+    })();
+  }
+
+  $effect(() => {
+    if (fileManagerViewMode !== 'icons' || !auth) return;
+    for (const file of visibleFiles) {
+      queueThumbnailLoad(file);
+    }
+  });
 
   function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -5879,6 +5919,11 @@
       closeVolumeShareDialog();
       return;
     }
+    if (showEventFlowPanel) {
+      e.preventDefault();
+      showEventFlowPanel = false;
+      return;
+    }
     handleManagerKeydown(e);
     collapseMount(activeMountId);
   }
@@ -6139,20 +6184,13 @@
   <!-- Main file area -->
   <main
     class="file-area"
-    class:volume-workspace-active={!showSourcesPanel && !showVolumeStoragePanel && !showEventFlowPanel && address.trim() !== ''}
+    class:volume-workspace-active={!showSourcesPanel && !showVolumeStoragePanel && address.trim() !== ''}
     class:dragging={isDragging}
     ondragover={handleDragOver}
     ondragleave={handleDragLeave}
     ondrop={handleDrop}
   >
-    {#if showEventFlowPanel}
-      <div class="workspace-panel-view">
-        <EventFlowPanel
-          auth={auth}
-          volumeId={shareableVolumeId}
-        />
-      </div>
-    {:else if showSourcesPanel}
+    {#if showSourcesPanel}
       <div class="workspace-panel-view">
         <StoragePanel
           mode="global"
@@ -6390,10 +6428,6 @@
                 class:active={showEventFlowPanel}
                 onclick={() => {
                   showEventFlowPanel = !showEventFlowPanel;
-                  if (showEventFlowPanel) {
-                    showSourcesPanel = false;
-                    showVolumeStoragePanel = false;
-                  }
                 }}
                 title="Event flow visualization"
               >
@@ -6506,8 +6540,13 @@
                           onkeydown={(e) => handleFileRowKeydown(e, file)}
                         >
                           {#if fileManagerViewMode === 'icons'}
+                            {@const thumbUrl = thumbnailUrls.get(file.blobHash)}
                             <div class={`file-card-art ${fileAccentTone(file)}`}>
-                              <FileIcon size={28} strokeWidth={1.8} />
+                              {#if thumbUrl}
+                                <img class="file-card-thumb" src={thumbUrl} alt="" aria-hidden="true" />
+                              {:else}
+                                <FileIcon size={28} strokeWidth={1.8} />
+                              {/if}
                             </div>
                             <div class="file-card-copy">
                               {#if renamingFileName === file.filename}
@@ -6712,6 +6751,27 @@
           </div>
         {/if}
       </div>
+      {/if}
+      {#if showEventFlowPanel}
+        <div
+          class="flow-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Event flow"
+          onclick={(e) => { if (e.target === e.currentTarget) showEventFlowPanel = false; }}
+        >
+          <div class="flow-overlay-panel panel-surface">
+            <button
+              type="button"
+              class="flow-overlay-close"
+              onclick={() => { showEventFlowPanel = false; }}
+              aria-label="Close event flow"
+            >
+              <X size={18} strokeWidth={2} />
+            </button>
+            <EventFlowPanel auth={auth} volumeId={shareableVolumeId} />
+          </div>
+        </div>
       {/if}
       </div>
     {/if}
@@ -7294,13 +7354,6 @@
           <div class="mount-dialog-head-meta">
             <p class="mount-dialog-eyebrow">Hub properties</p>
             <p class="mount-dialog-title">{isMountEmpty(mountDialogMount) ? 'Create or open a hub' : 'Edit this hub'}</p>
-            <p class="mount-dialog-subtitle">
-              {#if mountDialogMode === 'join-link' && isMountEmpty(mountDialogMount)}
-                Paste a nearbytes://join link or canonical join JSON. Nearbytes will preview the hub first, then stage attached live storage when you join.
-              {:else}
-                Set the secret or attach one secret file.
-              {/if}
-            </p>
             {#if isMountEmpty(mountDialogMount)}
               <div class="mount-dialog-mode-switch" role="tablist" aria-label="Create hub mode">
                 <button
@@ -7590,7 +7643,6 @@
           <div>
             <p class="mount-dialog-eyebrow">Create</p>
             <p class="mount-dialog-title">What do you want to make?</p>
-            <p class="mount-dialog-subtitle">Hubs hold app logs and files. Identities are your local signing personas.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close create chooser" onclick={closeCreateChooser}>
             <X size={18} strokeWidth={2} />
@@ -7600,17 +7652,14 @@
           <button type="button" class="create-chooser-card" onclick={startCreateHub}>
             <Plus size={18} strokeWidth={2.2} />
             <span class="create-chooser-card-title">Hub</span>
-            <span class="create-chooser-card-copy">Create or open a hub from a secret.</span>
           </button>
           <button type="button" class="create-chooser-card" onclick={startCreateIdentity}>
             <UserRound size={18} strokeWidth={2} />
             <span class="create-chooser-card-title">Identity</span>
-            <span class="create-chooser-card-copy">Create a local identity with the same secret model.</span>
           </button>
           <button type="button" class="create-chooser-card" onclick={() => void openJoinVolumeDialogFromClipboard()}>
             <ClipboardPaste size={18} strokeWidth={2} />
             <span class="create-chooser-card-title">Paste link</span>
-            <span class="create-chooser-card-copy">Join a shared hub from a Nearbytes link.</span>
           </button>
         </div>
       </div>
@@ -7892,7 +7941,6 @@
           <div class="share-dialog-head-meta">
             <p class="share-dialog-eyebrow">Shared hub</p>
             <p class="share-dialog-title">Share this hub</p>
-            <p class="share-dialog-subtitle">Share the hub itself here. Configure shared storage separately in storage settings.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close share dialog" onclick={closeVolumeShareDialog}>
             <X size={18} strokeWidth={2} />
@@ -7939,7 +7987,6 @@
           <div class="join-dialog-head-meta">
             <p class="join-dialog-eyebrow">Join shared hub</p>
             <p class="join-dialog-title">Open from clipboard</p>
-            <p class="join-dialog-subtitle">Paste a nearbytes://join link or canonical join JSON. Nearbytes will preview the hub first, then stage any attached live storage when you join.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close join dialog" onclick={closeJoinVolumeDialog}>
             <X size={18} strokeWidth={2} />
@@ -7951,7 +7998,6 @@
             <div class="join-dialog-input-head">
               <div>
                 <p class="join-dialog-section-title">Join link</p>
-                <p class="join-dialog-note">Copy the share link, then paste it here or press Paste from clipboard.</p>
               </div>
               <button
                 type="button"
@@ -8076,7 +8122,6 @@
           <div class="theme-dialog-head-meta">
             <p class="theme-dialog-eyebrow danger">Reset</p>
             <p class="theme-dialog-title">Clear stored configuration</p>
-            <p class="theme-dialog-subtitle">This helper disconnects all known providers, clears saved Nearbytes configuration and local app state, and then restarts the desktop app.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close reset dialog" onclick={closeResetDialog} disabled={resetDialogBusy}>
             <X size={18} strokeWidth={2} />
@@ -8087,14 +8132,12 @@
           <section class="theme-dialog-section reset-dialog-section">
             <div class="reset-warning-card">
               <p class="reset-warning-title">Safe start-from-scratch helper</p>
-              <p class="theme-dialog-note">Nearbytes will first disconnect every known provider account so the reset does not leave provider-backed storage attached. Local blocks and channels stay in place unless you opt into deleting them below.</p>
             </div>
 
             <label class="reset-checkbox-row">
               <input type="checkbox" bind:checked={resetDialogDeleteLocalData} disabled={resetDialogBusy} />
               <span>
                 <strong>Also delete local blocks and channels</strong>
-                <small>Use this only if you want a completely empty local store. Nearbytes disconnects providers first, then removes local blocks and channels as a separate final step.</small>
               </span>
             </label>
 
@@ -8138,7 +8181,6 @@
           <div class="theme-dialog-head-meta">
             <p class="theme-dialog-eyebrow">Appearance</p>
             <p class="theme-dialog-title">Brand system</p>
-            <p class="theme-dialog-subtitle">The animated logo, shell palette, and accent treatment stay in sync. Changes apply live and persist across launches.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close appearance dialog" onclick={() => (showThemeDialog = false)}>
             <X size={18} strokeWidth={2} />
@@ -8541,10 +8583,10 @@
     flex-direction: column;
     gap: 0.7rem;
     padding: 0.78rem 0.9rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    border-radius: 18px;
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.9));
-    box-shadow: 0 10px 28px rgba(82, 53, 33, 0.06);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, var(--nb-shell-bottom, #f4f4f7));
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
   }
 
   .identity-row-head,
@@ -8736,10 +8778,10 @@
     width: min(760px, calc(100vw - 2rem));
     max-height: min(86vh, 920px);
     overflow: auto;
-    border-radius: 24px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.92));
-    box-shadow: 0 24px 72px rgba(42, 28, 18, 0.18);
+    border-radius: 20px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
+    background: var(--nb-panel-bg, #ffffff);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
   }
 
   .create-chooser-head {
@@ -8759,11 +8801,11 @@
 
   .create-chooser-card {
     appearance: none;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(250, 244, 239, 0.9));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-    border-radius: 18px;
-    padding: 1rem;
+    border-radius: 16px;
+    padding: 0.9rem;
     display: grid;
     gap: 0.45rem;
     justify-items: start;
@@ -8772,14 +8814,12 @@
     transition:
       transform 0.18s ease,
       background-color 0.18s ease,
-      border-color 0.18s ease,
       box-shadow 0.18s ease;
   }
 
   .create-chooser-card:hover {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 10%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    box-shadow: 0 14px 28px rgba(82, 53, 33, 0.08);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
   }
 
   .create-chooser-card-title {
@@ -9376,21 +9416,6 @@
     letter-spacing: 0.01em;
   }
 
-  .secret-input-hint kbd {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 1.25rem;
-    padding: 0 0.34rem;
-    border-radius: 6px;
-    border: 1px solid var(--nb-border, rgba(96, 165, 250, 0.18));
-    background: var(--nb-btn-bg, rgba(10, 18, 33, 0.7));
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.86));
-    font-size: 0.68rem;
-    font-weight: 600;
-    font-family: inherit;
-    vertical-align: middle;
-  }
 
   .secret-clipboard-btn {
     min-width: 108px;
@@ -9942,10 +9967,10 @@
     display: grid;
     gap: 0.9rem;
     padding: 0.95rem 1rem 1rem;
-    border: 1px solid rgba(56, 189, 248, 0.22);
+    border: 1px solid color-mix(in srgb, rgba(56, 189, 248, 0.22) 70%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
     box-shadow:
-      0 22px 44px rgba(2, 6, 23, 0.42),
+      0 16px 40px rgba(2, 6, 23, 0.36),
       inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
@@ -10066,9 +10091,9 @@
     gap: 0.75rem;
     align-self: stretch;
     margin: 0;
-    padding: 0.32rem;
-    border-radius: 14px;
-    border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
+    padding: 0.28rem 0.38rem;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 70%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
     backdrop-filter: blur(12px);
     flex: 0 0 auto;
@@ -10166,6 +10191,7 @@
   }
 
   .volume-workspace {
+    position: relative;
     max-width: none;
     margin: 0;
     width: 100%;
@@ -10186,6 +10212,53 @@
     display: grid;
     gap: 0;
     align-items: stretch;
+  }
+
+  .flow-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    background: rgba(0, 0, 0, 0.38);
+    backdrop-filter: blur(4px);
+    animation: panel-fade-in 200ms ease;
+  }
+
+  .flow-overlay-panel {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: 18px;
+    overflow: hidden;
+    margin: 0.75rem;
+  }
+
+  .flow-overlay-close {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    z-index: 10;
+    appearance: none;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.22)) 88%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 24, 48, 0.95)) 90%, transparent);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.82));
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .flow-overlay-close:hover {
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 24, 48, 0.98)) 95%, transparent);
+    color: var(--nb-text-main, rgba(226, 232, 240, 0.96));
   }
 
   .workspace-pane {
@@ -10494,75 +10567,37 @@
     color: var(--nb-text-soft, rgba(186, 230, 253, 0.7));
   }
 
-  .tm-details-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.72);
-    backdrop-filter: blur(8px);
-    z-index: 200;
-  }
-
-  .share-dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.76);
-    backdrop-filter: blur(10px);
-    z-index: 220;
-  }
-
-  .join-dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.8);
-    backdrop-filter: blur(12px);
-    z-index: 225;
-  }
-
-  .theme-dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.82);
-    backdrop-filter: blur(14px);
-    z-index: 230;
-  }
-
+  .tm-details-backdrop,
+  .share-dialog-backdrop,
+  .join-dialog-backdrop,
+  .theme-dialog-backdrop,
   .mount-dialog-backdrop {
     position: fixed;
     inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 1.5rem;
-    background: rgba(246, 238, 232, 0.72);
-    backdrop-filter: blur(18px);
-    z-index: 235;
+    padding: 1.25rem;
+    background: rgba(2, 6, 23, 0.56);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
   }
+
+  .tm-details-backdrop { z-index: 200; }
+  .share-dialog-backdrop { z-index: 220; }
+  .join-dialog-backdrop { z-index: 225; }
+  .theme-dialog-backdrop { z-index: 230; }
+  .mount-dialog-backdrop { z-index: 235; }
 
   .mount-dialog {
     width: min(720px, 94vw);
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(255, 246, 240, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 92%, rgba(255, 250, 247, 0.88)));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.16)) 80%, rgba(210, 122, 84, 0.18));
-    border-radius: 24px;
-    box-shadow: 0 26px 90px rgba(93, 56, 34, 0.16);
+    background: var(--nb-panel-bg, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.16)) 60%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
   }
 
   .share-dialog {
@@ -10570,10 +10605,10 @@
     max-height: 86vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, rgba(255, 248, 244, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 96%, rgba(250, 242, 236, 0.92)));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.12));
-    border-radius: 22px;
-    box-shadow: 0 24px 72px rgba(82, 53, 33, 0.12);
+    background: var(--nb-panel-bg, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 60%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.16);
   }
 
   .join-dialog {
@@ -10581,10 +10616,10 @@
     max-height: 86vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, rgba(255, 247, 241, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 95%, rgba(251, 243, 236, 0.92)));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.16));
-    border-radius: 22px;
-    box-shadow: 0 24px 72px rgba(82, 53, 33, 0.12);
+    background: var(--nb-panel-bg, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 60%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.16);
   }
 
   .theme-dialog {
@@ -10592,10 +10627,10 @@
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(255, 247, 241, 0.94)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 96%, rgba(248, 239, 232, 0.92)));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.14));
-    border-radius: 24px;
-    box-shadow: 0 24px 80px rgba(82, 53, 33, 0.12);
+    background: var(--nb-panel-bg, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 60%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.16);
   }
 
   .mount-dialog-header,
@@ -10609,23 +10644,23 @@
   }
 
   .mount-dialog-header {
-    padding: 1.35rem 1.45rem 1rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.12));
+    padding: 1.1rem 1.25rem 0.85rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
   .share-dialog-header {
-    padding: 1.2rem 1.3rem 0.95rem;
-    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+    padding: 1rem 1.2rem 0.8rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
   .join-dialog-header {
-    padding: 1.2rem 1.3rem 0.95rem;
-    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+    padding: 1rem 1.2rem 0.8rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
   .theme-dialog-header {
-    padding: 1.3rem 1.4rem 1rem;
-    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+    padding: 1.05rem 1.2rem 0.85rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
   .mount-dialog-head-meta,
@@ -10756,23 +10791,23 @@
   }
 
   .mount-dialog-body {
-    gap: 0.95rem;
-    padding: 1.1rem 1.45rem 1.35rem;
+    gap: 0.85rem;
+    padding: 0.95rem 1.25rem 1.15rem;
   }
 
   .share-dialog-body {
-    gap: 0.95rem;
-    padding: 1rem 1.3rem 1.3rem;
+    gap: 0.85rem;
+    padding: 0.85rem 1.2rem 1.1rem;
   }
 
   .join-dialog-body {
-    gap: 0.95rem;
-    padding: 1rem 1.3rem 1.3rem;
+    gap: 0.85rem;
+    padding: 0.85rem 1.2rem 1.1rem;
   }
 
   .theme-dialog-body {
-    gap: 1rem;
-    padding: 1rem 1.3rem 1.3rem;
+    gap: 0.9rem;
+    padding: 0.9rem 1.2rem 1.1rem;
   }
 
   .reset-dialog {
@@ -10831,11 +10866,6 @@
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
 
-  .reset-checkbox-row small {
-    font-size: 0.82rem;
-    line-height: 1.45;
-    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
-  }
 
   .mount-dialog-section {
     gap: 0.8rem;
@@ -11930,10 +11960,10 @@
 
   .file-list-scroll.icons {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     align-content: start;
-    gap: 0.7rem;
-    padding: 0.9rem;
+    gap: 0.6rem;
+    padding: 0.8rem;
   }
 
   .file-list-clear-hitbox {
@@ -11957,10 +11987,10 @@
     grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 0.75rem;
     align-items: center;
-    padding: 0.65rem 0.75rem;
+    padding: 0.52rem 0.75rem;
     cursor: grab;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    transition: background 0.15s ease, border-color 0.15s ease;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.12)) 50%, transparent);
+    transition: background 0.12s ease, border-color 0.12s ease;
   }
 
   .file-row:hover {
@@ -12057,55 +12087,65 @@
   }
 
   .file-card {
-    min-height: 118px;
-    border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.12)) 84%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
-    padding: 0.9rem;
-    display: grid;
-    grid-template-rows: auto 1fr;
-    justify-items: start;
-    align-content: start;
-    gap: 0.7rem;
+    border-radius: 12px;
+    border: none;
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, var(--nb-shell-bottom, #f4f4f7));
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     cursor: grab;
-    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-  }
-
-  .file-card:hover {
-    border-color: color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.28)) 62%, transparent);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  }
-
-  .file-card.selected {
-    border-color: color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.44)) 74%, transparent);
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.12)) 28%, transparent),
-      0 4px 12px rgba(0, 0, 0, 0.1);
-  }
-
-  .file-card-art {
-    width: 58px;
-    height: 58px;
-    border-radius: 14px;
-    display: grid;
-    place-items: center;
-    position: relative;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(255, 255, 255, 0.08)) 40%, transparent);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.07), 0 1px 2px rgba(0, 0, 0, 0.04);
     overflow: hidden;
   }
 
-  .file-card-copy {
+  .file-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.11);
+  }
+
+  .file-card.selected {
+    box-shadow:
+      0 0 0 2px var(--nb-accent, rgba(255, 59, 48, 0.85)),
+      0 4px 14px rgba(0, 0, 0, 0.11);
+  }
+
+  .file-card-art {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 0;
     display: grid;
-    gap: 0.18rem;
+    place-items: center;
+    position: relative;
+    border: none;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .file-card-thumb {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .file-card-copy {
+    padding: 0.48rem 0.58rem 0.52rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
     min-width: 0;
     width: 100%;
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 100%, transparent);
   }
 
   .file-card-name {
-    font-size: 0.88rem;
-    font-weight: 570;
-    color: var(--nb-text-main, rgba(248, 250, 252, 0.98));
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     line-height: 1.3;
     display: -webkit-box;
     line-clamp: 2;
@@ -12156,8 +12196,8 @@
   }
 
   .preview-header {
-    padding: 1rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.18)) 84%, transparent);
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.18)) 60%, transparent);
     display: flex;
     justify-content: space-between;
     gap: 1rem;
