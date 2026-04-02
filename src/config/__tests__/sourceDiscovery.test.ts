@@ -18,6 +18,7 @@ import {
 } from '../sourceDiscovery.js';
 
 describe('source discovery', () => {
+  const validVolumeId = 'a'.repeat(130);
   const previousScanDirs = process.env.NEARBYTES_SOURCE_SCAN_DIRS;
 
   afterEach(() => {
@@ -69,7 +70,7 @@ describe('source discovery', () => {
   it('discovers existing storage layout even without a marker file', async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), 'nearbytes-source-layout-'));
     const root = path.join(tempDir, 'shared-root');
-    await mkdir(path.join(root, 'channels', 'a'.repeat(64)), { recursive: true });
+    await mkdir(path.join(root, 'channels', validVolumeId), { recursive: true });
     await mkdir(path.join(root, 'blocks'), { recursive: true });
 
     process.env.NEARBYTES_SOURCE_SCAN_DIRS = root;
@@ -86,7 +87,7 @@ describe('source discovery', () => {
     expect(sources[0]?.sourceType).toBe('layout');
     expect(sources[0]?.hasChannels).toBe(true);
     expect(sources[0]?.hasBlocks).toBe(true);
-    expect(sources[0]?.volumeIds).toEqual(['a'.repeat(64)]);
+    expect(sources[0]?.volumeIds).toEqual([validVolumeId]);
 
     const manualSources = await discoverNearbytesSources({
       maxDepth: 1,

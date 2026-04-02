@@ -115,7 +115,16 @@ export async function saveIntegrationState(
   const normalized = integrationStateSchema.parse(snapshot);
   const tempPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
-  await fs.rename(tempPath, resolvedPath);
+  try {
+    await fs.rename(tempPath, resolvedPath);
+  } catch (error) {
+    if (!isAtomicReplaceFallbackError(error)) {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    await fs.copyFile(tempPath, resolvedPath);
+    await fs.rm(tempPath, { force: true });
+  }
 }
 
 export function createDefaultIntegrationState(): IntegrationStateSnapshot {
@@ -144,4 +153,12 @@ function uniqueStrings(values: readonly string[]): string[] {
 
 function isFileNotFound(error: unknown): error is NodeJS.ErrnoException {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'ENOENT');
+}
+
+function isAtomicReplaceFallbackError(error: unknown): error is NodeJS.ErrnoException {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return false;
+  }
+  const code = (error as { code?: string }).code;
+  return code === 'EPERM' || code === 'EEXIST' || code === 'EXDEV' || code === 'ENOENT';
 }

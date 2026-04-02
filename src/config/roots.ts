@@ -307,7 +307,16 @@ export async function saveRootsConfig(configPath: string, config: RootsConfig): 
   const tempPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
   const payload = `${JSON.stringify(validated, null, 2)}\n`;
   await fs.writeFile(tempPath, payload, 'utf8');
-  await fs.rename(tempPath, resolvedPath);
+  try {
+    await fs.rename(tempPath, resolvedPath);
+  } catch (error) {
+    if (!isAtomicReplaceFallbackError(error)) {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    await fs.copyFile(tempPath, resolvedPath);
+    await fs.rm(tempPath, { force: true });
+  }
 }
 
 export function resolveVolumeDestinations(config: RootsConfig, volumeId: string): VolumeDestinationConfig[] {
@@ -662,4 +671,12 @@ function isFileNotFoundError(error: unknown): error is NodeJS.ErrnoException {
     return false;
   }
   return (error as { code?: string }).code === 'ENOENT';
+}
+
+function isAtomicReplaceFallbackError(error: unknown): error is NodeJS.ErrnoException {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return false;
+  }
+  const code = (error as { code?: string }).code;
+  return code === 'EPERM' || code === 'EEXIST' || code === 'EXDEV';
 }

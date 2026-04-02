@@ -2,6 +2,11 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createCryptoOperations } from '../../crypto/index.js';
+import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
+import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
+import { createSecret } from '../../types/keys.js';
+import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
 import { GitHubTransportAdapter } from '../github.js';
 import { createIntegrationRuntime, type ProviderSecretStore } from '../runtime.js';
 import type { ManagedShare } from '../types.js';
@@ -139,6 +144,37 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const crypto = createCryptoOperations();
+
+async function createStoredBlock(value: string): Promise<{ hash: string; bytes: Uint8Array }> {
+  const bytes = new TextEncoder().encode(value);
+  return {
+    hash: await crypto.computeHash(bytes),
+    bytes,
+  };
+}
+
+async function createStoredDeleteEvent(secretValue: string, fileName: string): Promise<{
+  volumeId: string;
+  eventHash: string;
+  bytes: Uint8Array;
+}> {
+  const keyPair = await crypto.deriveKeys(createSecret(secretValue));
+  const payload = {
+    type: EventType.DELETE_FILE,
+    fileName,
+    hash: EMPTY_HASH,
+    encryptedKey: createEncryptedData(new Uint8Array(0)),
+  };
+  const payloadBytes = serializeEventPayload(payload);
+  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
+  return {
+    volumeId: volumeIdFromPublicKey(keyPair.publicKey),
+    eventHash: await crypto.computeHash(payloadBytes),
+    bytes: new TextEncoder().encode(JSON.stringify(serializeEvent({ payload, signature }))),
+  };
+}
+
 describe('GitHubTransportAdapter', () => {
   const tempDirs: string[] = [];
 
@@ -148,15 +184,17 @@ describe('GitHubTransportAdapter', () => {
   });
 
   it('completes device auth and syncs a repo-backed share', async () => {
+    const localBlock = await createStoredBlock('alpha');
+    const remoteEvent = await createStoredDeleteEvent('nearbytes-github-remote', 'remote.txt');
     const remoteExistingSha = 'blob-remote-existing';
     const githubState = {
       tokenPolls: 0,
       openedUploads: [] as string[],
       blobs: new Map<string, Uint8Array>([
-        [remoteExistingSha, Buffer.from('from-remote', 'utf8')],
+        [remoteExistingSha, remoteEvent.bytes],
       ]),
       pathsToSha: new Map<string, string>([
-        ['nearbytes/alpha/channels/room/remote.bin', remoteExistingSha],
+        [`nearbytes/alpha/channels/${remoteEvent.volumeId}/${remoteEvent.eventHash}.bin`, remoteExistingSha],
       ]),
       nextBlobId: 1,
     };
@@ -210,8 +248,7 @@ describe('GitHubTransportAdapter', () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-github-'));
     tempDirs.push(tempDir);
     await fs.mkdir(path.join(tempDir, 'blocks'), { recursive: true });
-    await fs.mkdir(path.join(tempDir, 'channels', 'room'), { recursive: true });
-    await fs.writeFile(path.join(tempDir, 'blocks', 'alpha.bin'), 'alpha', 'utf8');
+    await fs.writeFile(path.join(tempDir, 'blocks', `${localBlock.hash}.bin`), localBlock.bytes);
 
     const remoteShare = await adapter.createManagedShare(
       {
@@ -249,9 +286,12 @@ describe('GitHubTransportAdapter', () => {
     await adapter.ensureSync(share, connected.account!);
     const state = await adapter.getState(share, connected.account!);
     expect(state.status).toBe('ready');
-    expect(githubState.openedUploads).toContain('nearbytes/alpha/blocks/alpha.bin');
-    const downloaded = await fs.readFile(path.join(tempDir, 'channels', 'room', 'remote.bin'), 'utf8');
-    expect(downloaded).toBe('from-remote');
+    expect(githubState.openedUploads).toContain(`nearbytes/alpha/blocks/${localBlock.hash}.bin`);
+    const downloaded = await fs.readFile(
+      path.join(tempDir, 'channels', remoteEvent.volumeId, `${remoteEvent.eventHash}.bin`),
+      'utf8'
+    );
+    expect(downloaded).toContain('DELETE_FILE');
 
     await adapter.detachManagedShare(share);
     await adapter.disconnect(connected.account!);

@@ -7,6 +7,8 @@ import { reconcileDiscoveredSources } from '../sourceReconcile.js';
 import { NEARBYTES_MARKER_FILE } from '../sourceDiscovery.js';
 
 describe('source reconciliation', () => {
+  const knownVolumeId = 'a'.repeat(130);
+  const unknownVolumeId = 'b'.repeat(130);
   const previousScanDirs = process.env.NEARBYTES_SOURCE_SCAN_DIRS;
 
   afterEach(() => {
@@ -17,7 +19,6 @@ describe('source reconciliation', () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), 'nearbytes-source-reconcile-'));
     const mainRoot = path.join(tempDir, 'main-root');
     const sharedRoot = path.join(tempDir, 'dropbox-share');
-    const knownVolumeId = 'a'.repeat(64);
 
     await mkdir(mainRoot, { recursive: true });
     await mkdir(path.join(sharedRoot, 'channels', knownVolumeId), { recursive: true });
@@ -69,7 +70,6 @@ describe('source reconciliation', () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), 'nearbytes-source-reconcile-'));
     const mainRoot = path.join(tempDir, 'main-root');
     const sharedRoot = path.join(tempDir, 'icloud-share');
-    const unknownVolumeId = 'b'.repeat(64);
 
     await mkdir(mainRoot, { recursive: true });
     await mkdir(path.join(sharedRoot, 'channels', unknownVolumeId), { recursive: true });

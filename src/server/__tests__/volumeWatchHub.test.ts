@@ -6,6 +6,8 @@ import { VolumeWatchHub } from '../volumeWatchHub.js';
 
 describe('VolumeWatchHub', () => {
   const cleanups: string[] = [];
+  const volumeIdA = 'a'.repeat(130);
+  const volumeIdB = 'b'.repeat(130);
 
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((target) => rm(target, { recursive: true, force: true })));
@@ -14,7 +16,7 @@ describe('VolumeWatchHub', () => {
   it('ignores top-level housekeeping folders while reporting channel changes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'nearbytes-volume-watch-'));
     cleanups.push(root);
-    const volumeId = 'a'.repeat(64);
+    const volumeId = volumeIdA;
     const hub = new VolumeWatchHub({} as never, root);
 
     const updates: string[] = [];
@@ -38,16 +40,17 @@ describe('VolumeWatchHub', () => {
 
     subscription.unsubscribe();
 
+    const watchedVolumePath = normalizeWatchPath(path.join(root, 'channels', volumeId));
     expect(errors).toEqual([]);
-    expect(updates.some((value) => value.includes(`channels${path.sep}${volumeId}`))).toBe(true);
-    expect(updates.some((value) => value.includes('Rubbish'))).toBe(false);
-    expect(updates.some((value) => value.includes(`blocks${path.sep}`))).toBe(false);
+    expect(updates).toContain(watchedVolumePath);
+    expect(updates.some((value) => value.includes('/rubbish'))).toBe(false);
+    expect(updates.some((value) => value.includes('/blocks/'))).toBe(false);
   });
 
   it('reports creation of the watched channel directory itself', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'nearbytes-volume-watch-'));
     cleanups.push(root);
-    const volumeId = 'b'.repeat(64);
+    const volumeId = volumeIdB;
     const hub = new VolumeWatchHub({} as never, root);
 
     const updates: string[] = [];
@@ -66,11 +69,17 @@ describe('VolumeWatchHub', () => {
 
     subscription.unsubscribe();
 
+    const watchedVolumePath = normalizeWatchPath(path.join(root, 'channels', volumeId));
     expect(errors).toEqual([]);
-    expect(updates.some((value) => value.endsWith(`${path.sep}channels${path.sep}${volumeId}`))).toBe(true);
+    expect(updates).toContain(watchedVolumePath);
   });
 });
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeWatchPath(value: string): string {
+  const normalized = path.resolve(value).replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }

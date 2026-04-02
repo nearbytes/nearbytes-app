@@ -2,6 +2,11 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createCryptoOperations } from '../../crypto/index.js';
+import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
+import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
+import { createSecret } from '../../types/keys.js';
+import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
 import { GoogleDriveTransportAdapter } from '../googleDrive.js';
 import {
   DEFAULT_GOOGLE_DESKTOP_CLIENT_ID,
@@ -147,6 +152,37 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const crypto = createCryptoOperations();
+
+async function createStoredBlock(value: string): Promise<{ hash: string; bytes: Uint8Array }> {
+  const bytes = new TextEncoder().encode(value);
+  return {
+    hash: await crypto.computeHash(bytes),
+    bytes,
+  };
+}
+
+async function createStoredDeleteEvent(secretValue: string, fileName: string): Promise<{
+  volumeId: string;
+  eventHash: string;
+  bytes: Uint8Array;
+}> {
+  const keyPair = await crypto.deriveKeys(createSecret(secretValue));
+  const payload = {
+    type: EventType.DELETE_FILE,
+    fileName,
+    hash: EMPTY_HASH,
+    encryptedKey: createEncryptedData(new Uint8Array(0)),
+  };
+  const payloadBytes = serializeEventPayload(payload);
+  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
+  return {
+    volumeId: volumeIdFromPublicKey(keyPair.publicKey),
+    eventHash: await crypto.computeHash(payloadBytes),
+    bytes: new TextEncoder().encode(JSON.stringify(serializeEvent({ payload, signature }))),
+  };
+}
+
 describe('GoogleDriveTransportAdapter', () => {
   const tempDirs: string[] = [];
   const previousGoogleClientId = process.env.NEARBYTES_GOOGLE_CLIENT_ID;
@@ -173,6 +209,8 @@ describe('GoogleDriveTransportAdapter', () => {
   });
 
   it('completes OAuth, creates folders, invites users, and syncs a local mirror', async () => {
+    const localBlock = await createStoredBlock('alpha');
+    const localEvent = await createStoredDeleteEvent('nearbytes-gdrive-local', 'log.txt');
     const driveState = {
       records: new Map<string, FakeDriveRecord>(),
       permissions: [] as Array<{ fileId: string; email: string; role: string }>,
@@ -237,9 +275,12 @@ describe('GoogleDriveTransportAdapter', () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-gdrive-'));
     tempDirs.push(tempDir);
     await fs.mkdir(path.join(tempDir, 'blocks'), { recursive: true });
-    await fs.mkdir(path.join(tempDir, 'channels', 'room'), { recursive: true });
-    await fs.writeFile(path.join(tempDir, 'blocks', 'alpha.bin'), 'alpha', 'utf8');
-    await fs.writeFile(path.join(tempDir, 'channels', 'room', 'log.bin'), 'log', 'utf8');
+    await fs.mkdir(path.join(tempDir, 'channels', localEvent.volumeId), { recursive: true });
+    await fs.writeFile(path.join(tempDir, 'blocks', `${localBlock.hash}.bin`), localBlock.bytes);
+    await fs.writeFile(
+      path.join(tempDir, 'channels', localEvent.volumeId, `${localEvent.eventHash}.bin`),
+      localEvent.bytes
+    );
 
     const remoteShare = await adapter.createManagedShare(
       {
@@ -293,8 +334,8 @@ describe('GoogleDriveTransportAdapter', () => {
     expect(state.status).toBe('ready');
 
     const uploadedNames = Array.from(driveState.records.values()).map((record) => record.name).sort();
-    expect(uploadedNames).toContain('alpha.bin');
-    expect(uploadedNames).toContain('log.bin');
+    expect(uploadedNames).toContain(`${localBlock.hash}.bin`);
+    expect(uploadedNames).toContain(`${localEvent.eventHash}.bin`);
 
     const accepted = await adapter.acceptInvite(
       {

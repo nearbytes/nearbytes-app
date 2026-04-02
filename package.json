@@ -18,6 +18,7 @@
     "build:ui": "yarn --cwd ui build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "test": "vitest run",
+    "test:mega:manual": "vitest run src/integrations/__tests__/megaAdapter.test.ts src/server/__tests__/megaManagedShareApi.test.ts",
     "test:mega:live": "vitest run src/integrations/__tests__/megaAdapter.live.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
