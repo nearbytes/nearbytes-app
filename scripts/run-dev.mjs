@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
-const repoRoot = process.cwd();
+const repoRoot = normalizeWindowsWorkingDirectory(process.cwd());
 const args = process.argv.slice(2);
 const killFirst = args.includes('--kill');
 const killOnly = killFirst && args.length === 1;
@@ -492,4 +492,20 @@ function extractDebugFlag(rawArgs) {
     debugValue,
     passthroughArgs,
   };
+}
+
+function normalizeWindowsWorkingDirectory(inputPath) {
+  if (process.platform !== 'win32') {
+    return inputPath;
+  }
+
+  if (inputPath.startsWith('\\\\?\\UNC\\')) {
+    return `\\\\${inputPath.slice('\\\\?\\UNC\\'.length)}`;
+  }
+
+  if (inputPath.startsWith('\\\\?\\')) {
+    return inputPath.slice('\\\\?\\'.length);
+  }
+
+  return inputPath;
 }
