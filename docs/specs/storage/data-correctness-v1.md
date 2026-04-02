@@ -39,7 +39,7 @@ A file is permitted to reside in `blocks/` if and only if:
 2. `<hash>` is lowercase 64-hex;
 3. `<hash>` equals the SHA-256 of the file bytes.
 
-This matches the ciphertext-addressed block rules in `nb-content-v1.md`.
+This matches the ciphertext-addressed block rules in `references/nb-content-v1.md`.
 
 ## 4. Channel Event Correctness
 
@@ -58,10 +58,10 @@ When the outer event type carries nested signed application data, the nested rec
 
 Normative rules:
 
-1. `APP_RECORD` MUST satisfy `app-records-v1.md`.
+1. `APP_RECORD` MUST satisfy `application/app-records-v1.md`.
 2. `APP_RECORD.payload.protocol` MUST equal the nested record's `p` field.
 3. Supported nested `APP_RECORD` protocols MUST parse and verify according to their own specifications.
-4. Legacy `DECLARE_IDENTITY` and `CHAT_MESSAGE` events MUST satisfy the corresponding compatibility rules in `chat-events-v1.md`, including nested signer consistency and nested signature verification.
+4. Legacy `DECLARE_IDENTITY` and `CHAT_MESSAGE` events MUST satisfy the corresponding compatibility rules in `application/chat-events-v1.md`, including nested signer consistency and nested signature verification.
 
 ## 6. Cleanup Requirement
 

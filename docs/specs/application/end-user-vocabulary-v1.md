@@ -138,7 +138,7 @@ Reason:
 - a Nearbytes hub can span multiple locations
 - a location may exist without being the logical thing people collaborate in
 
-Use only when talking about the cloud provider’s own sharing feature.
+Use only when talking about the cloud providerâ€™s own sharing feature.
 
 ### Project
 Do not use as the default Nearbytes noun.

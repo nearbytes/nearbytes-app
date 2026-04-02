@@ -29,9 +29,9 @@ This specification does not define:
 
 Relationship to other specs:
 
-1. Event append and replay are defined in `file-events-v2.md`.
-2. Recipient-bound references are defined in `nb-reference-v1.md` and `nb-refs-v1.md`.
-3. Source-bound references are defined in `nb-src-ref-v1.md` and `nb-src-refs-v1.md`.
+1. Event append and replay are defined in `application/file-events-v2.md`.
+2. Recipient-bound references are defined in `references/nb-reference-v1.md` and `references/nb-refs-v1.md`.
+3. Source-bound references are defined in `references/nb-src-ref-v1.md` and `references/nb-src-refs-v1.md`.
 
 ## 2. Terms
 

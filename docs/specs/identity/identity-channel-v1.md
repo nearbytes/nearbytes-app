@@ -18,7 +18,7 @@ This specification defines:
 
 Relationship note:
 
-1. command-level identity lifecycle semantics are defined in `identity-management-v1.md`.
+1. command-level identity lifecycle semantics are defined in `identity/identity-management-v1.md`.
 
 ## 2. Channel Addressing
 
@@ -43,7 +43,7 @@ Rules:
 
 1. the enclosing `APP_RECORD` event MUST be signed by the same identity keypair that owns the channel;
 2. `authorPublicKey` MUST equal the identity channel public key;
-3. the nested `nb.identity.record.v1` MUST verify successfully according to `identity-record-v1.md`.
+3. the nested `nb.identity.record.v1` MUST verify successfully according to `identity/identity-record-v1.md`.
 
 ## 4. Update Semantics
 

@@ -25,8 +25,8 @@ This specification does not define:
 
 Relationship note:
 
-1. canonical publication of `nb.identity.record.v1` is defined in `identity-channel-v1.md`;
-2. foreign-volume materialization of the same public profile is defined in `identity-snapshot-v1.md`.
+1. canonical publication of `nb.identity.record.v1` is defined in `identity/identity-channel-v1.md`;
+2. foreign-volume materialization of the same public profile is defined in `identity/identity-snapshot-v1.md`.
 
 Introductory note (non-normative):
 

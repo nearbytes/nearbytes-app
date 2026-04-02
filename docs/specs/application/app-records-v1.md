@@ -24,7 +24,7 @@ This specification does not define:
 
 Relationship note:
 
-1. the enclosing hub/channel model is defined in `hub-model-v1.md`.
+1. the enclosing hub/channel model is defined in `application/hub-model-v1.md`.
 
 ## 2. Outer Event Type
 

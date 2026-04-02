@@ -32,13 +32,13 @@ Introductory model (non-normative):
 
 ## 2. Relationship to Other Specs
 
-1. Nearbytes file-system events are defined in `file-events-v2.md`.
-2. Public sender profiles are defined in `identity-record-v1.md`.
-3. Source-bound file references are defined in `nb-src-ref-v1.md` and `nb-src-refs-v1.md`.
-4. Generic application-carried outer events are defined in `app-records-v1.md`.
-5. Canonical identity publication is defined in `identity-channel-v1.md`.
-6. Local hub materialization of identity state is defined in `identity-snapshot-v1.md`.
-7. The enclosing hub model is defined in `hub-model-v1.md`.
+1. Nearbytes file-system events are defined in `application/file-events-v2.md`.
+2. Public sender profiles are defined in `identity/identity-record-v1.md`.
+3. Source-bound file references are defined in `references/nb-src-ref-v1.md` and `references/nb-src-refs-v1.md`.
+4. Generic application-carried outer events are defined in `application/app-records-v1.md`.
+5. Canonical identity publication is defined in `identity/identity-channel-v1.md`.
+6. Local hub materialization of identity state is defined in `identity/identity-snapshot-v1.md`.
+7. The enclosing hub model is defined in `application/hub-model-v1.md`.
 
 ## 3. Preferred Carrier
 
@@ -80,7 +80,7 @@ Required outer fields:
 Rules:
 
 1. `authorPublicKey` MUST equal the `k` field inside the embedded identity record.
-2. the embedded record MUST verify successfully according to `identity-record-v1.md`.
+2. the embedded record MUST verify successfully according to `identity/identity-record-v1.md`.
 3. the enclosing hub event MUST still be signed by the hub key.
 
 ## 6. `nb.chat.message.v1`

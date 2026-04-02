@@ -30,7 +30,7 @@ These workflows all depend on the same rule: the bundle is useful only to a part
 
 Command note:
 
-1. Source-bound bundle copy/paste command semantics are defined in `file-commands-v1.md`.
+1. Source-bound bundle copy/paste command semantics are defined in `application/file-commands-v1.md`.
 
 Security intuition (non-normative):
 

@@ -8,7 +8,7 @@ Its scope is naming and versioning discipline, not the payload rules of each ind
 
 Relationship note:
 
-1. the current provisional Nearbytes stack model is outlined in `hub-model-v1.md`.
+1. the current provisional Nearbytes stack model is outlined in `application/hub-model-v1.md`.
 
 ## 1. Naming Rule
 
@@ -56,10 +56,10 @@ Some Nearbytes protocol families are specified as command/event-model documents 
 
 Current examples:
 
-1. hub/log model -> `hub-model-v1.md`
-2. file command semantics -> `file-commands-v1.md`
-3. file event/replay model -> `file-events-v2.md`
-4. identity management command semantics -> `identity-management-v1.md`
+1. hub/log model -> `application/hub-model-v1.md`
+2. file command semantics -> `application/file-commands-v1.md`
+3. file event/replay model -> `application/file-events-v2.md`
+4. identity management command semantics -> `identity/identity-management-v1.md`
 
 ## 5. Provisional Stack View
 

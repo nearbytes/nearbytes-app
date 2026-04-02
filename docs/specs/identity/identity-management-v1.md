@@ -36,11 +36,11 @@ Rules:
 
 ## 3. Relationship to Other Specs
 
-1. the enclosing hub/log model is defined in `hub-model-v1.md`;
-2. canonical public identity records are defined in `identity-record-v1.md`;
-3. canonical publication of those records is defined in `identity-channel-v1.md`;
-4. foreign-hub materialization is defined in `identity-snapshot-v1.md`;
-5. chat usage of identities is defined in `chat-events-v1.md`.
+1. the enclosing hub/log model is defined in `application/hub-model-v1.md`;
+2. canonical public identity records are defined in `identity/identity-record-v1.md`;
+3. canonical publication of those records is defined in `identity/identity-channel-v1.md`;
+4. foreign-hub materialization is defined in `identity/identity-snapshot-v1.md`;
+5. chat usage of identities is defined in `application/chat-events-v1.md`.
 
 ## 4. Command Surface
 
@@ -91,7 +91,7 @@ Purpose:
 
 Effect:
 
-1. append an `APP_RECORD` with `protocol = "nb.identity.record.v1"` to the identity publication channel defined by `identity-channel-v1.md`.
+1. append an `APP_RECORD` with `protocol = "nb.identity.record.v1"` to the identity publication channel defined by `identity/identity-channel-v1.md`.
 
 ### 4.4 `MATERIALIZE_IDENTITY_IN_HUB`
 

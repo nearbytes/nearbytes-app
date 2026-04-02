@@ -33,7 +33,7 @@ These are all the same cryptographic shape: a reference is usable once the recip
 
 Command note:
 
-1. Recipient-bound export/import command semantics are defined in `file-commands-v1.md`.
+1. Recipient-bound export/import command semantics are defined in `application/file-commands-v1.md`.
 
 ## 2. Terms
 
@@ -130,7 +130,7 @@ Practical interpretation (non-normative):
 If `c.t == "m"`:
 
 1. `c.h` points to an encrypted manifest block.
-2. Manifest plaintext schema is `nb.manifest.v1` (see `nb-content-v1.md`).
+2. Manifest plaintext schema is `nb.manifest.v1` (see `references/nb-content-v1.md`).
 3. Manifest MUST be encrypted with FEK before storage.
 
 ## 8. Import Procedure

@@ -8,7 +8,7 @@ Its scope is metadata-driven placement and retention policy. It does not define 
 
 Correctness note:
 
-1. Canonical storage-path validity and file correctness are defined in `data-correctness-v1.md`.
+1. Canonical storage-path validity and file correctness are defined in `storage/data-correctness-v1.md`.
 
 ## 1. Scope
 
@@ -83,7 +83,7 @@ Normative rules:
 5. Readers MUST ignore non-`.bin` files when enumerating event logs; `snapshot.latest.json` is optional and not part of the log.
 6. `Nearbytes.html`, when present, is a discovery marker only and MUST NOT be treated as durable data.
 7. `Nearbytes.json` is obsolete metadata and MUST be ignored and removed if found.
-8. Files that do not satisfy canonical path or content correctness MUST be treated as invalid storage data per `data-correctness-v1.md`.
+8. Files that do not satisfy canonical path or content correctness MUST be treated as invalid storage data per `storage/data-correctness-v1.md`.
 
 Each source has:
 

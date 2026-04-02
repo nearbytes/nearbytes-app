@@ -30,7 +30,7 @@ These workflows all depend on the same rule: the reference is useful only to a p
 
 Command note:
 
-1. Source-bound copy/paste command semantics are defined in `file-commands-v1.md`.
+1. Source-bound copy/paste command semantics are defined in `application/file-commands-v1.md`.
 
 Security intuition (non-normative):
 
@@ -58,7 +58,7 @@ Operational consequences:
 
 1. `nb.src.ref.v1` does not require a destination public key at copy time.
 2. `nb.src.ref.v1` is suitable as the default clipboard format.
-3. `nb.ref.v1` is suitable for explicit “copy for this destination volume” flows.
+3. `nb.ref.v1` is suitable for explicit â€œcopy for this destination volumeâ€ flows.
 
 ## 4. Wire Encoding
 

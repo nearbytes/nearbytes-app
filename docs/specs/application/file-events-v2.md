@@ -24,8 +24,8 @@ This specification does not define:
 
 Command note:
 
-1. user-level commands such as upload, copy, paste, recipient-bound export, and folder rename orchestration are defined in `file-commands-v1.md`;
-2. the enclosing hub model is defined in `hub-model-v1.md`.
+1. user-level commands such as upload, copy, paste, recipient-bound export, and folder rename orchestration are defined in `application/file-commands-v1.md`;
+2. the enclosing hub model is defined in `application/hub-model-v1.md`.
 
 ## 2. Terms
 

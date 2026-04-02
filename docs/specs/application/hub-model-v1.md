@@ -116,11 +116,11 @@ However:
 
 ## 9. Relationship to Other Specs
 
-1. generic application-carried records are defined in `app-records-v1.md`;
-2. file subsystem replay is defined in `file-events-v2.md` and `file-commands-v1.md`;
-3. identity management semantics are defined in `identity-management-v1.md`;
-4. identity publication is defined in `identity-channel-v1.md`, `identity-record-v1.md`, and `identity-snapshot-v1.md`;
-5. chat payloads are defined in `chat-events-v1.md`.
+1. generic application-carried records are defined in `application/app-records-v1.md`;
+2. file subsystem replay is defined in `application/file-events-v2.md` and `application/file-commands-v1.md`;
+3. identity management semantics are defined in `identity/identity-management-v1.md`;
+4. identity publication is defined in `identity/identity-channel-v1.md`, `identity/identity-record-v1.md`, and `identity/identity-snapshot-v1.md`;
+5. chat payloads are defined in `application/chat-events-v1.md`.
 
 ## 10. Open-Ended Extension Rule
 
