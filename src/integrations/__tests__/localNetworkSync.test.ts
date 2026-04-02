@@ -92,6 +92,18 @@ describe('LocalNetworkSyncService', () => {
     await shutdownLan(local.lanService);
     await shutdownLan(remote.lanService);
   });
+
+  it('stores local-network runtime state outside a custom storage root', async () => {
+    const secret = 'test:secret:lan-runtime-dir';
+    const harness = await createLanHarness('nearbytes-lan-runtime-dir-', secret, 'peer-a', 3301);
+
+    const internal = harness.lanService as unknown as {
+      runtimeDir: string;
+    };
+    expect(path.resolve(internal.runtimeDir)).not.toBe(path.join(path.resolve(harness.storageDir), 'local-network'));
+
+    await shutdownLan(harness.lanService);
+  });
 });
 
 async function createLanHarness(prefix: string, secretValue: string, peerId: string, httpPort: number): Promise<{

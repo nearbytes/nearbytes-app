@@ -5,7 +5,7 @@ import { promises as fs } from 'fs';
 import type { Request } from 'express';
 import { MultiRootStorageBackend, type VolumeSyncInventory } from '../storage/multiRoot.js';
 import { normalizeHash, normalizeVolumeId, validateBlockBytes, validateEventBytes } from '../storage/integrity.js';
-import { resolveStorageHomeDir } from '../storagePath.js';
+import { getDefaultRuntimeHomeDir, resolveStorageHomeDir } from '../storagePath.js';
 import { PersistentProviderQueue, type ProviderQueueObservationPage } from './providerQueue.js';
 import type { ProviderQueueObservation } from './types.js';
 
@@ -19,6 +19,7 @@ const PEER_SYNC_INTERVAL_MS = 8_000;
 const REQUEST_TIMEOUT_MS = 4_500;
 const OBSERVATION_PAGE_LIMIT = 512;
 const LOCAL_NETWORK_PROVIDER = 'local-network';
+const LOCAL_NETWORK_RUNTIME_FOLDER = 'local-network';
 
 interface LocalAnnouncement {
   readonly protocol: typeof LAN_SYNC_PROTOCOL;
@@ -145,7 +146,7 @@ export class LocalNetworkSyncService {
     }
   ) {
     this.storageHomeDir = resolveStorageHomeDir(options?.storageDir ?? storage.getRootsConfig().sources[0]?.path ?? process.cwd());
-    this.runtimeDir = path.join(this.storageHomeDir, 'local-network');
+    this.runtimeDir = resolveLocalNetworkRuntimeDir(this.storageHomeDir);
     this.providerQueue = new PersistentProviderQueue(storage, this.runtimeDir);
     this.multicastGroup = options?.multicastGroup ?? DEFAULT_MULTICAST_GROUP;
     this.multicastPort = options?.multicastPort ?? DEFAULT_MULTICAST_PORT;
@@ -716,4 +717,13 @@ function formatRelative(timestamp: number): string {
 
 function routeKeyForPeer(peerId: string): string {
   return `peer:${peerId}:pull`;
+}
+
+function resolveLocalNetworkRuntimeDir(storageHomeDir: string): string {
+  const normalizedStorageHome = path.resolve(storageHomeDir);
+  const defaultStorageHome = path.resolve(resolveStorageHomeDir(path.join(os.homedir(), 'nearbytes', 'local')));
+  if (normalizedStorageHome === defaultStorageHome) {
+    return path.join(normalizedStorageHome, LOCAL_NETWORK_RUNTIME_FOLDER);
+  }
+  return path.join(getDefaultRuntimeHomeDir(), LOCAL_NETWORK_RUNTIME_FOLDER);
 }

@@ -82,7 +82,7 @@ export const NEARBYTES_IGNORED_ROOT_FILES = [
   NEARBYTES_LEGACY_MARKER_FILE,
   NEARBYTES_LEGACY_METADATA_FILE,
 ] as const;
-export const NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES = ['.debris', '.megaignore', 'Rubbish'] as const;
+export const NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES = ['.debris', '.megaignore', 'Rubbish', 'local-network'] as const;
 export const NEARBYTES_HOME_URL = 'https://anymatix.github.io/nearbytes/';
 const DEFAULT_NEARBYTES_DIRECTORY = 'nearbytes';
 const WATCH_IGNORED_TOP_LEVEL_ENTRY_NAMES = ['.Trash', ...NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES] as const;

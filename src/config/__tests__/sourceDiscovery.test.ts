@@ -170,6 +170,7 @@ describe('source discovery', () => {
   it('treats provider housekeeping paths as ignored top-level entries', () => {
     expect(isNearbytesIgnoredTopLevelEntryName('Rubbish')).toBe(true);
     expect(isNearbytesIgnoredTopLevelEntryName('.debris')).toBe(true);
+    expect(isNearbytesIgnoredTopLevelEntryName('local-network')).toBe(true);
     expect(isNearbytesIgnoredTopLevelEntryName('blocks')).toBe(false);
   });
 
