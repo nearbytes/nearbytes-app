@@ -56,6 +56,7 @@
   import ArmedActionButton from './ArmedActionButton.svelte';
   import AppDialog from './AppDialog.svelte';
   import IconToggle from './IconToggle.svelte';
+  import ProviderStatusCard from './ProviderStatusCard.svelte';
   import ShareCard from './ShareCard.svelte';
   import {
     ArrowRightLeft,
@@ -275,6 +276,7 @@
   let sourceRepairReports = $state<Record<string, StorageLocationRepairReport>>({});
   let hubLocationDialogVolumeId = $state<string | null>(null);
   let selectedGlobalProvider = $state('local');
+  let selectedGlobalView = $state<'local' | 'provider' | 'incoming'>('local');
   let megaToastDismissals = $state<Record<string, string>>({});
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
@@ -282,10 +284,10 @@
   let activeReserveEditorKey = $state<string | null>(null);
   let discoveryRunId = 0;
 
-  let megaOverviewSection = $state<HTMLDivElement | null>(null);
-  let megaAccountSection = $state<HTMLButtonElement | null>(null);
-  let megaPublishingSection = $state<HTMLButtonElement | null>(null);
-  let megaIncomingSection = $state<HTMLButtonElement | null>(null);
+  let megaOverviewSection = $state<HTMLElement | null>(null);
+  let megaAccountSection = $state<HTMLElement | null>(null);
+  let megaPublishingSection = $state<HTMLElement | null>(null);
+  let megaIncomingSection = $state<HTMLElement | null>(null);
 
   type ShareBadge = {
     label: string;
@@ -472,6 +474,20 @@
     const availableProviders = new Set(['local', ...providerCatalog.map((provider) => provider.provider)]);
     if (!availableProviders.has(selectedGlobalProvider)) {
       selectedGlobalProvider = 'local';
+      selectedGlobalView = 'local';
+      return;
+    }
+    if (selectedGlobalProvider === 'local' && selectedGlobalView !== 'local') {
+      selectedGlobalView = 'local';
+    }
+  });
+
+  $effect(() => {
+    if (selectedGlobalView !== 'incoming') {
+      return;
+    }
+    if (incomingReviewTargetProvider() === null) {
+      selectedGlobalView = selectedGlobalProvider === 'local' ? 'local' : 'provider';
     }
   });
 
@@ -1400,8 +1416,8 @@
       return entry.isConnected
         ? megaProviderReconnectIssue()
           ? 'Nearbytes can see the MEGA account, but MEGA requires account recovery before incoming-share mirroring can resume.'
-          : 'Use MEGA for two kinds of locations: the ones you manage in your own account, and read-only local copies of locations other people shared with you.'
-        : 'Use MEGA for locations you manage yourself and locations shared into your account.';
+          : 'Use MEGA for locations in the connected account.'
+        : 'Connect MEGA to use locations from that account.';
     }
     return entry.setup.detail || entry.description;
   }
@@ -1413,7 +1429,7 @@
   function incomingManagedSharesForProvider(provider: string): IncomingManagedShareOffer[] {
     return sortIncomingManagedShareOffers(
       incomingManagedShareOffers.filter(
-        (offer) => offer.provider === provider && !isIncomingManagedShareOfferDismissed(offer)
+        (offer) => offer.provider === provider && visibleIncomingManagedShareOffer(offer)
       )
     );
   }
@@ -1429,11 +1445,11 @@
   }
 
   function megaOwnerShares(): ManagedShareSummary[] {
-    return providerVisibleShares('mega').filter((summary) => summary.share.role === 'owner');
+    return providerVisibleShares('mega').filter((summary) => managedShareIsOwned(summary));
   }
 
   function megaRecipientShares(): ManagedShareSummary[] {
-    return providerVisibleShares('mega').filter((summary) => summary.share.role === 'recipient');
+    return providerVisibleShares('mega').filter((summary) => managedShareIsIncoming(summary));
   }
 
   function megaPendingIncomingCount(): number {
@@ -1540,6 +1556,7 @@
   async function focusMegaArea(target: MegaTabFocusTarget): Promise<void> {
     if (mode === 'global' && selectedGlobalProvider !== 'mega') {
       selectedGlobalProvider = 'mega';
+      selectedGlobalView = 'provider';
       await tick();
     }
     const element = megaFocusElement(target);
@@ -1671,11 +1688,11 @@
   }
 
   function providerOwnedVisibleShares(provider: string): ManagedShareSummary[] {
-    return providerVisibleShares(provider).filter((summary) => summary.share.role !== 'recipient');
+    return providerVisibleShares(provider).filter((summary) => managedShareIsOwned(summary));
   }
 
   function providerReceivedVisibleShares(provider: string): ManagedShareSummary[] {
-    return providerVisibleShares(provider).filter((summary) => summary.share.role === 'recipient');
+    return providerVisibleShares(provider).filter((summary) => managedShareIsIncoming(summary));
   }
 
   function providerVisibleShareCount(provider: string): number {
@@ -1781,17 +1798,7 @@
       return providerCardStatus(entry);
     }
     if (entry.provider === 'mega') {
-      const publishCount = megaOwnerShares().length;
-      const incomingCount = megaRecipientShares().length;
-      const pendingCount = megaPendingIncomingCount();
-      const parts = [
-        countLabel(publishCount, 'managed location'),
-        countLabel(incomingCount, 'incoming location'),
-      ];
-      if (pendingCount > 0) {
-        parts.push(`${countLabel(pendingCount, 'item')} checking`);
-      }
-      return parts.join(' • ');
+      return connectedAccountForProvider('mega')?.email ?? 'No account connected';
     }
     const locationCopy = countLabel(
       providerVisibleShareCount(entry.provider),
@@ -1871,7 +1878,7 @@
         continue;
       }
       unique.set(resolved, {
-        heading: share.share.role === 'recipient' ? 'Mirror folder for shared location' : 'Local mirror folder',
+        heading: managedShareIsIncoming(share) ? 'Mirror folder for shared location' : 'Local mirror folder',
         title: managedShareTitle(share),
         path: resolved,
       });
@@ -1883,8 +1890,8 @@
     const shareCount = providerVisibleShareCount(entry.provider);
     const attachedCount = providerAttachedShareCount(entry.provider);
     const providerSharesForEntry = providerShares(entry.provider);
-    const recipientCount = providerSharesForEntry.filter((summary) => summary.share.role === 'recipient').length;
-    const ownerCount = providerSharesForEntry.filter((summary) => summary.share.role === 'owner').length;
+    const recipientCount = providerSharesForEntry.filter((summary) => managedShareIsIncoming(summary)).length;
+    const ownerCount = providerSharesForEntry.filter((summary) => managedShareIsOwned(summary)).length;
     const facts = [
       countLabel(
         shareCount,
@@ -2682,6 +2689,10 @@
     return summary.storage?.sourcePath?.trim() || summary.share.localPath;
   }
 
+  function normalizeIdentity(value: string | null | undefined): string {
+    return value?.trim().toLowerCase() ?? '';
+  }
+
   function managedShareAccountEmail(summary: ManagedShareSummary): string | null {
     const account = providerAccounts.find((entry) => entry.id === summary.share.accountId);
     const email = typeof account?.email === 'string' ? account.email.trim() : '';
@@ -2702,10 +2713,84 @@
     return shareName || null;
   }
 
+  function managedShareIsOwned(summary: ManagedShareSummary): boolean {
+    if (summary.share.provider !== 'mega') {
+      return summary.share.role !== 'recipient';
+    }
+    if (summary.share.role === 'owner') {
+      return true;
+    }
+    const accountIdentity = normalizeIdentity(managedShareAccountEmail(summary));
+    const ownerIdentity = normalizeIdentity(managedShareOwnerEmail(summary));
+    return Boolean(accountIdentity && ownerIdentity && accountIdentity === ownerIdentity);
+  }
+
+  function managedShareIsIncoming(summary: ManagedShareSummary): boolean {
+    return !managedShareIsOwned(summary);
+  }
+
+  function incomingManagedShareOwnerEmail(offer: IncomingManagedShareOffer): string | null {
+    const ownerEmail = typeof offer.remoteDescriptor.ownerEmail === 'string'
+      ? offer.remoteDescriptor.ownerEmail.trim()
+      : '';
+    return ownerEmail || null;
+  }
+
+  function incomingManagedShareName(offer: IncomingManagedShareOffer): string | null {
+    const shareName = typeof offer.remoteDescriptor.shareName === 'string'
+      ? offer.remoteDescriptor.shareName.trim()
+      : offer.label.trim();
+    return shareName || null;
+  }
+
+  function incomingManagedShareBelongsToConnectedAccount(offer: IncomingManagedShareOffer): boolean {
+    if (offer.provider !== 'mega') {
+      return false;
+    }
+    const account = providerAccounts.find((entry) => entry.id === offer.accountId);
+    const accountIdentity = normalizeIdentity(account?.email);
+    const ownerIdentity = normalizeIdentity(incomingManagedShareOwnerEmail(offer));
+    return Boolean(accountIdentity && ownerIdentity && accountIdentity === ownerIdentity);
+  }
+
+  function incomingManagedShareMatchesExistingShare(offer: IncomingManagedShareOffer): boolean {
+    const offerName = normalizeIdentity(incomingManagedShareName(offer));
+    const offerOwner = normalizeIdentity(incomingManagedShareOwnerEmail(offer));
+    return providerShares(offer.provider).some((summary) => {
+      if (summary.share.accountId !== offer.accountId) {
+        return false;
+      }
+      const summaryName = normalizeIdentity(managedShareRemoteName(summary) ?? summary.share.label);
+      if (offerName && summaryName && offerName !== summaryName) {
+        return false;
+      }
+      if (offer.provider === 'mega' && offerOwner) {
+        const summaryOwner = normalizeIdentity(managedShareOwnerEmail(summary) ?? managedShareAccountEmail(summary));
+        if (summaryOwner && offerOwner !== summaryOwner) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+
+  function visibleIncomingManagedShareOffer(offer: IncomingManagedShareOffer): boolean {
+    if (isIncomingManagedShareOfferDismissed(offer)) {
+      return false;
+    }
+    if (incomingManagedShareBelongsToConnectedAccount(offer)) {
+      return false;
+    }
+    if (incomingManagedShareMatchesExistingShare(offer)) {
+      return false;
+    }
+    return true;
+  }
+
   function managedShareTitle(summary: ManagedShareSummary): string {
     if (summary.share.provider === 'mega') {
       const remoteName = managedShareRemoteName(summary) ?? summary.share.label;
-      if (summary.share.role === 'recipient') {
+      if (managedShareIsIncoming(summary)) {
         const ownerEmail = managedShareOwnerEmail(summary);
         if (ownerEmail && remoteName) {
           return `${ownerEmail}/${remoteName}`;
@@ -2731,9 +2816,9 @@
     if (summary.share.provider !== 'mega') {
       return null;
     }
-    if (summary.share.role === 'owner') {
+    if (managedShareIsOwned(summary)) {
       const accountEmail = managedShareAccountEmail(summary);
-      return accountEmail ? `Yours in ${accountEmail}` : 'Your MEGA location';
+      return accountEmail || 'Your MEGA location';
     }
     const ownerEmail = managedShareOwnerEmail(summary);
     return ownerEmail ? `Owner: ${ownerEmail}` : 'Owner: another MEGA account';
@@ -2751,7 +2836,7 @@
   }
 
   function managedShareRoleLabel(summary: ManagedShareSummary): string {
-    if (summary.share.role === 'owner') {
+    if (managedShareIsOwned(summary)) {
       return 'You own this live location';
     }
     const ownerEmail = managedShareOwnerEmail(summary);
@@ -2760,10 +2845,10 @@
 
   function managedShareNarrative(summary: ManagedShareSummary): string {
     if (summary.state.status === 'ready') {
-      if (summary.share.provider === 'mega' && summary.share.role === 'owner') {
+      if (summary.share.provider === 'mega' && managedShareIsOwned(summary)) {
         return 'This is your writable Nearbytes publication root for this MEGA account. Nearbytes publishes your updates here, keeps it synced with MEGA, and retries automatically after transient provider errors.';
       }
-      if (summary.share.provider === 'mega' && summary.share.role === 'recipient') {
+      if (summary.share.provider === 'mega' && managedShareIsIncoming(summary)) {
         const ownerEmail = managedShareOwnerEmail(summary);
         return ownerEmail
           ? `This is an automatic local copy of the MEGA location shared with you by ${ownerEmail}. Nearbytes reads from it here, but it never publishes your changes back into ${ownerEmail}'s folder directly.`
@@ -2890,8 +2975,8 @@
     const badges: ShareBadge[] = [];
     if (summary.share.provider === 'mega') {
       badges.push({
-        label: summary.share.role === 'owner' ? 'Yours' : 'Incoming',
-        tone: summary.share.role === 'owner' ? 'durable' : 'replica',
+        label: managedShareIsOwned(summary) ? 'Your location' : 'Incoming',
+        tone: managedShareIsOwned(summary) ? 'durable' : 'replica',
         description: managedShareOwnershipLabel(summary) ?? undefined,
       });
     }
@@ -5118,7 +5203,7 @@
             {@const invitedCollaboratorViews = pendingCollaborators(summary)}
             {#if activeCollaborators.length > 0 || invitedCollaboratorViews.length > 0}
               <div class="managed-share-members managed-share-members-inline">
-                <p class="subheading">{summary.share.role === 'owner' ? 'People' : 'Shared with'}</p>
+                <p class="subheading">{managedShareIsOwned(summary) ? 'People' : 'Shared with'}</p>
                 <div class="managed-share-members-list">
                   {#each activeCollaborators as collaborator (collaborator.key)}
                     <span class="mini-pill">
@@ -5384,9 +5469,12 @@
         <button
           type="button"
           class="provider-choice-card"
-          class:active={selectedGlobalProvider === 'local'}
-          aria-pressed={selectedGlobalProvider === 'local'}
-          onclick={() => (selectedGlobalProvider = 'local')}
+          class:active={selectedGlobalView === 'local'}
+          aria-pressed={selectedGlobalView === 'local'}
+          onclick={() => {
+            selectedGlobalProvider = 'local';
+            selectedGlobalView = 'local';
+          }}
         >
           <span class="provider-choice-eyebrow">Start here</span>
           <span class="provider-choice-head">
@@ -5405,9 +5493,12 @@
           <button
             type="button"
             class="provider-choice-card"
-            class:active={selectedGlobalProvider === provider.provider}
-            aria-pressed={selectedGlobalProvider === provider.provider}
-            onclick={() => (selectedGlobalProvider = provider.provider)}
+            class:active={selectedGlobalView === 'provider' && selectedGlobalProvider === provider.provider}
+            aria-pressed={selectedGlobalView === 'provider' && selectedGlobalProvider === provider.provider}
+            onclick={() => {
+              selectedGlobalProvider = provider.provider;
+              selectedGlobalView = 'provider';
+            }}
           >
             <span class="provider-choice-eyebrow">{provider.isConnected ? 'Connected service' : 'Optional service'}</span>
             <span class="provider-choice-head">
@@ -5429,12 +5520,13 @@
         <button
           type="button"
           class="provider-choice-card incoming-choice-card"
-          class:active={incomingReviewTargetProvider() !== null && selectedGlobalProvider === incomingReviewTargetProvider()}
-          aria-pressed={incomingReviewTargetProvider() !== null && selectedGlobalProvider === incomingReviewTargetProvider()}
+          class:active={selectedGlobalView === 'incoming'}
+          aria-pressed={selectedGlobalView === 'incoming'}
           onclick={() => {
             const provider = incomingReviewTargetProvider();
             if (provider) {
               selectedGlobalProvider = provider;
+              selectedGlobalView = 'incoming';
             }
           }}
           disabled={incomingReviewTargetProvider() === null}
@@ -5463,10 +5555,7 @@
 
       {#if selectedGlobalProvider === 'local'}
       <section class="panel-section">
-        <div class="section-head compact global-panel-head">
-          <div>
-            <h3>Folders on this device</h3>
-          </div>
+        <div class="section-head compact global-panel-head global-panel-head-actions">
           <div class="button-row compact-panel-actions">
             {@render addLocationAction('Add folder', 'Add a folder on this device', addSourceCard, false)}
             {#if dismissedSuggestionCount() > 0}
@@ -5556,11 +5645,7 @@
               || Boolean(incomingLoadError)
             )}
           <section class="panel-section">
-            <div class="section-head compact global-panel-head">
-              <div>
-                <h3>{provider.label}</h3>
-                <p class="section-copy">{providerCardDetail(provider)}</p>
-              </div>
+            <div class="section-head compact global-panel-head global-panel-head-actions">
               <div class="button-row compact-panel-actions">
                 {#if provider.isConnected && providerSupportsCreateAction(provider.provider)}
                   {#if isInlineLocationComposerProvider(provider.provider) && isProviderCreateComposerOpen(provider.provider)}
@@ -5593,7 +5678,16 @@
                     <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
                   </button>
                 {/if}
-                {#if provider.isConnected}
+                {#if provider.provider === 'mega'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    bind:this={megaAccountSection}
+                    onclick={() => openProviderConnectionDialog(provider.provider)}
+                  >
+                    <span>{provider.isConnected ? (megaProviderReconnectIssue() ? 'Reconnect' : 'Disconnect') : 'Connect'}</span>
+                  </button>
+                {:else if provider.isConnected}
                   <button
                     type="button"
                     class="panel-btn subtle compact"
@@ -5651,116 +5745,32 @@
               {@const megaStatus = megaStatusView()}
               {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}
               {@const megaReconnectIssue = megaProviderReconnectIssue()}
-              {@const megaAccount = connectedAccountForProvider('mega')}
-              {@const megaOwnerLocations = megaOwnerShares()}
-              {@const megaIncomingLocations = megaRecipientShares()}
-              {@const megaPendingCount = megaPendingIncomingCount()}
-              {@const megaFlow = providerFlowState('mega')}
-              <div class="mega-command-deck">
-                <div class="provider-story-card compact-provider-card mega-command-card" data-tone={megaStatus.tone} bind:this={megaOverviewSection}>
-                  <div class="mega-command-head">
-                    <div>
-                      <h4 class="mega-command-title">{megaStatus.headline}</h4>
-                      {#if megaStatus.detail}<p class="provider-step-detail">{megaStatus.detail}</p>{/if}
-                    </div>
-                    {#if megaStatus.tone === 'warn'}
-                      <div class="mega-command-badges">
-                        <span class="status-pill tone-warn">Needs attention</span>
-                      </div>
-                    {/if}
-                  </div>
-
-                  <div class="provider-choice-grid mega-summary-strip">
-                    <button type="button" class="provider-choice-card mega-summary-card" bind:this={megaAccountSection} onclick={() => openProviderConnectionDialog(provider.provider)}>
-                      <span class="provider-choice-eyebrow">MEGA login</span>
-                      <span class="provider-choice-head">
-                        <span class="provider-choice-title">{megaAccount?.email ?? 'Sign in required'}</span>
-                        <span class={`status-pill tone-${megaReconnectIssue ? 'warn' : megaAccount ? 'good' : 'muted'}`}>
-                          {megaReconnectIssue ? 'Recovery' : megaAccount ? 'Connected' : 'Sign in'}
-                        </span>
-                      </span>
-                      <span class="provider-choice-detail">
-                        {megaReconnectIssue
-                          ? 'Recovery required before incoming sync resumes'
-                          : megaFlow?.title ?? 'This is the account Nearbytes is signed into'}
-                      </span>
-                    </button>
-
-                    <button type="button" class="provider-choice-card mega-summary-card" bind:this={megaPublishingSection} onclick={() => void focusMegaArea('publishing')}>
-                      <span class="provider-choice-eyebrow">Your locations</span>
-                      <span class="provider-choice-head">
-                        <span class="provider-choice-title">{countLabel(megaOwnerLocations.length, 'location')}</span>
-                        <span class="status-pill tone-good">Yours</span>
-                      </span>
-                      <span class="provider-choice-detail">
-                        {megaOwnerLocations.length > 0
-                          ? 'Locations you control in this MEGA account'
-                          : 'No writable locations in this account yet'}
-                      </span>
-                    </button>
-
-                    <button type="button" class="provider-choice-card mega-summary-card" bind:this={megaIncomingSection} onclick={() => void focusMegaArea('incoming')}>
-                      <span class="provider-choice-eyebrow">Incoming locations</span>
-                      <span class="provider-choice-head">
-                        <span class="provider-choice-title">{countLabel(megaIncomingLocations.length, 'location')}</span>
-                        <span class={`status-pill tone-${megaPendingCount > 0 ? 'warn' : megaIncomingLocations.length > 0 ? 'muted' : 'muted'}`}>
-                          {megaPendingCount > 0 ? 'Checking' : 'Foreign'}
-                        </span>
-                      </span>
-                      <span class="provider-choice-detail">
-                        {megaPendingCount > 0
-                          ? `${countLabel(megaPendingCount, 'waiting item')} still being checked`
-                          : megaIncomingLocations.length > 0
-                            ? 'Read-only local copies of locations shared to you'
-                            : 'No incoming locations visible yet'}
-                      </span>
-                    </button>
-                  </div>
-
-                  {#if megaReconnectIssue}
-                    <div class="button-row mega-command-actions">
-                      <button
-                        type="button"
-                        class="panel-btn primary compact"
-                        onclick={() => openProviderConnectionDialog(provider.provider)}
-                      >
-                        <span>Reconnect account</span>
-                      </button>
-                    </div>
+              {#if megaReconnectIssue || shareLoadError || (megaStatus.tone !== 'good' && (megaStatus.detail || megaStatus.progressLabel)) || megaRuntimeLogsVisible}
+                <div class="mega-command-deck" bind:this={megaOverviewSection}>
+                  {#if megaReconnectIssue || shareLoadError || (megaStatus.tone !== 'good' && (megaStatus.detail || megaStatus.progressLabel))}
+                    <ProviderStatusCard
+                      title={megaReconnectIssue ? 'Finish MEGA account recovery' : megaStatus.headline}
+                      detail={megaReconnectIssue
+                        ? 'Recovery is required before Nearbytes can keep MEGA locations in sync.'
+                        : shareLoadError || megaStatus.detail || megaStatus.headline}
+                      tone={megaReconnectIssue ? 'warn' : megaStatus.tone}
+                      showProgress={megaStatus.showProgressBar}
+                      progressPercent={megaStatus.progressPercent}
+                      progressLabel={megaStatus.progressLabel}
+                    >
+                      {#snippet actions()}
+                        {#if megaReconnectIssue}
+                          <button
+                            type="button"
+                            class="panel-btn primary compact"
+                            onclick={() => openProviderConnectionDialog(provider.provider)}
+                          >
+                            <span>Reconnect account</span>
+                          </button>
+                        {/if}
+                      {/snippet}
+                    </ProviderStatusCard>
                   {/if}
-
-                  <div class="provider-path-card mega-detail-card" data-tone={megaStatus.tone}>
-                    {#if megaStatus.showProgressBar && megaStatus.progressLabel}
-                      <div
-                        class="mega-sync-progress"
-                        role="progressbar"
-                        aria-label="MEGA sync progress"
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={megaStatus.progressPercent ?? undefined}
-                      >
-                        <div
-                          class="mega-sync-progress-bar"
-                          class:indeterminate={megaStatus.progressPercent === null}
-                          style={megaStatus.progressPercent === null ? undefined : `width: ${megaStatus.progressPercent}%`}
-                        ></div>
-                      </div>
-                      <p class="mega-progress-copy">{megaStatus.progressLabel}</p>
-                    {/if}
-                    {#if megaStatus.locationSteps.length > 0}
-                      <div class="mega-location-activity">
-                        <p class="subheading">Visible locations</p>
-                        <ul class="mega-location-activity-list">
-                          {#each megaStatus.locationSteps as step (step.shareId)}
-                            <li class="mega-location-activity-item" data-tone={step.tone}>
-                              <span class="mega-location-activity-name">{step.name}</span>
-                              <span class="mega-location-activity-phase">{step.phase}</span>
-                            </li>
-                          {/each}
-                        </ul>
-                      </div>
-                    {/if}
-                  </div>
 
                   {#if megaRuntimeLogsVisible}
                     {@const visibleRuntimeLogs = visibleMegaRuntimeLogs()}
@@ -5886,9 +5896,7 @@
                     </div>
                   {/if}
                 </div>
-
-
-              </div>
+              {/if}
 
               {#if megaIssue}
                 <div class="provider-story-card compact-provider-card">
@@ -6131,12 +6139,7 @@
               </div>
             {/if}
 
-            <div class="section-stack">
-              <div class="section-copy-stack">
-                <p class="subheading">Your locations</p>
-                <p class="managed-share-invite-copy">Locations you manage in {provider.label} stay here.</p>
-              </div>
-
+            <div class="section-stack" bind:this={megaPublishingSection}>
               <div class="compact-share-grid" class:mega-share-grid={provider.provider === 'mega'}>
                 {#if ownedShares.length === 0}
                   <div class="compact-share-item">
@@ -6156,7 +6159,7 @@
             </div>
 
             {#if receivedShares.length > 0 || hasIncomingReviewState}
-              <div class="section-stack section-stack-secondary">
+              <div class="section-stack section-stack-secondary" bind:this={megaIncomingSection}>
                 <div class="section-copy-stack">
                   <p class="subheading">{provider.provider === 'mega' ? 'Incoming locations' : 'Shared with you'}</p>
                   <p class="managed-share-invite-copy">Locations someone else shared into this account stay separate from the ones you manage yourself.</p>
@@ -6484,27 +6487,48 @@
             {/if}
 
             <div class="button-row provider-dialog-actions">
-              <button
-                type="button"
-                class={`panel-btn subtle compact ${providerDisconnectArmed[dialogProvider.provider] ? 'danger' : ''}`}
-                onclick={async () => {
-                  if (providerDisconnectArmed[dialogProvider.provider]) {
-                    await disconnectProvider(dialogProvider);
-                    closeProviderConnectionDialog();
-                    return;
+              {#if dialogProvider.isConnected}
+                <button
+                  type="button"
+                  class={`panel-btn subtle compact ${providerDisconnectArmed[dialogProvider.provider] ? 'danger' : ''}`}
+                  onclick={async () => {
+                    if (providerDisconnectArmed[dialogProvider.provider]) {
+                      await disconnectProvider(dialogProvider);
+                      closeProviderConnectionDialog();
+                      return;
+                    }
+                    setProviderDisconnectArmed(dialogProvider.provider, true);
+                  }}
+                  disabled={integrationBusyKey === `disconnect:${dialogProvider.provider}`}
+                >
+                  {integrationBusyKey === `disconnect:${dialogProvider.provider}`
+                    ? 'Disconnecting...'
+                    : providerDisconnectArmed[dialogProvider.provider]
+                      ? 'Confirm disconnect'
+                      : dialogMegaReconnectIssue
+                        ? 'Disconnect to recover'
+                        : 'Disconnect'}
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="panel-btn primary compact"
+                  onclick={() => void connectProvider(dialogProvider)}
+                  disabled={
+                    integrationBusyKey === `connect:${dialogProvider.provider}` ||
+                    dialogProvider.setup.status === 'needs-config' ||
+                    dialogProvider.setup.status === 'unsupported'
                   }
-                  setProviderDisconnectArmed(dialogProvider.provider, true);
-                }}
-                disabled={integrationBusyKey === `disconnect:${dialogProvider.provider}`}
-              >
-                {integrationBusyKey === `disconnect:${dialogProvider.provider}`
-                  ? 'Disconnecting...'
-                  : providerDisconnectArmed[dialogProvider.provider]
-                    ? 'Confirm disconnect'
-                    : dialogMegaReconnectIssue
-                      ? 'Disconnect to recover'
-                      : 'Disconnect'}
-              </button>
+                >
+                  <span>
+                    {integrationBusyKey === `connect:${dialogProvider.provider}`
+                      ? dialogProvider.setup.status === 'needs-install'
+                        ? 'Installing...'
+                        : 'Connecting...'
+                      : 'Connect'}
+                  </span>
+                </button>
+              {/if}
             </div>
           {/snippet}
         </AppDialog>
@@ -6739,20 +6763,6 @@
     gap: 0.62rem;
   }
 
-  .mega-detail-card {
-    gap: 0.45rem;
-  }
-
-  .mega-detail-card[data-tone='good'] {
-    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.92));
-  }
-
-  .mega-detail-card[data-tone='warn'] {
-    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 30%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 80%, rgba(255, 250, 245, 0.97));
-  }
-
   .provider-tabs {
     display: flex;
     flex-wrap: wrap;
@@ -6889,6 +6899,10 @@
 
   .global-panel-head {
     gap: 0.9rem;
+  }
+
+  .global-panel-head-actions {
+    justify-content: flex-end;
   }
 
   .compact-panel-actions {
@@ -7635,63 +7649,8 @@
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
   }
 
-  .mega-command-deck {
-    display: grid;
-    gap: 1rem;
-  }
-
-  .mega-command-card {
-    width: 100%;
-    max-width: none;
-    gap: 0.82rem;
-    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(249, 244, 240, 0.94)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(247, 239, 233, 0.94))),
-      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #7c6f64) 11%, transparent), transparent 58%);
-  }
-
-  .mega-command-card[data-tone='warn'] {
-    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 30%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background:
-      linear-gradient(180deg, color-mix(in srgb, rgba(255, 250, 245, 0.98) 92%, rgba(253, 230, 138, 0.1)), color-mix(in srgb, rgba(255, 248, 242, 0.96) 90%, rgba(253, 230, 138, 0.14))),
-      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-warning, #d4945f) 10%, transparent), transparent 58%);
-  }
-
-  .mega-command-head {
-    display: grid;
-    gap: 0.6rem;
-  }
-
-  .mega-command-title {
-    margin: 0;
-    color: var(--text-main);
-    font-size: 1rem;
-    line-height: 1.3;
-    font-weight: 700;
-  }
-
-  .mega-command-badges {
-    display: flex;
-    gap: 0.45rem;
-    flex-wrap: wrap;
+  .mega-account-card-actions {
     justify-content: flex-start;
-  }
-
-  .mega-summary-strip {
-    gap: 0.72rem;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  }
-
-  .mega-summary-card {
-    min-width: 0;
-  }
-
-  .mega-summary-card .provider-choice-title {
-    overflow-wrap: anywhere;
-  }
-
-  .mega-summary-card .provider-choice-detail {
-    margin: 0;
   }
 
   .mega-share-grid {
@@ -7940,81 +7899,6 @@
     color: var(--text-main);
     font-size: 0.84rem;
     font-weight: 640;
-  }
-
-  .mega-sync-progress {
-    position: relative;
-    overflow: hidden;
-    height: 7px;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(0, 0, 0, 0.03));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 240, 234, 0.9));
-  }
-
-  .mega-sync-progress-bar {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 0%;
-    border-radius: inherit;
-    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 50%, rgba(255, 249, 246, 0.98));
-    transition: width 220ms ease;
-  }
-
-  .mega-sync-progress-bar.indeterminate {
-    width: 34%;
-    animation: mega-sync-indeterminate 1.1s ease-in-out infinite;
-  }
-
-  .mega-progress-copy,
-  .mega-self-repair-copy {
-    margin: 0;
-    color: var(--text-faint);
-    font-size: 0.73rem;
-    line-height: 1.35;
-  }
-
-  .mega-location-activity {
-    margin: 0.35rem 0 0;
-  }
-
-  .mega-location-activity-list {
-    margin: 0.35rem 0 0;
-    padding: 0;
-    list-style: none;
-    display: grid;
-    gap: 0.45rem;
-  }
-
-  .mega-location-activity-item {
-    display: grid;
-    gap: 0.12rem;
-    padding: 0.45rem 0.55rem;
-    border-radius: 0.55rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.5));
-  }
-
-  .mega-location-activity-item[data-tone='warn'] {
-    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 35%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 75%, rgba(255, 250, 245, 0.96));
-  }
-
-  .mega-location-activity-item[data-tone='good'] {
-    border-color: color-mix(in srgb, var(--nb-success, #6aa975) 28%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-  }
-
-  .mega-location-activity-name {
-    font-size: 0.78rem;
-    font-weight: 640;
-    color: var(--text-main);
-    overflow-wrap: anywhere;
-  }
-
-  .mega-location-activity-phase {
-    font-size: 0.72rem;
-    color: var(--text-faint);
-    line-height: 1.35;
-    overflow-wrap: anywhere;
   }
 
   .mega-log-view {
@@ -8353,15 +8237,6 @@
   }
 
   @keyframes provider-progress-slide {
-    0% {
-      transform: translateX(-110%);
-    }
-    100% {
-      transform: translateX(320%);
-    }
-  }
-
-  @keyframes mega-sync-indeterminate {
     0% {
       transform: translateX(-110%);
     }
