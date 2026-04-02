@@ -35,6 +35,15 @@
 <article class="share-card" class:active class:compact>
   <div class="card-head">
     <span class="card-title-text">{title}</span>
+    {#if statusBadges.length > 0}
+      <span class="card-head-badges">
+        {#each statusBadges as badge}
+          <span class={`status-pill tone-${badge.tone ?? 'muted'}`} title={badge.description ?? badge.label}>
+            {badge.label}
+          </span>
+        {/each}
+      </span>
+    {/if}
     {#if actions}
       <span class="card-head-actions">
         {@render actions()}
@@ -133,6 +142,48 @@
     align-items: center;
     gap: 0.3rem;
     flex-shrink: 0;
+  }
+
+  .card-head-badges {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.28rem;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 0 0.48rem;
+    border-radius: 999px;
+    border: 1px solid var(--nb-border, rgba(0, 0, 0, 0.08));
+    background: var(--nb-panel-bg, #ffffff);
+    color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
+    font-size: 0.58rem;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .tone-good,
+  .tone-durable {
+    border-color: color-mix(in srgb, var(--nb-success, #34C759) 22%, var(--nb-border, rgba(0, 0, 0, 0.08)));
+    background: color-mix(in srgb, var(--nb-success, #34C759) 7%, var(--nb-panel-bg, #ffffff));
+    color: color-mix(in srgb, var(--nb-success, #34C759) 72%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
+  }
+
+  .tone-warn {
+    border-color: color-mix(in srgb, var(--nb-warning, #FF9500) 28%, var(--nb-border, rgba(0, 0, 0, 0.08)));
+    background: color-mix(in srgb, var(--nb-warning, #FF9500) 8%, var(--nb-panel-bg, #ffffff));
+    color: color-mix(in srgb, var(--nb-warning, #FF9500) 72%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
+  }
+
+  .tone-replica,
+  .tone-off,
+  .tone-muted {
+    color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
   }
 
   .card-sub {

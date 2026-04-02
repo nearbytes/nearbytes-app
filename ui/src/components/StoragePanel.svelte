@@ -713,15 +713,15 @@
   function providerSelectionDetail(entry: ProviderCatalogEntry): string {
     if (!entry.isConnected) {
       if (entry.provider === 'mega') {
-        return 'Connect this if you want Nearbytes to publish through MEGA or read folders shared to your MEGA account.';
+        return 'Connect this if you want Nearbytes to use MEGA for your own locations or incoming locations.';
       }
       return `Connect ${entry.label} only if you want a storage location there.`;
     }
     if (entry.provider === 'mega') {
-      return 'Nearbytes keeps your own MEGA root separate from folders other people shared with you.';
+      return 'Nearbytes keeps your own MEGA locations separate from incoming locations.';
     }
     if (providerShowsIncomingShareSection(entry.provider)) {
-      return 'Your own locations stay separate from folders other people shared with you.';
+      return 'Your own locations stay separate from incoming locations.';
     }
     return 'Use this service only for the storage locations you choose here.';
   }
@@ -2721,10 +2721,22 @@
   }
 
   function managedShareCardTitle(summary: ManagedShareSummary): string {
-    if (summary.share.provider === 'mega' && summary.share.role === 'owner') {
+    if (summary.share.provider === 'mega') {
       return managedShareRemoteName(summary) ?? summary.share.label;
     }
     return managedShareTitle(summary);
+  }
+
+  function managedShareOwnershipLabel(summary: ManagedShareSummary): string | null {
+    if (summary.share.provider !== 'mega') {
+      return null;
+    }
+    if (summary.share.role === 'owner') {
+      const accountEmail = managedShareAccountEmail(summary);
+      return accountEmail ? `Yours in ${accountEmail}` : 'Your MEGA location';
+    }
+    const ownerEmail = managedShareOwnerEmail(summary);
+    return ownerEmail ? `Owner: ${ownerEmail}` : 'Owner: another MEGA account';
   }
 
   function sourceDisplayTitle(source: SourceConfigEntry): string {
@@ -2875,17 +2887,23 @@
   }
 
   function shareCardBadgesForManaged(summary: ManagedShareSummary): ShareBadge[] {
-    const label = shareStatusLabel(summary);
-    if (label === 'Connected' || label === 'Available') {
-      return [];
+    const badges: ShareBadge[] = [];
+    if (summary.share.provider === 'mega') {
+      badges.push({
+        label: summary.share.role === 'owner' ? 'Yours' : 'Incoming',
+        tone: summary.share.role === 'owner' ? 'durable' : 'replica',
+        description: managedShareOwnershipLabel(summary) ?? undefined,
+      });
     }
-    return [
-      {
+    const label = shareStatusLabel(summary);
+    if (label !== 'Connected' && label !== 'Available') {
+      badges.push({
         label,
         tone: shareStatusTone(summary),
         description: summary.state.detail,
-      },
-    ];
+      });
+    }
+    return badges;
   }
 
   function defaultManagedShareLabel(): string {
@@ -2998,6 +3016,7 @@
       summary.storage?.usageTotalBytes,
       summary.storage?.availableBytes ?? summary.storage?.remoteAvailableBytes
     );
+    const ownershipLabel = managedShareOwnershipLabel(summary);
     return {
       provider: summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider === 'github' ? 'GitHub' : summary.share.provider,
       title: managedShareCardTitle(summary),
@@ -3005,6 +3024,7 @@
       active: summary.state.status === 'ready',
       statusBadges: shareCardBadgesForManaged(summary),
       meta: [
+        ownershipLabel,
         measurement,
         !measurement ? managedShareOpenLabel(summary) : null,
       ].filter((value): value is string => Boolean(value)),
@@ -5309,9 +5329,9 @@
           {:else if !incomingLoading}
             <p class="managed-share-invite-copy">
               {#if hiddenIncomingSharesHere > 0}
-                No incoming folders are visible right now. {countLabel(hiddenIncomingSharesHere, 'hidden share')} can be shown again from the button above.
+                No incoming locations are visible right now. {countLabel(hiddenIncomingSharesHere, 'hidden share')} can be shown again from the button above.
               {:else}
-                No incoming folders detected yet. When the share is visible in {providerLabelForIncoming(providerKey)}, it will list here with an add action.
+                No incoming locations detected yet. When a location is visible in {providerLabelForIncoming(providerKey)}, it will list here with an add action.
               {/if}
             </p>
           {/if}
@@ -5419,17 +5439,17 @@
           }}
           disabled={incomingReviewTargetProvider() === null}
         >
-          <span class="provider-choice-eyebrow">Shared with you</span>
+          <span class="provider-choice-eyebrow">From other people</span>
           <span class="provider-choice-head">
-            <span class="provider-choice-title">Incoming folders</span>
+            <span class="provider-choice-title">Incoming items</span>
             <span class={`status-pill tone-${totalIncomingReviewCount() > 0 ? 'warn' : 'muted'}`}>
               {countLabel(totalIncomingReviewCount(), 'item')}
             </span>
           </span>
           <span class="provider-choice-copy">
             {totalIncomingReviewCount() > 0
-              ? 'Review contact requests and shared folders here'
-              : 'No incoming folders right now'}
+              ? 'Review contact requests and incoming locations here'
+              : 'No incoming items right now'}
           </span>
         </button>
       </div>
@@ -5643,41 +5663,51 @@
                       <h4 class="mega-command-title">{megaStatus.headline}</h4>
                       {#if megaStatus.detail}<p class="provider-step-detail">{megaStatus.detail}</p>{/if}
                     </div>
-                    <div class="mega-command-badges">
-                      <span class={`status-pill tone-${megaStatus.tone === 'good' ? 'good' : megaStatus.tone === 'warn' ? 'warn' : 'muted'}`}>
-                        {megaStatus.tone === 'good' ? 'Healthy' : megaStatus.tone === 'warn' ? 'Needs attention' : 'Syncing'}
-                      </span>
-                      {#if megaStatus.progressLabel && !megaStatus.showProgressBar}
-                        <span class="status-pill tone-muted">{megaStatus.progressLabel}</span>
-                      {/if}
-                    </div>
+                    {#if megaStatus.tone === 'warn'}
+                      <div class="mega-command-badges">
+                        <span class="status-pill tone-warn">Needs attention</span>
+                      </div>
+                    {/if}
                   </div>
 
-                  <div class="mega-summary-strip">
-                    <button type="button" class="mega-summary-chip" bind:this={megaAccountSection} onclick={() => openProviderConnectionDialog(provider.provider)}>
-                      <span class="subheading">Connected account</span>
-                      <strong>{megaAccount?.email ?? 'Sign in required'}</strong>
-                      <span class="mega-summary-note">
+                  <div class="provider-choice-grid mega-summary-strip">
+                    <button type="button" class="provider-choice-card mega-summary-card" bind:this={megaAccountSection} onclick={() => openProviderConnectionDialog(provider.provider)}>
+                      <span class="provider-choice-eyebrow">MEGA login</span>
+                      <span class="provider-choice-head">
+                        <span class="provider-choice-title">{megaAccount?.email ?? 'Sign in required'}</span>
+                        <span class={`status-pill tone-${megaReconnectIssue ? 'warn' : megaAccount ? 'good' : 'muted'}`}>
+                          {megaReconnectIssue ? 'Recovery' : megaAccount ? 'Connected' : 'Sign in'}
+                        </span>
+                      </span>
+                      <span class="provider-choice-detail">
                         {megaReconnectIssue
                           ? 'Recovery required before incoming sync resumes'
-                          : megaFlow?.title ?? 'Open sign-in and session details'}
+                          : megaFlow?.title ?? 'This is the account Nearbytes is signed into'}
                       </span>
                     </button>
 
-                    <button type="button" class="mega-summary-chip" bind:this={megaPublishingSection} onclick={() => void focusMegaArea('publishing')}>
-                      <span class="subheading">Your locations</span>
-                      <strong>{countLabel(megaOwnerLocations.length, 'location')}</strong>
-                      <span class="mega-summary-note">
+                    <button type="button" class="provider-choice-card mega-summary-card" bind:this={megaPublishingSection} onclick={() => void focusMegaArea('publishing')}>
+                      <span class="provider-choice-eyebrow">Your locations</span>
+                      <span class="provider-choice-head">
+                        <span class="provider-choice-title">{countLabel(megaOwnerLocations.length, 'location')}</span>
+                        <span class="status-pill tone-good">Yours</span>
+                      </span>
+                      <span class="provider-choice-detail">
                         {megaOwnerLocations.length > 0
                           ? 'Locations you control in this MEGA account'
                           : 'No writable locations in this account yet'}
                       </span>
                     </button>
 
-                    <button type="button" class="mega-summary-chip" bind:this={megaIncomingSection} onclick={() => void focusMegaArea('incoming')}>
-                      <span class="subheading">Incoming locations</span>
-                      <strong>{countLabel(megaIncomingLocations.length, 'location')}</strong>
-                      <span class="mega-summary-note">
+                    <button type="button" class="provider-choice-card mega-summary-card" bind:this={megaIncomingSection} onclick={() => void focusMegaArea('incoming')}>
+                      <span class="provider-choice-eyebrow">Incoming locations</span>
+                      <span class="provider-choice-head">
+                        <span class="provider-choice-title">{countLabel(megaIncomingLocations.length, 'location')}</span>
+                        <span class={`status-pill tone-${megaPendingCount > 0 ? 'warn' : megaIncomingLocations.length > 0 ? 'muted' : 'muted'}`}>
+                          {megaPendingCount > 0 ? 'Checking' : 'Foreign'}
+                        </span>
+                      </span>
+                      <span class="provider-choice-detail">
                         {megaPendingCount > 0
                           ? `${countLabel(megaPendingCount, 'waiting item')} still being checked`
                           : megaIncomingLocations.length > 0
@@ -6322,7 +6352,7 @@
 
         {#each providerCatalog.filter((entry) => entry.isConnected && providerShowsIncomingShareSection(entry.provider) && (incomingProviderInvitesForProvider(entry.provider).length > 0 || incomingManagedSharesForProvider(entry.provider).length > 0)) as incomingProvider (incomingProvider.provider)}
           <section class="panel-section provider-incoming-hub-wrap">
-            {@render incomingFromOthersSection(incomingProvider.provider, 'Shared with you')}
+            {@render incomingFromOthersSection(incomingProvider.provider, 'Incoming items')}
           </section>
         {/each}
 
@@ -7612,8 +7642,8 @@
 
   .mega-command-card {
     width: 100%;
-    max-width: 720px;
-    gap: 1rem;
+    max-width: none;
+    gap: 0.82rem;
     border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background:
       linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(249, 244, 240, 0.94)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(247, 239, 233, 0.94))),
@@ -7648,47 +7678,20 @@
   }
 
   .mega-summary-strip {
-    display: grid;
     gap: 0.72rem;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
 
-  .mega-summary-chip {
-    display: grid;
-    gap: 0.3rem;
+  .mega-summary-card {
     min-width: 0;
-    padding: 0.92rem 0.96rem;
-    border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(251, 247, 244, 0.9));
-    text-align: left;
-    cursor: pointer;
-    transition:
-      transform 140ms ease,
-      border-color 140ms ease,
-      background 140ms ease,
-      box-shadow 140ms ease;
   }
 
-  .mega-summary-chip:hover {
-    transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
-    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.04);
-  }
-
-  .mega-summary-chip strong {
-    color: var(--text-main);
-    font-size: 1rem;
-    line-height: 1.28;
-    font-weight: 700;
+  .mega-summary-card .provider-choice-title {
     overflow-wrap: anywhere;
   }
 
-  .mega-summary-note {
-    color: var(--text-soft);
-    font-size: 0.77rem;
-    line-height: 1.35;
+  .mega-summary-card .provider-choice-detail {
+    margin: 0;
   }
 
   .mega-share-grid {
