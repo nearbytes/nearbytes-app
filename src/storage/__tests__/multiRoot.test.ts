@@ -8,8 +8,9 @@ import { NEARBYTES_MARKER_FILE } from '../../config/sourceDiscovery.js';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { createEncryptedData, EMPTY_HASH, EventType, type EventPayload, type Hash } from '../../types/events.js';
 import { createSecret } from '../../types/keys.js';
-import { serializeEvent, serializeEventPayload } from '../serialization.js';
+import { serializeEvent, serializeEventEnvelope } from '../serialization.js';
 import { MultiRootStorageBackend, type MultiRootRuntimeSnapshot } from '../multiRoot.js';
+import { createSignedEvent } from '../../domain/eventEnvelope.js';
 
 function bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
@@ -30,13 +31,17 @@ async function createSignedStoredEvent(
   payload: EventPayload
 ): Promise<{ volumeId: string; eventHash: Hash; bytes: Uint8Array }> {
   const keyPair = await crypto.deriveKeys(createSecret(secretValue));
-  const payloadBytes = serializeEventPayload(payload);
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
-  const eventHash = await crypto.computeHash(payloadBytes);
+  const storedEvent = await createSignedEvent(
+    crypto,
+    keyPair,
+    payload,
+    payload.hash === EMPTY_HASH ? [] : [payload.hash]
+  );
+  const eventHash = await crypto.computeHash(serializeEventEnvelope(storedEvent.envelope));
   return {
     volumeId: volumeIdFromPublicKey(keyPair.publicKey),
     eventHash,
-    bytes: bytes(JSON.stringify(serializeEvent({ payload, signature }))),
+    bytes: bytes(JSON.stringify(serializeEvent(storedEvent))),
   };
 }
 
@@ -927,7 +932,9 @@ describe('MultiRootStorageBackend', () => {
 
     expect(await readFile(join(backupRoot, 'blocks', `${block.hash}.bin`), 'utf8')).toBe('block-data');
     expect(await readFile(join(backupRoot, 'channels', keyHex, `${createEvent.eventHash}.bin`), 'utf8')).toContain(block.hash);
-    expect(await readFile(join(backupRoot, 'channels', keyHex, `${deleteEvent.eventHash}.bin`), 'utf8')).toContain('DELETE_FILE');
+    expect(await readFile(join(backupRoot, 'channels', keyHex, `${deleteEvent.eventHash}.bin`), 'utf8')).toBe(
+      new TextDecoder().decode(deleteEvent.bytes)
+    );
 
     await rm(dir, { recursive: true, force: true });
   });

@@ -14,7 +14,7 @@ import {
   normalizeNearbytesRoot,
   NEARBYTES_IGNORED_ROOT_FILES,
 } from '../config/sourceDiscovery.js';
-import { EventType, type SerializedEvent } from '../types/events.js';
+import { type SerializedEvent } from '../types/events.js';
 import { StorageError } from '../types/errors.js';
 import type { StorageBackend, StorageWriteEvent, StorageWriteListener } from '../types/storage.js';
 import { FilesystemStorageBackend } from './filesystem.js';
@@ -1654,8 +1654,8 @@ export class MultiRootStorageBackend implements StorageBackend {
 
       try {
         const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(bytes)) as SerializedEvent);
-        if (parsed.payload.type === EventType.CREATE_FILE) {
-          hashes.add(parsed.payload.hash);
+        for (const blockHash of parsed.envelope.blockRefs) {
+          hashes.add(blockHash);
         }
       } catch {
         // Ignore unreadable event payloads at the meta layer.

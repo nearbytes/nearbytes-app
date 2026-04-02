@@ -5,7 +5,7 @@ import { join } from 'path';
 import { createCryptoOperations } from '../../crypto/index.js';
 import type { RootsConfig } from '../../config/roots.js';
 import { storeData } from '../../domain/operations.js';
-import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
+import { serializeEvent, serializeEventEnvelope } from '../../storage/serialization.js';
 import { ChannelStorage } from '../../storage/channel.js';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
@@ -14,6 +14,8 @@ import { createEncryptedData, createSignature, EventType } from '../../types/eve
 import { createSecret } from '../../types/keys.js';
 import { defaultPathMapper } from '../../types/storage.js';
 import { createFileService } from '../fileService.js';
+import { createSignedEvent } from '../eventEnvelope.js';
+import { hydrateSignedEvent } from '../eventEnvelope.js';
 
 const START_TIME = 1700000000000;
 
@@ -68,9 +70,9 @@ describe('FileService', () => {
       size: plaintext.length,
       createdAt: START_TIME,
     } as const;
-    const signature = await crypto.signPR(serializeEventPayload(payload), keyPair.privateKey);
-    const eventHash = await crypto.computeHash(serializeEventPayload(payload));
-    await backupChannelStorage.storeEvent(keyPair.publicKey, { payload, signature });
+    const storedEvent = await createSignedEvent(crypto, keyPair, payload, [blobHash]);
+    const eventHash = await crypto.computeHash(serializeEventEnvelope(storedEvent.envelope));
+    await backupChannelStorage.storeEvent(keyPair.publicKey, storedEvent);
 
     const channelPath = defaultPathMapper(keyPair.publicKey);
     await mkdir(join(mainRoot, 'blocks'), { recursive: true });
@@ -78,21 +80,24 @@ describe('FileService', () => {
     await writeFile(join(mainRoot, 'blocks', `${blobHash}.bin`), 'corrupt-block', 'utf8');
     await writeFile(
       join(mainRoot, channelPath, `${eventHash}.bin`),
-      JSON.stringify(serializeEvent({ payload, signature: createSignature(new Uint8Array(signature.length)) })),
+      JSON.stringify(serializeEvent({ ...storedEvent, signature: createSignature(new Uint8Array(storedEvent.signature.length)) })),
       'utf8'
     );
 
     await expect(channelStorage.retrieveEncryptedData(blobHash, keyPair.publicKey)).resolves.toEqual(encryptedData);
-    await expect(channelStorage.retrieveEvent(keyPair.publicKey, eventHash)).resolves.toMatchObject({
-      payload: {
-        fileName: 'validated.txt',
-      },
-    });
+    const repairedEvent = await hydrateSignedEvent(
+      crypto,
+      keyPair.privateKey,
+      await channelStorage.retrieveEvent(keyPair.publicKey, eventHash)
+    );
+    expect(repairedEvent.payload.fileName).toBe('validated.txt');
 
     await expect(readFile(join(mainRoot, 'blocks', `${blobHash}.bin`), 'utf8')).rejects.toThrow();
     await expect(readFile(join(mainRoot, channelPath, `${eventHash}.bin`), 'utf8')).rejects.toThrow();
     await expect(readFile(join(backupRoot, 'blocks', `${blobHash}.bin`))).resolves.toBeDefined();
-    await expect(readFile(join(backupRoot, channelPath, `${eventHash}.bin`), 'utf8')).resolves.toContain('validated.txt');
+    await expect(readFile(join(backupRoot, channelPath, `${eventHash}.bin`), 'utf8')).resolves.toBe(
+      JSON.stringify(serializeEvent(storedEvent))
+    );
 
     await rm(dir, { recursive: true, force: true });
   });
@@ -473,7 +478,7 @@ async function loadEntries(dir: string, secret: string) {
   const storage = new FilesystemStorageBackend(dir);
   const channelStorage = new ChannelStorage(storage, defaultPathMapper);
   const volume = await openVolume(createSecret(secret), crypto, storage, defaultPathMapper);
-  return loadEventLog(volume, channelStorage);
+  return loadEventLog(volume, channelStorage, crypto);
 }
 
 async function getVolumeId(dir: string, secret: string): Promise<string> {
@@ -509,8 +514,8 @@ async function appendLegacyVolumeKeyFile(
     size: data.length,
     createdAt,
   } as const;
-  const signature = await crypto.signPR(serializeEventPayload(payload), keyPair.privateKey);
-  await channelStorage.storeEvent(volume.publicKey, { payload, signature });
+  const storedEvent = await createSignedEvent(crypto, keyPair, payload, [payload.hash]);
+  await channelStorage.storeEvent(volume.publicKey, storedEvent);
 }
 
 function createMultiRootConfig(mainRoot: string, backupRoot: string, volumeIds: readonly string[]): RootsConfig {

@@ -193,24 +193,31 @@ export interface TimelineResponse {
   events: TimelineEvent[];
 }
 
+export interface SerializedEventPayload {
+  type: string;
+  fileName: string;
+  toFileName?: string;
+  hash: string;
+  encryptedKey: string;
+  contentType?: 'b' | 'm';
+  size?: number;
+  mimeType?: string;
+  createdAt?: number;
+  deletedAt?: number;
+  renamedAt?: number;
+  authorPublicKey?: string;
+  protocol?: string;
+  record?: string;
+  message?: string;
+  publishedAt?: number;
+}
+
 export interface SerializedEvent {
-  payload: {
-    type: string;
-    fileName: string;
-    toFileName?: string;
-    hash: string;
-    encryptedKey: string;
-    contentType?: 'b' | 'm';
-    size?: number;
-    mimeType?: string;
-    createdAt?: number;
-    deletedAt?: number;
-    renamedAt?: number;
-    authorPublicKey?: string;
-    protocol?: string;
-    record?: string;
-    message?: string;
-    publishedAt?: number;
+  envelope: {
+    version: string;
+    publicKey: string;
+    blockRefs: string[];
+    ciphertext: string;
   };
   signature: string;
 }
@@ -218,6 +225,7 @@ export interface SerializedEvent {
 export interface EventDetailResponse {
   eventHash: string;
   event: SerializedEvent;
+  decryptedPayload?: SerializedEventPayload;
 }
 
 export interface EventStorageLocationEntry {

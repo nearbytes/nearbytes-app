@@ -3,7 +3,7 @@ import type { Hash as HashType, SignedEvent, EncryptedData } from '../types/even
 import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
 import { createHash } from '../types/events.js';
 import { StorageError } from '../types/errors.js';
-import { serializeEvent, deserializeEvent, serializeEventPayload } from './serialization.js';
+import { serializeEvent, deserializeEvent, serializeEventEnvelope } from './serialization.js';
 import { computeHash } from '../crypto/hash.js';
 import { isMultiRootStorageBackend } from './multiRoot.js';
 import { verifyPU } from '../crypto/asymmetric.js';
@@ -50,9 +50,8 @@ export class ChannelStorage {
    */
   async storeEvent(publicKey: PublicKey, event: SignedEvent): Promise<HashType> {
     try {
-      // Compute event hash from serialized payload
-      const payloadBytes = serializeEventPayload(event.payload);
-      const eventHash = await computeHash(payloadBytes);
+      const envelopeBytes = serializeEventEnvelope(event.envelope);
+      const eventHash = await computeHash(envelopeBytes);
 
       // Serialize the full event
       const serialized = serializeEvent(event);
@@ -100,13 +99,13 @@ export class ChannelStorage {
       }
       const serialized = JSON.parse(new TextDecoder().decode(eventBytes)) as import('../types/events.js').SerializedEvent;
       const event = deserializeEvent(serialized);
-      const payloadBytes = serializeEventPayload(event.payload);
-      const payloadHash = await computeHash(payloadBytes);
+      const envelopeBytes = serializeEventEnvelope(event.envelope);
+      const payloadHash = await computeHash(envelopeBytes);
       if (payloadHash !== eventHash) {
         await this.storage.deleteFile(eventPath).catch(() => undefined);
         throw new StorageError(`Failed to retrieve event: event hash mismatch for ${eventHash}`);
       }
-      const valid = await verifyPU(payloadBytes, event.signature, publicKey).catch(() => false);
+      const valid = await verifyPU(envelopeBytes, event.signature, publicKey).catch(() => false);
       if (!valid) {
         await this.storage.deleteFile(eventPath).catch(() => undefined);
         throw new StorageError(`Failed to retrieve event: signature verification failed for ${eventHash}`);

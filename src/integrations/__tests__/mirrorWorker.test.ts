@@ -6,9 +6,10 @@ import { createCryptoOperations } from '../../crypto/index.js';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
 import { createSecret } from '../../types/keys.js';
-import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
+import { serializeEvent, serializeEventEnvelope } from '../../storage/serialization.js';
 import { MirrorWorker } from '../mirrorWorker.js';
 import type { MirrorRemoteAdapter, MirrorRemoteEntry } from '../adapters.js';
+import { createSignedEvent } from '../../domain/eventEnvelope.js';
 
 class FakeRemote implements MirrorRemoteAdapter {
   readonly entries = new Map<string, Uint8Array>();
@@ -69,12 +70,11 @@ async function createStoredDeleteEvent(secretValue: string, fileName: string): P
     hash: EMPTY_HASH,
     encryptedKey: createEncryptedData(new Uint8Array(0)),
   };
-  const payloadBytes = serializeEventPayload(payload);
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
+  const storedEvent = await createSignedEvent(crypto, keyPair, payload, []);
   return {
     volumeId: volumeIdFromPublicKey(keyPair.publicKey),
-    eventHash: await crypto.computeHash(payloadBytes),
-    bytes: bytes(JSON.stringify(serializeEvent({ payload, signature }))),
+    eventHash: await crypto.computeHash(serializeEventEnvelope(storedEvent.envelope)),
+    bytes: bytes(JSON.stringify(serializeEvent(storedEvent))),
   };
 }
 
@@ -126,10 +126,10 @@ describe('MirrorWorker', () => {
     expect(await fs.readFile(path.join(tempDir, 'blocks', `${remoteBlock.hash}.bin`), 'utf8')).toBe('remote-only');
     expect(
       await fs.readFile(path.join(tempDir, 'channels', remoteEvent.volumeId, `${remoteEvent.eventHash}.bin`), 'utf8')
-    ).toContain('DELETE_FILE');
+    ).toBe(new TextDecoder().decode(remoteEvent.bytes));
     expect(
       new TextDecoder().decode(remote.entries.get(`channels/${localEvent.volumeId}/${localEvent.eventHash}.bin`)!)
-    ).toContain('DELETE_FILE');
+    ).toBe(new TextDecoder().decode(localEvent.bytes));
     expect(new TextDecoder().decode(remote.entries.get(`blocks/${localBlock.hash}.bin`)!)).toBe('local-only');
   });
 

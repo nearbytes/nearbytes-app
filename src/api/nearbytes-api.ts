@@ -221,7 +221,7 @@ export class NearbytesAPI {
    */
   async getEventLog(secret: Secret): Promise<EventLogEntry[]> {
     const volume = await this.getVolume(secret);
-    return await loadEventLog(volume, this.channelStorage);
+    return await loadEventLog(volume, this.channelStorage, this.crypto);
   }
 
   /**

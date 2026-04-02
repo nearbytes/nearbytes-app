@@ -6,7 +6,7 @@ import { createCryptoOperations } from '../../crypto/index.js';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
 import { createSecret } from '../../types/keys.js';
-import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
+import { serializeEvent, serializeEventEnvelope } from '../../storage/serialization.js';
 import { GoogleDriveTransportAdapter } from '../googleDrive.js';
 import {
   DEFAULT_GOOGLE_DESKTOP_CLIENT_ID,
@@ -14,6 +14,7 @@ import {
   type ProviderSecretStore,
 } from '../runtime.js';
 import type { ManagedShare } from '../types.js';
+import { createSignedEvent } from '../../domain/eventEnvelope.js';
 
 interface FakeDriveRecord {
   id: string;
@@ -174,12 +175,11 @@ async function createStoredDeleteEvent(secretValue: string, fileName: string): P
     hash: EMPTY_HASH,
     encryptedKey: createEncryptedData(new Uint8Array(0)),
   };
-  const payloadBytes = serializeEventPayload(payload);
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
+  const storedEvent = await createSignedEvent(crypto, keyPair, payload, []);
   return {
     volumeId: volumeIdFromPublicKey(keyPair.publicKey),
-    eventHash: await crypto.computeHash(payloadBytes),
-    bytes: new TextEncoder().encode(JSON.stringify(serializeEvent({ payload, signature }))),
+    eventHash: await crypto.computeHash(serializeEventEnvelope(storedEvent.envelope)),
+    bytes: new TextEncoder().encode(JSON.stringify(serializeEvent(storedEvent))),
   };
 }
 

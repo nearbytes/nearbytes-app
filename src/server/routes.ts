@@ -981,7 +981,7 @@ export function createRoutes(deps: RouteDependencies): Router {
       const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
 
       const expectedEventRelativePath = join('channels', volumeId, `${hash}.bin`);
-      const payloadHash = detail.event.payload.hash?.trim() ?? '';
+      const payloadHash = detail.decryptedPayload?.hash?.trim() ?? '';
       const expectedDataRelativePath =
         /^[a-f0-9]{64}$/i.test(payloadHash) && !/^0+$/i.test(payloadHash)
           ? join('blocks', `${payloadHash}.bin`)

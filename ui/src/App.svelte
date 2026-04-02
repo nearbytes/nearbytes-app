@@ -27,6 +27,7 @@
     type FileMetadata,
     type JoinLink,
     type SerializedEvent,
+    type SerializedEventPayload,
     type SourceFileReference,
     type RecipientFileReference,
     type ReconcileSourcesResponse,
@@ -119,7 +120,7 @@
   const WORKSPACE_CHAT_PANE_MIN_WIDTH = 180;
   const PARKED_MOUNT_WIDTH = 46;
   const isDevThemeStudio = import.meta.env.DEV;
-  const SPEC_DOC_CONTENTS = import.meta.glob('../../docs/specs/*.md', {
+  const SPEC_DOC_CONTENTS = import.meta.glob('../../docs/specs/**/*.md', {
     query: '?raw',
     import: 'default',
     eager: true,
@@ -133,30 +134,30 @@
   }
   const SPEC_DOCS: SpecDoc[] = [
     {
-      id: 'hub-model-v1',
-      title: 'Hub model v1',
-      filename: 'hub-model-v1.md',
+      id: 'hub-model-v0.2',
+      title: 'Hub model v0.2',
+      filename: 'hub-model-v0.2.md',
       summary: 'Hub log model and subsystem projection rules.',
       always: true,
     },
     {
-      id: 'app-records-v1',
-      title: 'App records v1',
-      filename: 'app-records-v1.md',
+      id: 'app-records-v0.2',
+      title: 'App records v0.2',
+      filename: 'app-records-v0.2.md',
       summary: 'APP_RECORD envelope + replay rules.',
       eventTypes: ['APP_RECORD'],
     },
     {
-      id: 'file-events-v2',
-      title: 'File protocol v2',
-      filename: 'file-events-v2.md',
+      id: 'file-events-v0.3',
+      title: 'File protocol v0.3',
+      filename: 'file-events-v0.3.md',
       summary: 'CREATE/DELETE/RENAME file replay semantics.',
       eventTypes: ['CREATE_FILE', 'DELETE_FILE', 'RENAME_FILE'],
     },
     {
-      id: 'chat-events-v1',
-      title: 'Chat protocol v1',
-      filename: 'chat-events-v1.md',
+      id: 'chat-events-v0.2',
+      title: 'Chat protocol v0.2',
+      filename: 'chat-events-v0.2.md',
       summary: 'Hub chat payload and replay rules.',
       protocols: ['nb.chat.message.v1'],
       eventTypes: ['CHAT_MESSAGE', 'DECLARE_IDENTITY'],
@@ -191,9 +192,9 @@
       protocols: ['nb.identity.record.v1'],
     },
     {
-      id: 'log-command-map-v1',
-      title: 'Log command map v1',
-      filename: 'log-command-map-v1.md',
+      id: 'log-command-map-v0.2',
+      title: 'Log command map v0.2',
+      filename: 'log-command-map-v0.2.md',
       summary: 'Lookup from event/protocol to governing spec.',
       always: true,
     },
@@ -2280,14 +2281,25 @@
   const isHistoryMode = $derived.by(() => timelinePosition < timelineEvents.length);
   const timelineDetailTimestamp = $derived.by(() => {
     if (timelineDetailEvent) return timelineDetailEvent.timestamp;
-    if (!timelineDetailPayload) return null;
-    const payload = timelineDetailPayload.payload;
+    const payload = timelineDetailPayloadDecrypted;
+    if (!payload) return null;
     return (
       payload.createdAt ??
       payload.deletedAt ??
       payload.renamedAt ??
       payload.publishedAt ??
       null
+    );
+  });
+
+  const timelineDetailPayloadDecrypted = $derived.by<SerializedEventPayload>(() => {
+    return (
+      timelineDetailPayload?.decryptedPayload ?? {
+        type: 'ENCRYPTED_OPAQUE',
+        fileName: 'Opaque payload',
+        hash: '',
+        encryptedKey: '',
+      }
     );
   });
 
@@ -4582,18 +4594,21 @@
     return Array.from(hashes);
   }
 
-  function specDocsForPayload(payload: SerializedEvent['payload']): SpecDoc[] {
+  function specDocsForPayload(
+    payload: SerializedEventPayload | null,
+    seedEvent: TimelineEvent | null
+  ): SpecDoc[] {
     const docs: SpecDoc[] = [];
     for (const doc of SPEC_DOCS) {
       if (doc.always) {
         docs.push(doc);
         continue;
       }
-      if (doc.eventTypes?.includes(payload.type)) {
+      if (seedEvent && doc.eventTypes?.includes(seedEvent.type)) {
         docs.push(doc);
         continue;
       }
-      if (payload.protocol && doc.protocols?.includes(payload.protocol)) {
+      if (payload?.protocol && doc.protocols?.includes(payload.protocol)) {
         docs.push(doc);
       }
     }
@@ -4702,21 +4717,22 @@
         }
       }
 
-      const recordParse = tryParseJson(detail.event.payload.record);
+      const decryptedPayload = detail.decryptedPayload ?? null;
+      const recordParse = tryParseJson(decryptedPayload?.record);
       if (recordParse.value !== undefined) {
         timelineDetailRecord = JSON.stringify(recordParse.value, null, 2);
-      } else if (detail.event.payload.record) {
-        timelineDetailRecord = detail.event.payload.record;
+      } else if (decryptedPayload?.record) {
+        timelineDetailRecord = decryptedPayload.record;
       }
       if (recordParse.error) {
         timelineDetailRecordError = recordParse.error;
       }
 
-      const messageParse = tryParseJson(detail.event.payload.message);
+      const messageParse = tryParseJson(decryptedPayload?.message);
       if (messageParse.value !== undefined) {
         timelineDetailMessage = JSON.stringify(messageParse.value, null, 2);
-      } else if (detail.event.payload.message) {
-        timelineDetailMessage = detail.event.payload.message;
+      } else if (decryptedPayload?.message) {
+        timelineDetailMessage = decryptedPayload.message;
       }
       if (messageParse.error) {
         timelineDetailMessageError = messageParse.error;
@@ -4784,7 +4800,7 @@
     if (typeof fromStorage === 'string' && fromStorage.trim() !== '') {
       return fromStorage;
     }
-    const hash = timelineDetailPayload?.payload.hash?.trim() ?? '';
+    const hash = timelineDetailPayload?.decryptedPayload?.hash?.trim() ?? '';
     if (!/^[a-f0-9]{64}$/i.test(hash) || /^0+$/i.test(hash)) {
       return null;
     }
@@ -4845,14 +4861,14 @@
     }
   }
 
-  function findPreviewFileForPayload(payload: SerializedEvent['payload']): FileMetadata | null {
+  function findPreviewFileForPayload(payload: SerializedEventPayload): FileMetadata | null {
     const byHash = visibleFiles.find((file) => file.blobHash === payload.hash) ?? null;
     if (byHash) return byHash;
     if (!payload.fileName) return null;
     return visibleFiles.find((file) => file.filename === payload.fileName) ?? null;
   }
 
-  function openEventPayloadPreview(payload: SerializedEvent['payload']): void {
+  function openEventPayloadPreview(payload: SerializedEventPayload): void {
     if (!auth || payload.type !== 'CREATE_FILE' || !payload.hash) {
       return;
     }
@@ -7123,8 +7139,8 @@
             <p class="tm-details-title">
               {#if timelineDetailEvent}
                 {timelineKindLabel(timelineDetailEvent)} {timelineHeadline(timelineDetailEvent)}
-              {:else if timelineDetailPayload}
-                {timelineDetailPayload.payload.type} {timelineDetailPayload.payload.fileName}
+              {:else if timelineDetailPayloadDecrypted}
+                {timelineDetailPayloadDecrypted.type} {timelineDetailPayloadDecrypted.fileName}
               {:else}
                 Event details
               {/if}
@@ -7151,17 +7167,17 @@
           {:else if timelineDetailError}
             <p class="tm-details-error">{timelineDetailError}</p>
           {:else if timelineDetailPayload}
-            {@const payload = timelineDetailPayload.payload}
-            {@const hasEncryptedPayload = payload.type === 'CREATE_FILE'}
-            {@const relevantSpecs = specDocsForPayload(payload)}
+            {@const payload = timelineDetailPayloadDecrypted}
+            {@const hasEncryptedPayload = payload?.type === 'CREATE_FILE'}
+            {@const relevantSpecs = specDocsForPayload(payload, timelineDetailEvent)}
             <div class="tm-details-meta">
-              <span>{payload.type}</span>
+              <span>{payload?.type ?? 'Encrypted event'}</span>
               <span>{payload.fileName || '—'}</span>
             </div>
             {#if timelineDetailHash}
               <p class="tm-details-hash">{timelineDetailHash}</p>
               <p class="tm-details-hint">
-                Event hash = SHA-256 of the serialized payload bytes (signature not included).
+                Event hash = SHA-256 of the serialized visible envelope bytes (signature not included).
               </p>
             {/if}
 
@@ -7223,20 +7239,21 @@
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">signedBy</span>
                   <div class="tm-details-value-group">
-                    <span class="tm-details-value">volume key (hub secret)</span>
-                    <span class="tm-details-help">Outer signature proves this event belongs to the hub.</span>
+                    <span class="tm-details-value">event envelope public key</span>
+                    <span class="tm-details-help">The outer signature authenticates the visible envelope and ciphertext.</span>
                   </div>
                 </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">visibility</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value">
-                      {hasEncryptedPayload ? 'payload cleartext, file bytes encrypted' : 'payload cleartext, no encrypted file bytes'}
+                      {timelineDetailPayload?.decryptedPayload
+                        ? 'visible envelope + decrypted inner payload'
+                        : 'visible envelope + opaque inner payload'}
                     </span>
                     <span class="tm-details-help">
-                      {hasEncryptedPayload
-                        ? 'Decrypt file bytes with encryptedKey + volume key.'
-                        : 'App record/message fields are cleartext JSON.'}
+                      Semantic event content lives inside the encrypted payload. Storage only sees version, signer,
+                      referenced blocks, ciphertext, and signature.
                     </span>
                   </div>
                 </div>
@@ -7261,15 +7278,47 @@
             <div class="tm-details-section">
               <p class="tm-details-section-title">Signed envelope</p>
               <p class="tm-details-section-note">
-                The signature covers the serialized payload fields below and is verified with the volume public key
-                derived from this hub secret.
+                The signature covers the serialized visible envelope plus ciphertext. The decrypted payload below is a
+                trusted local convenience view, not the stored outer structure.
               </p>
               <div class="tm-details-grid">
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">version</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value">{timelineDetailPayload.envelope.version}</span>
+                    <span class="tm-details-help">Protocol version for the visible event envelope.</span>
+                  </div>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">publicKey</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">{timelineDetailPayload.envelope.publicKey}</span>
+                    <span class="tm-details-help">Full signer public key stored in cleartext.</span>
+                  </div>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">blockRefs</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">
+                      {timelineDetailPayload.envelope.blockRefs.length > 0
+                        ? timelineDetailPayload.envelope.blockRefs.join(', ')
+                        : '[]'}
+                    </span>
+                    <span class="tm-details-help">Visible ciphertext block references mentioned by this event.</span>
+                  </div>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">ciphertext</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">{timelineDetailPayload.envelope.ciphertext}</span>
+                    <span class="tm-details-help">Base64-encoded encrypted inner payload bytes.</span>
+                  </div>
+                </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">signature</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value mono">{timelineDetailPayload.signature}</span>
-                    <span class="tm-details-help">Base64 signature bytes stored alongside the payload.</span>
+                    <span class="tm-details-help">Base64 signature bytes stored alongside the envelope.</span>
                   </div>
                 </div>
               </div>
@@ -7277,29 +7326,29 @@
 
             <div class="tm-details-section">
               <p class="tm-details-section-title">Encoded event</p>
-              <p class="tm-details-section-note">Raw JSON stored for this event (payload + signature).</p>
+              <p class="tm-details-section-note">Raw JSON stored for this event (visible envelope + signature).</p>
               <pre class="tm-details-pre">{timelineDetailEncoded}</pre>
             </div>
 
+            {#if timelineDetailPayload?.decryptedPayload}
             <div class="tm-details-section">
-              <p class="tm-details-section-title">Payload fields (signed)</p>
+              <p class="tm-details-section-title">Decrypted inner payload</p>
               <p class="tm-details-section-note">
-                Payload fields are cleartext metadata. File bytes are encrypted separately; record/message fields are
-                stored as canonical JSON strings.
+                This trusted local view appears only after decrypting the opaque event payload with the volume secret.
               </p>
               <div class="tm-details-grid">
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">type</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value">{payload.type}</span>
-                    <span class="tm-details-help">Event kind; controls which fields are used.</span>
+                    <span class="tm-details-help">Semantic event kind carried inside the encrypted payload.</span>
                   </div>
                 </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">fileName</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value">{payload.fileName}</span>
-                    <span class="tm-details-help">Logical file name in the volume (empty for app/chat events).</span>
+                    <span class="tm-details-help">Logical file name inside the decrypted event payload.</span>
                   </div>
                 </div>
                 {#if payload.toFileName}
@@ -7315,19 +7364,14 @@
                   <span class="tm-details-label">hash</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value mono">{payload.hash}</span>
-                    <span class="tm-details-help">
-                      SHA-256 of the encrypted data block. Empty (all zeros) for delete/rename/app events.
-                    </span>
+                    <span class="tm-details-help">Application-level primary block hash from the decrypted payload.</span>
                   </div>
                 </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">encryptedKey</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value mono">{payload.encryptedKey}</span>
-                    <span class="tm-details-help">
-                      Wrapped file key (encrypted with a key derived from the volume private key). Empty for
-                      delete/rename/app events and legacy blocks.
-                    </span>
+                    <span class="tm-details-help">Wrapped file key carried inside the encrypted payload.</span>
                   </div>
                 </div>
                 {#if payload.contentType}
@@ -7415,6 +7459,7 @@
                 {/if}
               </div>
             </div>
+            {/if}
 
             {#if hasEncryptedPayload}
               <div class="tm-details-section">
@@ -7440,8 +7485,7 @@
               <div class="tm-details-section">
                 <p class="tm-details-section-title">App record</p>
                 <p class="tm-details-section-note">
-                  Cleartext canonical JSON string embedded in the signed payload. Not encrypted; any app-level
-                  signature lives inside the record (for example a sig field).
+                  Trusted local rendering of decrypted app-record JSON extracted from the opaque event payload.
                 </p>
                 {#if timelineDetailRecordError}
                   <p class="tm-details-error">Record parse error: {timelineDetailRecordError}</p>
@@ -7456,8 +7500,7 @@
               <div class="tm-details-section">
                 <p class="tm-details-section-title">App message</p>
                 <p class="tm-details-section-note">
-                  Cleartext canonical JSON string embedded in the signed payload. Not encrypted; chat protocols often
-                  include their own sig field.
+                  Trusted local rendering of decrypted chat/message JSON extracted from the opaque event payload.
                 </p>
                 {#if timelineDetailMessageError}
                   <p class="tm-details-error">Message parse error: {timelineDetailMessageError}</p>

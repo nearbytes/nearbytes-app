@@ -15,9 +15,10 @@ import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCryptoOperations } from '../../crypto/index.js';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
-import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
+import { serializeEvent, serializeEventEnvelope } from '../../storage/serialization.js';
 import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
 import { createSecret } from '../../types/keys.js';
+import { createSignedEvent } from '../../domain/eventEnvelope.js';
 import { MegaTransportAdapter, rebuildMegaSecurityAttributeForE2e } from '../mega.js';
 import { createIntegrationRuntime, type ProviderSecretStore } from '../runtime.js';
 import type { ManagedShare, ProviderAccount } from '../types.js';
@@ -343,11 +344,10 @@ describe('MegaTransportAdapter', () => {
       hash: EMPTY_HASH,
       encryptedKey: createEncryptedData(new Uint8Array(0)),
     };
-    const eventPayloadBytes = serializeEventPayload(eventPayload);
-    const eventHash = await cryptoOps.computeHash(eventPayloadBytes);
-    const eventSignature = await cryptoOps.signPR(eventPayloadBytes, channelKeyPair.privateKey);
+    const storedEvent = await createSignedEvent(cryptoOps, channelKeyPair, eventPayload, []);
+    const eventHash = await cryptoOps.computeHash(serializeEventEnvelope(storedEvent.envelope));
     const eventBytes = Buffer.from(
-      JSON.stringify(serializeEvent({ payload: eventPayload, signature: eventSignature })),
+      JSON.stringify(serializeEvent(storedEvent)),
       'utf8'
     );
     const eventFileName = `${eventHash}.bin`;

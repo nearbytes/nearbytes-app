@@ -6,7 +6,8 @@ import type { Volume, FileSystemState, FileMetadata, EventLogEntry } from '../ty
 import { createVolume } from '../types/volume.js';
 import { ChannelStorage } from '../storage/channel.js';
 import { defaultPathMapper } from '../types/storage.js';
-import { serializeEventPayload } from '../storage/serialization.js';
+import { serializeEventEnvelope } from '../storage/serialization.js';
+import { eventEnvelopePublicKeyMatches, hydrateSignedEvent } from './eventEnvelope.js';
 
 /**
  * Opens a volume from a secret
@@ -49,19 +50,24 @@ export async function openVolume(
  */
 export async function loadEventLog(
   volume: Volume,
-  channelStorage: ChannelStorage
+  channelStorage: ChannelStorage,
+  crypto: CryptoOperations
 ): Promise<EventLogEntry[]> {
+  const keyPair = await crypto.deriveKeys(volume.secret);
   // List all event hashes
-  const eventHashes = await channelStorage.listEvents(volume.publicKey);
+  const eventHashes = await channelStorage.listEvents(keyPair.publicKey);
 
   // Load all events
   const entries: EventLogEntry[] = [];
   for (const eventHash of eventHashes) {
     try {
-      const signedEvent = await channelStorage.retrieveEvent(volume.publicKey, eventHash);
+      const signedEvent = await channelStorage.retrieveEvent(keyPair.publicKey, eventHash);
+      if (!eventEnvelopePublicKeyMatches(signedEvent, keyPair.publicKey)) {
+        continue;
+      }
       entries.push({
         eventHash,
-        signedEvent,
+        signedEvent: await hydrateSignedEvent(crypto, keyPair.privateKey, signedEvent),
       });
     } catch {
       // Skip unreadable/corrupt event files so a single bad entry does not make the whole volume unreadable.
@@ -94,7 +100,7 @@ export async function verifyEventLog(
   crypto: CryptoOperations
 ): Promise<void> {
   for (const entry of entries) {
-    const payloadBytes = serializeEventPayload(entry.signedEvent.payload);
+    const payloadBytes = serializeEventEnvelope(entry.signedEvent.envelope);
     const isValid = await crypto.verifyPU(
       payloadBytes,
       entry.signedEvent.signature,
@@ -171,7 +177,8 @@ export async function materializeVolume(
   crypto: CryptoOperations
 ): Promise<FileSystemState> {
   // 1. Load all events
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
+
 
   // 2. Verify all event signatures
   await verifyEventLog(entries, volume, crypto);

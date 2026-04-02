@@ -7,9 +7,10 @@ import { createEncryptedData, EMPTY_HASH, EventType } from '../types/events.js';
 import type { EventLogEntry } from '../types/volume.js';
 import { defaultPathMapper } from '../types/storage.js';
 import { ChannelStorage } from '../storage/channel.js';
-import { serializeEventPayload } from '../storage/serialization.js';
+import { serializeEventEnvelope } from '../storage/serialization.js';
 import { loadEventLog, openVolume, verifyEventLog } from './volume.js';
 import { volumeIdFromPublicKey } from './fileCrypto.js';
+import { createSignedEvent, hydrateSignedEvent } from './eventEnvelope.js';
 import {
   createChatMessage,
   createIdentityRecord,
@@ -130,7 +131,7 @@ async function listChatWithDeps(
   pathMapper: ChannelPathMapper
 ): Promise<VolumeChatState> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
 
   const chatState = await materializeChatState(entries, crypto);
@@ -153,7 +154,7 @@ async function publishIdentityWithDeps(
   const normalizedVolumeSecret = normalizeSecret(volumeSecret);
   const normalizedIdentitySecret = normalizeSecret(identitySecret);
   const volume = await openVolume(normalizedVolumeSecret, crypto, storage, pathMapper);
-  const volumeEntries = await loadEventLog(volume, channelStorage);
+  const volumeEntries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(volumeEntries, volume, crypto);
 
   const volumeKeyPair = await crypto.deriveKeys(normalizedVolumeSecret);
@@ -191,12 +192,12 @@ async function sendMessageWithDeps(
   const normalizedVolumeSecret = normalizeSecret(volumeSecret);
   const normalizedIdentitySecret = normalizeSecret(identitySecret);
   const volume = await openVolume(normalizedVolumeSecret, crypto, storage, pathMapper);
-  const volumeEntries = await loadEventLog(volume, channelStorage);
+  const volumeEntries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(volumeEntries, volume, crypto);
 
   const volumeKeyPair = await crypto.deriveKeys(normalizedVolumeSecret);
   const identityKeyPair = await crypto.deriveKeys(normalizedIdentitySecret);
-  const canonicalIdentity = await getLatestIdentityChannelRecord(identityKeyPair.publicKey, crypto, channelStorage);
+  const canonicalIdentity = await getLatestIdentityChannelRecord(identityKeyPair, crypto, channelStorage);
   if (!canonicalIdentity) {
     throw new Error('The selected identity has not been published yet');
   }
@@ -244,7 +245,7 @@ async function ensureCanonicalIdentityRecord(
   channelStorage: ChannelStorage,
   now: () => number
 ): Promise<IdentityChannelRecord> {
-  const identityEntries = await loadVerifiedChannelEntries(identityKeyPair.publicKey, crypto, channelStorage);
+  const identityEntries = await loadVerifiedChannelEntries(identityKeyPair, crypto, channelStorage);
   const latest = await getLatestIdentityChannelRecordFromEntries(identityEntries, crypto);
   if (latest && profilesEqual(latest.record.profile, profile)) {
     return latest;
@@ -268,11 +269,11 @@ async function ensureCanonicalIdentityRecord(
 }
 
 async function getLatestIdentityChannelRecord(
-  identityPublicKey: PublicKey,
+  identityKeyPair: KeyPair,
   crypto: CryptoOperations,
   channelStorage: ChannelStorage
 ): Promise<IdentityChannelRecord | null> {
-  const entries = await loadVerifiedChannelEntries(identityPublicKey, crypto, channelStorage);
+  const entries = await loadVerifiedChannelEntries(identityKeyPair, crypto, channelStorage);
   return getLatestIdentityChannelRecordFromEntries(entries, crypto);
 }
 
@@ -511,9 +512,8 @@ async function appendAppRecord(
     record: input.record,
     publishedAt: input.publishedAt,
   };
-  const payloadBytes = serializeEventPayload(payload);
-  const signature = await crypto.signPR(payloadBytes, channelKeyPair.privateKey);
-  return channelStorage.storeEvent(channelKeyPair.publicKey, { payload, signature });
+  const event = await createSignedEvent(crypto, channelKeyPair, payload, []);
+  return channelStorage.storeEvent(channelKeyPair.publicKey, event);
 }
 
 function extractChatRows(entries: readonly EventLogEntry[]): ChatTimelineRow[] {
@@ -594,23 +594,23 @@ function extractChatRows(entries: readonly EventLogEntry[]): ChatTimelineRow[] {
 }
 
 async function loadVerifiedChannelEntries(
-  publicKey: PublicKey,
+  keyPair: KeyPair,
   crypto: CryptoOperations,
   channelStorage: ChannelStorage
 ): Promise<EventLogEntry[]> {
-  const eventHashes = await channelStorage.listEvents(publicKey);
+  const eventHashes = await channelStorage.listEvents(keyPair.publicKey);
   const entries: EventLogEntry[] = [];
 
   for (const eventHash of eventHashes) {
-    const signedEvent = await channelStorage.retrieveEvent(publicKey, eventHash);
-    const payloadBytes = serializeEventPayload(signedEvent.payload);
-    const isValid = await crypto.verifyPU(payloadBytes, signedEvent.signature, publicKey);
+    const signedEvent = await channelStorage.retrieveEvent(keyPair.publicKey, eventHash);
+    const payloadBytes = serializeEventEnvelope(signedEvent.envelope);
+    const isValid = await crypto.verifyPU(payloadBytes, signedEvent.signature, keyPair.publicKey);
     if (!isValid) {
       throw new Error(`Event signature verification failed for event ${eventHash}`);
     }
     entries.push({
       eventHash,
-      signedEvent,
+      signedEvent: await hydrateSignedEvent(crypto, keyPair.privateKey, signedEvent),
     });
   }
 

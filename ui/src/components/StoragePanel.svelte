@@ -4520,6 +4520,17 @@
   }
 
   async function connectProvider(provider: ProviderCatalogEntry): Promise<void> {
+    if (provider.provider === 'local-network') {
+      integrationBusyKey = `connect:${provider.provider}`;
+      errorMessage = '';
+      successMessage = '';
+      try {
+        await refreshLocalNetworkPeers();
+      } finally {
+        integrationBusyKey = null;
+      }
+      return;
+    }
     integrationBusyKey = `connect:${provider.provider}`;
     errorMessage = '';
     successMessage = '';
@@ -4688,6 +4699,7 @@
   }
 
   async function disconnectProvider(provider: ProviderCatalogEntry): Promise<void> {
+    if (provider.provider === 'local-network') return;
     if (!provider.accountId) return;
     integrationBusyKey = `disconnect:${provider.provider}`;
     errorMessage = '';
@@ -4889,6 +4901,7 @@
   }
 
   async function confirmMegaSignup(provider: ProviderCatalogEntry): Promise<void> {
+    if (provider.provider === 'local-network') return;
     const session = pendingSessionForProvider(provider.provider);
     if (!session) {
       errorMessage = 'Start the MEGA account creation flow first.';
@@ -4951,6 +4964,7 @@
   }
 
   async function pollProviderSession(provider: ProviderCatalogEntry, authSessionId: string): Promise<void> {
+    if (provider.provider === 'local-network') return;
     const controller = beginProviderRequest(provider.provider, {
       phase: 'polling',
       title: `Waiting for ${provider.label}`,

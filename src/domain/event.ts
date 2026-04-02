@@ -1,4 +1,4 @@
-import type { Hash, SignedEvent } from '../types/events.js';
+import type { DecryptedEvent, Hash } from '../types/events.js';
 import type { PublicKey } from '../types/keys.js';
 
 /**
@@ -8,7 +8,7 @@ import type { PublicKey } from '../types/keys.js';
 export class Event {
   constructor(
     public readonly hash: Hash,
-    public readonly signedEvent: SignedEvent,
+    public readonly signedEvent: DecryptedEvent,
     public readonly publicKey: PublicKey
   ) {}
 

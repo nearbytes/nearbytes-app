@@ -6,13 +6,14 @@ import { createCryptoOperations } from '../../crypto/index.js';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
 import { createSecret } from '../../types/keys.js';
-import { serializeEvent, serializeEventPayload } from '../../storage/serialization.js';
+import { serializeEvent, serializeEventEnvelope } from '../../storage/serialization.js';
 import {
   ProviderRefreshWorker,
   type ProviderRefreshManifest,
   type ProviderRefreshRemoteAdapter,
   type ProviderRefreshRemoteEntry,
 } from '../providerRefreshWorker.js';
+import { createSignedEvent } from '../../domain/eventEnvelope.js';
 
 class FakeReadonlyRemote implements ProviderRefreshRemoteAdapter {
   constructor(
@@ -59,12 +60,11 @@ async function createStoredDeleteEvent(secretValue: string, fileName: string): P
     hash: EMPTY_HASH,
     encryptedKey: createEncryptedData(new Uint8Array(0)),
   };
-  const payloadBytes = serializeEventPayload(payload);
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
+  const storedEvent = await createSignedEvent(crypto, keyPair, payload, []);
   return {
     volumeId: volumeIdFromPublicKey(keyPair.publicKey),
-    eventHash: await crypto.computeHash(payloadBytes),
-    bytes: bytes(JSON.stringify(serializeEvent({ payload, signature }))),
+    eventHash: await crypto.computeHash(serializeEventEnvelope(storedEvent.envelope)),
+    bytes: bytes(JSON.stringify(serializeEvent(storedEvent))),
   };
 }
 
@@ -133,7 +133,7 @@ describe('ProviderRefreshWorker', () => {
     await expect(fs.readFile(path.join(localRoot, 'blocks', `${replaceBlock.hash}.bin`), 'utf8')).resolves.toBe('new-value-2');
     await expect(
       fs.readFile(path.join(localRoot, 'channels', remoteEvent.volumeId, `${remoteEvent.eventHash}.bin`), 'utf8')
-    ).resolves.toContain('DELETE_FILE');
+    ).resolves.toBe(new TextDecoder().decode(remoteEvent.bytes));
     await expect(fs.stat(path.join(localRoot, 'blocks', `${staleBlock.hash}.bin`))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(result.manifest.entries[`blocks/${replaceBlock.hash}.bin`]).toEqual({
       kind: 'file',
