@@ -13,6 +13,7 @@ import {
   type SecretSessionStore,
 } from './secretSessions.js';
 import type { ManagedShareService, ManagedShareServiceOptions } from '../integrations/managedShares.js';
+import type { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import type { UiDebugExecutor } from './uiDebug.js';
 
 /**
@@ -39,6 +40,8 @@ export interface AppDependencies {
   readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
   /** Optional pre-built managed share service. */
   readonly managedShareService?: ManagedShareService;
+  /** Optional LAN discovery and sync service. */
+  readonly localNetworkSyncService?: LocalNetworkSyncService;
   /** Optional desktop-only UI automation/debugging bridge. */
   readonly uiDebugExecutor?: UiDebugExecutor;
 }

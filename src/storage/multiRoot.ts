@@ -83,6 +83,13 @@ export interface MultiRootRuntimeSnapshot {
   readonly writeFailures: RootWriteFailure[];
 }
 
+export interface VolumeSyncInventory {
+  readonly volumeId: string;
+  readonly generatedAt: number;
+  readonly eventHashes: string[];
+  readonly blockHashes: string[];
+}
+
 interface RuntimeSnapshotOptions {
   readonly includeUsage?: boolean;
 }
@@ -224,6 +231,33 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   getRootsConfig(): RootsConfig {
     return this.config;
+  }
+
+  async listKnownVolumeIds(): Promise<string[]> {
+    return Array.from(await this.listTrackedVolumeIds()).sort((left, right) => left.localeCompare(right));
+  }
+
+  async getVolumeSyncInventory(volumeId: string): Promise<VolumeSyncInventory> {
+    const normalizedVolumeId = normalizeVolumeId(volumeId);
+    if (!normalizedVolumeId) {
+      throw new StorageError(`Invalid volume id: ${volumeId}`);
+    }
+
+    const directory = `channels/${normalizedVolumeId}`;
+    const eventHashes = (await this.listFilesAcrossRoots(directory))
+      .map((entry) => normalizeEventHashFile(entry))
+      .filter((value): value is string => value !== null)
+      .sort((left, right) => left.localeCompare(right));
+    const blockHashes = Array.from(await this.collectReferencedBlockHashes(normalizedVolumeId)).sort((left, right) =>
+      left.localeCompare(right)
+    );
+
+    return {
+      volumeId: normalizedVolumeId,
+      generatedAt: Date.now(),
+      eventHashes,
+      blockHashes,
+    };
   }
 
   updateRootsConfig(nextConfig: RootsConfig): void {
@@ -2296,4 +2330,10 @@ function asError(error: unknown): Error {
     return error;
   }
   return new Error(String(error));
+}
+
+function normalizeEventHashFile(fileName: string): string | null {
+  const normalized = fileName.trim().toLowerCase();
+  const match = /^([a-f0-9]{64})\.bin$/u.exec(normalized);
+  return match?.[1] ?? null;
 }

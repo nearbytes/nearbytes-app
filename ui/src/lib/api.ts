@@ -556,6 +556,47 @@ export interface IncomingProviderContactInvitesResponse {
   invites: IncomingProviderContactInvite[];
 }
 
+export interface LocalNetworkPeer {
+  peerId: string;
+  label: string;
+  address: string;
+  port: number;
+  endpointUrl: string;
+  capabilities: string[];
+  volumeIds: string[];
+  firstSeenAt: number;
+  lastSeenAt: number;
+  lastHelloAt: number | null;
+  lastSyncAt: number | null;
+  lastSyncStartedAt: number | null;
+  lastSyncError: string | null;
+  lastImportedEvents: number;
+  lastImportedBlocks: number;
+  status: 'ready' | 'syncing' | 'error' | 'stale';
+  detail: string;
+}
+
+export interface LocalNetworkServiceState {
+  protocol: string;
+  peerId: string;
+  label: string;
+  listening: boolean;
+  port: number | null;
+  multicastGroup: string;
+  multicastPort: number;
+  announceIntervalMs: number;
+  peerCount: number;
+}
+
+export interface LocalNetworkPeersResponse {
+  service: LocalNetworkServiceState;
+  peers: LocalNetworkPeer[];
+}
+
+export interface LocalNetworkPeerMutationResponse {
+  peer: LocalNetworkPeer;
+}
+
 export interface ConnectProviderAccountResponse {
   status: 'connected' | 'pending' | 'failed';
   account?: ProviderAccount;
@@ -1590,6 +1631,26 @@ export async function listIncomingProviderContactInvites(
     : '/integrations/providers/contact-invites';
   return apiRequest<IncomingProviderContactInvitesResponse>(endpoint, {
     method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function listLocalNetworkPeers(
+  options: { signal?: AbortSignal } = {}
+): Promise<LocalNetworkPeersResponse> {
+  return apiRequest<LocalNetworkPeersResponse>('/integrations/local-network/peers', {
+    method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function syncLocalNetworkPeer(
+  peerId: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<LocalNetworkPeerMutationResponse> {
+  const encoded = encodeURIComponent(peerId);
+  return apiRequest<LocalNetworkPeerMutationResponse>(`/integrations/local-network/peers/${encoded}/sync`, {
+    method: 'POST',
     signal: options.signal,
   });
 }

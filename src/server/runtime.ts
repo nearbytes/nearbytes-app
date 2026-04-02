@@ -10,6 +10,7 @@ import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../c
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { ManagedShareService } from '../integrations/managedShares.js';
 import type { ManagedShareServiceOptions } from '../integrations/managedShares.js';
+import { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { StorageError } from '../types/errors.js';
 import { createApp } from './app.js';
@@ -107,6 +108,9 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     readMaintenanceMode: 'background',
     ...options.integrationOptions,
   });
+  const localNetworkSyncService = new LocalNetworkSyncService(storage, {
+    storageDir: defaultStorageDir,
+  });
   void managedShareService.warmupBackgroundActivity('runtime startup').catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`Warning: managed share startup bootstrap failed: ${message}`);
@@ -126,14 +130,17 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     uiDistPath: options.uiDistPath,
     integrationOptions: options.integrationOptions,
     managedShareService,
+    localNetworkSyncService,
     uiDebugExecutor: options.uiDebugExecutor,
   });
 
   const server = await listen(app, host, port);
   const bound = getBoundPort(server);
+  await localNetworkSyncService.start(bound);
 
   const stop = createStop(server, async () => {
     storage.stopRepairMonitor();
+    await localNetworkSyncService.stop();
     await managedShareService.dispose();
   });
   latestStop = stop;

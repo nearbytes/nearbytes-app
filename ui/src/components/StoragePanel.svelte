@@ -18,10 +18,12 @@
     hasDesktopDirectoryPicker,
     installProviderHelper,
     inviteManagedShare,
+    listLocalNetworkPeers,
     listIncomingManagedShares,
     listIncomingProviderContactInvites,
     listManagedShares,
     listProviderAccounts,
+    syncLocalNetworkPeer,
     openPathInFileManager,
     openRootInFileManager,
     repairStorageLocation,
@@ -31,6 +33,8 @@
     type DesktopRuntimeLogEntry,
     type IncomingManagedShareOffer,
     type IncomingProviderContactInvite,
+    type LocalNetworkPeer,
+    type LocalNetworkPeersResponse,
     type ManagedShareSummary,
     type ProviderAccount,
     type ProviderAuthSession,
@@ -234,6 +238,8 @@
   let repairingSourceId = $state<string | null>(null);
   let providerAccounts = $state<ProviderAccount[]>([]);
   let providerCatalog = $state<ProviderCatalogEntry[]>(defaultProviderCatalogEntries());
+  let localNetworkService = $state<LocalNetworkPeersResponse['service'] | null>(null);
+  let localNetworkPeers = $state<LocalNetworkPeer[]>([]);
   let managedShares = $state<ManagedShareSummary[]>([]);
   let incomingManagedShareOffers = $state<IncomingManagedShareOffer[]>([]);
   let incomingProviderContactInvites = $state<IncomingProviderContactInvite[]>([]);
@@ -241,9 +247,11 @@
   let sharesLoading = $state(false);
   let incomingLoading = $state(false);
   let providerLoadError = $state('');
+  let localNetworkLoadError = $state('');
   let shareLoadError = $state('');
   let incomingLoadError = $state('');
   let integrationBusyKey = $state<string | null>(null);
+  let syncingLocalNetworkPeerId = $state<string | null>(null);
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
   let providerFlowStates = $state<Record<string, ProviderFlowState>>({});
   let providerCredentialDrafts = $state<Record<string, {
@@ -727,6 +735,9 @@
   }
 
   function providerSelectionDetail(entry: ProviderCatalogEntry): string {
+    if (entry.provider === 'local-network') {
+      return 'Nearby Nearbytes peers appear here automatically and sync without manual addresses or ports.';
+    }
     if (!entry.isConnected) {
       if (entry.provider === 'mega') {
         return 'Connect this if you want Nearbytes to use MEGA for your own locations or incoming locations.';
@@ -1366,6 +1377,11 @@
 
   function providerCardStatus(entry: ProviderCatalogEntry): string {
     if (providersLoading) return 'Loading';
+    if (entry.provider === 'local-network') {
+      if (localNetworkPeers.some((peer) => peer.status === 'syncing')) return 'Syncing';
+      if (localNetworkLoadError) return 'Delayed';
+      return localNetworkPeers.length > 0 ? 'Live' : 'Listening';
+    }
     if (entry.provider === 'mega' && megaProviderReconnectIssue()) return 'Sign-in needed';
     if (entry.provider === 'mega' && sharesLoading) return 'Syncing';
     const pending = pendingSessionForProvider(entry.provider);
@@ -1381,6 +1397,18 @@
   }
 
   function providerCardDetail(entry: ProviderCatalogEntry): string {
+    if (entry.provider === 'local-network') {
+      if (localNetworkLoadError) {
+        return localNetworkLoadError;
+      }
+      if (!localNetworkService?.listening) {
+        return 'Nearbytes is preparing local network discovery.';
+      }
+      if (localNetworkPeers.length === 0) {
+        return 'LAN discovery is active. Nearby Nearbytes peers will appear here automatically.';
+      }
+      return `Found ${countLabel(localNetworkPeers.length, 'peer')} on ${localNetworkService.multicastGroup}:${localNetworkService.multicastPort}.`;
+    }
     if (entry.provider === 'mega' && shareLoadError) {
       return shareLoadError;
     }
@@ -1584,10 +1612,11 @@
   }
 
   function providerPriority(provider: string): number {
-    if (provider === 'mega') return 0;
-    if (provider === 'gdrive') return 1;
-    if (provider === 'github') return 2;
-    return 3;
+    if (provider === 'local-network') return 0;
+    if (provider === 'mega') return 1;
+    if (provider === 'gdrive') return 2;
+    if (provider === 'github') return 3;
+    return 4;
   }
 
   function sortProviders(entries: readonly ProviderCatalogEntry[]): ProviderCatalogEntry[] {
@@ -1600,26 +1629,34 @@
     });
   }
 
-  function providerPlaceholder(provider: 'mega' | 'github'): ProviderCatalogEntry {
+  function providerPlaceholder(provider: 'local-network' | 'mega' | 'github'): ProviderCatalogEntry {
     return {
       provider,
-      label: provider === 'mega' ? 'MEGA' : 'GitHub',
+      label: provider === 'local-network' ? 'Local network' : provider === 'mega' ? 'MEGA' : 'GitHub',
       description:
-        provider === 'mega'
+        provider === 'local-network'
+          ? 'Automatic LAN discovery and peer-to-peer Nearbytes sync with nearby devices.'
+          : provider === 'mega'
           ? 'Native MEGA syncing for public links plus incoming read-only and writable shares.'
           : 'Managed repo-backed shares synced through a configurable nearbytes subdirectory.',
-      badges: provider === 'github' ? ['Device flow'] : [],
-      isConnected: false,
-      connectionState: 'available',
+      badges: provider === 'github' ? ['Device flow'] : provider === 'local-network' ? ['Auto'] : [],
+      isConnected: provider === 'local-network',
+      connectionState: provider === 'local-network' ? 'connected' : 'available',
       setup: {
         status: 'ready',
-        detail: provider === 'mega' ? 'MEGA native sync is ready to use.' : 'GitHub is available to connect.',
+        detail:
+          provider === 'local-network'
+            ? 'LAN sync is active and scans for nearby Nearbytes peers automatically.'
+            : provider === 'mega'
+              ? 'MEGA native sync is ready to use.'
+              : 'GitHub is available to connect.',
       },
     };
   }
 
   function defaultProviderCatalogEntries(): ProviderCatalogEntry[] {
     return sortProviders([
+      providerPlaceholder('local-network'),
       providerPlaceholder('mega'),
       providerPlaceholder('github'),
     ]);
@@ -1797,6 +1834,14 @@
     if (!entry.isConnected) {
       return providerCardStatus(entry);
     }
+    if (entry.provider === 'local-network') {
+      const peerCopy = countLabel(localNetworkPeers.length, 'peer');
+      if (localNetworkPeers.length === 0) {
+        return localNetworkService?.listening ? 'Listening for peers' : 'Starting discovery';
+      }
+      const syncingCount = localNetworkPeers.filter((peer) => peer.status === 'syncing').length;
+      return syncingCount > 0 ? `${peerCopy} • ${countLabel(syncingCount, 'sync active')}` : peerCopy;
+    }
     if (entry.provider === 'mega') {
       return connectedAccountForProvider('mega')?.email ?? 'No account connected';
     }
@@ -1812,7 +1857,7 @@
   }
 
   function providerSupportsCreateAction(provider: string): boolean {
-    return provider !== 'mega';
+    return provider !== 'mega' && provider !== 'local-network';
   }
 
   function destinationComparisonKey(destination: VolumeDestinationConfig): string {
@@ -2369,6 +2414,17 @@
     });
   }
 
+  function formatAbsoluteTimestamp(value: number | null): string {
+    if (!value || !Number.isFinite(value)) {
+      return 'Waiting';
+    }
+    return new Date(value).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  }
+
   async function loadMegaRuntimeLogs(): Promise<void> {
     megaRuntimeLogsLoading = true;
     megaRuntimeLogsError = '';
@@ -2659,6 +2715,9 @@
   }
 
   function shouldShowProviderDocs(entry: ProviderCatalogEntry): boolean {
+    if (entry.provider === 'local-network') {
+      return false;
+    }
     if (entry.provider === 'gdrive') {
       return entry.setup.status === 'needs-config' || entry.setup.status === 'unsupported';
     }
@@ -3008,10 +3067,40 @@
     if (!provider.isConnected) {
       return `Connect ${provider.label} first, then Nearbytes will manage its shares here.`;
     }
+    if (provider.provider === 'local-network') {
+      return 'Discovery is active. When another Nearbytes device appears on the same LAN, it will show up here and sync automatically.';
+    }
     if (provider.provider === 'mega') {
       return 'No MEGA locations yet. After sign-in, Nearbytes will show your writable publication root here and any accepted incoming shares as local read-only copies.';
     }
     return 'Create a storage location here to make it available in Nearbytes.';
+  }
+
+  async function refreshLocalNetworkPeers(options?: { background?: boolean }): Promise<void> {
+    try {
+      const response = await listLocalNetworkPeers();
+      applyLocalNetworkResponse(response);
+      if (!options?.background) {
+        localNetworkLoadError = '';
+      }
+    } catch (error) {
+      if (!options?.background) {
+        localNetworkLoadError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
+  async function triggerLocalNetworkSync(peerId: string): Promise<void> {
+    syncingLocalNetworkPeerId = peerId;
+    try {
+      const response = await syncLocalNetworkPeer(peerId);
+      localNetworkPeers = localNetworkPeers.map((peer) => (peer.peerId === response.peer.peerId ? response.peer : peer));
+      await refreshLocalNetworkPeers({ background: true });
+    } catch (error) {
+      localNetworkLoadError = error instanceof Error ? error.message : String(error);
+    } finally {
+      syncingLocalNetworkPeerId = null;
+    }
   }
 
   function managedShareCreateLabel(provider: string): string {
@@ -3153,6 +3242,7 @@
   }
 
   function providerLabelForIncoming(provider: string): string {
+    if (provider === 'local-network') return 'Local network';
     if (provider === 'gdrive') return 'Google Drive';
     if (provider === 'mega') return 'MEGA';
     if (provider === 'github') return 'GitHub';
@@ -4006,6 +4096,11 @@
     }
   }
 
+  function applyLocalNetworkResponse(response: LocalNetworkPeersResponse): void {
+    localNetworkService = response.service;
+    localNetworkPeers = [...response.peers].sort((left, right) => left.label.localeCompare(right.label));
+  }
+
   async function loadPanel(options?: { background?: boolean }) {
     const keepVisible = options?.background === true && configDraft !== null;
     const hadProviderData = providerCatalog.length > 0 || providerAccounts.length > 0;
@@ -4024,6 +4119,7 @@
       sharesLoading = true;
       incomingLoading = true;
       providerLoadError = '';
+      localNetworkLoadError = '';
       shareLoadError = '';
       incomingLoadError = '';
 
@@ -4076,6 +4172,21 @@
           providersLoading = false;
         });
 
+      const localNetworkPromise = withPanelRequestTimeout(
+        'Local network peer discovery',
+        (signal) => listLocalNetworkPeers({ signal })
+      )
+        .then((response) => {
+          applyLocalNetworkResponse(response);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          if (keepVisible && localNetworkPeers.length > 0) {
+            return;
+          }
+          localNetworkLoadError = `Local network discovery is delayed: ${detail}`;
+        });
+
       const sharesPromise = withPanelRequestTimeout(
         'MEGA and provider share status',
         (signal) => listManagedShares({ signal, fast: !keepVisible })
@@ -4091,7 +4202,7 @@
           sharesLoading = false;
         });
 
-      await Promise.allSettled([rootsPromise, accountsPromise, sharesPromise]);
+      await Promise.allSettled([rootsPromise, accountsPromise, localNetworkPromise, sharesPromise]);
 
       if (rootsLoadError) {
         incomingLoading = false;
@@ -5705,7 +5816,15 @@
           <section class="panel-section">
             <div class="section-head compact global-panel-head global-panel-head-actions">
               <div class="button-row compact-panel-actions">
-                {#if provider.isConnected && providerSupportsCreateAction(provider.provider)}
+                {#if provider.provider === 'local-network'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void refreshLocalNetworkPeers()}
+                  >
+                    <span>Refresh peers</span>
+                  </button>
+                {:else if provider.isConnected && providerSupportsCreateAction(provider.provider)}
                   {#if isInlineLocationComposerProvider(provider.provider) && isProviderCreateComposerOpen(provider.provider)}
                     {@render addLocationComposer(provider)}
                   {:else}
@@ -5745,7 +5864,7 @@
                   >
                     <span>{provider.isConnected ? (megaProviderReconnectIssue() ? 'Reconnect' : 'Disconnect') : 'Connect'}</span>
                   </button>
-                {:else if provider.isConnected}
+                {:else if provider.isConnected && provider.provider !== 'local-network'}
                   <button
                     type="button"
                     class="panel-btn subtle compact"
@@ -5797,8 +5916,75 @@
               </div>
             </div>
 
+            {#if provider.provider === 'local-network'}
+              <div class="section-stack">
+                <ProviderStatusCard
+                  title={localNetworkService?.listening ? 'Local network sync is active' : 'Preparing local network sync'}
+                  detail={providerCardDetail(provider)}
+                  tone={localNetworkLoadError ? 'warn' : localNetworkPeers.length > 0 ? 'good' : 'muted'}
+                >
+                  {#snippet actions()}
+                    {#if localNetworkService}
+                      <span class="provider-step-detail">Peer ID {localNetworkService.peerId.slice(0, 8)}</span>
+                    {/if}
+                  {/snippet}
+                </ProviderStatusCard>
 
+                {#if localNetworkLoadError}
+                  <p class="warning-copy">{localNetworkLoadError}</p>
+                {/if}
 
+                <div class="compact-share-grid">
+                  {#if localNetworkPeers.length === 0}
+                    <div class="compact-share-item">
+                      <ShareCard
+                        title="No nearby peers yet"
+                        copy="Keep Nearbytes open on another machine on the same LAN. As soon as it announces itself, this panel will populate and sync will start automatically."
+                        statusBadges={localNetworkService?.listening ? [{ label: 'Listening', tone: 'muted' }] : []}
+                        meta={localNetworkService ? [`${localNetworkService.multicastGroup}:${localNetworkService.multicastPort}`] : []}
+                      />
+                    </div>
+                  {:else}
+                    {#each localNetworkPeers as peer (peer.peerId)}
+                      <div class="compact-share-item">
+                        <ShareCard
+                          title={peer.label}
+                          copy={peer.detail}
+                          statusBadges={[
+                            { label: peer.status === 'ready' ? 'Live' : peer.status === 'syncing' ? 'Syncing' : peer.status === 'error' ? 'Attention' : 'Waiting', tone: peer.status === 'ready' ? 'good' : peer.status === 'syncing' ? 'muted' : peer.status === 'error' ? 'warn' : 'muted' },
+                            { label: countLabel(peer.volumeIds.length, 'volume'), tone: 'replica' }
+                          ]}
+                          meta={[peer.address, `Port ${peer.port}`]}
+                        >
+                          {#snippet controls()}
+                            <button
+                              type="button"
+                              class="panel-btn subtle compact"
+                              onclick={() => void triggerLocalNetworkSync(peer.peerId)}
+                              disabled={syncingLocalNetworkPeerId === peer.peerId}
+                            >
+                              <span>{syncingLocalNetworkPeerId === peer.peerId ? 'Syncing...' : 'Sync now'}</span>
+                            </button>
+                          {/snippet}
+                          {#snippet details()}
+                            <div class="provider-fact-list">
+                              <p class="provider-step-detail">Last seen: {formatAbsoluteTimestamp(peer.lastSeenAt)}</p>
+                              <p class="provider-step-detail">Last sync: {peer.lastSyncAt ? formatAbsoluteTimestamp(peer.lastSyncAt) : 'Waiting'}</p>
+                              <p class="provider-step-detail">Imported recently: {peer.lastImportedEvents} events, {peer.lastImportedBlocks} blocks</p>
+                              {#if peer.lastSyncError}
+                                <p class="warning-copy">{peer.lastSyncError}</p>
+                              {/if}
+                            </div>
+                          {/snippet}
+                        </ShareCard>
+                      </div>
+                    {/each}
+                  {/if}
+                </div>
+              </div>
+            {/if}
+
+            {#if provider.provider !== 'local-network'}
             {#if provider.provider === 'mega'}
               {@const megaStatus = megaStatusView()}
               {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}
@@ -6235,6 +6421,7 @@
                   {@render incomingFromOthersSection(provider.provider, receivedShares.length > 0 ? 'Still to review' : provider.provider === 'mega' ? 'Incoming locations' : 'Shared with you')}
                 {/if}
               </div>
+            {/if}
             {/if}
           </section>
         {/if}

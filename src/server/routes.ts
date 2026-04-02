@@ -19,6 +19,7 @@ import {
   ManagedShareServiceError,
   type ManagedShareServiceOptions,
 } from '../integrations/managedShares.js';
+import type { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { isProviderEnabled } from '../config/appConfig.js';
 import { bytesToHex } from '../utils/encoding.js';
 import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
@@ -92,6 +93,8 @@ export interface RouteDependencies {
   readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
   /** Optional pre-built service, mainly for tests. */
   readonly managedShareService?: ManagedShareService;
+  /** Optional LAN sync service for local discovery and peer replication. */
+  readonly localNetworkSyncService?: LocalNetworkSyncService;
   /** Optional desktop-only UI automation/debugging bridge. */
   readonly uiDebugExecutor?: UiDebugExecutor;
 }
@@ -127,6 +130,62 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
+
+  router.get('/lan/hello', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.buildHello());
+  }));
+
+  router.get('/lan/peers/self', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.buildHello());
+  }));
+
+  router.get('/lan/volumes', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.listVolumes());
+  }));
+
+  router.get('/lan/volumes/:volumeId/inventory', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const volumeId = String(req.params.volumeId ?? '');
+    res.json(await deps.localNetworkSyncService.getVolumeInventory(volumeId));
+  }));
+
+  router.get('/lan/volumes/:volumeId/events/:eventHash', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const volumeId = String(req.params.volumeId ?? '');
+    const eventHash = String(req.params.eventHash ?? '');
+    const bytes = await deps.localNetworkSyncService.readEventBytes(volumeId, eventHash);
+    res.type('application/octet-stream').send(Buffer.from(bytes));
+  }));
+
+  router.get('/lan/blocks/:blockHash', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const blockHash = String(req.params.blockHash ?? '');
+    const bytes = await deps.localNetworkSyncService.readBlockBytes(blockHash);
+    res.type('application/octet-stream').send(Buffer.from(bytes));
+  }));
+
+  router.post('/lan/sync', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    deps.localNetworkSyncService.notifySyncHint(req, req.body as { reason?: string } | undefined);
+    res.json({ ok: true, acceptedAt: Date.now() });
+  }));
 
   if (isProviderEnabled('gdrive')) {
     router.get('/oauth/google/callback', asyncHandler(async (req, res) => {
@@ -305,6 +364,30 @@ export function createRoutes(deps: RouteDependencies): Router {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
     res.json(await service.listAccounts({ fast: req.query.fast === '1' }));
+  }));
+
+  router.get('/integrations/local-network/peers', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(deps.localNetworkSyncService.getPeersResponse());
+  }));
+
+  router.post('/integrations/local-network/peers/:peerId/sync', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const peerId = String(req.params.peerId ?? '').trim();
+    if (!peerId) {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Peer id is required');
+    }
+    const peer = await deps.localNetworkSyncService.syncPeer(peerId);
+    if (!peer) {
+      throw new ApiError(404, 'NOT_FOUND', `Peer not found: ${peerId}`);
+    }
+    res.json({ peer });
   }));
 
   router.post('/integrations/accounts/connect', asyncHandler(async (req, res) => {
