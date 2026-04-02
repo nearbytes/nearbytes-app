@@ -29,6 +29,9 @@ This is a clean break:
 - 2026-04-02: Reworked local-network sync to pull queue-backed observation pages first and then run inventory reconciliation as recovery/fallback. Per-peer LAN cursor progress now persists through the provider queue route-state store and survives service restarts.
 - 2026-04-02: Added focused tests for provider-queue persistence/dedup/filtering and for LAN cursor resume after service restart using a fetch-stubbed peer.
 - 2026-04-02: Full verification is green again after the provider-queue/LAN refactor: `yarn test`, `yarn type-check`, `yarn build`, and `yarn --cwd ui build` all pass.
+- 2026-04-03: Re-read the original user request and confirmed that the current LAN stack drifted from the intended architecture. The present multicast-plus-peer-HTTP implementation is scaffolding, not the target protocol.
+- 2026-04-03: Standards review completed against RFC 6762, RFC 6763, RFC 9000, RFC 9001, and RFC 9221. The target LAN profile is now explicit: DNS-SD over mDNS for discovery, QUIC over UDP for transport, single shared UDP socket per peer, identity-first routing, and observation-log plus anti-entropy above the transport.
+- 2026-04-03: Added transport-profile code and tests that lock the Nearbytes DNS-SD TXT record shape and QUIC ALPN into the codebase before replacing the old LAN service implementation.
 
 ## TODO
 
@@ -42,6 +45,11 @@ This is a clean break:
 - [x] review whether managed-share/provider sync surfaces should enqueue local work items too, even if they still bootstrap transport separately
 - [x] add integration tests for LAN queue/cursor sync and recovery
 - [x] rerun all tests/builds and keep this TODO list updated until empty
+- [ ] replace ad hoc multicast JSON discovery with DNS-SD service advertisement and browsing
+- [ ] replace peer-HTTP LAN transport with QUIC streams on a shared UDP socket
+- [ ] move current `/lan/*` HTTP routes behind debug or migration-only scaffolding
+- [ ] add end-to-end QUIC transport tests for cursor exchange and object transfer
+- [ ] verify desktop packaging and runtime behavior for the new QUIC/DNS-SD dependencies
 
 ## Locked Decisions
 
@@ -151,6 +159,14 @@ Important nuance:
 - keep a separate persistent per-provider queue beside the future peer-log
 - peer-log is shared sync/history
 - per-provider queue is local delivery/work state for each integration
+
+### Zero-config transport direction
+
+- discovery is mDNS plus DNS-SD, not ad hoc multicast JSON
+- LAN data transport is QUIC over UDP, not peer HTTP over TCP
+- one shared UDP socket per peer is required for the transport
+- peer identity stays independent of route, address, and port
+- HTTP LAN routes are only temporary scaffolding and must not define the long-term protocol
 
 ## Implementation Notes
 
@@ -377,3 +393,9 @@ Current execution note:
     - `src/integrations/__tests__/providerQueue.test.ts`
     - `src/integrations/__tests__/localNetworkSync.test.ts`
   - managed-share/provider review result: no immediate queue adoption was forced into MEGA/GitHub/Google Drive transport code in this pass; the generic provider queue now exists as the local observation/work substrate, and LAN is the first transport consuming it cleanly
+- 2026-04-03 transport reset notes:
+  - added dependencies for `bonjour-service` and `@matrixai/quic`
+  - added `src/integrations/lanTransportProfile.ts` and `src/integrations/__tests__/lanTransportProfile.test.ts`
+  - added `docs/specs/transport/lan-sync-v0.3.md`
+  - updated the registry to point to LAN sync v0.3 as the current target spec
+  - next implementation step is the actual replacement of `src/integrations/localNetworkSync.ts` discovery and transport internals to match the new profile

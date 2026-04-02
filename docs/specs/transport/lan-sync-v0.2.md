@@ -108,3 +108,8 @@ Therefore:
 1. it MUST NOT use generic provider-account connect/disconnect flows;
 2. peer/service errors SHOULD remain scoped to Local network transport UI;
 3. discovered peers SHOULD be shown as transport peers, not provider accounts.
+
+Deprecated note:
+
+1. v0.2 allowed provisional peer-HTTP transport scaffolding during development;
+2. v0.3 replaces that with a normative DNS-SD plus QUIC transport profile.

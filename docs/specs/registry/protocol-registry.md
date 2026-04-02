@@ -60,7 +60,7 @@ Current examples:
 2. file command semantics -> `application/file-commands-v1.md`
 3. file event/replay model -> `application/file-events-v0.3.md`
 4. identity management command semantics -> `identity/identity-management-v1.md`
-5. LAN sync transport family -> `transport/lan-sync-v0.2.md`
+5. LAN sync transport family -> `transport/lan-sync-v0.3.md`
 
 ## 5. Provisional Stack View
 
