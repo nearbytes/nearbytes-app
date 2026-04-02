@@ -16,7 +16,7 @@ const ANNOUNCE_INTERVAL_MS = 3_000;
 const PEER_STALE_AFTER_MS = 18_000;
 const PEER_FORGET_AFTER_MS = 120_000;
 const PEER_SYNC_INTERVAL_MS = 8_000;
-const REQUEST_TIMEOUT_MS = 4_500;
+const REQUEST_TIMEOUT_MS = 10_000;
 const OBSERVATION_PAGE_LIMIT = 512;
 const LOCAL_NETWORK_PROVIDER = 'local-network';
 const LOCAL_NETWORK_RUNTIME_FOLDER = 'local-network';
@@ -74,6 +74,7 @@ interface LocalPeerState {
   lastSyncAt: number | null;
   lastSyncStartedAt: number | null;
   lastSyncError: string | null;
+  lastSyncTransient: boolean;
   lastImportedEvents: number;
   lastImportedBlocks: number;
   remoteCursorSequence: number;
@@ -402,6 +403,7 @@ export class LocalNetworkSyncService {
       lastSyncAt: null,
       lastSyncStartedAt: null,
       lastSyncError: null,
+      lastSyncTransient: false,
       lastImportedEvents: 0,
       lastImportedBlocks: 0,
       remoteCursorSequence: 0,
@@ -468,13 +470,19 @@ export class LocalNetworkSyncService {
       peer.lastImportedBlocks = importedBlocks;
       peer.lastSyncAt = Date.now();
       peer.lastSyncError = null;
+      peer.lastSyncTransient = false;
 
       if ((importedEvents > 0 || importedBlocks > 0) && (force || !peer.queued)) {
         this.storage.scheduleReconcileConfiguredVolumes();
       }
     } catch (error) {
       peer.lastSyncAt = Date.now();
-      peer.lastSyncError = error instanceof Error ? error.message : String(error);
+      peer.lastSyncTransient = isAbortLikeError(error);
+      peer.lastSyncError = peer.lastSyncTransient
+        ? 'Peer timed out; Nearbytes will retry automatically.'
+        : error instanceof Error
+          ? error.message
+          : String(error);
     } finally {
       peer.syncing = false;
       const shouldRunAgain = peer.queued;
@@ -650,7 +658,7 @@ export class LocalNetworkSyncService {
     const stale = Date.now() - peer.lastSeenAt >= PEER_STALE_AFTER_MS;
     const status: LocalNetworkPeerSnapshot['status'] = peer.syncing
       ? 'syncing'
-      : peer.lastSyncError
+      : peer.lastSyncError && !peer.lastSyncTransient
         ? 'error'
         : stale
           ? 'stale'
@@ -658,7 +666,9 @@ export class LocalNetworkSyncService {
     const detail =
       status === 'syncing'
         ? 'Syncing with this peer now.'
-        : status === 'error'
+        : peer.lastSyncTransient
+          ? peer.lastSyncError ?? 'Peer responded too slowly; Nearbytes will retry automatically.'
+          : status === 'error'
           ? peer.lastSyncError ?? 'Last sync failed.'
           : stale
           ? 'Peer is offline or quiet; Nearbytes will reconnect automatically.'
@@ -717,6 +727,12 @@ function formatRelative(timestamp: number): string {
 
 function routeKeyForPeer(peerId: string): string {
   return `peer:${peerId}:pull`;
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === 'AbortError'
+    : error instanceof Error && error.name === 'AbortError';
 }
 
 function resolveLocalNetworkRuntimeDir(storageHomeDir: string): string {

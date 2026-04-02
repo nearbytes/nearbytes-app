@@ -104,6 +104,30 @@ describe('LocalNetworkSyncService', () => {
 
     await shutdownLan(harness.lanService);
   });
+
+  it('treats LAN abort timeouts as transient retry states instead of hard peer errors', async () => {
+    const secret = 'test:secret:lan-timeout';
+    const remote = await createLanHarness('nearbytes-lan-timeout-remote-', secret, 'peer-b', 3401);
+    const local = await createLanHarness('nearbytes-lan-timeout-local-', secret, 'peer-a', 3402);
+    const hello = await remote.lanService.buildHello();
+    addPeer(local.lanService, hello, remote.baseUrl);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const error = new Error('This operation was aborted.');
+        error.name = 'AbortError';
+        throw error;
+      })
+    );
+
+    const peer = await local.lanService.syncPeer(hello.peerId);
+    expect(peer?.status).toBe('ready');
+    expect(peer?.lastSyncError).toBe('Peer timed out; Nearbytes will retry automatically.');
+
+    await shutdownLan(local.lanService);
+    await shutdownLan(remote.lanService);
+  });
 });
 
 async function createLanHarness(prefix: string, secretValue: string, peerId: string, httpPort: number): Promise<{
