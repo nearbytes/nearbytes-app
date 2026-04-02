@@ -395,6 +395,7 @@ class RecordingInviteAdapter extends FakeTransportAdapter {
 }
 
 const tempDirs = new Set<string>();
+const services = new Set<ManagedShareService>();
 
 async function createHarness(options?: {
   adapters?: TransportAdapter[];
@@ -451,6 +452,7 @@ async function createHarness(options?: {
     adapters: options?.adapters ?? [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
     readMaintenanceMode: options?.readMaintenanceMode ?? 'inline',
   });
+  services.add(service);
 
   return {
     integrationStatePath,
@@ -462,6 +464,15 @@ async function createHarness(options?: {
 
 afterEach(async () => {
   vi.useRealTimers();
+  await Promise.all(
+    Array.from(services, async (service) => {
+      try {
+        await service.dispose();
+      } finally {
+        services.delete(service);
+      }
+    })
+  );
   await Promise.all(
     Array.from(tempDirs, async (tempDir) => {
       try {

@@ -1,3 +1,7 @@
+# Next Iteration Prompt
+
+Open this repo fresh and review the current opaque-event refactor with suspicion. Focus on protocol correctness, storage integrity boundaries, event encryption assumptions, LAN-sync architecture fit, managed-share regressions, UI leaks of semantic event data, and test realism. Keep working in small commits, update the diary and implementation-notes sections of this file as you go, and prefer finding concrete bugs or mismatches over polishing prose. Treat this as one pass in a planned 3-4 iteration hardening cycle.
+
 # WIP
 
 ## Goal
@@ -12,6 +16,14 @@ This is a clean break:
 - no migration support
 - old local data may be wiped
 - old specs can be superseded freely
+
+## Diary
+
+- 2026-04-02: Opaque event-envelope refactor is in progress across storage, domain, API, and UI layers. Event semantics now live in encrypted payloads; storage integrity only validates the visible envelope.
+- 2026-04-02: Current stabilization focus is managed-share/background-maintenance cleanup after the protocol refactor. Fast-path tests are timing out because background tasks can outlive their tests and integration-state writes still race on Windows.
+- 2026-04-02: Rule for the remainder of this implementation: every meaningful implementation step must update the Implementation Notes section below before or alongside the code change.
+- 2026-04-02: Managed-share stabilization pass completed. Root causes were confirmed as missing-service disposal in tests, background maintenance re-entry after shutdown, `ENOENT` retry backoff on missing integration-state reads, and duplicate incoming-share adoption races during contact-invite handling.
+- 2026-04-02: Verification is green at this checkpoint: `yarn test`, `yarn type-check`, `yarn build`, and `yarn --cwd ui build` all pass.
 
 ## Locked Decisions
 
@@ -117,6 +129,50 @@ Important nuance:
 - volume linkage comes from events, because events mention referenced block hashes
 
 ### Provider queue direction
+
+- keep a separate persistent per-provider queue beside the future peer-log
+- peer-log is shared sync/history
+- per-provider queue is local delivery/work state for each integration
+
+## Implementation Notes
+
+### Completed so far
+
+- Introduced the new visible event envelope shape in code:
+  - version
+  - full public key
+  - cleartext referenced block hashes
+  - ciphertext payload
+  - signature
+- Updated event hashing/signing to cover the visible envelope plus ciphertext.
+- Moved semantic payload handling behind explicit decrypt/hydrate steps in domain code.
+- Storage integrity now validates only the outer envelope and channel/public-key match.
+- Multi-root block dependency traversal now uses visible `blockRefs` instead of plaintext file-event metadata.
+- UI event details were partially updated to show the visible envelope and optional decrypted payload separately.
+- Local-network UI no longer routes its basic actions through provider-account connect/disconnect paths.
+- Managed-share/background-maintenance stabilization is now in place:
+  - managed-share tests dispose service instances after each run
+  - `ManagedShareService.dispose()` now prevents follow-up maintenance scheduling after shutdown
+  - integration-state writes are serialized per path
+  - missing integration-state reads no longer retry `ENOENT` and therefore return defaults promptly in fast-mode APIs
+  - contact-invite auto-adoption now waits for background maintenance to settle and tolerates stale share IDs during reconciliation
+
+### Still in progress
+
+- UI cleanup:
+  - continue reviewing event-detail rendering for any stale assumptions about plaintext payloads
+  - remove any remaining legacy wording that implies event semantics are storage-visible
+- Protocol breadth:
+  - chat, identity, file, app-record, and LAN surfaces all need another review pass for full alignment with the new specs
+- Noise cleanup:
+  - some managed-share tests still log expected fake-adapter warnings such as “Mirror inventory is not implemented by this fake adapter”; the suite passes, but the logs are noisier than ideal
+
+### Immediate next implementation steps
+
+- do a targeted UI review of event-detail and timeline rendering for any remaining assumptions that `event.payload` is always directly available
+- review identity/app-record/file/chat protocol surfaces against the v0.x specs and remove transitional wording/types where possible
+- review LAN sync code against the new opaque event model and decide the next clean protocol step instead of carrying forward the temporary implementation blindly
+- consider reducing expected fake-adapter warning noise in integration tests now that correctness is restored
 
 In addition to the per-peer log, each transport/provider runtime should maintain its own persistent queue of local delivery work.
 
@@ -288,3 +344,9 @@ Current execution note:
 - added draft specs: `hub-model-v0.2`, `file-events-v0.3`, `app-records-v0.2`, `chat-events-v0.2`, `data-correctness-v0.2`, `meta-storage-v0.3`, `lan-sync-v0.2`, and `log-command-map-v0.2`
 - the first spec batch did not yet explicitly define per-provider persistent queues; this is now recorded here and in the LAN spec as a follow-up refinement
 - next implementation step: replace `EventPayload` with a visible envelope plus encrypted inner payload in `src/types/events.ts` and `src/storage/serialization.ts`
+- implementation has now started on that root change:
+  - `src/types/events.ts` now defines a visible `EventEnvelope` and encrypted stored `SignedEvent`
+  - `src/storage/serialization.ts` now serializes the outer envelope separately from the inner payload
+  - `src/domain/eventEnvelope.ts` was added to create and decrypt signed events
+  - `src/storage/channel.ts`, `src/storage/integrity.ts`, `src/storage/multiRoot.ts`, `src/domain/volume.ts`, `src/domain/chatService.ts`, and `src/domain/fileService.ts` are in active transition
+- current state is intentionally mid-refactor and not yet validated; the next step is to finish threading decrypted payload handling through file replay and the remaining APIs before running tests

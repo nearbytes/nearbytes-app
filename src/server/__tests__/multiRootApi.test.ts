@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import type { Response } from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCryptoOperations } from '../../crypto/index.js';
 import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from '../../domain/fileService.js';
@@ -16,6 +16,19 @@ import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import { createApp } from '../app.js';
 
 const SECRET = 'nearbytes-multi-root-secret';
+
+vi.mock('../../config/appConfig.js', async () => {
+  const actual = await vi.importActual<typeof import('../../config/appConfig.js')>('../../config/appConfig.js');
+  return {
+    ...actual,
+    isProviderEnabled(provider: string): boolean {
+      if (provider.trim().toLowerCase() === 'gdrive') {
+        return true;
+      }
+      return actual.isProviderEnabled(provider);
+    },
+  };
+});
 
 interface ConfigRootsResponseBody {
   configPath: string | null;

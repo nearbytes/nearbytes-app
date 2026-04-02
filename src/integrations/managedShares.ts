@@ -121,6 +121,7 @@ export class ManagedShareService {
   private readonly stopStorageWriteSubscription: (() => void) | null;
   private maintenanceRequested = false;
   private maintenanceTask: Promise<void> | null = null;
+  private disposed = false;
 
   constructor(private readonly options: ManagedShareServiceOptions) {
     this.runtime = createIntegrationRuntime({
@@ -148,8 +149,20 @@ export class ManagedShareService {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
     this.maintenanceRequested = false;
+    this.pendingMarkerRefreshes.clear();
+    this.lastGetManagedShareScheduledSyncAt.clear();
+    this.autoRepairCooldowns.clear();
+    this.collaboratorLookupCooldowns.clear();
     this.stopStorageWriteSubscription?.();
+    const maintenanceTask = this.maintenanceTask;
+    if (maintenanceTask) {
+      await Promise.race([
+        maintenanceTask.catch(() => undefined),
+        delay(100),
+      ]);
+    }
     await Promise.all(
       Array.from(this.adapters.values(), async (adapter) => {
         await adapter.dispose?.();
@@ -677,6 +690,7 @@ export class ManagedShareService {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${accountId}`);
     }
     await adapter.acceptIncomingContactInvite(account, inviteId);
+    await this.waitForBackgroundMaintenance();
     if (adapter.listIncomingShares && this.isOperationalAccount(account)) {
       await this.withSoftTimeout(
         this.reconcileIncomingManagedShares(provider, account, state),
@@ -755,6 +769,19 @@ export class ManagedShareService {
       ...initialDescriptor,
       ...(providerOverlay.remoteDescriptor ?? {}),
     };
+    const latestState = await this.loadState();
+    const existing = findManagedShareByRemoteDescriptor(latestState.managedShares, provider, account.id, remoteDescriptor);
+    if (existing) {
+      if (input.volumeId && existing.sourceId) {
+        const config = ensureVolumeAttachment(
+          cloneConfig(this.options.storage.getRootsConfig()),
+          input.volumeId,
+          existing.sourceId
+        );
+        await this.persistRootsConfig(config);
+      }
+      return this.buildManagedShareSummary(existing);
+    }
 
     const share: ManagedShare = {
       id: shareId,
@@ -1319,7 +1346,13 @@ export class ManagedShareService {
     for (const offer of offers) {
       const existing = findManagedShareByRemoteDescriptor(state.managedShares, provider, account.id, offer.remoteDescriptor);
       if (existing) {
-        await this.prepareManagedShareForSync(existing.id);
+        try {
+          await this.prepareManagedShareForSync(existing.id);
+        } catch (error) {
+          if (!(error instanceof ManagedShareServiceError) || error.code !== 'SHARE_NOT_FOUND') {
+            throw error;
+          }
+        }
         state = await this.loadState();
         continue;
       }
@@ -1786,12 +1819,18 @@ export class ManagedShareService {
   }
 
   private scheduleManagedShareSyncs(state: IntegrationStateSnapshot): void {
+    if (this.disposed) {
+      return;
+    }
     for (const share of state.managedShares) {
       this.scheduleManagedShareSync(share, state);
     }
   }
 
   private scheduleManagedShareSync(share: ManagedShare, state: IntegrationStateSnapshot): void {
+    if (this.disposed) {
+      return;
+    }
     const account = state.accounts.find((entry) => entry.id === share.accountId);
     if (!account || !this.canSyncManagedShare(share, account) || this.syncBootstrapTasks.has(share.id)) {
       return;
@@ -1808,6 +1847,9 @@ export class ManagedShareService {
       .get(normalizeProvider(share.provider))
       ?.ensureSync?.(share, account)
       .then(() => {
+        if (this.disposed) {
+          return;
+        }
         this.runtime.logger.log('Managed share sync bootstrap completed.', {
           provider: normalizeProvider(share.provider),
           shareId: share.id,
@@ -1948,6 +1990,9 @@ export class ManagedShareService {
   }
 
   private requestBackgroundMaintenance(reason: string, stateSnapshot: IntegrationStateSnapshot): void {
+    if (this.disposed) {
+      return;
+    }
     if (!this.shouldRunBackgroundMaintenance(stateSnapshot)) {
       return;
     }
@@ -1962,7 +2007,7 @@ export class ManagedShareService {
       })
       .finally(() => {
         this.maintenanceTask = null;
-        if (this.maintenanceRequested) {
+        if (this.maintenanceRequested && !this.disposed) {
           void this.loadState()
             .then((latestState) => {
               this.requestBackgroundMaintenance('follow-up', latestState);
@@ -1977,16 +2022,31 @@ export class ManagedShareService {
 
   private async runBackgroundMaintenanceLoop(initialReason: string): Promise<void> {
     let reason = initialReason;
-    while (this.maintenanceRequested) {
+    while (this.maintenanceRequested && !this.disposed) {
       this.maintenanceRequested = false;
       this.runtime.logger.log('Managed share background maintenance started.', { reason });
       try {
         const state = await this.loadState();
+        if (this.disposed) {
+          break;
+        }
         const repairedState = await this.repairManagedShareState(state);
+        if (this.disposed) {
+          break;
+        }
         const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
+        if (this.disposed) {
+          break;
+        }
         await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
+        if (this.disposed) {
+          break;
+        }
         const refreshedState = await this.loadState();
         const stampedState = await this.persistBackgroundMaintenanceSnapshot(refreshedState);
+        if (this.disposed) {
+          break;
+        }
         this.scheduleManagedShareSyncs(stampedState);
         this.runtime.logger.log('Managed share background maintenance completed.', {
           reason,
@@ -4156,4 +4216,8 @@ function uniqueStrings(values: readonly string[]): string[] {
     result.push(normalized);
   }
   return result;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

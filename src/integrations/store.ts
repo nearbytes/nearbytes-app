@@ -21,6 +21,7 @@ export interface IntegrationStateSnapshot {
 }
 
 const INTEGRATION_STATE_VERSION = 1 as const;
+const saveQueues = new Map<string, Promise<void>>();
 
 const providerAccountSchema = z.object({
   id: z.string().trim().min(1),
@@ -78,7 +79,7 @@ export function resolveIntegrationStatePath(customPath?: string): string {
 export async function loadIntegrationState(customPath?: string): Promise<IntegrationStateSnapshot> {
   const resolvedPath = resolveIntegrationStatePath(customPath);
   try {
-    const raw = await fs.readFile(resolvedPath, 'utf8');
+    const raw = await retryFileOperation(() => fs.readFile(resolvedPath, 'utf8'), 4, isTransientReadError);
     const parsed = integrationStateSchema.parse(JSON.parse(raw));
     return {
       version: INTEGRATION_STATE_VERSION,
@@ -109,21 +110,44 @@ export async function saveIntegrationState(
   customPath?: string
 ): Promise<void> {
   const resolvedPath = resolveIntegrationStatePath(customPath);
-  const dir = path.dirname(resolvedPath);
-  await fs.mkdir(dir, { recursive: true });
+  const previous = saveQueues.get(resolvedPath) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const dir = path.dirname(resolvedPath);
+      await fs.mkdir(dir, { recursive: true });
 
-  const normalized = integrationStateSchema.parse(snapshot);
-  const tempPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+      const normalized = integrationStateSchema.parse(snapshot);
+      const tempPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
+      await fs.writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+      try {
+        await retryFileOperation(() => fs.rename(tempPath, resolvedPath));
+      } catch (error) {
+        if (!(await pathExists(tempPath))) {
+          return;
+        }
+        if (!isAtomicReplaceFallbackError(error)) {
+          await fs.rm(tempPath, { force: true }).catch(() => undefined);
+          throw error;
+        }
+        try {
+          await retryFileOperation(() => fs.copyFile(tempPath, resolvedPath));
+        } catch (copyError) {
+          if (!(await pathExists(tempPath))) {
+            return;
+          }
+          throw copyError;
+        }
+        await retryFileOperation(() => fs.rm(tempPath, { force: true }));
+      }
+    });
+  saveQueues.set(resolvedPath, next);
   try {
-    await fs.rename(tempPath, resolvedPath);
-  } catch (error) {
-    if (!isAtomicReplaceFallbackError(error)) {
-      await fs.rm(tempPath, { force: true }).catch(() => undefined);
-      throw error;
+    await next;
+  } finally {
+    if (saveQueues.get(resolvedPath) === next) {
+      saveQueues.delete(resolvedPath);
     }
-    await fs.copyFile(tempPath, resolvedPath);
-    await fs.rm(tempPath, { force: true });
   }
 }
 
@@ -161,4 +185,53 @@ function isAtomicReplaceFallbackError(error: unknown): error is NodeJS.ErrnoExce
   }
   const code = (error as { code?: string }).code;
   return code === 'EPERM' || code === 'EEXIST' || code === 'EXDEV' || code === 'ENOENT';
+}
+
+async function retryFileOperation<T>(
+  operation: () => Promise<T>,
+  attempts = 4,
+  isTransient: (error: unknown) => boolean = isTransientFileError
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isTransient(error) || attempt === attempts - 1) {
+        throw error;
+      }
+      await delay(15 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+function isTransientFileError(error: unknown): error is NodeJS.ErrnoException {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return false;
+  }
+  const code = (error as { code?: string }).code;
+  return code === 'EBUSY' || code === 'EPERM' || code === 'ENOENT';
+}
+
+function isTransientReadError(error: unknown): error is NodeJS.ErrnoException {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return false;
+  }
+  const code = (error as { code?: string }).code;
+  return code === 'EBUSY' || code === 'EPERM';
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
