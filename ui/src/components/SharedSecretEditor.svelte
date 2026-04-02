@@ -150,7 +150,7 @@
       {#if showPasteButton}
         <button type="button" class="workspace-toggle" onclick={() => void onPasteButton?.()} disabled={pasteButtonBusy}>
           <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-          <span>{pasteButtonBusy ? 'Readingâ€¦' : pasteButtonLabel}</span>
+          <span>{pasteButtonBusy ? 'Reading…' : pasteButtonLabel}</span>
         </button>
       {/if}
       {#if hasAttachedFile && onClearFile}
@@ -181,14 +181,14 @@
         <p class="shared-secret-editor-file-info">
           {fileTypeLabel}
           {#if fileInfo}
-            {' â€¢ '}{fileInfo}
+            {' • '}{fileInfo}
           {/if}
         </p>
         {#if fileHashLabel}
           <p class="shared-secret-editor-file-hash-label">{fileHashLabel}</p>
-          <p class="shared-secret-editor-file-hash" title={fileHashPending ? 'Computingâ€¦' : fileHashValue || 'Unavailable'}>
+          <p class="shared-secret-editor-file-hash" title={fileHashPending ? 'Computing…' : fileHashValue || 'Unavailable'}>
             {#if fileHashPending}
-              Computingâ€¦
+              Computing…
             {:else if fileHashValue}
               {fileHashValue}
             {:else}
@@ -238,15 +238,15 @@
   }
 
   .shared-secret-editor-choose-file {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 24%, var(--nb-btn-border, rgba(56, 189, 248, 0.24)) 76%);
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 88%, var(--nb-btn-bg, rgba(12, 24, 43, 0.82)));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 36%, var(--nb-btn-color, rgba(226, 232, 240, 0.92)) 64%);
-    box-shadow: 0 10px 24px color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 70%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 24%, var(--nb-btn-border, rgba(56, 189, 248, 0.24)) 76%);
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 88%, var(--nb-btn-bg, rgba(12, 24, 43, 0.82)));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 36%, var(--nb-btn-color, rgba(226, 232, 240, 0.92)) 64%);
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 70%, transparent);
   }
 
   .shared-secret-editor-choose-file:hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 32%, var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34)) 68%);
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.12)) 92%, var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.96)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 32%, var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34)) 68%);
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.05)) 92%, var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.96)));
   }
 
   .shared-secret-editor-file-card {

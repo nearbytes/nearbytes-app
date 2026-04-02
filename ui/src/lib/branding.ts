@@ -67,7 +67,7 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
     palette: {
       id: 'clarity-light',
       label: 'Clarity',
-      description: 'Pure white, strong contrast, crisp blue accents — inspired by the best of Apple Mail.',
+      description: 'Pure white, strong contrast, warm graphite accents — clean and composed.',
       surfaceStyle: 'flat',
       appBg: '#ffffff',
       shellTop: 'rgba(255, 255, 255, 1)',
@@ -77,9 +77,9 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
       panelGlow: 'rgba(0, 0, 0, 0)',
       border: 'rgba(0, 0, 0, 0.10)',
       borderStrong: 'rgba(0, 0, 0, 0.18)',
-      accent: '#007AFF',
-      accentStrong: '#0055D4',
-      accentSoft: 'rgba(0, 122, 255, 0.08)',
+      accent: '#6b5e54',
+      accentStrong: '#4a3f37',
+      accentSoft: 'rgba(107, 94, 84, 0.08)',
       accentText: '#ffffff',
       textMain: 'rgba(0, 0, 0, 0.88)',
       textSoft: 'rgba(60, 60, 67, 0.6)',
@@ -90,9 +90,9 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
     },
     logo: {
       peers: 3,
-      accentColor: '#007AFF',
-      peerColor: '#5AC8FA',
-      arcColor: '#007AFF',
+      accentColor: '#6b5e54',
+      peerColor: '#a09890',
+      arcColor: '#6b5e54',
       bgFill: '#ffffff',
       nodeFill: '#f5f5f7',
       nodeStroke: '#d1d1d6',
@@ -249,8 +249,8 @@ const DEFAULT_PRESETS: NearbytesThemeSettings[] = [
 ];
 
 export const DEFAULT_THEME_REGISTRY: NearbytesThemeRegistry = {
-  version: 3,
-  defaultPresetId: 'clarity-light',
+  version: 4,
+  defaultPresetId: 'mono-scarlet',
   presets: DEFAULT_PRESETS,
 };
 

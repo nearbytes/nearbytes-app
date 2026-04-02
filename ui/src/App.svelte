@@ -474,7 +474,7 @@
     const rate = state.bytesPerSecond > 0 ? `${formatByteCount(state.bytesPerSecond)}/s` : '';
     const percent =
       typeof state.progressPercent === 'number' ? `${Math.round(Math.max(0, Math.min(100, state.progressPercent)))}%` : '';
-    return [percent, total ? `${transferred} of ${total}` : transferred, rate].filter(Boolean).join(' â€¢ ');
+    return [percent, total ? `${transferred} of ${total}` : transferred, rate].filter(Boolean).join(' • ');
   }
 
   function desktopUpdaterPrimaryActionLabel(state: DesktopUpdaterState): string {
@@ -2345,26 +2345,26 @@
   function timelineMarkerText(event: TimelineEvent, position: number, total: number): string {
     switch (event.type) {
       case 'CREATE_FILE':
-        return `${position}/${total} â€¢ ${fileBaseName(event.filename)} created`;
+        return `${position}/${total} • ${fileBaseName(event.filename)} created`;
       case 'DELETE_FILE':
-        return `${position}/${total} â€¢ ${fileBaseName(event.filename)} deleted`;
+        return `${position}/${total} • ${fileBaseName(event.filename)} deleted`;
       case 'RENAME_FILE':
-        return `${position}/${total} â€¢ ${fileBaseName(event.filename)} renamed`;
+        return `${position}/${total} • ${fileBaseName(event.filename)} renamed`;
       case 'DECLARE_IDENTITY':
-        return `${position}/${total} â€¢ ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
+        return `${position}/${total} • ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
       case 'CHAT_MESSAGE':
-        return `${position}/${total} â€¢ ${event.summary ?? 'Chat message'}`;
+        return `${position}/${total} • ${event.summary ?? 'Chat message'}`;
       case 'APP_RECORD':
         if (event.protocol === 'nb.identity.snapshot.v1') {
-          return `${position}/${total} â€¢ ${event.displayName ? `${event.displayName} synced` : 'Identity synced'}`;
+          return `${position}/${total} • ${event.displayName ? `${event.displayName} synced` : 'Identity synced'}`;
         }
         if (event.protocol === 'nb.identity.record.v1') {
-          return `${position}/${total} â€¢ ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
+          return `${position}/${total} • ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
         }
         if (event.protocol === 'nb.chat.message.v1') {
-          return `${position}/${total} â€¢ ${event.summary ?? 'Chat message'}`;
+          return `${position}/${total} • ${event.summary ?? 'Chat message'}`;
         }
-        return `${position}/${total} â€¢ ${event.protocol ?? 'App record'}`;
+        return `${position}/${total} • ${event.protocol ?? 'App record'}`;
     }
   }
 
@@ -2384,13 +2384,13 @@
   }
 
   function timelineTitle(event: TimelineEvent): string {
-    return `${timelineKindLabel(event)} ${timelineHeadline(event)} â€¢ ${formatDate(event.timestamp)}`;
+    return `${timelineKindLabel(event)} ${timelineHeadline(event)} • ${formatDate(event.timestamp)}`;
   }
 
   const timelineMarker = $derived.by(() => {
     if (timelineEvents.length === 0) return 'No history yet';
     if (timelinePosition === timelineEvents.length) return 'Live view';
-    if (timelinePosition === 0) return `Genesis â€¢ 0/${timelineEvents.length}`;
+    if (timelinePosition === 0) return `Genesis • 0/${timelineEvents.length}`;
     const event = timelineEvents[timelinePosition - 1];
     return timelineMarkerText(event, timelinePosition, timelineEvents.length);
   });
@@ -4805,9 +4805,9 @@
     const shareName = segments.length > 0 ? segments[segments.length - 1] : '';
 
     if (shareName) {
-      return `${provider} â€¢ ${shareName}`;
+      return `${provider} • ${shareName}`;
     }
-    return `${provider} â€¢ default storage`;
+    return `${provider} • default storage`;
   }
 
   function timelineStorageLocationPath(location: TimelineStorageLocationView): string {
@@ -4826,7 +4826,7 @@
     if (location.dataPath) {
       parts.push(location.hasDataBlock ? 'block present' : 'block missing');
     }
-    return parts.join(' â€¢ ');
+    return parts.join(' • ');
   }
 
   async function revealTimelineStorageLocation(location: TimelineStorageLocationView): Promise<void> {
@@ -6444,7 +6444,7 @@
           <div class="volume-transition-spinner"></div>
           <div class="volume-transition-copy">
             <p class="volume-transition-title">Switching hub</p>
-            <p class="volume-transition-subtitle">Replaying history off-screenâ€¦</p>
+            <p class="volume-transition-subtitle">Replaying history off-screen…</p>
           </div>
         </div>
       {:else}
@@ -6563,10 +6563,10 @@
             {#if showFilesWorkspace}
               <span class="workspace-selection-summary">
                 {selectedFileNames.length === 0
-                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} Â· no selection`
+                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
                   : selectedFileNames.length === 1 && selectedFile
-                    ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} Â· ${displayFileName(selectedFile)}`
-                    : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} Â· ${selectedFileNames.length} selected`}
+                    ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
+                    : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
               </span>
               <input
                 type="text"
@@ -6862,7 +6862,7 @@
                         <div>
                           <h3 class="preview-title" title={currentPreviewFile.filename}>{currentPreviewFile.filename}</h3>
                           <p class="preview-meta">
-                            {currentPreviewFile.mimeType || 'Unknown type'} â€¢ {formatSize(currentPreviewFile.size)} â€¢ {formatDate(currentPreviewFile.createdAt)}
+                            {currentPreviewFile.mimeType || 'Unknown type'} • {formatSize(currentPreviewFile.size)} • {formatDate(currentPreviewFile.createdAt)}
                           </p>
                         </div>
                         <div class="preview-actions">
@@ -6891,7 +6891,7 @@
                       </div>
                       <div class="preview-body">
                         {#if previewLoading}
-                          <p class="preview-message">Loading previewâ€¦</p>
+                          <p class="preview-message">Loading preview…</p>
                         {:else if previewError}
                           <p class="preview-message error">{previewError}</p>
                         {:else if previewKind === 'image' && previewUrl}
@@ -7146,7 +7146,7 @@
           {#if timelineDetailLoading}
             <div class="tm-details-loading">
               <span class="loading-spinner"></span>
-              <span>Loading eventâ€¦</span>
+              <span>Loading event…</span>
             </div>
           {:else if timelineDetailError}
             <p class="tm-details-error">{timelineDetailError}</p>
@@ -7156,7 +7156,7 @@
             {@const relevantSpecs = specDocsForPayload(payload)}
             <div class="tm-details-meta">
               <span>{payload.type}</span>
-              <span>{payload.fileName || 'â€”'}</span>
+              <span>{payload.fileName || '—'}</span>
             </div>
             {#if timelineDetailHash}
               <p class="tm-details-hash">{timelineDetailHash}</p>
@@ -7204,7 +7204,7 @@
                           onclick={() => void revealTimelineStorageLocation(location)}
                           disabled={timelineDetailRevealBusyPath === targetPath}
                         >
-                          {timelineDetailRevealBusyPath === targetPath ? 'Openingâ€¦' : 'Reveal in folder'}
+                          {timelineDetailRevealBusyPath === targetPath ? 'Opening…' : 'Reveal in folder'}
                         </button>
                       </div>
                     </div>
@@ -7510,7 +7510,7 @@
                         {/if}
                         <p class="tm-details-ref-hash mono">{reference.ref.c.h}</p>
                         <p class="tm-details-ref-meta">
-                          {reference.ref.c.t} â€¢ {reference.ref.c.z} bytes
+                          {reference.ref.c.t} • {reference.ref.c.z} bytes
                         </p>
                       </div>
                       <div class="tm-details-ref-actions">
@@ -7711,7 +7711,7 @@
                   disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
                 >
                   <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                  <span>{joinDialogClipboardBusy ? 'Readingâ€¦' : 'Paste from clipboard'}</span>
+                  <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
                 </button>
               </div>
 
@@ -7729,7 +7729,7 @@
                   onclick={() => void openJoinDialogLink()}
                   disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
                 >
-                  <span>{joinDialogOpenBusy ? 'Openingâ€¦' : 'Open shared hub'}</span>
+                  <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
                 </button>
               </div>
 
@@ -7947,7 +7947,7 @@
                 <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
                 <span>
                   {identityManagerLoading
-                    ? 'Joiningâ€¦'
+                    ? 'Joining…'
                     : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
                       ? 'Joined'
                       : 'Join this hub'}
@@ -7969,7 +7969,7 @@
                 <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
                 <span>
                   {identityManagerLoading
-                    ? 'Publishingâ€¦'
+                    ? 'Publishing…'
                     : selectedChatIdentityNeedsPublish
                       ? 'Publish identity'
                       : 'Published'}
@@ -8002,7 +8002,7 @@
                   <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
                   <span class="identity-pill-state">
                     {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
-                      Joined Â· update pending
+                      Joined · update pending
                     {:else if identity.id === currentVolumeChatIdentityId}
                       Joined
                     {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
@@ -8141,7 +8141,7 @@
                   <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
                   <span>
                     {identityManagerLoading
-                      ? 'Publishingâ€¦'
+                      ? 'Publishing…'
                       : selectedChatIdentityNeedsPublish
                         ? 'Publish to hub'
                         : 'Published'}
@@ -8244,7 +8244,7 @@
                 disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
               >
                 <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                <span>{joinDialogClipboardBusy ? 'Readingâ€¦' : 'Paste from clipboard'}</span>
+                <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
               </button>
             </div>
 
@@ -8262,7 +8262,7 @@
                 onclick={() => void openJoinDialogLink()}
                 disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
               >
-                <span>{joinDialogOpenBusy ? 'Openingâ€¦' : 'Open shared hub'}</span>
+                <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
               </button>
             </div>
 
@@ -8862,7 +8862,7 @@
 
   .identity-pill {
     appearance: none;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(250, 244, 239, 0.9));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     border-radius: 14px;
@@ -8884,14 +8884,14 @@
   }
 
   .identity-pill:hover {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 10%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 10%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%);
   }
 
   .identity-pill.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.12));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, rgba(60, 60, 67, 0.12));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(248, 243, 239, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(0, 0, 0, 0.03));
   }
 
   .identity-pill.add {
@@ -8959,7 +8959,7 @@
   .identity-editor-panel textarea {
     width: 100%;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.9));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font: inherit;
@@ -8969,7 +8969,7 @@
   .identity-editor-panel input:focus,
   .identity-editor-panel textarea:focus {
     outline: none;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, rgba(60, 60, 67, 0.14));
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-panel-bg, #ffffff) 72%, rgba(240, 232, 226, 0.8));
   }
 
@@ -8995,7 +8995,7 @@
     overflow: hidden;
     display: grid;
     place-items: center;
-    background: color-mix(in srgb, var(--nb-accent, #d27a54) 8%, #fff8f2);
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 8%, #f8f7f5);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font-size: 1.2rem;
     font-weight: 700;
@@ -9929,7 +9929,7 @@
     align-items: center;
     gap: 0.32rem;
     background: transparent;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.12));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.05));
     border-radius: 999px;
     padding: 0.22rem 0.62rem;
     font-family: var(--nb-font-mono);
@@ -9941,7 +9941,7 @@
 
   .volume-id-btn:hover {
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.92));
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
   }
 
@@ -10034,7 +10034,7 @@
     border: 0;
     background: transparent;
     padding: 0;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 68%, var(--nb-text-soft, rgba(70, 70, 73, 0.8)) 32%);
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 68%, var(--nb-text-soft, rgba(70, 70, 73, 0.8)) 32%);
     font: inherit;
     font-size: 0.72rem;
     font-weight: 600;
@@ -10045,7 +10045,7 @@
   }
 
   .mount-dialog-inline-action:hover:not(:disabled) {
-    color: var(--nb-accent-strong, #b85f39);
+    color: var(--nb-accent-strong, #5d524a);
   }
 
   .mount-dialog-inline-action:disabled {
@@ -10060,8 +10060,8 @@
     min-height: 26px;
     padding: 0 0.62rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(245, 243, 240, 0.88));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
     font-size: 0.72rem;
     font-weight: 600;
@@ -11035,7 +11035,7 @@
     font-size: 0.68rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.8));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 72%, rgba(110, 110, 115, 0.8));
   }
 
   .theme-dialog-eyebrow.danger {
@@ -11073,7 +11073,7 @@
     gap: 0.32rem;
     padding: 0.2rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(210, 122, 84, 0.1));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(0, 0, 0, 0.04));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(249, 244, 240, 0.82));
   }
 
@@ -11102,13 +11102,13 @@
   }
 
   .mount-dialog-mode-btn.active {
-    background: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(255, 255, 255, 0.92));
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, rgba(255, 255, 255, 0.92));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 16%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, transparent);
   }
 
   .mount-dialog-mode-btn:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--nb-accent, #d27a54) 34%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 34%, transparent);
     outline-offset: 2px;
   }
 
@@ -11187,7 +11187,7 @@
     align-items: flex-start;
     padding: 0.95rem 1rem;
     border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.04));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(255, 248, 244, 0.9));
   }
 
@@ -11210,7 +11210,7 @@
     gap: 0.8rem;
     padding: 1rem 1.05rem;
     border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.1));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.04));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(255, 245, 239, 0.9));
   }
 
@@ -11218,7 +11218,7 @@
     gap: 0.7rem;
     padding: 1rem;
     border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.86));
   }
 
@@ -11226,16 +11226,16 @@
     gap: 0.78rem;
     padding: 1rem;
     border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.04));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(245, 243, 240, 0.88));
   }
 
   .theme-dialog-section {
     gap: 0.9rem;
     padding: 1rem;
     border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.04));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(245, 243, 240, 0.88));
   }
 
   .theme-dialog-hero {
@@ -11248,7 +11248,7 @@
     padding: 0.8rem;
     border-radius: 24px;
     background: color-mix(in srgb, var(--nb-logo-bg, #f7efe9) 70%, rgba(255, 247, 241, 0.95));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%, rgba(210, 122, 84, 0.12));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%, rgba(0, 0, 0, 0.05));
   }
 
   .theme-dialog-preview-copy {
@@ -11279,8 +11279,8 @@
     margin: 0;
     padding: 0.85rem 1rem;
     border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 78%, rgba(210, 122, 84, 0.16));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 72%, rgba(255, 250, 247, 0.98));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 78%, rgba(0, 0, 0, 0.06));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 72%, rgba(245, 243, 240, 0.98));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font-size: 0.88rem;
   }
@@ -11306,7 +11306,7 @@
     gap: 0.35rem;
     padding: 0.38rem 0.72rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(252, 244, 238, 0.92));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
     font-family: var(--nb-font-body);
@@ -11316,13 +11316,13 @@
   }
 
   .theme-studio-chip.strong {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 28%, rgba(60, 60, 67, 0.16));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 85%, rgba(255, 247, 241, 0.98));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 70%, rgba(28, 28, 30, 0.96));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 28%, rgba(60, 60, 67, 0.16));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 85%, rgba(245, 243, 240, 0.98));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 70%, rgba(28, 28, 30, 0.96));
   }
 
   .theme-dialog-tab {
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.1));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.04));
     background: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.88));
     border-radius: 999px;
@@ -11335,9 +11335,9 @@
   }
 
   .theme-dialog-tab.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 26%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 86%, var(--nb-panel-bg, white));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 78%, rgba(28, 28, 30, 0.96));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 26%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 86%, var(--nb-panel-bg, white));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 78%, rgba(28, 28, 30, 0.96));
   }
 
   .theme-preset-grid,
@@ -11351,7 +11351,7 @@
   }
 
   .theme-preset-card {
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.86));
     border-radius: 18px;
     padding: 0.95rem;
@@ -11363,8 +11363,8 @@
   }
 
   .theme-preset-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 24%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 82%, var(--nb-panel-bg, white));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 24%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 82%, var(--nb-panel-bg, white));
   }
 
   .theme-preset-swatches {
@@ -11422,8 +11422,8 @@
   .theme-form-grid select {
     min-height: 40px;
     border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(245, 243, 240, 0.88));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     padding: 0.45rem 0.6rem;
   }
@@ -11492,7 +11492,7 @@
     font-family: var(--nb-font-display);
     font-size: 0.88rem;
     font-weight: 600;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .join-dialog-section-title {
@@ -11500,7 +11500,7 @@
     font-family: var(--nb-font-display);
     font-size: 0.88rem;
     font-weight: 600;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .join-dialog-input-shell {
@@ -11531,8 +11531,8 @@
 
   .join-dialog-textarea:focus {
     outline: none;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 44%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 90%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 44%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 90%, transparent);
   }
 
   .join-dialog-toggle {
@@ -11565,17 +11565,17 @@
     gap: 0.3rem;
     padding: 0.34rem 0.65rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(245, 243, 240, 0.88));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.9));
     font-size: 0.75rem;
     font-weight: 600;
   }
 
   .join-dialog-chip.strong {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 26%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 82%, rgba(255, 247, 241, 0.98));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 74%, rgba(28, 28, 30, 0.96));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 26%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 82%, rgba(245, 243, 240, 0.98));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 74%, rgba(28, 28, 30, 0.96));
   }
 
   .join-dialog-chip.warning {
@@ -11596,8 +11596,8 @@
     gap: 0.55rem;
     padding: 0.9rem 0.95rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(245, 243, 240, 0.88));
   }
 
   .join-dialog-result-row {
@@ -11637,8 +11637,8 @@
     align-items: center;
     padding: 0.26rem 0.5rem;
     border-radius: 999px;
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
-    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.12));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, rgba(60, 60, 67, 0.12));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.86));
     font-size: 0.72rem;
   }
@@ -11652,8 +11652,8 @@
     gap: 0.3rem;
     padding: 0.9rem 0.95rem;
     border-radius: 14px;
-    border: 1px dashed color-mix(in srgb, var(--nb-accent, #d27a54) 22%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border: 1px dashed color-mix(in srgb, var(--nb-accent, #7c6f64) 22%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
   }
 
   .share-dialog-empty-title {
@@ -12298,11 +12298,11 @@
   }
 
   .file-list-sort-wrap[data-sort='ascending'] .file-list-sort::after {
-    content: ' â†‘';
+    content: ' ↑';
   }
 
   .file-list-sort-wrap[data-sort='descending'] .file-list-sort::after {
-    content: ' â†“';
+    content: ' ↓';
   }
 
   .file-list-scroll {

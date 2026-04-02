@@ -30,7 +30,7 @@
 
 <style>
   .hub-storage-button {
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.94));
     border-radius: 999px;
@@ -49,14 +49,14 @@
     line-height: 1;
     white-space: nowrap;
     cursor: pointer;
-    box-shadow: 0 1px 2px rgba(82, 53, 33, 0.04);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
     transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
   }
 
   .hub-storage-button:hover:not(:disabled) {
     transform: translateY(-1px);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 12%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 12%, rgba(60, 60, 67, 0.14));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
   }
 
@@ -71,10 +71,10 @@
   }
 
   .hub-storage-button.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(0, 0, 0, 0.03));
   }
 
   .hub-storage-button-label,
@@ -87,7 +87,7 @@
     padding: 0.22rem 0.56rem;
     border-radius: 999px;
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, rgba(248, 243, 239, 0.96));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.8));
     font-size: 0.64rem;
     letter-spacing: 0.06em;

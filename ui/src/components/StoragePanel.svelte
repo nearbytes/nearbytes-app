@@ -1794,7 +1794,7 @@
       if (pendingCount > 0) {
         parts.push(`${countLabel(pendingCount, 'item')} checking`);
       }
-      return parts.join(' â€¢ ');
+      return parts.join(' • ');
     }
     const locationCopy = countLabel(
       providerVisibleShareCount(entry.provider),
@@ -1975,7 +1975,7 @@
     const status = summary.state.status;
     const rawDetail = summary.state.diagnostic?.summary?.trim() || summary.state.detail.trim();
     const detail = rawDetail ? summarizeMegaStateDetail(rawDetail) : '';
-    const shortDetail = detail.length > 140 ? `${detail.slice(0, 137).trimEnd()}â€¦` : detail;
+    const shortDetail = detail.length > 140 ? `${detail.slice(0, 137).trimEnd()}…` : detail;
 
     if (status === 'ready') {
       return {
@@ -1990,7 +1990,7 @@
       return {
         shareId: summary.share.id,
         name,
-        phase: preparing ? 'Preparing local mirrorâ€¦' : shortDetail || 'Syncing with MEGAâ€¦',
+        phase: preparing ? 'Preparing local mirror…' : shortDetail || 'Syncing with MEGA…',
         tone: 'muted',
       };
     }
@@ -1998,7 +1998,7 @@
       return {
         shareId: summary.share.id,
         name,
-        phase: shortDetail || 'Checking connection and mirror healthâ€¦',
+        phase: shortDetail || 'Checking connection and mirror health…',
         tone: 'muted',
       };
     }
@@ -2565,7 +2565,7 @@
         tone: 'warn' as const,
         syncing: inProgress,
         progressPercent,
-        progressLabel: progressSummary || (total > 0 ? 'Working on locationsâ€¦' : 'Recovering MEGA status'),
+        progressLabel: progressSummary || (total > 0 ? 'Working on locations…' : 'Recovering MEGA status'),
         showProgressBar,
         selfRepairCopy:
           'Details for each folder appear below. Nearbytes retries transient MEGA API issues; use Refresh if something stays stuck.',
@@ -2600,7 +2600,7 @@
         progressLabel: progressSummary,
         showProgressBar,
         selfRepairCopy:
-          'â€œIdleâ€ on a location usually means the app is still validating the mirror or waiting on MEGA; it should move to ready on its own.',
+          '“Idle” on a location usually means the app is still validating the mirror or waiting on MEGA; it should move to ready on its own.',
       };
     }
 
@@ -2619,7 +2619,7 @@
         progressLabel: progressSummary || (preparing > 0 ? 'Preparing local mirror' : 'Refreshing locations'),
         showProgressBar,
         selfRepairCopy:
-          'If a folder stays in â€œPreparingâ€ or â€œCheckingâ€¦â€, wait for a full sync cycle or tap Refresh MEGA status.',
+          'If a folder stays in “Preparing” or “Checking…”, wait for a full sync cycle or tap Refresh MEGA status.',
       };
     }
 
@@ -2668,7 +2668,7 @@
     if (summary.share.provider === 'github') {
       const repoFullName = typeof summary.share.remoteDescriptor.repoFullName === 'string' ? summary.share.remoteDescriptor.repoFullName : null;
       const basePath = typeof summary.share.remoteDescriptor.basePath === 'string' ? summary.share.remoteDescriptor.basePath : null;
-      return repoFullName && basePath ? `${repoFullName} â†’ ${basePath}` : 'GitHub repository share';
+      return repoFullName && basePath ? `${repoFullName} → ${basePath}` : 'GitHub repository share';
     }
     return summary.share.sourceId ? 'Local mirror folder managed by Nearbytes' : 'Mirror folder needs attention';
   }
@@ -2949,7 +2949,6 @@
       statusBadges: shareCardBadgeForSource(source),
       meta: [
         measurement,
-        sourceAttachmentSummary(source.id),
       ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
@@ -3003,7 +3002,6 @@
       active: summary.state.status === 'ready',
       statusBadges: shareCardBadgesForManaged(summary),
       meta: [
-        shareAttachmentSummary(summary),
         measurement,
         !measurement ? managedShareOpenLabel(summary) : null,
       ].filter((value): value is string => Boolean(value)),
@@ -4001,7 +3999,7 @@
       // that rarely set `keepVisible`, the UI never showed "Shared with you" or any Add action.
       // Run after share summaries so we do not hit MEGA with a duplicate full-tree fetch in parallel
       // with the same panel refresh (reduces transient API lock / -3 warnings in logs).
-      // MEGA fetch-nodes for incoming shares can take 10â€“50s under load; keep this above
+      // MEGA fetch-nodes for incoming shares can take 10—50s under load; keep this above
       // `providerIncomingShareDiscoveryTimeoutMs` in managedShares so we do not abort early.
       const incomingSharesPromise = withPanelRequestTimeout(
         'Incoming share discovery',
@@ -4936,33 +4934,32 @@
           compact={true}
           statusBadges={view.statusBadges}
           meta={view.meta}
+          reservePercent={view.reservePercent}
+          onReserveClick={() => toggleReserveEditor(view.reserveKey)}
+          onPathClick={view.onOpen}
+          onChangeLocation={view.onMove}
+          changeDisabled={view.moveDisabled}
+          changeLabel={view.moveLabel === 'Moving...' ? 'Moving...' : 'Change'}
         >
         {#snippet metaActions()}
-          <div class="inline-reserve-slot">
-            {#if activeReserveEditorKey === view.reserveKey}
-              <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
-                <span>Free-space buffer</span>
-                <select
-                  class="panel-input inline-reserve-select"
-                  value={String(view.reservePercent)}
-                  onchange={(event) => {
-                    view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value));
-                    closeReserveEditor(view.reserveKey);
-                  }}
-                  onblur={() => closeReserveEditor(view.reserveKey)}
-                >
-                  {#each RESERVE_OPTIONS as option}
-                    <option value={option}>{formatPercent(option)}</option>
-                  {/each}
-                </select>
-              </label>
-            {:else}
-              <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(view.reserveKey)} title="Change free-space buffer">
-                <SquarePen size={13} strokeWidth={2} />
-                <span>Reserve {formatPercent(view.reservePercent)} free</span>
-              </button>
-            {/if}
-          </div>
+          {#if activeReserveEditorKey === view.reserveKey}
+            <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
+              <span>Free-space buffer</span>
+              <select
+                class="panel-input inline-reserve-select"
+                value={String(view.reservePercent)}
+                onchange={(event) => {
+                  view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value));
+                  closeReserveEditor(view.reserveKey);
+                }}
+                onblur={() => closeReserveEditor(view.reserveKey)}
+              >
+                {#each RESERVE_OPTIONS as option}
+                  <option value={option}>{formatPercent(option)}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
         {/snippet}
         {#snippet controls()}
           <div class="setting-list compact-toggle-row">
@@ -4986,29 +4983,6 @@
           </div>
         {/snippet}
         {#snippet actions()}
-          {#if view.onOpen}
-            <button
-              type="button"
-              class="panel-btn subtle compact"
-              onclick={view.onOpen}
-              disabled={view.openDisabled}
-              title={view.openTitle}
-            >
-              <FolderOpen size={14} strokeWidth={2} />
-              <span>Open</span>
-            </button>
-          {/if}
-          {#if view.onMove}
-            <button
-              type="button"
-              class="panel-btn subtle compact"
-              onclick={view.onMove}
-              disabled={view.moveDisabled}
-            >
-              <ArrowRightLeft size={14} strokeWidth={2} />
-              <span>{view.moveLabel ?? 'Move'}</span>
-            </button>
-          {/if}
           {#if view.onRemove && view.canRemove}
             <ArmedActionButton
               class="panel-btn subtle compact icon-btn armed-icon-danger"
@@ -5084,33 +5058,29 @@
             compact={true}
             statusBadges={view.statusBadges}
             meta={view.meta}
+            reservePercent={view.reservePercent}
+            onReserveClick={() => toggleReserveEditor(view.reserveKey)}
+            onPathClick={view.onOpen}
           >
           {#snippet metaActions()}
-            <div class="inline-reserve-slot">
-              {#if activeReserveEditorKey === view.reserveKey}
-                <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
-                  <span>Free-space buffer</span>
-                  <select
-                    class="panel-input inline-reserve-select"
-                    value={String(view.reservePercent)}
-                    onchange={(event) => {
-                      view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value));
-                      closeReserveEditor(view.reserveKey);
-                    }}
-                    onblur={() => closeReserveEditor(view.reserveKey)}
-                  >
-                    {#each RESERVE_OPTIONS as option}
-                      <option value={option}>{formatPercent(option)}</option>
-                    {/each}
-                  </select>
-                </label>
-              {:else}
-                <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(view.reserveKey)} title="Change free-space buffer">
-                  <SquarePen size={13} strokeWidth={2} />
-                  <span>Reserve {formatPercent(view.reservePercent)} free</span>
-                </button>
-              {/if}
-            </div>
+            {#if activeReserveEditorKey === view.reserveKey}
+              <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
+                <span>Free-space buffer</span>
+                <select
+                  class="panel-input inline-reserve-select"
+                  value={String(view.reservePercent)}
+                  onchange={(event) => {
+                    view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value));
+                    closeReserveEditor(view.reserveKey);
+                  }}
+                  onblur={() => closeReserveEditor(view.reserveKey)}
+                >
+                  {#each RESERVE_OPTIONS as option}
+                    <option value={option}>{formatPercent(option)}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
           {/snippet}
           {#snippet controls()}
             <div class="setting-list compact-toggle-row">
@@ -5185,18 +5155,6 @@
             {/if}
           {/snippet}
           {#snippet actions()}
-            {#if view.onOpen}
-              <button
-                type="button"
-                class="panel-btn subtle compact"
-                onclick={view.onOpen}
-                disabled={view.openDisabled}
-                title={view.openTitle}
-              >
-                <FolderOpen size={14} strokeWidth={2} />
-                <span>Open</span>
-              </button>
-            {/if}
             {#if view.onRemove && view.canRemove}
               <ArmedActionButton
                 class="panel-btn subtle compact icon-btn armed-icon-danger"
@@ -5339,7 +5297,7 @@
           <div class="provider-flow-status">
             <p class="provider-flow-title">{heading}</p>
             {#if incomingLoading}
-              <p class="muted-copy">Checkingâ€¦</p>
+              <p class="muted-copy">Checking…</p>
             {:else if incomingLoadError}
               <p class="warning-copy">{incomingLoadError}</p>
             {/if}
@@ -5507,15 +5465,6 @@
           </div>
           <div class="button-row compact-panel-actions">
             {@render addLocationAction('Add folder', 'Add a folder on this device', addSourceCard, false)}
-            <button
-              type="button"
-              class="panel-btn subtle compact icon-btn"
-              onclick={() => void refreshDiscoverySuggestions()}
-              disabled={discoveryLoading}
-              title="Scan again"
-            >
-              <RefreshCw size={14} strokeWidth={2} />
-            </button>
             {#if dismissedSuggestionCount() > 0}
               <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
                 <span>Show hidden</span>
@@ -5529,11 +5478,6 @@
         {/if}
 
         <div class="section-stack">
-          <div class="section-copy-stack">
-            <p class="subheading">Saved folders</p>
-            <p class="managed-share-invite-copy">These folders live on this device. Sync folders from services like OneDrive also appear here because Nearbytes uses the local folder, not the cloud service directly.</p>
-          </div>
-
           {#if localShares().length > 0}
             <div class="compact-share-grid">
               {#each localShares() as source (source.id)}
@@ -5885,8 +5829,8 @@
                                 <span class="mega-runtime-log-tab-title">{entry.label}</span>
                                 <span class="mega-runtime-log-tab-meta">
                                   {entry.exists
-                                    ? `${compactPath(entry.path)} â€¢ ${formatSize(entry.size)}`
-                                    : `${compactPath(entry.path)} â€¢ waiting`}
+                                    ? `${compactPath(entry.path)} • ${formatSize(entry.size)}`
+                                    : `${compactPath(entry.path)} • waiting`}
                                 </span>
                               </button>
                             {/each}
@@ -6553,7 +6497,7 @@
     --text-main: var(--nb-text-main, rgba(0, 0, 0, 0.88));
     --text-soft: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
     --text-faint: var(--nb-text-faint, rgba(60, 60, 67, 0.36));
-    --teal: color-mix(in srgb, var(--nb-accent-strong, #0055D4) 52%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
+    --teal: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 52%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
     --warn: color-mix(in srgb, var(--nb-warning, #FF9500) 78%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
     --danger: color-mix(in srgb, var(--nb-danger, #FF3B30) 82%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
     display: grid;
@@ -6663,8 +6607,8 @@
     border: 1px solid var(--panel-soft-border);
     background: var(--card-bg);
     box-shadow:
-      0 8px 18px rgba(82, 53, 33, 0.06),
-      0 2px 5px rgba(82, 53, 33, 0.04);
+      0 1px 3px rgba(0, 0, 0, 0.04),
+      0 1px 2px rgba(0, 0, 0, 0.02);
     text-align: left;
     font: inherit;
     cursor: pointer;
@@ -6673,20 +6617,19 @@
 
   .provider-choice-card:hover:not(:disabled) {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--card-bg) 96%, rgba(255, 252, 249, 0.94));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--card-bg) 96%, rgba(245, 243, 240, 0.94));
     box-shadow:
-      0 12px 24px rgba(82, 53, 33, 0.08),
-      0 3px 8px rgba(82, 53, 33, 0.05);
+      0 4px 12px rgba(0, 0, 0, 0.06),
+      0 1px 3px rgba(0, 0, 0, 0.03);
   }
 
   .provider-choice-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--card-bg-strong) 96%, rgba(255, 255, 255, 0.94));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--card-bg-strong) 96%, rgba(245, 243, 240, 0.94));
     box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08)),
-      0 12px 28px rgba(82, 53, 33, 0.09),
-      0 3px 8px rgba(82, 53, 33, 0.06);
+      0 1px 3px rgba(0, 0, 0, 0.04),
+      0 1px 2px rgba(0, 0, 0, 0.02);
   }
 
   .provider-choice-card:disabled {
@@ -6696,10 +6639,10 @@
   }
 
   .provider-choice-eyebrow {
-    color: color-mix(in srgb, var(--nb-accent-strong, #0055D4) 72%, rgba(110, 110, 115, 0.82));
+    color: var(--text-soft);
     font-size: 0.68rem;
     font-weight: 600;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
   }
 
@@ -6755,7 +6698,7 @@
     gap: 0.28rem;
     padding: 0.78rem 0.82rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
   }
 
@@ -6775,7 +6718,7 @@
   }
 
   .mega-detail-card[data-tone='good'] {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.92));
   }
 
@@ -6809,14 +6752,14 @@
   }
 
   .provider-tab:hover {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 12%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 12%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--card-bg) 96%, rgba(255, 252, 249, 0.92));
   }
 
   .provider-tab.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--card-bg-strong) 96%, rgba(255, 255, 255, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(0, 0, 0, 0.03));
   }
 
   .provider-tab-label {
@@ -6839,7 +6782,7 @@
     min-height: 20px;
     padding: 0.08rem 0.5rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
     color: var(--text-soft);
     font-size: 0.67rem;
@@ -6852,8 +6795,8 @@
     width: 0.72rem;
     height: 0.72rem;
     border-radius: 999px;
-    border: 2px solid color-mix(in srgb, var(--nb-accent, #d27a54) 28%, transparent);
-    border-top-color: color-mix(in srgb, var(--nb-accent, #d27a54) 82%, var(--text-main));
+    border: 2px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 28%, transparent);
+    border-top-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 82%, var(--text-main));
     animation: provider-tab-spin 0.72s linear infinite;
   }
 
@@ -6961,7 +6904,7 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     font-weight: 600;
-    color: color-mix(in srgb, var(--nb-accent-strong, #0055D4) 60%, var(--text-soft));
+    color: var(--text-soft);
   }
 
   h3,
@@ -7004,7 +6947,7 @@
 
   .storage-title-link:hover .storage-title-link-text {
     text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, transparent);
+    text-decoration-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, transparent);
   }
 
   .storage-title-link-text {
@@ -7087,9 +7030,9 @@
 
   .location-card.active,
   .rule-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--card-bg-strong) 95%, rgba(255, 255, 255, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 74%, rgba(210, 122, 84, 0.08));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--card-bg-strong) 95%, rgba(245, 243, 240, 0.92));
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   }
 
   .card-title {
@@ -7115,7 +7058,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.9));
     color: var(--text-soft);
   }
@@ -7132,7 +7075,7 @@
     max-width: 100%;
     padding: 0.22rem 1.08rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
     color: var(--text-main);
     font-size: 0.7rem;
@@ -7156,7 +7099,7 @@
 
   .mini-pill-button:hover {
     transform: translateY(-1px);
-    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
+    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #7c6f64) 8%));
     background: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%));
     color: var(--nb-btn-hover-color, rgba(28, 28, 30, 0.96));
   }
@@ -7178,7 +7121,7 @@
 
   .status-pill.tone-good,
   .status-pill.tone-durable {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 16%, rgba(60, 60, 67, 0.12));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, rgba(60, 60, 67, 0.12));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.92));
     color: var(--teal);
   }
@@ -7193,8 +7136,8 @@
   .status-pill.tone-replica,
   .status-pill.tone-off,
   .mini-pill {
-    border-color: color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border-color: color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
     color: var(--text-soft);
   }
 
@@ -7222,7 +7165,7 @@
   .panel-btn:hover,
   :global(.panel-btn:hover) {
     transform: translateY(-1px);
-    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
+    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #7c6f64) 8%));
     background: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%));
     color: var(--nb-btn-hover-color, rgba(28, 28, 30, 0.96));
   }
@@ -7237,14 +7180,14 @@
   .panel-btn.primary,
   :global(.panel-btn.primary) {
     background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92)));
-    border-color: var(--nb-btn-active-border, color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12))));
+    border-color: var(--nb-btn-active-border, color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, var(--nb-border, rgba(60, 60, 67, 0.12))));
     color: var(--nb-btn-active-color, rgba(28, 28, 30, 0.96));
-    box-shadow: var(--nb-btn-active-shadow, 0 1px 2px rgba(82, 53, 33, 0.05));
+    box-shadow: var(--nb-btn-active-shadow, 0 1px 2px rgba(0, 0, 0, 0.03));
   }
 
   .panel-btn.subtle,
   :global(.panel-btn.subtle) {
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.88));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(245, 243, 240, 0.88));
   }
 
   .panel-btn.compact,
@@ -7299,13 +7242,13 @@
 
   .panel-success {
     color: var(--teal);
-    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
   }
 
   .protection-banner {
     color: var(--teal);
-    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.9));
   }
 
@@ -7327,10 +7270,10 @@
     align-items: center;
     padding: 0.82rem 0.9rem;
     border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(0, 0, 0, 0.03));
     background:
       linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(250, 246, 243, 0.94)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 240, 234, 0.92))),
-      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #d27a54) 10%, transparent), transparent 62%);
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #7c6f64) 10%, transparent), transparent 62%);
   }
 
   .mega-toast[data-tone='warn'] {
@@ -7468,9 +7411,9 @@
     min-height: 30px;
     padding: 0.28rem 0.78rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 30%, var(--nb-border, rgba(60, 60, 67, 0.12)) 70%);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(248, 236, 229, 0.94));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 66%, var(--text-main) 34%);
+    border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
+    background: var(--nb-panel-bg, #ffffff);
+    color: var(--nb-accent-strong, #5d524a);
     font: inherit;
     font-size: 0.75rem;
     font-weight: 600;
@@ -7484,9 +7427,9 @@
   }
 
   .inline-reserve-button:hover {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 42%, var(--nb-border, rgba(60, 60, 67, 0.12)) 58%);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 88%, rgba(245, 226, 214, 0.98));
-    box-shadow: 0 8px 18px rgba(210, 122, 84, 0.12);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 24%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 4%, var(--nb-panel-bg, #ffffff));
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
     transform: translateY(-1px);
   }
 
@@ -7585,16 +7528,16 @@
     gap: 0.35rem;
     padding: 0.76rem 0.82rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
   }
 
   .onboarding-note-card {
     gap: 0.65rem;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 16%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background:
       linear-gradient(180deg, color-mix(in srgb, var(--card-bg-strong) 94%, rgba(255, 250, 246, 0.96)), color-mix(in srgb, var(--card-bg) 98%, rgba(249, 244, 240, 0.88))),
-      radial-gradient(circle at top left, color-mix(in srgb, var(--nb-accent, #d27a54) 10%, transparent), transparent 58%);
+      radial-gradient(circle at top left, color-mix(in srgb, var(--nb-accent, #7c6f64) 10%, transparent), transparent 58%);
   }
 
   .section-head.compact {
@@ -7640,7 +7583,7 @@
   .mega-onboarding-card {
     gap: 0.9rem;
     padding: 0.82rem 0.88rem;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 12%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 12%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
   }
 
@@ -7655,10 +7598,10 @@
     flex: 0 1 440px;
     width: min(100%, 440px);
     gap: 0.8rem;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background:
       linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(249, 244, 240, 0.94)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(247, 239, 233, 0.94))),
-      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #d27a54) 11%, transparent), transparent 58%);
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #7c6f64) 11%, transparent), transparent 58%);
   }
 
   .mega-command-card[data-tone='warn'] {
@@ -7703,7 +7646,7 @@
     min-width: 0;
     padding: 0.68rem 0.74rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(251, 247, 244, 0.9));
     text-align: left;
     cursor: pointer;
@@ -7716,9 +7659,9 @@
 
   .mega-summary-chip:hover {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
-    box-shadow: 0 8px 18px rgba(82, 53, 33, 0.06);
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.04);
   }
 
   .mega-summary-chip strong {
@@ -7748,7 +7691,7 @@
     min-width: 0;
     padding: 0.8rem 0.82rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(251, 247, 244, 0.9));
     text-align: left;
     cursor: pointer;
@@ -7760,7 +7703,7 @@
 
   .mega-metric-card:hover {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
   }
 
@@ -7816,7 +7759,7 @@
     gap: 0.22rem;
     padding: 0.22rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
   }
 
@@ -7846,7 +7789,7 @@
   .segmented-toggle-btn.active {
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.94));
     color: var(--text-main);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, var(--nb-border, rgba(60, 60, 67, 0.12)));
   }
 
   .provider-flow-status {
@@ -7854,7 +7797,7 @@
     gap: 0.25rem;
     padding: 0.62rem 0.78rem;
     border-radius: 0.8rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(249, 244, 240, 0.8));
   }
 
@@ -7864,8 +7807,8 @@
     gap: 0.65rem;
     padding: 0.82rem 0.9rem;
     border-radius: 0.9rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
   }
 
   .mega-helper-card {
@@ -7924,7 +7867,7 @@
     text-align: left;
     padding: 0.65rem 0.72rem;
     border-radius: 0.78rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.84));
     cursor: pointer;
     transition:
@@ -7935,13 +7878,13 @@
 
   .mega-runtime-log-tab:hover {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
   }
 
   .mega-runtime-log-tab.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 22%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 22%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 236, 227, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 12%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #7c6f64) 12%, transparent);
   }
 
   .mega-runtime-log-tab-title {
@@ -7976,7 +7919,7 @@
     overflow: hidden;
     height: 7px;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 240, 234, 0.9));
   }
 
@@ -7985,7 +7928,7 @@
     inset: 0 auto 0 0;
     width: 0%;
     border-radius: inherit;
-    background: color-mix(in srgb, var(--nb-accent, #d27a54) 50%, rgba(255, 249, 246, 0.98));
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 50%, rgba(255, 249, 246, 0.98));
     transition: width 220ms ease;
   }
 
@@ -8050,7 +7993,7 @@
     margin: 0;
     padding: 0.55rem 0.62rem;
     border-radius: 0.62rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(248, 243, 239, 0.8));
     color: var(--text-soft);
     font-size: 0.71rem;
@@ -8159,7 +8102,7 @@
     gap: 0.28rem;
     padding: 0.62rem 0.72rem;
     border-radius: 0.78rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.84));
   }
 
@@ -8271,7 +8214,7 @@
     height: 6px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 240, 234, 0.9));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(0, 0, 0, 0.03));
   }
 
   .inline-progress-bar {
@@ -8279,14 +8222,14 @@
     inset: 0 auto 0 0;
     width: 34%;
     border-radius: inherit;
-    background: color-mix(in srgb, var(--nb-accent, #d27a54) 54%, rgba(255, 249, 246, 0.98));
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 54%, rgba(255, 249, 246, 0.98));
     animation: provider-progress-slide 1.1s ease-in-out infinite;
   }
 
   .panel-input {
     min-height: 34px;
     border-radius: 10px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.9));
     color: var(--text-main);
     padding: 0 0.68rem;
@@ -8295,7 +8238,7 @@
 
   .panel-input:focus {
     outline: none;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, rgba(60, 60, 67, 0.14));
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-panel-bg, #ffffff) 72%, rgba(240, 232, 226, 0.8));
   }
 
@@ -8316,7 +8259,7 @@
   .add-card-button {
     min-height: 38px;
     border-radius: 16px;
-    border: 1px dashed color-mix(in srgb, var(--nb-accent, #d27a54) 22%, rgba(60, 60, 67, 0.14));
+    border: 1px dashed color-mix(in srgb, var(--nb-accent, #7c6f64) 22%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
     color: var(--text-main);
     display: inline-flex;
@@ -8337,7 +8280,7 @@
 
   .add-card-button:hover {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(248, 243, 239, 0.92));
   }
 
@@ -8358,7 +8301,7 @@
     padding: 0.75rem 0.85rem;
     border-radius: 14px;
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.88));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
   }
 
   .merge-box {
@@ -8366,7 +8309,7 @@
     gap: 0.7rem;
     padding: 0.78rem;
     border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.88));
   }
 

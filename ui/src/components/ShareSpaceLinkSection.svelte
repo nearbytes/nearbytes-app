@@ -86,7 +86,7 @@
     gap: 0.9rem;
     padding: 0.95rem 1rem;
     border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.04));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.92));
   }
 
@@ -116,7 +116,7 @@
   .share-link-kicker {
     font-size: 0.78rem;
     font-weight: 600;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .share-link-heading h4 {
@@ -143,9 +143,9 @@
 
   .share-link-btn {
     appearance: none;
-    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 22%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 82%, rgba(255, 247, 241, 0.98));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 74%, rgba(28, 28, 30, 0.96));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 22%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 82%, rgba(245, 243, 240, 0.98));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 74%, rgba(28, 28, 30, 0.96));
     border-radius: 999px;
     padding: 0.68rem 0.95rem;
     display: inline-flex;
@@ -183,7 +183,7 @@
     gap: 0.45rem;
     padding: 0.82rem 0.88rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.76));
   }
 

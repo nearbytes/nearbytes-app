@@ -93,9 +93,9 @@
     min-height: 30px;
     padding: 0 0.7rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
-    color: var(--nb-text-soft, rgba(70, 70, 73, 0.84));
+    border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
+    background: var(--nb-panel-bg, #ffffff);
+    color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -106,45 +106,59 @@
     letter-spacing: 0.01em;
     cursor: pointer;
     transition:
-      transform 120ms ease,
-      background 120ms ease,
-      border-color 120ms ease,
-      color 120ms ease,
-      box-shadow 120ms ease;
+      transform 140ms cubic-bezier(0.2, 0, 0, 1),
+      background 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease,
+      box-shadow 140ms ease;
   }
 
   .icon-toggle.layout-stacked {
-    min-width: 58px;
-    min-height: 52px;
-    padding: 0.42rem 0.52rem;
+    min-width: 64px;
+    min-height: 56px;
+    padding: 0.5rem 0.6rem;
     border-radius: 14px;
     flex-direction: column;
-    gap: 0.18rem;
+    gap: 0.22rem;
+    border: 1.5px solid var(--nb-border, rgba(60, 60, 67, 0.1));
+    background: var(--nb-panel-bg, #ffffff);
   }
 
   .icon-toggle:hover:not(:disabled) {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 24%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    color: var(--nb-text-main, rgba(0, 0, 0, 0.88));
   }
 
   .icon-toggle.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 44%, rgba(60, 60, 67, 0.14));
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, rgba(241, 223, 214, 0.98)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 84%, rgba(233, 205, 190, 0.98))),
-      radial-gradient(circle at top, color-mix(in srgb, var(--nb-accent, #d27a54) 20%, transparent), transparent 62%);
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 82%, rgba(28, 28, 30, 0.96));
-    box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.12)),
-      0 8px 18px rgba(210, 122, 84, 0.14);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 36%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 6%, var(--nb-panel-bg, #ffffff));
+    color: var(--nb-accent-strong, #5d524a);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   }
 
-  .icon-toggle.active .icon-toggle-glyph {
-    transform: scale(1.05);
+  .icon-toggle.layout-stacked.active {
+    border-color: var(--nb-accent, #7c6f64);
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 10%, var(--nb-panel-bg, #ffffff));
+    color: var(--nb-accent-strong, #5d524a);
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, transparent),
+      0 2px 6px rgba(0, 0, 0, 0.08);
+  }
+
+  .icon-toggle.layout-stacked:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
+  }
+
+  .icon-toggle.layout-stacked.active:hover:not(:disabled) {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, transparent),
+      0 4px 12px rgba(0, 0, 0, 0.1);
   }
 
   .icon-toggle.active .icon-toggle-label {
-    font-weight: 800;
+    font-weight: 700;
   }
 
   .icon-toggle:disabled {
@@ -157,15 +171,24 @@
     flex: 0 0 auto;
   }
 
+  .icon-toggle.layout-stacked .icon-toggle-glyph {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+  }
+
   .icon-toggle-label {
     min-width: 0;
     overflow-wrap: anywhere;
   }
 
   .icon-toggle.layout-stacked .icon-toggle-label {
-    font-size: 0.64rem;
-    letter-spacing: 0.05em;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    line-height: 1.05;
+    line-height: 1.1;
   }
 </style>
