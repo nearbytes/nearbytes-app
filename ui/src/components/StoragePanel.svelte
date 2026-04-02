@@ -5987,6 +5987,8 @@
                               <p class="provider-step-detail">Imported recently: {peer.lastImportedEvents} events, {peer.lastImportedBlocks} blocks</p>
                               {#if peer.lastSyncError}
                                 <p class="warning-copy">{peer.lastSyncError}</p>
+                              {:else if peer.lastSyncNotice}
+                                <p class="provider-step-detail">{peer.lastSyncNotice}</p>
                               {/if}
                             </div>
                           {/snippet}

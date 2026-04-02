@@ -578,6 +578,7 @@ export interface LocalNetworkPeer {
   lastSyncAt: number | null;
   lastSyncStartedAt: number | null;
   lastSyncError: string | null;
+  lastSyncNotice: string | null;
   lastImportedEvents: number;
   lastImportedBlocks: number;
   status: 'ready' | 'syncing' | 'error' | 'stale';

@@ -123,7 +123,8 @@ describe('LocalNetworkSyncService', () => {
 
     const peer = await local.lanService.syncPeer(hello.peerId);
     expect(peer?.status).toBe('ready');
-    expect(peer?.lastSyncError).toBe('Peer timed out; Nearbytes will retry automatically.');
+    expect(peer?.lastSyncError).toBeNull();
+    expect(peer?.lastSyncNotice).toBe('Peer timed out; Nearbytes will retry automatically.');
 
     await shutdownLan(local.lanService);
     await shutdownLan(remote.lanService);

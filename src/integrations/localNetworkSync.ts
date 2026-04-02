@@ -16,7 +16,7 @@ const ANNOUNCE_INTERVAL_MS = 3_000;
 const PEER_STALE_AFTER_MS = 18_000;
 const PEER_FORGET_AFTER_MS = 120_000;
 const PEER_SYNC_INTERVAL_MS = 8_000;
-const REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 30_000;
 const OBSERVATION_PAGE_LIMIT = 512;
 const LOCAL_NETWORK_PROVIDER = 'local-network';
 const LOCAL_NETWORK_RUNTIME_FOLDER = 'local-network';
@@ -75,6 +75,7 @@ interface LocalPeerState {
   lastSyncStartedAt: number | null;
   lastSyncError: string | null;
   lastSyncTransient: boolean;
+  lastSyncNotice: string | null;
   lastImportedEvents: number;
   lastImportedBlocks: number;
   remoteCursorSequence: number;
@@ -97,6 +98,7 @@ export interface LocalNetworkPeerSnapshot {
   readonly lastSyncAt: number | null;
   readonly lastSyncStartedAt: number | null;
   readonly lastSyncError: string | null;
+  readonly lastSyncNotice: string | null;
   readonly lastImportedEvents: number;
   readonly lastImportedBlocks: number;
   readonly remoteCursorSequence: number;
@@ -404,6 +406,7 @@ export class LocalNetworkSyncService {
       lastSyncStartedAt: null,
       lastSyncError: null,
       lastSyncTransient: false,
+      lastSyncNotice: null,
       lastImportedEvents: 0,
       lastImportedBlocks: 0,
       remoteCursorSequence: 0,
@@ -471,6 +474,7 @@ export class LocalNetworkSyncService {
       peer.lastSyncAt = Date.now();
       peer.lastSyncError = null;
       peer.lastSyncTransient = false;
+      peer.lastSyncNotice = null;
 
       if ((importedEvents > 0 || importedBlocks > 0) && (force || !peer.queued)) {
         this.storage.scheduleReconcileConfiguredVolumes();
@@ -478,8 +482,9 @@ export class LocalNetworkSyncService {
     } catch (error) {
       peer.lastSyncAt = Date.now();
       peer.lastSyncTransient = isAbortLikeError(error);
+      peer.lastSyncNotice = peer.lastSyncTransient ? 'Peer timed out; Nearbytes will retry automatically.' : null;
       peer.lastSyncError = peer.lastSyncTransient
-        ? 'Peer timed out; Nearbytes will retry automatically.'
+        ? null
         : error instanceof Error
           ? error.message
           : String(error);
@@ -667,14 +672,16 @@ export class LocalNetworkSyncService {
       status === 'syncing'
         ? 'Syncing with this peer now.'
         : peer.lastSyncTransient
-          ? peer.lastSyncError ?? 'Peer responded too slowly; Nearbytes will retry automatically.'
+          ? peer.lastSyncNotice ?? 'Peer responded too slowly; Nearbytes will retry automatically.'
           : status === 'error'
           ? peer.lastSyncError ?? 'Last sync failed.'
           : stale
           ? 'Peer is offline or quiet; Nearbytes will reconnect automatically.'
           : peer.lastSyncAt
               ? `Volumes visible: ${peer.volumeIds.length}. Cursor ${peer.remoteCursorSequence}/${peer.lastRemoteHeadSequence}. Last sync ${formatRelative(peer.lastSyncAt)}.`
-              : `Peer discovered. Cursor ${peer.remoteCursorSequence}/${peer.lastRemoteHeadSequence}.`;
+              : peer.volumeIds.length > 0 || peer.lastRemoteHeadSequence > 0
+                ? `Peer discovered. Cursor ${peer.remoteCursorSequence}/${peer.lastRemoteHeadSequence}.`
+                : 'Peer discovered. Waiting for the first shared volume or observation.';
 
     return {
       peerId: peer.peerId,
@@ -690,6 +697,7 @@ export class LocalNetworkSyncService {
       lastSyncAt: peer.lastSyncAt,
       lastSyncStartedAt: peer.lastSyncStartedAt,
       lastSyncError: peer.lastSyncError,
+      lastSyncNotice: peer.lastSyncNotice,
       lastImportedEvents: peer.lastImportedEvents,
       lastImportedBlocks: peer.lastImportedBlocks,
       remoteCursorSequence: peer.remoteCursorSequence,
