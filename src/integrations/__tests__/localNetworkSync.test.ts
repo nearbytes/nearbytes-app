@@ -129,6 +129,61 @@ describe('LocalNetworkSyncService', () => {
     await shutdownLan(local.lanService);
     await shutdownLan(remote.lanService);
   });
+
+  it('advertises observed volume ids from the provider queue even when the config has no tracked volumes', async () => {
+    const secret = 'test:secret:lan-observed-volume-advertise';
+    const remote = await createLanHarness('nearbytes-lan-observed-volume-', secret, 'peer-b', 3501);
+
+    const internalStorage = remote.storage as unknown as { config: RootsConfig };
+    internalStorage.config = {
+      ...internalStorage.config,
+      volumes: [],
+    };
+
+    const hello = await remote.lanService.buildHello();
+    expect(hello.volumeIds.length).toBeGreaterThan(0);
+
+    await shutdownLan(remote.lanService);
+  });
+
+  it('describes common mounted storage peers without implying a broken lan sync state', async () => {
+    const secret = 'test:secret:lan-common-mounted-volume';
+    const remote = await createLanHarness('nearbytes-lan-common-mounted-', secret, 'peer-b', 3601);
+    const local = await createLanHarness('nearbytes-lan-common-mounted-local-', secret, 'peer-a', 3602);
+    const hello = await remote.lanService.buildHello();
+    addPeer(local.lanService, hello, remote.baseUrl);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+        if (url.pathname === '/lan/hello') {
+          return jsonResponse({
+            ...hello,
+            volumeIds: [],
+            observationHeadSequence: 0,
+          });
+        }
+        if (url.pathname === '/lan/observations') {
+          return jsonResponse({
+            protocol: 'nearbytes.lan-sync.v1',
+            peerId: hello.peerId,
+            observations: [],
+            headSequence: 0,
+            generatedAt: Date.now(),
+          });
+        }
+        return new Response('not found', { status: 404 });
+      })
+    );
+
+    const peer = await local.lanService.syncPeer(hello.peerId);
+    expect(peer?.status).toBe('ready');
+    expect(peer?.detail).toContain('same mounted storage');
+
+    await shutdownLan(local.lanService);
+    await shutdownLan(remote.lanService);
+  });
 });
 
 async function createLanHarness(prefix: string, secretValue: string, peerId: string, httpPort: number): Promise<{

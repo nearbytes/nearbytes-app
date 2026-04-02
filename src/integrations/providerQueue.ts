@@ -69,6 +69,16 @@ export class PersistentProviderQueue {
     return this.state.observations.at(-1)?.sequence ?? 0;
   }
 
+  listObservedVolumeIds(): string[] {
+    const volumeIds = new Set<string>();
+    for (const observation of this.state.observations) {
+      if (observation.volumeId && observation.volumeId.trim() !== '') {
+        volumeIds.add(observation.volumeId);
+      }
+    }
+    return Array.from(volumeIds).sort((left, right) => left.localeCompare(right));
+  }
+
   listObservations(options: {
     readonly afterSequence?: number;
     readonly volumeIds?: readonly string[];

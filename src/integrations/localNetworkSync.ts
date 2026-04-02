@@ -207,18 +207,22 @@ export class LocalNetworkSyncService {
   }
 
   async buildHello(): Promise<PeerHelloResponse> {
+    const knownVolumeIds = await this.storage.listKnownVolumeIds();
+    const observedVolumeIds = this.providerQueue.listObservedVolumeIds();
     return {
       ...this.getHello(),
-      volumeIds: await this.storage.listKnownVolumeIds(),
+      volumeIds: dedupeVolumeIds([...knownVolumeIds, ...observedVolumeIds]),
       generatedAt: Date.now(),
     };
   }
 
   async listVolumes(): Promise<VolumeListResponse> {
+    const knownVolumeIds = await this.storage.listKnownVolumeIds();
+    const observedVolumeIds = this.providerQueue.listObservedVolumeIds();
     return {
       protocol: LAN_SYNC_PROTOCOL,
       peerId: this.peerId,
-      volumeIds: await this.storage.listKnownVolumeIds(),
+      volumeIds: dedupeVolumeIds([...knownVolumeIds, ...observedVolumeIds]),
       generatedAt: Date.now(),
     };
   }
@@ -677,6 +681,8 @@ export class LocalNetworkSyncService {
           ? peer.lastSyncError ?? 'Last sync failed.'
           : stale
           ? 'Peer is offline or quiet; Nearbytes will reconnect automatically.'
+          : peer.lastSyncAt && peer.volumeIds.length === 0 && peer.lastRemoteHeadSequence === 0
+            ? 'Peer is reachable. It is not advertising separate LAN volumes yet. If both apps use the same mounted storage, no transfer is needed.'
           : peer.lastSyncAt
               ? `Volumes visible: ${peer.volumeIds.length}. Cursor ${peer.remoteCursorSequence}/${peer.lastRemoteHeadSequence}. Last sync ${formatRelative(peer.lastSyncAt)}.`
               : peer.volumeIds.length > 0 || peer.lastRemoteHeadSequence > 0
