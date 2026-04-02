@@ -10,6 +10,7 @@ The spec tree is organized by concern, not by chronology.
 - `references/`: `nb.*` reference payloads and content descriptors.
 - `storage/`: on-disk layout, correctness, reconciliation, and storage integration rules.
 - `transport/`: join links, transport endpoints, transport recipes, and log/transport mappings.
+- `transport/`: join links, transport endpoints, transport recipes, log/transport mappings, and LAN sync.
 
 ## Rule of Thumb
 
