@@ -1,4 +1,4 @@
-# Nearbytes Meta-Storage v3
+# Nearbytes Meta-Storage v0.3
 
 Status: draft normative specification.
 
@@ -75,4 +75,3 @@ Any sync, mirror, or backfill process operating at the storage layer MUST:
 3. fetch or preserve the referenced ciphertext blocks.
 
 It MUST NOT depend on decrypting file/chat/identity/app payloads.
-

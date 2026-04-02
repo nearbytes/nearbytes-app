@@ -1,4 +1,4 @@
-# Nearbytes Data Correctness v2
+# Nearbytes Data Correctness v0.2
 
 Status: draft normative specification.
 
@@ -58,8 +58,8 @@ Supported readers MAY apply additional decrypted validation after event-envelope
 
 Examples:
 
-1. file-command payloads MAY be checked against `application/file-events-v3.md`;
-2. app-record payloads MAY be checked against `application/app-records-v2.md`;
+1. file-command payloads MAY be checked against `application/file-events-v0.3.md`;
+2. app-record payloads MAY be checked against `application/app-records-v0.2.md`;
 3. chat and identity payloads MAY be checked against their own nested protocol specs.
 
 Failure of decrypted interpretation MUST NOT make the outer storage object cease to be a syntactically valid Nearbytes event envelope, but it MUST make the event unusable for that unsupported or invalid application projection.
@@ -71,4 +71,3 @@ Cleanup of canonical Nearbytes storage MUST remove any file under `blocks/` or `
 ## 7. Forwarding Requirement
 
 Nearbytes MUST NOT forward a candidate file as canonical Nearbytes storage data unless that file satisfies this specification.
-

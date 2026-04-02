@@ -1,4 +1,4 @@
-# Nearbytes LAN Sync v2
+# Nearbytes LAN Sync v0.2
 
 Status: draft normative specification.
 
@@ -21,7 +21,7 @@ This specification does not define:
 
 ## 2. Design Goals
 
-LAN sync v2 MUST optimize for:
+LAN sync v0.2 MUST optimize for:
 
 1. zero manual network configuration;
 2. automatic bidirectional sync;
@@ -67,6 +67,28 @@ The minimum anti-entropy behavior is:
 6. use visible event `blockRefs` to discover required ciphertext blocks;
 7. continue reconciling until convergence.
 
+## 5.1 Provider Queue
+
+Implementations SHOULD maintain a persistent per-provider or per-transport queue for local delivery work.
+
+Purpose:
+
+1. persist outbound work while a peer or provider is unavailable;
+2. decouple local storage observation from immediate transport success;
+3. resume delivery without requiring a full storage rescan first.
+
+Queue items SHOULD reference typed object ids such as:
+
+1. `(event, H)`
+2. `(block, H)`
+
+plus any provider-specific routing context needed by that integration.
+
+This queue is not the peer-log:
+
+1. the peer-log is the shared synchronization/history model;
+2. the provider queue is a local runtime work queue.
+
 ## 6. Unknown Volumes
 
 Unknown volumes SHOULD be prefetched for liveness.
@@ -86,4 +108,3 @@ Therefore:
 1. it MUST NOT use generic provider-account connect/disconnect flows;
 2. peer/service errors SHOULD remain scoped to Local network transport UI;
 3. discovered peers SHOULD be shown as transport peers, not provider accounts.
-

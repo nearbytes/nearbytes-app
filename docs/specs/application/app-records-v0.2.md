@@ -1,4 +1,4 @@
-# Nearbytes App Records v2
+# Nearbytes App Records v0.2
 
 Status: draft normative specification.
 
@@ -58,4 +58,3 @@ Readers MUST:
 4. dispatch to the protocol-specific reader named by `protocol`.
 
 Readers MAY ignore unsupported nested application protocols while continuing to process the rest of the log.
-

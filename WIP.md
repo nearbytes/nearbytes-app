@@ -116,6 +116,20 @@ Important nuance:
 - block observations do not carry volume attribution by themselves
 - volume linkage comes from events, because events mention referenced block hashes
 
+### Provider queue direction
+
+In addition to the per-peer log, each transport/provider runtime should maintain its own persistent queue of local delivery work.
+
+Purpose:
+- decouple local storage observation from provider availability
+- survive provider outages or peer disappearance
+- resume sending without requiring a full rescan first
+
+Current intended model:
+- the peer-log is the cross-peer/history model
+- the per-provider queue is a local runtime work queue
+- queue items reference typed object ids such as `(event, H)` or `(block, H)` plus provider-specific routing context
+
 ## Whitepaper note
 
 The original whitepaper photo example is less strict than the new design.
@@ -216,12 +230,12 @@ These specs need version bumps and rewrites because they currently describe too 
 - likely `docs/specs/registry/protocol-registry.md`
 
 Likely new versions:
-- file events v3
-- chat events v2
-- app records v2
-- meta-storage v3
-- data-correctness v2
-- lan-sync v2
+- file events v0.3
+- chat events v0.2
+- app records v0.2
+- meta-storage v0.3
+- data-correctness v0.2
+- lan-sync v0.2
 
 Reference docs may also need edits if they currently imply visible outer semantics.
 
@@ -271,5 +285,6 @@ Rule:
 Current execution note:
 - the next concrete step is the spec rewrite, starting from event/storage specs and only then moving into the code
 - spec rewrite is now underway with new versioned docs targeting the opaque-event model
-- added draft specs: `hub-model-v2`, `file-events-v3`, `app-records-v2`, `chat-events-v2`, `data-correctness-v2`, `meta-storage-v3`, `lan-sync-v2`, and `log-command-map-v2`
+- added draft specs: `hub-model-v0.2`, `file-events-v0.3`, `app-records-v0.2`, `chat-events-v0.2`, `data-correctness-v0.2`, `meta-storage-v0.3`, `lan-sync-v0.2`, and `log-command-map-v0.2`
+- the first spec batch did not yet explicitly define per-provider persistent queues; this is now recorded here and in the LAN spec as a follow-up refinement
 - next implementation step: replace `EventPayload` with a visible envelope plus encrypted inner payload in `src/types/events.ts` and `src/storage/serialization.ts`

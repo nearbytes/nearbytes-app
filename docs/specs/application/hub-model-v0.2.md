@@ -1,4 +1,4 @@
-# Nearbytes Hub Model v2
+# Nearbytes Hub Model v0.2
 
 Status: draft normative specification.
 
@@ -88,10 +88,9 @@ Current implementations MAY continue using provisional timestamp-based replay co
 
 ## 7. Relationship to Other Specs
 
-1. file-event inner payloads are defined in `application/file-events-v3.md`;
-2. generic application payload carriage is defined in `application/app-records-v2.md`;
-3. chat payload semantics are defined in `application/chat-events-v2.md`;
-4. storage correctness is defined in `storage/data-correctness-v2.md`;
-5. storage routing/retention is defined in `storage/meta-storage-v3.md`;
-6. LAN synchronization is defined in `transport/lan-sync-v2.md`.
-
+1. file-event inner payloads are defined in `application/file-events-v0.3.md`;
+2. generic application payload carriage is defined in `application/app-records-v0.2.md`;
+3. chat payload semantics are defined in `application/chat-events-v0.2.md`;
+4. storage correctness is defined in `storage/data-correctness-v0.2.md`;
+5. storage routing/retention is defined in `storage/meta-storage-v0.3.md`;
+6. LAN synchronization is defined in `transport/lan-sync-v0.2.md`.

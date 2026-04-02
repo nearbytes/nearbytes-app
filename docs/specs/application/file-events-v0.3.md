@@ -1,4 +1,4 @@
-# Nearbytes File Protocol v3
+# Nearbytes File Protocol v0.3
 
 Status: draft normative specification.
 
@@ -112,4 +112,3 @@ Instead:
 
 1. event writers MUST expose required ciphertext block hashes in the outer `blockRefs` list;
 2. storage, sync, and retention layers MUST use only that visible dependency list.
-

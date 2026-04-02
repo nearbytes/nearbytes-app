@@ -56,11 +56,11 @@ Some Nearbytes protocol families are specified as command/event-model documents 
 
 Current examples:
 
-1. hub/log model -> `application/hub-model-v2.md`
+1. hub/log model -> `application/hub-model-v0.2.md`
 2. file command semantics -> `application/file-commands-v1.md`
-3. file event/replay model -> `application/file-events-v3.md`
+3. file event/replay model -> `application/file-events-v0.3.md`
 4. identity management command semantics -> `identity/identity-management-v1.md`
-5. LAN sync transport family -> `transport/lan-sync-v2.md`
+5. LAN sync transport family -> `transport/lan-sync-v0.2.md`
 
 ## 5. Provisional Stack View
 

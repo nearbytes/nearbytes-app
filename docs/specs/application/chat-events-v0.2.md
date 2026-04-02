@@ -1,4 +1,4 @@
-# Nearbytes Chat Protocol v2
+# Nearbytes Chat Protocol v0.2
 
 Status: draft normative specification.
 
@@ -22,7 +22,7 @@ This specification does not define:
 
 ## 2. Preferred Carrier
 
-New chat-capable writers SHOULD carry chat and identity-related material inside encrypted `APP_RECORD` inner payloads as defined by `application/app-records-v2.md`.
+New chat-capable writers SHOULD carry chat and identity-related material inside encrypted `APP_RECORD` inner payloads as defined by `application/app-records-v0.2.md`.
 
 Preferred mappings:
 
@@ -73,4 +73,3 @@ Chat clients reconstruct chat state by:
 5. ordering them under the implementation's current replay convention.
 
 Legacy outer event types such as `DECLARE_IDENTITY` and `CHAT_MESSAGE` are obsolete in v2 and SHOULD NOT be emitted by new writers.
-
