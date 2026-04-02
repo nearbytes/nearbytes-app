@@ -42,7 +42,7 @@
     align-items: center;
     justify-content: center;
     gap: 0.46rem;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.76rem;
     font-weight: 600;
     letter-spacing: 0.01em;

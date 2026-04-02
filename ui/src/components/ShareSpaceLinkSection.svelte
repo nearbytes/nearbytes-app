@@ -120,7 +120,7 @@
   }
 
   .share-link-heading h4 {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 1rem;
     font-weight: 600;
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));

@@ -150,7 +150,7 @@
       {#if showPasteButton}
         <button type="button" class="workspace-toggle" onclick={() => void onPasteButton?.()} disabled={pasteButtonBusy}>
           <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-          <span>{pasteButtonBusy ? 'Reading…' : pasteButtonLabel}</span>
+          <span>{pasteButtonBusy ? 'Readingâ€¦' : pasteButtonLabel}</span>
         </button>
       {/if}
       {#if hasAttachedFile && onClearFile}
@@ -181,14 +181,14 @@
         <p class="shared-secret-editor-file-info">
           {fileTypeLabel}
           {#if fileInfo}
-            {' • '}{fileInfo}
+            {' â€¢ '}{fileInfo}
           {/if}
         </p>
         {#if fileHashLabel}
           <p class="shared-secret-editor-file-hash-label">{fileHashLabel}</p>
-          <p class="shared-secret-editor-file-hash" title={fileHashPending ? 'Computing…' : fileHashValue || 'Unavailable'}>
+          <p class="shared-secret-editor-file-hash" title={fileHashPending ? 'Computingâ€¦' : fileHashValue || 'Unavailable'}>
             {#if fileHashPending}
-              Computing…
+              Computingâ€¦
             {:else if fileHashValue}
               {fileHashValue}
             {:else}
@@ -328,7 +328,7 @@
   }
 
   .shared-secret-editor-file-hash {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.72rem;
     line-height: 1.35;
     color: var(--nb-text-main, rgba(226, 232, 240, 0.9));

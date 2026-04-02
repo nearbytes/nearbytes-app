@@ -474,7 +474,7 @@
     const rate = state.bytesPerSecond > 0 ? `${formatByteCount(state.bytesPerSecond)}/s` : '';
     const percent =
       typeof state.progressPercent === 'number' ? `${Math.round(Math.max(0, Math.min(100, state.progressPercent)))}%` : '';
-    return [percent, total ? `${transferred} of ${total}` : transferred, rate].filter(Boolean).join(' • ');
+    return [percent, total ? `${transferred} of ${total}` : transferred, rate].filter(Boolean).join(' â€¢ ');
   }
 
   function desktopUpdaterPrimaryActionLabel(state: DesktopUpdaterState): string {
@@ -2345,26 +2345,26 @@
   function timelineMarkerText(event: TimelineEvent, position: number, total: number): string {
     switch (event.type) {
       case 'CREATE_FILE':
-        return `${position}/${total} • ${fileBaseName(event.filename)} created`;
+        return `${position}/${total} â€¢ ${fileBaseName(event.filename)} created`;
       case 'DELETE_FILE':
-        return `${position}/${total} • ${fileBaseName(event.filename)} deleted`;
+        return `${position}/${total} â€¢ ${fileBaseName(event.filename)} deleted`;
       case 'RENAME_FILE':
-        return `${position}/${total} • ${fileBaseName(event.filename)} renamed`;
+        return `${position}/${total} â€¢ ${fileBaseName(event.filename)} renamed`;
       case 'DECLARE_IDENTITY':
-        return `${position}/${total} • ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
+        return `${position}/${total} â€¢ ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
       case 'CHAT_MESSAGE':
-        return `${position}/${total} • ${event.summary ?? 'Chat message'}`;
+        return `${position}/${total} â€¢ ${event.summary ?? 'Chat message'}`;
       case 'APP_RECORD':
         if (event.protocol === 'nb.identity.snapshot.v1') {
-          return `${position}/${total} • ${event.displayName ? `${event.displayName} synced` : 'Identity synced'}`;
+          return `${position}/${total} â€¢ ${event.displayName ? `${event.displayName} synced` : 'Identity synced'}`;
         }
         if (event.protocol === 'nb.identity.record.v1') {
-          return `${position}/${total} • ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
+          return `${position}/${total} â€¢ ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
         }
         if (event.protocol === 'nb.chat.message.v1') {
-          return `${position}/${total} • ${event.summary ?? 'Chat message'}`;
+          return `${position}/${total} â€¢ ${event.summary ?? 'Chat message'}`;
         }
-        return `${position}/${total} • ${event.protocol ?? 'App record'}`;
+        return `${position}/${total} â€¢ ${event.protocol ?? 'App record'}`;
     }
   }
 
@@ -2384,13 +2384,13 @@
   }
 
   function timelineTitle(event: TimelineEvent): string {
-    return `${timelineKindLabel(event)} ${timelineHeadline(event)} • ${formatDate(event.timestamp)}`;
+    return `${timelineKindLabel(event)} ${timelineHeadline(event)} â€¢ ${formatDate(event.timestamp)}`;
   }
 
   const timelineMarker = $derived.by(() => {
     if (timelineEvents.length === 0) return 'No history yet';
     if (timelinePosition === timelineEvents.length) return 'Live view';
-    if (timelinePosition === 0) return `Genesis • 0/${timelineEvents.length}`;
+    if (timelinePosition === 0) return `Genesis â€¢ 0/${timelineEvents.length}`;
     const event = timelineEvents[timelinePosition - 1];
     return timelineMarkerText(event, timelinePosition, timelineEvents.length);
   });
@@ -4805,9 +4805,9 @@
     const shareName = segments.length > 0 ? segments[segments.length - 1] : '';
 
     if (shareName) {
-      return `${provider} • ${shareName}`;
+      return `${provider} â€¢ ${shareName}`;
     }
-    return `${provider} • default storage`;
+    return `${provider} â€¢ default storage`;
   }
 
   function timelineStorageLocationPath(location: TimelineStorageLocationView): string {
@@ -4826,7 +4826,7 @@
     if (location.dataPath) {
       parts.push(location.hasDataBlock ? 'block present' : 'block missing');
     }
-    return parts.join(' • ');
+    return parts.join(' â€¢ ');
   }
 
   async function revealTimelineStorageLocation(location: TimelineStorageLocationView): Promise<void> {
@@ -6444,7 +6444,7 @@
           <div class="volume-transition-spinner"></div>
           <div class="volume-transition-copy">
             <p class="volume-transition-title">Switching hub</p>
-            <p class="volume-transition-subtitle">Replaying history off-screen…</p>
+            <p class="volume-transition-subtitle">Replaying history off-screenâ€¦</p>
           </div>
         </div>
       {:else}
@@ -6563,10 +6563,10 @@
             {#if showFilesWorkspace}
               <span class="workspace-selection-summary">
                 {selectedFileNames.length === 0
-                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
+                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} Â· no selection`
                   : selectedFileNames.length === 1 && selectedFile
-                    ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
-                    : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
+                    ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} Â· ${displayFileName(selectedFile)}`
+                    : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} Â· ${selectedFileNames.length} selected`}
               </span>
               <input
                 type="text"
@@ -6862,7 +6862,7 @@
                         <div>
                           <h3 class="preview-title" title={currentPreviewFile.filename}>{currentPreviewFile.filename}</h3>
                           <p class="preview-meta">
-                            {currentPreviewFile.mimeType || 'Unknown type'} • {formatSize(currentPreviewFile.size)} • {formatDate(currentPreviewFile.createdAt)}
+                            {currentPreviewFile.mimeType || 'Unknown type'} â€¢ {formatSize(currentPreviewFile.size)} â€¢ {formatDate(currentPreviewFile.createdAt)}
                           </p>
                         </div>
                         <div class="preview-actions">
@@ -6891,7 +6891,7 @@
                       </div>
                       <div class="preview-body">
                         {#if previewLoading}
-                          <p class="preview-message">Loading preview…</p>
+                          <p class="preview-message">Loading previewâ€¦</p>
                         {:else if previewError}
                           <p class="preview-message error">{previewError}</p>
                         {:else if previewKind === 'image' && previewUrl}
@@ -7146,7 +7146,7 @@
           {#if timelineDetailLoading}
             <div class="tm-details-loading">
               <span class="loading-spinner"></span>
-              <span>Loading event…</span>
+              <span>Loading eventâ€¦</span>
             </div>
           {:else if timelineDetailError}
             <p class="tm-details-error">{timelineDetailError}</p>
@@ -7156,7 +7156,7 @@
             {@const relevantSpecs = specDocsForPayload(payload)}
             <div class="tm-details-meta">
               <span>{payload.type}</span>
-              <span>{payload.fileName || '—'}</span>
+              <span>{payload.fileName || 'â€”'}</span>
             </div>
             {#if timelineDetailHash}
               <p class="tm-details-hash">{timelineDetailHash}</p>
@@ -7204,7 +7204,7 @@
                           onclick={() => void revealTimelineStorageLocation(location)}
                           disabled={timelineDetailRevealBusyPath === targetPath}
                         >
-                          {timelineDetailRevealBusyPath === targetPath ? 'Opening…' : 'Reveal in folder'}
+                          {timelineDetailRevealBusyPath === targetPath ? 'Openingâ€¦' : 'Reveal in folder'}
                         </button>
                       </div>
                     </div>
@@ -7510,7 +7510,7 @@
                         {/if}
                         <p class="tm-details-ref-hash mono">{reference.ref.c.h}</p>
                         <p class="tm-details-ref-meta">
-                          {reference.ref.c.t} • {reference.ref.c.z} bytes
+                          {reference.ref.c.t} â€¢ {reference.ref.c.z} bytes
                         </p>
                       </div>
                       <div class="tm-details-ref-actions">
@@ -7711,7 +7711,7 @@
                   disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
                 >
                   <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                  <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
+                  <span>{joinDialogClipboardBusy ? 'Readingâ€¦' : 'Paste from clipboard'}</span>
                 </button>
               </div>
 
@@ -7729,7 +7729,7 @@
                   onclick={() => void openJoinDialogLink()}
                   disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
                 >
-                  <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
+                  <span>{joinDialogOpenBusy ? 'Openingâ€¦' : 'Open shared hub'}</span>
                 </button>
               </div>
 
@@ -7947,7 +7947,7 @@
                 <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
                 <span>
                   {identityManagerLoading
-                    ? 'Joining…'
+                    ? 'Joiningâ€¦'
                     : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
                       ? 'Joined'
                       : 'Join this hub'}
@@ -7969,7 +7969,7 @@
                 <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
                 <span>
                   {identityManagerLoading
-                    ? 'Publishing…'
+                    ? 'Publishingâ€¦'
                     : selectedChatIdentityNeedsPublish
                       ? 'Publish identity'
                       : 'Published'}
@@ -8002,7 +8002,7 @@
                   <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
                   <span class="identity-pill-state">
                     {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
-                      Joined · update pending
+                      Joined Â· update pending
                     {:else if identity.id === currentVolumeChatIdentityId}
                       Joined
                     {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
@@ -8141,7 +8141,7 @@
                   <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
                   <span>
                     {identityManagerLoading
-                      ? 'Publishing…'
+                      ? 'Publishingâ€¦'
                       : selectedChatIdentityNeedsPublish
                         ? 'Publish to hub'
                         : 'Published'}
@@ -8244,7 +8244,7 @@
                 disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
               >
                 <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
+                <span>{joinDialogClipboardBusy ? 'Readingâ€¦' : 'Paste from clipboard'}</span>
               </button>
             </div>
 
@@ -8262,7 +8262,7 @@
                 onclick={() => void openJoinDialogLink()}
                 disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
               >
-                <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
+                <span>{joinDialogOpenBusy ? 'Openingâ€¦' : 'Open shared hub'}</span>
               </button>
             </div>
 
@@ -8566,16 +8566,21 @@
   }
 
   :global(:root) {
-    --nb-font-display: 'Avenir Next', 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
-    --nb-font-body: 'Avenir Next', 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+    --nb-font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+    --nb-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    --nb-font-mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
   }
 
   :global(body) {
     margin: 0;
     padding: 0;
-    background: var(--nb-app-bg, #0a0a0f);
-    color: var(--nb-text-main, #e0e0e0);
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    background: var(--nb-app-bg, #ffffff);
+    color: var(--nb-text-main, rgba(0, 0, 0, 0.88));
+    font-family: var(--nb-font-body);
+    font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
     overscroll-behavior: none;
   }
 
@@ -8600,15 +8605,15 @@
   .header {
     background: var(--nb-header-bg, color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.98)) 98%, var(--nb-shell-top, white)));
     backdrop-filter: blur(18px);
-    border-bottom: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
-    padding: 0.75rem 2rem 0.9rem;
+    border-bottom: 1px solid var(--nb-border, rgba(0, 0, 0, 0.10));
+    padding: 1rem 2.5rem 1.1rem;
     position: sticky;
     top: 0;
     z-index: 120;
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    gap: 0.85rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   }
 
   .brand-rail {
@@ -8616,9 +8621,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.9rem;
-    padding: 0.7rem 0.82rem;
-    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
+    gap: 1.1rem;
+    padding: 0.9rem 1.1rem;
+    border: 1px solid var(--nb-border, rgba(0, 0, 0, 0.10));
     border-radius: 18px;
     background: var(--nb-brand-rail-bg, color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.98)) 98%, var(--nb-shell-bottom, rgba(244, 244, 247, 0.99))));
   }
@@ -8713,21 +8718,21 @@
   }
 
   .brand-title {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 1.66rem;
-    font-weight: 650;
-    line-height: 1.02;
-    letter-spacing: 0.01em;
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
+    font-family: var(--nb-font-display);
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    color: var(--nb-text-main, rgba(0, 0, 0, 0.88));
   }
 
   .brand-note {
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 0.82rem;
-    font-weight: 450;
-    letter-spacing: 0.02em;
-    line-height: 1.25;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
+    font-family: var(--nb-font-body);
+    font-size: 0.84rem;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 1.35;
+    color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
   }
 
   .brand-actions {
@@ -8757,7 +8762,7 @@
   .tm-details-spec-title,
   .tm-spec-title,
   .preview-title {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
   }
 
   .status-label,
@@ -8765,7 +8770,7 @@
   .tm-details-eyebrow,
   .tm-details-label,
   .empty-eyebrow {
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
   }
 
   .brand-rail {
@@ -9544,7 +9549,7 @@
   }
 
   .secret-file-card-hash {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.72rem;
     line-height: 1.35;
     color: var(--nb-text-main, rgba(226, 232, 240, 0.9));
@@ -9577,7 +9582,7 @@
     align-items: center;
     justify-content: center;
     gap: 0.46rem;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.74rem;
     font-weight: 600;
     letter-spacing: 0.01em;
@@ -9786,7 +9791,7 @@
     align-items: center;
     justify-content: center;
     gap: 0.46rem;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.74rem;
     font-weight: 600;
     letter-spacing: 0.01em;
@@ -9915,7 +9920,7 @@
   }
 
   .status-value {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.8125rem;
   }
 
@@ -9927,7 +9932,7 @@
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.12));
     border-radius: 999px;
     padding: 0.22rem 0.62rem;
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.75rem;
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.8));
     cursor: pointer;
@@ -10264,13 +10269,13 @@
     flex: 1 1 auto;
     min-height: 0;
     height: 100%;
-    padding: 2rem;
+    padding: 2.5rem;
     overflow: hidden;
     transition: background-color 0.3s ease;
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 1.5rem;
   }
 
   .file-area.volume-workspace-active {
@@ -10441,7 +10446,7 @@
     gap: 0.5rem;
     min-width: 0;
     flex-wrap: wrap;
-    font-family: var(--nb-font-body, 'Avenir Next', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
   }
 
   .workspace-mode-secondary {
@@ -11026,7 +11031,7 @@
   .share-dialog-eyebrow,
   .join-dialog-eyebrow {
     margin: 0;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.68rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -11042,7 +11047,7 @@
   .share-dialog-title,
   .join-dialog-title {
     margin: 0;
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 1.16rem;
     font-weight: 650;
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
@@ -11304,7 +11309,7 @@
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(252, 244, 238, 0.92));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.76rem;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -11323,7 +11328,7 @@
     border-radius: 999px;
     min-height: 34px;
     padding: 0 0.95rem;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.82rem;
     font-weight: 600;
     cursor: pointer;
@@ -11380,7 +11385,7 @@
   }
 
   .theme-preset-copy strong {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 0.92rem;
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
@@ -11403,7 +11408,7 @@
     display: grid;
     gap: 0.45rem;
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.8rem;
   }
 
@@ -11484,7 +11489,7 @@
   }
 
   .share-dialog-section-title {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 0.88rem;
     font-weight: 600;
     color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
@@ -11492,7 +11497,7 @@
 
   .join-dialog-section-title {
     margin: 0;
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 0.88rem;
     font-weight: 600;
     color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
@@ -11745,7 +11750,7 @@
 
   .tm-details-hash {
     margin: 0;
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.7rem;
     color: var(--nb-text-main, rgba(226, 232, 240, 0.85));
     word-break: break-all;
@@ -11783,7 +11788,7 @@
     border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.18));
     border-radius: 14px;
     padding: 0.85rem 0.95rem;
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.78rem;
     line-height: 1.5;
     color: var(--nb-text-main, rgba(226, 232, 240, 0.95));
@@ -11916,7 +11921,7 @@
   }
 
   .tm-details-value.mono {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.72rem;
   }
 
@@ -12100,7 +12105,7 @@
   }
 
   .mono {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
   }
 
   .tm-details-media {
@@ -12176,7 +12181,7 @@
     display: grid;
     gap: 0;
     align-items: stretch;
-    font-family: var(--nb-font-body, 'Avenir Next', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
   }
 
   .file-list-pane,
@@ -12293,11 +12298,11 @@
   }
 
   .file-list-sort-wrap[data-sort='ascending'] .file-list-sort::after {
-    content: ' ↑';
+    content: ' â†‘';
   }
 
   .file-list-sort-wrap[data-sort='descending'] .file-list-sort::after {
-    content: ' ↓';
+    content: ' â†“';
   }
 
   .file-list-scroll {
@@ -12701,7 +12706,7 @@
     margin: 0;
     white-space: pre-wrap;
     word-break: break-word;
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.8125rem;
     line-height: 1.5;
     color: #d9d9d9;

@@ -1794,7 +1794,7 @@
       if (pendingCount > 0) {
         parts.push(`${countLabel(pendingCount, 'item')} checking`);
       }
-      return parts.join(' • ');
+      return parts.join(' â€¢ ');
     }
     const locationCopy = countLabel(
       providerVisibleShareCount(entry.provider),
@@ -1975,7 +1975,7 @@
     const status = summary.state.status;
     const rawDetail = summary.state.diagnostic?.summary?.trim() || summary.state.detail.trim();
     const detail = rawDetail ? summarizeMegaStateDetail(rawDetail) : '';
-    const shortDetail = detail.length > 140 ? `${detail.slice(0, 137).trimEnd()}…` : detail;
+    const shortDetail = detail.length > 140 ? `${detail.slice(0, 137).trimEnd()}â€¦` : detail;
 
     if (status === 'ready') {
       return {
@@ -1990,7 +1990,7 @@
       return {
         shareId: summary.share.id,
         name,
-        phase: preparing ? 'Preparing local mirror…' : shortDetail || 'Syncing with MEGA…',
+        phase: preparing ? 'Preparing local mirrorâ€¦' : shortDetail || 'Syncing with MEGAâ€¦',
         tone: 'muted',
       };
     }
@@ -1998,7 +1998,7 @@
       return {
         shareId: summary.share.id,
         name,
-        phase: shortDetail || 'Checking connection and mirror health…',
+        phase: shortDetail || 'Checking connection and mirror healthâ€¦',
         tone: 'muted',
       };
     }
@@ -2565,7 +2565,7 @@
         tone: 'warn' as const,
         syncing: inProgress,
         progressPercent,
-        progressLabel: progressSummary || (total > 0 ? 'Working on locations…' : 'Recovering MEGA status'),
+        progressLabel: progressSummary || (total > 0 ? 'Working on locationsâ€¦' : 'Recovering MEGA status'),
         showProgressBar,
         selfRepairCopy:
           'Details for each folder appear below. Nearbytes retries transient MEGA API issues; use Refresh if something stays stuck.',
@@ -2600,7 +2600,7 @@
         progressLabel: progressSummary,
         showProgressBar,
         selfRepairCopy:
-          '“Idle” on a location usually means the app is still validating the mirror or waiting on MEGA; it should move to ready on its own.',
+          'â€œIdleâ€ on a location usually means the app is still validating the mirror or waiting on MEGA; it should move to ready on its own.',
       };
     }
 
@@ -2619,7 +2619,7 @@
         progressLabel: progressSummary || (preparing > 0 ? 'Preparing local mirror' : 'Refreshing locations'),
         showProgressBar,
         selfRepairCopy:
-          'If a folder stays in “Preparing” or “Checking…”, wait for a full sync cycle or tap Refresh MEGA status.',
+          'If a folder stays in â€œPreparingâ€ or â€œCheckingâ€¦â€, wait for a full sync cycle or tap Refresh MEGA status.',
       };
     }
 
@@ -2668,7 +2668,7 @@
     if (summary.share.provider === 'github') {
       const repoFullName = typeof summary.share.remoteDescriptor.repoFullName === 'string' ? summary.share.remoteDescriptor.repoFullName : null;
       const basePath = typeof summary.share.remoteDescriptor.basePath === 'string' ? summary.share.remoteDescriptor.basePath : null;
-      return repoFullName && basePath ? `${repoFullName} → ${basePath}` : 'GitHub repository share';
+      return repoFullName && basePath ? `${repoFullName} â†’ ${basePath}` : 'GitHub repository share';
     }
     return summary.share.sourceId ? 'Local mirror folder managed by Nearbytes' : 'Mirror folder needs attention';
   }
@@ -4001,7 +4001,7 @@
       // that rarely set `keepVisible`, the UI never showed "Shared with you" or any Add action.
       // Run after share summaries so we do not hit MEGA with a duplicate full-tree fetch in parallel
       // with the same panel refresh (reduces transient API lock / -3 warnings in logs).
-      // MEGA fetch-nodes for incoming shares can take 10–50s under load; keep this above
+      // MEGA fetch-nodes for incoming shares can take 10â€“50s under load; keep this above
       // `providerIncomingShareDiscoveryTimeoutMs` in managedShares so we do not abort early.
       const incomingSharesPromise = withPanelRequestTimeout(
         'Incoming share discovery',
@@ -5339,7 +5339,7 @@
           <div class="provider-flow-status">
             <p class="provider-flow-title">{heading}</p>
             {#if incomingLoading}
-              <p class="muted-copy">Checking…</p>
+              <p class="muted-copy">Checkingâ€¦</p>
             {:else if incomingLoadError}
               <p class="warning-copy">{incomingLoadError}</p>
             {/if}
@@ -5885,8 +5885,8 @@
                                 <span class="mega-runtime-log-tab-title">{entry.label}</span>
                                 <span class="mega-runtime-log-tab-meta">
                                   {entry.exists
-                                    ? `${compactPath(entry.path)} • ${formatSize(entry.size)}`
-                                    : `${compactPath(entry.path)} • waiting`}
+                                    ? `${compactPath(entry.path)} â€¢ ${formatSize(entry.size)}`
+                                    : `${compactPath(entry.path)} â€¢ waiting`}
                                 </span>
                               </button>
                             {/each}
@@ -6545,27 +6545,27 @@
 
 <style>
   .storage-panel {
-    --panel-border: var(--nb-border, rgba(111, 173, 252, 0.18));
-    --panel-soft-border: color-mix(in srgb, var(--nb-border, rgba(111, 173, 252, 0.18)) 70%, transparent);
-    --panel-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.88));
-    --card-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.82));
-    --card-bg-strong: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(248, 236, 227, 0.92));
-    --text-main: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-    --text-soft: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
-    --text-faint: var(--nb-text-faint, rgba(110, 110, 115, 0.62));
-    --teal: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 42%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
-    --warn: color-mix(in srgb, var(--nb-warning, #d4945f) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
-    --danger: color-mix(in srgb, var(--nb-danger, #c86a6a) 86%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    --panel-border: var(--nb-border, rgba(0, 0, 0, 0.10));
+    --panel-soft-border: color-mix(in srgb, var(--nb-border, rgba(0, 0, 0, 0.10)) 70%, transparent);
+    --panel-bg: var(--nb-panel-bg, #ffffff);
+    --card-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(245, 245, 247, 0.9));
+    --card-bg-strong: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(240, 240, 245, 0.94));
+    --text-main: var(--nb-text-main, rgba(0, 0, 0, 0.88));
+    --text-soft: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
+    --text-faint: var(--nb-text-faint, rgba(60, 60, 67, 0.36));
+    --teal: color-mix(in srgb, var(--nb-accent-strong, #0055D4) 52%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
+    --warn: color-mix(in srgb, var(--nb-warning, #FF9500) 78%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
+    --danger: color-mix(in srgb, var(--nb-danger, #FF3B30) 82%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
     display: grid;
-    gap: 0.85rem;
+    gap: 1.25rem;
     width: 100%;
     min-height: 0;
-    padding: 0.9rem;
+    padding: 1.5rem;
     overflow: auto;
     border: 1px solid var(--panel-border);
-    border-radius: 22px;
+    border-radius: 16px;
     background: var(--panel-bg);
-    box-shadow: 0 18px 40px rgba(93, 56, 34, 0.08);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   }
 
   .section-head,
@@ -6580,7 +6580,7 @@
   .usage-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.75rem;
+    gap: 1rem;
     align-items: center;
   }
 
@@ -6591,7 +6591,7 @@
   }
 
   .toolbar-row {
-    margin-bottom: 0.15rem;
+    margin-bottom: 0.25rem;
   }
 
   .storage-shell-intro,
@@ -6607,8 +6607,8 @@
   }
 
   .storage-shell-intro {
-    gap: 0.9rem;
-    padding: 0.1rem 0 0.15rem;
+    gap: 1.1rem;
+    padding: 0.25rem 0 0.35rem;
   }
 
   .storage-shell-intro-volume {
@@ -6616,8 +6616,8 @@
   }
 
   .storage-shell-copy {
-    gap: 0.34rem;
-    max-width: 76ch;
+    gap: 0.5rem;
+    max-width: 68ch;
   }
 
   .storage-shell-title,
@@ -6630,15 +6630,16 @@
 
   .storage-shell-title {
     color: var(--text-main);
-    font-size: 1.16rem;
-    line-height: 1.24;
-    font-weight: 700;
+    font-size: 1.25rem;
+    line-height: 1.3;
+    font-weight: 600;
+    letter-spacing: -0.01em;
   }
 
   .storage-shell-note {
     color: var(--text-soft);
-    font-size: 0.82rem;
-    line-height: 1.5;
+    font-size: 0.85rem;
+    line-height: 1.55;
   }
 
   .storage-shell-facts {
@@ -6650,15 +6651,15 @@
 
   .provider-choice-grid {
     display: grid;
-    gap: 0.75rem;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   }
 
   .provider-choice-card {
     display: grid;
-    gap: 0.36rem;
-    padding: 0.9rem;
-    border-radius: 16px;
+    gap: 0.5rem;
+    padding: 1.1rem;
+    border-radius: 12px;
     border: 1px solid var(--panel-soft-border);
     background: var(--card-bg);
     box-shadow:
@@ -6695,10 +6696,10 @@
   }
 
   .provider-choice-eyebrow {
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
+    color: color-mix(in srgb, var(--nb-accent-strong, #0055D4) 72%, rgba(110, 110, 115, 0.82));
     font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
   }
 
@@ -6712,42 +6713,42 @@
 
   .provider-choice-title {
     color: var(--text-main);
-    font-size: 0.94rem;
-    line-height: 1.3;
-    font-weight: 700;
+    font-size: 0.95rem;
+    line-height: 1.35;
+    font-weight: 600;
   }
 
   .provider-choice-copy {
     color: var(--text-main);
-    font-size: 0.78rem;
-    line-height: 1.35;
+    font-size: 0.82rem;
+    line-height: 1.4;
     font-weight: 600;
   }
 
   .provider-choice-detail {
     color: var(--text-soft);
-    font-size: 0.76rem;
-    line-height: 1.45;
+    font-size: 0.8rem;
+    line-height: 1.5;
   }
 
   .section-stack {
-    gap: 0.72rem;
+    gap: 1rem;
   }
 
   .section-stack-secondary {
-    padding-top: 0.2rem;
+    padding-top: 0.5rem;
     border-top: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 75%, transparent);
   }
 
   .section-copy-stack {
-    gap: 0.22rem;
+    gap: 0.35rem;
   }
 
   .provider-overview-grid,
   .setup-guidance-grid,
   .mega-inline-status-grid {
-    gap: 0.72rem;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   }
 
   .setup-guidance-card {
@@ -6791,10 +6792,10 @@
   }
 
   .provider-tab {
-    min-height: 58px;
-    min-width: 150px;
-    padding: 0.7rem 0.84rem;
-    border-radius: 14px;
+    min-height: 60px;
+    min-width: 160px;
+    padding: 0.9rem 1rem;
+    border-radius: 12px;
     border: 1px solid var(--panel-soft-border);
     background: var(--card-bg);
     color: var(--text-main);
@@ -6819,9 +6820,9 @@
   }
 
   .provider-tab-label {
-    font-size: 0.84rem;
+    font-size: 0.86rem;
     font-weight: 600;
-    line-height: 1.2;
+    line-height: 1.25;
   }
 
   .provider-tab-heading {
@@ -6878,9 +6879,9 @@
     max-height: min(78vh, 720px);
     overflow: auto;
     display: grid;
-    gap: 0.82rem;
-    padding: 0.95rem;
-    border-radius: 20px;
+    gap: 1.1rem;
+    padding: 1.5rem;
+    border-radius: 16px;
     border: 1px solid var(--panel-soft-border);
     background: var(--panel-bg);
     box-shadow: 0 24px 60px rgba(93, 56, 34, 0.16);
@@ -6894,7 +6895,7 @@
   .provider-dialog-grid,
   .provider-dialog-path-list {
     display: grid;
-    gap: 0.72rem;
+    gap: 1rem;
   }
 
   .section-actions,
@@ -6956,10 +6957,11 @@
   .provider-label,
   .scan-group-title {
     margin: 0;
-    font-size: 0.7rem;
-    letter-spacing: 0.14em;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
+    font-weight: 600;
+    color: color-mix(in srgb, var(--nb-accent-strong, #0055D4) 60%, var(--text-soft));
   }
 
   h3,
@@ -6982,12 +6984,12 @@
   }
 
   h3 {
-    font-size: 0.96rem;
-    line-height: 1.35;
+    font-size: 1rem;
+    line-height: 1.4;
   }
 
   h4 {
-    font-size: 0.92rem;
+    font-size: 0.95rem;
   }
 
   .storage-title-link {
@@ -7008,17 +7010,17 @@
   .storage-title-link-text {
     display: block;
     color: var(--text-main);
-    font-size: 0.92rem;
-    line-height: 1.24;
-    font-weight: 700;
+    font-size: 0.95rem;
+    line-height: 1.3;
+    font-weight: 600;
     overflow-wrap: anywhere;
   }
 
   .card-path {
-    margin: 0.22rem 0 0;
+    margin: 0.3rem 0 0;
     color: var(--text-soft);
-    font-size: 0.76rem;
-    line-height: 1.34;
+    font-size: 0.8rem;
+    line-height: 1.4;
     word-break: break-word;
   }
 
@@ -7031,8 +7033,8 @@
   .scan-path,
   .muted-copy {
     color: var(--text-soft);
-    font-size: 0.8rem;
-    line-height: 1.4;
+    font-size: 0.84rem;
+    line-height: 1.5;
   }
 
   .warning-copy {
@@ -7047,22 +7049,22 @@
   .scan-card,
   .scan-group {
     display: grid;
-    gap: 0.75rem;
+    gap: 1rem;
     min-width: 0;
-    border-radius: 16px;
+    border-radius: 12px;
     border: 1px solid var(--panel-soft-border);
     background: var(--card-bg);
   }
 
   .panel-section {
-    padding: 0.82rem;
+    padding: 1.1rem;
   }
 
   .location-card,
   .rule-card,
   .scan-card,
   .scan-group {
-    padding: 0.85rem;
+    padding: 1.1rem;
   }
 
   .card-grid,
@@ -7070,7 +7072,7 @@
   .scan-card-list,
   .scan-group-list {
     display: grid;
-    gap: 0.75rem;
+    gap: 1rem;
   }
 
   .card-grid,
@@ -7198,8 +7200,8 @@
 
   .panel-btn,
   :global(.panel-btn) {
-    min-height: 34px;
-    border-radius: 12px;
+    min-height: 36px;
+    border-radius: 8px;
     border: 1px solid var(--nb-btn-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 80%, transparent));
     background: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
     color: var(--nb-btn-color, rgba(70, 70, 73, 0.94));
@@ -7207,8 +7209,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.48rem;
-    font-size: 0.79rem;
+    gap: 0.5rem;
+    font-size: 0.82rem;
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -8057,7 +8059,7 @@
     word-break: break-word;
     max-height: 180px;
     overflow: auto;
-    font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+    font-family: var(--nb-font-mono, 'SF Mono', 'Cascadia Code', Consolas, monospace);
   }
 
   .mega-log-view.wrap {
@@ -8162,7 +8164,7 @@
   }
 
   .provider-path-copy {
-    font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+    font-family: var(--nb-font-mono, 'SF Mono', 'Cascadia Code', Consolas, monospace);
     word-break: break-word;
   }
 
@@ -8408,8 +8410,8 @@
 
   @media (max-width: 760px) {
     .storage-panel {
-      padding: 0.85rem;
-      border-radius: 18px;
+      padding: 1.1rem;
+      border-radius: 12px;
     }
 
     .provider-choice-grid,
