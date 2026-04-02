@@ -1,6 +1,6 @@
 # Next Iteration Prompt
 
-Open this repo fresh and review the current opaque-event refactor with suspicion. Focus on protocol correctness, storage integrity boundaries, event encryption assumptions, LAN-sync architecture fit, managed-share regressions, UI leaks of semantic event data, and test realism. Keep working in small commits, update the diary and implementation-notes sections of this file as you go, and prefer finding concrete bugs or mismatches over polishing prose. Treat this as one pass in a planned 3-4 iteration hardening cycle.
+Open this repo fresh and review the current opaque-event refactor with suspicion. Focus especially on protocol correctness, storage integrity boundaries, event encryption assumptions, the new queue-backed LAN sync path, provider-queue persistence/replay semantics, managed-share regressions, UI leaks of semantic event data, and test realism. Keep working in small commits, update the diary and implementation-notes sections of this file as you go, and prefer finding concrete bugs or mismatches over polishing prose. Treat this as one pass in a planned 3-4 iteration hardening cycle.
 
 # WIP
 
@@ -24,6 +24,24 @@ This is a clean break:
 - 2026-04-02: Rule for the remainder of this implementation: every meaningful implementation step must update the Implementation Notes section below before or alongside the code change.
 - 2026-04-02: Managed-share stabilization pass completed. Root causes were confirmed as missing-service disposal in tests, background maintenance re-entry after shutdown, `ENOENT` retry backoff on missing integration-state reads, and duplicate incoming-share adoption races during contact-invite handling.
 - 2026-04-02: Verification is green at this checkpoint: `yarn test`, `yarn type-check`, `yarn build`, and `yarn --cwd ui build` all pass.
+- 2026-04-02: Confirmed remaining architectural gap: the repo now has opaque event envelopes, but LAN sync is still inventory-polling based and there is no first-class persistent provider event/work queue yet. This pass will implement that queue and move local-network sync onto it.
+- 2026-04-02: Added a persistent provider queue with typed `(event, hash)` / `(block, hash)` observations, route acknowledgment state, and on-disk persistence under the local-network runtime directory.
+- 2026-04-02: Reworked local-network sync to pull queue-backed observation pages first and then run inventory reconciliation as recovery/fallback. Per-peer LAN cursor progress now persists through the provider queue route-state store and survives service restarts.
+- 2026-04-02: Added focused tests for provider-queue persistence/dedup/filtering and for LAN cursor resume after service restart using a fetch-stubbed peer.
+- 2026-04-02: Full verification is green again after the provider-queue/LAN refactor: `yarn test`, `yarn type-check`, `yarn build`, and `yarn --cwd ui build` all pass.
+
+## TODO
+
+- [x] add a dedicated persistent provider queue store and types
+- [x] add queue tests for persistence, dedupe, ordering, and acknowledgment behavior
+- [x] produce typed storage observations `(event, H)` / `(block, H)` from the local storage model
+- [x] expose LAN peer-log style APIs based on typed observations instead of only volume inventory polling
+- [x] refactor `LocalNetworkSyncService` to synchronize via observation cursors plus object fetches
+- [x] persist per-peer LAN cursor/progress separately from storage truth
+- [x] wire LAN sync imports through the new queue/observation model
+- [x] review whether managed-share/provider sync surfaces should enqueue local work items too, even if they still bootstrap transport separately
+- [x] add integration tests for LAN queue/cursor sync and recovery
+- [x] rerun all tests/builds and keep this TODO list updated until empty
 
 ## Locked Decisions
 
@@ -163,16 +181,15 @@ Important nuance:
   - continue reviewing event-detail rendering for any stale assumptions about plaintext payloads
   - remove any remaining legacy wording that implies event semantics are storage-visible
 - Protocol breadth:
-  - chat, identity, file, app-record, and LAN surfaces all need another review pass for full alignment with the new specs
+  - chat, identity, file, and app-record surfaces still deserve another hardening review pass for full alignment with the new specs, but LAN now uses the queue-backed observation path
 - Noise cleanup:
   - some managed-share tests still log expected fake-adapter warnings such as “Mirror inventory is not implemented by this fake adapter”; the suite passes, but the logs are noisier than ideal
 
 ### Immediate next implementation steps
 
-- do a targeted UI review of event-detail and timeline rendering for any remaining assumptions that `event.payload` is always directly available
-- review identity/app-record/file/chat protocol surfaces against the v0.x specs and remove transitional wording/types where possible
-- review LAN sync code against the new opaque event model and decide the next clean protocol step instead of carrying forward the temporary implementation blindly
-- consider reducing expected fake-adapter warning noise in integration tests now that correctness is restored
+- rerun the full verification suite and then collapse this list
+- then do a targeted UI review of event-detail and timeline rendering for any remaining assumptions that `event.payload` is always directly available
+- then review identity/app-record/file/chat protocol surfaces against the v0.x specs and remove transitional wording/types where possible
 
 In addition to the per-peer log, each transport/provider runtime should maintain its own persistent queue of local delivery work.
 
@@ -350,3 +367,13 @@ Current execution note:
   - `src/domain/eventEnvelope.ts` was added to create and decrypt signed events
   - `src/storage/channel.ts`, `src/storage/integrity.ts`, `src/storage/multiRoot.ts`, `src/domain/volume.ts`, `src/domain/chatService.ts`, and `src/domain/fileService.ts` are in active transition
 - current state is intentionally mid-refactor and not yet validated; the next step is to finish threading decrypted payload handling through file replay and the remaining APIs before running tests
+- LAN/provider-queue implementation notes for this pass:
+  - `src/integrations/providerQueue.ts` now persists typed observations plus per-route acknowledgment/attempt state in `provider-queue.json`
+  - storage writes now become queue observations via canonical path parsing, giving a transport-neutral local observation ledger
+  - `src/integrations/localNetworkSync.ts` now advertises `observationHeadSequence`, serves paged observation pulls, imports typed observations first, and only falls back to inventory diffing as a recovery pass
+  - the local-network cursor is persisted as provider-queue route state keyed by `peer:<peerId>:pull`, which survives LAN service restarts
+  - `src/server/routes.ts` now exposes `GET /lan/observations`
+  - tests added:
+    - `src/integrations/__tests__/providerQueue.test.ts`
+    - `src/integrations/__tests__/localNetworkSync.test.ts`
+  - managed-share/provider review result: no immediate queue adoption was forced into MEGA/GitHub/Google Drive transport code in this pass; the generic provider queue now exists as the local observation/work substrate, and LAN is the first transport consuming it cleanly
