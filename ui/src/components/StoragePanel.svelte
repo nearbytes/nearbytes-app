@@ -163,6 +163,7 @@
   const DISMISSED_INCOMING_OFFERS_KEY = 'nearbytes-incoming-share-dismissed-v1';
   const RESERVE_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
   const DEFAULT_RESERVE_PERCENT = 5;
+  const GENERIC_FOLDER_NAMES = new Set(['data', 'files', 'local', 'nearbytes', 'shared', 'storage', 'sync']);
   const DISCOVERY_SCAN_MAX_DEPTH = 1;
   const DISCOVERY_SCAN_MAX_DIRECTORIES = 600;
   const PANEL_REQUEST_TIMEOUT_MS: number | null = null;
@@ -314,6 +315,7 @@
   type UnifiedShareView = {
     provider: string;
     title: string;
+    pathLabel?: string;
     copy: string;
     active: boolean;
     statusBadges: ShareBadge[];
@@ -480,7 +482,7 @@
     autosaveStatus = 'pending';
     const timer = setTimeout(() => {
       void autosavePanel(nextSignature);
-    }, 450);
+    }, 700);
     return () => {
       clearTimeout(timer);
     };
@@ -552,6 +554,14 @@
     return value.trim().replace(/\\/g, '/').replace(/\/+$/u, '').toLowerCase();
   }
 
+  function normalizeDisplayPath(value: string): string {
+    return value.trim().replace(/\\/g, '/').replace(/\/+$/u, '');
+  }
+
+  function pathSegments(value: string): string[] {
+    return normalizeDisplayPath(value).split('/').filter((segment) => segment.length > 0);
+  }
+
   function detectProviderFromPath(value: string): SourceProvider {
     const lower = value.toLowerCase();
     if (lower.includes('dropbox')) return 'dropbox';
@@ -575,8 +585,36 @@
     return 'Local folder';
   }
 
+  function sourceLocationKindLabel(provider: SourceProvider): string {
+    if (provider === 'gdrive') return 'Google Drive sync folder';
+    if (provider === 'dropbox') return 'Dropbox sync folder';
+    if (provider === 'mega') return 'MEGA sync folder';
+    if (provider === 'icloud') return 'iCloud sync folder';
+    if (provider === 'onedrive') return 'OneDrive sync folder';
+    return 'Folder on this device';
+  }
+
+  function sourceLocationTitle(path: string): string {
+    const segments = pathSegments(path);
+    if (segments.length === 0) return 'Choose a folder';
+    const leaf = segments[segments.length - 1];
+    const parent = segments.length > 1 ? segments[segments.length - 2] : null;
+    if (!parent) {
+      return leaf;
+    }
+    if (GENERIC_FOLDER_NAMES.has(leaf.toLowerCase()) || leaf.length <= 3) {
+      return `${parent}/${leaf}`;
+    }
+    return leaf;
+  }
+
+  function sourceLocationPath(path: string): string {
+    const normalized = normalizeDisplayPath(path);
+    return normalized || 'Choose a folder';
+  }
+
   function compactPath(value: string): string {
-    const normalized = value.trim().replace(/\\/g, '/');
+    const normalized = normalizeDisplayPath(value);
     if (normalized === '') return 'Choose a folder';
     const parts = normalized.split('/').filter((part) => part.length > 0);
     return parts[parts.length - 1] ?? normalized;
@@ -596,6 +634,17 @@
       unit += 1;
     }
     return `${value >= 100 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+  }
+
+  function storageMeasurementSummary(usedBytes: number | null | undefined, freeBytes: number | null | undefined): string | null {
+    const parts: string[] = [];
+    if (typeof usedBytes === 'number' && usedBytes > 0) {
+      parts.push(`${formatSize(usedBytes)} used`);
+    }
+    if (typeof freeBytes === 'number' && freeBytes > 0) {
+      parts.push(`${formatSize(freeBytes)} free`);
+    }
+    return parts.length > 0 ? parts.join(' / ') : null;
   }
 
   function countLabel(count: number, singular: string, plural = `${singular}s`): string {
@@ -1922,7 +1971,7 @@
   }
 
   function megaShareActivityStep(summary: ManagedShareSummary): MegaLocationActivityStep {
-    const name = managedShareTitle(summary);
+    const name = managedShareCardTitle(summary);
     const status = summary.state.status;
     const rawDetail = summary.state.diagnostic?.summary?.trim() || summary.state.detail.trim();
     const detail = rawDetail ? summarizeMegaStateDetail(rawDetail) : '';
@@ -2674,15 +2723,22 @@
     return summary.share.label;
   }
 
+  function managedShareCardTitle(summary: ManagedShareSummary): string {
+    if (summary.share.provider === 'mega' && summary.share.role === 'owner') {
+      return managedShareRemoteName(summary) ?? summary.share.label;
+    }
+    return managedShareTitle(summary);
+  }
+
   function sourceDisplayTitle(source: SourceConfigEntry): string {
     const linkedSummary = managedShares.find((summary) => summary.share.sourceId === source.id)
       ?? (source.integration?.managedShareId
         ? managedShares.find((summary) => summary.share.id === source.integration?.managedShareId)
         : undefined);
     if (linkedSummary) {
-      return managedShareTitle(linkedSummary);
+      return managedShareCardTitle(linkedSummary);
     }
-    return compactPath(source.path);
+    return sourceLocationTitle(source.path);
   }
 
   function managedShareRoleLabel(summary: ManagedShareSummary): string {
@@ -2789,25 +2845,9 @@
   }
 
   function participantCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
-    const active = summary.collaborators
+    return summary.collaborators
       .filter((collaborator) => collaborator.status === 'active')
       .map((collaborator) => toCollaboratorView(collaborator));
-    if (summary.share.role === 'owner') {
-      const accountEmail = managedShareAccountEmail(summary);
-      if (accountEmail) {
-        const alreadyListed = active.some((collaborator) => collaborator.key === accountEmail.toLowerCase());
-        if (!alreadyListed) {
-          active.unshift({
-            key: accountEmail.toLowerCase(),
-            label: accountEmail,
-            role: 'owner',
-            status: 'active',
-            source: 'nearbytes',
-          });
-        }
-      }
-    }
-    return active;
   }
 
   function pendingCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
@@ -2899,17 +2939,18 @@
     const attachments = sourceAttachmentLabels(source.id);
     const repairSummary = sourceRepairSummary(source.id);
     const repairReport = sourceRepairReport(source.id);
+    const measurement = storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes);
     return {
-      provider: formatProvider(source.provider),
-      title: compactPath(source.path),
+      provider: sourceLocationKindLabel(source.provider),
+      title: sourceLocationTitle(source.path),
+      pathLabel: sourceLocationPath(source.path),
       copy: locationSummary(source),
       active: source.enabled,
       statusBadges: shareCardBadgeForSource(source),
       meta: [
-        status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown',
-        usageSummary(source.id),
+        measurement,
         sourceAttachmentSummary(source.id),
-      ],
+      ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
       reservePercent: Number.isFinite(defaultDestination?.reservePercent)
@@ -2951,22 +2992,20 @@
     const defaultDestination = destinationFor(null, source.id);
     const repairSummary = sourceRepairSummary(source.id);
     const repairReport = sourceRepairReport(source.id);
+    const measurement = storageMeasurementSummary(
+      summary.storage?.usageTotalBytes,
+      summary.storage?.availableBytes ?? summary.storage?.remoteAvailableBytes
+    );
     return {
       provider: summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider === 'github' ? 'GitHub' : summary.share.provider,
-      title: managedShareTitle(summary),
+      title: managedShareCardTitle(summary),
       copy: managedShareNarrative(summary),
       active: summary.state.status === 'ready',
       statusBadges: shareCardBadgesForManaged(summary),
       meta: [
         shareAttachmentSummary(summary),
-        summary.storage?.availableBytes !== undefined
-          ? `Available storage: ${formatSize(summary.storage.availableBytes)}`
-          : summary.storage?.remoteAvailableBytes !== undefined
-            ? `Available storage: ${formatSize(summary.storage.remoteAvailableBytes)} in ${providerLabelForManagedShare(summary)}`
-            : 'Available storage unknown',
-        typeof summary.storage?.usageTotalBytes === 'number'
-          ? `Using ${formatSize(summary.storage.usageTotalBytes)} here.`
-          : managedShareOpenLabel(summary),
+        measurement,
+        !measurement ? managedShareOpenLabel(summary) : null,
       ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
@@ -3713,9 +3752,9 @@
   function usageSummary(sourceId: string): string {
     const totalBytes = sourceStatus(sourceId)?.usage.totalBytes ?? 0;
     if (totalBytes <= 0) {
-      return 'Local usage has not been measured here yet.';
+      return '';
     }
-    return `Using ${formatSize(totalBytes)} here.`;
+    return `${formatSize(totalBytes)} used`;
   }
 
   function protectionSummary(targetVolumeId: string | null): string {
@@ -4887,20 +4926,22 @@
       {/if}
     {/if}
     {#snippet unifiedShareCard(view: UnifiedShareView)}
-      <ShareCard
-        provider={view.provider}
-        title={view.title}
-        copy={view.active && !view.warning && !view.repairSummary ? '' : view.copy}
-        active={view.active}
-        compact={true}
-        statusBadges={view.statusBadges}
-        meta={view.meta}
-      >
+      <div class="compact-share-item">
+        <ShareCard
+          provider={view.provider}
+          title={view.title}
+          pathLabel={view.pathLabel}
+          copy={view.active && !view.warning && !view.repairSummary ? '' : view.copy}
+          active={view.active}
+          compact={true}
+          statusBadges={view.statusBadges}
+          meta={view.meta}
+        >
         {#snippet metaActions()}
           <div class="inline-reserve-slot">
             {#if activeReserveEditorKey === view.reserveKey}
               <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
-                <span>Keep free</span>
+                <span>Free-space buffer</span>
                 <select
                   class="panel-input inline-reserve-select"
                   value={String(view.reservePercent)}
@@ -4916,8 +4957,9 @@
                 </select>
               </label>
             {:else}
-              <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(view.reserveKey)}>
-                <span>Keep free {formatPercent(view.reservePercent)}</span>
+              <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(view.reserveKey)} title="Change free-space buffer">
+                <SquarePen size={13} strokeWidth={2} />
+                <span>Reserve {formatPercent(view.reservePercent)} free</span>
               </button>
             {/if}
           </div>
@@ -5027,15 +5069,17 @@
             </div>
           {/if}
         {/snippet}
-      </ShareCard>
+        </ShareCard>
+      </div>
     {/snippet}
     {#snippet managedShareCard(summary: ManagedShareSummary)}
       {@const view = managedShareView(summary)}
       {#if view}
-        <div data-managed-share-id={summary.share.id}>
+        <div class="compact-share-item" data-managed-share-id={summary.share.id}>
           <ShareCard
             provider={view.provider}
             title={view.title}
+            pathLabel={view.pathLabel}
             active={view.active}
             compact={true}
             statusBadges={view.statusBadges}
@@ -5045,7 +5089,7 @@
             <div class="inline-reserve-slot">
               {#if activeReserveEditorKey === view.reserveKey}
                 <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
-                  <span>Keep free</span>
+                  <span>Free-space buffer</span>
                   <select
                     class="panel-input inline-reserve-select"
                     value={String(view.reservePercent)}
@@ -5061,8 +5105,9 @@
                   </select>
                 </label>
               {:else}
-                <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(view.reserveKey)}>
-                  <span>Keep free {formatPercent(view.reservePercent)}</span>
+                <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(view.reserveKey)} title="Change free-space buffer">
+                  <SquarePen size={13} strokeWidth={2} />
+                  <span>Reserve {formatPercent(view.reservePercent)} free</span>
                 </button>
               {/if}
             </div>
@@ -5217,69 +5262,73 @@
       {/if}
     {/snippet}
     {#snippet incomingContactInviteCard(invite: IncomingProviderContactInvite)}
-      <ShareCard
-        provider={providerLabelForIncoming(invite.provider)}
-        title={invite.label}
-        compact={true}
-        statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
-        meta={[]}
-      >
-        {#snippet actions()}
-          <button
-            type="button"
-            class="panel-btn subtle compact"
-            onclick={() => void acceptProviderContactInviteEntry(invite)}
-            disabled={integrationBusyKey === `accept-contact:${invite.id}`}
-          >
-            <span>{integrationBusyKey === `accept-contact:${invite.id}` ? 'Accepting...' : 'Accept contact'}</span>
-          </button>
-        {/snippet}
-      </ShareCard>
-    {/snippet}
-    {#snippet incomingManagedShareCard(offer: IncomingManagedShareOffer)}
-      <ShareCard
-        provider={providerLabelForIncoming(offer.provider)}
-        title={incomingManagedShareTitle(offer)}
-        compact={true}
-        statusBadges={[incomingShareStatusBadge(offer)]}
-        meta={[
-          `Shared by ${offer.ownerLabel}`,
-          incomingShareMetaDetail(offer),
-        ]}
-      >
-        {#snippet details()}
-          {#if offer.suggestedLocalPath}
-            <div class="provider-path-card managed-share-path-card">
-              <p class="subheading">Suggested local {incomingShareKindLabel(offer)}</p>
-              <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
-            </div>
-          {/if}
-        {/snippet}
-        {#snippet actions()}
-          <div class="button-row incoming-share-actions">
+      <div class="compact-share-item">
+        <ShareCard
+          provider={providerLabelForIncoming(invite.provider)}
+          title={invite.label}
+          compact={true}
+          statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
+          meta={[]}
+        >
+          {#snippet actions()}
             <button
               type="button"
               class="panel-btn subtle compact"
-              onclick={() => void acceptIncomingManagedShareOffer(offer)}
-              disabled={integrationBusyKey === `accept-share:${offer.id}`}
+              onclick={() => void acceptProviderContactInviteEntry(invite)}
+              disabled={integrationBusyKey === `accept-contact:${invite.id}`}
             >
-              {#if integrationBusyKey !== `accept-share:${offer.id}`}
-                <Plus size={14} strokeWidth={2} />
-              {/if}
-              <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
+              <span>{integrationBusyKey === `accept-contact:${invite.id}` ? 'Accepting...' : 'Accept contact'}</span>
             </button>
-            <button
-              type="button"
-              class="panel-btn subtle compact danger"
-              onclick={() => dismissIncomingManagedShareOffer(offer)}
-              disabled={integrationBusyKey === `accept-share:${offer.id}`}
-              title="Hide this incoming share on this device"
-            >
-              <span>Hide</span>
-            </button>
-          </div>
-        {/snippet}
-      </ShareCard>
+          {/snippet}
+        </ShareCard>
+      </div>
+    {/snippet}
+    {#snippet incomingManagedShareCard(offer: IncomingManagedShareOffer)}
+      <div class="compact-share-item">
+        <ShareCard
+          provider={providerLabelForIncoming(offer.provider)}
+          title={incomingManagedShareTitle(offer)}
+          compact={true}
+          statusBadges={[incomingShareStatusBadge(offer)]}
+          meta={[
+            `Shared by ${offer.ownerLabel}`,
+            incomingShareMetaDetail(offer),
+          ]}
+        >
+          {#snippet details()}
+            {#if offer.suggestedLocalPath}
+              <div class="provider-path-card managed-share-path-card">
+                <p class="subheading">Suggested local {incomingShareKindLabel(offer)}</p>
+                <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
+              </div>
+            {/if}
+          {/snippet}
+          {#snippet actions()}
+            <div class="button-row incoming-share-actions">
+              <button
+                type="button"
+                class="panel-btn subtle compact"
+                onclick={() => void acceptIncomingManagedShareOffer(offer)}
+                disabled={integrationBusyKey === `accept-share:${offer.id}`}
+              >
+                {#if integrationBusyKey !== `accept-share:${offer.id}`}
+                  <Plus size={14} strokeWidth={2} />
+                {/if}
+                <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
+              </button>
+              <button
+                type="button"
+                class="panel-btn subtle compact danger"
+                onclick={() => dismissIncomingManagedShareOffer(offer)}
+                disabled={integrationBusyKey === `accept-share:${offer.id}`}
+                title="Hide this incoming share on this device"
+              >
+                <span>Hide</span>
+              </button>
+            </div>
+          {/snippet}
+        </ShareCard>
+      </div>
     {/snippet}
     {#snippet incomingFromOthersSection(providerKey: string, heading: string)}
       {@const incomingInvitesHere = incomingProviderInvitesForProvider(providerKey)}
@@ -5454,10 +5503,10 @@
       <section class="panel-section">
         <div class="section-head compact global-panel-head">
           <div>
-            <h3>Your locations</h3>
+            <h3>Folders on this device</h3>
           </div>
           <div class="button-row compact-panel-actions">
-            {@render addLocationAction('Add a location', 'Add a storage location manually', addSourceCard, false)}
+            {@render addLocationAction('Add folder', 'Add a folder on this device', addSourceCard, false)}
             <button
               type="button"
               class="panel-btn subtle compact icon-btn"
@@ -5481,8 +5530,8 @@
 
         <div class="section-stack">
           <div class="section-copy-stack">
-            <p class="subheading">Saved locations</p>
-            <p class="managed-share-invite-copy">Folders on this Mac that can already serve your hubs.</p>
+            <p class="subheading">Saved folders</p>
+            <p class="managed-share-invite-copy">These folders live on this device. Sync folders from services like OneDrive also appear here because Nearbytes uses the local folder, not the cloud service directly.</p>
           </div>
 
           {#if localShares().length > 0}
@@ -5493,11 +5542,11 @@
             </div>
           {:else}
             <article class="rule-card">
-              <p class="card-copy">No storage locations are saved on this Mac yet.</p>
+              <p class="card-copy">No folders are saved on this device yet.</p>
               <div class="button-row inline-dialog-actions">
                 <button type="button" class="panel-btn subtle compact" onclick={addSourceCard}>
                   <Plus size={14} strokeWidth={2} />
-                  <span>Add a location</span>
+                  <span>Add folder</span>
                 </button>
               </div>
             </article>
@@ -5520,8 +5569,9 @@
                         <Search size={16} strokeWidth={2.1} />
                       </div>
                       <div title={row.source.path}>
-                        <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                        <h4>{compactPath(row.source.path)}</h4>
+                        <p class="provider-label">{sourceLocationKindLabel(row.source.provider)}</p>
+                        <h4>{sourceLocationTitle(row.source.path)}</h4>
+                        <p class="card-path">{sourceLocationPath(row.source.path)}</p>
                       </div>
                     </div>
                   </div>
@@ -6118,13 +6168,15 @@
 
               <div class="compact-share-grid">
                 {#if ownedShares.length === 0}
-                  <ShareCard
-                    provider={provider.label}
-                    title="No locations from this account yet"
-                    copy={providerEmptyShareCopy(provider)}
-                    statusBadges={[]}
-                    meta={[]}
-                  />
+                  <div class="compact-share-item">
+                    <ShareCard
+                      provider={provider.label}
+                      title="No locations from this account yet"
+                      copy={providerEmptyShareCopy(provider)}
+                      statusBadges={[]}
+                      meta={[]}
+                    />
+                  </div>
                 {:else}
                   {#each ownedShares as summary (summary.share.id)}
                     {@render managedShareCard(summary)}
@@ -6228,7 +6280,7 @@
                 <div class="card-head">
                   <div class="card-title">
                     <div>
-                      <p class="provider-label">{formatProvider(source.provider)}</p>
+                      <p class="provider-label">{sourceLocationKindLabel(source.provider)}</p>
                       {#if hasSourcePath(source)}
                         <button
                           type="button"
@@ -6236,10 +6288,11 @@
                           onclick={() => openSourceFolder(source.id, source.path)}
                           title={source.path}
                         >
-                          <span class="storage-title-link-text">{compactPath(source.path)}</span>
+                          <span class="storage-title-link-text">{sourceLocationTitle(source.path)}</span>
                         </button>
+                        <p class="card-path">{sourceLocationPath(source.path)}</p>
                       {:else}
-                        <h4>{compactPath(source.path)}</h4>
+                        <h4>{sourceLocationTitle(source.path)}</h4>
                       {/if}
                     </div>
                   </div>
@@ -6261,12 +6314,13 @@
                 {/if}
 
                 <div class="fact-row">
-                  <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
-                  <span>{usageSummary(source.id)}</span>
+                  {#if storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes)}
+                    <span>{storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes)}</span>
+                  {/if}
                   <div class="inline-reserve-slot">
                     {#if activeReserveEditorKey === `hub:${volumeId}:${source.id}`}
                       <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
-                        <span>Keep free</span>
+                        <span>Free-space buffer</span>
                         <select
                           class="panel-input inline-reserve-select"
                           value={String(Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT)}
@@ -6282,8 +6336,9 @@
                         </select>
                       </label>
                     {:else}
-                      <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(`hub:${volumeId}:${source.id}`)}>
-                        <span>Keep free {formatPercent(Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT)}</span>
+                      <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(`hub:${volumeId}:${source.id}`)} title="Change free-space buffer">
+                        <SquarePen size={13} strokeWidth={2} />
+                        <span>Reserve {formatPercent(Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT)} free</span>
                       </button>
                     {/if}
                   </div>
@@ -6349,15 +6404,17 @@
                       <div class="card-head">
                         <div class="card-title">
                           <div>
-                            <p class="provider-label">{formatProvider(source.provider)}</p>
+                            <p class="provider-label">{sourceLocationKindLabel(source.provider)}</p>
                             <h4>{sourceDisplayTitle(source)}</h4>
+                            <p class="card-path">{sourceLocationPath(source.path)}</p>
                           </div>
                         </div>
                       </div>
 
                       <div class="fact-row">
-                        <span>{status?.availableBytes !== undefined ? `Available storage: ${formatSize(status.availableBytes)}` : 'Available storage unknown'}</span>
-                        <span>{usageSummary(source.id)}</span>
+                        {#if storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes)}
+                          <span>{storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes)}</span>
+                        {/if}
                       </div>
 
                       <div class="button-row inline-dialog-actions">
@@ -6957,6 +7014,14 @@
     overflow-wrap: anywhere;
   }
 
+  .card-path {
+    margin: 0.22rem 0 0;
+    color: var(--text-soft);
+    font-size: 0.76rem;
+    line-height: 1.34;
+    word-break: break-word;
+  }
+
   .hero-text,
   .section-copy,
   .path-copy,
@@ -7396,17 +7461,31 @@
   .inline-reserve-button {
     display: inline-flex;
     align-items: center;
+    gap: 0.38rem;
     justify-content: center;
     min-height: 30px;
-    padding: 0.28rem 0.82rem;
+    padding: 0.28rem 0.78rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.88));
-    color: var(--text-main);
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 30%, var(--nb-border, rgba(60, 60, 67, 0.12)) 70%);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(248, 236, 229, 0.94));
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 66%, var(--text-main) 34%);
     font: inherit;
     font-size: 0.75rem;
     font-weight: 600;
     white-space: nowrap;
+    cursor: pointer;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease,
+      box-shadow 120ms ease,
+      transform 120ms ease;
+  }
+
+  .inline-reserve-button:hover {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 42%, var(--nb-border, rgba(60, 60, 67, 0.12)) 58%);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 88%, rgba(245, 226, 214, 0.98));
+    box-shadow: 0 8px 18px rgba(210, 122, 84, 0.12);
+    transform: translateY(-1px);
   }
 
   .inline-reserve-editor {
@@ -7564,11 +7643,15 @@
   }
 
   .mega-command-deck {
-    display: grid;
+    display: flex;
+    flex-wrap: wrap;
     gap: 0.75rem;
+    align-items: flex-start;
   }
 
   .mega-command-card {
+    flex: 0 1 440px;
+    width: min(100%, 440px);
     gap: 0.8rem;
     border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background:
@@ -8128,9 +8211,29 @@
   }
 
   .compact-share-grid {
-    display: grid;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
     gap: 0.72rem;
-    grid-template-columns: repeat(auto-fit, minmax(244px, 1fr));
+  }
+
+  .compact-share-item,
+  .compact-share-grid > .location-card {
+    flex: 0 1 320px;
+    width: min(100%, 320px);
+  }
+
+  .compact-share-item {
+    display: flex;
+  }
+
+  .compact-share-item :global(.share-card) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .compact-share-grid > .location-card {
+    height: 100%;
   }
 
   .field-block {

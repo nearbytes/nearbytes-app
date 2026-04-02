@@ -8,6 +8,7 @@
     eyebrow = 'Location',
     provider = '',
     title,
+    pathLabel = '',
     copy = '',
     active = false,
     compact = false,
@@ -23,6 +24,7 @@
     eyebrow?: string;
     provider?: string;
     title: string;
+    pathLabel?: string;
     copy?: string;
     active?: boolean;
     compact?: boolean;
@@ -46,6 +48,9 @@
       <div>
         <p class="provider-label">{provider || eyebrow}</p>
         <h4>{title}</h4>
+        {#if pathLabel}
+          <p class="card-path" title={pathLabel}>{pathLabel}</p>
+        {/if}
       </div>
     </div>
     {#if statusBadges.length > 0}
@@ -110,6 +115,8 @@
   .share-card {
     display: grid;
     gap: 0.72rem;
+    align-content: start;
+    height: 100%;
     padding: 0.82rem;
     border-radius: 16px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
@@ -230,6 +237,7 @@
   }
 
   .card-copy,
+  .card-path,
   .fact-row {
     margin: 0;
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
@@ -238,9 +246,17 @@
   }
 
   .share-card.compact .card-copy,
+  .share-card.compact .card-path,
   .share-card.compact .fact-row {
     font-size: 0.75rem;
     line-height: 1.34;
+  }
+
+  .card-path {
+    margin-top: 0.18rem;
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.78));
+    line-height: 1.32;
+    word-break: break-word;
   }
 
   .card-copy {

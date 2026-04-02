@@ -143,7 +143,7 @@
         aria-label={`Choose ${valueLabel.toLowerCase()} file`}
         onchange={handleFileInputChange}
       />
-      <button type="button" class="workspace-toggle" onclick={triggerFilePicker}>
+      <button type="button" class="workspace-toggle shared-secret-editor-choose-file" onclick={triggerFilePicker}>
         <ImageIcon class="button-icon" size={15} strokeWidth={2} />
         <span>{chooseFileLabel}</span>
       </button>
@@ -235,6 +235,18 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.55rem;
+  }
+
+  .shared-secret-editor-choose-file {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 24%, var(--nb-btn-border, rgba(56, 189, 248, 0.24)) 76%);
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 88%, var(--nb-btn-bg, rgba(12, 24, 43, 0.82)));
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 36%, var(--nb-btn-color, rgba(226, 232, 240, 0.92)) 64%);
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 70%, transparent);
+  }
+
+  .shared-secret-editor-choose-file:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 32%, var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34)) 68%);
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.12)) 92%, var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.96)));
   }
 
   .shared-secret-editor-file-card {

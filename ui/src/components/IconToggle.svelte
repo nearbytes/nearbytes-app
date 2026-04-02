@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import type { ComponentType } from 'svelte';
 
   let {
@@ -20,18 +21,63 @@
     ariaLabel?: string;
     onclick?: (() => void) | undefined;
   }>();
+
+  let optimisticActive = $state<boolean | null>(null);
+  let optimisticResetTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const visualActive = $derived(optimisticActive ?? active);
+
+  $effect(() => {
+    if (optimisticActive !== null && active === optimisticActive) {
+      optimisticActive = null;
+      if (optimisticResetTimer) {
+        clearTimeout(optimisticResetTimer);
+        optimisticResetTimer = null;
+      }
+    }
+  });
+
+  onDestroy(() => {
+    if (optimisticResetTimer) {
+      clearTimeout(optimisticResetTimer);
+      optimisticResetTimer = null;
+    }
+  });
+
+  function handlePress(): void {
+    if (disabled) {
+      return;
+    }
+
+    const nextActive = !(optimisticActive ?? active);
+    optimisticActive = nextActive;
+
+    if (optimisticResetTimer) {
+      clearTimeout(optimisticResetTimer);
+    }
+    optimisticResetTimer = setTimeout(() => {
+      if (optimisticActive === nextActive && active !== nextActive) {
+        optimisticActive = null;
+      }
+      optimisticResetTimer = null;
+    }, 1600);
+
+    requestAnimationFrame(() => {
+      onclick?.();
+    });
+  }
 </script>
 
 <button
   type="button"
   class="icon-toggle"
-  class:active
+  class:active={visualActive}
   class:layout-stacked={layout === 'stacked'}
   disabled={disabled}
-  aria-pressed={active}
+  aria-pressed={visualActive}
   aria-label={ariaLabel || label}
   title={title || label}
-  onclick={() => onclick?.()}
+  onclick={handlePress}
 >
   {#if icon}
     {@const Icon = icon}
@@ -83,10 +129,22 @@
   }
 
   .icon-toggle.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 93%, rgba(248, 243, 239, 0.94));
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 70%, rgba(210, 122, 84, 0.08));
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 44%, rgba(60, 60, 67, 0.14));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 90%, rgba(241, 223, 214, 0.98)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 84%, rgba(233, 205, 190, 0.98))),
+      radial-gradient(circle at top, color-mix(in srgb, var(--nb-accent, #d27a54) 20%, transparent), transparent 62%);
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 82%, rgba(28, 28, 30, 0.96));
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.12)),
+      0 8px 18px rgba(210, 122, 84, 0.14);
+  }
+
+  .icon-toggle.active .icon-toggle-glyph {
+    transform: scale(1.05);
+  }
+
+  .icon-toggle.active .icon-toggle-label {
+    font-weight: 800;
   }
 
   .icon-toggle:disabled {

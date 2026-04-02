@@ -11,6 +11,7 @@
     getTimeline,
     getEventDetail,
     getEventStorageLocations,
+    getRootsConfig,
     openPathInFileManager,
     uploadFiles,
     deleteFile,
@@ -33,6 +34,8 @@
     type SourceReferenceBundle,
     type SourceProvider,
     type TimelineEvent,
+    type RootsConfig,
+    type VolumeDestinationConfig,
     type VolumeChatState,
   } from './lib/api.js';
   import { clearCache, getCachedFiles, setCachedFiles } from './lib/cache.js';
@@ -57,7 +60,6 @@
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AppDialog from './components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
-  import HubStorageButton from './components/HubStorageButton.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
@@ -204,6 +206,7 @@
     },
   ];
   const NEARBYTES_JOIN_DEEP_LINK_MAX_LENGTH = 16_384;
+  const DEFAULT_VOLUME_RESERVE_PERCENT = 5;
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
   type EventReference = {
@@ -335,11 +338,87 @@
 
   type FileManagerViewMode = 'icons' | 'details';
   type MountDialogMode = 'secret' | 'join-link';
+  type MountStorageMode = 'default' | 'custom' | 'unknown';
 
   type AppReferenceClipboard = {
     bundle: SourceReferenceBundle;
     itemCount: number;
   };
+
+  function normalizeVolumeKey(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value.trim().toLowerCase();
+    return normalized || null;
+  }
+
+  function sanitizeMountStorageDestination(destination: VolumeDestinationConfig): VolumeDestinationConfig {
+    return {
+      ...destination,
+      enabled: destination.enabled,
+      storeEvents: destination.enabled,
+      storeBlocks: destination.enabled,
+      copySourceBlocks: destination.enabled,
+      reservePercent: destination.reservePercent ?? DEFAULT_VOLUME_RESERVE_PERCENT,
+      fullPolicy: 'block-writes',
+    };
+  }
+
+  function mountStorageDestinationKey(destination: VolumeDestinationConfig): string {
+    return JSON.stringify({
+      sourceId: destination.sourceId,
+      enabled: destination.enabled,
+      storeEvents: destination.storeEvents,
+      storeBlocks: destination.storeBlocks,
+      copySourceBlocks: destination.copySourceBlocks,
+      reservePercent: destination.reservePercent,
+      fullPolicy: destination.fullPolicy,
+    });
+  }
+
+  function mountStorageDestinationsEqual(
+    left: readonly VolumeDestinationConfig[],
+    right: readonly VolumeDestinationConfig[]
+  ): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+    const leftKeys = [...left].map(mountStorageDestinationKey).sort((a, b) => a.localeCompare(b));
+    const rightKeys = [...right].map(mountStorageDestinationKey).sort((a, b) => a.localeCompare(b));
+    return leftKeys.every((entry, index) => entry === rightKeys[index]);
+  }
+
+  function effectiveMountStorageDestinations(config: RootsConfig, targetVolumeId: string): VolumeDestinationConfig[] {
+    const normalizedVolumeId = normalizeVolumeKey(targetVolumeId);
+    const merged = new Map<string, VolumeDestinationConfig>();
+    for (const destination of config.defaultVolume.destinations) {
+      merged.set(destination.sourceId, sanitizeMountStorageDestination(destination));
+    }
+    if (!normalizedVolumeId) {
+      return Array.from(merged.values());
+    }
+    const explicit = config.volumes.find((entry) => normalizeVolumeKey(entry.volumeId) === normalizedVolumeId);
+    if (!explicit) {
+      return Array.from(merged.values());
+    }
+    for (const destination of explicit.destinations) {
+      merged.set(destination.sourceId, sanitizeMountStorageDestination(destination));
+    }
+    return Array.from(merged.values());
+  }
+
+  function resolveMountStorageMode(config: RootsConfig, targetVolumeId: string): MountStorageMode {
+    const normalizedVolumeId = normalizeVolumeKey(targetVolumeId);
+    if (!normalizedVolumeId) {
+      return 'unknown';
+    }
+    const defaultDestinations = config.defaultVolume.destinations.map((destination) =>
+      sanitizeMountStorageDestination(destination)
+    );
+    const effectiveDestinations = effectiveMountStorageDestinations(config, normalizedVolumeId);
+    return mountStorageDestinationsEqual(effectiveDestinations, defaultDestinations) ? 'default' : 'custom';
+  }
 
   type DiscoveryToastState = {
     runKey: string;
@@ -580,16 +659,30 @@
     showSourcesPanel = false;
   }
 
-  function openMountStorageDialog(): void {
-    if (!activeMount && !shareableVolumeId) {
+  function openMountStorageDialog(targetMountId: string | null = activeMountId): void {
+    const targetMount = targetMountId ? mounts.find((mount) => mount.id === targetMountId) ?? null : activeMount;
+    const targetVolumeId = normalizeVolumeKey(
+      targetMount?.id === activeMountId ? shareableVolumeId ?? targetMount?.volumeId ?? null : targetMount?.volumeId ?? null
+    );
+    if (!targetMount || !targetVolumeId) {
       return;
     }
     sourceDiscoveryPanelFocus = null;
+    mountStorageDialogMountId = targetMount.id;
+    if (mountDialogMountId) {
+      mountDialogMountId = null;
+      mountDialogMode = 'secret';
+      resetJoinDialogState();
+    }
+    if (secretPasteTargetMountId === targetMount.id) {
+      secretPasteTargetMountId = null;
+    }
     showMountStorageDialog = true;
   }
 
   function closeMountStorageDialog(): void {
     showMountStorageDialog = false;
+    mountStorageDialogMountId = null;
   }
 
   function stopSourceDiscoveryWatch(): void {
@@ -1503,6 +1596,9 @@
   let showSourcesPanel = $state(false);
   let showVolumeStoragePanel = $state(false);
   let showMountStorageDialog = $state(false);
+  let mountStorageDialogMountId = $state<string | null>(null);
+  let mountDialogStorageMode = $state<MountStorageMode>('unknown');
+  let mountDialogStorageModeLoading = $state(false);
   let showEventFlowPanel = $state(false);
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
@@ -2490,6 +2586,56 @@
   const mountDialogMount = $derived.by(() =>
     mountDialogMountId ? mounts.find((mount) => mount.id === mountDialogMountId) ?? null : null
   );
+  const mountStorageDialogMount = $derived.by(() =>
+    mountStorageDialogMountId ? mounts.find((mount) => mount.id === mountStorageDialogMountId) ?? null : null
+  );
+  const mountDialogRuntime = $derived.by(() =>
+    mountDialogMount ? mountRuntimeById[mountDialogMount.id] ?? null : null
+  );
+  const mountStorageDialogRuntime = $derived.by(() =>
+    mountStorageDialogMount ? mountRuntimeById[mountStorageDialogMount.id] ?? null : null
+  );
+  const mountDialogResolvedVolumeId = $derived.by(() =>
+    normalizeVolumeKey(
+      mountDialogMount?.id === activeMountId
+        ? volumeId ?? mountDialogRuntime?.volumeId ?? mountDialogMount?.volumeId ?? null
+        : mountDialogRuntime?.volumeId ?? mountDialogMount?.volumeId ?? null
+    )
+  );
+  const mountStorageDialogVolumeId = $derived.by(() =>
+    normalizeVolumeKey(
+      mountStorageDialogMount?.id === activeMountId
+        ? shareableVolumeId ?? mountStorageDialogRuntime?.volumeId ?? mountStorageDialogMount?.volumeId ?? null
+        : mountStorageDialogRuntime?.volumeId ?? mountStorageDialogMount?.volumeId ?? null
+    )
+  );
+  const mountDialogResolvedLastRefresh = $derived.by(() =>
+    mountDialogMount?.id === activeMountId
+      ? lastRefresh ?? mountDialogRuntime?.lastRefresh ?? null
+      : mountDialogRuntime?.lastRefresh ?? null
+  );
+  const mountDialogResolvedOffline = $derived.by(() =>
+    mountDialogMount?.id === activeMountId
+      ? isOffline || mountDialogRuntime?.isOffline === true
+      : mountDialogRuntime?.isOffline === true
+  );
+  const mountDialogResolvedError = $derived.by(() =>
+    mountDialogMount?.id === activeMountId
+      ? errorMessage || mountDialogRuntime?.errorMessage || ''
+      : mountDialogRuntime?.errorMessage ?? ''
+  );
+  const mountDialogStorageLabel = $derived.by(() => {
+    if (mountDialogStorageModeLoading && mountDialogResolvedVolumeId) {
+      return 'checking';
+    }
+    if (mountDialogStorageMode === 'custom') {
+      return 'custom';
+    }
+    if (mountDialogStorageMode === 'default') {
+      return 'default';
+    }
+    return 'unavailable';
+  });
   const showFilesWorkspace = $derived.by(() => activeMount?.showFilesPane ?? true);
   const showChatWorkspace = $derived.by(() => activeMount?.showChatPane ?? false);
   const workspaceSplit = $derived.by(() => activeMount?.workspaceSplit ?? 56);
@@ -2522,6 +2668,18 @@
       filePayload: activeMount.secretFilePayload,
       fileMimeType: activeMount.secretFileMimeType,
       fileName: activeMount.secretFileName,
+    };
+  });
+  const mountStorageDialogPresentation = $derived.by<MountedVolumePresentation | null>(() => {
+    if (!mountStorageDialogMount || !mountStorageDialogVolumeId) {
+      return null;
+    }
+    return {
+      volumeId: mountStorageDialogVolumeId,
+      label: mountLabel(mountStorageDialogMount),
+      filePayload: mountStorageDialogMount.secretFilePayload,
+      fileMimeType: mountStorageDialogMount.secretFileMimeType,
+      fileName: mountStorageDialogMount.secretFileName,
     };
   });
   const shareableVolumeId = $derived.by(() => volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null);
@@ -3237,6 +3395,43 @@
       isOffline,
       errorMessage,
     });
+  });
+
+  $effect(() => {
+    const dialogMountId = mountDialogMount?.id ?? null;
+    const targetVolumeId = mountDialogResolvedVolumeId;
+    let cancelled = false;
+
+    mountDialogStorageMode = 'unknown';
+    mountDialogStorageModeLoading = false;
+
+    if (!dialogMountId || !targetVolumeId) {
+      return;
+    }
+
+    mountDialogStorageModeLoading = true;
+    void (async () => {
+      try {
+        const response = await getRootsConfig();
+        if (cancelled) {
+          return;
+        }
+        mountDialogStorageMode = resolveMountStorageMode(response.config, targetVolumeId);
+      } catch {
+        if (cancelled) {
+          return;
+        }
+        mountDialogStorageMode = 'unknown';
+      } finally {
+        if (!cancelled) {
+          mountDialogStorageModeLoading = false;
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   });
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -5694,10 +5889,10 @@
   }
 
   // Copy volumeId to clipboard
-  async function copyVolumeId() {
-    if (!volumeId) return;
+  async function copyVolumeId(targetVolumeId: string | null = volumeId) {
+    if (!targetVolumeId) return;
     try {
-      await navigator.clipboard.writeText(volumeId);
+      await navigator.clipboard.writeText(targetVolumeId);
       copiedVolumeId = true;
       setTimeout(() => {
         copiedVolumeId = false;
@@ -6768,9 +6963,9 @@
       {/if}
       {#if showMountStorageDialog}
         <AppDialog
-          ariaLabel="Storage for current hub"
-          eyebrow="Current hub"
-          title={currentMountedVolumePresentation ? `Storage for ${currentMountedVolumePresentation.label}` : 'Storage for current hub'}
+          ariaLabel="Hub storage"
+          eyebrow="Hub storage"
+          title={mountStorageDialogPresentation ? `Storage for ${mountStorageDialogPresentation.label}` : 'Hub storage'}
           subtitle="Choose which locations this hub can read from and write to."
           width="full"
           closeLabel="Close hub storage"
@@ -6779,8 +6974,8 @@
           {#snippet body()}
             <StoragePanel
               mode="volume"
-              volumeId={shareableVolumeId}
-              currentVolumePresentation={currentMountedVolumePresentation}
+              volumeId={mountStorageDialogVolumeId}
+              currentVolumePresentation={mountStorageDialogPresentation}
               knownVolumes={knownMountedVolumes}
               onOpenVolumeRouting={openMountedVolumeRouting}
               onOpenStorageSetup={() => {
@@ -7423,7 +7618,53 @@
           <div class="mount-dialog-head-meta">
             <p class="mount-dialog-eyebrow">Hub properties</p>
             {#if !isMountEmpty(mountDialogMount)}
-              <p class="mount-dialog-title">Current hub: {mountLabel(mountDialogMount) || 'Unnamed hub'}</p>
+              <p class="mount-dialog-title">{mountLabel(mountDialogMount) || 'Unnamed hub'}</p>
+              {#if mountDialogResolvedVolumeId || mountDialogResolvedLastRefresh || mountDialogStorageLabel || (mountDialogMount.id === activeMountId && isHistoryMode) || mountDialogResolvedOffline}
+                <div class="mount-dialog-info-row" aria-label="Hub details">
+                  {#if mountDialogResolvedVolumeId}
+                    <div class="mount-dialog-info-item">
+                      <span class="mount-dialog-info-label">Hub ID</span>
+                      <button
+                        class="volume-id-btn"
+                        onclick={() => void copyVolumeId(mountDialogResolvedVolumeId)}
+                        title="Copy hub ID"
+                      >
+                        {mountDialogResolvedVolumeId.slice(0, 16)}...
+                        {#if copiedVolumeId}
+                          <span class="copied-indicator">Copied</span>
+                        {/if}
+                      </button>
+                    </div>
+                  {/if}
+                  <div class="mount-dialog-info-item mount-dialog-info-item-storage">
+                    <span class="mount-dialog-info-label">Storage</span>
+                    <span class="mount-dialog-info-value mount-dialog-info-value-storage">{mountDialogStorageLabel}</span>
+                    <button
+                      type="button"
+                      class="mount-dialog-inline-action"
+                      onclick={() => openMountStorageDialog(mountDialogMount.id)}
+                      disabled={!mountDialogResolvedVolumeId}
+                    >
+                      <span>Change</span>
+                    </button>
+                  </div>
+                  {#if mountDialogResolvedLastRefresh}
+                    <div class="mount-dialog-info-item mount-dialog-info-item-refresh">
+                      <span class="mount-dialog-info-label">Updated</span>
+                      <span class="mount-dialog-info-value mount-dialog-info-value-refresh">{formatDate(mountDialogResolvedLastRefresh)}</span>
+                    </div>
+                  {/if}
+                  {#if mountDialogMount.id === activeMountId && isHistoryMode}
+                    <span class="mount-dialog-info-pill">History mode</span>
+                  {/if}
+                  {#if mountDialogResolvedOffline}
+                    <span class="mount-dialog-info-pill">Offline</span>
+                  {/if}
+                </div>
+              {/if}
+              {#if mountDialogResolvedError}
+                <p class="mount-dialog-inline-message">{mountDialogResolvedError}</p>
+              {/if}
             {/if}
             {#if isMountEmpty(mountDialogMount)}
               <div class="mount-dialog-mode-switch" role="tablist" aria-label="Create hub mode">
@@ -7549,47 +7790,6 @@
               </div>
             </section>
           {:else}
-          {#if mountDialogMount.id === activeMountId && (volumeId || errorMessage || isOffline)}
-            <section class="mount-dialog-section mount-dialog-status-section">
-              <div class="mount-dialog-status-grid">
-                {#if volumeId}
-                  <div class="status-item mount-dialog-status-item">
-                    <span class="status-label">Hub ID</span>
-                    <button class="volume-id-btn" onclick={copyVolumeId} title="Copy hub ID">
-                      {volumeId.slice(0, 16)}...
-                      {#if copiedVolumeId}
-                        <span class="copied-indicator">✓ Copied</span>
-                      {/if}
-                    </button>
-                  </div>
-                {/if}
-                {#if lastRefresh}
-                  <div class="status-item mount-dialog-status-item">
-                    <span class="status-label">Last refresh</span>
-                    <span class="status-value">{formatDate(lastRefresh)}</span>
-                  </div>
-                {/if}
-
-                {#if isHistoryMode}
-                  <div class="status-item mount-dialog-status-item history-indicator">
-                    <span>History mode (read-only)</span>
-                  </div>
-                {/if}
-                {#if isOffline}
-                  <div class="status-item mount-dialog-status-item offline-indicator">
-                    <span>Offline (cached)</span>
-                  </div>
-                {/if}
-                {#if errorMessage}
-                  <div class="status-item mount-dialog-status-item error-indicator mount-dialog-status-error">
-                    <span>{errorMessage}</span>
-                  </div>
-                {/if}
-              </div>
-
-            </section>
-          {/if}
-
           {@const secretHash = hasFileSecret(mountDialogMount) ? secretFileHashForMount(mountDialogMount) : null}
           <section class="mount-dialog-section">
             <div class="secret-input-wrapper mount-dialog-inputs">
@@ -7628,28 +7828,20 @@
             </div>
           </section>
 
-          <section class="mount-dialog-section">
-            <div class="mount-dialog-actions">
-              <ArmedActionButton
-                class="panel-action-btn danger"
-                text="Remove"
-                icon={Trash2}
-                armed={true}
-                armDelayMs={0}
-                autoDisarmMs={3000}
-                resetKey={mountDialogMount.id}
-                onPress={() => removeMount(mountDialogMount.id)}
-                title="Remove hub"
-                ariaLabel="Remove hub"
-              />
-              <HubStorageButton
-                active={showMountStorageDialog}
-                badge="Current hub"
-                label="Storage"
-                onclick={() => {
-                  openMountStorageDialog();
-                }}
-              />
+          <div class="mount-dialog-footer">
+            <ArmedActionButton
+              class="panel-action-btn danger"
+              text="Detach"
+              icon={Trash2}
+              armed={true}
+              armDelayMs={0}
+              autoDisarmMs={3000}
+              resetKey={mountDialogMount.id}
+              onPress={() => removeMount(mountDialogMount.id)}
+              title="Detach hub"
+              ariaLabel="Detach hub"
+            />
+            <div class="mount-dialog-footer-actions">
               <button
                 type="button"
                 class="workspace-toggle"
@@ -7658,7 +7850,7 @@
                 <span>Done</span>
               </button>
             </div>
-          </section>
+          </div>
           {/if}
         </div>
       </div>
@@ -9728,21 +9920,24 @@
   }
 
   .volume-id-btn {
-    background: var(--nb-btn-bg, rgba(12, 24, 43, 0.82));
-    border: 1px solid var(--nb-btn-border, rgba(56, 189, 248, 0.24));
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.12));
     border-radius: 999px;
-    padding: 0.32rem 0.82rem;
+    padding: 0.22rem 0.62rem;
     font-family: 'Monaco', 'Menlo', monospace;
-    font-size: 0.8125rem;
-    color: var(--nb-accent, rgba(125, 211, 252, 0.96));
+    font-size: 0.75rem;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.8));
     cursor: pointer;
-    transition: background-color 0.18s ease, border-color 0.18s ease;
-    position: relative;
+    transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
   }
 
   .volume-id-btn:hover {
-    background: var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.96));
-    border-color: var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.92));
+    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%);
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
   }
 
   .mount-dialog-status-section {
@@ -9776,9 +9971,102 @@
   }
 
   .copied-indicator {
-    margin-left: 0.5rem;
+    margin-left: 0.2rem;
     color: var(--nb-success, #4ade80);
-    font-size: 0.75rem;
+    font-size: 0.7rem;
+  }
+
+  .mount-dialog-info-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem 0.82rem;
+  }
+
+  .mount-dialog-info-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .mount-dialog-info-item-refresh {
+    gap: 0.26rem;
+    opacity: 0.82;
+  }
+
+  .mount-dialog-info-item-storage {
+    gap: 0.38rem;
+  }
+
+  .mount-dialog-info-label {
+    font-size: 0.67rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.68));
+  }
+
+  .mount-dialog-info-value {
+    font-size: 0.78rem;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.8));
+  }
+
+  .mount-dialog-info-value-storage {
+    font-size: 0.74rem;
+    font-weight: 600;
+    text-transform: lowercase;
+  }
+
+  .mount-dialog-info-value-refresh {
+    font-size: 0.6rem;
+    line-height: 1.2;
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.72));
+  }
+
+  .mount-dialog-inline-action {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 68%, var(--nb-text-soft, rgba(70, 70, 73, 0.8)) 32%);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.14em;
+  }
+
+  .mount-dialog-inline-action:hover:not(:disabled) {
+    color: var(--nb-accent-strong, #b85f39);
+  }
+
+  .mount-dialog-inline-action:disabled {
+    cursor: default;
+    opacity: 0.45;
+    text-decoration: none;
+  }
+
+  .mount-dialog-info-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 26px;
+    padding: 0 0.62rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  .mount-dialog-inline-message {
+    margin: 0;
+    font-size: 0.79rem;
+    line-height: 1.5;
+    color: color-mix(in srgb, var(--nb-danger, #dc2626) 54%, var(--nb-text-soft, rgba(70, 70, 73, 0.82)) 46%);
   }
 
   .status-link-actions {
@@ -11172,11 +11460,27 @@
   }
 
   .mount-dialog-actions > .workspace-toggle,
-  .mount-dialog-actions :global(.hub-storage-button),
   .mount-dialog-actions :global(.panel-action-btn) {
     width: 100%;
     min-width: 0;
     max-width: none;
+  }
+
+  .mount-dialog-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+  }
+
+  .mount-dialog-footer-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.65rem;
+    margin-left: auto;
   }
 
   .share-dialog-section-title {
