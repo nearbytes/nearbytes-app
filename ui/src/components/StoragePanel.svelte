@@ -5553,7 +5553,7 @@
         <p class="panel-success">{successMessage}</p>
       {/if}
 
-      {#if selectedGlobalProvider === 'local'}
+      {#if selectedGlobalView === 'local'}
       <section class="panel-section">
         <div class="section-head compact global-panel-head global-panel-head-actions">
           <div class="button-row compact-panel-actions">
@@ -5631,6 +5631,64 @@
         {/if}
       </section>
 
+      {:else if selectedGlobalView === 'incoming'}
+        {@const incomingProviders = providerCatalog.filter((entry) => {
+          if (!entry.isConnected || !providerShowsIncomingShareSection(entry.provider)) {
+            return false;
+          }
+          const hasReceivedShares = providerReceivedVisibleShares(entry.provider).length > 0;
+          const hasIncomingReviewState =
+            incomingProviderInvitesForProvider(entry.provider).length > 0
+            || incomingManagedSharesForProvider(entry.provider).length > 0
+            || dismissedIncomingManagedShareCount(entry.provider) > 0
+            || incomingLoading
+            || Boolean(incomingLoadError);
+          return hasReceivedShares || hasIncomingReviewState;
+        })}
+        <section class="panel-section">
+          {#if incomingProviders.length === 0}
+            <article class="rule-card">
+              <p class="card-copy">No incoming items right now.</p>
+            </article>
+          {:else}
+            <div class="section-stack">
+              {#each incomingProviders as incomingProvider (incomingProvider.provider)}
+                {@const receivedShares = providerReceivedVisibleShares(incomingProvider.provider)}
+                {@const hasIncomingReviewState =
+                  incomingProviderInvitesForProvider(incomingProvider.provider).length > 0
+                  || incomingManagedSharesForProvider(incomingProvider.provider).length > 0
+                  || dismissedIncomingManagedShareCount(incomingProvider.provider) > 0
+                  || incomingLoading
+                  || Boolean(incomingLoadError)}
+                <div class="section-stack section-stack-secondary provider-incoming-hub-wrap">
+                  <div class="section-copy-stack">
+                    <p class="subheading">{incomingProvider.label}</p>
+                    <p class="managed-share-invite-copy">Only locations and invites coming from other people appear here.</p>
+                  </div>
+
+                  {#if receivedShares.length > 0}
+                    <div class="compact-share-grid" class:mega-share-grid={incomingProvider.provider === 'mega'}>
+                      {#each receivedShares as summary (summary.share.id)}
+                        {@render managedShareCard(summary)}
+                      {/each}
+                    </div>
+                  {/if}
+
+                  {#if hasIncomingReviewState}
+                    {@render incomingFromOthersSection(
+                      incomingProvider.provider,
+                      receivedShares.length > 0
+                        ? 'Still to review'
+                        : incomingProvider.provider === 'mega'
+                          ? 'Incoming locations'
+                          : 'Shared with you'
+                    )}
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
       {:else}
         {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
         {#if provider}
