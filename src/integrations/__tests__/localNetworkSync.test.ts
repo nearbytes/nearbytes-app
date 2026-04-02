@@ -58,6 +58,40 @@ describe('LocalNetworkSyncService', () => {
     await shutdownLan(restartedLocalLan);
     await shutdownLan(remote.lanService);
   });
+
+  it('does not fail the peer when inventory recovery references an event the remote can no longer serve', async () => {
+    const secret = 'test:secret:lan-missing-event';
+    const remote = await createLanHarness('nearbytes-lan-remote-missing-', secret, 'peer-b', 3201);
+    const local = await createLanHarness('nearbytes-lan-local-missing-', secret, 'peer-a', 3202);
+
+    await remote.fileService.addFile(secret, 'stable.txt', Buffer.from('alpha'), 'text/plain');
+    installLanFetchStub(
+      {
+        [remote.baseUrl]: remote.lanService,
+      },
+      {
+        missingEventFetches: new Set(['ghost']),
+      }
+    );
+
+    const hello = await remote.lanService.buildHello();
+    addPeer(local.lanService, hello, remote.baseUrl);
+    const originalInventory = remote.lanService.getVolumeInventory.bind(remote.lanService);
+    vi.spyOn(remote.lanService, 'getVolumeInventory').mockImplementation(async (volumeId) => {
+      const inventory = await originalInventory(volumeId);
+      return {
+        ...inventory,
+        eventHashes: [...inventory.eventHashes, 'ghost'],
+      };
+    });
+
+    const peer = await local.lanService.syncPeer(hello.peerId);
+    expect(peer?.lastSyncError).toBeNull();
+    expect((await local.fileService.listFiles(secret)).map((entry) => entry.filename)).toContain('stable.txt');
+
+    await shutdownLan(local.lanService);
+    await shutdownLan(remote.lanService);
+  });
 });
 
 async function createLanHarness(prefix: string, secretValue: string, peerId: string, httpPort: number): Promise<{
@@ -146,7 +180,12 @@ function addPeer(service: LocalNetworkSyncService, hello: Awaited<ReturnType<Loc
   });
 }
 
-function installLanFetchStub(services: Record<string, LocalNetworkSyncService>): void {
+function installLanFetchStub(
+  services: Record<string, LocalNetworkSyncService>,
+  options: {
+    readonly missingEventFetches?: ReadonlySet<string>;
+  } = {}
+): void {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL | Request) => {
@@ -176,7 +215,11 @@ function installLanFetchStub(services: Record<string, LocalNetworkSyncService>):
 
       const eventMatch = /^\/lan\/volumes\/([^/]+)\/events\/([^/]+)$/u.exec(url.pathname);
       if (eventMatch?.[1] && eventMatch[2]) {
-        const bytes = await service.readEventBytes(decodeURIComponent(eventMatch[1]), decodeURIComponent(eventMatch[2]));
+        const eventHash = decodeURIComponent(eventMatch[2]);
+        if (options.missingEventFetches?.has(eventHash)) {
+          return new Response('missing event', { status: 404 });
+        }
+        const bytes = await service.readEventBytes(decodeURIComponent(eventMatch[1]), eventHash);
         return bytesResponse(bytes);
       }
 

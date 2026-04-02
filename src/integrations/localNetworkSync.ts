@@ -501,9 +501,12 @@ export class LocalNetworkSyncService {
     let importedBlocks = 0;
 
     for (const eventHash of missingEvents) {
-      const bytes = await this.fetchBytes(
+      const bytes = await this.fetchBytesOrNull(
         `${peer.endpointUrl}/lan/volumes/${encodeURIComponent(volumeId)}/events/${encodeURIComponent(eventHash)}`
       );
+      if (!bytes) {
+        continue;
+      }
       const validation = await validateEventBytes(volumeId, eventHash, bytes);
       if (!validation.ok) {
         throw new Error(validation.detail ?? `Invalid event ${eventHash} from ${peer.label}`);
@@ -513,7 +516,10 @@ export class LocalNetworkSyncService {
     }
 
     for (const blockHash of missingBlocks) {
-      const bytes = await this.fetchBytes(`${peer.endpointUrl}/lan/blocks/${encodeURIComponent(blockHash)}`);
+      const bytes = await this.fetchBytesOrNull(`${peer.endpointUrl}/lan/blocks/${encodeURIComponent(blockHash)}`);
+      if (!bytes) {
+        continue;
+      }
       const validation = await validateBlockBytes(blockHash, bytes);
       if (!validation.ok) {
         throw new Error(validation.detail ?? `Invalid block ${blockHash} from ${peer.label}`);
@@ -609,6 +615,17 @@ export class LocalNetworkSyncService {
 
   private async fetchBytes(url: string): Promise<Uint8Array> {
     const response = await this.fetchWithTimeout(url);
+    if (!response.ok) {
+      throw new Error(`LAN request failed (${response.status}) for ${url}`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  private async fetchBytesOrNull(url: string): Promise<Uint8Array | null> {
+    const response = await this.fetchWithTimeout(url);
+    if (response.status === 404) {
+      return null;
+    }
     if (!response.ok) {
       throw new Error(`LAN request failed (${response.status}) for ${url}`);
     }
