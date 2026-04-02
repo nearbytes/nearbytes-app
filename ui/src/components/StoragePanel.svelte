@@ -602,10 +602,7 @@
     if (!parent) {
       return leaf;
     }
-    if (GENERIC_FOLDER_NAMES.has(leaf.toLowerCase()) || leaf.length <= 3) {
-      return `${parent}/${leaf}`;
-    }
-    return leaf;
+    return `${parent} / ${leaf}`;
   }
 
   function sourceLocationPath(path: string): string {
@@ -1403,8 +1400,8 @@
       return entry.isConnected
         ? megaProviderReconnectIssue()
           ? 'Nearbytes can see the MEGA account, but MEGA requires account recovery before incoming-share mirroring can resume.'
-          : 'Use MEGA as a Nearbytes publication channel: your own account stays writable, while incoming shares are refreshed here as local read-only inputs.'
-        : 'Use MEGA for Nearbytes publication and incoming-share reads.';
+          : 'Use MEGA for two kinds of locations: the ones you manage in your own account, and read-only local copies of locations other people shared with you.'
+        : 'Use MEGA for locations you manage yourself and locations shared into your account.';
     }
     return entry.setup.detail || entry.description;
   }
@@ -1788,8 +1785,8 @@
       const incomingCount = megaRecipientShares().length;
       const pendingCount = megaPendingIncomingCount();
       const parts = [
-        countLabel(publishCount, 'publish root'),
-        countLabel(incomingCount, 'shared folder', 'shared folders'),
+        countLabel(publishCount, 'managed location'),
+        countLabel(incomingCount, 'incoming location'),
       ];
       if (pendingCount > 0) {
         parts.push(`${countLabel(pendingCount, 'item')} checking`);
@@ -2043,15 +2040,15 @@
     const working = shares.filter((s) => s.state.status === 'syncing' || s.state.status === 'idle').length;
     const blocked = shares.filter((s) => s.state.status === 'attention' || s.state.status === 'needs-auth').length;
     if (blocked > 0) {
-      return `${countLabel(blocked, 'shared folder', 'shared folders')} need attention`;
+      return `${countLabel(blocked, 'location')} need attention`;
     }
     if (ready === total) {
-      return `All ${countLabel(total, 'shared folder', 'shared folders')} ready`;
+      return `All ${countLabel(total, 'location')} ready`;
     }
     if (working > 0 && ready < total) {
-      return `${countLabel(working, 'shared folder', 'shared folders')} still being checked`;
+      return `${countLabel(working, 'location')} still being checked`;
     }
-    return `${countLabel(ready, 'shared folder', 'shared folders')} ready`;
+    return `${countLabel(ready, 'location')} ready`;
   }
 
   function megaRuntimeReconnectLine(detail: string): string | null {
@@ -2589,10 +2586,10 @@
     if (checking > 0 && !inProgress && ready < total) {
       return {
         ...base,
-        headline: 'Checking MEGA shared folders',
+        headline: 'Checking MEGA locations',
         detail:
           total > 0
-            ? `Nearbytes is verifying ${countLabel(total, 'shared folder', 'shared folders')}. Progress for each folder is listed below.`
+            ? `Nearbytes is verifying ${countLabel(total, 'location')}. Status for each location is listed below.`
             : 'Nearbytes is verifying the connected MEGA account in the background.',
         tone: 'muted' as const,
         syncing: false,
@@ -2609,10 +2606,10 @@
         ...base,
         headline: preparing > 0 ? 'Preparing MEGA locations' : 'Syncing with MEGA',
         detail: loading
-          ? 'Loading account, mirrors, and shared locations. Each folder shows its own step below.'
+          ? 'Loading the connected account and visible locations. Each location shows its own step below.'
           : preparing > 0
-            ? 'Nearbytes is creating or validating the local mirror. Watch the folder row below for the exact step.'
-            : 'Pulling updates from MEGA. Folder-level status is below.',
+            ? 'Nearbytes is creating or validating the local mirror. Watch the location row below for the exact step.'
+            : 'Pulling updates from MEGA. Per-location status is below.',
         tone: 'muted' as const,
         syncing: true,
         progressPercent,
@@ -2626,7 +2623,7 @@
     if (total > 0) {
       return {
         ...base,
-        headline: `${countLabel(total, 'shared folder', 'shared folders')} ready`,
+        headline: `${countLabel(total, 'location')} ready`,
         detail: 'All visible MEGA locations are healthy.',
         tone: 'good' as const,
         syncing: false,
@@ -2939,6 +2936,11 @@
     const attachments = sourceAttachmentLabels(source.id);
     const repairSummary = sourceRepairSummary(source.id);
     const repairReport = sourceRepairReport(source.id);
+    const effectiveReserve = Number.isFinite(defaultDestination?.reservePercent)
+      ? defaultDestination!.reservePercent
+      : Number.isFinite(source.reservePercent)
+        ? source.reservePercent
+        : DEFAULT_RESERVE_PERCENT;
     const measurement = storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes);
     return {
       provider: sourceLocationKindLabel(source.provider),
@@ -2952,11 +2954,7 @@
       ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
-      reservePercent: Number.isFinite(defaultDestination?.reservePercent)
-        ? defaultDestination!.reservePercent
-        : Number.isFinite(source.reservePercent)
-          ? source.reservePercent
-          : DEFAULT_RESERVE_PERCENT,
+      reservePercent: effectiveReserve,
       reserveKey: `source:${source.id}`,
       warning: status?.lastWriteFailure?.message,
       repairSummary: repairSummary ?? undefined,
@@ -2991,6 +2989,11 @@
     const defaultDestination = destinationFor(null, source.id);
     const repairSummary = sourceRepairSummary(source.id);
     const repairReport = sourceRepairReport(source.id);
+    const effectiveReserve = Number.isFinite(defaultDestination?.reservePercent)
+      ? defaultDestination!.reservePercent
+      : Number.isFinite(source.reservePercent)
+        ? source.reservePercent
+        : DEFAULT_RESERVE_PERCENT;
     const measurement = storageMeasurementSummary(
       summary.storage?.usageTotalBytes,
       summary.storage?.availableBytes ?? summary.storage?.remoteAvailableBytes
@@ -3011,11 +3014,7 @@
       writableTitle: summary.storage?.writable === false
         ? 'This shared location is read-only here. Nearbytes refreshes it from the provider but does not upload changes from this folder.'
         : undefined,
-      reservePercent: Number.isFinite(defaultDestination?.reservePercent)
-        ? defaultDestination!.reservePercent
-        : Number.isFinite(source.reservePercent)
-          ? source.reservePercent
-          : DEFAULT_RESERVE_PERCENT,
+      reservePercent: effectiveReserve,
       reserveKey: `managed:${summary.share.id}`,
       warning: summary.storage?.lastWriteFailureMessage,
       repairSummary: repairSummary ?? undefined,
@@ -4926,22 +4925,20 @@
     {#snippet unifiedShareCard(view: UnifiedShareView)}
       <div class="compact-share-item">
         <ShareCard
-          provider={view.provider}
           title={view.title}
-          pathLabel={view.pathLabel}
           copy={view.active && !view.warning && !view.repairSummary ? '' : view.copy}
           active={view.active}
           compact={true}
           statusBadges={view.statusBadges}
           meta={view.meta}
-          reservePercent={view.reservePercent}
-          onReserveClick={() => toggleReserveEditor(view.reserveKey)}
-          onPathClick={view.onOpen}
-          onChangeLocation={view.onMove}
-          changeDisabled={view.moveDisabled}
-          changeLabel={view.moveLabel === 'Moving...' ? 'Moving...' : 'Change'}
         >
         {#snippet metaActions()}
+          <button
+            type="button"
+            class="meta-reserve-btn"
+            title="Change free-space buffer"
+            onclick={() => toggleReserveEditor(view.reserveKey)}
+          >{formatPercent(view.reservePercent)} reserved</button>
           {#if activeReserveEditorKey === view.reserveKey}
             <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
               <span>Free-space buffer</span>
@@ -4967,7 +4964,6 @@
               icon={BookOpen}
               label="Read"
               active={view.readable}
-              layout="stacked"
               title="Allow this location to serve this app"
               onclick={view.onToggleReadable}
             />
@@ -4975,7 +4971,6 @@
               icon={SquarePen}
               label="Write"
               active={view.writable}
-              layout="stacked"
               onclick={view.onToggleWritable}
               disabled={view.writableDisabled}
               title={view.writableTitle ?? 'Allow writes here'}
@@ -4984,17 +4979,13 @@
         {/snippet}
         {#snippet actions()}
           {#if view.onRemove && view.canRemove}
-            <ArmedActionButton
+            <button
+              type="button"
               class="panel-btn subtle compact icon-btn armed-icon-danger"
-              icon={Trash2}
-              text=""
-              armed={true}
-              autoDisarmMs={3000}
               title="Remove location"
-              ariaLabel="Remove location"
-              resetKey={view.removeResetKey}
-              onPress={view.onRemove}
-            />
+              aria-label="Remove location"
+              onclick={() => { if (confirm('Remove this location from nearbytes?')) view.onRemove?.(); }}
+            ><Trash2 size={14} strokeWidth={2} /></button>
           {/if}
         {/snippet}
         {#snippet footer()}
@@ -5051,18 +5042,19 @@
       {#if view}
         <div class="compact-share-item" data-managed-share-id={summary.share.id}>
           <ShareCard
-            provider={view.provider}
             title={view.title}
-            pathLabel={view.pathLabel}
             active={view.active}
             compact={true}
             statusBadges={view.statusBadges}
             meta={view.meta}
-            reservePercent={view.reservePercent}
-            onReserveClick={() => toggleReserveEditor(view.reserveKey)}
-            onPathClick={view.onOpen}
           >
           {#snippet metaActions()}
+            <button
+              type="button"
+              class="meta-reserve-btn"
+              title="Change free-space buffer"
+              onclick={() => toggleReserveEditor(view.reserveKey)}
+            >{formatPercent(view.reservePercent)} reserved</button>
             {#if activeReserveEditorKey === view.reserveKey}
               <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
                 <span>Free-space buffer</span>
@@ -5088,7 +5080,6 @@
                 icon={BookOpen}
                 label="Read"
                 active={view.readable}
-                layout="stacked"
                 title="Allow this location to serve this app"
                 onclick={view.onToggleReadable}
               />
@@ -5096,7 +5087,6 @@
                 icon={SquarePen}
                 label="Write"
                 active={view.writable}
-                layout="stacked"
                 onclick={view.onToggleWritable}
                 disabled={view.writableDisabled}
                 title={view.writableTitle ?? 'Allow writes here'}
@@ -5156,17 +5146,13 @@
           {/snippet}
           {#snippet actions()}
             {#if view.onRemove && view.canRemove}
-              <ArmedActionButton
+              <button
+                type="button"
                 class="panel-btn subtle compact icon-btn armed-icon-danger"
-                icon={Trash2}
-                text=""
-                armed={true}
-                autoDisarmMs={3000}
                 title="Remove location"
-                ariaLabel="Remove location"
-                resetKey={view.removeResetKey}
-                onPress={view.onRemove}
-              />
+                aria-label="Remove location"
+                onclick={() => { if (confirm('Remove this location from nearbytes?')) view.onRemove?.(); }}
+              ><Trash2 size={14} strokeWidth={2} /></button>
             {/if}
           {/snippet}
           {#snippet footer()}
@@ -5222,7 +5208,6 @@
     {#snippet incomingContactInviteCard(invite: IncomingProviderContactInvite)}
       <div class="compact-share-item">
         <ShareCard
-          provider={providerLabelForIncoming(invite.provider)}
           title={invite.label}
           compact={true}
           statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
@@ -5244,7 +5229,6 @@
     {#snippet incomingManagedShareCard(offer: IncomingManagedShareOffer)}
       <div class="compact-share-item">
         <ShareCard
-          provider={providerLabelForIncoming(offer.provider)}
           title={incomingManagedShareTitle(offer)}
           compact={true}
           statusBadges={[incomingShareStatusBadge(offer)]}
@@ -5661,7 +5645,7 @@
                     </div>
                     <div class="mega-command-badges">
                       <span class={`status-pill tone-${megaStatus.tone === 'good' ? 'good' : megaStatus.tone === 'warn' ? 'warn' : 'muted'}`}>
-                        {megaStatus.tone === 'good' ? 'Auto-managing' : megaStatus.tone === 'warn' ? 'Needs attention' : 'Working'}
+                        {megaStatus.tone === 'good' ? 'Healthy' : megaStatus.tone === 'warn' ? 'Needs attention' : 'Syncing'}
                       </span>
                       {#if megaStatus.progressLabel && !megaStatus.showProgressBar}
                         <span class="status-pill tone-muted">{megaStatus.progressLabel}</span>
@@ -5671,22 +5655,35 @@
 
                   <div class="mega-summary-strip">
                     <button type="button" class="mega-summary-chip" bind:this={megaAccountSection} onclick={() => openProviderConnectionDialog(provider.provider)}>
-                      <span class="subheading">Account</span>
+                      <span class="subheading">Connected account</span>
                       <strong>{megaAccount?.email ?? 'Sign in required'}</strong>
-                      {#if megaReconnectIssue || megaFlow}<span class="mega-summary-note">{megaReconnectIssue ? 'Recovery required' : megaFlow?.title ?? 'Manage account'}</span>{/if}
+                      <span class="mega-summary-note">
+                        {megaReconnectIssue
+                          ? 'Recovery required before incoming sync resumes'
+                          : megaFlow?.title ?? 'Open sign-in and session details'}
+                      </span>
                     </button>
 
                     <button type="button" class="mega-summary-chip" bind:this={megaPublishingSection} onclick={() => void focusMegaArea('publishing')}>
                       <span class="subheading">Your locations</span>
                       <strong>{countLabel(megaOwnerLocations.length, 'location')}</strong>
+                      <span class="mega-summary-note">
+                        {megaOwnerLocations.length > 0
+                          ? 'Locations you control in this MEGA account'
+                          : 'No writable locations in this account yet'}
+                      </span>
                     </button>
 
                     <button type="button" class="mega-summary-chip" bind:this={megaIncomingSection} onclick={() => void focusMegaArea('incoming')}>
-                      <span class="subheading">Shared with you</span>
+                      <span class="subheading">Incoming locations</span>
                       <strong>{countLabel(megaIncomingLocations.length, 'location')}</strong>
-                      {#if megaPendingCount > 0}
-                        <span class="mega-summary-note">{countLabel(megaPendingCount, 'waiting item')}</span>
-                      {/if}
+                      <span class="mega-summary-note">
+                        {megaPendingCount > 0
+                          ? `${countLabel(megaPendingCount, 'waiting item')} still being checked`
+                          : megaIncomingLocations.length > 0
+                            ? 'Read-only local copies of locations shared to you'
+                            : 'No incoming locations visible yet'}
+                      </span>
                     </button>
                   </div>
 
@@ -5722,7 +5719,7 @@
                     {/if}
                     {#if megaStatus.locationSteps.length > 0}
                       <div class="mega-location-activity">
-                        <p class="subheading">Locations</p>
+                        <p class="subheading">Visible locations</p>
                         <ul class="mega-location-activity-list">
                           {#each megaStatus.locationSteps as step (step.shareId)}
                             <li class="mega-location-activity-item" data-tone={step.tone}>
@@ -6110,11 +6107,10 @@
                 <p class="managed-share-invite-copy">Locations you manage in {provider.label} stay here.</p>
               </div>
 
-              <div class="compact-share-grid">
+              <div class="compact-share-grid" class:mega-share-grid={provider.provider === 'mega'}>
                 {#if ownedShares.length === 0}
                   <div class="compact-share-item">
                     <ShareCard
-                      provider={provider.label}
                       title="No locations from this account yet"
                       copy={providerEmptyShareCopy(provider)}
                       statusBadges={[]}
@@ -6132,12 +6128,12 @@
             {#if receivedShares.length > 0 || hasIncomingReviewState}
               <div class="section-stack section-stack-secondary">
                 <div class="section-copy-stack">
-                  <p class="subheading">Shared with you</p>
+                  <p class="subheading">{provider.provider === 'mega' ? 'Incoming locations' : 'Shared with you'}</p>
                   <p class="managed-share-invite-copy">Locations someone else shared into this account stay separate from the ones you manage yourself.</p>
                 </div>
 
                 {#if receivedShares.length > 0}
-                  <div class="compact-share-grid">
+                  <div class="compact-share-grid" class:mega-share-grid={provider.provider === 'mega'}>
                     {#each receivedShares as summary (summary.share.id)}
                       {@render managedShareCard(summary)}
                     {/each}
@@ -6145,7 +6141,7 @@
                 {/if}
 
                 {#if hasIncomingReviewState}
-                  {@render incomingFromOthersSection(provider.provider, receivedShares.length > 0 ? 'Still to review' : 'Shared with you')}
+                  {@render incomingFromOthersSection(provider.provider, receivedShares.length > 0 ? 'Still to review' : provider.provider === 'mega' ? 'Incoming locations' : 'Shared with you')}
                 {/if}
               </div>
             {/if}
@@ -6649,7 +6645,7 @@
   .provider-choice-head {
     display: flex;
     gap: 0.55rem;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
   }
@@ -7318,9 +7314,9 @@
   }
 
   .compact-toggle-row {
-    grid-template-columns: repeat(2, minmax(0, auto));
-    justify-content: start;
-    gap: 0.52rem;
+    display: flex;
+    gap: 0.4rem;
+    justify-content: flex-start;
   }
 
   .setting-list-preface {
@@ -7384,6 +7380,13 @@
     gap: 0.5rem 1rem;
   }
 
+  .share-volume-row {
+    margin-top: 0.48rem;
+    justify-content: flex-start;
+    align-items: flex-start;
+    gap: 0.45rem;
+  }
+
   .card-inline-warning {
     display: flex;
     flex-wrap: wrap;
@@ -7431,6 +7434,21 @@
     background: color-mix(in srgb, var(--nb-accent, #7c6f64) 4%, var(--nb-panel-bg, #ffffff));
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
     transform: translateY(-1px);
+  }
+
+  .meta-reserve-btn {
+    all: unset;
+    cursor: pointer;
+    color: var(--text-soft);
+    font-size: 0.75rem;
+    opacity: 0.85;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+  }
+  .meta-reserve-btn:hover {
+    opacity: 1;
+    color: var(--accent);
   }
 
   .inline-reserve-editor {
@@ -7588,16 +7606,14 @@
   }
 
   .mega-command-deck {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    align-items: flex-start;
+    display: grid;
+    gap: 1rem;
   }
 
   .mega-command-card {
-    flex: 0 1 440px;
-    width: min(100%, 440px);
-    gap: 0.8rem;
+    width: 100%;
+    max-width: 720px;
+    gap: 1rem;
     border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background:
       linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(249, 244, 240, 0.94)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(247, 239, 233, 0.94))),
@@ -7612,11 +7628,8 @@
   }
 
   .mega-command-head {
-    display: flex;
-    gap: 0.75rem;
-    justify-content: space-between;
-    align-items: flex-start;
-    flex-wrap: wrap;
+    display: grid;
+    gap: 0.6rem;
   }
 
   .mega-command-title {
@@ -7631,20 +7644,20 @@
     display: flex;
     gap: 0.45rem;
     flex-wrap: wrap;
-    justify-content: flex-end;
+    justify-content: flex-start;
   }
 
   .mega-summary-strip {
     display: grid;
-    gap: 0.58rem;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.72rem;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .mega-summary-chip {
     display: grid;
-    gap: 0.2rem;
+    gap: 0.3rem;
     min-width: 0;
-    padding: 0.68rem 0.74rem;
+    padding: 0.92rem 0.96rem;
     border-radius: 14px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(251, 247, 244, 0.9));
@@ -7666,7 +7679,7 @@
 
   .mega-summary-chip strong {
     color: var(--text-main);
-    font-size: 0.92rem;
+    font-size: 1rem;
     line-height: 1.28;
     font-weight: 700;
     overflow-wrap: anywhere;
@@ -7674,8 +7687,20 @@
 
   .mega-summary-note {
     color: var(--text-soft);
-    font-size: 0.74rem;
+    font-size: 0.77rem;
     line-height: 1.35;
+  }
+
+  .mega-share-grid {
+    display: grid;
+    gap: 0.9rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mega-share-grid > .compact-share-item {
+    width: 100%;
+    max-width: 560px;
+    flex-basis: 560px;
   }
 
   .mega-command-metrics,

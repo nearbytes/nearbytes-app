@@ -114,14 +114,12 @@
   }
 
   .icon-toggle.layout-stacked {
-    min-width: 64px;
-    min-height: 56px;
-    padding: 0.5rem 0.6rem;
-    border-radius: 14px;
+    min-width: 52px;
+    min-height: 44px;
+    padding: 0.35rem 0.6rem;
+    border-radius: 10px;
     flex-direction: column;
-    gap: 0.22rem;
-    border: 1.5px solid var(--nb-border, rgba(60, 60, 67, 0.1));
-    background: var(--nb-panel-bg, #ffffff);
+    gap: 0.15rem;
   }
 
   .icon-toggle:hover:not(:disabled) {
@@ -139,22 +137,16 @@
 
   .icon-toggle.layout-stacked.active {
     border-color: var(--nb-accent, #7c6f64);
-    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 10%, var(--nb-panel-bg, #ffffff));
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 8%, var(--nb-panel-bg, #ffffff));
     color: var(--nb-accent-strong, #5d524a);
-    box-shadow:
-      0 0 0 2px color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, transparent),
-      0 2px 6px rgba(0, 0, 0, 0.08);
   }
 
   .icon-toggle.layout-stacked:hover:not(:disabled) {
-    transform: translateY(-2px);
-    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
+    transform: translateY(-1px);
   }
 
   .icon-toggle.layout-stacked.active:hover:not(:disabled) {
-    box-shadow:
-      0 0 0 2px color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, transparent),
-      0 4px 12px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
   }
 
   .icon-toggle.active .icon-toggle-label {
@@ -175,8 +167,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 24px;
-    height: 24px;
   }
 
   .icon-toggle-label {
@@ -185,10 +175,10 @@
   }
 
   .icon-toggle.layout-stacked .icon-toggle-label {
-    font-size: 0.62rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    line-height: 1.1;
+    line-height: 1;
   }
 </style>
