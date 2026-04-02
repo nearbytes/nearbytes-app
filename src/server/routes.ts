@@ -205,7 +205,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     if (!deps.localNetworkSyncService) {
       throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
     }
-    deps.localNetworkSyncService.notifySyncHint(req, req.body as { reason?: string } | undefined);
+    deps.localNetworkSyncService.notifySyncHint(req.body as { reason?: string } | undefined);
     res.json({ ok: true, acceptedAt: Date.now() });
   }));
 

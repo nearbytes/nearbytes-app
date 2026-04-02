@@ -1,18 +1,19 @@
 import { mkdtemp, mkdir, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { RootsConfig } from '../../config/roots.js';
 import { createCryptoOperations } from '../../crypto/index.js';
 import { createFileService } from '../../domain/fileService.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
+import type { VolumeSyncInventory } from '../../storage/multiRoot.js';
 import { createSecret } from '../../types/keys.js';
+import { type LanPeerTransport, type LanPeerTransportCallbacks, type LanPeerTransportResponse, type LanTransportDiscoveredPeer, type LanTransportRpcRequest } from '../lanPeerTransport.js';
 import { LocalNetworkSyncService } from '../localNetworkSync.js';
 
 const cleanupPaths: string[] = [];
 
 afterEach(async () => {
-  vi.restoreAllMocks();
   while (cleanupPaths.length > 0) {
     const target = cleanupPaths.pop();
     if (!target) {
@@ -27,27 +28,29 @@ describe('LocalNetworkSyncService', () => {
     const secret = 'test:secret:lan-sync';
     const remote = await createLanHarness('nearbytes-lan-remote-', secret, 'peer-b', 3101);
     const local = await createLanHarness('nearbytes-lan-local-', secret, 'peer-a', 3102);
+    connectLanPeers(local.transport, remote.lanService, remote.port);
 
-    await remote.fileService.addFile(secret, 'first.txt', Buffer.from('alpha'), 'text/plain');
-    installLanFetchStub({
-      [remote.baseUrl]: remote.lanService,
-    });
+    const firstRemoteFile = await remote.fileService.addFile(secret, 'first.txt', Buffer.from('alpha'), 'text/plain');
+    expect(await remote.lanService.readBlockBytes(firstRemoteFile.blobHash)).toBeInstanceOf(Uint8Array);
 
-    addPeer(local.lanService, await remote.lanService.buildHello(), remote.baseUrl);
-    const firstPeer = await local.lanService.syncPeer((await remote.lanService.buildHello()).peerId);
+    const remoteHello = await remote.lanService.buildHello();
+    seedKnownPeer(local.lanService, remoteHello, remote.port);
+    const firstPeer = await local.lanService.syncPeer(remoteHello.peerId);
     expect(firstPeer?.remoteCursorSequence).toBeGreaterThan(0);
     expect((await local.fileService.listFiles(secret)).map((entry) => entry.filename)).toContain('first.txt');
 
     const firstCursor = firstPeer?.remoteCursorSequence ?? 0;
     await remote.fileService.addFile(secret, 'second.txt', Buffer.from('beta'), 'text/plain');
 
-    await shutdownLan(local.lanService);
+    await local.lanService.stop();
+    const restartedTransport = new FakeLanPeerTransport();
     const restartedLocalLan = new LocalNetworkSyncService(local.storage, {
       storageDir: local.storageDir,
+      peerTransport: restartedTransport,
     });
-    await primeLanService(restartedLocalLan, 3102, 'peer-a');
-    addPeer(restartedLocalLan, await remote.lanService.buildHello(), remote.baseUrl);
-
+    await restartedLocalLan.start(local.port);
+    connectLanPeers(restartedTransport, remote.lanService, remote.port);
+    seedKnownPeer(restartedLocalLan, await remote.lanService.buildHello(), remote.port);
     const secondPeer = await restartedLocalLan.syncPeer((await remote.lanService.buildHello()).peerId);
     expect(secondPeer?.remoteCursorSequence).toBeGreaterThan(firstCursor);
     expect((await local.fileService.listFiles(secret)).map((entry) => entry.filename).sort()).toEqual([
@@ -55,42 +58,32 @@ describe('LocalNetworkSyncService', () => {
       'second.txt',
     ]);
 
-    await shutdownLan(restartedLocalLan);
-    await shutdownLan(remote.lanService);
+    await restartedLocalLan.stop();
+    await remote.lanService.stop();
   });
 
   it('does not fail the peer when inventory recovery references an event the remote can no longer serve', async () => {
     const secret = 'test:secret:lan-missing-event';
     const remote = await createLanHarness('nearbytes-lan-remote-missing-', secret, 'peer-b', 3201);
     const local = await createLanHarness('nearbytes-lan-local-missing-', secret, 'peer-a', 3202);
-
-    await remote.fileService.addFile(secret, 'stable.txt', Buffer.from('alpha'), 'text/plain');
-    installLanFetchStub(
-      {
-        [remote.baseUrl]: remote.lanService,
-      },
-      {
-        missingEventFetches: new Set(['ghost']),
-      }
-    );
-
-    const hello = await remote.lanService.buildHello();
-    addPeer(local.lanService, hello, remote.baseUrl);
-    const originalInventory = remote.lanService.getVolumeInventory.bind(remote.lanService);
-    vi.spyOn(remote.lanService, 'getVolumeInventory').mockImplementation(async (volumeId) => {
-      const inventory = await originalInventory(volumeId);
-      return {
+    connectLanPeers(local.transport, remote.lanService, remote.port, {
+      missingEventFetches: new Set(['ghost']),
+      inventoryOverride: async (volumeId, inventory) => ({
         ...inventory,
-        eventHashes: [...inventory.eventHashes, 'ghost'],
-      };
+        eventHashes: volumeId === inventory.volumeId ? [...inventory.eventHashes, 'ghost'] : inventory.eventHashes,
+      }),
     });
 
+    const stableRemoteFile = await remote.fileService.addFile(secret, 'stable.txt', Buffer.from('alpha'), 'text/plain');
+    expect(await remote.lanService.readBlockBytes(stableRemoteFile.blobHash)).toBeInstanceOf(Uint8Array);
+    const hello = await remote.lanService.buildHello();
+    seedKnownPeer(local.lanService, hello, remote.port);
     const peer = await local.lanService.syncPeer(hello.peerId);
     expect(peer?.lastSyncError).toBeNull();
     expect((await local.fileService.listFiles(secret)).map((entry) => entry.filename)).toContain('stable.txt');
 
-    await shutdownLan(local.lanService);
-    await shutdownLan(remote.lanService);
+    await local.lanService.stop();
+    await remote.lanService.stop();
   });
 
   it('stores local-network runtime state outside a custom storage root', async () => {
@@ -102,37 +95,32 @@ describe('LocalNetworkSyncService', () => {
     };
     expect(path.resolve(internal.runtimeDir)).not.toBe(path.join(path.resolve(harness.storageDir), 'local-network'));
 
-    await shutdownLan(harness.lanService);
+    await harness.lanService.stop();
   });
 
   it('treats LAN abort timeouts as transient retry states instead of hard peer errors', async () => {
     const secret = 'test:secret:lan-timeout';
     const remote = await createLanHarness('nearbytes-lan-timeout-remote-', secret, 'peer-b', 3401);
     const local = await createLanHarness('nearbytes-lan-timeout-local-', secret, 'peer-a', 3402);
+    connectLanPeers(local.transport, remote.lanService, remote.port, {
+      helloError: abortError('This operation was aborted.'),
+    });
+
     const hello = await remote.lanService.buildHello();
-    addPeer(local.lanService, hello, remote.baseUrl);
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        const error = new Error('This operation was aborted.');
-        error.name = 'AbortError';
-        throw error;
-      })
-    );
-
+    seedKnownPeer(local.lanService, hello, remote.port);
     const peer = await local.lanService.syncPeer(hello.peerId);
     expect(peer?.status).toBe('ready');
     expect(peer?.lastSyncError).toBeNull();
     expect(peer?.lastSyncNotice).toBe('Peer timed out; Nearbytes will retry automatically.');
 
-    await shutdownLan(local.lanService);
-    await shutdownLan(remote.lanService);
+    await local.lanService.stop();
+    await remote.lanService.stop();
   });
 
   it('advertises observed volume ids from the provider queue even when the config has no tracked volumes', async () => {
     const secret = 'test:secret:lan-observed-volume-advertise';
     const remote = await createLanHarness('nearbytes-lan-observed-volume-', secret, 'peer-b', 3501);
+    await remote.fileService.addFile(secret, 'observed.txt', Buffer.from('gamma'), 'text/plain');
 
     const internalStorage = remote.storage as unknown as { config: RootsConfig };
     internalStorage.config = {
@@ -140,58 +128,47 @@ describe('LocalNetworkSyncService', () => {
       volumes: [],
     };
 
-    const hello = await remote.lanService.buildHello();
+    const hello = await waitForHelloVolumes(remote.lanService);
     expect(hello.volumeIds.length).toBeGreaterThan(0);
 
-    await shutdownLan(remote.lanService);
+    await remote.lanService.stop();
   });
 
   it('describes common mounted storage peers without implying a broken lan sync state', async () => {
     const secret = 'test:secret:lan-common-mounted-volume';
     const remote = await createLanHarness('nearbytes-lan-common-mounted-', secret, 'peer-b', 3601);
     const local = await createLanHarness('nearbytes-lan-common-mounted-local-', secret, 'peer-a', 3602);
+    connectLanPeers(local.transport, remote.lanService, remote.port, {
+      helloOverride: async (hello) => ({
+        ...hello,
+        volumeIds: [],
+        observationHeadSequence: 0,
+      }),
+      observationsOverride: async (page) => ({
+        ...page,
+        observations: [],
+        headSequence: 0,
+      }),
+    });
+
     const hello = await remote.lanService.buildHello();
-    addPeer(local.lanService, hello, remote.baseUrl);
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: string | URL | Request) => {
-        const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
-        if (url.pathname === '/lan/hello') {
-          return jsonResponse({
-            ...hello,
-            volumeIds: [],
-            observationHeadSequence: 0,
-          });
-        }
-        if (url.pathname === '/lan/observations') {
-          return jsonResponse({
-            protocol: 'nearbytes.lan-sync.v1',
-            peerId: hello.peerId,
-            observations: [],
-            headSequence: 0,
-            generatedAt: Date.now(),
-          });
-        }
-        return new Response('not found', { status: 404 });
-      })
-    );
-
+    seedKnownPeer(local.lanService, hello, remote.port);
     const peer = await local.lanService.syncPeer(hello.peerId);
     expect(peer?.status).toBe('ready');
     expect(peer?.detail).toContain('same mounted storage');
 
-    await shutdownLan(local.lanService);
-    await shutdownLan(remote.lanService);
+    await local.lanService.stop();
+    await remote.lanService.stop();
   });
 });
 
-async function createLanHarness(prefix: string, secretValue: string, peerId: string, httpPort: number): Promise<{
+async function createLanHarness(prefix: string, secretValue: string, peerId: string, port: number): Promise<{
   storage: MultiRootStorageBackend;
   storageDir: string;
   fileService: ReturnType<typeof createFileService>;
   lanService: LocalNetworkSyncService;
-  baseUrl: string;
+  transport: FakeLanPeerTransport;
+  port: number;
 }> {
   const baseDir = await mkdtemp(path.join(tmpdir(), prefix));
   cleanupPaths.push(baseDir);
@@ -204,56 +181,48 @@ async function createLanHarness(prefix: string, secretValue: string, peerId: str
   const volumeId = Buffer.from(keys.publicKey).toString('hex');
   const storage = new MultiRootStorageBackend(createConfig(storageDir, volumeId));
   const fileService = createFileService({ crypto, storage });
+  const transport = new FakeLanPeerTransport();
   const lanService = new LocalNetworkSyncService(storage, {
     storageDir,
+    peerTransport: transport,
   });
-  await primeLanService(lanService, httpPort, peerId);
+  await lanService.start(port);
+  await forcePeerIdentity(lanService, peerId);
+  await transport.refreshAdvertisement?.();
 
   return {
     storage,
     storageDir,
     fileService,
     lanService,
-    baseUrl: `http://${peerId}:${httpPort}`,
+    transport,
+    port,
   };
 }
 
-async function primeLanService(service: LocalNetworkSyncService, httpPort: number, peerId: string): Promise<void> {
+async function forcePeerIdentity(service: LocalNetworkSyncService, peerId: string): Promise<void> {
   const internal = service as unknown as {
-    started: boolean;
-    httpPort: number;
     peerId: string;
     label: string;
-    loadIdentity: () => Promise<void>;
-    providerQueue: { start: () => Promise<void> };
   };
-  internal.started = true;
-  internal.httpPort = httpPort;
-  await internal.loadIdentity();
   internal.peerId = peerId;
   internal.label = peerId;
-  await internal.providerQueue.start();
 }
 
-async function shutdownLan(service: LocalNetworkSyncService): Promise<void> {
-  const internal = service as unknown as {
-    providerQueue: { stop: () => Promise<void> };
-    started: boolean;
-  };
-  internal.started = false;
-  await internal.providerQueue.stop();
-}
-
-function addPeer(service: LocalNetworkSyncService, hello: Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>, baseUrl: string): void {
+function seedKnownPeer(
+  service: LocalNetworkSyncService,
+  hello: Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>,
+  port: number
+): void {
   const internal = service as unknown as {
     peers: Map<string, unknown>;
   };
   internal.peers.set(hello.peerId, {
     peerId: hello.peerId,
     label: hello.label,
-    address: new URL(baseUrl).hostname,
-    port: new URL(baseUrl).port ? Number(new URL(baseUrl).port) : 80,
-    endpointUrl: baseUrl,
+    address: hello.label.toLowerCase(),
+    port,
+    endpointUrl: `quic://${hello.label.toLowerCase()}:${port}`,
     capabilities: [...hello.capabilities],
     volumeIds: [],
     announcementCounter: 1,
@@ -263,6 +232,8 @@ function addPeer(service: LocalNetworkSyncService, hello: Awaited<ReturnType<Loc
     lastSyncAt: null,
     lastSyncStartedAt: null,
     lastSyncError: null,
+    lastSyncTransient: false,
+    lastSyncNotice: null,
     lastImportedEvents: 0,
     lastImportedBlocks: 0,
     remoteCursorSequence: 0,
@@ -272,81 +243,163 @@ function addPeer(service: LocalNetworkSyncService, hello: Awaited<ReturnType<Loc
   });
 }
 
-function installLanFetchStub(
-  services: Record<string, LocalNetworkSyncService>,
-  options: {
-    readonly missingEventFetches?: ReadonlySet<string>;
-  } = {}
+interface RemoteBehavior {
+  readonly missingEventFetches?: ReadonlySet<string>;
+  readonly helloError?: Error;
+  readonly helloOverride?: (hello: Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>) => Promise<Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>> | Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>;
+  readonly observationsOverride?: (page: Awaited<ReturnType<LocalNetworkSyncService['listObservations']>>) => Promise<Awaited<ReturnType<LocalNetworkSyncService['listObservations']>>> | Awaited<ReturnType<LocalNetworkSyncService['listObservations']>>;
+  readonly inventoryOverride?: (volumeId: string, inventory: VolumeSyncInventory) => Promise<VolumeSyncInventory> | VolumeSyncInventory;
+}
+
+function connectLanPeers(
+  transport: FakeLanPeerTransport,
+  remoteService: LocalNetworkSyncService,
+  remotePort: number,
+  behavior: RemoteBehavior = {}
 ): void {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (input: string | URL | Request) => {
-      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
-      const baseUrl = `${url.protocol}//${url.host}`;
-      const service = services[baseUrl];
-      if (!service) {
-        return new Response('missing service', { status: 404 });
-      }
+  transport.registerRemote(remoteService, remotePort, behavior);
+}
 
-      if (url.pathname === '/lan/hello') {
-        return jsonResponse(await service.buildHello());
-      }
-      if (url.pathname === '/lan/observations') {
-        const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10);
-        const limit = Number.parseInt(url.searchParams.get('limit') ?? '512', 10);
-        return jsonResponse(
-          service.listObservations({
-            afterSequence: Number.isFinite(after) ? after : 0,
-            limit: Number.isFinite(limit) ? limit : 512,
-          })
-        );
-      }
-      if (url.pathname === '/lan/volumes') {
-        return jsonResponse(await service.listVolumes());
-      }
+class FakeLanPeerTransport implements LanPeerTransport {
+  private callbacks: LanPeerTransportCallbacks | null = null;
+  private remotes = new Map<string, { service: LocalNetworkSyncService; port: number; behavior: RemoteBehavior }>();
 
-      const eventMatch = /^\/lan\/volumes\/([^/]+)\/events\/([^/]+)$/u.exec(url.pathname);
-      if (eventMatch?.[1] && eventMatch[2]) {
-        const eventHash = decodeURIComponent(eventMatch[2]);
-        if (options.missingEventFetches?.has(eventHash)) {
-          return new Response('missing event', { status: 404 });
+  async start(callbacks: LanPeerTransportCallbacks): Promise<void> {
+    this.callbacks = callbacks;
+  }
+
+  async stop(): Promise<void> {
+    this.callbacks = null;
+    this.remotes.clear();
+  }
+
+  async refreshAdvertisement(): Promise<void> {
+    return;
+  }
+
+  registerRemote(service: LocalNetworkSyncService, port: number, behavior: RemoteBehavior = {}): void {
+    const internal = service as unknown as { peerId: string };
+    this.remotes.set(internal.peerId, { service, port, behavior });
+  }
+
+  async discover(service: LocalNetworkSyncService, port: number): Promise<void> {
+    if (!this.callbacks) {
+      throw new Error('Fake LAN transport is not started');
+    }
+    const hello = await service.buildHello();
+    this.callbacks.onPeerDiscovered({
+      peerId: hello.peerId,
+      label: hello.label,
+      address: hello.label.toLowerCase(),
+      port,
+      capabilities: [...hello.capabilities],
+      headSequence: hello.observationHeadSequence,
+    });
+  }
+
+  async requestJson<TResponse>(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<TResponse> {
+    const response = await this.dispatch(peer, request);
+    if (response.kind !== 'json') {
+      throw new Error(`Expected JSON response for ${request.action}`);
+    }
+    return response.value as TResponse;
+  }
+
+  async requestBytes(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<Uint8Array> {
+    const response = await this.dispatch(peer, request);
+    if (response.kind !== 'bytes') {
+      throw new Error(`Expected byte response for ${request.action}`);
+    }
+    return response.value;
+  }
+
+  async notify(peer: LanTransportDiscoveredPeer, request: Extract<LanTransportRpcRequest, { action: 'sync-hint' }>): Promise<void> {
+    await this.dispatch(peer, request);
+  }
+
+  private async dispatch(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<LanPeerTransportResponse> {
+    const remote = this.remotes.get(peer.peerId);
+    if (!remote) {
+      throw new Error(`Unknown fake LAN peer ${peer.peerId}`);
+    }
+
+    if (request.action === 'hello' && remote.behavior.helloError) {
+      throw remote.behavior.helloError;
+    }
+
+    switch (request.action) {
+      case 'hello': {
+        const hello = await remote.service.buildHello();
+        return {
+          kind: 'json',
+          value: remote.behavior.helloOverride ? await remote.behavior.helloOverride(hello) : hello,
+        };
+      }
+      case 'volumes':
+        return {
+          kind: 'json',
+          value: await remote.service.listVolumes(),
+        };
+      case 'observations': {
+        const page = remote.service.listObservations({
+          afterSequence: request.afterSequence,
+          volumeIds: request.volumeIds,
+          limit: request.limit,
+        });
+        return {
+          kind: 'json',
+          value: remote.behavior.observationsOverride ? await remote.behavior.observationsOverride(page) : page,
+        };
+      }
+      case 'inventory': {
+        const inventory = await remote.service.getVolumeInventory(request.volumeId);
+        return {
+          kind: 'json',
+          value: remote.behavior.inventoryOverride
+            ? await remote.behavior.inventoryOverride(request.volumeId, inventory)
+            : inventory,
+        };
+      }
+      case 'event':
+        if (remote.behavior.missingEventFetches?.has(request.eventHash)) {
+          throw new Error(`404 missing event ${request.eventHash}`);
         }
-        const bytes = await service.readEventBytes(decodeURIComponent(eventMatch[1]), eventHash);
-        return bytesResponse(bytes);
-      }
-
-      const inventoryMatch = /^\/lan\/volumes\/([^/]+)\/inventory$/u.exec(url.pathname);
-      if (inventoryMatch?.[1]) {
-        return jsonResponse(await service.getVolumeInventory(decodeURIComponent(inventoryMatch[1])));
-      }
-
-      const blockMatch = /^\/lan\/blocks\/([^/]+)$/u.exec(url.pathname);
-      if (blockMatch?.[1]) {
-        const bytes = await service.readBlockBytes(decodeURIComponent(blockMatch[1]));
-        return bytesResponse(bytes);
-      }
-
-      return new Response('not found', { status: 404 });
-    })
-  );
+        return {
+          kind: 'bytes',
+          value: await remote.service.readEventBytes(request.volumeId, request.eventHash),
+        };
+      case 'block':
+        return {
+          kind: 'bytes',
+          value: await remote.service.readBlockBytes(request.blockHash),
+        };
+      case 'sync-hint':
+        remote.service.notifySyncHint({ reason: request.reason });
+        return {
+          kind: 'json',
+          value: { ok: true, acceptedAt: Date.now() },
+        };
+      default:
+        throw new Error(`Unsupported fake LAN request`);
+    }
+  }
 }
 
-function jsonResponse(value: unknown): Response {
-  return new Response(JSON.stringify(value), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  });
+function abortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
 }
 
-function bytesResponse(value: Uint8Array): Response {
-  return new Response(Buffer.from(value), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-    },
-  });
+async function waitForHelloVolumes(service: LocalNetworkSyncService): Promise<Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const hello = await service.buildHello();
+    if (hello.volumeIds.length > 0) {
+      return hello;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return await service.buildHello();
 }
 
 function createConfig(mainRoot: string, volumeId: string): RootsConfig {

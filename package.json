@@ -71,6 +71,7 @@
     "electron-updater": "^6.6.2",
     "express": "^4.22.1",
     "multer": "^2.0.2",
+    "selfsigned": "^5.5.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

@@ -591,8 +591,9 @@ export interface LocalNetworkServiceState {
   label: string;
   listening: boolean;
   port: number | null;
-  multicastGroup: string;
-  multicastPort: number;
+  discovery: 'dns-sd';
+  transport: 'quic';
+  serviceType: string;
   announceIntervalMs: number;
   peerCount: number;
 }

@@ -1407,7 +1407,7 @@
       if (localNetworkPeers.length === 0) {
         return 'LAN discovery is active. Nearby Nearbytes peers will appear here automatically.';
       }
-      return `Found ${countLabel(localNetworkPeers.length, 'peer')} on ${localNetworkService.multicastGroup}:${localNetworkService.multicastPort}.`;
+      return `Found ${countLabel(localNetworkPeers.length, 'peer')} via ${localNetworkService.serviceType} over ${localNetworkService.transport}.`;
     }
     if (entry.provider === 'mega' && shareLoadError) {
       return shareLoadError;
@@ -5955,7 +5955,7 @@
                         title="No nearby peers yet"
                         copy="Keep Nearbytes open on another machine on the same LAN. As soon as it announces itself, this panel will populate and sync will start automatically."
                         statusBadges={localNetworkService?.listening ? [{ label: 'Listening', tone: 'muted' }] : []}
-                        meta={localNetworkService ? [`${localNetworkService.multicastGroup}:${localNetworkService.multicastPort}`] : []}
+                        meta={localNetworkService ? [localNetworkService.serviceType, localNetworkService.transport.toUpperCase()] : []}
                       />
                     </div>
                   {:else}

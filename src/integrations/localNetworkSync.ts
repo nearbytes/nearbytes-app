@@ -1,35 +1,23 @@
-import dgram, { type RemoteInfo, type Socket } from 'dgram';
+import { createHash } from 'crypto';
 import os from 'os';
 import path from 'path';
 import { promises as fs } from 'fs';
-import type { Request } from 'express';
 import { MultiRootStorageBackend, type VolumeSyncInventory } from '../storage/multiRoot.js';
 import { normalizeHash, normalizeVolumeId, validateBlockBytes, validateEventBytes } from '../storage/integrity.js';
 import { getDefaultRuntimeHomeDir, resolveStorageHomeDir } from '../storagePath.js';
 import { PersistentProviderQueue, type ProviderQueueObservationPage } from './providerQueue.js';
 import type { ProviderQueueObservation } from './types.js';
+import type { LanPeerTransport, LanTransportDiscoveredPeer } from './lanPeerTransport.js';
+import { QuicDnsSdLanTransport } from './quicDnsSdLanTransport.js';
 
 const LAN_SYNC_PROTOCOL = 'nearbytes.lan-sync.v1';
-const DEFAULT_MULTICAST_GROUP = '239.255.40.41';
-const DEFAULT_MULTICAST_PORT = 40441;
-const ANNOUNCE_INTERVAL_MS = 3_000;
+const ADVERTISEMENT_REFRESH_INTERVAL_MS = 10_000;
 const PEER_STALE_AFTER_MS = 18_000;
 const PEER_FORGET_AFTER_MS = 120_000;
 const PEER_SYNC_INTERVAL_MS = 8_000;
-const REQUEST_TIMEOUT_MS = 30_000;
 const OBSERVATION_PAGE_LIMIT = 512;
 const LOCAL_NETWORK_PROVIDER = 'local-network';
 const LOCAL_NETWORK_RUNTIME_FOLDER = 'local-network';
-
-interface LocalAnnouncement {
-  readonly protocol: typeof LAN_SYNC_PROTOCOL;
-  readonly peerId: string;
-  readonly label: string;
-  readonly port: number;
-  readonly capabilities: string[];
-  readonly timestamp: number;
-  readonly counter: number;
-}
 
 interface PeerHelloResponse {
   readonly protocol: typeof LAN_SYNC_PROTOCOL;
@@ -113,8 +101,9 @@ export interface LocalNetworkServiceSnapshot {
   readonly label: string;
   readonly listening: boolean;
   readonly port: number | null;
-  readonly multicastGroup: string;
-  readonly multicastPort: number;
+  readonly discovery: 'dns-sd';
+  readonly transport: 'quic';
+  readonly serviceType: string;
   readonly announceIntervalMs: number;
   readonly peerCount: number;
 }
@@ -128,15 +117,11 @@ export class LocalNetworkSyncService {
   private readonly storageHomeDir: string;
   private readonly runtimeDir: string;
   private readonly providerQueue: PersistentProviderQueue;
+  private readonly peerTransport: LanPeerTransport;
   private readonly peers = new Map<string, LocalPeerState>();
-  private readonly multicastGroup: string;
-  private readonly multicastPort: number;
-  private socket: Socket | null = null;
   private peerId = '';
   private label = defaultPeerLabel();
   private httpPort: number | null = null;
-  private announceCounter = 0;
-  private announceTimer: ReturnType<typeof setInterval> | null = null;
   private upkeepTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
 
@@ -144,53 +129,50 @@ export class LocalNetworkSyncService {
     private readonly storage: MultiRootStorageBackend,
     options?: {
       readonly storageDir?: string;
-      readonly multicastGroup?: string;
-      readonly multicastPort?: number;
+      readonly peerTransport?: LanPeerTransport;
     }
   ) {
     this.storageHomeDir = resolveStorageHomeDir(options?.storageDir ?? storage.getRootsConfig().sources[0]?.path ?? process.cwd());
     this.runtimeDir = resolveLocalNetworkRuntimeDir(this.storageHomeDir);
     this.providerQueue = new PersistentProviderQueue(storage, this.runtimeDir);
-    this.multicastGroup = options?.multicastGroup ?? DEFAULT_MULTICAST_GROUP;
-    this.multicastPort = options?.multicastPort ?? DEFAULT_MULTICAST_PORT;
+    this.peerTransport = options?.peerTransport ?? new QuicDnsSdLanTransport(this.runtimeDir);
   }
 
   async start(httpPort: number): Promise<void> {
     if (this.started) {
       this.httpPort = httpPort;
+      await this.peerTransport.refreshAdvertisement?.();
       return;
     }
     this.started = true;
     this.httpPort = httpPort;
     await this.loadIdentity();
     await this.providerQueue.start();
-    await this.openSocket();
-    this.announce();
-    this.announceTimer = setInterval(() => this.announce(), ANNOUNCE_INTERVAL_MS);
+    await this.peerTransport.start({
+      getAdvertisement: async () => this.buildHello(),
+      onPeerDiscovered: (peer) => this.upsertDiscoveredPeer(peer),
+      onPeerExpired: (peerId) => {
+        const existing = this.peers.get(peerId);
+        if (existing) {
+          existing.lastSeenAt = Date.now() - PEER_STALE_AFTER_MS;
+        }
+      },
+      handleRequest: async (request) => this.handleTransportRequest(request),
+    });
     this.upkeepTimer = setInterval(() => {
       this.expirePeers();
       void this.syncActivePeers(false);
-    }, Math.min(ANNOUNCE_INTERVAL_MS, PEER_SYNC_INTERVAL_MS));
+    }, Math.min(ADVERTISEMENT_REFRESH_INTERVAL_MS, PEER_SYNC_INTERVAL_MS));
   }
 
   async stop(): Promise<void> {
     this.started = false;
-    if (this.announceTimer) {
-      clearInterval(this.announceTimer);
-      this.announceTimer = null;
-    }
     if (this.upkeepTimer) {
       clearInterval(this.upkeepTimer);
       this.upkeepTimer = null;
     }
-    const socket = this.socket;
-    this.socket = null;
+    await this.peerTransport.stop();
     await this.providerQueue.stop();
-    if (socket) {
-      await new Promise<void>((resolve) => {
-        socket.close(() => resolve());
-      });
-    }
   }
 
   getHello(): PeerHelloResponse {
@@ -269,8 +251,55 @@ export class LocalNetworkSyncService {
     );
   }
 
-  notifySyncHint(_req: Request, _body?: SyncHintBody): void {
+  notifySyncHint(_body?: SyncHintBody): void {
     void this.syncActivePeers(true);
+  }
+
+  private async handleTransportRequest(request: import('./lanPeerTransport.js').LanTransportRpcRequest): Promise<import('./lanPeerTransport.js').LanPeerTransportResponse> {
+    switch (request.action) {
+      case 'hello':
+        return {
+          kind: 'json',
+          value: await this.buildHello(),
+        };
+      case 'volumes':
+        return {
+          kind: 'json',
+          value: await this.listVolumes(),
+        };
+      case 'observations':
+        return {
+          kind: 'json',
+          value: this.listObservations({
+            afterSequence: request.afterSequence,
+            volumeIds: request.volumeIds,
+            limit: request.limit,
+          }),
+        };
+      case 'inventory':
+        return {
+          kind: 'json',
+          value: await this.getVolumeInventory(request.volumeId),
+        };
+      case 'event':
+        return {
+          kind: 'bytes',
+          value: await this.readEventBytes(request.volumeId, request.eventHash),
+        };
+      case 'block':
+        return {
+          kind: 'bytes',
+          value: await this.readBlockBytes(request.blockHash),
+        };
+      case 'sync-hint':
+        this.notifySyncHint({ reason: request.reason });
+        return {
+          kind: 'json',
+          value: { ok: true, acceptedAt: Date.now() },
+        };
+      default:
+        throw new Error(`Unsupported LAN transport request`);
+    }
   }
 
   getPeersResponse(): LocalNetworkPeersResponse {
@@ -279,11 +308,12 @@ export class LocalNetworkSyncService {
         protocol: LAN_SYNC_PROTOCOL,
         peerId: this.peerId,
         label: this.label,
-        listening: this.socket !== null && this.httpPort !== null,
+        listening: this.started && this.httpPort !== null,
         port: this.httpPort,
-        multicastGroup: this.multicastGroup,
-        multicastPort: this.multicastPort,
-        announceIntervalMs: ANNOUNCE_INTERVAL_MS,
+        discovery: 'dns-sd',
+        transport: 'quic',
+        serviceType: '_nearbytes._udp.local',
+        announceIntervalMs: ADVERTISEMENT_REFRESH_INTERVAL_MS,
         peerCount: this.peers.size,
       },
       peers: Array.from(this.peers.values())
@@ -321,72 +351,15 @@ export class LocalNetworkSyncService {
     await fs.writeFile(identityPath, JSON.stringify({ peerId: this.peerId, label: this.label }, null, 2), 'utf8');
   }
 
-  private async openSocket(): Promise<void> {
-    if (this.socket) {
-      return;
-    }
-    const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    await new Promise<void>((resolve, reject) => {
-      socket.once('error', reject);
-      socket.bind(this.multicastPort, '0.0.0.0', () => {
-        try {
-          socket.addMembership(this.multicastGroup);
-          socket.setMulticastTTL(128);
-          socket.setMulticastLoopback(true);
-          socket.removeListener('error', reject);
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      });
-    });
-    socket.on('message', (message, info) => {
-      this.handleAnnouncement(message, info);
-    });
-    this.socket = socket;
-  }
-
-  private announce(): void {
-    if (!this.socket || this.httpPort === null) {
-      return;
-    }
-    const payload: LocalAnnouncement = {
-      protocol: LAN_SYNC_PROTOCOL,
-      peerId: this.peerId,
-      label: this.label,
-      port: this.httpPort,
-      capabilities: ['observation-log', 'inventory', 'pull-sync', 'push-hint'],
-      timestamp: Date.now(),
-      counter: ++this.announceCounter,
-    };
-    const bytes = Buffer.from(JSON.stringify(payload), 'utf8');
-    this.socket.send(bytes, this.multicastPort, this.multicastGroup);
-  }
-
-  private handleAnnouncement(message: Buffer, info: RemoteInfo): void {
-    let parsed: LocalAnnouncement | null = null;
-    try {
-      parsed = JSON.parse(message.toString('utf8')) as LocalAnnouncement;
-    } catch {
-      return;
-    }
-    if (!parsed || parsed.protocol !== LAN_SYNC_PROTOCOL || parsed.peerId === this.peerId) {
-      return;
-    }
-    if (!Number.isInteger(parsed.port) || parsed.port <= 0) {
-      return;
-    }
-
+  private upsertDiscoveredPeer(discovered: LanTransportDiscoveredPeer): void {
     const now = Date.now();
-    const nextEndpointUrl = `http://${info.address}:${parsed.port}`;
-    const existing = this.peers.get(parsed.peerId);
+    const existing = this.peers.get(discovered.peerId);
     if (existing) {
-      existing.label = parsed.label || existing.label;
-      existing.address = info.address;
-      existing.port = parsed.port;
-      existing.endpointUrl = nextEndpointUrl;
-      existing.capabilities = Array.isArray(parsed.capabilities) ? parsed.capabilities : existing.capabilities;
-      existing.announcementCounter = Math.max(existing.announcementCounter, parsed.counter);
+      existing.label = discovered.label || existing.label;
+      existing.address = discovered.address;
+      existing.port = discovered.port;
+      existing.endpointUrl = `quic://${discovered.address}:${discovered.port}`;
+      existing.capabilities = [...discovered.capabilities];
       existing.lastSeenAt = now;
       if (!existing.lastSyncAt || now - existing.lastSyncAt >= PEER_SYNC_INTERVAL_MS) {
         void this.performPeerSync(existing, false);
@@ -395,14 +368,14 @@ export class LocalNetworkSyncService {
     }
 
     const peer: LocalPeerState = {
-      peerId: parsed.peerId,
-      label: parsed.label || `Peer ${parsed.peerId.slice(0, 8)}`,
-      address: info.address,
-      port: parsed.port,
-      endpointUrl: nextEndpointUrl,
-      capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : [],
+      peerId: discovered.peerId,
+      label: discovered.label || `Peer ${discovered.peerId.slice(0, 8)}`,
+      address: discovered.address,
+      port: discovered.port,
+      endpointUrl: `quic://${discovered.address}:${discovered.port}`,
+      capabilities: [...discovered.capabilities],
       volumeIds: [],
-      announcementCounter: parsed.counter,
+      announcementCounter: 0,
       firstSeenAt: now,
       lastSeenAt: now,
       lastHelloAt: null,
@@ -452,7 +425,9 @@ export class LocalNetworkSyncService {
     peer.queued = false;
     peer.lastSyncStartedAt = Date.now();
     try {
-      const hello = await this.fetchJson<PeerHelloResponse>(`${peer.endpointUrl}/lan/hello`);
+      const hello = await this.peerTransport.requestJson<PeerHelloResponse>(this.toTransportPeer(peer), {
+        action: 'hello',
+      });
       peer.label = hello.label || peer.label;
       peer.capabilities = Array.isArray(hello.capabilities) ? hello.capabilities : peer.capabilities;
       peer.volumeIds = dedupeVolumeIds(hello.volumeIds);
@@ -506,9 +481,10 @@ export class LocalNetworkSyncService {
     peer: LocalPeerState,
     volumeId: string
   ): Promise<{ importedEvents: number; importedBlocks: number }> {
-    const remoteInventory = await this.fetchJson<VolumeSyncInventory>(
-      `${peer.endpointUrl}/lan/volumes/${encodeURIComponent(volumeId)}/inventory`
-    );
+    const remoteInventory = await this.peerTransport.requestJson<VolumeSyncInventory>(this.toTransportPeer(peer), {
+      action: 'inventory',
+      volumeId,
+    });
     const localInventory = await this.storage.getVolumeSyncInventory(volumeId);
     const localEvents = new Set(localInventory.eventHashes);
     const localBlocks = new Set(localInventory.blockHashes);
@@ -519,9 +495,7 @@ export class LocalNetworkSyncService {
     let importedBlocks = 0;
 
     for (const eventHash of missingEvents) {
-      const bytes = await this.fetchBytesOrNull(
-        `${peer.endpointUrl}/lan/volumes/${encodeURIComponent(volumeId)}/events/${encodeURIComponent(eventHash)}`
-      );
+      const bytes = await this.requestEventBytesOrNull(peer, volumeId, eventHash);
       if (!bytes) {
         continue;
       }
@@ -534,7 +508,7 @@ export class LocalNetworkSyncService {
     }
 
     for (const blockHash of missingBlocks) {
-      const bytes = await this.fetchBytesOrNull(`${peer.endpointUrl}/lan/blocks/${encodeURIComponent(blockHash)}`);
+      const bytes = await this.requestBlockBytesOrNull(peer, blockHash);
       if (!bytes) {
         continue;
       }
@@ -562,9 +536,11 @@ export class LocalNetworkSyncService {
     const routeKey = routeKeyForPeer(peer.peerId);
 
     while (true) {
-      const page = await this.fetchJson<ObservationListResponse>(
-        `${peer.endpointUrl}/lan/observations?after=${encodeURIComponent(String(cursor))}&limit=${encodeURIComponent(String(OBSERVATION_PAGE_LIMIT))}`
-      );
+      const page = await this.peerTransport.requestJson<ObservationListResponse>(this.toTransportPeer(peer), {
+        action: 'observations',
+        afterSequence: cursor,
+        limit: OBSERVATION_PAGE_LIMIT,
+      });
       peer.lastRemoteHeadSequence = Math.max(peer.lastRemoteHeadSequence, page.headSequence);
       if (page.observations.length === 0) {
         break;
@@ -599,9 +575,11 @@ export class LocalNetworkSyncService {
       if (!volumeId) {
         throw new Error(`Peer ${peer.label} announced an event without a volume id`);
       }
-      const bytes = await this.fetchBytes(
-        `${peer.endpointUrl}/lan/volumes/${encodeURIComponent(volumeId)}/events/${encodeURIComponent(observation.hash)}`
-      );
+      const bytes = await this.peerTransport.requestBytes(this.toTransportPeer(peer), {
+        action: 'event',
+        volumeId,
+        eventHash: observation.hash,
+      });
       const validation = await validateEventBytes(volumeId, observation.hash, bytes);
       if (!validation.ok) {
         throw new Error(validation.detail ?? `Invalid event ${observation.hash} from ${peer.label}`);
@@ -610,7 +588,10 @@ export class LocalNetworkSyncService {
       return { importedEvents: 1, importedBlocks: 0 };
     }
 
-    const bytes = await this.fetchBytes(`${peer.endpointUrl}/lan/blocks/${encodeURIComponent(observation.hash)}`);
+    const bytes = await this.peerTransport.requestBytes(this.toTransportPeer(peer), {
+      action: 'block',
+      blockHash: observation.hash,
+    });
     const validation = await validateBlockBytes(observation.hash, bytes);
     if (!validation.ok) {
       throw new Error(validation.detail ?? `Invalid block ${observation.hash} from ${peer.label}`);
@@ -619,48 +600,44 @@ export class LocalNetworkSyncService {
     return { importedEvents: 0, importedBlocks: 1 };
   }
 
-  private async fetchJson<T>(url: string): Promise<T> {
-    const response = await this.fetchWithTimeout(url, {
-      headers: {
-        Accept: 'application/json',
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`LAN request failed (${response.status}) for ${url}`);
-    }
-    return (await response.json()) as T;
-  }
-
-  private async fetchBytes(url: string): Promise<Uint8Array> {
-    const response = await this.fetchWithTimeout(url);
-    if (!response.ok) {
-      throw new Error(`LAN request failed (${response.status}) for ${url}`);
-    }
-    return new Uint8Array(await response.arrayBuffer());
-  }
-
-  private async fetchBytesOrNull(url: string): Promise<Uint8Array | null> {
-    const response = await this.fetchWithTimeout(url);
-    if (response.status === 404) {
-      return null;
-    }
-    if (!response.ok) {
-      throw new Error(`LAN request failed (${response.status}) for ${url}`);
-    }
-    return new Uint8Array(await response.arrayBuffer());
-  }
-
-  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  private async requestEventBytesOrNull(peer: LocalPeerState, volumeId: string, eventHash: string): Promise<Uint8Array | null> {
     try {
-      return await fetch(url, {
-        ...options,
-        signal: controller.signal,
+      return await this.peerTransport.requestBytes(this.toTransportPeer(peer), {
+        action: 'event',
+        volumeId,
+        eventHash,
       });
-    } finally {
-      clearTimeout(timer);
+    } catch (error) {
+      if (isMissingLikeError(error)) {
+        return null;
+      }
+      throw error;
     }
+  }
+
+  private async requestBlockBytesOrNull(peer: LocalPeerState, blockHash: string): Promise<Uint8Array | null> {
+    try {
+      return await this.peerTransport.requestBytes(this.toTransportPeer(peer), {
+        action: 'block',
+        blockHash,
+      });
+    } catch (error) {
+      if (isMissingLikeError(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private toTransportPeer(peer: LocalPeerState): LanTransportDiscoveredPeer {
+    return {
+      peerId: peer.peerId,
+      label: peer.label,
+      address: peer.address,
+      port: peer.port,
+      capabilities: [...peer.capabilities],
+      headSequence: peer.lastRemoteHeadSequence,
+    };
   }
 
   private toPeerSnapshot(peer: LocalPeerState): LocalNetworkPeerSnapshot {
@@ -749,11 +726,16 @@ function isAbortLikeError(error: unknown): boolean {
     : error instanceof Error && error.name === 'AbortError';
 }
 
+function isMissingLikeError(error: unknown): boolean {
+  return error instanceof Error && /not found|404|missing/i.test(error.message);
+}
+
 function resolveLocalNetworkRuntimeDir(storageHomeDir: string): string {
   const normalizedStorageHome = path.resolve(storageHomeDir);
   const defaultStorageHome = path.resolve(resolveStorageHomeDir(path.join(os.homedir(), 'nearbytes', 'local')));
   if (normalizedStorageHome === defaultStorageHome) {
     return path.join(normalizedStorageHome, LOCAL_NETWORK_RUNTIME_FOLDER);
   }
-  return path.join(getDefaultRuntimeHomeDir(), LOCAL_NETWORK_RUNTIME_FOLDER);
+  const namespace = createHash('sha256').update(normalizedStorageHome).digest('hex').slice(0, 16);
+  return path.join(getDefaultRuntimeHomeDir(), LOCAL_NETWORK_RUNTIME_FOLDER, namespace);
 }
