@@ -152,6 +152,28 @@ export function createRoutes(deps: RouteDependencies): Router {
     res.json(await deps.localNetworkSyncService.listVolumes());
   }));
 
+  router.get('/lan/observations', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const afterSequence = parseOptionalInt(req.query.after) ?? 0;
+    const limit = parseOptionalInt(req.query.limit);
+    const rawVolumes = req.query.volumes;
+    const volumeIds =
+      typeof rawVolumes === 'string'
+        ? rawVolumes.split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+        : Array.isArray(rawVolumes)
+          ? rawVolumes.map((entry) => String(entry).trim()).filter((entry) => entry.length > 0)
+          : undefined;
+    res.json(
+      deps.localNetworkSyncService.listObservations({
+        afterSequence,
+        limit,
+        volumeIds,
+      })
+    );
+  }));
+
   router.get('/lan/volumes/:volumeId/inventory', asyncHandler(async (req, res) => {
     if (!deps.localNetworkSyncService) {
       throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');

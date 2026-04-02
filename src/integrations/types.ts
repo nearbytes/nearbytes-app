@@ -303,3 +303,26 @@ export interface JoinLinkPlan {
   readonly link: JoinLink;
   readonly attachments: PlannedAttachment[];
 }
+
+export type ProviderObservedObjectKind = 'event' | 'block';
+
+export interface ProviderObservedObjectRef {
+  readonly kind: ProviderObservedObjectKind;
+  readonly hash: string;
+}
+
+export interface ProviderQueueObservation extends ProviderObservedObjectRef {
+  readonly sequence: number;
+  readonly sourceId: string;
+  readonly relativePath: string;
+  readonly observedAt: number;
+  readonly volumeId?: string;
+}
+
+export interface ProviderQueueRouteState {
+  readonly provider: string;
+  readonly routeKey: string;
+  readonly lastAckedSequence: number;
+  readonly lastAttemptedSequence: number;
+  readonly updatedAt: number;
+}
