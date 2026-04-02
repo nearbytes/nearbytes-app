@@ -258,3 +258,18 @@ If another agent picks this up, the immediate next safe step is:
 
 Do not try to patch LAN sync first.
 The event format change is the root change.
+
+## Implementation notes
+
+Implementation notes must be kept in this same file while the work is in progress.
+
+Rule:
+- keep durable protocol/product decisions in the earlier sections
+- keep temporary execution notes, discoveries, partial progress, and blockers in this section
+- update this section alongside the implementation as work advances
+
+Current execution note:
+- the next concrete step is the spec rewrite, starting from event/storage specs and only then moving into the code
+- spec rewrite is now underway with new versioned docs targeting the opaque-event model
+- added draft specs: `hub-model-v2`, `file-events-v3`, `app-records-v2`, `chat-events-v2`, `data-correctness-v2`, `meta-storage-v3`, `lan-sync-v2`, and `log-command-map-v2`
+- next implementation step: replace `EventPayload` with a visible envelope plus encrypted inner payload in `src/types/events.ts` and `src/storage/serialization.ts`

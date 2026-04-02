@@ -56,11 +56,11 @@ Some Nearbytes protocol families are specified as command/event-model documents 
 
 Current examples:
 
-1. hub/log model -> `application/hub-model-v1.md`
+1. hub/log model -> `application/hub-model-v2.md`
 2. file command semantics -> `application/file-commands-v1.md`
-3. file event/replay model -> `application/file-events-v2.md`
+3. file event/replay model -> `application/file-events-v3.md`
 4. identity management command semantics -> `identity/identity-management-v1.md`
-5. LAN sync transport family -> `transport/lan-sync-v1.md`
+5. LAN sync transport family -> `transport/lan-sync-v2.md`
 
 ## 5. Provisional Stack View
 
@@ -69,7 +69,7 @@ The Nearbytes specifications already imply several layers, even though the full 
 1. vocabulary/product layer
 2. application semantics layer
 3. nested application record layer (`nb.*` payloads)
-4. outer log/event envelope layer
+4. outer log/event envelope layer, now explicitly opaque at the semantic level
 5. ordering/replay layer
 6. cryptographic and canonical-encoding layer
 7. blob/reference layer
@@ -96,5 +96,5 @@ Unless explicitly overridden by a specific protocol document:
 Any new `nb.*` protocol ID or major-version increment MUST include:
 
 1. A normative spec document in `docs/specs`.
-2. A compatibility section describing migration and fallback behavior.
+2. A compatibility section, or an explicit statement that no compatibility is provided.
 3. Test vectors or validation rules sufficient for independent implementation.
