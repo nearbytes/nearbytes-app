@@ -1,528 +1,260 @@
-# MANDATORY: NO MOCKS — REAL MEGA E2E ONLY
-
-**This is a binding directive for all agents working on this task.**
-
-The goal of this work is **end-to-end communication with two real MEGA user accounts** configured in `.env.e2e`. Every test run MUST hit the live MEGA API. **Mocks are forbidden.** Do not:
-
-- Create, modify, or rely on mock-based unit tests to validate MEGA transport behavior.
-- Claim progress based on mock tests passing. Mock tests (megaAdapter.test.ts, managedShares.test.ts) are regression guards only — they prove nothing about whether the real MEGA flow works.
-- Spend time writing new mock infrastructure, fake adapters, or simulated MEGA responses for this task.
-
-The **only** acceptable proof that the transport works is the live e2e test exiting 0:
-
-```bash
-NEARBYTES_E2E_SKIP_MEGA_WIPE=1 node scripts/e2e-mega-readonly-share.mjs
-# or
-NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport
-```
-
-If either of these fails, the work is not done. Do not report success based on anything else.
-
----
-
-# Handover — MEGA bidirectional transport (2026-03-29)
-
-This section is for the next developer or session: findings, what was tested, environment, and what to do next.
-
-## What the “Undecrypted” badge is (MEGA web UI)
-
-On **mega.nz** (Cloud Drive / shared folders), **Undecrypted** on directories means MEGA knows those nodes exist in the remote tree, but **your current session cannot decrypt them yet** — folder names and file contents stay hidden until the right keys are available. Common causes:
-
-- **Incoming folder share** where the share key has not been applied or has not propagated to this client/session.
-- **Contact / key-manager flow** incomplete (contact not accepted, or keys not loaded yet).
-- **Transient MEGA API issues** (for example temporary lock `-3`) so a key or tree fetch failed partway through.
-- **Stale or partial session** so the key snapshot does not include keys for nodes that show a sharing user (`su`).
-
-In **Nearbytes logs**, the same situation often appears as **`skippedNoDecrypt`** during incoming-share discovery, or messages like **MEGA tree decryption: some nodes could not be decrypted**. Stabilizing transport E2E means getting share keys into the key-manager snapshot before classifying incoming offers.
-
-**Important:** Orange **undecrypted** incoming rows on mega.nz for the disposable `+02` / `+03` pair were **produced by Nearbytes E2E / invite paths** (partial key handoff, aborted runs, many `nearbytes-e2e-*` roots), not by manual sharing alone. Cleaning **outgoing** access plus cloud data is required to stop the UI and API from surfacing stale share edges.
-
-## Status at handover (2026-03-29)
-
-- **Goal:** In-process bidirectional readonly MEGA transport (two real accounts, no HTTP server) via `ManagedShareService` + `MegaTransportAdapter`.
-- **Live e2e status: FAILING.** Both `e2e-mega-readonly-share.mjs` and `e2e-mega-bidirectional-transport.mjs` fail against live MEGA.
-- **Current blocker:** The owner creates a new shared folder on MEGA but cannot find its own share encryption key. The key-manager reports share keys but none match the handle of the freshly created folder. Without that key, files cannot be encrypted for upload, so push sync silently does nothing and the test times out. Log signature:
-  ```
-  WARN MEGA share crypto context could not be resolved — share key not found
-  in key-manager or snapshot.
-    shareHandle: '<new-handle>',
-    snapshotShareKeyCount: 0
-  ```
-- **Latest live readonly rerun:** Still failing. On a fresh root handle `tF1VzBpB`, owner A never reached `ready`; the run stopped during owner bootstrap with `keyManagerShareCount: 5`, `snapshotShareKeyCount: 0`, and `ownerA: share ... not ready within 60000ms (last: syncing)`.
-- **SDK-parity patch added:** Nearbytes now follows the MEGAcmd `openShareDialog` / `setShareCompletion` split more closely for first outgoing shares: it preserves raw `^!keys` records, can upsert the root share key through MEGA `up2`, and no longer ties `cr` inclusion to “new key” instead of “new share”.
-- **Current live blocker after that patch:** the readonly live test now gets past owner bootstrap with a longer timeout and reaches the owner `s2` invite stage, but repeated MEGA `-3` backoff/retry loops still prevent the invite from settling. This is later than the previous failure and confirms the missing-key preparation path is no longer the first blocker.
-- **Most likely remaining parity gap:** secure-client outshare state is still incomplete. MEGAcmd/webclient do more than just persist the share key: they also track pending outshares / in-use state in `^!keys`, and secure clients send different `s2` semantics than the legacy `ok`/`ha` path. The next iteration should focus there rather than revisiting inbound-share parsing.
-- **X-Hashcash:** Implemented and working. MEGA's proof-of-work challenge is now solved on every response (matching megajs reference behavior). The previous `-3` rate-limit storms are resolved.
-- **Unit tests (30 adapter + 44 managed shares):** Pass, but these use mocks and prove nothing about whether the live flow works. Do not spend time on them unless a code change breaks them.
-
-## Status update (2026-03-29, later)
-
-- **Latest strongest artifact:** `test-results/mega-two-way-unidirectional-progress-mnc7nr0w-nxh3ih.json`
-- **What it proves:** the single-file live harness now proves **A -> B** end to end, including a fast second packet, and fails only on **B -> A**.
-- **Passed evidence from the artifact:**
-  - step 11: A invites B in **54.5s**
-  - step 14: A outgoing descriptor resolved in **29.7s**
-  - step 20: B outgoing descriptor resolved in **8.8s**
-  - step 23: **A -> B passed**
-    - first payload: upload **5366ms**, mirror **2002ms**
-    - second payload: upload **2953ms**, mirror **1001ms**
-- **Remaining failure from the artifact:**
-  - step 24: **B -> A failed** after **64797ms**
-  - error: `Mirror file missing or mismatched: .../blocks/fb64c67203807dac9409e280603d6afa2d79b9ae9bef5b6be345c3a3a47238f6.bin`
-
-## False-positive check (completed)
-
-The reverse failure is **not** a harness-only false positive.
-
-Independent MEGAcmd checks against the same two live accounts showed:
-
-1. **No blacklist / blocked-contact asymmetry**
-   - `mega-users -h -s` on both accounts shows the peer as **Visible**, not blocked or hidden.
-   - Both accounts list the peer as a contact since `Fri, 27 Mar 2026 20:29:43 +0100`.
-   - `mega-showpcr` and `mega-ipc` are empty on both accounts, so there is no pending-contact-request skew left.
-
-2. **Share relationship exists in both directions**
-   - On A: `Folders shared with vincenzoml+03@gmail.com` includes `nearbytes-live-seq-mnc7nr0w-nxh3ih`.
-   - On A: `Folders shared by vincenzoml+03@gmail.com` includes `//from/vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih`.
-   - On B: `Folders shared with vincenzoml+02@gmail.com` includes `nearbytes-live-seq-mnc7nr0w-nxh3ih`.
-   - On B: `Folders shared by vincenzoml+02@gmail.com` includes `//from/vincenzoml+02@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih`.
-
-3. **The missing reverse block really exists on MEGA owner side**
-   - Logged in as B, `mega-ls nearbytes-live-seq-mnc7nr0w-nxh3ih/blocks` shows:
-     - `fb64c67203807dac9409e280603d6afa2d79b9ae9bef5b6be345c3a3a47238f6.bin`
-   - So `forceManagedShareUpload()` was not lying about B's upload completing.
-
-4. **The proven forward direction is visible end to end outside Nearbytes**
-   - Logged in as B, `mega-ls //from/vincenzoml+02@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih/blocks` shows both forward files:
-     - `ff03aaed7a56893fdadaf57af488106e8366f0fa9a5d703edbe5d823a24622cd.bin`
-     - `14559f2fb1c688277b90a39a3ead37ec926cc1c5fa2cf870a99a0bb90bdf1116.bin`
-
-5. **The reverse direction is broken before Nearbytes can mirror it locally**
-   - Logged in as A, `mega-ls //from/vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih` returns:
-     - `NO_KEY`
-   - Logged in as A, `mega-find //from/vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih` returns:
-     - `vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih/NO_KEY/NO_KEY`
-     - `vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih/NO_KEY`
-     - `vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih`
-   - Logged in as A, `mega-ls //from/vincenzoml+03@gmail.com:nearbytes-live-seq-mnc7nr0w-nxh3ih/blocks` fails because the child path is not decryptable.
-
-## Current interpretation
-
-- Communication is **not symmetric in practice** for the current live account state, even though the Nearbytes code path is largely symmetric.
-- The strongest evidence points to a **MEGA incoming-share key availability problem on A for B-owned shares**, not to a local mirror bug and not to a test harness artifact.
-- More precisely:
-  - **B owner root is healthy** and contains the uploaded block.
-  - **A incoming share edge exists**, so the share is present at the account relationship level.
-  - **A cannot decrypt the incoming root subtree** (`NO_KEY`), so neither MEGAcmd nor Nearbytes can see `blocks/` there.
-- That makes the remaining bug narrower than “reverse sync is flaky”: it is a **one-sided incoming-share key delivery / application failure** for B -> A.
-- The fact that A can successfully share to B while B's reciprocal share lands on A as `NO_KEY` means the next investigation should focus on:
-  - secure `s2` payload parity for B-owned outgoing shares,
-  - `^!keys` pending-outshare state around B -> A,
-  - whether A's session is missing a required inshare key promotion step for B-owned shares.
-
-## Official source reconciliation (2026-03-28)
-
-- **MEGA help**: undecrypted shared folders mean the recipient session is missing the right key; the documented remediation is logout/reload and, if needed, **remove and re-add the share**.
-- **MEGAcmd SDK**: `pk` is a supplemental pending-key path. `CommandPendingKeys("pk")` returns pending inbound keys when present, but the client also keeps separate missing-key / pending-share state and promotes shares later.
-- **MEGA webclient**: `pk` `ENOENT` is treated as ordinary "no pending inshare keys"; the client still keeps undecryptable `su` nodes as missing-key state. This matches the orange "Undecrypted" web UI rows and Nearbytes `skippedNoDecrypt` exactly.
-- **Practical conclusion**: the last parser additions were correct but not sufficient. The remaining issue is now more likely in **fresh inbound share delivery / application** than in key-manager parsing.
-
-## Wipe and revoke (disposable test storage)
-
-Cleaning mega.nz for the two disposable accounts needs **two layers**: (1) **revoke cross-outgoing folder shares** between those emails, (2) **delete owned nodes** under Cloud Drive and Rubbish.
-
-### Implemented methods
-
-1. **`revokeMegaOutgoingSharesForPeers`** (`src/integrations/mega.ts`, exported)  
-   - **Guard:** `NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE=1`.  
-   - Logs in as one account, loads `f` snapshot, scans **`s`** (outgoing) and **`ps`** (pending) rows; for any row whose resolved peer email is in the configured peer list, issues **`s2` without `ok`/`ha`/`r`** on the shared node handle — matching **MEGA SDK `ACCESS_UNKNOWN`** / **CommandSetShare** “remove share”.  
-   - Dedupes by `(nodeHandle, peerEmail)`; loops up to 10 rounds so MEGA can reflect revokes.  
-   - **Effect:** Removes the owner-side edge so the other account’s **Incoming shares** should drop those folders (stops accumulation of app-created undecrypted rows between `+02` and `+03`).
-
-2. **`wipeMegaCloudDriveContentsForE2e`** (existing)  
-   - Post-order delete of every node under **Cloud Drive** root, then **Rubbish Bin**, repeated until empty (same env guard).  
-   - **Per-delete delay** in `wipeMegaSubtreeHandles` was reduced (**150ms → 25ms**) so wiping very large trees (tens of thousands of nodes) is **practical**; still **O(n) API calls**, so a full wipe can take **tens of minutes** on huge `nearbytes` mirrors.
-
-3. **`yarn e2e:mega-wipe`** (`scripts/e2e-mega-wipe.mjs`)  
-   - For **each** email in `NEARBYTES_E2E_MEGA_ACCOUNTS` or owner+recipient: first **`revokeMegaOutgoingSharesForPeers`** against the *other* account(s), then **`wipeMegaCloudDriveContentsForE2e`**.
-
-4. **`yarn e2e:mega-bidirectional-transport`** when **`NEARBYTES_E2E_SKIP_MEGA_WIPE` is unset**  
-   - Runs the **same revoke-then-wipe** sequence for both env accounts before the test (shared helper pattern as the wipe script).
-
-5. **`NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport`**  
-  - **Still revokes** outgoing cross-shares for the two env accounts before the transport test, but skips the expensive Cloud Drive/Rubbish wipe.
-  - Set **`NEARBYTES_E2E_SKIP_MEGA_REVOKE=1`** only if you intentionally want to preserve stale incoming/outgoing share state too.
-
-### Results so far (cleanup)
-
-- **Revoke:** In a real run, **`+02` revoked 6** outgoing share rows to the peer; **`+03` revoked 4** — consistent with stacked E2E invites / folder shares.  
-- **Full wipe:** A **56k+ node** Cloud Drive makes **sequential `d` deletes** extremely slow; a long-running wipe was **aborted mid-account** in one session after revoke had already completed. **Partial wipe** leaves debris; **incoming empty + owner `-3`** can still dominate the next transport run if trees stay huge.  
-- **Third-pass live result:** Revoke-only preflight under `NEARBYTES_E2E_SKIP_MEGA_WIPE=1` reduced B's undecryptable incoming roots from **13** to **1**. This proved the bulk of the contamination was stale cross-shares, but it also isolated one **fresh** inbound root that still arrives without a usable key.
-- **Conclusion:** For **deterministic** transport tests, prefer **revoke + full wipe** when time allows, or **manually** clear mega.nz once; otherwise expect **heavy `f` / `-3`** noise. If revoke-only leaves exactly one undecryptable incoming root, the investigation should pivot from cleanup to **fresh inbound-share key application**.
-
-### Other related mitigations (incoming / keys)
-
-- **`registerMegaShareKeyHandlesForNode`:** after decrypting node **`sk`**, register the share key under **`node.h`** and **every owner handle parsed from `node.k`**, so **`decryptNodeKey`** can resolve incoming nodes (MEGA often keys by sharer handle, not recipient copy handle).  
-- **`fetchMegaPendingInShareKeys`:** `pk` returning **`-9` / `API_ENOENT`** is now treated as a benign "no pending keys" case, matching MEGA SDK/webclient behavior.  
-- **`listIncomingShares`:** up to **4 passes** with delays when `su` nodes exist but **`skippedNoDecrypt`** and **no offers**, to allow key-manager / propagation.  
-- **Provisional incoming offers:** when MEGA exposes an incoming root with `su` metadata but Nearbytes still cannot decrypt it, the adapter now surfaces a fallback offer from the root metadata instead of reporting `offerCount: 0`. This mirrors the webclient's ability to track inshares before the root name decrypts.
-- **Pending-root bootstrap:** when an accepted incoming share exists but the requested root is still undecryptable, recipient bootstrap now stays in retrying `syncing` state instead of treating the first attempt as terminal.
-- **Transport script:** **`inviteManagedShareWithMegaRetry`** on **`-3`**; **12s settle** after both invites; **serial** incoming polls (**`INCOMING_OFFER_TIMEOUT_MS` = 720_000**) instead of **parallel** `Promise.all` to reduce concurrent **`f`** / `-3`; and **revoke-only cleanup** now runs even when wipe is skipped.  
-- **Not implemented / reverted:** Gmail “`+tag`” normalization for offer matching — test accounts use real addresses as-is; matching stays **trim + case-insensitive** equality only.
-
-## Findings (concise)
-
-| Area | Finding |
-|------|--------|
-| Polling vs owner sync | `getManagedShareState()` scheduled `ensureSync` on every poll → owner stuck “syncing”. **Mitigation:** throttle scheduling (~120s per share). |
-| Owner bootstrap | Repeated `ensureSync` re-ran heavy initial sync even with watchers active. **Mitigation:** skip blocking initial `runSyncLoop` when the owner loop is already active. |
-| List vs download | Different trees caused “listed but not downloadable”. **Mitigation:** `listCycleTree` + refetch fallback in owner adapter `download()`. |
-| Phantom `channels/` | Entries listed but not resolvable blocked the whole mirror pass. **Mitigation:** `MirrorWorker` skips vanished / missing owner paths. |
-| Partial fetch + `-3` | Full fallback after partial failure could enumerate huge trees. **Mitigation:** `allowTransientFullFallback` — readonly paths may full-fallback; owner folder operations use `false`. |
-| Incoming offers | Tree shows shared nodes but decrypt fails without share keys → `skippedNoDecrypt`. **Mitigation:** key-manager **cache** when a fetch returns empty; **multi-pass** `listIncomingShares`; **share-key handle aliases** on `k`/`h`. |
-| Contact invites | Short lookup timeout was too tight for MEGA. **Mitigation:** longer `FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS` for MEGA. |
-| E2E isolation | Shared `/nearbytes` caused cross-run interference. **Mitigation:** per-run `remoteBasePath` (e.g. `/nearbytes-e2e-<id>`) and `NEARBYTES_MEGA_REMOTE_BASE`. |
-| Wipe script | Hang risk + huge trees. **Mitigation:** abort timeout; **faster inter-delete delay** (25ms); **revoke-before-wipe** so incoming share list is cleared between the two disposable accounts. |
-| Concurrent MEGA API | Two peers polling **incoming** in parallel plus multi-pass discovery amplifies **`-3`** and **empty** listings. **Mitigation:** **serial** incoming poll + longer timeout; invite **`-3` retries**. |
-| Official client parity | **`pk` `-9` / `API_ENOENT`** is a normal "nothing pending" case in MEGA clients; it is not evidence of a separate failure. |
-| Third-pass cleanup effect | Revoke-only cleanup cut B's stale undecryptable roots **13 -> 1**; the remaining failure is the **fresh** inbound root itself, not the old share pileup. |
-| Incoming-root warmup | A fresh inshare root can exist before Nearbytes can decrypt its attributes. **Mitigation:** surface a provisional offer from `su` root metadata and keep accepted recipient bootstrap retrying while the root key is still pending. |
-
-## Hypotheses (current)
-
-1. **Stale cross-shares were a real problem**, and revoke-only cleanup is necessary even when wipe is skipped. That part is now confirmed by the **13 -> 1** reduction in B's undecryptable incoming roots.  
-2. The **remaining** failure is **not** explained by stale pileup alone: the **fresh** inbound root **`cIVQ2bjB`** itself arrives on B without `sk` and without any usable key from current key-manager sources.  
-3. Nearbytes now matches the MEGA clients more closely at the **discovery** layer by exposing undecryptable `su` roots as provisional offers, so if the live rerun still stalls the remaining root cause is narrower: **share-row / action-packet key delivery or application**, not offer enumeration.  
-4. The latest diagnostics further narrow the gap: for the failing incoming root, Nearbytes can now prove the root node itself exists in the `f` snapshot while **all currently consumed key channels remain empty** (`sk`, share rows, pending inshares, resolved share keys).  
-5. **`-3`** still adds noise, especially on B owner sync, but after cleanup it no longer explains the missing incoming offer by itself.
-
-## Testing phase (live e2e results only)
-
-Mock tests are regression guards. They do not validate MEGA transport. Only live e2e results matter.
-
-1. **`NEARBYTES_E2E_SKIP_MEGA_WIPE=1 node scripts/e2e-mega-readonly-share.mjs`** — **FAILS.** Owner upload times out at 45s. Root cause: share key not found for newly created folder, so push sync does nothing.
-2. **`NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport`** — **FAILS.** 7 of 8 recent runs Exit Code: 1. Same share-key resolution failure blocks owner uploads.
-3. **X-Hashcash** is solved correctly — no more `-3` rate-limit storms in recent runs.
-4. **Revoke-only cleanup** reduced stale undecryptable incoming roots from 13 to 1 in earlier runs.
-5. **Wipe script** (`yarn e2e:mega-wipe`) works but is slow on large accounts; user has wiped manually when needed.
-6. **Latest readonly rerun after owner-key cache changes** — **FAILS earlier.** Fresh root `tF1VzBpB` never reaches owner `ready`; bootstrap logs the same share-key miss (`keyManagerShareCount: 5`, `snapshotShareKeyCount: 0`) and exits at 60s with owner state still `syncing`.
-7. **Readonly rerun with longer owner timeout after SDK-parity patch** — owner A does reach `ready`; the previous 60s bootstrap timeout was masking a slower first sync cycle. The test then reaches the first forced upload and, with a longer upload budget, reaches the actual `A -> B` invite stage.
-8. **Invite-stage live result after SDK-parity patch** — Nearbytes logs `MEGA owner share key prepared in ^!keys before issuing a new share` and sends `s2` with `isNewShare: true`, but the run still stalls in repeated `A→B: invite -3, backoff ...` retries before the invite settles.
-9. **Interpretation of that result** — the previous root cause was real and improved, but the secure-share flow is still not fully replicated. The next likely fixes are around secure `s2` payload shape and the extra `^!keys` bookkeeping that official clients perform around outshares.
-
-## Commands and environment
-
-- **Secrets:** repo-root `.env.e2e` (gitignored). Two MEGA accounts (`NEARBYTES_E2E_MEGA_OWNER_EMAIL`, `NEARBYTES_E2E_MEGA_RECIPIENT_EMAIL`, `NEARBYTES_E2E_MEGA_PASSWORD`).  
-- **Revoke + wipe both accounts:**  
-  `yarn e2e:mega-wipe`  
-  (sets `NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE` internally via script.)  
-- **Transport only (no wipe):**  
-  `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport`  
-- **Transport with revoke skipped too (usually a bad idea while debugging stale shares):**  
-  `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 NEARBYTES_E2E_SKIP_MEGA_REVOKE=1 yarn e2e:mega-bidirectional-transport`  
-- **Transport with revoke+wipe first:** omit `NEARBYTES_E2E_SKIP_MEGA_WIPE=1` (long).  
-- **Regression:** `yarn build` + the three integration test files above.
-
-## Next steps for the next agent
-
-**Reminder: no mocks. Only the live e2e test matters.**
-
-1. **Fix the share-key resolution bug.** The owner creates a folder via MEGA API, but the returned share key is never stored/indexed under the new folder's handle. Investigate `registerMegaShareKeyHandlesForNode`, the `s2` invite flow, and the `ok` (owner-key) path to find where the key is dropped.
-2. **Run the live e2e test** after every code change. The test is: `NEARBYTES_E2E_SKIP_MEGA_WIPE=1 node scripts/e2e-mega-readonly-share.mjs`. If it exits 0, it works. If not, keep fixing.
-3. Do not spend time on mock tests, new mock infrastructure, or reporting mock results. Run mock regression suites only to catch breakage from code changes.
-4. **Commit** once the live e2e test passes.
-
----
-
-# MEGA Bidirectional Readonly Transport WIP
+# WIP
 
 ## Goal
-Prove and stabilize end-to-end bidirectional Nearbytes synchronization over MEGA using two accounts:
-
-- User A owns a writable `/nearbytes` MEGA root and shares it read-only to User B.
-- User B owns a writable `/nearbytes` MEGA root and shares it read-only to User A.
-- Nearbytes must mirror A -> B and B -> A over MEGA transport only.
-- No Nearbytes HTTP server should be required for the core transport test.
-
-## Local Test Setup
-
-### Accounts
-- User A: configured locally in `.env.e2e`
-- User B: configured locally in `.env.e2e`
-- Password is stored only in `.env.e2e` and is intentionally not committed.
-
-### Primary runner
-- Command:
-
-```bash
-yarn e2e:mega-bidirectional-transport
-```
-
-### Runner behavior
-- Loads repo-root `.env.e2e`
-- Unless `NEARBYTES_E2E_SKIP_MEGA_WIPE=1`, **revokes outgoing cross-shares** between the two env accounts, then **wipes** Cloud Drive + Rubbish on both (same sequence as `yarn e2e:mega-wipe`)
-- Creates two isolated temp peers, each with:
-  - dedicated `roots.json`
-  - dedicated `integrations.json`
-  - dedicated secret store
-  - `ManagedShareService`
-  - real `MegaTransportAdapter`
-- Connects both accounts directly in-process
-- Waits for owner shares to become ready
-- Cross-invites readonly shares
-- Accepts contact invites when available
-- Accepts incoming readonly shares
-- Pushes canonical files in both directions and waits for the mirrored file to appear on the other side
-
-## Files Added Or Changed For This Investigation
-
-### New files
-- `scripts/e2e-mega-bidirectional-transport.mjs`
-- `WIP.md`
-
-### Existing files changed
-- `package.json`
-- `scripts/e2e-mega-bidirectional-transport.mjs`
-- `scripts/e2e-mega-wipe.mjs`
-- `src/integrations/managedShares.ts`
-- `src/integrations/mega.ts`
-- `src/integrations/mirrorWorker.ts`
-
-## What Was Fixed So Far
-
-### 1. Re-entrant owner sync from polling
-Problem:
-- `getManagedShareState()` scheduled a fresh `ensureSync()` on every poll in inline mode.
-- The E2E runner polls aggressively.
-- Each poll could reset owner state back to `syncing`, so the test never saw a stable `ready`.
-
-Change:
-- Added throttling in `ManagedShareService` so `getManagedShareState()` only schedules a sync at most once per share per 120 seconds.
-
-Expected effect:
-- State polling should observe stable owner readiness instead of constantly retriggering bootstrap.
 
-### 2. Owner `ensureSync()` was blocking repeatedly
-Problem:
-- Once an owner share already had push/pull watchers and timers running, repeated `ensureSync()` still awaited a full `runSyncLoop()`.
-
-Change:
-- Owner `ensureSync()` now skips the blocking initial `runSyncLoop()` when the owner loop is already active.
-
-Expected effect:
-- Avoid repeated expensive full MEGA syncs due to harmless state/UI polling.
-
-### 3. Owner adapter used inconsistent trees for `list()` vs `download()`
-Problem:
-- `MegaOwnerRemoteAdapter.list()` fetched a fresh MEGA tree.
-- `download()` used the older `ownerRoot.tree` captured earlier.
-- This produced cases where `list()` reported a file but `download()` could not find it.
-
-Change:
-- Added `listCycleTree` to reuse the tree fetched during `list()`.
-- `download()` first resolves from `listCycleTree`, and only falls back to one fresh refetch if needed.
-
-Expected effect:
-- Eliminate stale-tree skew inside one sync pass.
-
-### 4. Phantom MEGA entries were failing full owner sync
-Observed:
-- MEGA repeatedly exposes `channels/...` entries that appear during enumeration but are not resolvable when downloading.
-- This previously failed the entire `MirrorWorker.sync()`.
-
-Change:
-- `MirrorWorker` now treats:
-  - `MEGA owner folder is missing ...`
-  - `MEGA mirror entry not found: ...`
-  as skippable remote-path skew and continues the sync.
-
-Expected effect:
-- Owner sync should complete with skipped entries instead of failing the entire pass.
+Nearbytes is moving to an opaque event model.
 
-### 5. Owner transient timeout handling
-Problem:
-- Long owner syncs could abort and leave the share in a failing state.
+New rule:
+- anything that reveals the semantic contents of an event must be encrypted
 
-Change:
-- Owner sync now treats `AbortError` as transient in the owner-sync catch path and surfaces retryable behavior instead of a hard failure.
+This is a clean break:
+- no backward compatibility
+- no migration support
+- old local data may be wiped
+- old specs can be superseded freely
 
-Expected effect:
-- Long-running owner syncs keep retrying instead of poisoning the share state.
+## Locked Decisions
 
-### 6. Background owner refresh should not always flip state back to `syncing`
-Problem:
-- Even after a successful owner sync, background refreshes could change the state back to `syncing`, making long polls unreliable.
+### Event envelope
 
-Change:
-- If a share is already `ready` with `Synced`, background owner refresh keeps that ready state rather than forcing a visible transition back to `syncing`.
+Visible event envelope:
+- protocol version
+- full signing public key
+- cleartext list of referenced block hashes
+- ciphertext payload
+- signature
 
-Expected effect:
-- Pollers can continue to observe readiness while background refresh happens.
+Implicitly visible by storage nature:
+- channel id
+- event hash
+- event file size
 
-### 7. Contact invites during cross-share setup
-Problem:
-- MEGA sometimes requires accepting a contact request before an incoming folder share becomes visible.
+Not visible:
+- event type
+- file names
+- timestamps
+- wrapped keys
+- nested protocol ids
+- chat bodies
+- identity records
+- app-record semantics
+- any other semantic payload content
 
-Change:
-- The transport E2E script now:
-  - explicitly checks incoming provider contact invites
-  - accepts all MEGA contact invites during setup
-  - also retries invite acceptance during incoming-share polling
+### Event signing
 
-Expected effect:
-- Cross-invited readonly shares should become visible without manual browser intervention.
+- the event signature covers the whole visible envelope plus the ciphertext payload
+- the event hash is computed from the same signed bytes, excluding only the signature field itself
 
-### 8. More realistic long-running MEGA timings
-Changes in the transport E2E script:
-- `syncTimeoutMs` increased to 900s
-- owner/recipient ready waits increased to 960s
-- incoming-share polling increased
-- `syncIntervalMs` relaxed to reduce overlap with initial full sync
+### Crypto/versioning
 
-Expected effect:
-- Large or noisy `/nearbytes` trees get enough time to converge.
+- protocol version alone fixes the crypto/hash suite
+- no separate cleartext crypto-suite marker is required
 
-## Regression Guards (mock tests — NOT proof of correctness)
+### Block references
 
-These mock-based test suites exist as regression guards only. **Passing mocks is not evidence that the MEGA transport works.** Do not add new mocks for this task. Do not report mock results as progress.
+- the cleartext block hash list is semantically unordered
+- zero referenced blocks is allowed
+- duplicates should not be emitted by the implementation
+- block references mean "this event mentions these ciphertext blocks"
+- the storage layer uses only this visible dependency list
+- application semantics stay inside ciphertext
 
-- `src/integrations/__tests__/megaAdapter.test.ts` (30 tests)
-- `src/integrations/__tests__/mirrorWorker.test.ts`
-- `src/integrations/__tests__/managedShares.test.ts` (44 tests)
+### Signer hint
 
-Run them after code changes to catch regressions, but the only meaningful validation is the live e2e test.
+- the visible signer hint is the full public key
 
-## Live End-to-End Results So Far
+### Namespace
 
-### A. Original transport-only run
-Result:
-- Failed early on login when the wrong owner email was used.
+There is no naked shared hash namespace.
 
-Correction:
-- Local `.env.e2e` was updated to use the correct owner and recipient addresses.
+Object identity is typed:
+- `(event, H)`
+- `(block, H)`
 
-### B. Simultaneous account connect attempt
-Result:
-- Frequent MEGA API `-3` temporary lock behavior.
-- One owner share never reached ready.
+This matters especially for the future peer-log.
 
-Interpretation:
-- Bringing two accounts up concurrently is too aggressive for MEGA.
+## Event model direction
 
-Adjustment:
-- Serialized startup:
-  - connect A
-  - wait for A
-  - cooldown
-  - connect B
+Events are storage-layer objects with:
+- a visible envelope
+- an opaque encrypted payload
 
-### C. Post-serialization owner sync
-Result:
-- Owner sync still got stuck.
-- Investigation showed re-entrant sync scheduling from `getManagedShareState()` was part of the problem.
+The encrypted payload contains the application-level command or record.
 
-Adjustment:
-- Added throttling and idempotent owner bootstrap behavior.
+Examples:
+- file create/delete/rename commands live inside ciphertext
+- chat message records live inside ciphertext
+- identity records and identity snapshots live inside ciphertext
+- generic app records live inside ciphertext
 
-### D. Stale-tree mismatch
-Result:
-- Logs repeatedly showed:
-  - `download target not found in tree`
-  - owner list saw files that owner download could not resolve
+Important distinction:
+- block references remain visible for storage/liveness
+- event meaning does not
 
-Adjustment:
-- Added `listCycleTree` and fresh fallback resolution in `MegaOwnerRemoteAdapter.download()`.
+## LAN direction
 
-### E. Large pre-existing owner tree
-Result:
-- Owner sync frequently encountered old `channels/...` entries listed by MEGA but missing on actual download.
-- These entries were blocking owner readiness.
+Local network is not a provider account.
+It must be its own transport tab.
 
-Adjustment:
-- `MirrorWorker` now skips such unresolvable entries.
+Current bug:
+- the generic provider connect flow is still used for `local-network`
+- this produces `Unsupported provider: local-network`
 
-### F. Current latest live state
-Current latest failure pattern:
-- Owner A still does a very long first sync.
-- Logs show many collaborator timeout messages while sync is in progress.
-- Phantom channel entries are now skipped instead of aborting the entire sync.
-- The most recent blocker has shifted to either:
-  - owner A not surfacing stable `ready` quickly enough during the first long sync, or
-  - incoming share discovery still not producing the cross-offer in time after invites
-
-Representative latest failure:
-- `No incoming MEGA offer from <other account> within 300000ms`
-
-That means the pipeline now gets significantly further than earlier failures, but the cross-share visibility is still not reliable enough.
-
-## Important Observations About MEGA
-
-### 1. MEGA is eventually consistent and noisy
-- `-3` temporary lock responses occur frequently.
-- The same account can validate successfully and then hit transient lock behavior moments later.
-- Incoming discovery can lag well behind invite creation.
-
-### 2. `/nearbytes` on these accounts is not clean
-- Even when skipping wipe, many historic `channels/...` files are visible.
-- Some are phantom or inconsistently resolvable.
-- This massively increases first-sync cost and noise.
-
-### 3. Wipe likely matters for true determinism
-The most reliable path to a real green transport E2E is probably:
-
-1. wipe both accounts
-2. create fresh owner roots
-3. cross-invite
-4. accept contact invites
-5. wait for fresh incoming shares
-6. perform A -> B and B -> A pushes
-
-Without a wipe, the test is currently validating both:
-- the new bidirectional transport flow
-- the ability to survive historic account debris
-
-That is a much harder problem.
-
-## Current Main Hypotheses
-
-### Hypothesis 1
-Incoming share discovery still misses legitimate MEGA offers because:
-- share keys are not yet available at the time of fetch/decrypt
-- contact acceptance has propagated only partially
-- the polling window is still too short for MEGA propagation under load
-
-### Hypothesis 2
-The initial owner sync is still too expensive on these accounts because old phantom `channels/*` entries force repeated download resolution work and timeouts.
-
-### Hypothesis 3
-Collaborator lookup timeouts are not the root cause, but they are adding noise and may be competing for the same MEGA session budget during first sync.
-
-## Next Fix Directions
-
-### High priority
-- Relax or suppress collaborator lookups during first transport bootstrap in the transport runner path.
-- Add stronger logging around:
-  - contact invites found/accepted
-  - incoming share offers found per account
-  - inventory snapshots before and after invite acceptance
-- Consider explicit polling of provider share inventory debug data when incoming offers are empty.
-
-### Medium priority
-- Make owner first-sync completion less sensitive to unresolved legacy channel nodes.
-- Consider skipping remote downloads of entries that fail repeated resolution within one pass, rather than retrying them again inside the same long sync window.
-
-### Strong recommendation for deterministic validation
-- Run the transport E2E without `NEARBYTES_E2E_SKIP_MEGA_WIPE=1` once the current fixes are committed, so both MEGA roots are clean.
-
-## Commands Used Repeatedly
-
-```bash
-yarn build
-yarn test src/integrations/__tests__/megaAdapter.test.ts
-yarn test src/integrations/__tests__/mirrorWorker.test.ts
-yarn test src/integrations/__tests__/managedShares.test.ts
-NEARBYTES_E2E_SKIP_MEGA_WIPE=1 yarn e2e:mega-bidirectional-transport
-```
-
-## Commit Intent
-This file documents the current MEGA transport debugging state so the work can continue without losing context across long-running E2E attempts.
+Near-term LAN direction:
+- remove provider-account behavior from Local network
+- keep transport/service status separate from provider account UX
+- make peer errors local to peer cards instead of global provider errors
+
+Longer-term LAN sync direction:
+- use a per-peer ordered log of hash observations
+- the peer-log observes both events and blocks
+- the peer-log is one sequence per peer, not per volume
+- block observations are useful even before the referencing event is seen
+- future queries should support "after X, what else have you seen?" optionally scoped to volumes
+
+Important nuance:
+- block observations do not carry volume attribution by themselves
+- volume linkage comes from events, because events mention referenced block hashes
+
+## Whitepaper note
+
+The original whitepaper photo example is less strict than the new design.
+
+In that example:
+- ciphertext block contents are encrypted
+- wrapped content keys are encrypted
+- block hashes are visible
+- event structure remains partly visible
+
+This branch is intentionally moving to a stricter design than the original whitepaper example.
+
+## Implementation blast radius
+
+The current code still assumes semantic fields are visible in outer event payloads.
+
+Main code areas that will need coordinated changes:
+
+### Event types and serialization
+- `src/types/events.ts`
+- `src/storage/serialization.ts`
+- `src/storage/integrity.ts`
+- `src/storage/channel.ts`
+
+### File protocol and replay
+- `src/domain/fileEventCodec.ts`
+- `src/domain/fileEvents.ts`
+- `src/domain/fileService.ts`
+- `src/domain/volume.ts`
+- `src/domain/operations.ts`
+
+### Chat / identity / app-record flow
+- `src/domain/chatCodec.ts`
+- `src/domain/chatService.ts`
+
+### Multi-root / storage metadata
+- `src/storage/multiRoot.ts`
+- any code that currently infers referenced blocks from visible `CREATE_FILE` fields
+
+### UI / API payload inspection
+- `ui/src/App.svelte`
+- `ui/src/lib/api.ts`
+- any endpoint that exposes raw event payload details
+
+### LAN sync
+- `src/integrations/localNetworkSync.ts`
+- `src/server/routes.ts`
+- `src/server/runtime.ts`
+
+### Tests
+- domain tests
+- storage tests
+- provider adapter tests that synthesize events directly
+- UI expectations around visible event payloads
+
+## Current code assumptions that are now wrong
+
+The following old assumptions must be removed:
+- `CREATE_FILE` metadata is visible in the outer payload
+- block attribution is derived from visible file-event fields
+- chat and identity records are visible in the outer payload
+- event type is visible at the storage layer
+- Local network can reuse generic provider-account connect flows
+
+## Target wire shape
+
+Intended event object shape at a high level:
+
+- `version`
+- `publicKey`
+- `blockRefs`
+- `ciphertext`
+- `signature`
+
+Where:
+- `version` is cleartext
+- `publicKey` is cleartext
+- `blockRefs` is cleartext
+- `ciphertext` holds the application payload
+- `signature` authenticates the full event envelope plus ciphertext
+
+The encrypted inner payload should carry enough information to reconstruct:
+- file operations
+- chat timeline events
+- identity publications / snapshots
+- generic app records
+
+## Spec rewrite plan
+
+These specs need version bumps and rewrites because they currently describe too much cleartext:
+
+- `docs/specs/application/file-events-v2.md`
+- `docs/specs/application/chat-events-v1.md`
+- `docs/specs/application/app-records-v1.md`
+- `docs/specs/storage/meta-storage-v2.md`
+- `docs/specs/storage/data-correctness-v1.md`
+- `docs/specs/transport/lan-sync-v1.md`
+- likely `docs/specs/registry/protocol-registry.md`
+
+Likely new versions:
+- file events v3
+- chat events v2
+- app records v2
+- meta-storage v3
+- data-correctness v2
+- lan-sync v2
+
+Reference docs may also need edits if they currently imply visible outer semantics.
+
+## Intended implementation strategy
+
+Recommended order:
+
+1. rewrite and bump the normative specs
+2. replace outer event payload types with a visible envelope + opaque ciphertext
+3. move file/chat/identity/app command data into encrypted inner payload codecs
+4. update integrity validation to validate only what remains visible plus decryptable application rules where appropriate
+5. update replay/materialization code to decrypt inner payloads before interpreting commands
+6. update multi-root block tracking to rely on visible block reference lists
+7. update LAN sync to work with the new event envelope and fix the Local network UI/account split
+8. update tests and UI tooling
+
+## Important open implementation details
+
+These are not product decisions anymore; they are implementation tasks:
+
+- define the exact binary/JSON serialized shape of the new event envelope
+- define the encrypted inner payload schema for file commands
+- define the encrypted inner payload schema for app/chat/identity records
+- ensure decryption keys are available from the volume secret path where replay happens
+- ensure UI detail views do not assume visible semantic payload fields
+- decide how much decrypted detail the API should expose to trusted local UI callers
+
+## Recommended handoff note
+
+If another agent picks this up, the immediate next safe step is:
+- update the specs first
+- then change `src/types/events.ts` and `src/storage/serialization.ts`
+- then thread the new model through file/chat/identity replay
+
+Do not try to patch LAN sync first.
+The event format change is the root change.
