@@ -1,3 +1,4 @@
+import { createECDH } from 'crypto';
 import { describe, it, expect } from 'vitest';
 import { createCryptoOperations } from '../../crypto/index.js';
 import { createSecret } from '../../types/keys.js';
@@ -96,6 +97,14 @@ describe('CryptoOperations', () => {
 
       expect(keyPair1.privateKey).toEqual(keyPair2.privateKey);
       expect(keyPair1.publicKey).toEqual(keyPair2.publicKey);
+    });
+
+    it('should derive the public key directly from the private scalar', async () => {
+      const secret = createSecret('codex-cross-platform-secret');
+      const keyPair = await crypto.deriveKeys(secret);
+      const ecdh = createECDH('prime256v1');
+      ecdh.setPrivateKey(Buffer.from(keyPair.privateKey));
+      expect(keyPair.publicKey).toEqual(new Uint8Array(ecdh.getPublicKey(undefined, 'uncompressed')));
     });
   });
 
