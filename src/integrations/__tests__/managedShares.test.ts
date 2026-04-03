@@ -2076,6 +2076,160 @@ describe('ManagedShareService', () => {
     expect(incoming.shares[0]?.label).toBe('shared-demo');
   });
 
+  it('auto-attaches accepted non-canonical MEGA incoming shares to tracked local volumes', async () => {
+    const adapter = new IncomingShareAdapter([
+      {
+        label: 'shared-demo',
+        remoteDescriptor: {
+          remotePath: 'friend@example.com:shared-demo',
+          shareName: 'shared-demo',
+          ownerEmail: 'friend@example.com',
+          rootHandle: 'share-root-demo',
+          shareHandle: 'share-root-demo',
+          accessLevel: 'read/write',
+        },
+      },
+    ]);
+    const trackedVolumeId =
+      '0448eb9656ceaca3817f9375f65320fcf67710ec46f4064635f42733deda447ca5018dc71f949ff8f9e3c8a80346f12fb45060ee9b9a0119d4942b7c3d1ad2df05';
+    const { localRoot, rootsConfigPath, service } = await createHarness({ adapters: [adapter] });
+
+    await fs.mkdir(path.join(localRoot, 'channels', trackedVolumeId), { recursive: true });
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'reader@example.com',
+      credentials: {
+        email: 'reader@example.com',
+        password: 'secret',
+      },
+    });
+
+    const accepted = await service.acceptManagedShare({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'shared-demo',
+      remoteDescriptor: {
+        remotePath: 'friend@example.com:shared-demo',
+        shareName: 'shared-demo',
+        ownerEmail: 'friend@example.com',
+        rootHandle: 'share-root-demo',
+        shareHandle: 'share-root-demo',
+        accessLevel: 'read/write',
+      },
+    });
+
+    expect(accepted.share.role).toBe('recipient');
+    expect(accepted.attachments.map((attachment) => attachment.volumeId)).toEqual([trackedVolumeId]);
+
+    const updatedConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    expect(
+      updatedConfig.volumes.find((volume) => volume.volumeId === trackedVolumeId)?.destinations.some(
+        (destination) => destination.sourceId === accepted.share.sourceId
+      )
+    ).toBe(true);
+  });
+
+  it('repairs detached non-canonical MEGA incoming shares by attaching tracked local volumes', async () => {
+    const trackedVolumeId =
+      '0448eb9656ceaca3817f9375f65320fcf67710ec46f4064635f42733deda447ca5018dc71f949ff8f9e3c8a80346f12fb45060ee9b9a0119d4942b7c3d1ad2df05';
+    const { integrationStatePath, localRoot, rootsConfigPath, service } = await createHarness();
+
+    await fs.mkdir(path.join(localRoot, 'channels', trackedVolumeId), { recursive: true });
+
+    const detachedShareLocalPath = path.join(path.dirname(localRoot), 'managed-root', 'mega', 'friend-example-com', 'shared-demo');
+    await fs.mkdir(path.join(detachedShareLocalPath, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(detachedShareLocalPath, 'channels'), { recursive: true });
+    await fs.writeFile(path.join(detachedShareLocalPath, 'Nearbytes.html'), 'marker\n', 'utf8');
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: [],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'reader@example.com',
+            state: 'connected',
+            detail: 'MEGA is connected.',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-detached',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'shared-demo',
+            role: 'recipient',
+            localPath: detachedShareLocalPath,
+            sourceId: 'src-mega-detached',
+            syncMode: 'mirror',
+            remoteDescriptor: {
+              remotePath: 'friend@example.com:shared-demo',
+              shareName: 'shared-demo',
+              ownerEmail: 'friend@example.com',
+              rootHandle: 'share-root-demo',
+              shareHandle: 'share-root-demo',
+              accessLevel: 'read/write',
+            },
+            capabilities: ['mirror', 'read', 'accept'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const repairedRootsConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    repairedRootsConfig.sources.push({
+      id: 'src-mega-detached',
+      provider: 'mega',
+      path: detachedShareLocalPath,
+      enabled: true,
+      writable: false,
+      reservePercent: 5,
+      opportunisticPolicy: 'drop-older-blocks',
+      integration: {
+        kind: 'provider-managed',
+        provider: 'mega',
+        managedShareId: 'share-mega-detached',
+      },
+    });
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(repairedRootsConfig, null, 2)}\n`, 'utf8');
+
+    await service.dispose();
+    services.delete(service);
+
+    const repairedStorage = new MultiRootStorageBackend(repairedRootsConfig);
+    const repairedService = new ManagedShareService({
+      storage: repairedStorage,
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
+      readMaintenanceMode: 'inline',
+    });
+    services.add(repairedService);
+
+    const summaries = await repairedService.listManagedShares();
+    const detachedShare = summaries.shares.find((entry) => entry.share.id === 'share-mega-detached');
+    expect(detachedShare?.attachments.map((attachment) => attachment.volumeId)).toEqual([trackedVolumeId]);
+
+    const updatedConfig = JSON.parse(await fs.readFile(rootsConfigPath, 'utf8')) as RootsConfig;
+    expect(
+      updatedConfig.volumes.find((volume) => volume.volumeId === trackedVolumeId)?.destinations.some(
+        (destination) => destination.sourceId === 'src-mega-detached'
+      )
+    ).toBe(true);
+  });
+
   it('repairs accepted MEGA shares that were incorrectly stored on the account base folder', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-shares-recipient-repair-'));
     tempDirs.add(tempDir);

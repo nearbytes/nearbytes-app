@@ -778,13 +778,24 @@ export class ManagedShareService {
     const latestState = await this.loadState();
     const existing = findManagedShareByRemoteDescriptor(latestState.managedShares, provider, account.id, remoteDescriptor);
     if (existing) {
-      if (input.volumeId && existing.sourceId) {
-        const config = ensureVolumeAttachment(
-          cloneConfig(this.options.storage.getRootsConfig()),
-          input.volumeId,
-          existing.sourceId
-        );
-        await this.persistRootsConfig(config);
+      if (existing.sourceId) {
+        let config = cloneConfig(this.options.storage.getRootsConfig());
+        let changed = false;
+        if (input.volumeId) {
+          const nextConfig = ensureVolumeAttachment(config, input.volumeId, existing.sourceId);
+          changed = nextConfig !== config;
+          config = nextConfig;
+        } else if (shouldAutoAttachTrackedVolumesToManagedShare(existing)) {
+          const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(config.sources, existing.sourceId);
+          for (const trackedVolumeId of trackedVolumeIds) {
+            const nextConfig = ensureVolumeAttachment(config, trackedVolumeId, existing.sourceId);
+            changed = changed || nextConfig !== config;
+            config = nextConfig;
+          }
+        }
+        if (changed) {
+          await this.persistRootsConfig(config);
+        }
       }
       return this.buildManagedShareSummary(existing);
     }
@@ -814,6 +825,11 @@ export class ManagedShareService {
     const nextShare = { ...share, sourceId };
     if (input.volumeId) {
       config = ensureVolumeAttachment(config, input.volumeId, sourceId);
+    } else if (shouldAutoAttachTrackedVolumesToManagedShare(nextShare)) {
+      const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(config.sources, sourceId);
+      for (const trackedVolumeId of trackedVolumeIds) {
+        config = ensureVolumeAttachment(config, trackedVolumeId, sourceId);
+      }
     }
     await this.persistRootsConfig(config);
 
@@ -3139,7 +3155,7 @@ export class ManagedShareService {
       path.resolve(nextShare.localPath)
     );
     let finalConfig = nextConfig;
-    if (isMegaIncomingBaseShare(nextShare)) {
+    if (shouldAutoAttachTrackedVolumesToManagedShare(nextShare)) {
       const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(finalConfig.sources, sourceId);
       for (const volumeId of trackedVolumeIds) {
         finalConfig = ensureVolumeAttachment(finalConfig, volumeId, sourceId);
@@ -3451,18 +3467,14 @@ function isMegaOwnerBaseShare(share: ManagedShare): boolean {
       sanitizeManagedFolderLabel(share.label).toLowerCase() === shareName);
 }
 
-function isMegaIncomingBaseShare(share: ManagedShare): boolean {
+function shouldAutoAttachTrackedVolumesToManagedShare(share: ManagedShare): boolean {
+  if (isMegaOwnerBaseShare(share)) {
+    return true;
+  }
   if (normalizeProvider(share.provider) !== 'mega' || share.role !== 'recipient') {
     return false;
   }
-  const remotePath = getManagedShareRemotePath('mega', share.remoteDescriptor);
-  if (!isMegaIncomingRemotePath(remotePath)) {
-    return false;
-  }
-  const shareName =
-    typeof share.remoteDescriptor?.shareName === 'string' ? sanitizeManagedFolderLabel(share.remoteDescriptor.shareName) : '';
-  const normalizedLabel = sanitizeManagedFolderLabel(share.label).toLowerCase();
-  return shareName.toLowerCase() === MEGA_BASE_SHARE_FOLDER_NAME || normalizedLabel === MEGA_BASE_SHARE_FOLDER_NAME;
+  return isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor));
 }
 
 function sanitizeManagedFolderLabel(value: string): string {
