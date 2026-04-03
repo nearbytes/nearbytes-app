@@ -217,6 +217,42 @@ class ContactInviteIncomingShareAdapter extends IncomingShareAdapter {
   }
 }
 
+class AttentionMegaInviteAdapter extends FakeTransportAdapter {
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  async listIncomingContactInvites(account: ProviderAccount) {
+    return [
+      {
+        id: 'invite-attention-1',
+        provider: 'mega',
+        accountId: account.id,
+        label: 'vincenzoml+05@gmail.com',
+        detail: 'Incoming MEGA contact invite',
+      },
+    ];
+  }
+
+  async listIncomingShares(account: ProviderAccount) {
+    return [
+      {
+        id: 'offer-attention-1',
+        provider: 'mega',
+        accountId: account.id,
+        label: 'nearbytes',
+        ownerLabel: 'vincenzoml+05@gmail.com',
+        detail: 'Incoming MEGA share',
+        remoteDescriptor: {
+          ownerEmail: 'vincenzoml+05@gmail.com',
+          remotePath: '/shared-with-vincenzo-05',
+          shareName: 'shared-with-vincenzo-05',
+        },
+      },
+    ];
+  }
+}
+
 class BlockingIncomingShareAdapter extends FakeTransportAdapter {
   incomingCalls = 0;
 
@@ -1119,6 +1155,48 @@ describe('ManagedShareService', () => {
     expect(result.status).toBe('connected');
     expect(result.account?.id).toBe('acct-mega-1');
     expect(adapter.incomingCalls).toBe(0);
+  });
+
+  it('still lists incoming MEGA contact invites and shares while the account is in attention state', async () => {
+    const fixture = await createHarness({
+      adapters: [new AttentionMegaInviteAdapter()],
+    });
+    await fixture.service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-attention',
+      label: 'MEGA',
+      email: 'attention@example.com',
+    });
+
+    const state = await loadIntegrationState(fixture.integrationStatePath);
+    const account = state.accounts[0];
+    if (!account) {
+      throw new Error('Expected a MEGA account in fixture state.');
+    }
+    await saveIntegrationState({
+      ...state,
+      accounts: [
+        {
+          ...account,
+          state: 'attention',
+          detail: 'Reconnect suggested, but account data is still readable.',
+        },
+      ],
+    }, fixture.integrationStatePath);
+
+    const invites = await fixture.service.listIncomingProviderContactInvites();
+    const shares = await fixture.service.listIncomingManagedShares();
+
+    expect(invites.invites).toEqual([
+      expect.objectContaining({
+        label: 'vincenzoml+05@gmail.com',
+      }),
+    ]);
+    expect(shares.shares).toEqual([
+      expect.objectContaining({
+        ownerLabel: 'vincenzoml+05@gmail.com',
+      }),
+    ]);
   });
 
   it('does not block account connect on an auto-adopted incoming share sync bootstrap', async () => {

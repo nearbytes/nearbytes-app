@@ -549,7 +549,7 @@ export class ManagedShareService {
     const attachedKeys = buildAttachedShareKeys(preparedState.managedShares);
     const offers = await Promise.all(
       preparedState.accounts
-        .filter((account) => this.isOperationalAccount(account) && isProviderEnabled(account.provider))
+        .filter((account) => this.canReadIncomingProviderState(account) && isProviderEnabled(account.provider))
         .map(async (account) => {
           const adapter = this.adapters.get(normalizeProvider(account.provider));
           if (!adapter?.listIncomingShares) {
@@ -651,7 +651,7 @@ export class ManagedShareService {
     }
     const invites = await Promise.all(
       state.accounts
-        .filter((account) => this.isOperationalAccount(account) && isProviderEnabled(account.provider))
+        .filter((account) => this.canReadIncomingProviderState(account) && isProviderEnabled(account.provider))
         .map(async (account) => {
           const adapter = this.adapters.get(normalizeProvider(account.provider));
           if (!adapter?.listIncomingContactInvites) {
@@ -676,6 +676,12 @@ export class ManagedShareService {
     return {
       invites: invites.flat().sort((left, right) => left.label.localeCompare(right.label)),
     };
+  }
+
+  private canReadIncomingProviderState(account: ProviderAccount): boolean {
+    return normalizeProvider(account.provider) === 'mega'
+      ? this.isMegaHelperOperationalAccount(account)
+      : this.isOperationalAccount(account);
   }
 
   async acceptIncomingProviderContactInvite(providerInput: string, accountId: string, inviteId: string): Promise<void> {
