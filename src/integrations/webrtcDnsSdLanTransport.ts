@@ -90,7 +90,7 @@ interface WebRtcChannelErrorEvent {
 }
 
 interface WebRtcChannelMessageEvent {
-  readonly data: string | Buffer;
+  readonly data: string | Buffer | Uint8Array | ArrayBuffer;
 }
 
 type ControlPacket =
@@ -599,7 +599,13 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       context.resolveReady();
     };
     channel.onmessage = (event: WebRtcChannelMessageEvent) => {
-      void this.handleControlChannelMessage(context, event).catch(() => undefined);
+      void this.handleControlChannelMessage(context, event).catch((error) => {
+        console.error('[Nearbytes LAN][WebRTC] Control channel message handling failed.', {
+          peerId: context.peerId,
+          label: context.peer.label,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
     };
     channel.onclose = () => {
       if (context.controlChannel === channel) {
@@ -1208,14 +1214,23 @@ async function waitForControlChannelReady(
   return context.controlChannel;
 }
 
-function toMessageBytes(message: string | Buffer): Uint8Array {
+function toMessageBytes(message: string | Buffer | Uint8Array | ArrayBuffer): Uint8Array {
   if (typeof message === 'string') {
     return new TextEncoder().encode(message);
   }
-  return new Uint8Array(message);
+  if (message instanceof Uint8Array) {
+    return message;
+  }
+  if (message instanceof ArrayBuffer) {
+    return new Uint8Array(message);
+  }
+  if (Buffer.isBuffer(message)) {
+    return new Uint8Array(message);
+  }
+  throw new Error(`Unsupported WebRTC control message payload type: ${Object.prototype.toString.call(message)}`);
 }
 
-function parseControlPacket(message: string | Buffer): ControlPacket {
+function parseControlPacket(message: string | Buffer | Uint8Array | ArrayBuffer): ControlPacket {
   const bytes = toMessageBytes(message);
   const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as Partial<ControlPacket>;
   if (!parsed || typeof parsed !== 'object' || typeof parsed.type !== 'string' || typeof parsed.requestId !== 'string') {
@@ -1275,6 +1290,12 @@ function parseControlPacket(message: string | Buffer): ControlPacket {
     default:
       throw new Error('Unknown WebRTC control packet type');
   }
+}
+
+export function decodeLanWebRtcControlPacketForTest(
+  message: string | Buffer | Uint8Array | ArrayBuffer
+): unknown {
+  return parseControlPacket(message);
 }
 
 function concatBytes(chunks: readonly Uint8Array[], size: number): Uint8Array {

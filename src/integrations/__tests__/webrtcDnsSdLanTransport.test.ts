@@ -10,7 +10,7 @@ import type {
   LanTransportHello,
   LanTransportRpcRequest,
 } from '../lanPeerTransport.js';
-import { WebRtcDnsSdLanTransport } from '../webrtcDnsSdLanTransport.js';
+import { WebRtcDnsSdLanTransport, decodeLanWebRtcControlPacketForTest } from '../webrtcDnsSdLanTransport.js';
 
 const cleanupPaths: string[] = [];
 
@@ -320,6 +320,19 @@ describe('WebRtcDnsSdLanTransport', () => {
 
     expect(expiredPeerIds).toEqual(['peer-b']);
     expect(transport.getDebugState().discoveredPeers.find((entry) => entry.peerId === 'peer-b')).toBeUndefined();
+  });
+
+  it('decodes control packets from Uint8Array payloads', () => {
+    const payload = new TextEncoder().encode(JSON.stringify({
+      type: 'response-json',
+      requestId: 'abc123',
+      value: { ok: true },
+    }));
+    expect(decodeLanWebRtcControlPacketForTest(payload)).toEqual({
+      type: 'response-json',
+      requestId: 'abc123',
+      value: { ok: true },
+    });
   });
 });
 
