@@ -11,7 +11,8 @@ This specification defines:
 1. LAN peer discovery using mDNS and DNS-SD;
 2. LAN transport using QUIC over UDP;
 3. peer identity binding independent of host and port;
-4. automatic recovery and convergence using the Nearbytes observation log plus storage anti-entropy.
+4. automatic recovery and convergence using the Nearbytes observation log plus storage anti-entropy;
+5. the relationship between the shared peer observation history and local per-provider queues.
 
 This specification does not define:
 
@@ -38,7 +39,8 @@ The transport profile MUST provide:
 3. identity-first routing, not address-first routing;
 4. route migration without changing peer identity;
 5. multiplexed control and object transfer without head-of-line blocking;
-6. crash-safe recovery through persisted cursors and anti-entropy.
+6. crash-safe recovery through persisted cursors and anti-entropy;
+7. liveness even when a useful block is observed before the event that later references it.
 
 ## 4. Discovery Profile
 
@@ -65,7 +67,7 @@ The TXT record MUST contain:
 
 The TXT record SHOULD contain:
 
-1. `head`: latest local observation-log sequence known to the peer
+1. `head`: latest local observation-log head id known to the peer
 
 Unknown TXT keys MUST be ignored.
 
@@ -99,7 +101,8 @@ Rules:
 1. the peer identity string advertised in DNS-SD is the transport identity anchor;
 2. DNS-SD service addresses are only route hints;
 3. a route change MUST update reachability without changing peer identity;
-4. application trust decisions MUST attach to peer identity, not route.
+4. application trust decisions MUST attach to peer identity, not route;
+5. transport acceptance MAY be route-open, but trust and action MUST bind to accepted peer identities.
 
 ## 7. QUIC Session Layout
 
@@ -120,6 +123,30 @@ The authoritative data model is still:
 1. opaque signed events;
 2. ciphertext blocks;
 3. typed observation-log entries over `(event, hash)` and `(block, hash)`.
+
+The peer observation history is:
+
+1. per peer, not per volume;
+2. one ordered stream across both event and block observations;
+3. hash-addressed rather than numeric-sequence-addressed;
+4. a synchronization and liveness layer, not storage truth.
+
+Peers SHOULD support "after X, what else have you seen?" exchange, optionally filtered to a requested set of volumes.
+
+Each observation entry SHOULD include at least:
+
+1. its own observation id;
+2. the previous observation id, if any;
+3. typed object identity, that is `(event, hash)` or `(block, hash)`;
+4. observed-at metadata or equivalent local ordering metadata.
+
+Implementations SHOULD also maintain a separate persistent per-provider or per-transport queue for local delivery work.
+
+Queue rules:
+
+1. queue items SHOULD reference typed object ids such as `(event, H)` or `(block, H)`;
+2. the provider queue is local runtime state, not the shared peer history;
+3. losing queue or cursor state MUST cost efficiency, not correctness.
 
 The minimum sync loop is:
 

@@ -1,5 +1,11 @@
 # Nearbytes Identity Publication v1
 
+Superseded note:
+
+1. this document records the pre-opaque event design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `identity/identity-channel-v0.2.md`.
+
 Status: draft normative specification.
 
 Ordering status: non-final. Current implementations generally resolve identity-channel recency using `publishedAt` plus deterministic tie-breakers. This is a temporary replay convention rather than a final Nearbytes ordering specification.

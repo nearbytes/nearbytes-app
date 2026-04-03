@@ -44,21 +44,21 @@ Field requirements:
 2. `k` MUST be the identity public key.
 3. `ts` MUST be a non-negative integer millisecond timestamp for the snapshot materialization.
 4. `ref.channel` MUST equal the identity public key hex of the canonical identity channel.
-5. `ref.eventHash` MUST be the outer event hash of the referenced identity-channel `APP_RECORD`.
+5. `ref.eventHash` MUST be the outer event hash of the referenced identity-channel opaque event carrying the inner `APP_RECORD`.
 6. `record` MUST be a valid `nb.identity.record.v1`.
 7. `record.k` MUST equal `k`.
 8. `sig` MUST be a valid signature by identity key `k` over the canonical JSON encoding of the object with `sig` omitted.
 
 ## 3. Publication Rules
 
-Foreign volumes MUST emit identity snapshots as `APP_RECORD` events carrying:
+Foreign volumes MUST emit identity snapshots as opaque signed outer events whose decrypted inner payload is `APP_RECORD` carrying:
 
 1. `protocol = "nb.identity.snapshot.v1"`
 2. `authorPublicKey = <identityPublicKeyHex>`
 3. `record = canonical JSON string encoding of nb.identity.snapshot.v1`
 4. `publishedAt`
 
-The enclosing outer event MUST still be signed by the foreign volume key.
+The enclosing outer event MUST still be signed by the foreign volume key and remain semantically opaque at the storage layer.
 
 ## 4. Materialization Policy
 

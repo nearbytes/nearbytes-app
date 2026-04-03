@@ -1,5 +1,11 @@
 # Nearbytes Meta-Storage v2
 
+Superseded note:
+
+1. this document records the pre-opaque event design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `storage/meta-storage-v0.3.md`.
+
 Status: draft normative specification.
 
 This document defines how Nearbytes stores, discovers, retains, and prunes encrypted events and blocks across configured storage roots. It is the storage-routing and durability layer above raw filesystems and below higher-level features.

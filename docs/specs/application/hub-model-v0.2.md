@@ -93,4 +93,4 @@ Current implementations MAY continue using provisional timestamp-based replay co
 3. chat payload semantics are defined in `application/chat-events-v0.2.md`;
 4. storage correctness is defined in `storage/data-correctness-v0.2.md`;
 5. storage routing/retention is defined in `storage/meta-storage-v0.3.md`;
-6. LAN synchronization is defined in `transport/lan-sync-v0.2.md`.
+6. LAN synchronization is defined in `transport/lan-sync-v0.3.md`.

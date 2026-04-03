@@ -1,5 +1,11 @@
 # Nearbytes Log Command / Spec Map v1
 
+Superseded note:
+
+1. this document records the pre-opaque event design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `transport/log-command-map-v0.3.md`.
+
 Status: draft normative specification.
 
 This document is the lookup table between known interpreted Nearbytes commands or carried log payloads and the normative specifications that govern them. Its purpose is simple: every known command or protocol family should have one clear spec home.

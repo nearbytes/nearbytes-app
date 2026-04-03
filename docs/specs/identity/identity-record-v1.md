@@ -14,7 +14,7 @@ This specification defines:
 
 1. A public identity record signed by a Nearbytes-style identity keypair.
 2. The minimal profile information required to represent a chat sender.
-3. Validation and signature rules for identity records carried inside volume chat events.
+3. Validation and signature rules for identity records carried inside opaque Nearbytes events via encrypted inner application records.
 
 This specification does not define:
 
@@ -25,7 +25,7 @@ This specification does not define:
 
 Relationship note:
 
-1. canonical publication of `nb.identity.record.v1` is defined in `identity/identity-channel-v1.md`;
+1. canonical publication of `nb.identity.record.v1` is defined in `identity/identity-channel-v0.2.md`;
 2. foreign-volume materialization of the same public profile is defined in `identity/identity-snapshot-v1.md`.
 
 Introductory note (non-normative):
@@ -100,7 +100,7 @@ Multiple identity records for the same `k` MAY appear over time.
 Readers SHOULD:
 
 1. group records by `k`;
-2. if records are observed inside an enclosing channel or hub, use that enclosing context's current replay convention to decide recency;
+2. if records are observed inside an enclosing opaque event log, use that enclosing context's current replay convention to decide recency;
 3. treat the latest valid record as the active profile for `k`.
 
 Older valid records remain part of history but are superseded by later valid records.

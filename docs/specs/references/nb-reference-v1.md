@@ -33,7 +33,7 @@ These are all the same cryptographic shape: a reference is usable once the recip
 
 Command note:
 
-1. Recipient-bound export/import command semantics are defined in `application/file-commands-v1.md`.
+1. Recipient-bound export/import command semantics are defined in `application/file-commands-v0.2.md`.
 
 ## 2. Terms
 

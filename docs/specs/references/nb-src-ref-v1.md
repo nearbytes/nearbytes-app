@@ -30,7 +30,7 @@ These workflows all depend on the same rule: the reference is useful only to a p
 
 Command note:
 
-1. Source-bound copy/paste command semantics are defined in `application/file-commands-v1.md`.
+1. Source-bound copy/paste command semantics are defined in `application/file-commands-v0.2.md`.
 
 Security intuition (non-normative):
 

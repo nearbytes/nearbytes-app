@@ -1,8 +1,8 @@
-# Nearbytes Log Command / Spec Map v0.2
+# Nearbytes Log Command / Spec Map v0.3
 
 Status: draft normative specification.
 
-This document maps current interpreted Nearbytes command families to their normative specs after the move to opaque events.
+This document maps current interpreted Nearbytes command families to their normative specs in the opaque-event design line.
 
 ## 1. Hub / Event Layer
 

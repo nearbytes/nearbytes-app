@@ -1,5 +1,11 @@
 # Nearbytes App Records v1
 
+Superseded note:
+
+1. this document records the pre-opaque event design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `application/app-records-v0.2.md`.
+
 Status: draft normative specification.
 
 Ordering status: non-final. Current implementations generally use `publishedAt` plus a deterministic tie-breaker when replaying `APP_RECORD` events, but that is a temporary convention and not a final full-stack ordering rule.

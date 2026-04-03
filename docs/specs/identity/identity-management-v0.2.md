@@ -1,14 +1,8 @@
-# Nearbytes Identity Management v1
-
-Superseded note:
-
-1. this document records the pre-opaque event design line;
-2. it is retained only as a historical snapshot;
-3. the current unreleased design line is `identity/identity-management-v0.2.md`.
+# Nearbytes Identity Management v0.2
 
 Status: draft normative specification.
 
-This document defines the application-level identity command model for Nearbytes clients. It covers how identities are created locally, how public metadata is edited, how canonical publication happens, and how identity state is materialized into hubs that need it.
+This document defines application-level identity lifecycle semantics above the opaque-event hub model.
 
 Its scope is command semantics and state transitions. It does not define private secret storage or replace the wire-format specs for `nb.identity.record.v1` and `nb.identity.snapshot.v1`.
 
@@ -38,19 +32,18 @@ Rules:
 
 1. the identity secret is private user input and MUST NOT be written into a shared hub log;
 2. the identity public key is deterministically derived from that secret and MAY appear in shared logs;
-3. editable public metadata such as display name and bio is shared by publishing a new signed public record, not by sharing the secret.
+3. editable public metadata is shared by publishing new signed public records, not by sharing the secret.
 
 ## 3. Relationship to Other Specs
 
-1. the enclosing hub/log model is defined in `application/hub-model-v1.md`;
-2. canonical public identity records are defined in `identity/identity-record-v1.md`;
-3. canonical publication of those records is defined in `identity/identity-channel-v1.md`;
-4. foreign-hub materialization is defined in `identity/identity-snapshot-v1.md`;
-5. chat usage of identities is defined in `application/chat-events-v1.md`.
+1. the enclosing opaque hub/log model is defined in `application/hub-model-v0.2.md`;
+2. the encrypted inner app-record carrier is defined in `application/app-records-v0.2.md`;
+3. canonical public identity records are defined in `identity/identity-record-v1.md`;
+4. canonical publication of those records is defined in `identity/identity-channel-v0.2.md`;
+5. foreign-hub materialization is defined in `identity/identity-snapshot-v1.md`;
+6. chat usage of identities is defined in `application/chat-events-v0.2.md`.
 
 ## 4. Command Surface
-
-Nearbytes identity management is defined in terms of application-level commands.
 
 ### 4.1 `CREATE_IDENTITY`
 
@@ -58,17 +51,11 @@ Purpose:
 
 1. create a new local identity from private user input.
 
-Required local inputs:
-
-1. identity secret or equivalent local secret material;
-2. optional password or extra secret factor if the client supports one;
-3. initial public profile metadata, at minimum `displayName`.
-
 Effects:
 
 1. derive an identity keypair locally;
 2. persist the private secret locally according to client policy;
-3. create an initial public profile state for that identity;
+3. create initial public profile state for that identity;
 4. optionally publish that state canonically;
 5. optionally materialize that identity into the current hub when the user is acting there.
 
@@ -86,7 +73,7 @@ Supported v1 fields:
 Effects:
 
 1. produce a new signed `nb.identity.record.v1` for the same identity public key;
-2. append that record to the canonical identity publication channel;
+2. append that record to the canonical identity publication channel via an opaque outer event carrying an inner `APP_RECORD`;
 3. append a new `nb.identity.snapshot.v1` into any hub where the client explicitly uses that identity and needs the latest public state.
 
 ### 4.3 `PUBLISH_IDENTITY`
@@ -97,7 +84,7 @@ Purpose:
 
 Effect:
 
-1. append an `APP_RECORD` with `protocol = "nb.identity.record.v1"` to the identity publication channel defined by `identity/identity-channel-v1.md`.
+1. append an opaque event whose decrypted inner payload is `APP_RECORD` with `protocol = "nb.identity.record.v1"` to the identity publication channel defined by `identity/identity-channel-v0.2.md`.
 
 ### 4.4 `MATERIALIZE_IDENTITY_IN_HUB`
 
@@ -107,13 +94,7 @@ Purpose:
 
 Effect:
 
-1. append an `APP_RECORD` with `protocol = "nb.identity.snapshot.v1"` to the target hub.
-
-Typical triggers:
-
-1. joining a hub chat with that identity;
-2. sending a chat message with that identity;
-3. future identity-authenticated hub actions.
+1. append an opaque event whose decrypted inner payload is `APP_RECORD` with `protocol = "nb.identity.snapshot.v1"` to the target hub.
 
 ### 4.5 `SELECT_IDENTITY_FOR_HUB`
 
@@ -123,18 +104,18 @@ Purpose:
 
 Rule:
 
-1. this is local application state and MUST NOT be treated as a shared hub-log command in v1.
+1. this is local application state and MUST NOT be treated as a shared hub-log command in v0.2.
 
 ## 5. Hub-Carried Identity State
 
 A hub MAY carry identity-related state for its own application behavior.
 
-In v1, the standardized shared forms are:
+In the active design line, the standardized shared forms are:
 
 1. `nb.identity.snapshot.v1` for public identity material copied into a hub;
-2. legacy `DECLARE_IDENTITY` for compatibility with older chat-capable hubs.
+2. encrypted inner `APP_RECORD` payloads carrying identity-related nested protocols.
 
-This means a hub can host identity-related commands and records even though the private identity secret remains local.
+Legacy outer event types such as `DECLARE_IDENTITY` are superseded and SHOULD NOT be emitted by new writers.
 
 ## 6. Replay and Authority
 
@@ -148,24 +129,5 @@ Replay rules:
 
 1. clients MUST treat the canonical identity channel as the authoritative public publication source;
 2. clients MUST treat hub snapshots as local materializations, not as canonical ownership transfer;
-3. clients MUST use enclosing log order, not profile timestamps, when deciding which record is later within a given log.
+3. clients MUST use enclosing log order, not profile timestamps alone, when deciding which record is later within a given log.
 
-## 7. Privacy and Security
-
-1. clients MUST NOT serialize private identity secrets into shared hub records;
-2. clients MUST NOT treat possession of a hub secret as authority to forge an identity record;
-3. public profile updates MUST remain signed by the relevant identity keypair;
-4. hubs MAY contain public identity material, but that does not imply disclosure of the underlying secret.
-
-## 8. Extensibility
-
-Future Nearbytes versions MAY extend identity management with:
-
-1. richer public profile fields such as avatar references;
-2. explicit delegation or device-link flows;
-3. additional hub-scoped identity-authenticated commands.
-
-Any such extension MUST preserve the split between:
-
-1. local private identity control; and
-2. shared public signed identity material.

@@ -1,5 +1,11 @@
 # Nearbytes LAN Sync v1
 
+Superseded note:
+
+1. this document records the provisional multicast plus peer-HTTP design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `transport/lan-sync-v0.3.md`.
+
 Status: draft normative specification.
 
 This document defines the first Nearbytes local-network sync protocol.

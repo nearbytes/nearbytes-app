@@ -22,7 +22,7 @@ This specification does not define:
 
 Command note:
 
-1. Recipient-bound bundle export/import command semantics are defined in `application/file-commands-v1.md`.
+1. Recipient-bound bundle export/import command semantics are defined in `application/file-commands-v0.2.md`.
 
 Security intuition (non-normative):
 

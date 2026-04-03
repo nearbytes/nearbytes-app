@@ -1,5 +1,11 @@
 # Nearbytes Hub Model v1
 
+Superseded note:
+
+1. this document records the pre-opaque event design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `application/hub-model-v0.2.md` and related `v0.x` specs.
+
 Status: draft normative specification.
 
 Ordering status: non-final. This document intentionally leaves the final log-order model unspecified for now. Current implementations commonly use monotonic timestamps as a temporary replay aid, but that behavior is provisional and expected to change when the full stack ordering model is specified.

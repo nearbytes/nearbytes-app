@@ -1,5 +1,11 @@
 # Nearbytes File Commands v1
 
+Superseded note:
+
+1. this document records the pre-opaque event design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `application/file-commands-v0.2.md`.
+
 Status: draft normative specification.
 
 This document defines the user-level file operations that Nearbytes clients perform above the append-only log. It says what commands like upload, rename, copy, paste, and reference export mean, and which lower-level events or reference formats they are expected to use.

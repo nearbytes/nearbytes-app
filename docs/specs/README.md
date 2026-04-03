@@ -2,6 +2,21 @@
 
 The spec tree is organized by concern, not by chronology.
 
+Current active design line for the unreleased opaque-event refactor:
+
+- `application/hub-model-v0.2.md`
+- `application/file-events-v0.3.md`
+- `application/file-commands-v0.2.md`
+- `application/app-records-v0.2.md`
+- `application/chat-events-v0.2.md`
+- `identity/identity-management-v0.2.md`
+- `identity/identity-channel-v0.2.md`
+- `storage/data-correctness-v0.2.md`
+- `storage/meta-storage-v0.3.md`
+- `transport/lan-sync-v0.3.md`
+
+Earlier pre-opaque docs remain in-tree only as historical snapshots unless they are explicitly referenced by the active design line.
+
 ## Families
 
 - `registry/`: naming, versioning, and shared registry rules.

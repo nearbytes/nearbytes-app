@@ -1,5 +1,11 @@
 # Nearbytes File Protocol v2
 
+Superseded note:
+
+1. this document records the pre-opaque event design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `application/file-events-v0.3.md`.
+
 Status: draft normative specification.
 
 Ordering status: non-final. Current implementations generally reconstruct file state using event timestamps such as `createdAt`, `deletedAt`, and `renamedAt`, together with deterministic tie-breakers. This is a temporary implementation rule rather than a final Nearbytes ordering specification.

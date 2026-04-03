@@ -1,5 +1,11 @@
 # Nearbytes Data Correctness v1
 
+Superseded note:
+
+1. this document records the pre-opaque event design line;
+2. it is retained only as a historical snapshot;
+3. the current unreleased design line is `storage/data-correctness-v0.2.md`.
+
 Status: draft normative specification.
 
 This document defines when a file is valid Nearbytes storage data and therefore permitted to remain in canonical Nearbytes storage or to be forwarded to another storage location.

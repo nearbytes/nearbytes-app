@@ -62,6 +62,7 @@ Not visible:
 - block references mean "this event mentions these ciphertext blocks"
 - the storage layer uses only this visible dependency list
 - application semantics stay inside ciphertext
+- the current protocol messages survive by moving into ciphertext, not by remaining visible as outer event types
 
 ### Namespace
 
@@ -78,12 +79,37 @@ Object identity is typed:
 - one shared UDP socket per peer is required for the transport
 - peer identity stays independent of route, address, and port
 - HTTP LAN routes are compatibility or debug scaffolding and must not define the long-term protocol
+- transport acceptance is route-open, but trust and action must bind to accepted peer identities rather than IPs or ports
 
 ### Queue direction
 
 - keep a separate persistent per-provider queue beside the future peer-log
 - peer-log is shared sync or history
 - per-provider queue is local delivery or work state for each integration
+
+### Peer-log direction
+
+- the sync history is per peer, not per volume
+- it records one ordered stream of typed hash observations over unified storage
+- both events and blocks participate in that same observation stream
+- the observation stream is hash-addressed rather than numeric-sequence-addressed
+- each observation entry should carry its own hash identity and a link to the previous observation entry
+- typed identity avoids namespace clashes:
+  - `(event, H)`
+  - `(block, H)`
+- peers must support "after X, what else have you seen?" exchange, optionally filtered to a set of volumes
+- cursor state is disposable cache and must be recoverable through checkpoints or fresh anti-entropy
+
+### Unknown-volume liveness
+
+- unknown volumes should be mutually prefetched for liveness
+- prefetched unknown data lives in normal Nearbytes storage
+- unknown prefetched volumes may remain hidden in ordinary UX until locally recognized
+
+### Compatibility
+
+- no backward compatibility is required for this redesign
+- superseded pre-opaque specs must not remain ambiguous or appear current
 
 ## Diary
 
@@ -96,6 +122,8 @@ Object identity is typed:
 - 2026-04-03: Replaced the live LAN runtime internals with a transport boundary and a default DNS-SD plus QUIC implementation. `LocalNetworkSyncService` now uses `LanPeerTransport`, and the default runtime transport is `QuicDnsSdLanTransport`.
 - 2026-04-03: Added a real QUIC integration test that exercises JSON RPC, byte transfer, and sync-hint delivery over QUIC streams.
 - 2026-04-03: Found and fixed a LAN runtime-state collision for custom storage roots. Provider-queue and cursor state had been sharing one global runtime folder, which leaked observations across independent instances and caused bogus missing-block sync errors.
+- 2026-04-03: Reconciled the conversation against the specs and found that the provider queue and LAN cursor layer were still numeric-sequence based even though the agreed design had moved to hash-addressed peer observations.
+- 2026-04-03: Reworked the provider queue, LAN transport profile, LAN sync service, HTTP debug routes, and tests to use hash-addressed observation entries with `observationId` and `prevObservationId` instead of public numeric sequence cursors.
 - 2026-04-03: Verification is green at this checkpoint: `yarn test`, `yarn type-check`, `yarn build`, `yarn build:electron`, and `yarn --cwd ui build`.
 
 ## TODO
@@ -111,6 +139,7 @@ Object identity is typed:
 - [x] replace ad hoc multicast JSON discovery with DNS-SD service advertisement and browsing
 - [x] replace peer-HTTP LAN transport with QUIC streams on a shared UDP socket
 - [x] add end-to-end QUIC transport tests for cursor exchange and object transfer
+- [x] replace public numeric observation cursors with hash-addressed observation ids and previous-entry links
 - [x] verify desktop packaging and runtime behavior for the new QUIC and DNS-SD dependencies
 - [x] rerun all tests and builds and keep this TODO list updated until empty
 
@@ -168,6 +197,7 @@ Rule:
 - do a targeted UI review of event-detail and timeline rendering for any remaining assumptions that `event.payload` is always directly available
 - review identity, app-record, file, and chat protocol surfaces against the v0.x specs and remove transitional wording or types where possible
 - review the QUIC transport against real multi-host and multi-interface behavior, especially discovery freshness, timeout or backoff policy, and certificate or peer-id persistence semantics
+- keep this file and `WIP2.md` synchronized with any newly confirmed design decisions while implementation is still moving
 
 ## Current Blast Radius
 
