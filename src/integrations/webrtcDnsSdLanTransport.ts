@@ -344,9 +344,12 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
 
   async ensurePeerReady(peer: LanTransportDiscoveredPeer): Promise<void> {
     const existing = this.connections.get(peer.peerId);
-    if (existing && existing.readyResolved && !existing.closed) {
+    if (existing && !existing.closed) {
       existing.peer = peer;
-      return;
+      if (existing.readyResolved || existing.controlChannel?.readyState === 'open') {
+        existing.resolveReady();
+        return;
+      }
     }
     const pending = this.pendingConnections.get(peer.peerId);
     if (pending) {
