@@ -924,6 +924,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       seenAt: Date.now(),
     });
     this.callbacks?.onPeerDiscovered(peer);
+    void this.ensurePeerReady(peer).catch(() => undefined);
   }
 
   private handleDiscoveryService(service: Service): void {
@@ -967,6 +968,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       };
       this.discoveryByFqdn.set(service.fqdn, peer);
       this.callbacks?.onPeerDiscovered(peer);
+      void this.ensurePeerReady(peer).catch(() => undefined);
     }).catch(() => undefined);
   }
 
@@ -1037,6 +1039,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       };
       this.discoveryByFqdn.set(fqdn, peer);
       this.callbacks?.onPeerDiscovered(peer);
+      void this.ensurePeerReady(peer).catch(() => undefined);
     }).catch(() => undefined);
   }
 
