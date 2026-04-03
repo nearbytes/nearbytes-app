@@ -101,7 +101,7 @@ export interface LocalNetworkServiceSnapshot {
   readonly label: string;
   readonly listening: boolean;
   readonly port: number | null;
-  readonly discovery: 'dns-sd';
+  readonly discovery: 'dns-sd+multicast-fallback';
   readonly transport: 'quic';
   readonly serviceType: string;
   readonly announceIntervalMs: number;
@@ -317,7 +317,7 @@ export class LocalNetworkSyncService {
         label: this.label,
         listening: this.started && this.httpPort !== null,
         port: this.httpPort,
-        discovery: 'dns-sd',
+        discovery: 'dns-sd+multicast-fallback',
         transport: 'quic',
         serviceType: '_nearbytes._udp.local',
         announceIntervalMs: ADVERTISEMENT_REFRESH_INTERVAL_MS,

@@ -8,7 +8,7 @@ This document defines the Nearbytes zero-configuration local-network transport p
 
 This specification defines:
 
-1. LAN peer discovery using mDNS and DNS-SD;
+1. LAN peer discovery using mDNS and DNS-SD, with optional link-local multicast fallback;
 2. LAN transport using QUIC over UDP;
 3. peer identity binding independent of host and port;
 4. automatic recovery and convergence using the Nearbytes observation log plus storage anti-entropy;
@@ -29,6 +29,8 @@ Nearbytes LAN Sync v0.3 MUST use:
 2. DNS-Based Service Discovery as specified by RFC 6763;
 3. QUIC transport as specified by RFC 9000 and RFC 9001;
 4. QUIC datagrams, when used, as specified by RFC 9221.
+
+Implementations MAY additionally use a compact Nearbytes-specific UDP multicast discovery fallback on the local link when DNS-SD is unavailable, filtered, or unreliable on the host environment.
 
 ## 3. Design Goals
 
@@ -71,11 +73,24 @@ The TXT record SHOULD contain:
 
 Unknown TXT keys MUST be ignored.
 
+## 4.2 Discovery Fallback
+
+DNS-SD is the normative primary discovery mechanism.
+
+Implementations MAY also send and accept compact Nearbytes multicast discovery advertisements on the local link as a resilience fallback.
+
+Fallback rules:
+
+1. fallback discovery MUST NOT replace the DNS-SD advertisement model;
+2. fallback discovery MUST carry the same peer identity, QUIC port, protocol version, ALPN, and observation-head hints as the DNS-SD record, within normal size constraints;
+3. fallback discovery MUST be treated as a route hint only, not as a trust signal;
+4. when both DNS-SD and fallback discovery are available, implementations SHOULD prefer the DNS-SD record and use fallback only to improve liveness on networks or hosts where DNS-SD visibility is degraded.
+
 ## 5. Transport Profile
 
 Discovery and data transport are separate:
 
-1. discovery is mDNS/DNS-SD only;
+1. discovery is mDNS/DNS-SD first, with optional multicast fallback for resilience;
 2. data transport is QUIC only.
 
 The QUIC listener port MUST be the service port published in DNS-SD.
@@ -187,4 +202,5 @@ Rules:
 
 1. HTTP/TCP LAN transfer is development scaffolding only;
 2. it MUST NOT be treated as the final protocol shape;
-3. QUIC plus DNS-SD is the normative v0.3 profile for Nearbytes LAN sync.
+3. QUIC plus DNS-SD is the normative v0.3 profile for Nearbytes LAN sync;
+4. multicast discovery fallback is permitted as an implementation hardening measure, but it does not replace the normative QUIC plus DNS-SD profile.

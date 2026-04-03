@@ -74,7 +74,7 @@ Object identity is typed:
 
 ### LAN transport direction
 
-- discovery is mDNS plus DNS-SD, not ad hoc multicast JSON
+- discovery is mDNS plus DNS-SD first, with compact UDP multicast fallback for resilience on hostile or flaky local networks
 - LAN data transport is QUIC over UDP, not peer HTTP over TCP
 - one shared UDP socket per peer is required for the transport
 - peer identity stays independent of route, address, and port

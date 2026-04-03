@@ -20,6 +20,11 @@ Locked outcome:
 - peer identity is independent of host, route, address, and port
 - no manual IP or port entry is part of the intended product
 
+Refinement from implementation hardening:
+- DNS-SD is the normative primary discovery path
+- compact UDP multicast fallback is acceptable as a resilience mechanism on local networks where DNS-SD visibility is unreliable
+- fallback discovery is a route hint only and does not change identity or trust semantics
+
 Interpretation:
 - transport connections may arrive from any route
 - parsing may be open to anyone
@@ -157,5 +162,5 @@ The code must satisfy all of the following:
 - [x] identity docs reflect opaque outer events
 - [x] LAN spec includes both transport profile and typed observation/provider-queue model
 - [x] superseded docs are clearly marked as historical and non-current
-- [x] implementation matches the active design line for the decisions covered in this conversation
+- [x] implementation matches the active design line for the decisions covered in this conversation, including DNS-SD-first discovery with multicast fallback
 - [x] tests cover the decisions above

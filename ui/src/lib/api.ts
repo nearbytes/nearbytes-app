@@ -593,7 +593,7 @@ export interface LocalNetworkServiceState {
   label: string;
   listening: boolean;
   port: number | null;
-  discovery: 'dns-sd';
+  discovery: 'dns-sd+multicast-fallback';
   transport: 'quic';
   serviceType: string;
   announceIntervalMs: number;

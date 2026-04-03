@@ -37,8 +37,7 @@ Relationship to other specs:
 1. **Source volume**: the volume from which a copy or export command originates.
 2. **Destination volume**: the volume into which a paste or import command writes.
 3. **Modern file command**: a decrypted inner `CREATE_FILE` command carrying wrapped per-file key material.
-4. **Legacy file**: a readable historical file representation still accepted by implementations during the transition.
-5. **Conflict rename**: automatic generation of a destination filename such as `name copy.ext` or `name copy 2.ext`.
+4. **Conflict rename**: automatic generation of a destination filename such as `name copy.ext` or `name copy 2.ext`.
 
 ## 3. Command Semantics
 
@@ -77,9 +76,7 @@ Default output:
 3. export MAY travel through clipboard, chat, or any other transport.
 
 Legacy behavior:
-
-1. if a selected file is legacy, the implementation SHOULD lazily upgrade it to the modern wrapped-key representation before export;
-2. lazy upgrade appends a new opaque event carrying an inner `CREATE_FILE` command for the same logical filename while reusing the ciphertext content where possible.
+None.
 
 ### 3.6 `PASTE_FILES`
 
@@ -121,7 +118,5 @@ Rules:
 
 Read compatibility rules:
 
-1. implementations MAY continue to read legacy files;
-2. implementations MUST prefer wrapped-key reads when modern inner payload fields are present;
-3. legacy and modern file history MAY coexist in the same volume during the transition.
-
+1. implementations in the active opaque-event line MUST read and write only the wrapped-key file-command model defined by `application/file-events-v0.3.md`;
+2. no legacy plaintext outer file-event compatibility is required by this spec line.
