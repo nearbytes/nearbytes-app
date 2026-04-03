@@ -359,27 +359,64 @@ async function waitOutgoingShareDescriptor(service, ownerEmail, shareName, acces
   throw new Error(`No outgoing MEGA share descriptor for ${ownerEmail}:${shareName} within ${timeoutMs}ms`);
 }
 
-async function waitIncomingShareDescriptor(service, ownerEmail, shareName, timeoutMs) {
+function normalizeIdentity(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function matchesRecipientShare(share, ownerEmail, shareName) {
+  const descriptor = share?.remoteDescriptor ?? {};
+  return share?.provider === 'mega' &&
+    share?.role === 'recipient' &&
+    normalizeIdentity(descriptor.ownerEmail) === normalizeIdentity(ownerEmail) &&
+    normalizeIdentity(descriptor.shareName ?? share.label) === normalizeIdentity(shareName);
+}
+
+async function findExistingRecipientShare(service, ownerEmail, shareName) {
+  const { shares } = await service.listManagedShares({ fast: true });
+  return shares.find((summary) => matchesRecipientShare(summary.share, ownerEmail, shareName));
+}
+
+function matchesIncomingDescriptor(candidate, expectedDescriptor, offerLabel) {
+  const expectedShareHandle = normalizeIdentity(expectedDescriptor.shareHandle);
+  const expectedRootHandle = normalizeIdentity(expectedDescriptor.rootHandle);
+  const candidateShareHandle = normalizeIdentity(candidate.shareHandle);
+  const candidateRootHandle = normalizeIdentity(candidate.rootHandle);
+
+  if (expectedShareHandle && (candidateShareHandle === expectedShareHandle || candidateRootHandle === expectedShareHandle)) {
+    return true;
+  }
+  if (expectedRootHandle && (candidateRootHandle === expectedRootHandle || candidateShareHandle === expectedRootHandle)) {
+    return true;
+  }
+
+  return (
+    normalizeIdentity(candidate.ownerEmail) === normalizeIdentity(expectedDescriptor.ownerEmail) &&
+    normalizeIdentity(candidate.shareName ?? offerLabel) === normalizeIdentity(expectedDescriptor.shareName)
+  );
+}
+
+async function waitIncomingShareDescriptor(service, expectedDescriptor, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    const existing = await findExistingRecipientShare(service, expectedDescriptor.ownerEmail, expectedDescriptor.shareName);
+    if (existing?.share?.remoteDescriptor) {
+      return existing.share.remoteDescriptor;
+    }
     const { shares } = await service.listIncomingManagedShares();
     const match = shares.find((offer) => {
       if (offer.provider !== 'mega') {
         return false;
       }
-      const descriptor = offer.remoteDescriptor ?? {};
-      return (
-        descriptor.ownerEmail === ownerEmail &&
-        descriptor.shareName === shareName &&
-        offer.label === shareName
-      );
+      return matchesIncomingDescriptor(offer.remoteDescriptor ?? {}, expectedDescriptor, offer.label);
     });
     if (match?.remoteDescriptor) {
       return match.remoteDescriptor;
     }
     await sleep(1_500);
   }
-  throw new Error(`No incoming MEGA share offer for ${ownerEmail}:${shareName} within ${timeoutMs}ms`);
+  throw new Error(
+    `No incoming MEGA share offer for ${expectedDescriptor.ownerEmail}:${expectedDescriptor.shareName} within ${timeoutMs}ms`
+  );
 }
 
 async function waitMirrorFile(filePath, expectedBytes, timeoutMs) {
@@ -492,39 +529,43 @@ async function main() {
     console.error('[mega-bidir] wait recipient B to list the incoming A→B share…');
     const incomingDescriptorAToB = await waitIncomingShareDescriptor(
       peerB.service,
-      emailA,
-      descriptorAToB.shareName,
+      descriptorAToB,
       INCOMING_OFFER_TIMEOUT_MS
     );
     console.error('[mega-bidir] wait recipient A to list the incoming B→A share…');
     const incomingDescriptorBToA = await waitIncomingShareDescriptor(
       peerA.service,
-      emailB,
-      descriptorBToA.shareName,
+      descriptorBToA,
       INCOMING_OFFER_TIMEOUT_MS
     );
 
-    const mirrorB = await mkdtemp(path.join(tmpdir(), 'nb-mirror-b-reads-a-'));
-    const mirrorA = await mkdtemp(path.join(tmpdir(), 'nb-mirror-a-reads-b-'));
+    const existingRecipientB = await findExistingRecipientShare(peerB.service, emailA, descriptorAToB.shareName);
+    const existingRecipientA = await findExistingRecipientShare(peerA.service, emailB, descriptorBToA.shareName);
+    const mirrorB = existingRecipientB?.share?.localPath ?? await mkdtemp(path.join(tmpdir(), 'nb-mirror-b-reads-a-'));
+    const mirrorA = existingRecipientA?.share?.localPath ?? await mkdtemp(path.join(tmpdir(), 'nb-mirror-a-reads-b-'));
 
-    const acceptedB = await withTimeout('accept share B←A', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
-      peerB.service.acceptManagedShare({
-        provider: 'mega',
-        accountId: ownerB.share.accountId,
-        label: descriptorAToB.shareName,
-        localPath: mirrorB,
-        remoteDescriptor: incomingDescriptorAToB,
-      })
-    );
-    const acceptedA = await withTimeout('accept share A←B', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
-      peerA.service.acceptManagedShare({
-        provider: 'mega',
-        accountId: ownerA.share.accountId,
-        label: descriptorBToA.shareName,
-        localPath: mirrorA,
-        remoteDescriptor: incomingDescriptorBToA,
-      })
-    );
+    const acceptedB = existingRecipientB
+      ? { share: existingRecipientB.share }
+      : await withTimeout('accept share B←A', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
+          peerB.service.acceptManagedShare({
+            provider: 'mega',
+            accountId: ownerB.share.accountId,
+            label: descriptorAToB.shareName,
+            localPath: mirrorB,
+            remoteDescriptor: incomingDescriptorAToB,
+          })
+        );
+    const acceptedA = existingRecipientA
+      ? { share: existingRecipientA.share }
+      : await withTimeout('accept share A←B', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
+          peerA.service.acceptManagedShare({
+            provider: 'mega',
+            accountId: ownerA.share.accountId,
+            label: descriptorBToA.shareName,
+            localPath: mirrorA,
+            remoteDescriptor: incomingDescriptorBToA,
+          })
+        );
 
     console.error('[mega-bidir] wait writable incoming shares ready…');
     await Promise.all([

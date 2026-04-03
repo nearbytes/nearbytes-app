@@ -493,6 +493,23 @@ async function waitIncomingOfferDescriptor(
   const deadline = Date.now() + timeoutMs;
   let seenOffers: string[] = [];
   while (Date.now() < deadline) {
+    const existing = await findExistingRecipientShare(peer, ownerEmail, shareName);
+    if (existing?.share?.remoteDescriptor) {
+      const existingAccessLevel = readDescriptorString(existing.share.remoteDescriptor, 'accessLevel');
+      return {
+        remotePath: readDescriptorString(existing.share.remoteDescriptor, 'remotePath') ?? `${ownerEmail}:${shareName}`,
+        shareName: readDescriptorString(existing.share.remoteDescriptor, 'shareName') ?? shareName,
+        ownerEmail: readDescriptorString(existing.share.remoteDescriptor, 'ownerEmail') ?? ownerEmail,
+        accessLevel:
+          existingAccessLevel === 'read' ||
+          existingAccessLevel === 'read/write' ||
+          existingAccessLevel === 'full access'
+            ? existingAccessLevel
+            : INVITE_ACCESS_LEVEL,
+        shareHandle: readDescriptorString(existing.share.remoteDescriptor, 'shareHandle'),
+        rootHandle: readDescriptorString(existing.share.remoteDescriptor, 'rootHandle'),
+      };
+    }
     const incoming = await withTimeout(`list incoming shares ${peer.label}`, INVENTORY_TIMEOUT_MS, () =>
       peer.service.listIncomingManagedShares()
     );
@@ -560,9 +577,7 @@ async function getOrCreateRecipientShare(
   descriptor: ChannelDescriptor,
   requestedMirrorDir: string
 ): Promise<MaterializedRecipient> {
-  const existing = USE_CACHE
-    ? await findExistingRecipientShare(peer, descriptor.ownerEmail, descriptor.shareName)
-    : undefined;
+  const existing = await findExistingRecipientShare(peer, descriptor.ownerEmail, descriptor.shareName);
   if (existing) {
     return {
       shareId: existing.share.id,

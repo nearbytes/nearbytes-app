@@ -86,6 +86,7 @@ const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
 const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
 const MEGA_PENDING_ROOT_DIAGNOSTIC_MIN_INTERVAL_MS = 60_000;
 const MEGA_OWNER_SHARE_KEY_HEAL_INTERVAL_MS = 15 * 60_000;
+const MEGA_OWNER_SHARE_KEY_HEAL_RETRY_MS = 20_000;
 const MEGA_OWNER_COLLABORATOR_CACHE_MS = 30_000;
 const MEGA_INCOMING_DISCOVERY_CACHE_MS = 5_000;
 const MEGA_CONTACT_INVITES_CACHE_MS = 5_000;
@@ -2108,7 +2109,14 @@ export class MegaTransportAdapter {
           { shareId: share.id, shareHandle: root.root.shareHandle, email: session.email }
         );
       }
-      await this.healOwnerOutgoingShareKeys(share, session, root, shareCrypto, signal);
+      const ownerShareKeyHealResult = await this.healOwnerOutgoingShareKeys(share, session, root, shareCrypto, signal);
+      if (
+        ownerShareKeyHealResult &&
+        ownerShareKeyHealResult.targetCount > 0 &&
+        ownerShareKeyHealResult.publishedCount < ownerShareKeyHealResult.targetCount
+      ) {
+        this.schedulePendingSyncRetry(share, account, MEGA_OWNER_SHARE_KEY_HEAL_RETRY_MS);
+      }
       const ownerUploadState = buildMegaOwnerUploadState(root, shareCrypto);
       this.ownerUploadStates.set(share.id, ownerUploadState);
       const result = await worker.sync(
@@ -2651,14 +2659,14 @@ export class MegaTransportAdapter {
     root: MegaOwnerRemoteRoot,
     shareCrypto: MegaShareCryptoContext | undefined,
     signal?: AbortSignal
-  ): Promise<void> {
+  ): Promise<{ targetCount: number; publishedCount: number } | null> {
     if (!shareCrypto) {
-      return;
+      return null;
     }
 
     const lastHealedAt = this.ownerShareKeyHealAt.get(share.id) ?? 0;
     if (Date.now() - lastHealedAt < MEGA_OWNER_SHARE_KEY_HEAL_INTERVAL_MS) {
-      return;
+      return null;
     }
 
     try {
@@ -2666,7 +2674,7 @@ export class MegaTransportAdapter {
       const targets = collectMegaOwnerShareInviteTargets(snapshot, root.root.handle, root.root.shareHandle)
         .filter((target) => isMegaUserHandle(target.u));
       if (targets.length === 0) {
-        return;
+        return { targetCount: 0, publishedCount: 0 };
       }
 
       const keyManager = await this.fetchKeyManagerState(session, signal);
@@ -2683,14 +2691,22 @@ export class MegaTransportAdapter {
           publishedCount += 1;
         }
       }
-      this.ownerShareKeyHealAt.set(share.id, Date.now());
+      const cooldownMs = publishedCount >= targets.length
+        ? MEGA_OWNER_SHARE_KEY_HEAL_INTERVAL_MS
+        : MEGA_OWNER_SHARE_KEY_HEAL_RETRY_MS;
+      this.ownerShareKeyHealAt.set(share.id, Date.now() - MEGA_OWNER_SHARE_KEY_HEAL_INTERVAL_MS + cooldownMs);
       this.runtime.logger.log('MEGA owner share key healing completed.', {
         shareId: share.id,
         accountId: share.accountId,
         shareHandle: shareCrypto.shareHandle,
         targetCount: targets.length,
         publishedCount,
+        nextRetryInMs: cooldownMs,
       });
+      return {
+        targetCount: targets.length,
+        publishedCount,
+      };
     } catch (error) {
       this.runtime.logger.warn('MEGA owner share key healing failed.', {
         shareId: share.id,
@@ -2698,6 +2714,7 @@ export class MegaTransportAdapter {
         shareHandle: shareCrypto.shareHandle,
         message: error instanceof Error ? error.message : String(error),
       });
+      return null;
     }
   }
 
@@ -6612,8 +6629,25 @@ async function resolveMegaKeyManagerShareKeys(
   };
 
   for (const [shareHandle, pendingInShare] of keyManager.pendingInShares) {
-    if (resolved.has(shareHandle)) {
-      continue;
+    const matchingNode = snapshot?.nodes.find((node) => typeof node.h === 'string' && node.h.trim() === shareHandle);
+    const existingShareKey = resolved.get(shareHandle);
+    if (existingShareKey) {
+      if (!snapshot || !matchingNode) {
+        continue;
+      }
+      const validationShareKeys = new Map(resolved);
+      registerMegaShareKeyHandlesForNode(validationShareKeys, matchingNode, existingShareKey);
+      const decryptedNode = decryptNodeRecord(matchingNode, session, validationShareKeys, usersByHandle);
+      if (decryptedNode) {
+        continue;
+      }
+      logger?.warn?.('MEGA existing share key failed to decrypt the incoming root; retrying pending inshare resolution.', {
+        email: session.email,
+        shareHandle,
+        ownerHandle: pendingInShare.ownerHandle,
+        existingShareKeyFingerprint: fingerprintMegaShareKey(existingShareKey),
+      });
+      resolved.delete(shareHandle);
     }
     if (pendingInShare.encryptedShareKey.length === 0) {
       logger?.warn?.('MEGA pending inshare entry has no encrypted share key payload.', {
@@ -6657,20 +6691,17 @@ async function resolveMegaKeyManagerShareKeys(
       continue;
     }
     const candidateShareKey = Buffer.from(decryptedShareKey.subarray(0, 16));
-    if (snapshot) {
-      const matchingNode = snapshot.nodes.find((node) => typeof node.h === 'string' && node.h.trim() === shareHandle);
-      if (matchingNode) {
-        const validationShareKeys = new Map(resolved);
-        registerMegaShareKeyHandlesForNode(validationShareKeys, matchingNode, candidateShareKey);
-        const decryptedNode = decryptNodeRecord(matchingNode, session, validationShareKeys, usersByHandle);
-        if (!decryptedNode) {
-          logger?.warn?.('MEGA pending inshare key was rejected because it does not decrypt the incoming root node.', {
-            email: session.email,
-            shareHandle,
-            ownerHandle: pendingInShare.ownerHandle,
-          });
-          continue;
-        }
+    if (matchingNode) {
+      const validationShareKeys = new Map(resolved);
+      registerMegaShareKeyHandlesForNode(validationShareKeys, matchingNode, candidateShareKey);
+      const decryptedNode = decryptNodeRecord(matchingNode, session, validationShareKeys, usersByHandle);
+      if (!decryptedNode) {
+        logger?.warn?.('MEGA pending inshare key was rejected because it does not decrypt the incoming root node.', {
+          email: session.email,
+          shareHandle,
+          ownerHandle: pendingInShare.ownerHandle,
+        });
+        continue;
       }
     }
     resolved.set(shareHandle, candidateShareKey);
