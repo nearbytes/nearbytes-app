@@ -200,6 +200,11 @@ interface VolumeDestinationTarget {
   readonly policy: VolumeDestinationConfig;
 }
 
+interface CapacityProbe {
+  getAvailableBytes(path: string): Promise<number | undefined>;
+  getTotalBytes(path: string): Promise<number | undefined>;
+}
+
 /**
  * Meta-level storage router for multi-root block/event storage.
  * Routes writes by channel key and merges reads across roots.
@@ -223,8 +228,13 @@ export class MultiRootStorageBackend implements StorageBackend {
     blockedDelayMs: 30_000,
     healthyDelayMs: 120_000,
   };
+  private readonly capacityProbe: CapacityProbe;
 
   constructor(initialConfig: RootsConfig) {
+    this.capacityProbe = {
+      getAvailableBytes,
+      getTotalBytes,
+    };
     this.config = initialConfig;
     this.rootStates = this.buildRootStates(initialConfig);
   }
@@ -1315,23 +1325,37 @@ export class MultiRootStorageBackend implements StorageBackend {
     bytesToWrite: number,
     channelKeyHex: string
   ): Promise<void> {
-    const availableBytes = await getAvailableBytes(target.state.config.path);
-    const totalBytes = await getTotalBytes(target.state.config.path);
+    const availableBytes = await this.capacityProbe.getAvailableBytes(target.state.config.path);
+    const totalBytes = await this.capacityProbe.getTotalBytes(target.state.config.path);
     if (availableBytes === undefined || totalBytes === undefined) {
       return;
     }
 
     const reservePercent = Math.max(target.state.config.reservePercent, target.policy.reservePercent);
     const reservedBytes = Math.floor((totalBytes * reservePercent) / 100);
-    if (availableBytes - bytesToWrite >= reservedBytes) {
+    const spareBytesAfterWrite = availableBytes - bytesToWrite;
+    if (spareBytesAfterWrite >= reservedBytes) {
+      return;
+    }
+
+    // Once a destination is already below its reserve watermark, keep allowing writes
+    // that still fit in the actual free space rather than deadlocking the volume.
+    if (availableBytes < reservedBytes && spareBytesAfterWrite >= 0) {
       return;
     }
 
     await this.pruneSourceBlocks(target.state.config.id, reservedBytes + bytesToWrite, channelKeyHex, {
       preserveReplicaBlocks: true,
     });
-    const afterSpareCleanupBytes = await getAvailableBytes(target.state.config.path);
+    const afterSpareCleanupBytes = await this.capacityProbe.getAvailableBytes(target.state.config.path);
     if (afterSpareCleanupBytes !== undefined && afterSpareCleanupBytes - bytesToWrite >= reservedBytes) {
+      return;
+    }
+    if (
+      afterSpareCleanupBytes !== undefined &&
+      availableBytes < reservedBytes &&
+      afterSpareCleanupBytes >= bytesToWrite
+    ) {
       return;
     }
 

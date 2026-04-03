@@ -136,7 +136,10 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
 
   const server = await listen(app, host, port);
   const bound = getBoundPort(server);
-  await localNetworkSyncService.start(bound);
+  void localNetworkSyncService.start(bound).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`Warning: local network sync startup failed: ${message}`);
+  });
 
   const stop = createStop(server, async () => {
     storage.stopRepairMonitor();

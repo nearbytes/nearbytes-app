@@ -566,6 +566,49 @@ describe('MultiRootStorageBackend', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it('allows writes when a destination is already below reserve but still has real free space', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    await mkdir(mainRoot, { recursive: true });
+
+    const keyHex = 'e'.repeat(130);
+    const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot }));
+    (storage as unknown as { capacityProbe: { getAvailableBytes(path: string): Promise<number | undefined>; getTotalBytes(path: string): Promise<number | undefined> } }).capacityProbe = {
+      getAvailableBytes: async () => 50,
+      getTotalBytes: async () => 1000,
+    };
+
+    try {
+      await expect(
+        storage.writeFileForChannel(`channels/${keyHex}/event.bin`, bytes('value'), keyHex)
+      ).resolves.toBeUndefined();
+      expect(await readFile(join(mainRoot, 'channels', keyHex, 'event.bin'), 'utf8')).toBe('value');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still blocks writes that would newly cross the reserve watermark', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
+    const mainRoot = join(dir, 'main');
+    await mkdir(mainRoot, { recursive: true });
+
+    const keyHex = 'f'.repeat(130);
+    const storage = new MultiRootStorageBackend(createConfig({ mainPath: mainRoot }));
+    (storage as unknown as { capacityProbe: { getAvailableBytes(path: string): Promise<number | undefined>; getTotalBytes(path: string): Promise<number | undefined> } }).capacityProbe = {
+      getAvailableBytes: async () => 120,
+      getTotalBytes: async () => 1000,
+    };
+
+    try {
+      await expect(
+        storage.writeFileForChannel(`channels/${keyHex}/event.bin`, bytes('x'.repeat(30)), keyHex)
+      ).rejects.toThrow(/does not have enough free space/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps secondary destination failures best effort and records failure status', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'nearbytes-mr-'));
     const mainRoot = join(dir, 'main');
