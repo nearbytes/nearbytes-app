@@ -216,6 +216,13 @@ export function createRoutes(deps: RouteDependencies): Router {
     res.json({ ok: true, acceptedAt: Date.now() });
   }));
 
+  router.post('/lan/transport/signal', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.handleTransportSignal(req.body));
+  }));
+
   if (isProviderEnabled('gdrive')) {
     router.get('/oauth/google/callback', asyncHandler(async (req, res) => {
       const service = getManagedShareServiceOrThrow(managedShareService);

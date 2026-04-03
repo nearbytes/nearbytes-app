@@ -594,7 +594,7 @@ export interface LocalNetworkServiceState {
   listening: boolean;
   port: number | null;
   discovery: 'dns-sd+multicast-fallback';
-  transport: 'quic';
+  transport: 'webrtc';
   serviceType: string;
   announceIntervalMs: number;
   peerCount: number;

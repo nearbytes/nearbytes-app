@@ -240,7 +240,7 @@ Future versions SHOULD add:
 2. signed sync messages;
 3. accepted-peer trust policy;
 4. relay-capable routes;
-5. QUIC transport profile;
+5. additional transport profiles beyond the active WebRTC LAN carriage;
 6. mobile background-sync constraints;
 7. compact inventories such as Bloom-filter or set-reconciliation summaries.
 

@@ -112,4 +112,4 @@ Therefore:
 Deprecated note:
 
 1. v0.2 allowed provisional peer-HTTP transport scaffolding during development;
-2. v0.3 replaces that with a normative DNS-SD plus QUIC transport profile.
+2. v0.3 replaces that with a normative DNS-SD plus WebRTC transport profile.

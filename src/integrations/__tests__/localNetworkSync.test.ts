@@ -232,7 +232,7 @@ describe('LocalNetworkSyncService', () => {
     }
 
     peer.lastSeenAt = Date.now() - 30_000;
-    peer.lastSyncError = 'LAN QUIC hello failed: Create external arraybuffer failed';
+    peer.lastSyncError = 'LAN WebRTC hello failed for peer-b: timeout';
     peer.lastSyncTransient = false;
     peer.lastSyncNotice = null;
 
@@ -241,6 +241,42 @@ describe('LocalNetworkSyncService', () => {
     expect(snapshot?.lastSyncError).toBeNull();
     expect(snapshot?.lastSyncNotice).toBe('Peer is offline or quiet; Nearbytes will reconnect automatically.');
     expect(snapshot?.detail).toBe('Peer is offline or quiet; Nearbytes will reconnect automatically.');
+
+    await local.lanService.stop();
+    await remote.lanService.stop();
+  });
+
+  it('only requests events and blocks that the receiver is actually missing', async () => {
+    const secret = 'test:secret:lan-want-first';
+    const remote = await createLanHarness('nearbytes-lan-want-first-remote-', secret, 'peer-b', 3801);
+    const local = await createLanHarness('nearbytes-lan-want-first-local-', secret, 'peer-a', 3802);
+    const requestCounts = {
+      event: 0,
+      block: 0,
+    };
+    connectLanPeers(local.transport, remote.lanService, remote.port, {
+      onEventRequest: () => {
+        requestCounts.event += 1;
+      },
+      onBlockRequest: () => {
+        requestCounts.block += 1;
+      },
+    });
+
+    await remote.fileService.addFile(secret, 'wanted.txt', Buffer.from('payload'), 'text/plain');
+    const hello = await remote.lanService.buildHello();
+    seedKnownPeer(local.lanService, hello, remote.port);
+
+    await local.lanService.syncPeer(hello.peerId);
+    expect(requestCounts.event).toBeGreaterThan(0);
+    expect(requestCounts.block).toBeGreaterThan(0);
+
+    requestCounts.event = 0;
+    requestCounts.block = 0;
+
+    await local.lanService.syncPeer(hello.peerId);
+    expect(requestCounts.event).toBe(0);
+    expect(requestCounts.block).toBe(0);
 
     await local.lanService.stop();
     await remote.lanService.stop();
@@ -307,7 +343,7 @@ function seedKnownPeer(
     label: hello.label,
     address: hello.label.toLowerCase(),
     port,
-    endpointUrl: `quic://${hello.label.toLowerCase()}:${port}`,
+    endpointUrl: `webrtc://${hello.peerId}`,
     capabilities: [...hello.capabilities],
     volumeIds: [],
     announcementCounter: 1,
@@ -331,6 +367,8 @@ function seedKnownPeer(
 interface RemoteBehavior {
   readonly missingEventFetches?: ReadonlySet<string>;
   readonly helloError?: Error;
+  readonly onEventRequest?: (volumeId: string, eventHash: string) => void;
+  readonly onBlockRequest?: (blockHash: string) => void;
   readonly helloOverride?: (hello: Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>) => Promise<Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>> | Awaited<ReturnType<LocalNetworkSyncService['buildHello']>>;
   readonly observationsOverride?: (page: Awaited<ReturnType<LocalNetworkSyncService['listObservations']>>) => Promise<Awaited<ReturnType<LocalNetworkSyncService['listObservations']>>> | Awaited<ReturnType<LocalNetworkSyncService['listObservations']>>;
   readonly inventoryOverride?: (volumeId: string, inventory: VolumeSyncInventory) => Promise<VolumeSyncInventory> | VolumeSyncInventory;
@@ -446,6 +484,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
         };
       }
       case 'event':
+        remote.behavior.onEventRequest?.(request.volumeId, request.eventHash);
         if (remote.behavior.missingEventFetches?.has(request.eventHash)) {
           throw new Error(`404 missing event ${request.eventHash}`);
         }
@@ -454,6 +493,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
           value: await remote.service.readEventBytes(request.volumeId, request.eventHash),
         };
       case 'block':
+        remote.behavior.onBlockRequest?.(request.blockHash);
         return {
           kind: 'bytes',
           value: await remote.service.readBlockBytes(request.blockHash),

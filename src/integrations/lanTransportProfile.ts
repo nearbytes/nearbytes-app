@@ -1,14 +1,14 @@
 export const LAN_DISCOVERY_SERVICE_TYPE = 'nearbytes';
 export const LAN_DISCOVERY_SERVICE_PROTOCOL = 'udp' as const;
 export const LAN_DISCOVERY_PROTOCOL_VERSION = '0.3';
-export const LAN_QUIC_ALPN = 'nearbytes-lan/0.3';
+export const LAN_TRANSPORT_PROFILE_ID = 'nearbytes-lan/0.3';
 export const LAN_TXT_MAX_RECOMMENDED_BYTES = 200;
-export const LAN_TRANSPORT_CAPABILITIES = ['quic', 'observation-log', 'inventory-recovery', 'push-hint'] as const;
+export const LAN_TRANSPORT_CAPABILITIES = ['webrtc', 'observation-log', 'inventory-recovery', 'push-hint'] as const;
 
 export interface LanDiscoveryTxtRecord {
   readonly pv: typeof LAN_DISCOVERY_PROTOCOL_VERSION;
   readonly peer: string;
-  readonly alpn: typeof LAN_QUIC_ALPN;
+  readonly alpn: typeof LAN_TRANSPORT_PROFILE_ID;
   readonly caps: string;
   readonly head?: string;
 }
@@ -32,7 +32,7 @@ export function buildLanDiscoveryTxtRecord(input: LanDiscoveryRecordInput): LanD
   return {
     pv: LAN_DISCOVERY_PROTOCOL_VERSION,
     peer: input.peerId.trim(),
-    alpn: LAN_QUIC_ALPN,
+    alpn: LAN_TRANSPORT_PROFILE_ID,
     caps: capabilities.join(','),
     ...(typeof input.headObservationId === 'string' && input.headObservationId.trim() !== ''
       ? { head: input.headObservationId.trim().toLowerCase() }

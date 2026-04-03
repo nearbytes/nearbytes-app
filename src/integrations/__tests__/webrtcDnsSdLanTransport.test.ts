@@ -1,11 +1,16 @@
-import dgram from 'dgram';
 import os from 'os';
 import { mkdtemp, rm } from 'fs/promises';
 import path from 'path';
 import { tmpdir } from 'os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { LanPeerTransportCallbacks, LanTransportDiscoveredPeer, LanTransportHello, LanTransportRpcRequest } from '../lanPeerTransport.js';
-import { QuicDnsSdLanTransport } from '../quicDnsSdLanTransport.js';
+import type {
+  LanPeerTransportCallbacks,
+  LanPeerTransportSignalRequest,
+  LanTransportDiscoveredPeer,
+  LanTransportHello,
+  LanTransportRpcRequest,
+} from '../lanPeerTransport.js';
+import { WebRtcDnsSdLanTransport } from '../webrtcDnsSdLanTransport.js';
 
 const cleanupPaths: string[] = [];
 
@@ -19,24 +24,56 @@ afterEach(async () => {
   }
 });
 
-describe('QuicDnsSdLanTransport', () => {
-  it('exchanges json, bytes, and sync-hint messages over QUIC streams', async () => {
-    const leftRuntimeDir = await mkRuntimeDir('nearbytes-lan-quic-left-');
-    const rightRuntimeDir = await mkRuntimeDir('nearbytes-lan-quic-right-');
-    const leftPort = await reserveUdpPort();
-    const rightPort = await reserveUdpPort();
-    const leftTransport = new QuicDnsSdLanTransport(leftRuntimeDir);
-    const rightTransport = new QuicDnsSdLanTransport(rightRuntimeDir);
+describe('WebRtcDnsSdLanTransport', () => {
+  it('exchanges json, bytes, and sync-hint messages over WebRTC data channels', async () => {
+    const leftRuntimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-left-');
+    const rightRuntimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-right-');
     let syncHintReason: string | null = null;
+    const responders = new Map<string, WebRtcDnsSdLanTransport>();
+    const makeSignalFetcher = (owner: string): typeof fetch => {
+      return async (input, init) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+        const hostname = new URL(url).hostname.toLowerCase();
+        const target = responders.get(hostname);
+        if (!target) {
+          throw new Error(`Unknown signal target ${hostname} for ${owner}`);
+        }
+        const body = JSON.parse(String(init?.body ?? '{}')) as LanPeerTransportSignalRequest;
+        const response = await target.handleSignal!(body);
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return response;
+          },
+        } as Response;
+      };
+    };
+
+    const leftTransport = new WebRtcDnsSdLanTransport(leftRuntimeDir, {
+      disableDiscovery: true,
+      signalFetcher: makeSignalFetcher('left'),
+    });
+    const rightTransport = new WebRtcDnsSdLanTransport(rightRuntimeDir, {
+      disableDiscovery: true,
+      signalFetcher: makeSignalFetcher('right'),
+    });
+    responders.set('left.local', leftTransport);
+    responders.set('right.local', rightTransport);
 
     await leftTransport.start(createCallbacks({
       peerId: 'peer-left',
       label: 'peer-left',
-      port: leftPort,
+      port: 3101,
       headObservationId: 'aa'.repeat(32),
+      capabilities: ['webrtc', 'observation-log'],
       handleRequest: async (request) => {
         if (request.action === 'hello') {
-          return { protocol: 'nearbytes.lan-sync.v1', peerId: 'peer-left', label: 'peer-left', port: leftPort, capabilities: ['quic'], volumeIds: [], observationHeadId: 'aa'.repeat(32), generatedAt: Date.now() };
+          return { protocol: 'nearbytes.lan-sync.v1', peerId: 'peer-left', label: 'peer-left', port: 3101, capabilities: ['webrtc'], volumeIds: [], observationHeadId: 'aa'.repeat(32), generatedAt: Date.now() };
         }
         if (request.action === 'block') {
           return new Uint8Array([1, 2, 3]);
@@ -48,11 +85,12 @@ describe('QuicDnsSdLanTransport', () => {
     await rightTransport.start(createCallbacks({
       peerId: 'peer-right',
       label: 'peer-right',
-      port: rightPort,
+      port: 3102,
       headObservationId: 'bb'.repeat(32),
+      capabilities: ['webrtc', 'inventory'],
       handleRequest: async (request) => {
         if (request.action === 'hello') {
-          return { protocol: 'nearbytes.lan-sync.v1', peerId: 'peer-right', label: 'peer-right', port: rightPort, capabilities: ['quic', 'inventory'], volumeIds: ['vol-1'], observationHeadId: 'bb'.repeat(32), generatedAt: Date.now() };
+          return { protocol: 'nearbytes.lan-sync.v1', peerId: 'peer-right', label: 'peer-right', port: 3102, capabilities: ['webrtc', 'inventory'], volumeIds: ['vol-1'], observationHeadId: 'bb'.repeat(32), generatedAt: Date.now() };
         }
         if (request.action === 'observations') {
           return {
@@ -86,9 +124,9 @@ describe('QuicDnsSdLanTransport', () => {
       const remotePeer: LanTransportDiscoveredPeer = {
         peerId: 'peer-right',
         label: 'peer-right',
-        address: '127.0.0.1',
-        port: rightPort,
-        capabilities: ['quic', 'inventory'],
+        address: 'right.local',
+        port: 3102,
+        capabilities: ['webrtc', 'inventory'],
         headObservationId: 'bb'.repeat(32),
       };
 
@@ -120,11 +158,11 @@ describe('QuicDnsSdLanTransport', () => {
       await leftTransport.stop();
       await rightTransport.stop();
     }
-  });
+  }, 15_000);
 
   it('prefers private LAN addresses in discovery debug state and ignores incompatible records', async () => {
-    const runtimeDir = await mkRuntimeDir('nearbytes-lan-quic-debug-');
-    const transport = new QuicDnsSdLanTransport(runtimeDir);
+    const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-debug-');
+    const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });
     const internal = transport as unknown as {
       callbacks: LanPeerTransportCallbacks | null;
       handleDiscoveryService: (service: {
@@ -140,6 +178,7 @@ describe('QuicDnsSdLanTransport', () => {
       label: 'peer-self',
       port: 4101,
       headObservationId: null,
+      capabilities: ['webrtc', 'observation-log'],
       handleRequest: async () => ({ ok: true }),
     });
 
@@ -176,7 +215,7 @@ describe('QuicDnsSdLanTransport', () => {
           pv: '0.3',
           peer: 'peer-remote',
           alpn: 'nearbytes-lan/0.3',
-          caps: 'quic,observation-log',
+          caps: 'webrtc,observation-log',
           head: 'aa'.repeat(32),
         },
       });
@@ -190,7 +229,7 @@ describe('QuicDnsSdLanTransport', () => {
           pv: '0.2',
           peer: 'peer-old',
           alpn: 'nearbytes-lan/0.2',
-          caps: 'quic',
+          caps: 'webrtc',
         },
       });
     } finally {
@@ -214,6 +253,7 @@ function createCallbacks(options: {
   label: string;
   port: number;
   headObservationId: string | null;
+  capabilities: string[];
   handleRequest: (request: LanTransportRpcRequest) => Promise<unknown> | unknown;
 }): LanPeerTransportCallbacks {
   return {
@@ -222,7 +262,7 @@ function createCallbacks(options: {
       peerId: options.peerId,
       label: options.label,
       port: options.port,
-      capabilities: ['quic'],
+      capabilities: [...options.capabilities],
       volumeIds: [],
       observationHeadId: options.headObservationId,
       generatedAt: Date.now(),
@@ -241,18 +281,4 @@ async function mkRuntimeDir(prefix: string): Promise<string> {
   const runtimeDir = await mkdtemp(path.join(tmpdir(), prefix));
   cleanupPaths.push(runtimeDir);
   return runtimeDir;
-}
-
-async function reserveUdpPort(): Promise<number> {
-  const socket = dgram.createSocket('udp4');
-  try {
-    await new Promise<void>((resolve, reject) => {
-      socket.once('error', reject);
-      socket.bind(0, '127.0.0.1', () => resolve());
-    });
-    const address = socket.address();
-    return typeof address === 'string' ? 0 : address.port;
-  } finally {
-    socket.close();
-  }
 }

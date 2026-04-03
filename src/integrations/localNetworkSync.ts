@@ -7,8 +7,13 @@ import { normalizeHash, normalizeVolumeId, validateBlockBytes, validateEventByte
 import { getDefaultRuntimeHomeDir, resolveStorageHomeDir } from '../storagePath.js';
 import { PersistentProviderQueue, type ProviderQueueObservationPage } from './providerQueue.js';
 import type { ProviderQueueObservation } from './types.js';
-import type { LanPeerTransport, LanTransportDiscoveredPeer } from './lanPeerTransport.js';
-import { QuicDnsSdLanTransport } from './quicDnsSdLanTransport.js';
+import type {
+  LanPeerTransport,
+  LanPeerTransportSignalRequest,
+  LanPeerTransportSignalResponse,
+  LanTransportDiscoveredPeer,
+} from './lanPeerTransport.js';
+import { WebRtcDnsSdLanTransport } from './webrtcDnsSdLanTransport.js';
 
 const LAN_SYNC_PROTOCOL = 'nearbytes.lan-sync.v1';
 const ADVERTISEMENT_REFRESH_INTERVAL_MS = 10_000;
@@ -102,7 +107,7 @@ export interface LocalNetworkServiceSnapshot {
   readonly listening: boolean;
   readonly port: number | null;
   readonly discovery: 'dns-sd+multicast-fallback';
-  readonly transport: 'quic';
+  readonly transport: 'webrtc';
   readonly serviceType: string;
   readonly announceIntervalMs: number;
   readonly peerCount: number;
@@ -142,7 +147,7 @@ export class LocalNetworkSyncService {
     this.storageHomeDir = resolveStorageHomeDir(options?.storageDir ?? storage.getRootsConfig().sources[0]?.path ?? process.cwd());
     this.runtimeDir = resolveLocalNetworkRuntimeDir(this.storageHomeDir);
     this.providerQueue = new PersistentProviderQueue(storage, this.runtimeDir);
-    this.peerTransport = options?.peerTransport ?? new QuicDnsSdLanTransport(this.runtimeDir);
+    this.peerTransport = options?.peerTransport ?? new WebRtcDnsSdLanTransport(this.runtimeDir);
   }
 
   async start(httpPort: number): Promise<void> {
@@ -188,7 +193,7 @@ export class LocalNetworkSyncService {
       peerId: this.peerId,
       label: this.label,
       port: this.httpPort ?? 0,
-      capabilities: ['observation-log', 'inventory', 'pull-sync', 'push-hint'],
+      capabilities: ['webrtc', 'observation-log', 'inventory', 'pull-sync', 'push-hint'],
       volumeIds: [],
       observationHeadId: this.providerQueue.getHeadObservationId(),
       generatedAt: Date.now(),
@@ -262,6 +267,13 @@ export class LocalNetworkSyncService {
     void this.syncActivePeers(true);
   }
 
+  async handleTransportSignal(request: LanPeerTransportSignalRequest): Promise<LanPeerTransportSignalResponse> {
+    if (!this.peerTransport.handleSignal) {
+      throw new Error('The active LAN transport does not support signaling');
+    }
+    return await this.peerTransport.handleSignal(request);
+  }
+
   private async handleTransportRequest(request: import('./lanPeerTransport.js').LanTransportRpcRequest): Promise<import('./lanPeerTransport.js').LanPeerTransportResponse> {
     switch (request.action) {
       case 'hello':
@@ -318,7 +330,7 @@ export class LocalNetworkSyncService {
         listening: this.started && this.httpPort !== null,
         port: this.httpPort,
         discovery: 'dns-sd+multicast-fallback',
-        transport: 'quic',
+        transport: 'webrtc',
         serviceType: '_nearbytes._udp.local',
         announceIntervalMs: ADVERTISEMENT_REFRESH_INTERVAL_MS,
         peerCount: this.peers.size,
@@ -374,7 +386,7 @@ export class LocalNetworkSyncService {
       existing.label = discovered.label || existing.label;
       existing.address = discovered.address;
       existing.port = discovered.port;
-      existing.endpointUrl = `quic://${discovered.address}:${discovered.port}`;
+      existing.endpointUrl = `webrtc://${discovered.peerId}`;
       existing.capabilities = [...discovered.capabilities];
       existing.lastSeenAt = now;
       if (!existing.lastSyncAt || now - existing.lastSyncAt >= PEER_SYNC_INTERVAL_MS) {
@@ -388,7 +400,7 @@ export class LocalNetworkSyncService {
       label: discovered.label || `Peer ${discovered.peerId.slice(0, 8)}`,
       address: discovered.address,
       port: discovered.port,
-      endpointUrl: `quic://${discovered.address}:${discovered.port}`,
+      endpointUrl: `webrtc://${discovered.peerId}`,
       capabilities: [...discovered.capabilities],
       volumeIds: [],
       announcementCounter: 0,
@@ -441,6 +453,7 @@ export class LocalNetworkSyncService {
     peer.queued = false;
     peer.lastSyncStartedAt = Date.now();
     try {
+      await this.peerTransport.ensurePeerReady?.(this.toTransportPeer(peer));
       const hello = await this.peerTransport.requestJson<PeerHelloResponse>(this.toTransportPeer(peer), {
         action: 'hello',
       });

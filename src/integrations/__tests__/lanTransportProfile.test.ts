@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LAN_DISCOVERY_PROTOCOL_VERSION,
-  LAN_QUIC_ALPN,
+  LAN_TRANSPORT_PROFILE_ID,
   LAN_TXT_MAX_RECOMMENDED_BYTES,
   buildLanDiscoveryTxtRecord,
   estimateLanTxtRecordBytes,
@@ -13,14 +13,14 @@ describe('lanTransportProfile', () => {
     const txt = buildLanDiscoveryTxtRecord({
       peerId: 'peer-123',
       headObservationId: 'ab'.repeat(32),
-      capabilities: ['inventory-recovery', 'quic', 'quic', 'push-hint'],
+      capabilities: ['inventory-recovery', 'webrtc', 'webrtc', 'push-hint'],
     });
 
     expect(txt).toEqual({
       pv: LAN_DISCOVERY_PROTOCOL_VERSION,
       peer: 'peer-123',
-      alpn: LAN_QUIC_ALPN,
-      caps: 'inventory-recovery,push-hint,quic',
+      alpn: LAN_TRANSPORT_PROFILE_ID,
+      caps: 'inventory-recovery,push-hint,webrtc',
       head: 'ab'.repeat(32),
     });
   });
@@ -29,16 +29,16 @@ describe('lanTransportProfile', () => {
     const parsed = parseLanDiscoveryTxtRecord({
       pv: LAN_DISCOVERY_PROTOCOL_VERSION,
       peer: 'peer-abc',
-      alpn: LAN_QUIC_ALPN,
-      caps: 'quic,inventory-recovery,quic',
+      alpn: LAN_TRANSPORT_PROFILE_ID,
+      caps: 'webrtc,inventory-recovery,webrtc',
       head: 'cd'.repeat(32),
     });
 
     expect(parsed).toEqual({
       protocolVersion: LAN_DISCOVERY_PROTOCOL_VERSION,
       peerId: 'peer-abc',
-      alpn: LAN_QUIC_ALPN,
-      capabilities: ['inventory-recovery', 'quic'],
+      alpn: LAN_TRANSPORT_PROFILE_ID,
+      capabilities: ['inventory-recovery', 'webrtc'],
       headObservationId: 'cd'.repeat(32),
     });
   });
@@ -47,7 +47,7 @@ describe('lanTransportProfile', () => {
     const txt = buildLanDiscoveryTxtRecord({
       peerId: 'desktop-lan-peer-123456',
       headObservationId: 'ef'.repeat(32),
-      capabilities: ['quic', 'observation-log', 'inventory-recovery', 'push-hint'],
+      capabilities: ['webrtc', 'observation-log', 'inventory-recovery', 'push-hint'],
     });
 
     expect(estimateLanTxtRecordBytes({ ...txt })).toBeLessThanOrEqual(LAN_TXT_MAX_RECOMMENDED_BYTES);
@@ -55,6 +55,6 @@ describe('lanTransportProfile', () => {
 
   it('rejects malformed txt records', () => {
     expect(parseLanDiscoveryTxtRecord({})).toBeNull();
-    expect(parseLanDiscoveryTxtRecord({ pv: '0.3', peer: '', alpn: 'nearbytes-lan/0.3', caps: 'quic' })).toBeNull();
+    expect(parseLanDiscoveryTxtRecord({ pv: '0.3', peer: '', alpn: 'nearbytes-lan/0.3', caps: 'webrtc' })).toBeNull();
   });
 });
