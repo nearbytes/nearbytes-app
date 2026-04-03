@@ -282,6 +282,26 @@ describe('LocalNetworkSyncService', () => {
     await local.lanService.stop();
     await remote.lanService.stop();
   });
+
+  it('pushes an immediate sync hint after a new local observation instead of waiting for the long sync interval', async () => {
+    const secret = 'test:secret:lan-immediate-hint';
+    const local = await createLanHarness('nearbytes-lan-immediate-hint-local-', secret, 'peer-a', 3901);
+    const remote = await createLanHarness('nearbytes-lan-immediate-hint-remote-', secret, 'peer-b', 3902);
+    connectLanPeers(local.transport, remote.lanService, remote.port);
+
+    const remoteHello = await remote.lanService.buildHello();
+    seedKnownPeer(local.lanService, remoteHello, remote.port);
+    await local.lanService.syncPeer(remoteHello.peerId);
+
+    const hintStart = Date.now();
+    await local.fileService.addFile(secret, 'fast.txt', Buffer.from('delta'), 'text/plain');
+    const hinted = await local.transport.waitForNotifyCount(remoteHello.peerId, 1, 2_000);
+    expect(hinted).toBe(true);
+    expect(Date.now() - hintStart).toBeLessThan(2_000);
+
+    await local.lanService.stop();
+    await remote.lanService.stop();
+  });
 });
 
 async function createLanHarness(prefix: string, secretValue: string, peerId: string, port: number): Promise<{
@@ -387,6 +407,7 @@ function connectLanPeers(
 class FakeLanPeerTransport implements LanPeerTransport {
   private callbacks: LanPeerTransportCallbacks | null = null;
   private remotes = new Map<string, { service: LocalNetworkSyncService; port: number; behavior: RemoteBehavior }>();
+  private notifyCounts = new Map<string, number>();
 
   async start(callbacks: LanPeerTransportCallbacks): Promise<void> {
     this.callbacks = callbacks;
@@ -395,6 +416,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
   async stop(): Promise<void> {
     this.callbacks = null;
     this.remotes.clear();
+    this.notifyCounts.clear();
   }
 
   async refreshAdvertisement(): Promise<void> {
@@ -438,7 +460,19 @@ class FakeLanPeerTransport implements LanPeerTransport {
   }
 
   async notify(peer: LanTransportDiscoveredPeer, request: Extract<LanTransportRpcRequest, { action: 'sync-hint' }>): Promise<void> {
+    this.notifyCounts.set(peer.peerId, (this.notifyCounts.get(peer.peerId) ?? 0) + 1);
     await this.dispatch(peer, request);
+  }
+
+  async waitForNotifyCount(peerId: string, minimum: number, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if ((this.notifyCounts.get(peerId) ?? 0) >= minimum) {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return (this.notifyCounts.get(peerId) ?? 0) >= minimum;
   }
 
   private async dispatch(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<LanPeerTransportResponse> {

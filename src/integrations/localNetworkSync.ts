@@ -20,6 +20,7 @@ const ADVERTISEMENT_REFRESH_INTERVAL_MS = 10_000;
 const PEER_STALE_AFTER_MS = 18_000;
 const PEER_FORGET_AFTER_MS = 120_000;
 const PEER_SYNC_INTERVAL_MS = 8_000;
+const SYNC_HINT_DEBOUNCE_MS = 50;
 const OBSERVATION_PAGE_LIMIT = 512;
 const LOCAL_NETWORK_PROVIDER = 'local-network';
 const LOCAL_NETWORK_RUNTIME_FOLDER = 'local-network';
@@ -131,10 +132,12 @@ export class LocalNetworkSyncService {
   private readonly providerQueue: PersistentProviderQueue;
   private readonly peerTransport: LanPeerTransport;
   private readonly peers = new Map<string, LocalPeerState>();
+  private readonly pendingHintTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private peerId = '';
   private label = defaultPeerLabel();
   private httpPort: number | null = null;
   private upkeepTimer: ReturnType<typeof setInterval> | null = null;
+  private providerQueueObservationUnsubscribe: (() => void) | null = null;
   private started = false;
 
   constructor(
@@ -160,6 +163,9 @@ export class LocalNetworkSyncService {
     this.httpPort = httpPort;
     await this.loadIdentity();
     await this.providerQueue.start();
+    this.providerQueueObservationUnsubscribe = this.providerQueue.onObservation(() => {
+      this.queueImmediateSyncHints('storage-write');
+    });
     await this.peerTransport.start({
       getAdvertisement: async () => this.buildHello(),
       onPeerDiscovered: (peer) => this.upsertDiscoveredPeer(peer),
@@ -187,6 +193,12 @@ export class LocalNetworkSyncService {
       this.upkeepTimer = null;
     }
     await this.peerTransport.stop();
+    this.providerQueueObservationUnsubscribe?.();
+    this.providerQueueObservationUnsubscribe = null;
+    for (const timer of this.pendingHintTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingHintTimers.clear();
     await this.providerQueue.stop();
   }
 
@@ -268,6 +280,48 @@ export class LocalNetworkSyncService {
 
   notifySyncHint(_body?: SyncHintBody): void {
     void this.syncActivePeers(true);
+  }
+
+  private queueImmediateSyncHints(reason: string): void {
+    const now = Date.now();
+    for (const peer of this.peers.values()) {
+      if (now - peer.lastSeenAt >= PEER_STALE_AFTER_MS) {
+        continue;
+      }
+      this.queuePeerSyncHint(peer.peerId, reason);
+    }
+  }
+
+  private queuePeerSyncHint(peerId: string, reason: string): void {
+    if (this.pendingHintTimers.has(peerId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.pendingHintTimers.delete(peerId);
+      void this.dispatchPeerSyncHint(peerId, reason);
+    }, SYNC_HINT_DEBOUNCE_MS);
+    if (typeof timer === 'object' && 'unref' in timer) {
+      timer.unref();
+    }
+    this.pendingHintTimers.set(peerId, timer);
+  }
+
+  private async dispatchPeerSyncHint(peerId: string, reason: string): Promise<void> {
+    const peer = this.peers.get(peerId);
+    if (!peer) {
+      return;
+    }
+    if (Date.now() - peer.lastSeenAt >= PEER_STALE_AFTER_MS) {
+      return;
+    }
+    try {
+      await this.peerTransport.notify(this.toTransportPeer(peer), {
+        action: 'sync-hint',
+        reason,
+      });
+    } catch {
+      // Retry will happen through normal discovery/sync cadence.
+    }
   }
 
   async handleTransportSignal(request: LanPeerTransportSignalRequest): Promise<LanPeerTransportSignalResponse> {

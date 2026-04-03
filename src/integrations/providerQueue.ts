@@ -38,6 +38,7 @@ export class PersistentProviderQueue {
       routes: [],
   };
   private observationKeys = new Set<string>();
+  private readonly observationListeners = new Set<(observation: ProviderQueueObservation) => void>();
   private unsubscribe: (() => void) | null = null;
   private started = false;
   private writeChain: Promise<void> = Promise.resolve();
@@ -67,7 +68,15 @@ export class PersistentProviderQueue {
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.started = false;
+    this.observationListeners.clear();
     await this.writeChain.catch(() => undefined);
+  }
+
+  onObservation(listener: (observation: ProviderQueueObservation) => void): () => void {
+    this.observationListeners.add(listener);
+    return () => {
+      this.observationListeners.delete(listener);
+    };
   }
 
   getHeadObservationId(): string | null {
@@ -158,7 +167,9 @@ export class PersistentProviderQueue {
       observations: [...this.state.observations, stored],
     };
     await this.persistState();
-    return stripStoredObservation(stored);
+    const published = stripStoredObservation(stored);
+    this.publishObservation(published);
+    return published;
   }
 
   private async seedFromStorage(): Promise<void> {
@@ -292,6 +303,16 @@ export class PersistentProviderQueue {
       ...normalized,
       order,
     };
+  }
+
+  private publishObservation(observation: ProviderQueueObservation): void {
+    for (const listener of this.observationListeners) {
+      try {
+        listener(observation);
+      } catch {
+        // Listener failures must not break queue persistence.
+      }
+    }
   }
 }
 
