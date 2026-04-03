@@ -179,6 +179,7 @@ interface MegaAccountSecret {
   readonly userHandle: string;
   readonly accountVersion: number;
   readonly accountSalt?: string;
+  readonly shareKeys?: Record<string, string>;
 }
 
 interface MegaSession {
@@ -316,6 +317,7 @@ export class MegaTransportAdapter {
   private readonly suppressedWatcherPaths = new Map<string, Map<string, number>>();
   private readonly ownerUploadStates = new Map<string, MegaOwnerUploadState>();
   private readonly accountShareKeyCache = new Map<string, ReadonlyMap<string, Buffer>>();
+  private readonly accountIdByUserHandle = new Map<string, string>();
   private readonly accountCloudDriveHandleCache = new Map<string, string>();
   private readonly incomingShareDiscoveryCache = new Map<string, { expiresAt: number; offers: IncomingManagedShareOffer[] }>();
   private readonly incomingShareDiscoveryTasks = new Map<string, Promise<IncomingManagedShareOffer[]>>();
@@ -361,6 +363,7 @@ export class MegaTransportAdapter {
     this.suppressedWatcherPaths.clear();
     this.ownerUploadStates.clear();
     this.accountShareKeyCache.clear();
+    this.accountIdByUserHandle.clear();
     this.accountCloudDriveHandleCache.clear();
     this.incomingShareDiscoveryCache.clear();
     this.incomingShareDiscoveryTasks.clear();
@@ -454,7 +457,9 @@ export class MegaTransportAdapter {
       userHandle: session.userHandle,
       accountVersion: session.accountVersion,
       accountSalt: session.accountSalt,
+      shareKeys: encodePersistedMegaShareKeys(this.accountShareKeyCache.get(session.userHandle)),
     } satisfies MegaAccountSecret);
+    this.accountIdByUserHandle.set(session.userHandle, accountId);
     const persistSecretDurationMs = this.runtime.now() - activePhaseStartedAt;
     this.runtime.logger.log('MEGA connect completed.', {
       email: session.email,
@@ -485,6 +490,7 @@ export class MegaTransportAdapter {
     const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(account.id));
     if (isStoredMegaAccountSecret(secret) && typeof secret.userHandle === 'string' && secret.userHandle.trim()) {
       this.accountShareKeyCache.delete(secret.userHandle.trim());
+      this.accountIdByUserHandle.delete(secret.userHandle.trim());
       this.accountCloudDriveHandleCache.delete(secret.userHandle.trim());
     }
     await this.runtime.secretStore.delete(secretKey(account.id));
@@ -708,7 +714,7 @@ export class MegaTransportAdapter {
           const shareCommandStartedAt = this.runtime.now();
           try {
             await this.apiCommand(shareCommand.command, session);
-            this.rememberOwnerShareKey(session, root, shareCommand.shareKey);
+            await this.rememberOwnerShareKey(session, root, shareCommand.shareKey);
             if (useSecureKeyManagerShareFlow) {
               await this.finalizeOwnerOutgoingInviteInKeyManager(session, root, shareCommand.shareKey, target, {
                 removePendingOutShare: sentPendingShareKeyToContact,
@@ -734,7 +740,7 @@ export class MegaTransportAdapter {
               email: email.trim(),
             });
             await this.apiCommand(fallbackCommand.command, session);
-            this.rememberOwnerShareKey(session, root, fallbackCommand.shareKey);
+            await this.rememberOwnerShareKey(session, root, fallbackCommand.shareKey);
             if (useSecureKeyManagerShareFlow) {
               await this.finalizeOwnerOutgoingInviteInKeyManager(session, root, fallbackCommand.shareKey, fallbackTarget, {
                 removePendingOutShare: false,
@@ -1528,7 +1534,7 @@ export class MegaTransportAdapter {
         try {
           const actionBatch = await this.fetchActionPackets(session, incrementalScsn, signal);
           const packetReceivedAt = this.runtime.now();
-          const learnedShareKeyCount = this.rememberActionPacketShareKeys(session, actionBatch.packets);
+          const learnedShareKeyCount = await this.rememberActionPacketShareKeys(session, actionBatch.packets);
           const touchesShare = actionPacketBatchTouchesShare(actionBatch.packets, rootHandle, manifest);
           if (actionBatch.packets.length) {
             this.runtime.logger.log('MEGA push update received.', {
@@ -1836,7 +1842,7 @@ export class MegaTransportAdapter {
         }
 
         if (actionBatch.packets.length > 0) {
-          const learnedShareKeyCount = this.rememberActionPacketShareKeys(session, actionBatch.packets);
+          const learnedShareKeyCount = await this.rememberActionPacketShareKeys(session, actionBatch.packets);
           const actions = summarizeActionPacketActions(actionBatch.packets);
           const accountLevelOnly = allActionsAreAccountLevel(actions);
           const rootHandle = this.shareRootHandles.get(share.id);
@@ -2185,6 +2191,13 @@ export class MegaTransportAdapter {
     }
 
     const session = deserializeSession(secret, account.email ?? account.label);
+    this.accountIdByUserHandle.set(session.userHandle, account.id);
+    if (!this.accountShareKeyCache.has(session.userHandle)) {
+      const persistedShareKeys = decodePersistedMegaShareKeys(secret.shareKeys);
+      if (persistedShareKeys.size > 0) {
+        this.accountShareKeyCache.set(session.userHandle, persistedShareKeys);
+      }
+    }
     try {
       await this.fetchCurrentUser(session, signal);
       return session;
@@ -2254,7 +2267,9 @@ export class MegaTransportAdapter {
         userHandle: refreshed.userHandle,
         accountVersion: refreshed.accountVersion,
         accountSalt: refreshed.accountSalt,
+        shareKeys: encodePersistedMegaShareKeys(this.accountShareKeyCache.get(refreshed.userHandle)),
       } satisfies MegaAccountSecret);
+      this.accountIdByUserHandle.set(refreshed.userHandle, account.id);
       this.runtime.logger.log('MEGA session refresh succeeded.', {
         accountId: account.id,
       });
@@ -2379,6 +2394,7 @@ export class MegaTransportAdapter {
     };
     if (resolved.shareKeys.size > 0) {
       this.accountShareKeyCache.set(session.userHandle, new Map(resolved.shareKeys));
+      await this.persistCachedShareKeysForUser(session.userHandle);
       return resolved;
     }
     if (cachedShareKeys && cachedShareKeys.size > 0) {
@@ -2436,7 +2452,7 @@ export class MegaTransportAdapter {
         signal
       );
     }
-    this.rememberOwnerShareKey(session, root, shareKey);
+    await this.rememberOwnerShareKey(session, root, shareKey);
     this.runtime.logger.log('MEGA owner outgoing share state prepared in ^!keys before issuing s2.', {
       shareHandle,
       email: session.email,
@@ -2573,7 +2589,7 @@ export class MegaTransportAdapter {
     }
   }
 
-  private rememberShareKeys(session: MegaSession, shareKeys: ReadonlyMap<string, Buffer>): number {
+  private async rememberShareKeys(session: MegaSession, shareKeys: ReadonlyMap<string, Buffer>): Promise<number> {
     if (shareKeys.size === 0) {
       return 0;
     }
@@ -2595,11 +2611,12 @@ export class MegaTransportAdapter {
 
     if (learnedShareKeyCount > 0) {
       this.accountShareKeyCache.set(session.userHandle, mergedShareKeys);
+      await this.persistCachedShareKeysForUser(session.userHandle);
     }
     return learnedShareKeyCount;
   }
 
-  private rememberOwnerShareKey(session: MegaSession, root: MegaOwnerRemoteRoot, shareKey: Buffer): void {
+  private async rememberOwnerShareKey(session: MegaSession, root: MegaOwnerRemoteRoot, shareKey: Buffer): Promise<void> {
     const handles = [...new Set([root.root.handle, root.root.shareHandle].map((value) => value?.trim() ?? '').filter(Boolean))];
     if (handles.length === 0) {
       return;
@@ -2608,10 +2625,10 @@ export class MegaTransportAdapter {
     for (const handle of handles) {
       mapped.set(handle, Buffer.from(shareKey));
     }
-    this.rememberShareKeys(session, mapped);
+    await this.rememberShareKeys(session, mapped);
   }
 
-  private rememberActionPacketShareKeys(session: MegaSession, packets: readonly Record<string, unknown>[]): number {
+  private async rememberActionPacketShareKeys(session: MegaSession, packets: readonly Record<string, unknown>[]): Promise<number> {
     if (packets.length === 0) {
       return 0;
     }
@@ -2622,6 +2639,25 @@ export class MegaTransportAdapter {
     }
 
     return this.rememberShareKeys(session, extractedShareKeys);
+  }
+
+  private async persistCachedShareKeysForUser(userHandleRaw: string): Promise<void> {
+    const userHandle = userHandleRaw.trim();
+    if (!userHandle) {
+      return;
+    }
+    const accountId = this.accountIdByUserHandle.get(userHandle);
+    if (!accountId) {
+      return;
+    }
+    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(accountId));
+    if (!isStoredMegaAccountSecret(secret) || secret.userHandle.trim() !== userHandle) {
+      return;
+    }
+    await this.runtime.secretStore.set(secretKey(accountId), {
+      ...secret,
+      shareKeys: encodePersistedMegaShareKeys(this.accountShareKeyCache.get(userHandle)),
+    } satisfies MegaAccountSecret);
   }
 
   private async fetchActionPackets(session: MegaSession, scsn: string, signal?: AbortSignal): Promise<MegaActionPacketBatch> {
@@ -3319,7 +3355,7 @@ export class MegaTransportAdapter {
     for (const handle of shareHandleCandidates) {
       const fallbackKey = snapshotShareKeys.get(handle);
       if (fallbackKey) {
-        this.rememberShareKeys(session, new Map([[shareHandle, Buffer.from(fallbackKey)], [handle, Buffer.from(fallbackKey)]]));
+        await this.rememberShareKeys(session, new Map([[shareHandle, Buffer.from(fallbackKey)], [handle, Buffer.from(fallbackKey)]]));
         this.runtime.logger.log('MEGA share crypto context resolved via snapshot fallback (key-manager miss).', {
           shareHandle,
           matchedHandle: handle,
@@ -3389,7 +3425,7 @@ export class MegaTransportAdapter {
     };
     touchMegaSyncActivity(signal);
     await this.apiClient.requestSingle(command, { sessionId: session.sid, signal });
-    this.rememberOwnerShareKey(session, root, newShareKey);
+    await this.rememberOwnerShareKey(session, root, newShareKey);
     this.runtime.logger.log('MEGA owner share key repaired — new share key set and cr records rebuilt.', {
       shareHandle,
       email: session.email,
@@ -4864,6 +4900,44 @@ function deserializeSession(secret: MegaAccountSecret, fallbackEmail = ''): Mega
     accountVersion: secret.accountVersion,
     accountSalt: secret.accountSalt,
   };
+}
+
+function encodePersistedMegaShareKeys(shareKeys: ReadonlyMap<string, Buffer> | undefined): Record<string, string> | undefined {
+  if (!shareKeys || shareKeys.size === 0) {
+    return undefined;
+  }
+  const encoded: Record<string, string> = {};
+  for (const [handleRaw, shareKey] of shareKeys.entries()) {
+    const handle = handleRaw.trim();
+    if (!handle || shareKey.length === 0) {
+      continue;
+    }
+    encoded[handle] = encodeMegaBase64Url(Buffer.from(shareKey));
+  }
+  return Object.keys(encoded).length > 0 ? encoded : undefined;
+}
+
+function decodePersistedMegaShareKeys(value: unknown): ReadonlyMap<string, Buffer> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return new Map();
+  }
+  const decoded = new Map<string, Buffer>();
+  for (const [handleRaw, shareKeyRaw] of Object.entries(value)) {
+    const handle = handleRaw.trim();
+    const encodedShareKey = typeof shareKeyRaw === 'string' ? shareKeyRaw.trim() : '';
+    if (!handle || !encodedShareKey) {
+      continue;
+    }
+    try {
+      const shareKey = decodeMegaBase64Url(encodedShareKey);
+      if (shareKey.length === 16) {
+        decoded.set(handle, shareKey);
+      }
+    } catch {
+      // Ignore malformed persisted share-key entries.
+    }
+  }
+  return decoded;
 }
 
 function isStoredMegaAccountSecret(secret: unknown): secret is MegaAccountSecret {

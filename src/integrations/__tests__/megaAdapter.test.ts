@@ -4214,8 +4214,92 @@ describe('MegaTransportAdapter', () => {
       filePlaintext.toString('utf8')
     );
 
+    await expect(secretStore.get('provider-account:mega:acct-mega-pending-inshare')).resolves.toMatchObject({
+      shareKeys: {
+        [shareHandle]: encodeMegaBase64Url(shareKey),
+      },
+    });
+
+    const restartedLocalPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-pending-inshare-restart-'));
+    tempDirs.push(restartedLocalPath);
+    const restartedFetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'pk':
+            return new Response(JSON.stringify([-9]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(JSON.stringify([payload.n ? partialSnapshot : fullSnapshot]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'g':
+            if (payload.n === fileHandle) {
+              return new Response(JSON.stringify([{ g: `https://download.test/restart/${fileHandle}`, s: filePlaintext.length }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            throw new Error(`Unexpected MEGA file handle after restart: ${String(payload.n)}`);
+          default:
+            throw new Error(`Unexpected MEGA API payload after restart: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://g.api.mega.co.nz/sc')) {
+        const currentCursor = new URL(url).searchParams.get('sn');
+        return new Response(JSON.stringify({ a: [], sn: currentCursor ?? 'cursor-1' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === `https://download.test/restart/${fileHandle}`) {
+        return new Response(new Uint8Array(fileCiphertext), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL after restart: ${url}`);
+    }) as typeof fetch;
+
+    const restartedRuntime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const restartedAdapter = new MegaTransportAdapter(restartedRuntime, { fetchImpl: restartedFetchImpl });
+    const restartedShare: ManagedShare = {
+      ...share,
+      id: 'share-mega-pending-inshare-restart',
+      localPath: restartedLocalPath,
+      updatedAt: Date.now(),
+    };
+
+    await expect(restartedAdapter.ensureSync(restartedShare, account)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(restartedLocalPath, 'blocks', blockFileName), 'utf8')).resolves.toBe(
+      filePlaintext.toString('utf8')
+    );
+
     await adapter.detachManagedShare(share, account);
     await adapter.dispose();
+    await restartedAdapter.detachManagedShare(restartedShare, account);
+    await restartedAdapter.dispose();
   });
 
   it('lists and mirrors incoming shares when the share key exists only in the MEGA pk response', async () => {
@@ -4755,7 +4839,7 @@ describe('MegaTransportAdapter', () => {
     await expect(adapter.ensureSync(share, account)).resolves.toBeUndefined();
 
     const session = await (adapter as any).getAccountSession(account);
-    const learnedShareKeyCount = (adapter as any).rememberActionPacketShareKeys(session, [
+    const learnedShareKeyCount = await (adapter as any).rememberActionPacketShareKeys(session, [
       {
         a: 's',
         n: shareHandle,

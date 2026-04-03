@@ -1429,8 +1429,8 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     show: false,
     width: 1400,
     height: 900,
-    minWidth: 980,
-    minHeight: 680,
+    minWidth: 480,
+    minHeight: 420,
     icon: resolveDesktopIconPath() ?? undefined,
     webPreferences: {
       preload: preloadPath,
