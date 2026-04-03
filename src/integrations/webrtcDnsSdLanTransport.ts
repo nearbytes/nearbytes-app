@@ -29,14 +29,12 @@ import type {
 } from './lanPeerTransport.js';
 
 const LAN_DISCOVERY_CAPABILITIES = ['webrtc', 'observation-log', 'inventory-recovery', 'push-hint'];
-const LAN_RPC_HEADER_MAGIC = 'nearbytes-lan-dc/1';
 const LAN_CONTROL_CHANNEL_LABEL = 'nearbytes-control';
-const LAN_RPC_CHANNEL_PREFIX = 'nearbytes-rpc-';
 const LAN_SIGNAL_PATH = '/lan/transport/signal';
 const LAN_SIGNAL_TIMEOUT_MS = 15_000;
 const LAN_CONNECTION_TIMEOUT_MS = 20_000;
 const LAN_RPC_TIMEOUT_MS = 30_000;
-const LAN_MESSAGE_CHUNK_BYTES = 64 * 1024;
+const LAN_CONTROL_MESSAGE_CHUNK_BYTES = 48 * 1024;
 const LAN_MULTICAST_GROUP = '239.255.40.41';
 const LAN_MULTICAST_PORT = 40441;
 const LAN_MULTICAST_ANNOUNCE_MS = 5_000;
@@ -69,18 +67,14 @@ interface LanMulticastAdvertisement {
   readonly head?: string;
 }
 
-interface ChannelFrameHeader {
-  readonly magic: typeof LAN_RPC_HEADER_MAGIC;
-  readonly phase: 'request' | 'response';
-  readonly kind: 'json' | 'bytes';
-  readonly ok: boolean;
-  readonly size: number;
-  readonly mime?: string;
-  readonly error?: string;
-}
-
 interface ChannelFrame {
-  readonly header: Omit<ChannelFrameHeader, 'magic'>;
+  readonly header: {
+    readonly kind: 'json' | 'bytes';
+    readonly ok: boolean;
+    readonly size: number;
+    readonly mime?: string;
+    readonly error?: string;
+  };
   readonly payload: Uint8Array;
 }
 
@@ -98,11 +92,55 @@ interface WebRtcChannelMessageEvent {
   readonly data: string | Buffer;
 }
 
+type ControlPacket =
+  | {
+      readonly type: 'request';
+      readonly requestId: string;
+      readonly request: LanTransportRpcRequest;
+    }
+  | {
+      readonly type: 'response-json';
+      readonly requestId: string;
+      readonly value: unknown;
+    }
+  | {
+      readonly type: 'response-error';
+      readonly requestId: string;
+      readonly error: string;
+    }
+  | {
+      readonly type: 'response-bytes-start';
+      readonly requestId: string;
+      readonly size: number;
+      readonly mime?: string;
+    }
+  | {
+      readonly type: 'response-bytes-chunk';
+      readonly requestId: string;
+      readonly data: string;
+    }
+  | {
+      readonly type: 'response-bytes-end';
+      readonly requestId: string;
+    };
+
+interface PendingControlResponse {
+  readonly resolve: (frame: ChannelFrame) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+  kind: 'json' | 'bytes' | null;
+  size: number;
+  mime?: string;
+  readonly chunks: Uint8Array[];
+  total: number;
+}
+
 interface ConnectionContext {
   readonly peerId: string;
   peer: LanTransportDiscoveredPeer;
   readonly connection: RTCPeerConnection;
   controlChannel: RTCDataChannel | null;
+  readonly pendingControlResponses: Map<string, PendingControlResponse>;
   readonly initiator: boolean;
   readonly readyPromise: Promise<void>;
   readonly resolveReady: () => void;
@@ -435,27 +473,10 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     if (!context || context.closed) {
       throw new Error(`LAN WebRTC connection is not ready for ${peer.label}`);
     }
-    const channel = context.connection.createDataChannel(`${LAN_RPC_CHANNEL_PREFIX}${randomHex(8)}`, {
-      protocol: 'nearbytes-rpc',
-    });
     try {
-      await waitForChannelOpen(channel, LAN_CONNECTION_TIMEOUT_MS);
-      const payload = new TextEncoder().encode(JSON.stringify(request));
-      await sendChannelFrame(channel, {
-        header: {
-          phase: 'request',
-          kind: 'json',
-          ok: true,
-          size: payload.byteLength,
-          mime: 'application/json',
-        },
-        payload,
-      });
-      return await receiveChannelFrame(channel, 'response', LAN_RPC_TIMEOUT_MS);
+      return await this.sendControlRequest(context, request);
     } catch (error) {
       throw wrapLanWebRtcError(peer, request, error);
-    } finally {
-      safeCloseChannel(channel);
     }
   }
 
@@ -482,6 +503,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       peer,
       connection,
       controlChannel: null,
+      pendingControlResponses: new Map(),
       initiator,
       readyPromise: promise,
       resolveReady: () => {
@@ -529,11 +551,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       this.attachControlChannel(context, channel);
       return;
     }
-    if (!label.startsWith(LAN_RPC_CHANNEL_PREFIX)) {
-      safeCloseChannel(channel);
-      return;
-    }
-    void this.handleIncomingRpcChannel(channel);
+    safeCloseChannel(channel);
   }
 
   private attachControlChannel(context: ConnectionContext, channel: RTCDataChannel): void {
@@ -541,10 +559,18 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     channel.onopen = () => {
       context.resolveReady();
     };
+    channel.onmessage = (event: WebRtcChannelMessageEvent) => {
+      void this.handleControlChannelMessage(context, event).catch(() => undefined);
+    };
     channel.onclose = () => {
       if (context.controlChannel === channel) {
         context.controlChannel = null;
       }
+      for (const [requestId, pending] of context.pendingControlResponses.entries()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(`WebRTC control channel closed while waiting for request ${requestId}`));
+      }
+      context.pendingControlResponses.clear();
     };
     channel.onerror = (event: WebRtcChannelErrorEvent) => {
       if (!context.readyResolved) {
@@ -553,31 +579,6 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     };
     if (channel.readyState === 'open') {
       context.resolveReady();
-    }
-  }
-
-  private async handleIncomingRpcChannel(channel: RTCDataChannel): Promise<void> {
-    try {
-      const requestFrame = await receiveChannelFrame(channel, 'request', LAN_RPC_TIMEOUT_MS);
-      if (requestFrame.header.kind !== 'json') {
-        throw new Error('Invalid LAN WebRTC request frame');
-      }
-      const request = JSON.parse(new TextDecoder().decode(requestFrame.payload)) as LanTransportRpcRequest;
-      const response = await this.dispatchRequest(request);
-      await sendChannelFrame(channel, response);
-      scheduleCloseChannel(channel, 250);
-    } catch (error) {
-      await sendChannelFrame(channel, {
-        header: {
-          phase: 'response',
-          kind: 'json',
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-          size: 0,
-        },
-        payload: new Uint8Array(),
-      }).catch(() => undefined);
-      scheduleCloseChannel(channel, 250);
     }
   }
 
@@ -590,7 +591,6 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       const payload = new TextEncoder().encode(JSON.stringify(response.value));
       return {
         header: {
-          phase: 'response',
           kind: 'json',
           ok: true,
           mime: 'application/json',
@@ -601,7 +601,6 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     }
     return {
       header: {
-        phase: 'response',
         kind: 'bytes',
         ok: true,
         mime: 'application/octet-stream',
@@ -609,6 +608,212 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       },
       payload: response.value,
     };
+  }
+
+  private async sendControlRequest(
+    context: ConnectionContext,
+    request: LanTransportRpcRequest
+  ): Promise<ChannelFrame> {
+    const channel = await waitForControlChannelReady(context, LAN_CONNECTION_TIMEOUT_MS);
+    if (!channel || channel.readyState !== 'open') {
+      throw new Error(`WebRTC control channel is not open for ${context.peer.label}`);
+    }
+    const requestId = randomHex(12);
+    return await new Promise<ChannelFrame>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        context.pendingControlResponses.delete(requestId);
+        reject(new Error(`Timed out waiting for WebRTC control response for ${request.action}`));
+      }, LAN_RPC_TIMEOUT_MS);
+      if (typeof timer === 'object' && 'unref' in timer) {
+        timer.unref();
+      }
+      context.pendingControlResponses.set(requestId, {
+        resolve,
+        reject,
+        timer,
+        kind: null,
+        size: 0,
+        chunks: [],
+        total: 0,
+      });
+      this.sendControlPacket(channel, {
+        type: 'request',
+        requestId,
+        request,
+      }).catch((error) => {
+        clearTimeout(timer);
+        context.pendingControlResponses.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+  }
+
+  private async handleControlChannelMessage(
+    context: ConnectionContext,
+    event: WebRtcChannelMessageEvent
+  ): Promise<void> {
+    const packet = parseControlPacket(event.data);
+    if (packet.type === 'request') {
+      await this.handleInboundControlRequest(context, packet);
+      return;
+    }
+    this.handleInboundControlResponse(context, packet);
+  }
+
+  private async handleInboundControlRequest(
+    context: ConnectionContext,
+    packet: Extract<ControlPacket, { type: 'request' }>
+  ): Promise<void> {
+    const channel = context.controlChannel;
+    if (!channel || channel.readyState !== 'open') {
+      return;
+    }
+    try {
+      const response = await this.dispatchRequest(packet.request);
+      await this.sendControlResponsePackets(channel, packet.requestId, response);
+    } catch (error) {
+      await this.sendControlPacket(channel, {
+        type: 'response-error',
+        requestId: packet.requestId,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+    }
+  }
+
+  private handleInboundControlResponse(
+    context: ConnectionContext,
+    packet: Exclude<ControlPacket, { type: 'request' }>
+  ): void {
+    const pending = context.pendingControlResponses.get(packet.requestId);
+    if (!pending) {
+      return;
+    }
+    switch (packet.type) {
+      case 'response-json': {
+        clearTimeout(pending.timer);
+        context.pendingControlResponses.delete(packet.requestId);
+        const payload = new TextEncoder().encode(JSON.stringify(packet.value));
+        pending.resolve({
+          header: {
+            kind: 'json',
+            ok: true,
+            size: payload.byteLength,
+            mime: 'application/json',
+          },
+          payload,
+        });
+        return;
+      }
+      case 'response-error': {
+        clearTimeout(pending.timer);
+        context.pendingControlResponses.delete(packet.requestId);
+        pending.resolve({
+          header: {
+            kind: 'json',
+            ok: false,
+            size: 0,
+            error: packet.error,
+          },
+          payload: new Uint8Array(),
+        });
+        return;
+      }
+      case 'response-bytes-start': {
+        pending.kind = 'bytes';
+        pending.size = packet.size;
+        pending.mime = packet.mime;
+        pending.chunks.length = 0;
+        pending.total = 0;
+        if (packet.size === 0) {
+          clearTimeout(pending.timer);
+          context.pendingControlResponses.delete(packet.requestId);
+          pending.resolve({
+            header: {
+              kind: 'bytes',
+              ok: true,
+              size: 0,
+              ...(packet.mime ? { mime: packet.mime } : {}),
+            },
+            payload: new Uint8Array(),
+          });
+        }
+        return;
+      }
+      case 'response-bytes-chunk': {
+        const bytes = Buffer.from(packet.data, 'base64');
+        pending.chunks.push(new Uint8Array(bytes));
+        pending.total += bytes.byteLength;
+        return;
+      }
+      case 'response-bytes-end': {
+        clearTimeout(pending.timer);
+        context.pendingControlResponses.delete(packet.requestId);
+        pending.resolve({
+          header: {
+            kind: 'bytes',
+            ok: true,
+            size: pending.size,
+            ...(pending.mime ? { mime: pending.mime } : {}),
+          },
+          payload: concatBytes(pending.chunks, pending.size),
+        });
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  private async sendControlResponsePackets(
+    channel: RTCDataChannel,
+    requestId: string,
+    response: ChannelFrame
+  ): Promise<void> {
+    if (response.header.kind === 'json') {
+      const value = response.payload.byteLength === 0
+        ? null
+        : JSON.parse(new TextDecoder().decode(response.payload)) as unknown;
+      if (response.header.ok) {
+        await this.sendControlPacket(channel, {
+          type: 'response-json',
+          requestId,
+          value,
+        });
+      } else {
+        await this.sendControlPacket(channel, {
+          type: 'response-error',
+          requestId,
+          error: response.header.error ?? 'Unknown WebRTC transport error',
+        });
+      }
+      return;
+    }
+
+    await this.sendControlPacket(channel, {
+      type: 'response-bytes-start',
+      requestId,
+      size: response.payload.byteLength,
+      ...(response.header.mime ? { mime: response.header.mime } : {}),
+    });
+    for (let offset = 0; offset < response.payload.byteLength; offset += LAN_CONTROL_MESSAGE_CHUNK_BYTES) {
+      const next = response.payload.subarray(
+        offset,
+        Math.min(response.payload.byteLength, offset + LAN_CONTROL_MESSAGE_CHUNK_BYTES)
+      );
+      await this.sendControlPacket(channel, {
+        type: 'response-bytes-chunk',
+        requestId,
+        data: Buffer.from(next).toString('base64'),
+      });
+    }
+    await this.sendControlPacket(channel, {
+      type: 'response-bytes-end',
+      requestId,
+    });
+  }
+
+  private async sendControlPacket(channel: RTCDataChannel, packet: ControlPacket): Promise<void> {
+    channel.send(JSON.stringify(packet));
   }
 
   private async postSignal(
@@ -946,155 +1151,19 @@ async function waitForContextReady(context: ConnectionContext, timeoutMs: number
   ]);
 }
 
-async function waitForChannelOpen(channel: RTCDataChannel, timeoutMs: number): Promise<void> {
-  if (channel.readyState === 'open') {
-    return;
-  }
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(`Timed out waiting for WebRTC data channel ${channel.label} to open`));
-      }
-    }, timeoutMs);
-    channel.onopen = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve();
-      }
-    };
-    channel.onerror = (event: WebRtcChannelErrorEvent) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error(String(event.error ?? `WebRTC data channel ${channel.label} failed`)));
-      }
-    };
-    channel.onclose = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error(`WebRTC data channel ${channel.label} closed before opening`));
-      }
-    };
-  });
-}
-
-async function sendChannelFrame(channel: RTCDataChannel, frame: ChannelFrame): Promise<void> {
-  const header: ChannelFrameHeader = {
-    magic: LAN_RPC_HEADER_MAGIC,
-    phase: frame.header.phase,
-    kind: frame.header.kind,
-    ok: frame.header.ok,
-    size: frame.payload.byteLength,
-    ...(frame.header.mime ? { mime: frame.header.mime } : {}),
-    ...(frame.header.error ? { error: frame.header.error } : {}),
-  };
-  channel.send(JSON.stringify(header));
-  for (let offset = 0; offset < frame.payload.byteLength; offset += LAN_MESSAGE_CHUNK_BYTES) {
-    const next = frame.payload.subarray(offset, Math.min(frame.payload.byteLength, offset + LAN_MESSAGE_CHUNK_BYTES));
-    channel.send(Buffer.from(next));
-  }
-}
-
-async function receiveChannelFrame(
-  channel: RTCDataChannel,
-  expectedPhase: ChannelFrameHeader['phase'],
+async function waitForControlChannelReady(
+  context: ConnectionContext,
   timeoutMs: number
-): Promise<ChannelFrame> {
-  return await new Promise<ChannelFrame>((resolve, reject) => {
-    let header: ChannelFrameHeader | null = null;
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(`Timed out waiting for WebRTC ${expectedPhase} frame on ${channel.label}`));
-      }
-    }, timeoutMs);
-
-    const maybeResolve = () => {
-      if (!header || settled || total < header.size) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        header: {
-          phase: header.phase,
-          kind: header.kind,
-          ok: header.ok,
-          size: header.size,
-          ...(header.mime ? { mime: header.mime } : {}),
-          ...(header.error ? { error: header.error } : {}),
-        },
-        payload: concatBytes(chunks, header.size),
-      });
-    };
-
-    channel.onmessage = (event: WebRtcChannelMessageEvent) => {
-      if (settled) {
-        return;
-      }
-      try {
-        const bytes = toMessageBytes(event.data);
-        if (!header) {
-          const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as Partial<ChannelFrameHeader>;
-          if (
-            parsed.magic !== LAN_RPC_HEADER_MAGIC ||
-            (parsed.phase !== 'request' && parsed.phase !== 'response') ||
-            parsed.phase !== expectedPhase ||
-            (parsed.kind !== 'json' && parsed.kind !== 'bytes') ||
-            typeof parsed.ok !== 'boolean' ||
-            typeof parsed.size !== 'number' ||
-            parsed.size < 0
-          ) {
-            throw new Error('Invalid WebRTC LAN frame header');
-          }
-          header = {
-            magic: LAN_RPC_HEADER_MAGIC,
-            phase: parsed.phase,
-            kind: parsed.kind,
-            ok: parsed.ok,
-            size: parsed.size,
-            ...(typeof parsed.mime === 'string' ? { mime: parsed.mime } : {}),
-            ...(typeof parsed.error === 'string' ? { error: parsed.error } : {}),
-          };
-          if (header.size === 0) {
-            maybeResolve();
-          }
-          return;
-        }
-        if (bytes.byteLength === 0) {
-          return;
-        }
-        chunks.push(bytes);
-        total += bytes.byteLength;
-        maybeResolve();
-      } catch (error) {
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      }
-    };
-    channel.onerror = (event: WebRtcChannelErrorEvent) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error(String(event.error ?? `WebRTC data channel ${channel.label} failed`)));
-      }
-    };
-    channel.onclose = () => {
-      if (!settled && (!header || total < header.size)) {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error(`WebRTC data channel ${channel.label} closed before ${expectedPhase} completed`));
-      }
-    };
-  });
+): Promise<RTCDataChannel | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const channel = context.controlChannel;
+    if (channel && channel.readyState === 'open') {
+      return channel;
+    }
+    await sleep(25);
+  }
+  return context.controlChannel;
 }
 
 function toMessageBytes(message: string | Buffer): Uint8Array {
@@ -1102,6 +1171,68 @@ function toMessageBytes(message: string | Buffer): Uint8Array {
     return new TextEncoder().encode(message);
   }
   return new Uint8Array(message);
+}
+
+function parseControlPacket(message: string | Buffer): ControlPacket {
+  const bytes = toMessageBytes(message);
+  const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as Partial<ControlPacket>;
+  if (!parsed || typeof parsed !== 'object' || typeof parsed.type !== 'string' || typeof parsed.requestId !== 'string') {
+    throw new Error('Invalid WebRTC control packet');
+  }
+  switch (parsed.type) {
+    case 'request':
+      if (!parsed.request || typeof parsed.request !== 'object') {
+        throw new Error('Invalid WebRTC control request packet');
+      }
+      return {
+        type: 'request',
+        requestId: parsed.requestId,
+        request: parsed.request as LanTransportRpcRequest,
+      };
+    case 'response-json':
+      return {
+        type: 'response-json',
+        requestId: parsed.requestId,
+        value: (parsed as { value?: unknown }).value,
+      };
+    case 'response-error':
+      if (typeof (parsed as { error?: unknown }).error !== 'string') {
+        throw new Error('Invalid WebRTC control error packet');
+      }
+      return {
+        type: 'response-error',
+        requestId: parsed.requestId,
+        error: (parsed as { error: string }).error,
+      };
+    case 'response-bytes-start':
+      if (typeof (parsed as { size?: unknown }).size !== 'number') {
+        throw new Error('Invalid WebRTC control bytes-start packet');
+      }
+      return {
+        type: 'response-bytes-start',
+        requestId: parsed.requestId,
+        size: (parsed as { size: number }).size,
+        ...((parsed as { mime?: unknown }).mime && typeof (parsed as { mime?: unknown }).mime === 'string'
+          ? { mime: (parsed as { mime: string }).mime }
+          : {}),
+      };
+    case 'response-bytes-chunk':
+      if (typeof (parsed as { data?: unknown }).data !== 'string') {
+        throw new Error('Invalid WebRTC control bytes-chunk packet');
+      }
+      return {
+        type: 'response-bytes-chunk',
+        requestId: parsed.requestId,
+        data: (parsed as { data: string }).data,
+      };
+    case 'response-bytes-end':
+      return {
+        type: 'response-bytes-end',
+        requestId: parsed.requestId,
+      };
+    default:
+      throw new Error('Unknown WebRTC control packet type');
+  }
 }
 
 function concatBytes(chunks: readonly Uint8Array[], size: number): Uint8Array {
@@ -1123,15 +1254,6 @@ function safeCloseChannel(channel: RTCDataChannel): void {
     channel.close();
   } catch {
     // ignore
-  }
-}
-
-function scheduleCloseChannel(channel: RTCDataChannel, delayMs: number): void {
-  const timer = setTimeout(() => {
-    safeCloseChannel(channel);
-  }, delayMs);
-  if (typeof timer === 'object' && 'unref' in timer) {
-    timer.unref();
   }
 }
 
