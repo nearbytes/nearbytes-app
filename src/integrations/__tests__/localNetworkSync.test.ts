@@ -298,6 +298,10 @@ describe('LocalNetworkSyncService', () => {
     const hinted = await local.transport.waitForNotifyCount(remoteHello.peerId, 1, 2_000);
     expect(hinted).toBe(true);
     expect(Date.now() - hintStart).toBeLessThan(2_000);
+    const request = local.transport.getLastNotifyRequest(remoteHello.peerId);
+    const hintedHello = await local.lanService.buildHello();
+    expect(request?.action).toBe('sync-hint');
+    expect(request?.volumeIds).toContain(hintedHello.volumeIds[0]);
 
     await local.lanService.stop();
     await remote.lanService.stop();
@@ -408,6 +412,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
   private callbacks: LanPeerTransportCallbacks | null = null;
   private remotes = new Map<string, { service: LocalNetworkSyncService; port: number; behavior: RemoteBehavior }>();
   private notifyCounts = new Map<string, number>();
+  private lastNotifyRequests = new Map<string, Extract<LanTransportRpcRequest, { action: 'sync-hint' }>>();
 
   async start(callbacks: LanPeerTransportCallbacks): Promise<void> {
     this.callbacks = callbacks;
@@ -417,6 +422,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
     this.callbacks = null;
     this.remotes.clear();
     this.notifyCounts.clear();
+    this.lastNotifyRequests.clear();
   }
 
   async refreshAdvertisement(): Promise<void> {
@@ -461,6 +467,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
 
   async notify(peer: LanTransportDiscoveredPeer, request: Extract<LanTransportRpcRequest, { action: 'sync-hint' }>): Promise<void> {
     this.notifyCounts.set(peer.peerId, (this.notifyCounts.get(peer.peerId) ?? 0) + 1);
+    this.lastNotifyRequests.set(peer.peerId, request);
     await this.dispatch(peer, request);
   }
 
@@ -473,6 +480,10 @@ class FakeLanPeerTransport implements LanPeerTransport {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     return (this.notifyCounts.get(peerId) ?? 0) >= minimum;
+  }
+
+  getLastNotifyRequest(peerId: string): Extract<LanTransportRpcRequest, { action: 'sync-hint' }> | null {
+    return this.lastNotifyRequests.get(peerId) ?? null;
   }
 
   private async dispatch(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<LanPeerTransportResponse> {
@@ -534,7 +545,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
           value: await remote.service.readBlockBytes(request.blockHash),
         };
       case 'sync-hint':
-        remote.service.notifySyncHint({ reason: request.reason });
+        remote.service.notifySyncHint({ reason: request.reason, volumeIds: request.volumeIds });
         return {
           kind: 'json',
           value: { ok: true, acceptedAt: Date.now() },

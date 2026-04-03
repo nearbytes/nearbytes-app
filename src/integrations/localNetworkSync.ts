@@ -20,7 +20,7 @@ const ADVERTISEMENT_REFRESH_INTERVAL_MS = 10_000;
 const PEER_STALE_AFTER_MS = 18_000;
 const PEER_FORGET_AFTER_MS = 120_000;
 const PEER_SYNC_INTERVAL_MS = 8_000;
-const SYNC_HINT_DEBOUNCE_MS = 50;
+const SYNC_HINT_DEBOUNCE_MS = 10;
 const OBSERVATION_PAGE_LIMIT = 512;
 const LOCAL_NETWORK_PROVIDER = 'local-network';
 const LOCAL_NETWORK_RUNTIME_FOLDER = 'local-network';
@@ -51,6 +51,12 @@ interface ObservationListResponse extends ProviderQueueObservationPage {
 
 interface SyncHintBody {
   readonly reason?: string;
+  readonly volumeIds?: readonly string[];
+}
+
+interface PendingSyncHint {
+  readonly timer: ReturnType<typeof setTimeout>;
+  readonly volumeIds: Set<string>;
 }
 
 interface LocalPeerState {
@@ -132,7 +138,7 @@ export class LocalNetworkSyncService {
   private readonly providerQueue: PersistentProviderQueue;
   private readonly peerTransport: LanPeerTransport;
   private readonly peers = new Map<string, LocalPeerState>();
-  private readonly pendingHintTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly pendingHintTimers = new Map<string, PendingSyncHint>();
   private peerId = '';
   private label = defaultPeerLabel();
   private httpPort: number | null = null;
@@ -163,8 +169,8 @@ export class LocalNetworkSyncService {
     this.httpPort = httpPort;
     await this.loadIdentity();
     await this.providerQueue.start();
-    this.providerQueueObservationUnsubscribe = this.providerQueue.onObservation(() => {
-      this.queueImmediateSyncHints('storage-write');
+    this.providerQueueObservationUnsubscribe = this.providerQueue.onObservation((observation) => {
+      this.queueImmediateSyncHints('storage-write', observation.volumeId ? [observation.volumeId] : undefined);
     });
     await this.peerTransport.start({
       getAdvertisement: async () => this.buildHello(),
@@ -195,8 +201,8 @@ export class LocalNetworkSyncService {
     await this.peerTransport.stop();
     this.providerQueueObservationUnsubscribe?.();
     this.providerQueueObservationUnsubscribe = null;
-    for (const timer of this.pendingHintTimers.values()) {
-      clearTimeout(timer);
+    for (const pending of this.pendingHintTimers.values()) {
+      clearTimeout(pending.timer);
     }
     this.pendingHintTimers.clear();
     await this.providerQueue.stop();
@@ -278,35 +284,43 @@ export class LocalNetworkSyncService {
     );
   }
 
-  notifySyncHint(_body?: SyncHintBody): void {
-    void this.syncActivePeers(true);
+  notifySyncHint(body?: SyncHintBody): void {
+    void this.syncActivePeers(true, body?.volumeIds);
   }
 
-  private queueImmediateSyncHints(reason: string): void {
+  private queueImmediateSyncHints(reason: string, volumeIds?: readonly string[]): void {
     const now = Date.now();
     for (const peer of this.peers.values()) {
       if (now - peer.lastSeenAt >= PEER_STALE_AFTER_MS) {
         continue;
       }
-      this.queuePeerSyncHint(peer.peerId, reason);
+      this.queuePeerSyncHint(peer.peerId, reason, volumeIds);
     }
   }
 
-  private queuePeerSyncHint(peerId: string, reason: string): void {
-    if (this.pendingHintTimers.has(peerId)) {
+  private queuePeerSyncHint(peerId: string, reason: string, volumeIds?: readonly string[]): void {
+    const existing = this.pendingHintTimers.get(peerId);
+    if (existing) {
+      for (const volumeId of normalizeHintVolumeIds(volumeIds)) {
+        existing.volumeIds.add(volumeId);
+      }
       return;
     }
     const timer = setTimeout(() => {
+      const pending = this.pendingHintTimers.get(peerId);
       this.pendingHintTimers.delete(peerId);
-      void this.dispatchPeerSyncHint(peerId, reason);
+      void this.dispatchPeerSyncHint(peerId, reason, pending ? Array.from(pending.volumeIds) : undefined);
     }, SYNC_HINT_DEBOUNCE_MS);
     if (typeof timer === 'object' && 'unref' in timer) {
       timer.unref();
     }
-    this.pendingHintTimers.set(peerId, timer);
+    this.pendingHintTimers.set(peerId, {
+      timer,
+      volumeIds: new Set(normalizeHintVolumeIds(volumeIds)),
+    });
   }
 
-  private async dispatchPeerSyncHint(peerId: string, reason: string): Promise<void> {
+  private async dispatchPeerSyncHint(peerId: string, reason: string, volumeIds?: readonly string[]): Promise<void> {
     const peer = this.peers.get(peerId);
     if (!peer) {
       return;
@@ -318,6 +332,7 @@ export class LocalNetworkSyncService {
       await this.peerTransport.notify(this.toTransportPeer(peer), {
         action: 'sync-hint',
         reason,
+        volumeIds: normalizeHintVolumeIds(volumeIds),
       });
     } catch {
       // Retry will happen through normal discovery/sync cadence.
@@ -368,7 +383,7 @@ export class LocalNetworkSyncService {
           value: await this.readBlockBytes(request.blockHash),
         };
       case 'sync-hint':
-        this.notifySyncHint({ reason: request.reason });
+        this.notifySyncHint({ reason: request.reason, volumeIds: request.volumeIds });
         return {
           kind: 'json',
           value: { ok: true, acceptedAt: Date.now() },
@@ -490,19 +505,19 @@ export class LocalNetworkSyncService {
     }
   }
 
-  private async syncActivePeers(force: boolean): Promise<void> {
+  private async syncActivePeers(force: boolean, preferredVolumeIds?: readonly string[]): Promise<void> {
     const now = Date.now();
     const activePeers = Array.from(this.peers.values()).filter(
       (peer) => force || now - peer.lastSeenAt < PEER_STALE_AFTER_MS
     );
     for (const peer of activePeers) {
       if (force || !peer.lastSyncAt || now - peer.lastSyncAt >= PEER_SYNC_INTERVAL_MS) {
-        await this.performPeerSync(peer, force);
+        await this.performPeerSync(peer, force, preferredVolumeIds);
       }
     }
   }
 
-  private async performPeerSync(peer: LocalPeerState, force: boolean): Promise<void> {
+  private async performPeerSync(peer: LocalPeerState, force: boolean, preferredVolumeIds?: readonly string[]): Promise<void> {
     if (peer.syncing) {
       peer.queued = true;
       return;
@@ -528,8 +543,22 @@ export class LocalNetworkSyncService {
 
       let importedEvents = observationDelta.importedEvents;
       let importedBlocks = observationDelta.importedBlocks;
-      if (force || routeState.lastAckedObservationId === null || importedEvents > 0 || importedBlocks > 0) {
-        for (const volumeId of peer.volumeIds) {
+      const hintedVolumeIds = new Set(normalizeHintVolumeIds(preferredVolumeIds));
+      for (const volumeId of observationDelta.changedVolumeIds) {
+        hintedVolumeIds.add(volumeId);
+      }
+      const shouldPullVolumes =
+        force ||
+        routeState.lastAckedObservationId === null ||
+        importedEvents > 0 ||
+        importedBlocks > 0 ||
+        hintedVolumeIds.size > 0;
+      if (shouldPullVolumes) {
+        const volumesToPull =
+          routeState.lastAckedObservationId === null || hintedVolumeIds.size === 0
+            ? peer.volumeIds
+            : peer.volumeIds.filter((volumeId) => hintedVolumeIds.has(volumeId));
+        for (const volumeId of volumesToPull) {
           const delta = await this.pullVolume(peer, volumeId);
           importedEvents += delta.importedEvents;
           importedBlocks += delta.importedBlocks;
@@ -559,7 +588,7 @@ export class LocalNetworkSyncService {
       const shouldRunAgain = peer.queued;
       peer.queued = false;
       if (shouldRunAgain) {
-        await this.performPeerSync(peer, true);
+        await this.performPeerSync(peer, true, preferredVolumeIds);
       }
     }
   }
@@ -616,10 +645,11 @@ export class LocalNetworkSyncService {
   private async pullObservations(
     peer: LocalPeerState,
     afterObservationId: string | null
-  ): Promise<{ importedEvents: number; importedBlocks: number }> {
+  ): Promise<{ importedEvents: number; importedBlocks: number; changedVolumeIds: Set<string> }> {
     let cursor = afterObservationId;
     let importedEvents = 0;
     let importedBlocks = 0;
+    const changedVolumeIds = new Set<string>();
     const routeKey = routeKeyForPeer(peer.peerId);
 
     while (true) {
@@ -638,6 +668,9 @@ export class LocalNetworkSyncService {
         const imported = await this.importObservation(peer, observation);
         importedEvents += imported.importedEvents;
         importedBlocks += imported.importedBlocks;
+        for (const volumeId of imported.changedVolumeIds) {
+          changedVolumeIds.add(volumeId);
+        }
         cursor = observation.observationId;
       }
       await this.providerQueue.acknowledgeRoute(LOCAL_NETWORK_PROVIDER, routeKey, cursor);
@@ -650,13 +683,14 @@ export class LocalNetworkSyncService {
     return {
       importedEvents,
       importedBlocks,
+      changedVolumeIds,
     };
   }
 
   private async importObservation(
     peer: LocalPeerState,
     observation: ProviderQueueObservation
-  ): Promise<{ importedEvents: number; importedBlocks: number }> {
+  ): Promise<{ importedEvents: number; importedBlocks: number; changedVolumeIds: Set<string> }> {
     if (observation.kind === 'event') {
       const volumeId = normalizeVolumeId(observation.volumeId ?? '');
       if (!volumeId) {
@@ -664,26 +698,26 @@ export class LocalNetworkSyncService {
       }
       const bytes = await this.requestEventBytesOrNull(peer, volumeId, observation.hash);
       if (!bytes) {
-        return { importedEvents: 0, importedBlocks: 0 };
+        return { importedEvents: 0, importedBlocks: 0, changedVolumeIds: new Set([volumeId]) };
       }
       const validation = await validateEventBytes(volumeId, observation.hash, bytes);
       if (!validation.ok) {
         throw new Error(validation.detail ?? `Invalid event ${observation.hash} from ${peer.label}`);
       }
       await this.storage.writeFileForChannel(`channels/${volumeId}/${observation.hash}.bin`, bytes, volumeId);
-      return { importedEvents: 1, importedBlocks: 0 };
+      return { importedEvents: 1, importedBlocks: 0, changedVolumeIds: new Set([volumeId]) };
     }
 
     const bytes = await this.requestBlockBytesOrNull(peer, observation.hash);
     if (!bytes) {
-      return { importedEvents: 0, importedBlocks: 0 };
+      return { importedEvents: 0, importedBlocks: 0, changedVolumeIds: new Set() };
     }
     const validation = await validateBlockBytes(observation.hash, bytes);
     if (!validation.ok) {
       throw new Error(validation.detail ?? `Invalid block ${observation.hash} from ${peer.label}`);
     }
     await this.storage.writeFile(`blocks/${observation.hash}.bin`, bytes);
-    return { importedEvents: 0, importedBlocks: 1 };
+    return { importedEvents: 0, importedBlocks: 1, changedVolumeIds: new Set() };
   }
 
   private async requestEventBytesOrNull(peer: LocalPeerState, volumeId: string, eventHash: string): Promise<Uint8Array | null> {
@@ -787,6 +821,13 @@ function dedupeVolumeIds(values: readonly string[]): string[] {
     .map((value) => normalizeVolumeId(value))
     .filter((value): value is string => value !== null);
   return Array.from(new Set(normalized)).sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeHintVolumeIds(values?: readonly string[]): string[] {
+  if (!values || values.length === 0) {
+    return [];
+  }
+  return dedupeVolumeIds(values);
 }
 
 function formatRelative(timestamp: number): string {

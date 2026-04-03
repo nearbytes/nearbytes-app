@@ -109,6 +109,7 @@ export type LanTransportRpcRequest =
   | {
       readonly action: 'sync-hint';
       readonly reason?: string;
+      readonly volumeIds?: readonly string[];
     };
 
 export interface LanPeerTransportCallbacks {
