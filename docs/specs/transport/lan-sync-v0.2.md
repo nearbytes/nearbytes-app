@@ -16,7 +16,7 @@ This specification defines:
 This specification does not define:
 
 1. mandatory packet signatures yet;
-2. final relay/QUIC/WebRTC transport profiles;
+2. final relay or peer-transport profiles;
 3. final trust UX.
 
 ## 2. Design Goals
