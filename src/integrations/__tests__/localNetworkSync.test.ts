@@ -87,6 +87,52 @@ describe('LocalNetworkSyncService', () => {
     await remote.lanService.stop();
   });
 
+  it('does not fail the peer when an observation references an event the remote can no longer serve', async () => {
+    const secret = 'test:secret:lan-missing-observation-event';
+    const remote = await createLanHarness('nearbytes-lan-remote-missing-observation-', secret, 'peer-b', 3251);
+    const local = await createLanHarness('nearbytes-lan-local-missing-observation-', secret, 'peer-a', 3252);
+
+    await remote.fileService.addFile(secret, 'stable.txt', Buffer.from('alpha'), 'text/plain');
+    const hello = await remote.lanService.buildHello();
+    const volumeId = hello.volumeIds[0];
+    expect(volumeId).toBeTruthy();
+    let injectedGhost = false;
+    connectLanPeers(local.transport, remote.lanService, remote.port, {
+      observationsOverride: async (page) => {
+        if (injectedGhost) {
+          return page;
+        }
+        injectedGhost = true;
+        return {
+          ...page,
+          observations: [
+            ...page.observations,
+            {
+              observationId: 'dd'.repeat(32),
+              prevObservationId: page.observations.at(-1)?.observationId ?? null,
+              kind: 'event',
+              hash: 'ghost',
+              relativePath: `channels/${volumeId}/ghost.bin`,
+              sourceId: 'src-main',
+              volumeId,
+              observedAt: Date.now(),
+            },
+          ],
+          headObservationId: 'dd'.repeat(32),
+        };
+      },
+      missingEventFetches: new Set(['ghost']),
+    });
+
+    seedKnownPeer(local.lanService, hello, remote.port);
+    const peer = await local.lanService.syncPeer(hello.peerId);
+    expect(peer?.lastSyncError).toBeNull();
+    expect((await local.fileService.listFiles(secret)).map((entry) => entry.filename)).toContain('stable.txt');
+
+    await local.lanService.stop();
+    await remote.lanService.stop();
+  });
+
   it('stores local-network runtime state outside a custom storage root', async () => {
     const secret = 'test:secret:lan-runtime-dir';
     const harness = await createLanHarness('nearbytes-lan-runtime-dir-', secret, 'peer-a', 3301);

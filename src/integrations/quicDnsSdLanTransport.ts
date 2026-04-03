@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import dgram, { type RemoteInfo } from 'dgram';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -29,6 +30,9 @@ const LAN_QUIC_SIGNING_KEY_FILE = 'quic-signing-key.bin';
 const LAN_QUIC_APPLICATION_PROTOCOLS = [LAN_QUIC_ALPN];
 const LAN_QUIC_REQUEST_TIMEOUT_MS = 30_000;
 const LAN_QUIC_WRITE_CHUNK_BYTES = 64 * 1024;
+const LAN_MULTICAST_GROUP = '239.255.40.41';
+const LAN_MULTICAST_PORT = 40441;
+const LAN_MULTICAST_ANNOUNCE_MS = 5_000;
 
 interface LanRpcFrameHeader {
   readonly kind: 'json' | 'bytes';
@@ -49,6 +53,7 @@ interface PersistedLanQuicIdentity {
 }
 
 interface DiscoveryDebugRecord {
+  readonly source: string;
   readonly fqdn: string;
   readonly peerId: string | null;
   readonly label: string;
@@ -65,6 +70,15 @@ interface DiscoveryDebugRecord {
   readonly seenAt: number;
 }
 
+interface LanMulticastAdvertisement {
+  readonly pv: string;
+  readonly peer: string;
+  readonly label: string;
+  readonly port: number;
+  readonly caps: string[];
+  readonly head?: string;
+}
+
 export class QuicDnsSdLanTransport implements LanPeerTransport {
   private callbacks: LanPeerTransportCallbacks | null = null;
   private bonjour: Bonjour | null = null;
@@ -72,10 +86,12 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
   private publishedService: Service | null = null;
   private socket: QUICSocket | null = null;
   private server: QUICServer | null = null;
+  private multicastSocket: dgram.Socket | null = null;
   private clients = new Map<string, QUICClient>();
   private discoveryByFqdn = new Map<string, LanTransportDiscoveredPeer>();
   private discoveryDebugByFqdn = new Map<string, DiscoveryDebugRecord>();
   private advertisementTimer: ReturnType<typeof setInterval> | null = null;
+  private multicastTimer: ReturnType<typeof setInterval> | null = null;
   private publishedAdvertisement: LanPeerTransportDebugState['publishedAdvertisement'] = null;
 
   constructor(private readonly runtimeDir: string) {}
@@ -112,6 +128,24 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     asTypedEventTarget(this.server).addEventListener(events.EventQUICServerConnection.name, this.handleServerConnection as EventListener);
     await this.server.start();
 
+    this.multicastSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    this.multicastSocket.on('message', (message, remoteInfo) => {
+      this.handleMulticastMessage(message, remoteInfo);
+    });
+    await new Promise<void>((resolve, reject) => {
+      this.multicastSocket?.once('error', reject);
+      this.multicastSocket?.bind(LAN_MULTICAST_PORT, '0.0.0.0', () => resolve());
+    });
+    this.multicastSocket.setMulticastTTL(1);
+    this.multicastSocket.setMulticastLoopback(true);
+    for (const localInterface of listLocalIpv4Interfaces()) {
+      try {
+        this.multicastSocket.addMembership(LAN_MULTICAST_GROUP, localInterface.address);
+      } catch {
+        // Best-effort membership per interface.
+      }
+    }
+
     this.bonjour = new Bonjour();
     this.browser = this.bonjour.find(
       {
@@ -140,12 +174,19 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     this.advertisementTimer = setInterval(() => {
       void this.refreshAdvertisement();
     }, 10_000);
+    this.multicastTimer = setInterval(() => {
+      void this.sendMulticastAdvertisement();
+    }, LAN_MULTICAST_ANNOUNCE_MS);
   }
 
   async stop(): Promise<void> {
     if (this.advertisementTimer) {
       clearInterval(this.advertisementTimer);
       this.advertisementTimer = null;
+    }
+    if (this.multicastTimer) {
+      clearInterval(this.multicastTimer);
+      this.multicastTimer = null;
     }
     this.browser?.stop();
     this.browser = null;
@@ -155,6 +196,8 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     this.publishedService = null;
     this.bonjour?.destroy();
     this.bonjour = null;
+    await closeDgramSocket(this.multicastSocket);
+    this.multicastSocket = null;
     for (const client of this.clients.values()) {
       await client.destroy({ force: true }).catch(() => undefined);
     }
@@ -203,6 +246,7 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
       this.publishedService.stop();
     }
     this.publishedService = this.bonjour.publish(nextConfig);
+    await this.sendMulticastAdvertisement();
   }
 
   getDebugState(): LanPeerTransportDebugState {
@@ -253,6 +297,7 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     const compatibility = describeDiscoveryCompatibility(parsed);
     const selectedAddress = choosePeerAddress(service.addresses ?? []);
     this.discoveryDebugByFqdn.set(service.fqdn, {
+      source: 'dns-sd',
       fqdn: service.fqdn,
       peerId: parsed?.peerId ?? null,
       label: service.name || (parsed?.peerId ? `Peer ${parsed.peerId.slice(0, 8)}` : 'Unknown peer'),
@@ -294,6 +339,75 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
         headObservationId: parsed.headObservationId,
       };
       this.discoveryByFqdn.set(service.fqdn, peer);
+      this.callbacks?.onPeerDiscovered(peer);
+    }).catch(() => undefined);
+  }
+
+  private async sendMulticastAdvertisement(): Promise<void> {
+    if (!this.callbacks || !this.multicastSocket) {
+      return;
+    }
+    const hello = await this.callbacks.getAdvertisement();
+    const payload: LanMulticastAdvertisement = {
+      pv: LAN_DISCOVERY_PROTOCOL_VERSION,
+      peer: hello.peerId,
+      label: hello.label,
+      port: hello.port,
+      caps: [...(hello.capabilities.length > 0 ? hello.capabilities : LAN_TRANSPORT_CAPABILITIES)],
+      ...(hello.observationHeadId ? { head: hello.observationHeadId } : {}),
+    };
+    const bytes = Buffer.from(JSON.stringify(payload), 'utf8');
+    await new Promise<void>((resolve, reject) => {
+      this.multicastSocket?.send(bytes, LAN_MULTICAST_PORT, LAN_MULTICAST_GROUP, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    }).catch(() => undefined);
+  }
+
+  private handleMulticastMessage(message: Buffer, remoteInfo: RemoteInfo): void {
+    if (!this.callbacks) {
+      return;
+    }
+    const advertisement = parseMulticastAdvertisement(message);
+    const compatibility = describeMulticastCompatibility(advertisement);
+    const fqdn = `udp:${advertisement?.peer ?? remoteInfo.address}:${remoteInfo.port}`;
+    this.discoveryDebugByFqdn.set(fqdn, {
+      source: 'udp-multicast',
+      fqdn,
+      peerId: advertisement?.peer ?? null,
+      label: advertisement?.label ?? `Peer ${remoteInfo.address}`,
+      port: advertisement?.port ?? 0,
+      addresses: [remoteInfo.address],
+      chosenAddress: remoteInfo.address,
+      chosenAddressReason: 'Selected the source address of the multicast announcement.',
+      compatible: compatibility.compatible,
+      incompatibilityReason: compatibility.reason,
+      protocolVersion: advertisement?.pv ?? null,
+      alpn: LAN_QUIC_ALPN,
+      capabilities: advertisement?.caps ?? [],
+      headObservationId: advertisement?.head ?? null,
+      seenAt: Date.now(),
+    });
+    if (!advertisement || !compatibility.compatible) {
+      return;
+    }
+    this.callbacks.getAdvertisement().then((selfHello) => {
+      if (advertisement.peer === selfHello.peerId) {
+        return;
+      }
+      const peer: LanTransportDiscoveredPeer = {
+        peerId: advertisement.peer,
+        label: advertisement.label || `Peer ${advertisement.peer.slice(0, 8)}`,
+        address: remoteInfo.address,
+        port: advertisement.port,
+        capabilities: [...advertisement.caps],
+        headObservationId: advertisement.head ?? null,
+      };
+      this.discoveryByFqdn.set(fqdn, peer);
       this.callbacks?.onPeerDiscovered(peer);
     }).catch(() => undefined);
   }
@@ -491,6 +605,14 @@ interface ChosenPeerAddress {
   readonly reason: string | null;
 }
 
+interface LocalIpv4Interface {
+  readonly name: string;
+  readonly address: string;
+  readonly netmask: string;
+  readonly prefixLength: number;
+  readonly virtual: boolean;
+}
+
 function describeDiscoveryCompatibility(
   parsed: ReturnType<typeof parseLanDiscoveryTxtRecord>
 ): DiscoveryCompatibility {
@@ -518,12 +640,64 @@ function describeDiscoveryCompatibility(
   };
 }
 
+function describeMulticastCompatibility(advertisement: LanMulticastAdvertisement | null): DiscoveryCompatibility {
+  if (!advertisement) {
+    return {
+      compatible: false,
+      reason: 'Multicast packet is not a valid Nearbytes LAN advertisement.',
+    };
+  }
+  if (advertisement.pv !== LAN_DISCOVERY_PROTOCOL_VERSION) {
+    return {
+      compatible: false,
+      reason: `Unsupported multicast discovery protocol version ${advertisement.pv}. Expected ${LAN_DISCOVERY_PROTOCOL_VERSION}.`,
+    };
+  }
+  if (advertisement.peer.trim() === '' || !Number.isInteger(advertisement.port) || advertisement.port <= 0) {
+    return {
+      compatible: false,
+      reason: 'Multicast advertisement is missing peer id or port.',
+    };
+  }
+  return {
+    compatible: true,
+    reason: null,
+  };
+}
+
 function choosePeerAddress(addresses: readonly string[]): ChosenPeerAddress {
   const normalized = normalizeDiscoveryAddresses(addresses);
   if (normalized.length === 0) {
     return {
       address: null,
       reason: 'No non-loopback discovery addresses were advertised.',
+    };
+  }
+
+  const localInterfaces = listLocalIpv4Interfaces();
+  const samePhysicalSubnet = normalized.find((candidate) =>
+    localInterfaces.some((local) => !local.virtual && isSameIpv4Subnet(candidate, local.address, local.prefixLength))
+  );
+  if (samePhysicalSubnet) {
+    const matching = localInterfaces.find(
+      (local) => !local.virtual && isSameIpv4Subnet(samePhysicalSubnet, local.address, local.prefixLength)
+    );
+    return {
+      address: samePhysicalSubnet,
+      reason: `Selected IPv4 address on the same subnet as local interface ${matching?.name ?? 'unknown'}.`,
+    };
+  }
+
+  const sameVirtualSubnet = normalized.find((candidate) =>
+    localInterfaces.some((local) => local.virtual && isSameIpv4Subnet(candidate, local.address, local.prefixLength))
+  );
+  if (sameVirtualSubnet) {
+    const matching = localInterfaces.find(
+      (local) => local.virtual && isSameIpv4Subnet(sameVirtualSubnet, local.address, local.prefixLength)
+    );
+    return {
+      address: sameVirtualSubnet,
+      reason: `Selected IPv4 address on the same virtual subnet as local interface ${matching?.name ?? 'unknown'}.`,
     };
   }
 
@@ -601,6 +775,113 @@ function isLinkLocalIpv4Address(value: string): boolean {
 
 function isUniqueLocalIpv6Address(value: string): boolean {
   return /^[a-f0-9:]+$/i.test(value) && /^(fc|fd)/i.test(value);
+}
+
+function parseMulticastAdvertisement(message: Buffer): LanMulticastAdvertisement | null {
+  try {
+    const raw = JSON.parse(message.toString('utf8')) as Partial<LanMulticastAdvertisement>;
+    return {
+      pv: typeof raw.pv === 'string' ? raw.pv.trim() : '',
+      peer: typeof raw.peer === 'string' ? raw.peer.trim() : '',
+      label: typeof raw.label === 'string' ? raw.label.trim() : '',
+      port: typeof raw.port === 'number' ? raw.port : Number.parseInt(String(raw.port ?? ''), 10),
+      caps: Array.isArray(raw.caps)
+        ? raw.caps.map((entry) => String(entry).trim()).filter((entry) => entry !== '')
+        : [],
+      ...(typeof raw.head === 'string' && /^[0-9a-f]{64}$/i.test(raw.head.trim())
+        ? { head: raw.head.trim().toLowerCase() }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function listLocalIpv4Interfaces(): LocalIpv4Interface[] {
+  const interfaces = os.networkInterfaces();
+  const results: LocalIpv4Interface[] = [];
+  for (const [name, entries] of Object.entries(interfaces)) {
+    for (const entry of entries ?? []) {
+      if (entry.internal || entry.family !== 'IPv4') {
+        continue;
+      }
+      const prefixLength = netmaskToPrefixLength(entry.netmask);
+      if (prefixLength === null) {
+        continue;
+      }
+      results.push({
+        name,
+        address: entry.address,
+        netmask: entry.netmask,
+        prefixLength,
+        virtual: isVirtualInterfaceName(name),
+      });
+    }
+  }
+  return results;
+}
+
+function isVirtualInterfaceName(name: string): boolean {
+  return /wsl|hyper-v|docker|vethernet|vmware|virtualbox|vbox|virbr|bridge|tailscale|utun/i.test(name);
+}
+
+function netmaskToPrefixLength(netmask: string): number | null {
+  if (!isIpv4Address(netmask)) {
+    return null;
+  }
+  const parts = netmask.split('.').map((entry) => Number.parseInt(entry, 10));
+  if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return null;
+  }
+  let prefix = 0;
+  let sawZero = false;
+  for (const part of parts) {
+    for (let bit = 7; bit >= 0; bit -= 1) {
+      const enabled = (part & (1 << bit)) !== 0;
+      if (enabled && sawZero) {
+        return null;
+      }
+      if (enabled) {
+        prefix += 1;
+      } else {
+        sawZero = true;
+      }
+    }
+  }
+  return prefix;
+}
+
+function isSameIpv4Subnet(candidate: string, localAddress: string, prefixLength: number): boolean {
+  if (!isIpv4Address(candidate) || !isIpv4Address(localAddress) || prefixLength < 0 || prefixLength > 32) {
+    return false;
+  }
+  const candidateValue = ipv4ToUint32(candidate);
+  const localValue = ipv4ToUint32(localAddress);
+  if (candidateValue === null || localValue === null) {
+    return false;
+  }
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  return (candidateValue & mask) === (localValue & mask);
+}
+
+function ipv4ToUint32(value: string): number | null {
+  if (!isIpv4Address(value)) {
+    return null;
+  }
+  const parts = value.split('.').map((entry) => Number.parseInt(entry, 10));
+  if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return null;
+  }
+  return ((((parts[0] << 24) >>> 0) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0);
+}
+
+async function closeDgramSocket(socket: dgram.Socket | null): Promise<void> {
+  if (!socket) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    socket.close(() => resolve());
+  }).catch(() => undefined);
 }
 
 function jsonFrame(value: unknown): LanRpcFrame {

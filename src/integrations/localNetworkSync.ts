@@ -591,11 +591,10 @@ export class LocalNetworkSyncService {
       if (!volumeId) {
         throw new Error(`Peer ${peer.label} announced an event without a volume id`);
       }
-      const bytes = await this.peerTransport.requestBytes(this.toTransportPeer(peer), {
-        action: 'event',
-        volumeId,
-        eventHash: observation.hash,
-      });
+      const bytes = await this.requestEventBytesOrNull(peer, volumeId, observation.hash);
+      if (!bytes) {
+        return { importedEvents: 0, importedBlocks: 0 };
+      }
       const validation = await validateEventBytes(volumeId, observation.hash, bytes);
       if (!validation.ok) {
         throw new Error(validation.detail ?? `Invalid event ${observation.hash} from ${peer.label}`);
@@ -604,10 +603,10 @@ export class LocalNetworkSyncService {
       return { importedEvents: 1, importedBlocks: 0 };
     }
 
-    const bytes = await this.peerTransport.requestBytes(this.toTransportPeer(peer), {
-      action: 'block',
-      blockHash: observation.hash,
-    });
+    const bytes = await this.requestBlockBytesOrNull(peer, observation.hash);
+    if (!bytes) {
+      return { importedEvents: 0, importedBlocks: 0 };
+    }
     const validation = await validateBlockBytes(observation.hash, bytes);
     if (!validation.ok) {
       throw new Error(validation.detail ?? `Invalid block ${observation.hash} from ${peer.label}`);

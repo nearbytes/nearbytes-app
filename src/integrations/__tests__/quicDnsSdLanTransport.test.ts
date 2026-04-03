@@ -1,8 +1,9 @@
 import dgram from 'dgram';
+import os from 'os';
 import { mkdtemp, rm } from 'fs/promises';
 import path from 'path';
 import { tmpdir } from 'os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LanPeerTransportCallbacks, LanTransportDiscoveredPeer, LanTransportHello, LanTransportRpcRequest } from '../lanPeerTransport.js';
 import { QuicDnsSdLanTransport } from '../quicDnsSdLanTransport.js';
 
@@ -142,39 +143,66 @@ describe('QuicDnsSdLanTransport', () => {
       handleRequest: async () => ({ ok: true }),
     });
 
-    internal.handleDiscoveryService({
-      fqdn: 'peer-remote.local',
-      name: 'peer-remote',
-      port: 4200,
-      addresses: ['146.48.84.58', '192.168.1.25', '::1'],
-      txt: {
-        pv: '0.3',
-        peer: 'peer-remote',
-        alpn: 'nearbytes-lan/0.3',
-        caps: 'quic,observation-log',
-        head: 'aa'.repeat(32),
-      },
+    const networkInterfacesSpy = vi.spyOn(os, 'networkInterfaces').mockReturnValue({
+      Ethernet: [
+        {
+          address: '192.168.1.8',
+          netmask: '255.255.255.0',
+          family: 'IPv4',
+          mac: '00:00:00:00:00:01',
+          internal: false,
+          cidr: '192.168.1.8/24',
+        },
+      ],
+      'vEthernet (WSL)': [
+        {
+          address: '172.18.192.1',
+          netmask: '255.255.240.0',
+          family: 'IPv4',
+          mac: '00:00:00:00:00:02',
+          internal: false,
+          cidr: '172.18.192.1/20',
+        },
+      ],
     });
 
-    internal.handleDiscoveryService({
-      fqdn: 'peer-old.local',
-      name: 'peer-old',
-      port: 3000,
-      addresses: ['192.168.1.44'],
-      txt: {
-        pv: '0.2',
-        peer: 'peer-old',
-        alpn: 'nearbytes-lan/0.2',
-        caps: 'quic',
-      },
-    });
+    try {
+      internal.handleDiscoveryService({
+        fqdn: 'peer-remote.local',
+        name: 'peer-remote',
+        port: 4200,
+        addresses: ['146.48.84.58', '172.18.192.77', '192.168.1.25', '::1'],
+        txt: {
+          pv: '0.3',
+          peer: 'peer-remote',
+          alpn: 'nearbytes-lan/0.3',
+          caps: 'quic,observation-log',
+          head: 'aa'.repeat(32),
+        },
+      });
+
+      internal.handleDiscoveryService({
+        fqdn: 'peer-old.local',
+        name: 'peer-old',
+        port: 3000,
+        addresses: ['192.168.1.44'],
+        txt: {
+          pv: '0.2',
+          peer: 'peer-old',
+          alpn: 'nearbytes-lan/0.2',
+          caps: 'quic',
+        },
+      });
+    } finally {
+      networkInterfacesSpy.mockRestore();
+    }
 
     const debug = transport.getDebugState();
     const compatible = debug.discoveredPeers.find((entry) => entry.fqdn === 'peer-remote.local');
     const incompatible = debug.discoveredPeers.find((entry) => entry.fqdn === 'peer-old.local');
 
     expect(compatible?.chosenAddress).toBe('192.168.1.25');
-    expect(compatible?.chosenAddressReason).toContain('private IPv4');
+    expect(compatible?.chosenAddressReason).toContain('same subnet as local interface Ethernet');
     expect(compatible?.compatible).toBe(true);
     expect(incompatible?.compatible).toBe(false);
     expect(incompatible?.incompatibilityReason).toContain('Unsupported discovery protocol version');

@@ -89,6 +89,7 @@ export interface LanPeerTransportDebugState {
     readonly capabilities: string[];
   } | null;
   readonly discoveredPeers: Array<{
+    readonly source: string;
     readonly fqdn: string;
     readonly peerId: string | null;
     readonly label: string;
