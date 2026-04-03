@@ -85,6 +85,7 @@ const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 75;
 const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
 const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
 const MEGA_PENDING_ROOT_DIAGNOSTIC_MIN_INTERVAL_MS = 60_000;
+const MEGA_OWNER_SHARE_KEY_HEAL_INTERVAL_MS = 15 * 60_000;
 const MEGA_OWNER_COLLABORATOR_CACHE_MS = 30_000;
 const MEGA_INCOMING_DISCOVERY_CACHE_MS = 5_000;
 const MEGA_CONTACT_INVITES_CACHE_MS = 5_000;
@@ -321,6 +322,7 @@ export class MegaTransportAdapter {
   private readonly accountCloudDriveHandleCache = new Map<string, string>();
   private readonly incomingShareDiscoveryCache = new Map<string, { expiresAt: number; offers: IncomingManagedShareOffer[] }>();
   private readonly incomingShareDiscoveryTasks = new Map<string, Promise<IncomingManagedShareOffer[]>>();
+  private readonly ownerShareKeyHealAt = new Map<string, number>();
   private readonly incomingContactInviteCache = new Map<string, { expiresAt: number; invites: IncomingProviderContactInvite[] }>();
   private readonly incomingContactInviteTasks = new Map<string, Promise<IncomingProviderContactInvite[]>>();
   private uploadProbeSequence = 0;
@@ -367,6 +369,7 @@ export class MegaTransportAdapter {
     this.accountCloudDriveHandleCache.clear();
     this.incomingShareDiscoveryCache.clear();
     this.incomingShareDiscoveryTasks.clear();
+    this.ownerShareKeyHealAt.clear();
     this.incomingContactInviteCache.clear();
     this.incomingContactInviteTasks.clear();
   }
@@ -2105,6 +2108,7 @@ export class MegaTransportAdapter {
           { shareId: share.id, shareHandle: root.root.shareHandle, email: session.email }
         );
       }
+      await this.healOwnerOutgoingShareKeys(share, session, root, shareCrypto, signal);
       const ownerUploadState = buildMegaOwnerUploadState(root, shareCrypto);
       this.ownerUploadStates.set(share.id, ownerUploadState);
       const result = await worker.sync(
@@ -2639,6 +2643,62 @@ export class MegaTransportAdapter {
     }
 
     return this.rememberShareKeys(session, extractedShareKeys);
+  }
+
+  private async healOwnerOutgoingShareKeys(
+    share: ManagedShare,
+    session: MegaSession,
+    root: MegaOwnerRemoteRoot,
+    shareCrypto: MegaShareCryptoContext | undefined,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (!shareCrypto) {
+      return;
+    }
+
+    const lastHealedAt = this.ownerShareKeyHealAt.get(share.id) ?? 0;
+    if (Date.now() - lastHealedAt < MEGA_OWNER_SHARE_KEY_HEAL_INTERVAL_MS) {
+      return;
+    }
+
+    try {
+      const snapshot = await this.fetchNodesSnapshot(session, signal);
+      const targets = collectMegaOwnerShareInviteTargets(snapshot, root.root.handle, root.root.shareHandle)
+        .filter((target) => isMegaUserHandle(target.u));
+      if (targets.length === 0) {
+        return;
+      }
+
+      const keyManager = await this.fetchKeyManagerState(session, signal);
+      let publishedCount = 0;
+      for (const target of targets) {
+        if (await this.sendMegaPendingOutShareKeyToContact(
+          session,
+          shareCrypto.shareHandle,
+          shareCrypto.shareKey,
+          target,
+          keyManager,
+          signal
+        )) {
+          publishedCount += 1;
+        }
+      }
+      this.ownerShareKeyHealAt.set(share.id, Date.now());
+      this.runtime.logger.log('MEGA owner share key healing completed.', {
+        shareId: share.id,
+        accountId: share.accountId,
+        shareHandle: shareCrypto.shareHandle,
+        targetCount: targets.length,
+        publishedCount,
+      });
+    } catch (error) {
+      this.runtime.logger.warn('MEGA owner share key healing failed.', {
+        shareId: share.id,
+        accountId: share.accountId,
+        shareHandle: shareCrypto.shareHandle,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async persistCachedShareKeysForUser(userHandleRaw: string): Promise<void> {
@@ -3547,6 +3607,48 @@ function resolveOutgoingSharePeerEmail(
   }
   const fromUser = usersByHandle.get(uRaw)?.m;
   return typeof fromUser === 'string' && fromUser.trim() ? fromUser.trim() : undefined;
+}
+
+function collectMegaOwnerShareInviteTargets(
+  snapshot: MegaFetchNodesSnapshot,
+  rootNodeHandle: string,
+  rootShareHandle?: string
+): MegaShareInviteTarget[] {
+  const usersByHandle = buildMegaUsersByHandle(snapshot);
+  const pendingContactsByHandle = new Map<string, string>();
+  for (const pending of snapshot.outgoingPendingContacts) {
+    const handle = typeof pending.p === 'string' ? pending.p.trim() : '';
+    const email = typeof pending.e === 'string' ? pending.e.trim() : '';
+    if (handle && email) {
+      pendingContactsByHandle.set(handle, email);
+    }
+  }
+
+  const targets = new Map<string, MegaShareInviteTarget>();
+  const records = [...snapshot.outgoingShares, ...snapshot.pendingShares];
+  for (const record of records) {
+    const recordHandles = megaOutgoingShareRecordNodeHandles(record);
+    if (
+      !recordHandles.some(
+        (handle) =>
+          handle === rootNodeHandle || (typeof rootShareHandle === 'string' && rootShareHandle.trim() !== '' && handle === rootShareHandle.trim())
+      )
+    ) {
+      continue;
+    }
+
+    const userHandle = typeof record.u === 'string' ? record.u.trim() : '';
+    const email = resolveOutgoingSharePeerEmail(record, usersByHandle, pendingContactsByHandle)?.trim();
+    if (isMegaUserHandle(userHandle)) {
+      targets.set(`user:${userHandle}`, { u: userHandle });
+      continue;
+    }
+    if (email) {
+      targets.set(`email:${email.toLowerCase()}`, { u: MEGA_SHARE_INVITE_NON_CONTACT_USER, e: email });
+    }
+  }
+
+  return [...targets.values()];
 }
 
 function collectMegaOwnerCollaborators(

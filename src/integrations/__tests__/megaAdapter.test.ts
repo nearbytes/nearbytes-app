@@ -1698,6 +1698,194 @@ describe('MegaTransportAdapter', () => {
     await adapter.dispose();
   }, 15_000);
 
+  it('re-publishes pending MEGA outshare keys for existing collaborators during owner sync startup healing', async () => {
+    const secretStore = createMemorySecretStore();
+    await secretStore.set('provider-account:mega:acct-mega-owner-heal', {
+      email: 'owner@example.com',
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle: 'ownerhandle',
+      accountVersion: 2,
+    });
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-heal-'));
+    tempDirs.push(localPath);
+    await fs.mkdir(path.join(localPath, 'blocks'), { recursive: true });
+    await fs.mkdir(path.join(localPath, 'channels'), { recursive: true });
+
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const nearbytesNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const shareHandle = encodeMegaBase64Url(Buffer.from('001122334455', 'hex'));
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const friendHandle = encodeMegaBase64Url(Buffer.from('1122334455667788', 'hex'));
+    const ownerKeyPair = generateKeyPairSync('x25519' as any, {
+      privateKeyEncoding: { format: 'jwk' },
+      publicKeyEncoding: { format: 'jwk' },
+    });
+    const friendKeyPair = generateKeyPairSync('x25519' as any, {
+      privateKeyEncoding: { format: 'jwk' },
+      publicKeyEncoding: { format: 'jwk' },
+    });
+    const ownerPrivateCu25519 = decodeMegaBase64Url(String((ownerKeyPair.privateKey as JsonWebKey).d));
+    const friendPublicCu25519 = decodeMegaBase64Url(String((friendKeyPair.publicKey as JsonWebKey).x));
+    const keyManagerState = encryptMegaKeyManagerContainer(
+      masterKey,
+      Buffer.concat([
+        encodeMegaKeyManagerRecord(17, ownerPrivateCu25519),
+        encodeMegaKeyManagerRecord(
+          32,
+          Buffer.concat([decodeMegaBase64Url(friendHandle), Buffer.alloc(20, 7), Buffer.from([0])])
+        ),
+        encodeMegaKeyManagerRecord(
+          48,
+          Buffer.concat([decodeMegaBase64Url(shareHandle), shareKey, Buffer.from([3])])
+        ),
+      ])
+    );
+
+    let pkPayload: Record<string, unknown> | null = null;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: 'ownerhandle', email: 'owner@example.com' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            if (payload.ua === '^!keys') {
+              return new Response(JSON.stringify([{ av: keyManagerState }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            if (payload.ua === '+puCu255' && payload.u === friendHandle) {
+              return new Response(JSON.stringify([{ av: encodeMegaBase64Url(friendPublicCu25519) }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(
+              JSON.stringify([
+                {
+                  f: [
+                    {
+                      h: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('Cloud Drive', rootNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(rootNodeKey, masterKey)),
+                    },
+                    {
+                      h: shareHandle,
+                      p: 'root000001',
+                      t: 1,
+                      a: encryptAttributes('nearbytes', nearbytesNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(nearbytesNodeKey, masterKey)),
+                    },
+                    {
+                      h: 'blocks0001',
+                      p: shareHandle,
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(blocksNodeKey, masterKey)),
+                    },
+                    {
+                      h: 'chans00001',
+                      p: shareHandle,
+                      t: 1,
+                      a: encryptAttributes('channels', channelsNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
+                    },
+                  ],
+                  s: [{ h: shareHandle, u: friendHandle, r: 1 }],
+                  u: [{ u: friendHandle, m: 'friend@example.com' }],
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          case 'pk':
+            pkPayload = payload;
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    });
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, {
+      fetchImpl,
+    });
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner-heal',
+      provider: 'mega',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner-heal',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath,
+      sourceId: 'src-mega-owner-heal',
+      syncMode: 'mirror',
+      remoteDescriptor: { remotePath: '/nearbytes' },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await adapter.ensureSync(share, account);
+
+    expect(pkPayload).toBeDefined();
+    if (!pkPayload) {
+      throw new Error('Expected owner sync healing to publish a pending key.');
+    }
+    const committedPendingKeyPayload: Record<string, unknown> = pkPayload;
+    expect(committedPendingKeyPayload.u).toBe(friendHandle);
+    expect(committedPendingKeyPayload.h).toBe(shareHandle);
+    const pairwiseKey = deriveMegaPairwiseKey(ownerPrivateCu25519, friendPublicCu25519);
+    expect(decryptAesEcb(decodeMegaBase64Url(String(committedPendingKeyPayload.k)), pairwiseKey)).toEqual(shareKey);
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  }, 15_000);
+
   it('lists and accepts native incoming MEGA contact invites', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-owner', {

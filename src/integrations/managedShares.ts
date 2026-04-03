@@ -520,6 +520,9 @@ export class ManagedShareService {
 
   async repairManagedShare(shareId: string): Promise<ManagedShareSummary> {
     const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
+    if (shouldAutoAttachTrackedVolumesToManagedShare(nextShare)) {
+      await this.attachTrackedLocalVolumesToManagedShare(nextShare);
+    }
     if (account && this.canSyncManagedShare(nextShare, account)) {
       await adapter?.ensureSync?.(nextShare, account);
     }
