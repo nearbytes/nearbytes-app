@@ -22,3 +22,4 @@ test-data/
 .yarn/install-state.gz
 nearbytes
 test-results
+.nearbytes-web-dev.json
