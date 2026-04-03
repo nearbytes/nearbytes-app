@@ -41,7 +41,7 @@ async function main() {
   let uiChild = null;
   console.log(`[dev-run] starting renderer dev server on ${devUiUrl}`);
   uiChild = spawn(
-    ...buildSpawnInvocation('yarn', ['--cwd', 'ui', 'dev', '--host', '127.0.0.1', '--port', '5173', '--strictPort']),
+    ...buildSpawnInvocation('yarn', ['--cwd', 'ui', 'dev:raw', '--host', '127.0.0.1', '--port', '5173', '--strictPort']),
     {
       cwd: repoRoot,
       env: childEnv,

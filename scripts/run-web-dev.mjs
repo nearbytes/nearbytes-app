@@ -30,7 +30,7 @@ async function main() {
   await writeSession({ launcherPid: process.pid, backendPid: backend.pid ?? null, startedAt: Date.now() });
   await waitForHttpEndpoint(apiUrl, 30_000, backend, 'Nearbytes backend');
 
-  const ui = spawn(...buildPackageManagerInvocation('yarn', ['dev:raw']), {
+  const ui = spawn(...buildYarnInvocation(['dev:raw']), {
     cwd: uiDir,
     env: process.env,
     stdio: 'inherit',
@@ -82,7 +82,7 @@ async function main() {
 }
 
 async function ensureBackendBuild() {
-  const result = spawnSync(...buildPackageManagerInvocation('yarn', ['build']), {
+  const result = spawnSync(...buildYarnInvocation(['build']), {
     cwd: repoRoot,
     env: process.env,
     stdio: 'inherit',
@@ -93,15 +93,22 @@ async function ensureBackendBuild() {
   }
 }
 
-function buildPackageManagerInvocation(command, args) {
-  const packageManagerEntrypoint = process.env.npm_execpath?.trim();
-  if (packageManagerEntrypoint && /\.(c?m?js)$/i.test(path.extname(packageManagerEntrypoint))) {
-    return [process.execPath, [packageManagerEntrypoint, ...args]];
-  }
+function buildYarnInvocation(args) {
   if (process.platform === 'win32') {
-    return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `${command}.cmd ${args.join(' ')}`]];
+    const commandLine = ['yarn.cmd', ...args.map(quoteForWindowsCmd)].join(' ');
+    return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', commandLine]];
   }
-  return [command, args];
+  return ['yarn', args];
+}
+
+function quoteForWindowsCmd(value) {
+  if (value.length === 0) {
+    return '""';
+  }
+  if (!/[\s"]/u.test(value)) {
+    return value;
+  }
+  return `"${value.replace(/"/gu, '""')}"`;
 }
 
 async function waitForHttpEndpoint(url, timeoutMs, child, label) {
