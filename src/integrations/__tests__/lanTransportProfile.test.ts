@@ -12,7 +12,7 @@ describe('lanTransportProfile', () => {
   it('builds a canonical dns-sd txt record for the Nearbytes LAN transport', () => {
     const txt = buildLanDiscoveryTxtRecord({
       peerId: 'peer-123',
-      headSequence: 42,
+      headObservationId: 'ab'.repeat(32),
       capabilities: ['inventory-recovery', 'quic', 'quic', 'push-hint'],
     });
 
@@ -21,7 +21,7 @@ describe('lanTransportProfile', () => {
       peer: 'peer-123',
       alpn: LAN_QUIC_ALPN,
       caps: 'inventory-recovery,push-hint,quic',
-      head: '42',
+      head: 'ab'.repeat(32),
     });
   });
 
@@ -31,7 +31,7 @@ describe('lanTransportProfile', () => {
       peer: 'peer-abc',
       alpn: LAN_QUIC_ALPN,
       caps: 'quic,inventory-recovery,quic',
-      head: '17',
+      head: 'cd'.repeat(32),
     });
 
     expect(parsed).toEqual({
@@ -39,14 +39,14 @@ describe('lanTransportProfile', () => {
       peerId: 'peer-abc',
       alpn: LAN_QUIC_ALPN,
       capabilities: ['inventory-recovery', 'quic'],
-      headSequence: 17,
+      headObservationId: 'cd'.repeat(32),
     });
   });
 
   it('keeps the recommended dns-sd txt record small', () => {
     const txt = buildLanDiscoveryTxtRecord({
       peerId: 'desktop-lan-peer-123456',
-      headSequence: 999999,
+      headObservationId: 'ef'.repeat(32),
       capabilities: ['quic', 'observation-log', 'inventory-recovery', 'push-hint'],
     });
 

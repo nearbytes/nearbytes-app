@@ -38,6 +38,8 @@ describe('PersistentProviderQueue', () => {
       `event:${TEST_EVENT_HASH}`,
       `block:${TEST_BLOCK_HASH}`,
     ]);
+    expect(page.observations[0]?.prevObservationId).toBeNull();
+    expect(page.observations[1]?.prevObservationId).toBe(page.observations[0]?.observationId);
 
     await queue.stop();
   });
@@ -47,21 +49,22 @@ describe('PersistentProviderQueue', () => {
     const queue = new PersistentProviderQueue(storage, runtimeDir);
     await queue.start();
     await storage.writeFileForChannel(`channels/${TEST_VOLUME_ID}/${TEST_EVENT_HASH}.bin`, new TextEncoder().encode('event'), TEST_VOLUME_ID);
-    await queue.acknowledgeRoute('local-network', 'peer:alpha:pull', 1);
+    const headObservationId = queue.getHeadObservationId();
+    await queue.acknowledgeRoute('local-network', 'peer:alpha:pull', headObservationId);
     await queue.stop();
 
     const reloaded = new PersistentProviderQueue(storage, runtimeDir);
     await reloaded.start();
 
     expect(reloaded.listObservations().observations).toHaveLength(1);
-    expect(reloaded.getRouteState('local-network', 'peer:alpha:pull').lastAckedSequence).toBe(1);
+    expect(reloaded.getRouteState('local-network', 'peer:alpha:pull').lastAckedObservationId).toBe(headObservationId);
 
     const persisted = JSON.parse(await readFile(path.join(runtimeDir, 'provider-queue.json'), 'utf8')) as {
-      observations: Array<{ sequence: number }>;
-      routes: Array<{ lastAckedSequence: number }>;
+      observations: Array<{ observationId: string }>;
+      routes: Array<{ lastAckedObservationId: string | null }>;
     };
     expect(persisted.observations).toHaveLength(1);
-    expect(persisted.routes[0]?.lastAckedSequence).toBe(1);
+    expect(persisted.routes[0]?.lastAckedObservationId).toBe(headObservationId);
 
     await reloaded.stop();
   });
@@ -78,7 +81,7 @@ describe('PersistentProviderQueue', () => {
     await storage.writeFile(`blocks/${TEST_BLOCK_HASH}.bin`, new TextEncoder().encode('block'));
 
     const filtered = queue.listObservations({ volumeIds: [TEST_VOLUME_ID] });
-    expect(filtered.headSequence).toBe(3);
+    expect(filtered.headObservationId).toBe(queue.getHeadObservationId());
     expect(filtered.observations).toHaveLength(1);
     expect(filtered.observations[0]?.volumeId).toBe(TEST_VOLUME_ID);
 

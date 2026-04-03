@@ -36,10 +36,10 @@ describe('LocalNetworkSyncService', () => {
     const remoteHello = await remote.lanService.buildHello();
     seedKnownPeer(local.lanService, remoteHello, remote.port);
     const firstPeer = await local.lanService.syncPeer(remoteHello.peerId);
-    expect(firstPeer?.remoteCursorSequence).toBeGreaterThan(0);
+    expect(firstPeer?.remoteCursorObservationId).toMatch(/^[0-9a-f]{64}$/);
     expect((await local.fileService.listFiles(secret)).map((entry) => entry.filename)).toContain('first.txt');
 
-    const firstCursor = firstPeer?.remoteCursorSequence ?? 0;
+    const firstCursor = firstPeer?.remoteCursorObservationId ?? null;
     await remote.fileService.addFile(secret, 'second.txt', Buffer.from('beta'), 'text/plain');
 
     await local.lanService.stop();
@@ -52,7 +52,8 @@ describe('LocalNetworkSyncService', () => {
     connectLanPeers(restartedTransport, remote.lanService, remote.port);
     seedKnownPeer(restartedLocalLan, await remote.lanService.buildHello(), remote.port);
     const secondPeer = await restartedLocalLan.syncPeer((await remote.lanService.buildHello()).peerId);
-    expect(secondPeer?.remoteCursorSequence).toBeGreaterThan(firstCursor);
+    expect(secondPeer?.remoteCursorObservationId).not.toBeNull();
+    expect(secondPeer?.remoteCursorObservationId).not.toBe(firstCursor);
     expect((await local.fileService.listFiles(secret)).map((entry) => entry.filename).sort()).toEqual([
       'first.txt',
       'second.txt',
@@ -142,12 +143,12 @@ describe('LocalNetworkSyncService', () => {
       helloOverride: async (hello) => ({
         ...hello,
         volumeIds: [],
-        observationHeadSequence: 0,
+        observationHeadId: null,
       }),
       observationsOverride: async (page) => ({
         ...page,
         observations: [],
-        headSequence: 0,
+        headObservationId: null,
       }),
     });
 
@@ -236,8 +237,8 @@ function seedKnownPeer(
     lastSyncNotice: null,
     lastImportedEvents: 0,
     lastImportedBlocks: 0,
-    remoteCursorSequence: 0,
-    lastRemoteHeadSequence: 0,
+    remoteCursorObservationId: null,
+    lastRemoteHeadObservationId: null,
     syncing: false,
     queued: false,
   });
@@ -293,7 +294,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
       address: hello.label.toLowerCase(),
       port,
       capabilities: [...hello.capabilities],
-      headSequence: hello.observationHeadSequence,
+      headObservationId: hello.observationHeadId,
     });
   }
 
@@ -342,7 +343,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
         };
       case 'observations': {
         const page = remote.service.listObservations({
-          afterSequence: request.afterSequence,
+          afterObservationId: request.afterObservationId,
           volumeIds: request.volumeIds,
           limit: request.limit,
         });

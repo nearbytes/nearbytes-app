@@ -15,7 +15,7 @@ export interface LanDiscoveryTxtRecord {
 
 export interface LanDiscoveryRecordInput {
   readonly peerId: string;
-  readonly headSequence?: number;
+  readonly headObservationId?: string | null;
   readonly capabilities?: readonly string[];
 }
 
@@ -24,7 +24,7 @@ export interface ParsedLanDiscoveryTxtRecord {
   readonly peerId: string;
   readonly alpn: string;
   readonly capabilities: string[];
-  readonly headSequence: number;
+  readonly headObservationId: string | null;
 }
 
 export function buildLanDiscoveryTxtRecord(input: LanDiscoveryRecordInput): LanDiscoveryTxtRecord {
@@ -34,8 +34,8 @@ export function buildLanDiscoveryTxtRecord(input: LanDiscoveryRecordInput): LanD
     peer: input.peerId.trim(),
     alpn: LAN_QUIC_ALPN,
     caps: capabilities.join(','),
-    ...(typeof input.headSequence === 'number' && Number.isFinite(input.headSequence) && input.headSequence >= 0
-      ? { head: String(Math.trunc(input.headSequence)) }
+    ...(typeof input.headObservationId === 'string' && input.headObservationId.trim() !== ''
+      ? { head: input.headObservationId.trim().toLowerCase() }
       : {}),
   };
 }
@@ -45,7 +45,7 @@ export function parseLanDiscoveryTxtRecord(value: Record<string, unknown>): Pars
   const peerId = typeof value.peer === 'string' ? value.peer.trim() : '';
   const alpn = typeof value.alpn === 'string' ? value.alpn.trim() : '';
   const rawCapabilities = typeof value.caps === 'string' ? value.caps.trim() : '';
-  const headSequence = parseHeadSequence(value.head);
+  const headObservationId = parseHeadObservationId(value.head);
 
   if (protocolVersion === '' || peerId === '' || alpn === '') {
     return null;
@@ -56,7 +56,7 @@ export function parseLanDiscoveryTxtRecord(value: Record<string, unknown>): Pars
     peerId,
     alpn,
     capabilities: canonicalizeCapabilities(rawCapabilities.split(',')),
-    headSequence,
+    headObservationId,
   };
 }
 
@@ -77,13 +77,13 @@ function canonicalizeCapabilities(values: readonly string[] | undefined): string
   return Array.from(new Set(normalized)).sort((left, right) => left.localeCompare(right));
 }
 
-function parseHeadSequence(value: unknown): number {
+function parseHeadObservationId(value: unknown): string | null {
   if (typeof value !== 'string') {
-    return 0;
+    return null;
   }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return 0;
+  const normalized = value.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(normalized)) {
+    return null;
   }
-  return parsed;
+  return normalized;
 }

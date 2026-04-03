@@ -156,7 +156,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     if (!deps.localNetworkSyncService) {
       throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
     }
-    const afterSequence = parseOptionalInt(req.query.after) ?? 0;
+    const afterObservationId = typeof req.query.after === 'string' ? req.query.after.trim() || null : null;
     const limit = parseOptionalInt(req.query.limit);
     const rawVolumes = req.query.volumes;
     const volumeIds =
@@ -167,7 +167,7 @@ export function createRoutes(deps: RouteDependencies): Router {
           : undefined;
     res.json(
       deps.localNetworkSyncService.listObservations({
-        afterSequence,
+        afterObservationId,
         limit,
         volumeIds,
       })

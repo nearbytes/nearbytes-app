@@ -32,10 +32,10 @@ describe('QuicDnsSdLanTransport', () => {
       peerId: 'peer-left',
       label: 'peer-left',
       port: leftPort,
-      headSequence: 3,
+      headObservationId: 'aa'.repeat(32),
       handleRequest: async (request) => {
         if (request.action === 'hello') {
-          return { protocol: 'nearbytes.lan-sync.v1', peerId: 'peer-left', label: 'peer-left', port: leftPort, capabilities: ['quic'], volumeIds: [], observationHeadSequence: 3, generatedAt: Date.now() };
+          return { protocol: 'nearbytes.lan-sync.v1', peerId: 'peer-left', label: 'peer-left', port: leftPort, capabilities: ['quic'], volumeIds: [], observationHeadId: 'aa'.repeat(32), generatedAt: Date.now() };
         }
         if (request.action === 'block') {
           return new Uint8Array([1, 2, 3]);
@@ -48,17 +48,25 @@ describe('QuicDnsSdLanTransport', () => {
       peerId: 'peer-right',
       label: 'peer-right',
       port: rightPort,
-      headSequence: 7,
+      headObservationId: 'bb'.repeat(32),
       handleRequest: async (request) => {
         if (request.action === 'hello') {
-          return { protocol: 'nearbytes.lan-sync.v1', peerId: 'peer-right', label: 'peer-right', port: rightPort, capabilities: ['quic', 'inventory'], volumeIds: ['vol-1'], observationHeadSequence: 7, generatedAt: Date.now() };
+          return { protocol: 'nearbytes.lan-sync.v1', peerId: 'peer-right', label: 'peer-right', port: rightPort, capabilities: ['quic', 'inventory'], volumeIds: ['vol-1'], observationHeadId: 'bb'.repeat(32), generatedAt: Date.now() };
         }
         if (request.action === 'observations') {
           return {
             protocol: 'nearbytes.lan-sync.v1',
             peerId: 'peer-right',
-            observations: [{ sequence: 7, kind: 'block', hash: 'abc', relativePath: 'blocks/abc.bin', sourceId: 'src', observedAt: Date.now() }],
-            headSequence: 7,
+            observations: [{
+              observationId: 'cc'.repeat(32),
+              prevObservationId: null,
+              kind: 'block',
+              hash: 'abc',
+              relativePath: 'blocks/abc.bin',
+              sourceId: 'src',
+              observedAt: Date.now(),
+            }],
+            headObservationId: 'cc'.repeat(32),
             generatedAt: Date.now(),
           };
         }
@@ -80,25 +88,25 @@ describe('QuicDnsSdLanTransport', () => {
         address: '127.0.0.1',
         port: rightPort,
         capabilities: ['quic', 'inventory'],
-        headSequence: 7,
+        headObservationId: 'bb'.repeat(32),
       };
 
       const hello = await leftTransport.requestJson<LanTransportHello>(remotePeer, { action: 'hello' });
       expect(hello.peerId).toBe('peer-right');
-      expect(hello.observationHeadSequence).toBe(7);
+      expect(hello.observationHeadId).toBe('bb'.repeat(32));
 
       const blockBytes = await leftTransport.requestBytes(remotePeer, { action: 'block', blockHash: 'abc' });
       expect(Array.from(blockBytes)).toEqual([9, 8, 7]);
 
       const observations = await leftTransport.requestJson<{
-        observations: Array<{ sequence: number; kind: string; hash: string }>;
-        headSequence: number;
+        observations: Array<{ observationId: string; kind: string; hash: string }>;
+        headObservationId: string | null;
       }>(remotePeer, {
         action: 'observations',
-        afterSequence: 0,
+        afterObservationId: null,
         limit: 16,
       });
-      expect(observations.headSequence).toBe(7);
+      expect(observations.headObservationId).toBe('cc'.repeat(32));
       expect(observations.observations).toHaveLength(1);
       expect(observations.observations[0]?.hash).toBe('abc');
 
@@ -118,7 +126,7 @@ function createCallbacks(options: {
   peerId: string;
   label: string;
   port: number;
-  headSequence: number;
+  headObservationId: string | null;
   handleRequest: (request: LanTransportRpcRequest) => Promise<unknown> | unknown;
 }): LanPeerTransportCallbacks {
   return {
@@ -129,7 +137,7 @@ function createCallbacks(options: {
       port: options.port,
       capabilities: ['quic'],
       volumeIds: [],
-      observationHeadSequence: options.headSequence,
+      observationHeadId: options.headObservationId,
       generatedAt: Date.now(),
     }),
     onPeerDiscovered: () => undefined,

@@ -153,7 +153,7 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     const hello = await this.callbacks.getAdvertisement();
     const txt = buildLanDiscoveryTxtRecord({
       peerId: hello.peerId,
-      headSequence: hello.observationHeadSequence,
+      headObservationId: hello.observationHeadId,
       capabilities: hello.capabilities.length > 0 ? hello.capabilities : LAN_TRANSPORT_CAPABILITIES,
     });
     const nextConfig: ServiceConfig = {
@@ -221,7 +221,7 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
         address,
         port: service.port,
         capabilities: parsed.capabilities,
-        headSequence: parsed.headSequence,
+        headObservationId: parsed.headObservationId,
       };
       this.discoveryByFqdn.set(service.fqdn, peer);
       this.callbacks?.onPeerDiscovered(peer);

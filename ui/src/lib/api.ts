@@ -581,6 +581,8 @@ export interface LocalNetworkPeer {
   lastSyncNotice: string | null;
   lastImportedEvents: number;
   lastImportedBlocks: number;
+  remoteCursorObservationId?: string | null;
+  lastRemoteHeadObservationId?: string | null;
   status: 'ready' | 'syncing' | 'error' | 'stale';
   detail: string;
 }

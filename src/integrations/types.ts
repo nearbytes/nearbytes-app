@@ -312,7 +312,8 @@ export interface ProviderObservedObjectRef {
 }
 
 export interface ProviderQueueObservation extends ProviderObservedObjectRef {
-  readonly sequence: number;
+  readonly observationId: string;
+  readonly prevObservationId: string | null;
   readonly sourceId: string;
   readonly relativePath: string;
   readonly observedAt: number;
@@ -322,7 +323,7 @@ export interface ProviderQueueObservation extends ProviderObservedObjectRef {
 export interface ProviderQueueRouteState {
   readonly provider: string;
   readonly routeKey: string;
-  readonly lastAckedSequence: number;
-  readonly lastAttemptedSequence: number;
+  readonly lastAckedObservationId: string | null;
+  readonly lastAttemptedObservationId: string | null;
   readonly updatedAt: number;
 }

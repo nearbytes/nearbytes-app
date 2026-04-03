@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { MultiRootStorageBackend } from '../storage/multiRoot.js';
@@ -11,26 +12,30 @@ import type {
   ProviderQueueRouteState,
 } from './types.js';
 
-const PROVIDER_QUEUE_SCHEMA_VERSION = 1 as const;
+const PROVIDER_QUEUE_SCHEMA_VERSION = 2 as const;
 const DEFAULT_PAGE_LIMIT = 512;
+
+interface StoredProviderQueueObservation extends ProviderQueueObservation {
+  readonly order: number;
+}
 
 interface ProviderQueueState {
   readonly version: typeof PROVIDER_QUEUE_SCHEMA_VERSION;
-  readonly observations: ProviderQueueObservation[];
+  readonly observations: StoredProviderQueueObservation[];
   readonly routes: ProviderQueueRouteState[];
 }
 
 export interface ProviderQueueObservationPage {
   readonly observations: ProviderQueueObservation[];
-  readonly headSequence: number;
+  readonly headObservationId: string | null;
 }
 
 export class PersistentProviderQueue {
   private readonly statePath: string;
   private state: ProviderQueueState = {
     version: PROVIDER_QUEUE_SCHEMA_VERSION,
-    observations: [],
-    routes: [],
+      observations: [],
+      routes: [],
   };
   private observationKeys = new Set<string>();
   private unsubscribe: (() => void) | null = null;
@@ -65,8 +70,8 @@ export class PersistentProviderQueue {
     await this.writeChain.catch(() => undefined);
   }
 
-  getHeadSequence(): number {
-    return this.state.observations.at(-1)?.sequence ?? 0;
+  getHeadObservationId(): string | null {
+    return this.state.observations.at(-1)?.observationId ?? null;
   }
 
   listObservedVolumeIds(): string[] {
@@ -80,20 +85,20 @@ export class PersistentProviderQueue {
   }
 
   listObservations(options: {
-    readonly afterSequence?: number;
+    readonly afterObservationId?: string | null;
     readonly volumeIds?: readonly string[];
     readonly limit?: number;
   } = {}): ProviderQueueObservationPage {
-    const afterSequence = Math.max(0, options.afterSequence ?? 0);
     const limit = Math.max(1, Math.min(DEFAULT_PAGE_LIMIT, options.limit ?? DEFAULT_PAGE_LIMIT));
     const volumeFilter = normalizeVolumeFilter(options.volumeIds);
+    const startIndex = this.indexAfterObservationId(options.afterObservationId);
     const observations = this.state.observations
-      .filter((entry) => entry.sequence > afterSequence)
+      .slice(startIndex)
       .filter((entry) => matchesVolumeFilter(entry, volumeFilter))
       .slice(0, limit);
     return {
       observations,
-      headSequence: this.getHeadSequence(),
+      headObservationId: this.getHeadObservationId(),
     };
   }
 
@@ -102,35 +107,43 @@ export class PersistentProviderQueue {
       this.state.routes.find((entry) => entry.provider === provider && entry.routeKey === routeKey) ?? {
         provider,
         routeKey,
-        lastAckedSequence: 0,
-        lastAttemptedSequence: 0,
+        lastAckedObservationId: null,
+        lastAttemptedObservationId: null,
         updatedAt: 0,
       }
     );
   }
 
-  async noteRouteAttempt(provider: string, routeKey: string, sequence: number): Promise<ProviderQueueRouteState> {
+  async noteRouteAttempt(
+    provider: string,
+    routeKey: string,
+    observationId: string | null
+  ): Promise<ProviderQueueRouteState> {
     return this.upsertRouteState(provider, routeKey, (current) => ({
       provider,
       routeKey,
-      lastAckedSequence: current.lastAckedSequence,
-      lastAttemptedSequence: Math.max(current.lastAttemptedSequence, sequence),
+      lastAckedObservationId: current.lastAckedObservationId,
+      lastAttemptedObservationId: observationId ?? current.lastAttemptedObservationId,
       updatedAt: Date.now(),
     }));
   }
 
-  async acknowledgeRoute(provider: string, routeKey: string, sequence: number): Promise<ProviderQueueRouteState> {
+  async acknowledgeRoute(
+    provider: string,
+    routeKey: string,
+    observationId: string | null
+  ): Promise<ProviderQueueRouteState> {
     return this.upsertRouteState(provider, routeKey, (current) => ({
       provider,
       routeKey,
-      lastAckedSequence: Math.max(current.lastAckedSequence, sequence),
-      lastAttemptedSequence: Math.max(current.lastAttemptedSequence, sequence),
+      lastAckedObservationId: observationId ?? current.lastAckedObservationId,
+      lastAttemptedObservationId: observationId ?? current.lastAttemptedObservationId,
       updatedAt: Date.now(),
     }));
   }
 
   async recordStorageWrite(event: StorageWriteEvent): Promise<ProviderQueueObservation | null> {
-    const candidate = observationFromStorageWrite(event, this.getHeadSequence() + 1);
+    const candidate = observationFromStorageWrite(event);
     if (!candidate) {
       return null;
     }
@@ -138,13 +151,14 @@ export class PersistentProviderQueue {
     if (this.observationKeys.has(key)) {
       return null;
     }
+    const stored = this.toStoredObservation(candidate);
     this.observationKeys.add(key);
     this.state = {
       ...this.state,
-      observations: [...this.state.observations, candidate],
+      observations: [...this.state.observations, stored],
     };
     await this.persistState();
-    return candidate;
+    return stripStoredObservation(stored);
   }
 
   private async seedFromStorage(): Promise<void> {
@@ -183,7 +197,8 @@ export class PersistentProviderQueue {
       return;
     }
     const observation: ProviderQueueObservation = {
-      sequence: this.getHeadSequence() + 1,
+      observationId: '',
+      prevObservationId: null,
       kind: input.kind,
       hash: input.hash,
       relativePath: input.relativePath,
@@ -191,10 +206,11 @@ export class PersistentProviderQueue {
       observedAt: Date.now(),
       volumeId: input.volumeId,
     };
+    const stored = this.toStoredObservation(observation);
     this.observationKeys.add(key);
     this.state = {
       ...this.state,
-      observations: [...this.state.observations, observation],
+      observations: [...this.state.observations, stored],
     };
     await this.persistState();
   }
@@ -221,7 +237,9 @@ export class PersistentProviderQueue {
       return {
         version: PROVIDER_QUEUE_SCHEMA_VERSION,
         observations: Array.isArray(raw.observations)
-          ? raw.observations.filter(isProviderQueueObservation).sort((left, right) => left.sequence - right.sequence)
+          ? raw.observations
+              .filter(isStoredProviderQueueObservation)
+              .sort((left, right) => left.order - right.order)
           : [],
         routes: Array.isArray(raw.routes)
           ? raw.routes.filter(isProviderQueueRouteState).sort(compareRouteStates)
@@ -243,16 +261,48 @@ export class PersistentProviderQueue {
       .then(() => writeFileAtomicallyWithRenameFallback(this.statePath, serialized));
     await this.writeChain;
   }
+
+  private indexAfterObservationId(afterObservationId: string | null | undefined): number {
+    if (!afterObservationId) {
+      return 0;
+    }
+    const index = this.state.observations.findIndex((entry) => entry.observationId === afterObservationId);
+    return index >= 0 ? index + 1 : 0;
+  }
+
+  private toStoredObservation(observation: ProviderQueueObservation): StoredProviderQueueObservation {
+    const prevObservationId = this.getHeadObservationId();
+    const order = this.state.observations.length + 1;
+    const observedAt = observation.observedAt;
+    const normalized: ProviderQueueObservation = {
+      ...observation,
+      prevObservationId,
+      observedAt,
+      observationId: computeObservationId({
+        prevObservationId,
+        kind: observation.kind,
+        hash: observation.hash,
+        volumeId: observation.volumeId,
+        relativePath: observation.relativePath,
+        sourceId: observation.sourceId,
+        observedAt,
+      }),
+    };
+    return {
+      ...normalized,
+      order,
+    };
+  }
 }
 
 function observationFromStorageWrite(
-  event: StorageWriteEvent,
-  sequence: number
+  event: StorageWriteEvent
 ): ProviderQueueObservation | null {
   const parsedEvent = parseCanonicalEventRelativePath(event.path);
   if (parsedEvent) {
     return {
-      sequence,
+      observationId: '',
+      prevObservationId: null,
       kind: 'event',
       hash: parsedEvent.eventHash,
       volumeId: parsedEvent.volumeId,
@@ -264,7 +314,8 @@ function observationFromStorageWrite(
   const parsedBlock = parseCanonicalBlockRelativePath(event.path);
   if (parsedBlock) {
     return {
-      sequence,
+      observationId: '',
+      prevObservationId: null,
       kind: 'block',
       hash: parsedBlock.hash,
       relativePath: event.path,
@@ -299,9 +350,10 @@ function isProviderQueueObservation(value: unknown): value is ProviderQueueObser
   }
   const candidate = value as Partial<ProviderQueueObservation>;
   return (
-    typeof candidate.sequence === 'number' &&
-    Number.isInteger(candidate.sequence) &&
-    candidate.sequence > 0 &&
+    typeof candidate.observationId === 'string' &&
+    /^[0-9a-f]{64}$/.test(candidate.observationId) &&
+    (candidate.prevObservationId === null ||
+      (typeof candidate.prevObservationId === 'string' && /^[0-9a-f]{64}$/.test(candidate.prevObservationId))) &&
     (candidate.kind === 'event' || candidate.kind === 'block') &&
     typeof candidate.hash === 'string' &&
     candidate.hash.trim() !== '' &&
@@ -315,6 +367,14 @@ function isProviderQueueObservation(value: unknown): value is ProviderQueueObser
   );
 }
 
+function isStoredProviderQueueObservation(value: unknown): value is StoredProviderQueueObservation {
+  if (!isProviderQueueObservation(value)) {
+    return false;
+  }
+  const candidate = value as Partial<StoredProviderQueueObservation>;
+  return typeof candidate.order === 'number' && Number.isInteger(candidate.order) && candidate.order > 0;
+}
+
 function isProviderQueueRouteState(value: unknown): value is ProviderQueueRouteState {
   if (!value || typeof value !== 'object') {
     return false;
@@ -325,8 +385,11 @@ function isProviderQueueRouteState(value: unknown): value is ProviderQueueRouteS
     candidate.provider.trim() !== '' &&
     typeof candidate.routeKey === 'string' &&
     candidate.routeKey.trim() !== '' &&
-    typeof candidate.lastAckedSequence === 'number' &&
-    typeof candidate.lastAttemptedSequence === 'number' &&
+    (candidate.lastAckedObservationId === null ||
+      (typeof candidate.lastAckedObservationId === 'string' && /^[0-9a-f]{64}$/.test(candidate.lastAckedObservationId))) &&
+    (candidate.lastAttemptedObservationId === null ||
+      (typeof candidate.lastAttemptedObservationId === 'string' &&
+        /^[0-9a-f]{64}$/.test(candidate.lastAttemptedObservationId))) &&
     typeof candidate.updatedAt === 'number'
   );
 }
@@ -340,4 +403,30 @@ export function queueObservationObjectId(observation: ProviderQueueObservation):
     kind: observation.kind,
     hash: observation.hash,
   };
+}
+
+function stripStoredObservation(observation: StoredProviderQueueObservation): ProviderQueueObservation {
+  const { order: _order, ...rest } = observation;
+  return rest;
+}
+
+function computeObservationId(input: {
+  readonly prevObservationId: string | null;
+  readonly kind: ProviderObservedObjectKind;
+  readonly hash: string;
+  readonly volumeId?: string;
+  readonly relativePath: string;
+  readonly sourceId: string;
+  readonly observedAt: number;
+}): string {
+  const canonical = JSON.stringify({
+    prevObservationId: input.prevObservationId,
+    kind: input.kind,
+    hash: input.hash,
+    volumeId: input.volumeId ?? null,
+    relativePath: input.relativePath,
+    sourceId: input.sourceId,
+    observedAt: input.observedAt,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
 }

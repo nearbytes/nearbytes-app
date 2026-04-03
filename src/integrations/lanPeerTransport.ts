@@ -4,7 +4,7 @@ export interface LanTransportDiscoveredPeer {
   readonly address: string;
   readonly port: number;
   readonly capabilities: string[];
-  readonly headSequence: number;
+  readonly headObservationId: string | null;
 }
 
 export interface LanTransportHello {
@@ -14,7 +14,7 @@ export interface LanTransportHello {
   readonly port: number;
   readonly capabilities: string[];
   readonly volumeIds: string[];
-  readonly observationHeadSequence: number;
+  readonly observationHeadId: string | null;
   readonly generatedAt: number;
 }
 
@@ -29,7 +29,7 @@ export interface LanTransportObservationPage<TObservation> {
   readonly protocol: string;
   readonly peerId: string;
   readonly observations: TObservation[];
-  readonly headSequence: number;
+  readonly headObservationId: string | null;
   readonly generatedAt: number;
 }
 
@@ -49,7 +49,7 @@ export type LanTransportRpcRequest =
     }
   | {
       readonly action: 'observations';
-      readonly afterSequence?: number;
+      readonly afterObservationId?: string | null;
       readonly volumeIds?: readonly string[];
       readonly limit?: number;
     }

@@ -26,7 +26,7 @@ interface PeerHelloResponse {
   readonly port: number;
   readonly capabilities: string[];
   readonly volumeIds: string[];
-  readonly observationHeadSequence: number;
+  readonly observationHeadId: string | null;
   readonly generatedAt: number;
 }
 
@@ -66,8 +66,8 @@ interface LocalPeerState {
   lastSyncNotice: string | null;
   lastImportedEvents: number;
   lastImportedBlocks: number;
-  remoteCursorSequence: number;
-  lastRemoteHeadSequence: number;
+  remoteCursorObservationId: string | null;
+  lastRemoteHeadObservationId: string | null;
   syncing: boolean;
   queued: boolean;
 }
@@ -89,8 +89,8 @@ export interface LocalNetworkPeerSnapshot {
   readonly lastSyncNotice: string | null;
   readonly lastImportedEvents: number;
   readonly lastImportedBlocks: number;
-  readonly remoteCursorSequence: number;
-  readonly lastRemoteHeadSequence: number;
+  readonly remoteCursorObservationId: string | null;
+  readonly lastRemoteHeadObservationId: string | null;
   readonly status: 'ready' | 'syncing' | 'error' | 'stale';
   readonly detail: string;
 }
@@ -183,7 +183,7 @@ export class LocalNetworkSyncService {
       port: this.httpPort ?? 0,
       capabilities: ['observation-log', 'inventory', 'pull-sync', 'push-hint'],
       volumeIds: [],
-      observationHeadSequence: this.providerQueue.getHeadSequence(),
+      observationHeadId: this.providerQueue.getHeadObservationId(),
       generatedAt: Date.now(),
     };
   }
@@ -210,7 +210,7 @@ export class LocalNetworkSyncService {
   }
 
   listObservations(options: {
-    readonly afterSequence?: number;
+    readonly afterObservationId?: string | null;
     readonly volumeIds?: readonly string[];
     readonly limit?: number;
   } = {}): ObservationListResponse {
@@ -219,7 +219,7 @@ export class LocalNetworkSyncService {
       protocol: LAN_SYNC_PROTOCOL,
       peerId: this.peerId,
       observations: page.observations,
-      headSequence: page.headSequence,
+      headObservationId: page.headObservationId,
       generatedAt: Date.now(),
     };
   }
@@ -271,7 +271,7 @@ export class LocalNetworkSyncService {
         return {
           kind: 'json',
           value: this.listObservations({
-            afterSequence: request.afterSequence,
+            afterObservationId: request.afterObservationId,
             volumeIds: request.volumeIds,
             limit: request.limit,
           }),
@@ -386,8 +386,8 @@ export class LocalNetworkSyncService {
       lastSyncNotice: null,
       lastImportedEvents: 0,
       lastImportedBlocks: 0,
-      remoteCursorSequence: 0,
-      lastRemoteHeadSequence: 0,
+      remoteCursorObservationId: null,
+      lastRemoteHeadObservationId: null,
       syncing: false,
       queued: false,
     };
@@ -431,17 +431,17 @@ export class LocalNetworkSyncService {
       peer.label = hello.label || peer.label;
       peer.capabilities = Array.isArray(hello.capabilities) ? hello.capabilities : peer.capabilities;
       peer.volumeIds = dedupeVolumeIds(hello.volumeIds);
-      peer.lastRemoteHeadSequence = Math.max(0, hello.observationHeadSequence ?? 0);
+      peer.lastRemoteHeadObservationId = hello.observationHeadId ?? null;
       peer.lastHelloAt = Date.now();
       const routeKey = routeKeyForPeer(peer.peerId);
       const routeState = this.providerQueue.getRouteState(LOCAL_NETWORK_PROVIDER, routeKey);
-      peer.remoteCursorSequence = routeState.lastAckedSequence;
+      peer.remoteCursorObservationId = routeState.lastAckedObservationId;
 
-      const observationDelta = await this.pullObservations(peer, routeState.lastAckedSequence);
+      const observationDelta = await this.pullObservations(peer, routeState.lastAckedObservationId);
 
       let importedEvents = observationDelta.importedEvents;
       let importedBlocks = observationDelta.importedBlocks;
-      if (force || routeState.lastAckedSequence === 0 || importedEvents > 0 || importedBlocks > 0) {
+      if (force || routeState.lastAckedObservationId === null || importedEvents > 0 || importedBlocks > 0) {
         for (const volumeId of peer.volumeIds) {
           const delta = await this.pullVolume(peer, volumeId);
           importedEvents += delta.importedEvents;
@@ -528,9 +528,9 @@ export class LocalNetworkSyncService {
 
   private async pullObservations(
     peer: LocalPeerState,
-    afterSequence: number
+    afterObservationId: string | null
   ): Promise<{ importedEvents: number; importedBlocks: number }> {
-    let cursor = Math.max(0, afterSequence);
+    let cursor = afterObservationId;
     let importedEvents = 0;
     let importedBlocks = 0;
     const routeKey = routeKeyForPeer(peer.peerId);
@@ -538,24 +538,24 @@ export class LocalNetworkSyncService {
     while (true) {
       const page = await this.peerTransport.requestJson<ObservationListResponse>(this.toTransportPeer(peer), {
         action: 'observations',
-        afterSequence: cursor,
+        afterObservationId: cursor,
         limit: OBSERVATION_PAGE_LIMIT,
       });
-      peer.lastRemoteHeadSequence = Math.max(peer.lastRemoteHeadSequence, page.headSequence);
+      peer.lastRemoteHeadObservationId = page.headObservationId;
       if (page.observations.length === 0) {
         break;
       }
-      const lastSequence = page.observations.at(-1)?.sequence ?? cursor;
-      await this.providerQueue.noteRouteAttempt(LOCAL_NETWORK_PROVIDER, routeKey, lastSequence);
+      const lastObservationId = page.observations.at(-1)?.observationId ?? cursor;
+      await this.providerQueue.noteRouteAttempt(LOCAL_NETWORK_PROVIDER, routeKey, lastObservationId);
       for (const observation of page.observations) {
         const imported = await this.importObservation(peer, observation);
         importedEvents += imported.importedEvents;
         importedBlocks += imported.importedBlocks;
-        cursor = Math.max(cursor, observation.sequence);
+        cursor = observation.observationId;
       }
       await this.providerQueue.acknowledgeRoute(LOCAL_NETWORK_PROVIDER, routeKey, cursor);
-      peer.remoteCursorSequence = cursor;
-      if (cursor >= page.headSequence) {
+      peer.remoteCursorObservationId = cursor;
+      if (cursor !== null && cursor === page.headObservationId) {
         break;
       }
     }
@@ -636,7 +636,7 @@ export class LocalNetworkSyncService {
       address: peer.address,
       port: peer.port,
       capabilities: [...peer.capabilities],
-      headSequence: peer.lastRemoteHeadSequence,
+      headObservationId: peer.lastRemoteHeadObservationId,
     };
   }
 
@@ -658,12 +658,12 @@ export class LocalNetworkSyncService {
           ? peer.lastSyncError ?? 'Last sync failed.'
           : stale
           ? 'Peer is offline or quiet; Nearbytes will reconnect automatically.'
-          : peer.lastSyncAt && peer.volumeIds.length === 0 && peer.lastRemoteHeadSequence === 0
+          : peer.lastSyncAt && peer.volumeIds.length === 0 && !peer.lastRemoteHeadObservationId
             ? 'Peer is reachable. It is not advertising separate LAN volumes yet. If both apps use the same mounted storage, no transfer is needed.'
           : peer.lastSyncAt
-              ? `Volumes visible: ${peer.volumeIds.length}. Cursor ${peer.remoteCursorSequence}/${peer.lastRemoteHeadSequence}. Last sync ${formatRelative(peer.lastSyncAt)}.`
-              : peer.volumeIds.length > 0 || peer.lastRemoteHeadSequence > 0
-                ? `Peer discovered. Cursor ${peer.remoteCursorSequence}/${peer.lastRemoteHeadSequence}.`
+              ? `Volumes visible: ${peer.volumeIds.length}. Cursor ${shortObservationId(peer.remoteCursorObservationId)}/${shortObservationId(peer.lastRemoteHeadObservationId)}. Last sync ${formatRelative(peer.lastSyncAt)}.`
+              : peer.volumeIds.length > 0 || peer.lastRemoteHeadObservationId
+                ? `Peer discovered. Cursor ${shortObservationId(peer.remoteCursorObservationId)}/${shortObservationId(peer.lastRemoteHeadObservationId)}.`
                 : 'Peer discovered. Waiting for the first shared volume or observation.';
 
     return {
@@ -683,8 +683,8 @@ export class LocalNetworkSyncService {
       lastSyncNotice: peer.lastSyncNotice,
       lastImportedEvents: peer.lastImportedEvents,
       lastImportedBlocks: peer.lastImportedBlocks,
-      remoteCursorSequence: peer.remoteCursorSequence,
-      lastRemoteHeadSequence: peer.lastRemoteHeadSequence,
+      remoteCursorObservationId: peer.remoteCursorObservationId,
+      lastRemoteHeadObservationId: peer.lastRemoteHeadObservationId,
       status,
       detail,
     };
@@ -718,6 +718,10 @@ function formatRelative(timestamp: number): string {
 
 function routeKeyForPeer(peerId: string): string {
   return `peer:${peerId}:pull`;
+}
+
+function shortObservationId(value: string | null): string {
+  return value ? value.slice(0, 12) : 'none';
 }
 
 function isAbortLikeError(error: unknown): boolean {
