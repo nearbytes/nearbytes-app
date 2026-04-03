@@ -167,6 +167,9 @@ export class LocalNetworkSyncService {
         const existing = this.peers.get(peerId);
         if (existing) {
           existing.lastSeenAt = Date.now() - PEER_STALE_AFTER_MS;
+          existing.lastSyncTransient = true;
+          existing.lastSyncError = null;
+          existing.lastSyncNotice = 'Peer is offline or quiet; Nearbytes will reconnect automatically.';
         }
       },
       handleRequest: async (request) => this.handleTransportRequest(request),
@@ -322,6 +325,7 @@ export class LocalNetworkSyncService {
   }
 
   getPeersResponse(): LocalNetworkPeersResponse {
+    const now = Date.now();
     return {
       service: {
         protocol: LAN_SYNC_PROTOCOL,
@@ -333,7 +337,7 @@ export class LocalNetworkSyncService {
         transport: 'webrtc',
         serviceType: '_nearbytes._udp.local',
         announceIntervalMs: ADVERTISEMENT_REFRESH_INTERVAL_MS,
-        peerCount: this.peers.size,
+        peerCount: Array.from(this.peers.values()).filter((peer) => now - peer.lastSeenAt < PEER_STALE_AFTER_MS).length,
       },
       peers: Array.from(this.peers.values())
         .map((peer) => this.toPeerSnapshot(peer))

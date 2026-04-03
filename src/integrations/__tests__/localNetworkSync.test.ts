@@ -241,6 +241,7 @@ describe('LocalNetworkSyncService', () => {
     expect(snapshot?.lastSyncError).toBeNull();
     expect(snapshot?.lastSyncNotice).toBe('Peer is offline or quiet; Nearbytes will reconnect automatically.');
     expect(snapshot?.detail).toBe('Peer is offline or quiet; Nearbytes will reconnect automatically.');
+    expect(local.lanService.getPeersResponse().service.peerCount).toBe(0);
 
     await local.lanService.stop();
     await remote.lanService.stop();

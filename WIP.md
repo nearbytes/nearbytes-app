@@ -84,6 +84,7 @@ Not visible:
 - 2026-04-03: made WebRTC RPC channel shutdown graceful so response delivery is deterministic
 - 2026-04-03: added a regression test proving receiver-driven transfer: already-present events and blocks are not re-requested
 - 2026-04-03: updated the active LAN spec to WebRTC and wrote the receiver-driven transfer rule explicitly
+- 2026-04-03: made unreachable peers expire immediately on signal-path `404` or network failure, and excluded stale peers from the live peer count
 
 ## TODO
 
@@ -110,4 +111,5 @@ Not visible:
   - peers exchange hello and observation heads
   - the local side pulls observation pages
   - the local side requests only missing events and blocks
+- stale or unreachable peers are downgraded immediately and no longer count as live peers in the Local network header
 - `src/integrations/providerQueue.ts` remains the persisted local observation queue and route-state store.

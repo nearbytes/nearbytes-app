@@ -40,6 +40,7 @@ const LAN_MESSAGE_CHUNK_BYTES = 64 * 1024;
 const LAN_MULTICAST_GROUP = '239.255.40.41';
 const LAN_MULTICAST_PORT = 40441;
 const LAN_MULTICAST_ANNOUNCE_MS = 5_000;
+const LAN_UNREACHABLE_STATUS_CODES = new Set([404, 410, 502, 503, 504]);
 
 interface DiscoveryDebugRecord {
   readonly source: string;
@@ -618,11 +619,41 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
         signal: controller.signal,
       });
       if (!response.ok) {
+        if (LAN_UNREACHABLE_STATUS_CODES.has(response.status)) {
+          this.expirePeer(peer.peerId);
+        }
         throw new Error(`Signal POST failed with status ${response.status}`);
       }
       return await response.json() as LanPeerTransportSignalResponse;
+    } catch (error) {
+      if (isSignalPathUnavailableError(error)) {
+        this.expirePeer(peer.peerId);
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  private expirePeer(peerId: string): void {
+    let expired = false;
+    for (const [fqdn, peer] of this.discoveryByFqdn.entries()) {
+      if (peer.peerId !== peerId) {
+        continue;
+      }
+      this.discoveryByFqdn.delete(fqdn);
+      this.discoveryDebugByFqdn.delete(fqdn);
+      expired = true;
+    }
+    const context = this.connections.get(peerId);
+    if (context) {
+      destroyConnectionContext(context);
+      this.connections.delete(peerId);
+      expired = true;
+    }
+    this.pendingConnections.delete(peerId);
+    if (expired) {
+      this.callbacks?.onPeerExpired?.(peerId);
     }
   }
 
@@ -1172,6 +1203,13 @@ function wrapLanWebRtcError(
   );
   wrapped.name = error instanceof Error ? error.name : 'Error';
   return wrapped;
+}
+
+function isSignalPathUnavailableError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /fetch failed|networkerror|econnrefused|enotfound|ehostunreach|enetunreach|timed out|abort/i.test(error.message);
 }
 
 function describeDiscoveryCompatibility(

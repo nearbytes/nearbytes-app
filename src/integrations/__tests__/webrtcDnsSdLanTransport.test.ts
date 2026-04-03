@@ -246,6 +246,71 @@ describe('WebRtcDnsSdLanTransport', () => {
     expect(incompatible?.compatible).toBe(false);
     expect(incompatible?.incompatibilityReason).toContain('Unsupported discovery protocol version');
   });
+
+  it('expires a discovered peer immediately when the signaling path returns 404', async () => {
+    const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-expire-');
+    const expiredPeerIds: string[] = [];
+    const transport = new WebRtcDnsSdLanTransport(runtimeDir, {
+      disableDiscovery: true,
+      signalFetcher: async () =>
+        ({
+          ok: false,
+          status: 404,
+          async json() {
+            return {};
+          },
+        }) as Response,
+    });
+    const internal = transport as unknown as {
+      callbacks: LanPeerTransportCallbacks | null;
+      handleDiscoveryService: (service: {
+        fqdn: string;
+        name: string;
+        port: number;
+        addresses: string[];
+        txt: Record<string, string>;
+      }) => void;
+    };
+    internal.callbacks = createCallbacks({
+      peerId: 'peer-a',
+      label: 'peer-a',
+      port: 4301,
+      headObservationId: null,
+      capabilities: ['webrtc', 'observation-log'],
+      handleRequest: async () => ({ ok: true }),
+      onPeerExpired: (peerId) => {
+        expiredPeerIds.push(peerId);
+      },
+    });
+
+    internal.handleDiscoveryService({
+      fqdn: 'peer-b.local',
+      name: 'peer-b',
+      port: 4302,
+      addresses: ['192.168.1.25'],
+      txt: {
+        pv: '0.3',
+        peer: 'peer-b',
+        alpn: 'nearbytes-lan/0.3',
+        caps: 'webrtc,observation-log',
+      },
+    });
+
+    await expect(transport.requestJson<{ ok: boolean }>(
+      {
+        peerId: 'peer-b',
+        label: 'peer-b',
+        address: '192.168.1.25',
+        port: 4302,
+        capabilities: ['webrtc', 'observation-log'],
+        headObservationId: null,
+      },
+      { action: 'hello' }
+    )).rejects.toThrow('Signal POST failed with status 404');
+
+    expect(expiredPeerIds).toEqual(['peer-b']);
+    expect(transport.getDebugState().discoveredPeers.find((entry) => entry.peerId === 'peer-b')).toBeUndefined();
+  });
 });
 
 function createCallbacks(options: {
@@ -255,6 +320,7 @@ function createCallbacks(options: {
   headObservationId: string | null;
   capabilities: string[];
   handleRequest: (request: LanTransportRpcRequest) => Promise<unknown> | unknown;
+  onPeerExpired?: (peerId: string) => void;
 }): LanPeerTransportCallbacks {
   return {
     getAdvertisement: async (): Promise<LanTransportHello> => ({
@@ -268,6 +334,7 @@ function createCallbacks(options: {
       generatedAt: Date.now(),
     }),
     onPeerDiscovered: () => undefined,
+    onPeerExpired: options.onPeerExpired,
     handleRequest: async (request) => {
       const value = await options.handleRequest(request);
       return value instanceof Uint8Array
