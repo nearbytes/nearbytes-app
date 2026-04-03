@@ -26,6 +26,7 @@ const LAN_QUIC_KEY_FILE = 'quic-key.pem';
 const LAN_QUIC_SIGNING_KEY_FILE = 'quic-signing-key.bin';
 const LAN_QUIC_APPLICATION_PROTOCOLS = [LAN_QUIC_ALPN];
 const LAN_QUIC_REQUEST_TIMEOUT_MS = 30_000;
+const LAN_QUIC_WRITE_CHUNK_BYTES = 64 * 1024;
 
 interface LanRpcFrameHeader {
   readonly kind: 'json' | 'bytes';
@@ -257,6 +258,7 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
       const response = await this.dispatchRequest(request);
       await writeAllStream(stream.writable, encodeLanRpcFrame(response));
     } catch (error) {
+      console.error('[Nearbytes LAN][QUIC] Incoming stream failed.', describeQuicErrorContext(error));
       await writeAllStream(
         stream.writable,
         encodeLanRpcFrame({
@@ -289,10 +291,21 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
   }
 
   private async sendRequest(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<LanRpcFrame> {
-    const client = await this.getOrCreateClient(peer);
-    const stream = client.connection.newStream();
-    await writeAllStream(stream.writable, encodeLanRpcFrame(jsonFrame(request)));
-    return decodeLanRpcFrame(await readAllStreamWithTimeout(stream.readable, LAN_QUIC_REQUEST_TIMEOUT_MS));
+    try {
+      const client = await this.getOrCreateClient(peer);
+      const stream = client.connection.newStream();
+      await writeAllStream(stream.writable, encodeLanRpcFrame(jsonFrame(request)));
+      return decodeLanRpcFrame(await readAllStreamWithTimeout(stream.readable, LAN_QUIC_REQUEST_TIMEOUT_MS));
+    } catch (error) {
+      console.error('[Nearbytes LAN][QUIC] Request failed.', {
+        peerId: peer.peerId,
+        address: peer.address,
+        port: peer.port,
+        action: request.action,
+        detail: describeQuicErrorContext(error),
+      });
+      throw wrapLanQuicError(peer, request, error);
+    }
   }
 
   private async getOrCreateClient(peer: LanTransportDiscoveredPeer): Promise<QUICClient> {
@@ -486,7 +499,9 @@ async function readAllStreamWithTimeout(stream: NodeReadableStream<Uint8Array>, 
 async function writeAllStream(stream: NodeWritableStream<Uint8Array>, bytes: Uint8Array): Promise<void> {
   const writer = stream.getWriter();
   try {
-    await writer.write(bytes);
+    for (let offset = 0; offset < bytes.byteLength; offset += LAN_QUIC_WRITE_CHUNK_BYTES) {
+      await writer.write(bytes.subarray(offset, Math.min(bytes.byteLength, offset + LAN_QUIC_WRITE_CHUNK_BYTES)));
+    }
     await writer.close();
   } finally {
     writer.releaseLock();
@@ -507,4 +522,24 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 function asTypedEventTarget(value: unknown): EventTarget {
   return value as EventTarget;
+}
+
+function wrapLanQuicError(
+  peer: LanTransportDiscoveredPeer,
+  request: LanTransportRpcRequest,
+  error: unknown
+): Error {
+  const detail = error instanceof Error ? error.message : String(error);
+  const wrapped = new Error(
+    `LAN QUIC ${request.action} failed for ${peer.label} (${peer.address}:${peer.port}): ${detail}`
+  );
+  wrapped.name = error instanceof Error ? error.name : 'Error';
+  return wrapped;
+}
+
+function describeQuicErrorContext(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+  return String(error);
 }
