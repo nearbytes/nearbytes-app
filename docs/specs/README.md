@@ -13,13 +13,14 @@ Current active design line for the unreleased opaque-event refactor:
 - `identity/identity-channel-v0.2.md`
 - `storage/data-correctness-v0.2.md`
 - `storage/meta-storage-v0.3.md`
-- `transport/lan-sync-v0.3.md`
+- `transport/storage-commands-v0.1.md`
+- `transport/lan-sync-v0.4.md`
 
 Earlier pre-opaque docs remain in-tree only as historical snapshots unless they are explicitly referenced by the active design line.
 
 LAN note:
 
-- `transport/lan-sync-v0.3.md` defines DNS-SD over mDNS as the normative primary discovery mechanism.
+- `transport/lan-sync-v0.4.md` defines DNS-SD over mDNS as the normative primary discovery mechanism.
 - The current implementation also permits compact UDP multicast fallback discovery as a resilience layer on local networks where DNS-SD visibility is unreliable.
 
 ## Families

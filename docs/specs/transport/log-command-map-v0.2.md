@@ -8,7 +8,7 @@ This document maps current interpreted Nearbytes command families to their norma
 
 1. hub/log model -> `application/hub-model-v0.2.md`
 2. generic app-record inner payload -> `application/app-records-v0.2.md`
-3. LAN sync over opaque events -> `transport/lan-sync-v0.3.md`
+3. LAN sync over opaque events -> `transport/lan-sync-v0.4.md`
 
 ## 2. File Commands
 

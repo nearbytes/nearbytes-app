@@ -4,7 +4,7 @@ Superseded note:
 
 1. this document records the provisional multicast plus peer-HTTP design line;
 2. it is retained only as a historical snapshot;
-3. the current unreleased design line is `transport/lan-sync-v0.3.md`.
+3. the current unreleased design line is `transport/lan-sync-v0.4.md`.
 
 Status: draft normative specification.
 
@@ -70,7 +70,7 @@ Rationale:
 
 1. UDP multicast is easy to implement on desktop and mobile platforms;
 2. HTTP is already natural for Nearbytes desktop runtime integration;
-3. the message model can later be carried over QUIC, WebRTC, or relay transport without redefining sync semantics.
+3. the message model can later be carried over updated peer transports or relay transport without redefining sync semantics.
 
 Future Nearbytes versions MAY define additional transport profiles that carry the same sync messages.
 

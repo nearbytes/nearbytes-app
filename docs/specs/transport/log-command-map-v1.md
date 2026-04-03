@@ -4,7 +4,7 @@ Superseded note:
 
 1. this document records the pre-opaque event design line;
 2. it is retained only as a historical snapshot;
-3. the current unreleased design line is `transport/log-command-map-v0.3.md`.
+3. the current unreleased design line is `transport/log-command-map-v0.4.md`.
 
 Status: draft normative specification.
 
