@@ -474,12 +474,31 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
   }
 
   private async sendRequest(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<LanRpcFrame> {
+    const cacheKey = peerCacheKey(peer);
     try {
-      const client = await this.getOrCreateClient(peer);
+      const client = await this.getOrCreateClient(peer, cacheKey);
       const stream = client.connection.newStream();
       await writeAllStream(stream.writable, encodeLanRpcFrame(jsonFrame(request)));
       return decodeLanRpcFrame(await readAllStreamWithTimeout(stream.readable, LAN_QUIC_REQUEST_TIMEOUT_MS));
     } catch (error) {
+      if (shouldRetryWithFreshClient(error)) {
+        await this.destroyCachedClient(cacheKey);
+        try {
+          const freshClient = await this.getOrCreateClient(peer, cacheKey);
+          const stream = freshClient.connection.newStream();
+          await writeAllStream(stream.writable, encodeLanRpcFrame(jsonFrame(request)));
+          return decodeLanRpcFrame(await readAllStreamWithTimeout(stream.readable, LAN_QUIC_REQUEST_TIMEOUT_MS));
+        } catch (retryError) {
+          console.error('[Nearbytes LAN][QUIC] Retry with fresh client failed.', {
+            peerId: peer.peerId,
+            address: peer.address,
+            port: peer.port,
+            action: request.action,
+            detail: describeQuicErrorContext(retryError),
+          });
+          throw wrapLanQuicError(peer, request, retryError);
+        }
+      }
       console.error('[Nearbytes LAN][QUIC] Request failed.', {
         peerId: peer.peerId,
         address: peer.address,
@@ -491,8 +510,7 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     }
   }
 
-  private async getOrCreateClient(peer: LanTransportDiscoveredPeer): Promise<QUICClient> {
-    const key = `${peer.peerId}@${peer.address}:${peer.port}`;
+  private async getOrCreateClient(peer: LanTransportDiscoveredPeer, key = peerCacheKey(peer)): Promise<QUICClient> {
     const existing = this.clients.get(key);
     if (existing && !existing.closed) {
       return existing;
@@ -526,6 +544,15 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     });
     this.clients.set(key, client);
     return client;
+  }
+
+  private async destroyCachedClient(key: string): Promise<void> {
+    const client = this.clients.get(key);
+    if (!client) {
+      return;
+    }
+    this.clients.delete(key);
+    await client.destroy({ force: true }).catch(() => undefined);
   }
 }
 
@@ -593,6 +620,20 @@ function sanitizeBonjourHostName(value: string): string {
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return normalized === '' ? 'nearbytes-peer' : normalized;
+}
+
+function peerCacheKey(peer: LanTransportDiscoveredPeer): string {
+  return `${peer.peerId}@${peer.address}:${peer.port}`;
+}
+
+function shouldRetryWithFreshClient(error: unknown): boolean {
+  const detail = describeQuicErrorContext(error).toLowerCase();
+  return (
+    detail.includes('create external arraybuffer failed') ||
+    detail.includes('invalid state') ||
+    detail.includes('stream') && detail.includes('closed') ||
+    detail.includes('connection') && detail.includes('closed')
+  );
 }
 
 interface DiscoveryCompatibility {
