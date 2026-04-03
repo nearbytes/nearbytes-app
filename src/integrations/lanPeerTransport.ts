@@ -78,6 +78,34 @@ export interface LanPeerTransportCallbacks {
   readonly handleRequest: (request: LanTransportRpcRequest) => Promise<LanPeerTransportResponse>;
 }
 
+export interface LanPeerTransportDebugState {
+  readonly transport: string;
+  readonly listening: boolean;
+  readonly publishedAdvertisement?: {
+    readonly peerId: string;
+    readonly label: string;
+    readonly port: number;
+    readonly observationHeadId: string | null;
+    readonly capabilities: string[];
+  } | null;
+  readonly discoveredPeers: Array<{
+    readonly fqdn: string;
+    readonly peerId: string | null;
+    readonly label: string;
+    readonly port: number;
+    readonly addresses: string[];
+    readonly chosenAddress: string | null;
+    readonly chosenAddressReason: string | null;
+    readonly compatible: boolean;
+    readonly incompatibilityReason: string | null;
+    readonly protocolVersion: string | null;
+    readonly alpn: string | null;
+    readonly capabilities: string[];
+    readonly headObservationId: string | null;
+    readonly seenAt: number;
+  }>;
+}
+
 export type LanPeerTransportResponse =
   | {
       readonly kind: 'json';
@@ -92,6 +120,7 @@ export interface LanPeerTransport {
   start(callbacks: LanPeerTransportCallbacks): Promise<void>;
   stop(): Promise<void>;
   refreshAdvertisement?(): Promise<void>;
+  getDebugState?(): LanPeerTransportDebugState;
   requestJson<TResponse>(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<TResponse>;
   requestBytes(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<Uint8Array>;
   notify(peer: LanTransportDiscoveredPeer, request: Extract<LanTransportRpcRequest, { action: 'sync-hint' }>): Promise<void>;

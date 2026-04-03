@@ -113,6 +113,13 @@ export interface LocalNetworkPeersResponse {
   readonly peers: LocalNetworkPeerSnapshot[];
 }
 
+export interface LocalNetworkDebugResponse {
+  readonly service: LocalNetworkServiceSnapshot;
+  readonly self: PeerHelloResponse;
+  readonly peers: LocalNetworkPeerSnapshot[];
+  readonly transport: import('./lanPeerTransport.js').LanPeerTransportDebugState | null;
+}
+
 export class LocalNetworkSyncService {
   private readonly storageHomeDir: string;
   private readonly runtimeDir: string;
@@ -319,6 +326,15 @@ export class LocalNetworkSyncService {
       peers: Array.from(this.peers.values())
         .map((peer) => this.toPeerSnapshot(peer))
         .sort((left, right) => left.label.localeCompare(right.label) || left.peerId.localeCompare(right.peerId)),
+    };
+  }
+
+  async getDebugResponse(): Promise<LocalNetworkDebugResponse> {
+    return {
+      service: this.getPeersResponse().service,
+      self: await this.buildHello(),
+      peers: this.getPeersResponse().peers,
+      transport: this.peerTransport.getDebugState?.() ?? null,
     };
   }
 

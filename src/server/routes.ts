@@ -145,6 +145,13 @@ export function createRoutes(deps: RouteDependencies): Router {
     res.json(await deps.localNetworkSyncService.buildHello());
   }));
 
+  router.get('/lan/debug', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.getDebugResponse());
+  }));
+
   router.get('/lan/volumes', asyncHandler(async (_req, res) => {
     if (!deps.localNetworkSyncService) {
       throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');

@@ -120,6 +120,65 @@ describe('QuicDnsSdLanTransport', () => {
       await rightTransport.stop();
     }
   });
+
+  it('prefers private LAN addresses in discovery debug state and ignores incompatible records', async () => {
+    const runtimeDir = await mkRuntimeDir('nearbytes-lan-quic-debug-');
+    const transport = new QuicDnsSdLanTransport(runtimeDir);
+    const internal = transport as unknown as {
+      callbacks: LanPeerTransportCallbacks | null;
+      handleDiscoveryService: (service: {
+        fqdn: string;
+        name: string;
+        port: number;
+        addresses: string[];
+        txt: Record<string, string>;
+      }) => void;
+    };
+    internal.callbacks = createCallbacks({
+      peerId: 'peer-self',
+      label: 'peer-self',
+      port: 4101,
+      headObservationId: null,
+      handleRequest: async () => ({ ok: true }),
+    });
+
+    internal.handleDiscoveryService({
+      fqdn: 'peer-remote.local',
+      name: 'peer-remote',
+      port: 4200,
+      addresses: ['146.48.84.58', '192.168.1.25', '::1'],
+      txt: {
+        pv: '0.3',
+        peer: 'peer-remote',
+        alpn: 'nearbytes-lan/0.3',
+        caps: 'quic,observation-log',
+        head: 'aa'.repeat(32),
+      },
+    });
+
+    internal.handleDiscoveryService({
+      fqdn: 'peer-old.local',
+      name: 'peer-old',
+      port: 3000,
+      addresses: ['192.168.1.44'],
+      txt: {
+        pv: '0.2',
+        peer: 'peer-old',
+        alpn: 'nearbytes-lan/0.2',
+        caps: 'quic',
+      },
+    });
+
+    const debug = transport.getDebugState();
+    const compatible = debug.discoveredPeers.find((entry) => entry.fqdn === 'peer-remote.local');
+    const incompatible = debug.discoveredPeers.find((entry) => entry.fqdn === 'peer-old.local');
+
+    expect(compatible?.chosenAddress).toBe('192.168.1.25');
+    expect(compatible?.chosenAddressReason).toContain('private IPv4');
+    expect(compatible?.compatible).toBe(true);
+    expect(incompatible?.compatible).toBe(false);
+    expect(incompatible?.incompatibilityReason).toContain('Unsupported discovery protocol version');
+  });
 });
 
 function createCallbacks(options: {

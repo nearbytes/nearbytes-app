@@ -9,6 +9,7 @@ import { generate as generateSelfSigned } from 'selfsigned';
 import {
   LAN_DISCOVERY_SERVICE_PROTOCOL,
   LAN_DISCOVERY_SERVICE_TYPE,
+  LAN_DISCOVERY_PROTOCOL_VERSION,
   LAN_QUIC_ALPN,
   LAN_TRANSPORT_CAPABILITIES,
   buildLanDiscoveryTxtRecord,
@@ -17,6 +18,7 @@ import {
 import type {
   LanPeerTransport,
   LanPeerTransportCallbacks,
+  LanPeerTransportDebugState,
   LanTransportDiscoveredPeer,
   LanTransportRpcRequest,
 } from './lanPeerTransport.js';
@@ -46,6 +48,23 @@ interface PersistedLanQuicIdentity {
   readonly signingKeyHex: string;
 }
 
+interface DiscoveryDebugRecord {
+  readonly fqdn: string;
+  readonly peerId: string | null;
+  readonly label: string;
+  readonly port: number;
+  readonly addresses: string[];
+  readonly chosenAddress: string | null;
+  readonly chosenAddressReason: string | null;
+  readonly compatible: boolean;
+  readonly incompatibilityReason: string | null;
+  readonly protocolVersion: string | null;
+  readonly alpn: string | null;
+  readonly capabilities: string[];
+  readonly headObservationId: string | null;
+  readonly seenAt: number;
+}
+
 export class QuicDnsSdLanTransport implements LanPeerTransport {
   private callbacks: LanPeerTransportCallbacks | null = null;
   private bonjour: Bonjour | null = null;
@@ -55,7 +74,9 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
   private server: QUICServer | null = null;
   private clients = new Map<string, QUICClient>();
   private discoveryByFqdn = new Map<string, LanTransportDiscoveredPeer>();
+  private discoveryDebugByFqdn = new Map<string, DiscoveryDebugRecord>();
   private advertisementTimer: ReturnType<typeof setInterval> | null = null;
+  private publishedAdvertisement: LanPeerTransportDebugState['publishedAdvertisement'] = null;
 
   constructor(private readonly runtimeDir: string) {}
 
@@ -104,9 +125,11 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     this.browser.on('down', (service) => {
       const peer = this.discoveryByFqdn.get(service.fqdn);
       if (!peer) {
+        this.discoveryDebugByFqdn.delete(service.fqdn);
         return;
       }
       this.discoveryByFqdn.delete(service.fqdn);
+      this.discoveryDebugByFqdn.delete(service.fqdn);
       this.callbacks?.onPeerExpired?.(peer.peerId);
     });
     this.browser.on('txt-update', (service) => {
@@ -145,6 +168,8 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
     this.socket = null;
     this.callbacks = null;
     this.discoveryByFqdn.clear();
+    this.discoveryDebugByFqdn.clear();
+    this.publishedAdvertisement = null;
   }
 
   async refreshAdvertisement(): Promise<void> {
@@ -157,6 +182,13 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
       headObservationId: hello.observationHeadId,
       capabilities: hello.capabilities.length > 0 ? hello.capabilities : LAN_TRANSPORT_CAPABILITIES,
     });
+    this.publishedAdvertisement = {
+      peerId: hello.peerId,
+      label: hello.label,
+      port: hello.port,
+      observationHeadId: hello.observationHeadId,
+      capabilities: [...(hello.capabilities.length > 0 ? hello.capabilities : LAN_TRANSPORT_CAPABILITIES)],
+    };
     const nextConfig: ServiceConfig = {
       name: hello.label,
       type: LAN_DISCOVERY_SERVICE_TYPE,
@@ -171,6 +203,17 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
       this.publishedService.stop();
     }
     this.publishedService = this.bonjour.publish(nextConfig);
+  }
+
+  getDebugState(): LanPeerTransportDebugState {
+    return {
+      transport: 'quic-dns-sd',
+      listening: this.server !== null && this.socket !== null,
+      publishedAdvertisement: this.publishedAdvertisement,
+      discoveredPeers: Array.from(this.discoveryDebugByFqdn.values()).sort(
+        (left, right) => right.seenAt - left.seenAt || left.label.localeCompare(right.label)
+      ),
+    };
   }
 
   async requestJson<TResponse>(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<TResponse> {
@@ -204,7 +247,33 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
 
   private handleDiscoveryService(service: Service): void {
     const parsed = parseLanDiscoveryTxtRecord(service.txt ?? {});
-    if (!parsed || !this.callbacks || parsed.peerId === undefined) {
+    if (!this.callbacks) {
+      return;
+    }
+    const compatibility = describeDiscoveryCompatibility(parsed);
+    const selectedAddress = choosePeerAddress(service.addresses ?? []);
+    this.discoveryDebugByFqdn.set(service.fqdn, {
+      fqdn: service.fqdn,
+      peerId: parsed?.peerId ?? null,
+      label: service.name || (parsed?.peerId ? `Peer ${parsed.peerId.slice(0, 8)}` : 'Unknown peer'),
+      port: service.port,
+      addresses: normalizeDiscoveryAddresses(service.addresses ?? []),
+      chosenAddress: selectedAddress.address,
+      chosenAddressReason: selectedAddress.reason,
+      compatible: compatibility.compatible,
+      incompatibilityReason: compatibility.reason,
+      protocolVersion: parsed?.protocolVersion ?? null,
+      alpn: parsed?.alpn ?? null,
+      capabilities: parsed?.capabilities ?? [],
+      headObservationId: parsed?.headObservationId ?? null,
+      seenAt: Date.now(),
+    });
+    if (!parsed || !compatibility.compatible || parsed.peerId === undefined) {
+      const existing = this.discoveryByFqdn.get(service.fqdn);
+      if (existing) {
+        this.discoveryByFqdn.delete(service.fqdn);
+        this.callbacks?.onPeerExpired?.(existing.peerId);
+      }
       return;
     }
     const helloPeerId = parsed.peerId;
@@ -212,7 +281,7 @@ export class QuicDnsSdLanTransport implements LanPeerTransport {
       if (helloPeerId === selfHello.peerId) {
         return;
       }
-      const address = choosePeerAddress(service.addresses ?? []);
+      const address = selectedAddress.address;
       if (!address) {
         return;
       }
@@ -412,12 +481,126 @@ function sanitizeBonjourHostName(value: string): string {
   return normalized === '' ? 'nearbytes-peer' : normalized;
 }
 
-function choosePeerAddress(addresses: readonly string[]): string | null {
-  const normalized = addresses
+interface DiscoveryCompatibility {
+  readonly compatible: boolean;
+  readonly reason: string | null;
+}
+
+interface ChosenPeerAddress {
+  readonly address: string | null;
+  readonly reason: string | null;
+}
+
+function describeDiscoveryCompatibility(
+  parsed: ReturnType<typeof parseLanDiscoveryTxtRecord>
+): DiscoveryCompatibility {
+  if (!parsed) {
+    return {
+      compatible: false,
+      reason: 'TXT record is missing required Nearbytes discovery fields.',
+    };
+  }
+  if (parsed.protocolVersion !== LAN_DISCOVERY_PROTOCOL_VERSION) {
+    return {
+      compatible: false,
+      reason: `Unsupported discovery protocol version ${parsed.protocolVersion}. Expected ${LAN_DISCOVERY_PROTOCOL_VERSION}.`,
+    };
+  }
+  if (parsed.alpn !== LAN_QUIC_ALPN) {
+    return {
+      compatible: false,
+      reason: `Unsupported QUIC ALPN ${parsed.alpn}. Expected ${LAN_QUIC_ALPN}.`,
+    };
+  }
+  return {
+    compatible: true,
+    reason: null,
+  };
+}
+
+function choosePeerAddress(addresses: readonly string[]): ChosenPeerAddress {
+  const normalized = normalizeDiscoveryAddresses(addresses);
+  if (normalized.length === 0) {
+    return {
+      address: null,
+      reason: 'No non-loopback discovery addresses were advertised.',
+    };
+  }
+
+  const privateIpv4 = normalized.find(isPrivateIpv4Address);
+  if (privateIpv4) {
+    return {
+      address: privateIpv4,
+      reason: 'Selected RFC1918 private IPv4 address.',
+    };
+  }
+
+  const linkLocalIpv4 = normalized.find(isLinkLocalIpv4Address);
+  if (linkLocalIpv4) {
+    return {
+      address: linkLocalIpv4,
+      reason: 'Selected link-local IPv4 address.',
+    };
+  }
+
+  const uniqueLocalIpv6 = normalized.find(isUniqueLocalIpv6Address);
+  if (uniqueLocalIpv6) {
+    return {
+      address: uniqueLocalIpv6,
+      reason: 'Selected unique-local IPv6 address.',
+    };
+  }
+
+  const globalIpv4 = normalized.find(isIpv4Address);
+  if (globalIpv4) {
+    return {
+      address: globalIpv4,
+      reason: 'Fell back to advertised global IPv4 address because no LAN-scoped address was present.',
+    };
+  }
+
+  return {
+    address: normalized[0] ?? null,
+    reason: 'Fell back to the first advertised non-loopback address.',
+  };
+}
+
+function normalizeDiscoveryAddresses(addresses: readonly string[]): string[] {
+  return addresses
     .map((entry) => entry.trim())
-    .filter((entry) => entry !== '' && entry !== '127.0.0.1' && entry !== '::1');
-  const preferred = normalized.find((entry) => !entry.includes(':')) ?? normalized[0];
-  return preferred ?? null;
+    .map((entry) => (entry.toLowerCase().startsWith('::ffff:') ? entry.slice('::ffff:'.length) : entry))
+    .filter((entry) => entry !== '' && !isLoopbackAddress(entry));
+}
+
+function isLoopbackAddress(value: string): boolean {
+  return value === '127.0.0.1' || value === '::1' || value.toLowerCase() === 'localhost';
+}
+
+function isIpv4Address(value: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
+}
+
+function isPrivateIpv4Address(value: string): boolean {
+  if (!isIpv4Address(value)) {
+    return false;
+  }
+  const parts = value.split('.').map((entry) => Number.parseInt(entry, 10));
+  if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  return (
+    parts[0] === 10 ||
+    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+    (parts[0] === 192 && parts[1] === 168)
+  );
+}
+
+function isLinkLocalIpv4Address(value: string): boolean {
+  return isIpv4Address(value) && value.startsWith('169.254.');
+}
+
+function isUniqueLocalIpv6Address(value: string): boolean {
+  return /^[a-f0-9:]+$/i.test(value) && /^(fc|fd)/i.test(value);
 }
 
 function jsonFrame(value: unknown): LanRpcFrame {
