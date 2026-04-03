@@ -90,6 +90,14 @@ interface SignalDescriptionBundle {
   readonly candidates: LanTransportSignalCandidate[];
 }
 
+interface WebRtcChannelErrorEvent {
+  readonly error?: unknown;
+}
+
+interface WebRtcChannelMessageEvent {
+  readonly data: string | Buffer;
+}
+
 interface ConnectionContext {
   readonly peerId: string;
   peer: LanTransportDiscoveredPeer;
@@ -482,7 +490,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
           resolve();
         }
       },
-      rejectReady: (error) => {
+      rejectReady: (error: Error) => {
         if (!context.readyResolved) {
           reject(error);
         }
@@ -507,7 +515,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
         }
       }
     };
-    connection.onDataChannel.subscribe((channel) => {
+    connection.onDataChannel.subscribe((channel: RTCDataChannel) => {
       this.handleIncomingDataChannel(context, channel);
     });
 
@@ -538,7 +546,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
         context.controlChannel = null;
       }
     };
-    channel.onerror = (event) => {
+    channel.onerror = (event: WebRtcChannelErrorEvent) => {
       if (!context.readyResolved) {
         context.rejectReady(new Error(String(event.error ?? 'WebRTC data channel error')));
       }
@@ -847,7 +855,7 @@ async function gatherLocalDescription(
       clearTimeout(timeout);
       resolve();
     };
-    connection.onIceCandidate.subscribe((candidate) => {
+    connection.onIceCandidate.subscribe((candidate: RTCIceCandidate | undefined) => {
       if (settled) {
         return;
       }
@@ -860,7 +868,7 @@ async function gatherLocalDescription(
         candidates.push(normalized);
       }
     });
-    connection.iceGatheringStateChange.subscribe((state) => {
+    connection.iceGatheringStateChange.subscribe((state: string) => {
       if (state === 'complete') {
         maybeResolve();
       }
@@ -957,7 +965,7 @@ async function waitForChannelOpen(channel: RTCDataChannel, timeoutMs: number): P
         resolve();
       }
     };
-    channel.onerror = (event) => {
+    channel.onerror = (event: WebRtcChannelErrorEvent) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
@@ -1027,7 +1035,7 @@ async function receiveChannelFrame(
       });
     };
 
-    channel.onmessage = (event) => {
+    channel.onmessage = (event: WebRtcChannelMessageEvent) => {
       if (settled) {
         return;
       }
@@ -1072,7 +1080,7 @@ async function receiveChannelFrame(
         reject(error);
       }
     };
-    channel.onerror = (event) => {
+    channel.onerror = (event: WebRtcChannelErrorEvent) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
