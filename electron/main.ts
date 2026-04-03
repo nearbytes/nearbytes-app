@@ -153,6 +153,7 @@ if (!singleInstanceLock) {
 const desktopToken = generateDesktopApiToken();
 const devUiUrl = process.env.NEARBYTES_ELECTRON_DEV_SERVER_URL?.trim() ?? '';
 const devUiPort = parseDevUiPort(devUiUrl);
+const desktopApiPort = parsePositiveInt(process.env.NEARBYTES_DESKTOP_API_PORT, 3000);
 const isDev = devUiUrl.length > 0;
 const hasExternalDevUiServer = process.env.NEARBYTES_EXTERNAL_DEV_SERVER === '1';
 const enableRendererCpuProfile = process.env.NEARBYTES_RENDERER_PROFILE === '1';
@@ -291,8 +292,8 @@ async function startDesktop(): Promise<void> {
   let runtime: RuntimeHandle;
   try {
     runtime = await runtimeModule.startApiRuntime({
-      host: '127.0.0.1',
-      port: 0,
+      host: process.env.NEARBYTES_DESKTOP_API_HOST?.trim() || '0.0.0.0',
+      port: desktopApiPort,
       corsOrigin: isDev
         ? [`http://127.0.0.1:${devUiPort}`, `http://localhost:${devUiPort}`]
         : false,

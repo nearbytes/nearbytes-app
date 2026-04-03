@@ -13,6 +13,7 @@ const killOnly = killFirst && args.length === 1;
 const { debugValue, passthroughArgs } = extractDebugFlag(args.filter((arg) => arg !== '--kill'));
 const forwardedArgs = passthroughArgs;
 const devSessionPath = path.join(repoRoot, '.nearbytes-dev-run.json');
+const webSessionPath = path.join(repoRoot, '.nearbytes-web-dev.json');
 const desktopSessionPath =
   process.env.NEARBYTES_DESKTOP_SESSION_FILE && process.env.NEARBYTES_DESKTOP_SESSION_FILE.trim().length > 0
     ? path.resolve(process.env.NEARBYTES_DESKTOP_SESSION_FILE)
@@ -117,6 +118,7 @@ async function main() {
       killManagedProcessSync(uiChild.pid, 'SIGTERM');
     }
     clearDevSessionSync();
+    clearWebSessionSync();
   };
 
   process.on('SIGINT', () => {
@@ -288,6 +290,14 @@ async function killExistingDevProcesses() {
     pids.add(devSession.launcherPid);
   }
 
+  const webSession = await readJsonFile(webSessionPath);
+  if (isPositiveInteger(webSession?.backendPid)) {
+    pids.add(webSession.backendPid);
+  }
+  if (isPositiveInteger(webSession?.launcherPid)) {
+    pids.add(webSession.launcherPid);
+  }
+
   if (process.platform === 'win32') {
     for (const pid of await findWindowsCurrentRepoDevProcesses()) {
       pids.add(pid);
@@ -302,6 +312,7 @@ async function killExistingDevProcesses() {
   }
 
   await clearDevSession();
+  await clearWebSession();
   await clearDesktopSession();
 }
 
@@ -329,9 +340,29 @@ async function clearDesktopSession() {
   }
 }
 
+async function clearWebSession() {
+  try {
+    await fs.unlink(webSessionPath);
+  } catch (error) {
+    if (!isFileNotFound(error)) {
+      throw error;
+    }
+  }
+}
+
 function clearDevSessionSync() {
   try {
     fsSync.unlinkSync(devSessionPath);
+  } catch (error) {
+    if (!isFileNotFound(error)) {
+      throw error;
+    }
+  }
+}
+
+function clearWebSessionSync() {
+  try {
+    fsSync.unlinkSync(webSessionPath);
   } catch (error) {
     if (!isFileNotFound(error)) {
       throw error;
@@ -344,7 +375,9 @@ async function findWindowsCurrentRepoDevProcesses() {
 $repoPath = '${escapeForPowerShellSingleQuotedString(repoRoot)}'
 $patterns = @(
   (Join-Path $repoPath 'scripts\\run-dev.mjs'),
+  (Join-Path $repoPath 'scripts\\run-web-dev.mjs'),
   (Join-Path $repoPath 'scripts\\with-dev-megacmd.mjs'),
+  (Join-Path $repoPath 'dist\\server\\index.js'),
   (Join-Path $repoPath 'dist-electron\\electron\\main.js'),
   (Join-Path $repoPath 'node_modules\\vite\\bin\\vite.js'),
   (Join-Path $repoPath 'node_modules\\electron\\cli.js')
