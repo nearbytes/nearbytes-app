@@ -659,20 +659,21 @@ export class LocalNetworkSyncService {
     const stale = Date.now() - peer.lastSeenAt >= PEER_STALE_AFTER_MS;
     const status: LocalNetworkPeerSnapshot['status'] = peer.syncing
       ? 'syncing'
-      : peer.lastSyncError && !peer.lastSyncTransient
-        ? 'error'
-        : stale
-          ? 'stale'
+      : stale
+        ? 'stale'
+        : peer.lastSyncError && !peer.lastSyncTransient
+          ? 'error'
           : 'ready';
+    const offlineNotice = 'Peer is offline or quiet; Nearbytes will reconnect automatically.';
     const detail =
       status === 'syncing'
         ? 'Syncing with this peer now.'
+        : stale
+          ? offlineNotice
         : peer.lastSyncTransient
           ? peer.lastSyncNotice ?? 'Peer responded too slowly; Nearbytes will retry automatically.'
           : status === 'error'
           ? peer.lastSyncError ?? 'Last sync failed.'
-          : stale
-          ? 'Peer is offline or quiet; Nearbytes will reconnect automatically.'
           : peer.lastSyncAt && peer.volumeIds.length === 0 && !peer.lastRemoteHeadObservationId
             ? 'Peer is reachable. It is not advertising separate LAN volumes yet. If both apps use the same mounted storage, no transfer is needed.'
           : peer.lastSyncAt
@@ -694,8 +695,8 @@ export class LocalNetworkSyncService {
       lastHelloAt: peer.lastHelloAt,
       lastSyncAt: peer.lastSyncAt,
       lastSyncStartedAt: peer.lastSyncStartedAt,
-      lastSyncError: peer.lastSyncError,
-      lastSyncNotice: peer.lastSyncNotice,
+      lastSyncError: stale ? null : peer.lastSyncError,
+      lastSyncNotice: stale ? offlineNotice : peer.lastSyncNotice,
       lastImportedEvents: peer.lastImportedEvents,
       lastImportedBlocks: peer.lastImportedBlocks,
       remoteCursorObservationId: peer.remoteCursorObservationId,

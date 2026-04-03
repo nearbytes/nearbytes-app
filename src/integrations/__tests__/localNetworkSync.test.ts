@@ -207,6 +207,44 @@ describe('LocalNetworkSyncService', () => {
     await local.lanService.stop();
     await remote.lanService.stop();
   });
+
+  it('shows disappeared peers as stale instead of preserving an old hard transport error', async () => {
+    const secret = 'test:secret:lan-stale-peer';
+    const remote = await createLanHarness('nearbytes-lan-stale-remote-', secret, 'peer-b', 3701);
+    const local = await createLanHarness('nearbytes-lan-stale-local-', secret, 'peer-a', 3702);
+
+    const hello = await remote.lanService.buildHello();
+    seedKnownPeer(local.lanService, hello, remote.port);
+
+    const internal = local.lanService as unknown as {
+      peers: Map<string, {
+        lastSeenAt: number;
+        lastSyncError: string | null;
+        lastSyncTransient: boolean;
+        lastSyncNotice: string | null;
+      }>;
+      getPeersResponse: () => import('../localNetworkSync.js').LocalNetworkPeersResponse;
+    };
+    const peer = internal.peers.get(hello.peerId);
+    expect(peer).toBeTruthy();
+    if (!peer) {
+      throw new Error('Expected seeded peer');
+    }
+
+    peer.lastSeenAt = Date.now() - 30_000;
+    peer.lastSyncError = 'LAN QUIC hello failed: Create external arraybuffer failed';
+    peer.lastSyncTransient = false;
+    peer.lastSyncNotice = null;
+
+    const snapshot = local.lanService.getPeersResponse().peers.find((entry) => entry.peerId === hello.peerId);
+    expect(snapshot?.status).toBe('stale');
+    expect(snapshot?.lastSyncError).toBeNull();
+    expect(snapshot?.lastSyncNotice).toBe('Peer is offline or quiet; Nearbytes will reconnect automatically.');
+    expect(snapshot?.detail).toBe('Peer is offline or quiet; Nearbytes will reconnect automatically.');
+
+    await local.lanService.stop();
+    await remote.lanService.stop();
+  });
 });
 
 async function createLanHarness(prefix: string, secretValue: string, peerId: string, port: number): Promise<{
