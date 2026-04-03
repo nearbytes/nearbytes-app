@@ -34,6 +34,7 @@ const LAN_SIGNAL_PATH = '/lan/transport/signal';
 const LAN_SIGNAL_TIMEOUT_MS = 15_000;
 const LAN_CONNECTION_TIMEOUT_MS = 20_000;
 const LAN_RPC_TIMEOUT_MS = 30_000;
+const LAN_DISCONNECTED_GRACE_MS = 5_000;
 const LAN_CONTROL_MESSAGE_CHUNK_BYTES = 48 * 1024;
 const LAN_MULTICAST_GROUP = '239.255.40.41';
 const LAN_MULTICAST_PORT = 40441;
@@ -147,6 +148,7 @@ interface ConnectionContext {
   readonly rejectReady: (error: Error) => void;
   readyResolved: boolean;
   closed: boolean;
+  disconnectTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface TransportOptions {
@@ -519,15 +521,46 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       },
       readyResolved: false,
       closed: false,
+      disconnectTimer: null,
     };
 
     connection.onconnectionstatechange = () => {
       const state = connection.connectionState;
       if (state === 'connected') {
+        if (context.disconnectTimer) {
+          clearTimeout(context.disconnectTimer);
+          context.disconnectTimer = null;
+        }
         context.resolveReady();
         return;
       }
-      if (state === 'closed' || state === 'failed' || state === 'disconnected') {
+      if (state === 'disconnected') {
+        if (context.disconnectTimer) {
+          clearTimeout(context.disconnectTimer);
+        }
+        context.disconnectTimer = setTimeout(() => {
+          context.disconnectTimer = null;
+          if (context.closed || connection.connectionState !== 'disconnected') {
+            return;
+          }
+          context.closed = true;
+          if (!context.readyResolved) {
+            context.rejectReady(new Error(`WebRTC connection disconnected for ${peer.label}`));
+          }
+          if (this.connections.get(peer.peerId) === context) {
+            this.connections.delete(peer.peerId);
+          }
+        }, LAN_DISCONNECTED_GRACE_MS);
+        if (typeof context.disconnectTimer === 'object' && 'unref' in context.disconnectTimer) {
+          context.disconnectTimer.unref();
+        }
+        return;
+      }
+      if (state === 'closed' || state === 'failed') {
+        if (context.disconnectTimer) {
+          clearTimeout(context.disconnectTimer);
+          context.disconnectTimer = null;
+        }
         context.closed = true;
         if (!context.readyResolved) {
           context.rejectReady(new Error(`WebRTC connection ${state} for ${peer.label}`));
@@ -1259,6 +1292,10 @@ function safeCloseChannel(channel: RTCDataChannel): void {
 
 function destroyConnectionContext(context: ConnectionContext): void {
   context.closed = true;
+  if (context.disconnectTimer) {
+    clearTimeout(context.disconnectTimer);
+    context.disconnectTimer = null;
+  }
   if (!context.readyResolved) {
     context.resolveReady();
   }
