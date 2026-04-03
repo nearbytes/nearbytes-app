@@ -28,7 +28,7 @@ import type {
   LanTransportSignalPeer,
 } from './lanPeerTransport.js';
 
-const LAN_DISCOVERY_CAPABILITIES = ['webrtc', 'observation-log', 'inventory-recovery', 'push-hint'];
+const LAN_DISCOVERY_CAPABILITIES = ['webrtc', 'observation-log', 'inventory-recovery', 'push-hint', 'storage-command'];
 const LAN_CONTROL_CHANNEL_LABEL = 'nearbytes-control';
 const LAN_SIGNAL_PATH = '/lan/transport/signal';
 const LAN_SIGNAL_TIMEOUT_MS = 15_000;
@@ -426,7 +426,10 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     return frame.payload;
   }
 
-  async notify(peer: LanTransportDiscoveredPeer, request: Extract<LanTransportRpcRequest, { action: 'sync-hint' }>): Promise<void> {
+  async notify(
+    peer: LanTransportDiscoveredPeer,
+    request: Extract<LanTransportRpcRequest, { action: 'sync-hint' | 'storage-command' }>
+  ): Promise<void> {
     const frame = await this.sendRequest(peer, request);
     if (!frame.header.ok) {
       throw new Error(frame.header.error ?? 'LAN WebRTC sync hint failed');

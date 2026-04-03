@@ -80,6 +80,23 @@ export interface LanTransportVolumeInventory {
   readonly blockHashes: string[];
 }
 
+export type LanTransportStorageCommand =
+  | {
+      readonly type: 'want-event';
+      readonly fromPeerId: string;
+      readonly volumeId: string;
+      readonly eventHash: string;
+      readonly observationId?: string | null;
+      readonly prevObservationId?: string | null;
+    }
+  | {
+      readonly type: 'want-block';
+      readonly fromPeerId: string;
+      readonly blockHash: string;
+      readonly observationId?: string | null;
+      readonly prevObservationId?: string | null;
+    };
+
 export type LanTransportRpcRequest =
   | {
       readonly action: 'hello';
@@ -110,6 +127,10 @@ export type LanTransportRpcRequest =
       readonly action: 'sync-hint';
       readonly reason?: string;
       readonly volumeIds?: readonly string[];
+    }
+  | {
+      readonly action: 'storage-command';
+      readonly command: LanTransportStorageCommand;
     };
 
 export interface LanPeerTransportCallbacks {
@@ -167,5 +188,8 @@ export interface LanPeerTransport {
   handleSignal?(request: LanPeerTransportSignalRequest): Promise<LanPeerTransportSignalResponse>;
   requestJson<TResponse>(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<TResponse>;
   requestBytes(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<Uint8Array>;
-  notify(peer: LanTransportDiscoveredPeer, request: Extract<LanTransportRpcRequest, { action: 'sync-hint' }>): Promise<void>;
+  notify(
+    peer: LanTransportDiscoveredPeer,
+    request: Extract<LanTransportRpcRequest, { action: 'sync-hint' | 'storage-command' }>
+  ): Promise<void>;
 }

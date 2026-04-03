@@ -25,10 +25,12 @@ afterEach(async () => {
 });
 
 describe('WebRtcDnsSdLanTransport', () => {
-  it('exchanges json, bytes, and sync-hint messages over WebRTC data channels', async () => {
+  it('exchanges json, bytes, and storage-command messages over WebRTC data channels', async () => {
     const leftRuntimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-left-');
     const rightRuntimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-right-');
-    let syncHintReason: string | null = null;
+    let lastStorageCommand:
+      | Extract<LanTransportRpcRequest, { action: 'storage-command' }>['command']
+      | null = null;
     const responders = new Map<string, WebRtcDnsSdLanTransport>();
     const makeSignalFetcher = (owner: string): typeof fetch => {
       return async (input, init) => {
@@ -112,8 +114,8 @@ describe('WebRtcDnsSdLanTransport', () => {
         if (request.action === 'block') {
           return new Uint8Array([9, 8, 7]);
         }
-        if (request.action === 'sync-hint') {
-          syncHintReason = request.reason ?? null;
+        if (request.action === 'storage-command') {
+          lastStorageCommand = request.command;
           return { ok: true, acceptedAt: Date.now() };
         }
         return { ok: true };
@@ -150,10 +152,18 @@ describe('WebRtcDnsSdLanTransport', () => {
       expect(observations.observations[0]?.hash).toBe('abc');
 
       await leftTransport.notify(remotePeer, {
-        action: 'sync-hint',
-        reason: 'test-sync',
+        action: 'storage-command',
+        command: {
+          type: 'want-block',
+          fromPeerId: 'peer-left',
+          blockHash: 'abc',
+        },
       });
-      expect(syncHintReason).toBe('test-sync');
+      expect(lastStorageCommand).toEqual({
+        type: 'want-block',
+        fromPeerId: 'peer-left',
+        blockHash: 'abc',
+      });
     } finally {
       await leftTransport.stop();
       await rightTransport.stop();

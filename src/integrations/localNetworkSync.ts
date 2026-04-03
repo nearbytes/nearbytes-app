@@ -4,6 +4,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import { MultiRootStorageBackend, type VolumeSyncInventory } from '../storage/multiRoot.js';
 import { normalizeHash, normalizeVolumeId, validateBlockBytes, validateEventBytes } from '../storage/integrity.js';
+import { deserializeEvent } from '../storage/serialization.js';
 import { getDefaultRuntimeHomeDir, resolveStorageHomeDir } from '../storagePath.js';
 import { PersistentProviderQueue, type ProviderQueueObservationPage } from './providerQueue.js';
 import type { ProviderQueueObservation } from './types.js';
@@ -12,6 +13,7 @@ import type {
   LanPeerTransportSignalRequest,
   LanPeerTransportSignalResponse,
   LanTransportDiscoveredPeer,
+  LanTransportStorageCommand,
 } from './lanPeerTransport.js';
 import { WebRtcDnsSdLanTransport } from './webrtcDnsSdLanTransport.js';
 
@@ -170,7 +172,7 @@ export class LocalNetworkSyncService {
     await this.loadIdentity();
     await this.providerQueue.start();
     this.providerQueueObservationUnsubscribe = this.providerQueue.onObservation((observation) => {
-      this.queueImmediateSyncHints('storage-write', observation.volumeId ? [observation.volumeId] : undefined);
+      void this.dispatchImmediateStorageCommand(observation);
     });
     await this.peerTransport.start({
       getAdvertisement: async () => this.buildHello(),
@@ -214,7 +216,7 @@ export class LocalNetworkSyncService {
       peerId: this.peerId,
       label: this.label,
       port: this.httpPort ?? 0,
-      capabilities: ['webrtc', 'observation-log', 'inventory', 'pull-sync', 'push-hint'],
+      capabilities: ['webrtc', 'observation-log', 'inventory', 'pull-sync', 'push-hint', 'storage-command'],
       volumeIds: [],
       observationHeadId: this.providerQueue.getHeadObservationId(),
       generatedAt: Date.now(),
@@ -288,16 +290,6 @@ export class LocalNetworkSyncService {
     void this.syncActivePeers(true, body?.volumeIds);
   }
 
-  private queueImmediateSyncHints(reason: string, volumeIds?: readonly string[]): void {
-    const now = Date.now();
-    for (const peer of this.peers.values()) {
-      if (now - peer.lastSeenAt >= PEER_STALE_AFTER_MS) {
-        continue;
-      }
-      this.queuePeerSyncHint(peer.peerId, reason, volumeIds);
-    }
-  }
-
   private queuePeerSyncHint(peerId: string, reason: string, volumeIds?: readonly string[]): void {
     const existing = this.pendingHintTimers.get(peerId);
     if (existing) {
@@ -337,6 +329,28 @@ export class LocalNetworkSyncService {
     } catch {
       // Retry will happen through normal discovery/sync cadence.
     }
+  }
+
+  private async dispatchImmediateStorageCommand(observation: ProviderQueueObservation): Promise<void> {
+    const now = Date.now();
+    const activePeers = Array.from(this.peers.values()).filter((peer) => now - peer.lastSeenAt < PEER_STALE_AFTER_MS);
+    if (activePeers.length === 0) {
+      return;
+    }
+    const request = {
+      action: 'storage-command' as const,
+      command: this.toStorageCommand(observation),
+    };
+    const fallbackVolumes = observation.volumeId ? [observation.volumeId] : undefined;
+    await Promise.all(
+      activePeers.map(async (peer) => {
+        try {
+          await this.peerTransport.notify(this.toTransportPeer(peer), request);
+        } catch {
+          this.queuePeerSyncHint(peer.peerId, 'storage-command-fallback', fallbackVolumes);
+        }
+      })
+    );
   }
 
   async handleTransportSignal(request: LanPeerTransportSignalRequest): Promise<LanPeerTransportSignalResponse> {
@@ -387,6 +401,11 @@ export class LocalNetworkSyncService {
         return {
           kind: 'json',
           value: { ok: true, acceptedAt: Date.now() },
+        };
+      case 'storage-command':
+        return {
+          kind: 'json',
+          value: await this.handleStorageCommand(request.command),
         };
       default:
         throw new Error(`Unsupported LAN transport request`);
@@ -720,6 +739,97 @@ export class LocalNetworkSyncService {
     return { importedEvents: 0, importedBlocks: 1, changedVolumeIds: new Set() };
   }
 
+  private async handleStorageCommand(command: LanTransportStorageCommand): Promise<{
+    readonly ok: true;
+    readonly action: 'skipped' | 'imported';
+    readonly importedEvents: number;
+    readonly importedBlocks: number;
+  }> {
+    const peer = this.peers.get(command.fromPeerId);
+    if (!peer) {
+      return {
+        ok: true,
+        action: 'skipped',
+        importedEvents: 0,
+        importedBlocks: 0,
+      };
+    }
+    if (command.type === 'want-event') {
+      const imported = await this.importEventFromStorageCommand(peer, command.volumeId, command.eventHash);
+      return {
+        ok: true,
+        action: imported.importedEvents > 0 || imported.importedBlocks > 0 ? 'imported' : 'skipped',
+        ...imported,
+      };
+    }
+    const imported = await this.importBlockFromStorageCommand(peer, command.blockHash);
+    return {
+      ok: true,
+      action: imported.importedBlocks > 0 ? 'imported' : 'skipped',
+      importedEvents: 0,
+      importedBlocks: imported.importedBlocks,
+    };
+  }
+
+  private async importEventFromStorageCommand(
+    peer: LocalPeerState,
+    volumeId: string,
+    eventHash: string
+  ): Promise<{ importedEvents: number; importedBlocks: number }> {
+    const normalizedVolumeId = normalizeVolumeId(volumeId);
+    const normalizedEventHash = normalizeHash(eventHash);
+    if (!normalizedVolumeId || !normalizedEventHash) {
+      return { importedEvents: 0, importedBlocks: 0 };
+    }
+    const relativePath = `channels/${normalizedVolumeId}/${normalizedEventHash}.bin`;
+    if (await this.storage.existsForChannel(relativePath, normalizedVolumeId)) {
+      return { importedEvents: 0, importedBlocks: 0 };
+    }
+    const bytes = await this.requestEventBytesOrNull(peer, normalizedVolumeId, normalizedEventHash);
+    if (!bytes) {
+      return { importedEvents: 0, importedBlocks: 0 };
+    }
+    const validation = await validateEventBytes(normalizedVolumeId, normalizedEventHash, bytes);
+    if (!validation.ok) {
+      throw new Error(validation.detail ?? `Invalid event ${normalizedEventHash} from ${peer.label}`);
+    }
+    await this.storage.writeFileForChannel(relativePath, bytes, normalizedVolumeId);
+    let importedBlocks = 0;
+    const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(bytes)) as import('../types/events.js').SerializedEvent);
+    for (const blockHash of parsed.envelope.blockRefs) {
+      importedBlocks += await this.importBlockFromStorageCommand(peer, blockHash).then((result) => result.importedBlocks);
+    }
+    this.storage.scheduleReconcileConfiguredVolumes();
+    return {
+      importedEvents: 1,
+      importedBlocks,
+    };
+  }
+
+  private async importBlockFromStorageCommand(
+    peer: LocalPeerState,
+    blockHash: string
+  ): Promise<{ importedBlocks: number }> {
+    const normalizedBlockHash = normalizeHash(blockHash);
+    if (!normalizedBlockHash) {
+      return { importedBlocks: 0 };
+    }
+    const relativePath = `blocks/${normalizedBlockHash}.bin`;
+    if (await this.storage.exists(relativePath)) {
+      return { importedBlocks: 0 };
+    }
+    const bytes = await this.requestBlockBytesOrNull(peer, normalizedBlockHash);
+    if (!bytes) {
+      return { importedBlocks: 0 };
+    }
+    const validation = await validateBlockBytes(normalizedBlockHash, bytes);
+    if (!validation.ok) {
+      throw new Error(validation.detail ?? `Invalid block ${normalizedBlockHash} from ${peer.label}`);
+    }
+    await this.storage.writeFile(relativePath, bytes);
+    return { importedBlocks: 1 };
+  }
+
   private async requestEventBytesOrNull(peer: LocalPeerState, volumeId: string, eventHash: string): Promise<Uint8Array | null> {
     try {
       return await this.peerTransport.requestBytes(this.toTransportPeer(peer), {
@@ -757,6 +867,26 @@ export class LocalNetworkSyncService {
       port: peer.port,
       capabilities: [...peer.capabilities],
       headObservationId: peer.lastRemoteHeadObservationId,
+    };
+  }
+
+  private toStorageCommand(observation: ProviderQueueObservation): LanTransportStorageCommand {
+    if (observation.kind === 'event') {
+      return {
+        type: 'want-event',
+        fromPeerId: this.peerId,
+        volumeId: observation.volumeId ?? '',
+        eventHash: observation.hash,
+        observationId: observation.observationId,
+        prevObservationId: observation.prevObservationId,
+      };
+    }
+    return {
+      type: 'want-block',
+      fromPeerId: this.peerId,
+      blockHash: observation.hash,
+      observationId: observation.observationId,
+      prevObservationId: observation.prevObservationId,
     };
   }
 

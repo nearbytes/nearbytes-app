@@ -3,7 +3,7 @@ export const LAN_DISCOVERY_SERVICE_PROTOCOL = 'udp' as const;
 export const LAN_DISCOVERY_PROTOCOL_VERSION = '0.3';
 export const LAN_TRANSPORT_PROFILE_ID = 'nearbytes-lan/0.3';
 export const LAN_TXT_MAX_RECOMMENDED_BYTES = 200;
-export const LAN_TRANSPORT_CAPABILITIES = ['webrtc', 'observation-log', 'inventory-recovery', 'push-hint'] as const;
+export const LAN_TRANSPORT_CAPABILITIES = ['webrtc', 'observation-log', 'inventory-recovery', 'push-hint', 'storage-command'] as const;
 
 export interface LanDiscoveryTxtRecord {
   readonly pv: typeof LAN_DISCOVERY_PROTOCOL_VERSION;

@@ -283,25 +283,37 @@ describe('LocalNetworkSyncService', () => {
     await remote.lanService.stop();
   });
 
-  it('pushes an immediate sync hint after a new local observation instead of waiting for the long sync interval', async () => {
-    const secret = 'test:secret:lan-immediate-hint';
-    const local = await createLanHarness('nearbytes-lan-immediate-hint-local-', secret, 'peer-a', 3901);
-    const remote = await createLanHarness('nearbytes-lan-immediate-hint-remote-', secret, 'peer-b', 3902);
+  it('pushes an immediate storage command after a new local observation and the receiver imports it without a full sync loop', async () => {
+    const secret = 'test:secret:lan-immediate-storage-command';
+    const local = await createLanHarness('nearbytes-lan-immediate-storage-command-local-', secret, 'peer-a', 3901);
+    const remote = await createLanHarness('nearbytes-lan-immediate-storage-command-remote-', secret, 'peer-b', 3902);
     connectLanPeers(local.transport, remote.lanService, remote.port);
 
     const remoteHello = await remote.lanService.buildHello();
+    const localHello = await local.lanService.buildHello();
     seedKnownPeer(local.lanService, remoteHello, remote.port);
+    seedKnownPeer(remote.lanService, localHello, local.port);
+    connectLanPeers(remote.transport, local.lanService, local.port);
     await local.lanService.syncPeer(remoteHello.peerId);
 
-    const hintStart = Date.now();
+    const dispatchStart = Date.now();
     await local.fileService.addFile(secret, 'fast.txt', Buffer.from('delta'), 'text/plain');
-    const hinted = await local.transport.waitForNotifyCount(remoteHello.peerId, 1, 2_000);
-    expect(hinted).toBe(true);
-    expect(Date.now() - hintStart).toBeLessThan(2_000);
+    const notified = await local.transport.waitForNotifyCount(remoteHello.peerId, 1, 2_000);
+    expect(notified).toBe(true);
+    expect(Date.now() - dispatchStart).toBeLessThan(2_000);
     const request = local.transport.getLastNotifyRequest(remoteHello.peerId);
     const hintedHello = await local.lanService.buildHello();
-    expect(request?.action).toBe('sync-hint');
-    expect(request?.volumeIds).toContain(hintedHello.volumeIds[0]);
+    expect(request?.action).toBe('storage-command');
+    if (!request || request.action !== 'storage-command') {
+      throw new Error('Expected a storage-command request');
+    }
+    expect(request.command.fromPeerId).toBe('peer-a');
+
+    const imported = await waitForFile(remote.fileService, secret, 'fast.txt');
+    expect(imported).toBe(true);
+    expect(hintedHello.volumeIds).toContain(
+      request.command.type === 'want-event' ? request.command.volumeId : hintedHello.volumeIds[0]
+    );
 
     await local.lanService.stop();
     await remote.lanService.stop();
@@ -412,7 +424,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
   private callbacks: LanPeerTransportCallbacks | null = null;
   private remotes = new Map<string, { service: LocalNetworkSyncService; port: number; behavior: RemoteBehavior }>();
   private notifyCounts = new Map<string, number>();
-  private lastNotifyRequests = new Map<string, Extract<LanTransportRpcRequest, { action: 'sync-hint' }>>();
+  private lastNotifyRequests = new Map<string, Extract<LanTransportRpcRequest, { action: 'sync-hint' | 'storage-command' }>>();
 
   async start(callbacks: LanPeerTransportCallbacks): Promise<void> {
     this.callbacks = callbacks;
@@ -465,7 +477,10 @@ class FakeLanPeerTransport implements LanPeerTransport {
     return response.value;
   }
 
-  async notify(peer: LanTransportDiscoveredPeer, request: Extract<LanTransportRpcRequest, { action: 'sync-hint' }>): Promise<void> {
+  async notify(
+    peer: LanTransportDiscoveredPeer,
+    request: Extract<LanTransportRpcRequest, { action: 'sync-hint' | 'storage-command' }>
+  ): Promise<void> {
     this.notifyCounts.set(peer.peerId, (this.notifyCounts.get(peer.peerId) ?? 0) + 1);
     this.lastNotifyRequests.set(peer.peerId, request);
     await this.dispatch(peer, request);
@@ -482,7 +497,7 @@ class FakeLanPeerTransport implements LanPeerTransport {
     return (this.notifyCounts.get(peerId) ?? 0) >= minimum;
   }
 
-  getLastNotifyRequest(peerId: string): Extract<LanTransportRpcRequest, { action: 'sync-hint' }> | null {
+  getLastNotifyRequest(peerId: string): Extract<LanTransportRpcRequest, { action: 'sync-hint' | 'storage-command' }> | null {
     return this.lastNotifyRequests.get(peerId) ?? null;
   }
 
@@ -550,6 +565,10 @@ class FakeLanPeerTransport implements LanPeerTransport {
           kind: 'json',
           value: { ok: true, acceptedAt: Date.now() },
         };
+      case 'storage-command':
+        return await (remote.service as unknown as {
+          handleTransportRequest: (request: LanTransportRpcRequest) => Promise<LanPeerTransportResponse>;
+        }).handleTransportRequest(request);
       default:
         throw new Error(`Unsupported fake LAN request`);
     }
@@ -571,6 +590,21 @@ async function waitForHelloVolumes(service: LocalNetworkSyncService): Promise<Aw
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   return await service.buildHello();
+}
+
+async function waitForFile(
+  fileService: ReturnType<typeof createFileService>,
+  secret: string,
+  filename: string
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const files = await fileService.listFiles(secret);
+    if (files.some((entry) => entry.filename === filename)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return (await fileService.listFiles(secret)).some((entry) => entry.filename === filename);
 }
 
 function createConfig(mainRoot: string, volumeId: string): RootsConfig {
