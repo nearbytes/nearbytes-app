@@ -152,6 +152,7 @@ if (!singleInstanceLock) {
 
 const desktopToken = generateDesktopApiToken();
 const devUiUrl = process.env.NEARBYTES_ELECTRON_DEV_SERVER_URL?.trim() ?? '';
+const devUiPort = parseDevUiPort(devUiUrl);
 const isDev = devUiUrl.length > 0;
 const hasExternalDevUiServer = process.env.NEARBYTES_EXTERNAL_DEV_SERVER === '1';
 const enableRendererCpuProfile = process.env.NEARBYTES_RENDERER_PROFILE === '1';
@@ -264,6 +265,21 @@ function isIgnorableConsoleWriteError(error: unknown): boolean {
   return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
 }
 
+function parseDevUiPort(url: string): number {
+  if (url.length > 0) {
+    try {
+      const parsed = new URL(url);
+      const port = Number.parseInt(parsed.port, 10);
+      if (Number.isInteger(port) && port > 0) {
+        return port;
+      }
+    } catch {
+      // Fall back to the default dev port when the URL is malformed.
+    }
+  }
+  return 5177;
+}
+
 async function startDesktop(): Promise<void> {
   app.setName('Nearbytes');
   applyDesktopIcon();
@@ -278,7 +294,7 @@ async function startDesktop(): Promise<void> {
       host: '127.0.0.1',
       port: 0,
       corsOrigin: isDev
-        ? ['http://127.0.0.1:5173', 'http://localhost:5173']
+        ? [`http://127.0.0.1:${devUiPort}`, `http://localhost:${devUiPort}`]
         : false,
       desktopApiToken: desktopToken,
       uiDistPath: isDev ? undefined : resolveUiDistPath(),

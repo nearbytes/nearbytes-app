@@ -17,7 +17,8 @@ const desktopSessionPath =
   process.env.NEARBYTES_DESKTOP_SESSION_FILE && process.env.NEARBYTES_DESKTOP_SESSION_FILE.trim().length > 0
     ? path.resolve(process.env.NEARBYTES_DESKTOP_SESSION_FILE)
     : path.join(os.homedir(), '.nearbytes', 'desktop-session.json');
-const devUiUrl = 'http://127.0.0.1:5173';
+const devUiPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
+const devUiUrl = `http://127.0.0.1:${devUiPort}`;
 
 await main();
 
@@ -41,10 +42,23 @@ async function main() {
   let uiChild = null;
   console.log(`[dev-run] starting renderer dev server on ${devUiUrl}`);
   uiChild = spawn(
-    ...buildSpawnInvocation('yarn', ['--cwd', 'ui', 'dev:raw', '--host', '127.0.0.1', '--port', '5173', '--strictPort']),
+    ...buildSpawnInvocation('yarn', [
+      '--cwd',
+      'ui',
+      'dev:raw',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      String(devUiPort),
+      '--strictPort',
+    ]),
     {
       cwd: repoRoot,
-      env: childEnv,
+      env: {
+        ...childEnv,
+        NEARBYTES_WEB_DEV_PORT: String(devUiPort),
+        VITE_NEARBYTES_WEB_DEV_PORT: String(devUiPort),
+      },
       stdio: 'inherit',
       shell: false,
     }
@@ -173,6 +187,14 @@ function buildPackageManagerInvocation(command, args) {
 function isNodeScriptPath(filePath) {
   const extension = path.extname(filePath).toLowerCase();
   return extension === '.js' || extension === '.cjs' || extension === '.mjs';
+}
+
+function parsePort(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 async function waitForHttpEndpoint(url, timeoutMs, child, label) {

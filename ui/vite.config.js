@@ -4,6 +4,8 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
 import { nearbytesDevApiProxy } from './devApiProxy.js';
 
+const devPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
+
 export default defineConfig({
   plugins: [
     nearbytesDevApiProxy(),
@@ -56,9 +58,19 @@ export default defineConfig({
     }),
   ],
   server: {
-    port: 5173,
+    host: '127.0.0.1',
+    port: devPort,
+    strictPort: true,
     fs: {
       allow: [path.resolve(process.cwd(), '..')],
     },
   },
 });
+
+function parsePort(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}

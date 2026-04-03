@@ -1082,7 +1082,7 @@ function useSameOriginDesktopProxy(runtimeConfig: DesktopRuntimeConfig): boolean
   return (
     (protocol === 'http:' || protocol === 'https:') &&
     (hostname === '127.0.0.1' || hostname === 'localhost') &&
-    port === '5173'
+    port === getConfiguredDesktopDevPort()
   );
 }
 
@@ -1091,6 +1091,11 @@ function getRequestBaseUrl(runtimeConfig: DesktopRuntimeConfig): string {
     return '';
   }
   return runtimeConfig.apiBaseUrl;
+}
+
+function getConfiguredDesktopDevPort(): string {
+  const configured = import.meta.env?.VITE_NEARBYTES_WEB_DEV_PORT;
+  return typeof configured === 'string' && configured.trim().length > 0 ? configured.trim() : '5177';
 }
 
 async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {

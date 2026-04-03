@@ -9,6 +9,9 @@ const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '
 const uiDir = path.join(repoRoot, 'ui');
 const sessionPath = path.join(repoRoot, '.nearbytes-web-dev.json');
 const apiUrl = 'http://127.0.0.1:3000/config/roots';
+const devUiPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
+const devUiHost = '127.0.0.1';
+const devUiUrl = `http://${devUiHost}:${devUiPort}`;
 
 await main();
 
@@ -18,7 +21,10 @@ async function main() {
 
   const backend = spawn(process.execPath, ['dist/server/index.js'], {
     cwd: repoRoot,
-    env: process.env,
+    env: {
+      ...process.env,
+      NEARBYTES_CORS_ORIGIN: buildCorsOrigin(process.env.NEARBYTES_CORS_ORIGIN, devUiPort),
+    },
     stdio: 'inherit',
     shell: false,
   });
@@ -32,7 +38,11 @@ async function main() {
 
   const ui = spawn(...buildYarnInvocation(['dev:raw']), {
     cwd: uiDir,
-    env: process.env,
+    env: {
+      ...process.env,
+      NEARBYTES_WEB_DEV_PORT: String(devUiPort),
+      VITE_NEARBYTES_WEB_DEV_PORT: String(devUiPort),
+    },
     stdio: 'inherit',
     shell: false,
   });
@@ -99,6 +109,26 @@ function buildYarnInvocation(args) {
     return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', commandLine]];
   }
   return ['yarn', args];
+}
+
+function parsePort(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function buildCorsOrigin(currentValue, port) {
+  const origins = new Set(
+    (currentValue ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+  );
+  origins.add(`http://127.0.0.1:${port}`);
+  origins.add(`http://localhost:${port}`);
+  return Array.from(origins).join(',');
 }
 
 function quoteForWindowsCmd(value) {
