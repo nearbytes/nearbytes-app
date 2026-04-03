@@ -334,6 +334,107 @@ describe('WebRtcDnsSdLanTransport', () => {
       value: { ok: true },
     });
   });
+
+  it('retries once with a fresh connection after a stale control-channel timeout', async () => {
+    const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-retry-');
+    const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });
+    const peer: LanTransportDiscoveredPeer = {
+      peerId: 'peer-stale',
+      label: 'peer-stale',
+      address: '127.0.0.1',
+      port: 4302,
+      capabilities: ['webrtc', 'observation-log'],
+      headObservationId: null,
+    };
+    const internal = transport as unknown as {
+      sendRequestWithRetry: (
+        peer: LanTransportDiscoveredPeer,
+        request: LanTransportRpcRequest,
+        retried: boolean
+      ) => Promise<unknown>;
+      ensurePeerReady: (peer: LanTransportDiscoveredPeer) => Promise<void>;
+      connections: Map<string, unknown>;
+      sendControlRequest: () => Promise<unknown>;
+      resetPeerConnection: (peerId: string) => boolean;
+    };
+
+    let ensureCalls = 0;
+    let sendCalls = 0;
+    let resetCalls = 0;
+    internal.ensurePeerReady = async () => {
+      ensureCalls += 1;
+    };
+    internal.connections.set(peer.peerId, { closed: false });
+    internal.sendControlRequest = async () => {
+      sendCalls += 1;
+      if (sendCalls === 1) {
+        throw new Error('Timed out waiting for WebRTC control response for hello');
+      }
+      return {
+        header: { kind: 'json', ok: true, size: 2, mime: 'application/json' },
+        payload: new TextEncoder().encode('{}'),
+      };
+    };
+    internal.resetPeerConnection = (_peerId: string) => {
+      resetCalls += 1;
+      internal.connections.set(peer.peerId, { closed: false });
+      return true;
+    };
+
+    const frame = await internal.sendRequestWithRetry(peer, { action: 'hello' }, false) as {
+      header: { ok: boolean };
+    };
+    expect(frame.header.ok).toBe(true);
+    expect(ensureCalls).toBe(2);
+    expect(sendCalls).toBe(2);
+    expect(resetCalls).toBe(1);
+  });
+
+  it('drops stale peer state and forces a fresh initiator handshake on connect signals', async () => {
+    const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-connect-reset-');
+    const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });
+    const internal = transport as unknown as {
+      callbacks: LanPeerTransportCallbacks | null;
+      selfSignalPeer: { peerId: string } | null;
+      handleSignal: (request: LanPeerTransportSignalRequest) => Promise<unknown>;
+      ensurePeerReady: (peer: LanTransportDiscoveredPeer) => Promise<void>;
+      resetPeerConnection: (peerId: string) => boolean;
+    };
+    internal.callbacks = createCallbacks({
+      peerId: 'desktop-peer',
+      label: 'desktop-peer',
+      port: 4301,
+      headObservationId: null,
+      capabilities: ['webrtc', 'observation-log'],
+      handleRequest: async () => ({ ok: true }),
+    });
+    internal.selfSignalPeer = { peerId: 'desktop-peer' };
+
+    let ensureCalls = 0;
+    let resetCalls = 0;
+    internal.ensurePeerReady = async () => {
+      ensureCalls += 1;
+    };
+    internal.resetPeerConnection = (_peerId: string) => {
+      resetCalls += 1;
+      return true;
+    };
+
+    await internal.handleSignal({
+      kind: 'connect',
+      from: {
+        peerId: 'pc-peer',
+        label: 'pc-peer',
+        address: '192.168.1.25',
+        port: 4302,
+        capabilities: ['webrtc'],
+        headObservationId: null,
+      },
+    });
+
+    expect(ensureCalls).toBe(1);
+    expect(resetCalls).toBe(1);
+  });
 });
 
 function createCallbacks(options: {

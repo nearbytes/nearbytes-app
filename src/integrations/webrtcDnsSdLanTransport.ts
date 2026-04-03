@@ -374,6 +374,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
 
     if (request.kind === 'connect') {
       if (this.shouldInitiate(peer.peerId)) {
+        this.resetPeerConnection(peer.peerId);
         void this.ensurePeerReady(peer).catch(() => undefined);
       }
       return {
@@ -382,6 +383,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       };
     }
 
+    this.resetPeerConnection(peer.peerId);
     const context = this.createConnectionContext(peer, false);
     await context.connection.setRemoteDescription({
       sdp: request.sdp,
@@ -476,6 +478,18 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
   }
 
   private async sendRequest(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<ChannelFrame> {
+    try {
+      return await this.sendRequestWithRetry(peer, request, false);
+    } catch (error) {
+      throw wrapLanWebRtcError(peer, request, error);
+    }
+  }
+
+  private async sendRequestWithRetry(
+    peer: LanTransportDiscoveredPeer,
+    request: LanTransportRpcRequest,
+    retried: boolean
+  ): Promise<ChannelFrame> {
     await this.ensurePeerReady(peer);
     const context = this.connections.get(peer.peerId);
     if (!context || context.closed) {
@@ -484,7 +498,11 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     try {
       return await this.sendControlRequest(context, request);
     } catch (error) {
-      throw wrapLanWebRtcError(peer, request, error);
+      if (!retried && shouldRetryAfterChannelFailure(error)) {
+        this.resetPeerConnection(peer.peerId);
+        return await this.sendRequestWithRetry(peer, request, true);
+      }
+      throw error;
     }
   }
 
@@ -903,10 +921,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       this.discoveryDebugByFqdn.delete(fqdn);
       expired = true;
     }
-    const context = this.connections.get(peerId);
-    if (context) {
-      destroyConnectionContext(context);
-      this.connections.delete(peerId);
+    if (this.resetPeerConnection(peerId)) {
       expired = true;
     }
     this.pendingConnections.delete(peerId);
@@ -936,7 +951,6 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       seenAt: Date.now(),
     });
     this.callbacks?.onPeerDiscovered(peer);
-    void this.ensurePeerReady(peer).catch(() => undefined);
   }
 
   private handleDiscoveryService(service: Service): void {
@@ -1083,6 +1097,16 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       capabilities: [...signalPeer.capabilities],
       headObservationId: signalPeer.headObservationId,
     };
+  }
+
+  private resetPeerConnection(peerId: string): boolean {
+    const context = this.connections.get(peerId);
+    if (!context) {
+      return false;
+    }
+    destroyConnectionContext(context);
+    this.connections.delete(peerId);
+    return true;
   }
 }
 
@@ -1407,6 +1431,15 @@ function isSignalPathUnavailableError(error: unknown): boolean {
     return false;
   }
   return /fetch failed|networkerror|econnrefused|enotfound|ehostunreach|enetunreach|timed out|abort/i.test(error.message);
+}
+
+function shouldRetryAfterChannelFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /timed out waiting for webrtc control response|webrtc control channel closed|webrtc control channel is not open/i.test(
+    error.message.toLowerCase()
+  );
 }
 
 function describeDiscoveryCompatibility(
