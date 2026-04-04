@@ -1067,13 +1067,6 @@ export function hasDesktopRuntimeLogsBridge(): boolean {
   return Boolean(bridge && typeof bridge.readRuntimeLogs === 'function');
 }
 
-function isElectronRenderer(): boolean {
-  if (typeof navigator === 'undefined') {
-    return false;
-  }
-  return /\bElectron\//.test(navigator.userAgent);
-}
-
 function useSameOriginDesktopProxy(runtimeConfig: DesktopRuntimeConfig): boolean {
   if (!runtimeConfig.isDesktop || typeof window === 'undefined') {
     return false;
@@ -1106,9 +1099,6 @@ async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {
   const nextPromise = (async () => {
     const bridge = getDesktopBridge();
     if (!bridge) {
-      if (isElectronRenderer()) {
-        throw new Error('Nearbytes desktop bridge is unavailable in Electron renderer.');
-      }
       return WEB_RUNTIME_CONFIG;
     }
 
