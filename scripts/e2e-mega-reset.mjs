@@ -42,7 +42,10 @@ const {
   wipeMegaCloudDriveContentsForE2e,
 } = await import('../dist/integrations/mega.js');
 
-const RESET_TIMEOUT_MS = Number.parseInt(process.env.NEARBYTES_E2E_MEGA_RESET_TIMEOUT_MS ?? '0', 10);
+const RESET_TIMEOUT_MS = Number.parseInt(
+  process.env.NEARBYTES_E2E_MEGA_RESET_TIMEOUT_MS ?? String(20 * 60 * 1000),
+  10
+);
 
 function startOptionalTimeout(controller) {
   if (!Number.isFinite(RESET_TIMEOUT_MS) || RESET_TIMEOUT_MS <= 0) {

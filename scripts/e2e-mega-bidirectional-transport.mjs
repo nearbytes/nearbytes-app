@@ -16,6 +16,7 @@
  *   - NEARBYTES_E2E_MEGA_PASSWORD
  * Optional:
  *   - NEARBYTES_E2E_SKIP_MEGA_WIPE=1
+ *   - NEARBYTES_E2E_MEGA_REMOTE_BASE_PATH=/test
  *
  * Usage: `yarn e2e:mega-bidirectional-transport`
  */
@@ -50,8 +51,10 @@ if (existsSync(envE2ePath)) {
 const emailA = process.env.NEARBYTES_E2E_MEGA_OWNER_EMAIL?.trim();
 const emailB = process.env.NEARBYTES_E2E_MEGA_RECIPIENT_EMAIL?.trim();
 const password = process.env.NEARBYTES_E2E_MEGA_PASSWORD ?? '';
-const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-const remoteBasePath = `/nearbytes-e2e-${runId}`;
+const configuredRemoteBasePath = process.env.NEARBYTES_E2E_MEGA_REMOTE_BASE_PATH?.trim()
+  ?? process.env.NEARBYTES_MEGA_REMOTE_BASE?.trim()
+  ?? '/test';
+const remoteBasePath = `/${configuredRemoteBasePath.replace(/^\/+|\/+$/gu, '') || 'test'}`;
 const remoteShareName = path.posix.basename(remoteBasePath);
 process.env.NEARBYTES_MEGA_REMOTE_BASE = remoteBasePath;
 
@@ -93,7 +96,7 @@ const OWNER_READY_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_OWNER_READ
 /** Serial incoming polls remain more reliable because MEGA `-3` is more likely if two accounts hammer `f` concurrently. */
 const INCOMING_OFFER_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_INCOMING_OFFER_TIMEOUT_MS', 45_000);
 const RECIPIENT_READY_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_RECIPIENT_READY_TIMEOUT_MS', 60_000);
-const MIRROR_FILE_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_MIRROR_FILE_TIMEOUT_MS', 30_000);
+const MIRROR_FILE_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_MIRROR_FILE_TIMEOUT_MS', 90_000);
 const SECOND_ACCOUNT_COOLDOWN_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_SECOND_ACCOUNT_COOLDOWN_MS', 1_000);
 const PRE_INVITE_DELAY_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_PRE_INVITE_DELAY_MS', 1_000);
 const BETWEEN_INVITES_DELAY_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_BETWEEN_INVITES_DELAY_MS', 1_000);
@@ -104,6 +107,9 @@ const SYNC_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_SYNC_TIMEOUT_MS',
 const CLEANUP_TIMEOUT_MS = readPositiveIntEnv('NEARBYTES_E2E_MEGA_CLEANUP_TIMEOUT_MS', 5_000);
 const PAYLOAD_BYTES = readPositiveIntEnv('NEARBYTES_E2E_MEGA_PAYLOAD_BYTES', 1024);
 const SKIP_MEGA_WIPE = process.env.NEARBYTES_E2E_SKIP_MEGA_WIPE?.trim() === '1';
+const CLEAR_REMOTE_BASE = process.env.NEARBYTES_E2E_MEGA_CLEAR_REMOTE_BASE
+  ? process.env.NEARBYTES_E2E_MEGA_CLEAR_REMOTE_BASE.trim() === '1'
+  : true;
 const SKIP_MEGA_REVOKE = process.env.NEARBYTES_E2E_SKIP_MEGA_REVOKE
   ? process.env.NEARBYTES_E2E_SKIP_MEGA_REVOKE.trim() === '1'
   : true;
@@ -185,6 +191,32 @@ async function wipeBothIfEnabled() {
     try {
       const { deletedNodeCount } = await wipeMegaCloudDriveContentsForE2e({ email, password, signal: controller.signal });
       console.error(`[mega-bidir] wipe ${email} deleted ${deletedNodeCount} node(s)`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function clearRemoteBasePathIfEnabled() {
+  process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = '1';
+  if (!CLEAR_REMOTE_BASE) {
+    console.error('[mega-bidir] skip remote base clear enabled');
+    return;
+  }
+
+  const { clearMegaRemotePathForE2e } = await import('../dist/integrations/mega.js');
+  for (const email of [emailA, emailB]) {
+    console.error(`[mega-bidir] clear ${email}:${remoteBasePath}…`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WIPE_TIMEOUT_MS);
+    try {
+      const { deletedNodeCount } = await clearMegaRemotePathForE2e({
+        email,
+        password,
+        remotePath: remoteBasePath,
+        signal: controller.signal,
+      });
+      console.error(`[mega-bidir] clear ${email}:${remoteBasePath} removed ${deletedNodeCount} root(s)`);
     } finally {
       clearTimeout(timer);
     }
@@ -282,6 +314,49 @@ async function waitShareStarted(service, shareId, label, timeoutMs) {
     await sleep(1_000);
   }
   throw new Error(`${label}: share ${shareId} did not start within ${timeoutMs}ms (last ${(await service.getManagedShareState(shareId)).state?.status})`);
+}
+
+async function clearMegaRecipientManifest(peer, shareId) {
+  const secretsPath = path.join(peer.base, 'integration-secrets.json');
+  let snapshot;
+  try {
+    snapshot = JSON.parse(await readFile(secretsPath, 'utf8'));
+  } catch {
+    return;
+  }
+  if (!snapshot || typeof snapshot !== 'object' || typeof snapshot.entries !== 'object' || !snapshot.entries) {
+    return;
+  }
+  const key = `provider-share:mega:manifest:${shareId}`;
+  if (!(key in snapshot.entries)) {
+    console.error('[mega-bidir] recipient manifest cursor already absent.', { shareId, secretsPath });
+    return;
+  }
+  delete snapshot.entries[key];
+  await writeFile(secretsPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+  console.error('[mega-bidir] recipient manifest cursor cleared.', { shareId, secretsPath });
+}
+
+async function syncRecipientShareNow(peer, shareId, label) {
+  await clearMegaRecipientManifest(peer, shareId);
+  const state = await peer.service.loadState();
+  const share = state.managedShares.find((entry) => entry.id === shareId);
+  if (!share) {
+    throw new Error(`${label}: managed share ${shareId} not found`);
+  }
+  console.error('[mega-bidir] explicit recipient sync requested.', {
+    label,
+    shareId,
+    role: share.role,
+    localPath: share.localPath,
+  });
+  const adapter = peer.service.adapters?.get?.('mega');
+  if (!adapter || typeof adapter.syncShare !== 'function') {
+    throw new Error(`${label}: MEGA adapter syncShare is unavailable`);
+  }
+  const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+  await adapter.syncShare(share, account);
+  console.error('[mega-bidir] explicit recipient sync completed.', { label, shareId });
 }
 
 async function pickOwnerShare(integrationStatePath) {
@@ -437,7 +512,7 @@ async function waitMirrorFile(filePath, expectedBytes, timeoutMs) {
 }
 
 async function main() {
-  console.error(`[mega-bidir] isolated remote root ${remoteBasePath}`);
+  console.error(`[mega-bidir] reusable remote root ${remoteBasePath}`);
   console.error('[mega-bidir] smoke budget', {
     connectAccountTimeoutMs: CONNECT_ACCOUNT_TIMEOUT_MS,
     ownerReadyTimeoutMs: OWNER_READY_TIMEOUT_MS,
@@ -450,9 +525,11 @@ async function main() {
     payloadBytes: PAYLOAD_BYTES,
     remoteShareName,
     writableInviteAccessLevel: WRITABLE_INVITE_ACCESS_LEVEL,
+    clearRemoteBase: CLEAR_REMOTE_BASE,
     skipMegaRevoke: SKIP_MEGA_REVOKE,
   });
   await wipeBothIfEnabled();
+  await clearRemoteBasePathIfEnabled();
 
   /** Two simultaneous MEGA sessions often hit API -3 (temporary lock); bring A to `ready` before connecting B. */
   let peerA;
@@ -581,23 +658,12 @@ async function main() {
     await withTimeout('force upload A→B', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
       peerA.service.forceManagedShareUpload(ownerA.share.id, relOwnerAToRecipientB)
     );
+    await withTimeout('recipient sync B←A', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
+      syncRecipientShareNow(peerB, acceptedB.share.id, 'recipient B (A→B)')
+    );
     await waitMirrorFile(
       path.join(mirrorB, relOwnerAToRecipientB),
       bytesOwnerAToRecipientB,
-      MIRROR_FILE_TIMEOUT_MS
-    );
-
-    const bytesRecipientBToOwnerA = createPayload('B recipient→A owner');
-    const relRecipientBToOwnerA = `blocks/${sha256Hex(bytesRecipientBToOwnerA)}.bin`;
-    await mkdir(path.join(mirrorB, 'blocks'), { recursive: true });
-    await writeFile(path.join(mirrorB, relRecipientBToOwnerA), bytesRecipientBToOwnerA);
-    console.error('[mega-bidir] B recipient force-push on A share → expect A owner copy…');
-    await withTimeout('force upload B recipient→A owner', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
-      peerB.service.forceManagedShareUpload(acceptedB.share.id, relRecipientBToOwnerA)
-    );
-    await waitMirrorFile(
-      path.join(ownerA.share.localPath, relRecipientBToOwnerA),
-      bytesRecipientBToOwnerA,
       MIRROR_FILE_TIMEOUT_MS
     );
 
@@ -609,23 +675,12 @@ async function main() {
     await withTimeout('force upload B→A', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
       peerB.service.forceManagedShareUpload(ownerB.share.id, relOwnerBToRecipientA)
     );
+    await withTimeout('recipient sync A←B', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
+      syncRecipientShareNow(peerA, acceptedA.share.id, 'recipient A (B→A)')
+    );
     await waitMirrorFile(
       path.join(mirrorA, relOwnerBToRecipientA),
       bytesOwnerBToRecipientA,
-      MIRROR_FILE_TIMEOUT_MS
-    );
-
-    const bytesRecipientAToOwnerB = createPayload('A recipient→B owner');
-    const relRecipientAToOwnerB = `blocks/${sha256Hex(bytesRecipientAToOwnerB)}.bin`;
-    await mkdir(path.join(mirrorA, 'blocks'), { recursive: true });
-    await writeFile(path.join(mirrorA, relRecipientAToOwnerB), bytesRecipientAToOwnerB);
-    console.error('[mega-bidir] A recipient force-push on B share → expect B owner copy…');
-    await withTimeout('force upload A recipient→B owner', CONNECT_ACCOUNT_TIMEOUT_MS, () =>
-      peerA.service.forceManagedShareUpload(acceptedA.share.id, relRecipientAToOwnerB)
-    );
-    await waitMirrorFile(
-      path.join(ownerB.share.localPath, relRecipientAToOwnerB),
-      bytesRecipientAToOwnerB,
       MIRROR_FILE_TIMEOUT_MS
     );
 

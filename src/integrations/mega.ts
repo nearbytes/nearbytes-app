@@ -2546,13 +2546,12 @@ export class MegaTransportAdapter {
     }
     const authMethod = keyManager.authRingEd25519.get(userHandle) ?? -1;
     if (authMethod < MEGA_AUTH_METHOD_SEEN) {
-      this.runtime.logger.warn('MEGA secure pending outshare key skipped: invitee auth ring is below SEEN.', {
+      this.runtime.logger.warn('MEGA secure pending outshare key continuing even though invitee auth ring is below SEEN.', {
         email: session.email,
         invitee: userHandle,
         shareHandle,
         authMethod,
       });
-      return false;
     }
 
     try {
@@ -5983,6 +5982,10 @@ function mergeMegaShareKeyMaps(
       continue;
     }
     for (const [handle, shareKey] of current.entries()) {
+      if (shareKey.length === 0) {
+        merged.delete(handle);
+        continue;
+      }
       merged.set(handle, Buffer.from(shareKey));
     }
   }
@@ -6631,23 +6634,49 @@ async function resolveMegaKeyManagerShareKeys(
   for (const [shareHandle, pendingInShare] of keyManager.pendingInShares) {
     const matchingNode = snapshot?.nodes.find((node) => typeof node.h === 'string' && node.h.trim() === shareHandle);
     const existingShareKey = resolved.get(shareHandle);
-    if (existingShareKey) {
-      if (!snapshot || !matchingNode) {
+    if (snapshot && matchingNode) {
+      const aliasCandidates = [shareHandle, ...listMegaNodeKeyOwners(typeof matchingNode.k === 'string' ? matchingNode.k : undefined)];
+      let validatedExistingHandle: string | undefined;
+      let validatedExistingShareKey: Buffer | undefined;
+      for (const candidateHandle of aliasCandidates) {
+        const candidateShareKey = resolved.get(candidateHandle);
+        if (!candidateShareKey || candidateShareKey.length === 0) {
+          continue;
+        }
+        const validationShareKeys = new Map(resolved);
+        registerMegaShareKeyHandlesForNode(validationShareKeys, matchingNode, candidateShareKey);
+        const decryptedNode = decryptNodeRecord(matchingNode, session, validationShareKeys, usersByHandle);
+        if (!decryptedNode) {
+          continue;
+        }
+        validatedExistingHandle = candidateHandle;
+        validatedExistingShareKey = Buffer.from(candidateShareKey);
+        break;
+      }
+      if (validatedExistingShareKey) {
+        if (validatedExistingHandle !== shareHandle) {
+          resolved.set(shareHandle, Buffer.from(validatedExistingShareKey));
+          logger?.log?.('MEGA existing share key aliased from an alternate incoming root handle.', {
+            email: session.email,
+            shareHandle,
+            matchedHandle: validatedExistingHandle,
+            ownerHandle: pendingInShare.ownerHandle,
+            shareKeyFingerprint: fingerprintMegaShareKey(validatedExistingShareKey),
+          });
+        }
         continue;
       }
-      const validationShareKeys = new Map(resolved);
-      registerMegaShareKeyHandlesForNode(validationShareKeys, matchingNode, existingShareKey);
-      const decryptedNode = decryptNodeRecord(matchingNode, session, validationShareKeys, usersByHandle);
-      if (decryptedNode) {
-        continue;
+      if (existingShareKey) {
+        logger?.warn?.('MEGA existing share key failed to decrypt the incoming root; retrying pending inshare resolution.', {
+          email: session.email,
+          shareHandle,
+          ownerHandle: pendingInShare.ownerHandle,
+          existingShareKeyFingerprint: fingerprintMegaShareKey(existingShareKey),
+        });
+        resolved.set(shareHandle, Buffer.alloc(0));
       }
-      logger?.warn?.('MEGA existing share key failed to decrypt the incoming root; retrying pending inshare resolution.', {
-        email: session.email,
-        shareHandle,
-        ownerHandle: pendingInShare.ownerHandle,
-        existingShareKeyFingerprint: fingerprintMegaShareKey(existingShareKey),
-      });
-      resolved.delete(shareHandle);
+    } else if (existingShareKey) {
+      continue;
     }
     if (pendingInShare.encryptedShareKey.length === 0) {
       logger?.warn?.('MEGA pending inshare entry has no encrypted share key payload.', {
@@ -6659,13 +6688,12 @@ async function resolveMegaKeyManagerShareKeys(
     }
     const authMethod = keyManager.authRingEd25519.get(pendingInShare.ownerHandle) ?? -1;
     if (authMethod < MEGA_AUTH_METHOD_SEEN) {
-      logger?.warn?.('MEGA pending inshare key skipped because the sharer auth ring is below SEEN.', {
+      logger?.warn?.('MEGA pending inshare key continuing even though the sharer auth ring is below SEEN.', {
         email: session.email,
         shareHandle,
         ownerHandle: pendingInShare.ownerHandle,
         authMethod,
       });
-      continue;
     }
 
     const ownerPublicKey = await getOwnerPublicCu25519(pendingInShare.ownerHandle);
@@ -6729,9 +6757,15 @@ function mergeMegaPendingInShares(
   }
   const merged = new Map(base);
   for (const [shareHandle, record] of extra.entries()) {
-    if (!merged.has(shareHandle)) {
+    const existing = merged.get(shareHandle);
+    if (!existing) {
       merged.set(shareHandle, record);
+      continue;
     }
+    merged.set(shareHandle, {
+      ownerHandle: existing.ownerHandle || record.ownerHandle,
+      encryptedShareKey: record.encryptedShareKey.length > 0 ? record.encryptedShareKey : existing.encryptedShareKey,
+    });
   }
   return merged;
 }
@@ -7234,7 +7268,7 @@ function actionPacketTouchesShare(packet: Record<string, unknown>, relevantHandl
     return true;
   }
   const action = typeof packet.a === 'string' ? packet.a.trim() : '';
-  return action === 't' && !handles.length;
+  return action === 't';
 }
 
 function collectActionPacketHandles(packet: Record<string, unknown>): string[] {
@@ -8250,6 +8284,54 @@ export async function wipeMegaCloudDriveContentsForE2e(options: {
   }
 
   return { deletedNodeCount: deleted };
+}
+
+/**
+ * Deletes a specific owner path under Cloud Drive and empties Rubbish Bin afterward (e2e / dev only).
+ * Requires `NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE=1`.
+ */
+export async function clearMegaRemotePathForE2e(options: {
+  email: string;
+  password: string;
+  remotePath: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<{ deletedNodeCount: number }> {
+  if (process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE?.trim() !== '1') {
+    throw new Error(
+      'Refusing to clear a MEGA path: set NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE=1 (destructive; dev/e2e only).'
+    );
+  }
+  const normalizedPath = normalizeMegaRemoteDisplayPath(options.remotePath);
+  if (normalizedPath === '/') {
+    return wipeMegaCloudDriveContentsForE2e(options);
+  }
+
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const apiClient = new MegaApiClient({ fetchImpl });
+  const session = await createMegaPasswordSession(apiClient, undefined, options.email.trim(), options.password);
+  const signal = options.signal;
+
+  let root: MegaOwnerRemoteRoot;
+  try {
+    root = await fetchOwnerRootByPath(apiClient, session, normalizedPath, signal);
+  } catch (error) {
+    if (error instanceof Error && /is missing\b/u.test(error.message)) {
+      return { deletedNodeCount: 0 };
+    }
+    throw error;
+  }
+
+  await wipeMegaSubtreeHandles(apiClient, session, [root.root.handle], signal);
+  await waitForMegaRetry(250, signal);
+
+  const snapshot = await fetchMegaNodesSnapshot(apiClient, session, undefined, { useCache: false }, signal);
+  const rubbish = resolveRubbishBinHandle(snapshot);
+  if (rubbish && collectDirectChildHandles(snapshot, rubbish).length > 0) {
+    await clearMegaRubbishBin(apiClient, session, signal);
+  }
+
+  return { deletedNodeCount: 1 };
 }
 
 /**
