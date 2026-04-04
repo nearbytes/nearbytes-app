@@ -1546,6 +1546,7 @@ export class MegaTransportAdapter {
               rootHandle,
               packetCount: actionBatch.packets.length,
               actions: summarizeActionPacketActions(actionBatch.packets),
+              packetDetails: createMegaActionPacketLogDetails(actionBatch.packets),
               learnedShareKeyCount,
               touchesShare,
               previousScsn: incrementalScsn,
@@ -1867,6 +1868,7 @@ export class MegaTransportAdapter {
               rootHandle,
               packetCount: actionBatch.packets.length,
               actions,
+              packetDetails: createMegaActionPacketLogDetails(actionBatch.packets),
               accountLevelOnly,
               learnedShareKeyCount,
               touchesShare,
@@ -1935,10 +1937,21 @@ export class MegaTransportAdapter {
         if (signal.aborted) {
           return;
         }
-        if (shouldResetScCursor(error)) {
+        const resetCursor = shouldResetScCursor(error);
+        if (resetCursor) {
           this.shareScsn.delete(share.id);
         }
-        backoffMs = Math.min(backoffMs ? backoffMs * 2 : 2_000, 60_000);
+        const nextBackoffMs = Math.min(backoffMs ? backoffMs * 2 : 2_000, 60_000);
+        this.runtime.logger.warn('MEGA sc channel listener iteration failed.', {
+          shareId: share.id,
+          accountId: account.id,
+          currentScsn: this.shareScsn.get(share.id) ?? null,
+          resetCursor,
+          nextBackoffMs,
+          errorName: error instanceof Error ? error.name : undefined,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        backoffMs = nextBackoffMs;
       }
     }
   }
@@ -7288,6 +7301,53 @@ function summarizeActionPacketActions(packets: readonly Record<string, unknown>[
   return [...actions];
 }
 
+function createMegaActionPacketLogDetails(
+  packets: readonly Record<string, unknown>[]
+): Array<{
+  readonly action: string;
+  readonly handles: string[];
+  readonly keys: string[];
+  readonly packet: unknown;
+}> {
+  return packets.map((packet) => ({
+    action: typeof packet.a === 'string' ? packet.a.trim() : '',
+    handles: collectActionPacketHandles(packet),
+    keys: Object.keys(packet).sort(),
+    packet: sanitizeMegaActionPacketForLogging(packet),
+  }));
+}
+
+function sanitizeMegaActionPacketForLogging(value: unknown, parentKey?: string): unknown {
+  if (parentKey && MEGA_REDACTED_ACTION_PACKET_LOG_KEYS.has(parentKey)) {
+    return '[redacted]';
+  }
+  if (typeof value === 'string') {
+    return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const limit = 25;
+    const sanitized = value.slice(0, limit).map((entry) => sanitizeMegaActionPacketForLogging(entry, parentKey));
+    if (value.length > limit) {
+      sanitized.push(`[${value.length - limit} more item(s)]`);
+    }
+    return sanitized;
+  }
+  if (!value || typeof value !== 'object') {
+    return value === undefined ? undefined : String(value);
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    const entry = sanitizeMegaActionPacketForLogging(entryValue, key);
+    if (entry !== undefined) {
+      sanitized[key] = entry;
+    }
+  }
+  return sanitized;
+}
+
 function collectRecipientImmediatePacketHandles(
   packets: readonly Record<string, unknown>[],
   rootHandle: string
@@ -7372,6 +7432,7 @@ function shouldResetScCursor(error: unknown): boolean {
 
 const ACTION_PACKET_HANDLE_KEYS = new Set(['h', 'n', 'p', 'ph', 'sh']);
 const ACCOUNT_LEVEL_ACTIONS = new Set(['ua']);
+const MEGA_REDACTED_ACTION_PACKET_LOG_KEYS = new Set(['at', 'cr', 'fa', 'ha', 'k', 'ok']);
 
 function allActionsAreAccountLevel(actions: readonly string[]): boolean {
   return actions.length > 0 && actions.every((action) => ACCOUNT_LEVEL_ACTIONS.has(action));

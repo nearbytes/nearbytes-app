@@ -634,8 +634,32 @@ describe('MegaTransportAdapter', () => {
     expect(
       pushLogs.some(
         (call) =>
+          Array.isArray((call[1] as { packetDetails?: Array<{ action?: string; handles?: string[]; packet?: { n?: string } }> })?.packetDetails) &&
+          (call[1] as { packetDetails?: Array<{ action?: string; handles?: string[]; packet?: { n?: string } }> }).packetDetails?.some(
+            (packet) =>
+              packet.action === 'u' &&
+              packet.handles?.includes('outside0001') === true &&
+              packet.packet?.n === 'outside0001'
+          ) === true
+      )
+    ).toBe(true);
+    expect(
+      pushLogs.some(
+        (call) =>
           (call[1] as { touchesShare?: boolean; nextScsn?: string })?.touchesShare === true &&
           (call[1] as { nextScsn?: string })?.nextScsn === 'cursor-3'
+      )
+    ).toBe(true);
+    expect(
+      pushLogs.some(
+        (call) =>
+          (call[1] as { nextScsn?: string })?.nextScsn === 'cursor-3' &&
+          (call[1] as { packetDetails?: Array<{ action?: string; handles?: string[]; packet?: { n?: string } }> }).packetDetails?.some(
+            (packet) =>
+              packet.action === 'u' &&
+              packet.handles?.includes(fileHandle) === true &&
+              packet.packet?.n === fileHandle
+          ) === true
       )
     ).toBe(true);
 
