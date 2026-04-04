@@ -419,10 +419,26 @@ export interface ProviderCatalogEntry {
   label: string;
   description: string;
   badges: string[];
+  enabled?: boolean;
   isConnected: boolean;
   connectionState: 'available' | 'connected' | 'setup';
   accountId?: string;
   setup: ProviderSetupState;
+}
+
+export interface AppConfig {
+  version: 1;
+  features: {
+    providers: {
+      googleDrive: boolean;
+      mega: boolean;
+      github: boolean;
+      localNetwork: boolean;
+    };
+    performance: {
+      appMetrics: boolean;
+    };
+  };
 }
 
 export interface ProviderSetupState {
@@ -550,6 +566,10 @@ export interface ProviderAccountsResponse {
   accounts: ProviderAccount[];
   providers: ProviderCatalogEntry[];
   preferredProviders: string[];
+}
+
+export interface AppConfigResponse {
+  config: AppConfig;
 }
 
 export interface ManagedSharesResponse {
@@ -1542,6 +1562,21 @@ export async function listProviderAccounts(
   return apiRequest<ProviderAccountsResponse>(endpoint, {
     method: 'GET',
     signal: options.signal,
+  });
+}
+
+export async function getAppConfig(options: { signal?: AbortSignal } = {}): Promise<AppConfigResponse> {
+  return apiRequest<AppConfigResponse>('/config/app', {
+    method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function updateProviderEnabled(provider: string, enabled: boolean): Promise<AppConfigResponse> {
+  const encoded = encodeURIComponent(provider);
+  return apiRequest<AppConfigResponse>(`/config/app/providers/${encoded}`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
   });
 }
 

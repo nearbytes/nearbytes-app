@@ -5,6 +5,7 @@ import { promises as fs, constants as fsConstants } from 'fs';
 import { join, resolve } from 'path';
 import os from 'os';
 import multer from 'multer';
+import { getAppConfig, setProviderEnabled } from '../config/appConfig.js';
 import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
 import { discoverNearbytesSources, ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { reconcileDiscoveredSources } from '../config/sourceReconcile.js';
@@ -258,6 +259,21 @@ export function createRoutes(deps: RouteDependencies): Router {
       config: multiRootStorage.getRootsConfig(),
       runtime,
     });
+  }));
+
+  router.get('/config/app', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    res.json({ config: getAppConfig() });
+  }));
+
+  router.put('/config/app/providers/:providerId', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const { provider } = parseWithSchema(providerIdParamSchema, req.params);
+    const enabled = (req.body as { enabled?: unknown } | null | undefined)?.enabled;
+    if (typeof enabled !== 'boolean') {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Provider enabled must be a boolean.');
+    }
+    res.json({ config: setProviderEnabled(provider, enabled) });
   }));
 
   router.put('/config/roots', asyncHandler(async (req, res) => {
@@ -532,7 +548,9 @@ export function createRoutes(deps: RouteDependencies): Router {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
     const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
-    await service.removeManagedShare(shareId);
+    await service.removeManagedShare(shareId, {
+      skipMigration: req.query.mode === 'reset',
+    });
     res.json({ ok: true });
   }));
 
@@ -880,6 +898,7 @@ export function createRoutes(deps: RouteDependencies): Router {
       const { secret } = parseWithSchema(openBodySchema, req.body);
       const validatedSecret = validateSecret(secret);
       const volumeId = await getVolumeId(validatedSecret, deps.crypto, deps.storage);
+      managedShareService?.rememberOpenedVolume(volumeId);
       const files = await deps.fileService.listFiles(validatedSecret);
 
       const response: {

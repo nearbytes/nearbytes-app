@@ -495,6 +495,9 @@ function ensureBootstrapSourceAndDefaultDestination(
   config: RootsConfig,
   defaultRootPath: string
 ): RootsConfig {
+  if (process.env.NEARBYTES_SKIP_BOOTSTRAP_DEFAULT_DESTINATION?.trim() === '1') {
+    return config;
+  }
   const bootstrapPath = path.resolve(defaultRootPath);
   const existingBootstrapSource =
     config.sources.find((source) => path.resolve(source.path) === bootstrapPath) ?? null;

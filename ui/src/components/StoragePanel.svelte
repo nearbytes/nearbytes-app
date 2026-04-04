@@ -11,6 +11,7 @@
     consolidateRoot,
     disconnectProviderAccount,
     discoverSources,
+    getAppConfig,
     readDesktopRuntimeLogs,
     getManagedShareState,
     getStorageLocationRepairReport,
@@ -24,6 +25,7 @@
     listManagedShares,
     listProviderAccounts,
     syncLocalNetworkPeer,
+    updateProviderEnabled,
     openPathInFileManager,
     openRootInFileManager,
     repairStorageLocation,
@@ -31,6 +33,7 @@
     watchSources,
     type DiscoveredNearbytesSource,
     type DesktopRuntimeLogEntry,
+    type AppConfig,
     type IncomingManagedShareOffer,
     type IncomingProviderContactInvite,
     type LocalNetworkPeer,
@@ -68,6 +71,7 @@
     FolderOpen,
     HardDrive,
     Link2,
+    Power,
     Plus,
     RefreshCw,
     Search,
@@ -237,6 +241,7 @@
   let movingSourceId = $state<string | null>(null);
   let repairingSourceId = $state<string | null>(null);
   let providerAccounts = $state<ProviderAccount[]>([]);
+  let runtimeAppConfig = $state<AppConfig | null>(null);
   let providerCatalog = $state<ProviderCatalogEntry[]>(defaultProviderCatalogEntries());
   let localNetworkService = $state<LocalNetworkPeersResponse['service'] | null>(null);
   let localNetworkPeers = $state<LocalNetworkPeer[]>([]);
@@ -1376,6 +1381,7 @@
   }
 
   function providerCardStatus(entry: ProviderCatalogEntry): string {
+    if (!providerEnabled(entry.provider)) return 'Off';
     if (providersLoading) return 'Loading';
     if (entry.provider === 'local-network') {
       if (localNetworkPeers.some((peer) => peer.status === 'syncing')) return 'Syncing';
@@ -1397,6 +1403,11 @@
   }
 
   function providerCardDetail(entry: ProviderCatalogEntry): string {
+    if (!providerEnabled(entry.provider)) {
+      return entry.provider === 'local-network'
+        ? 'LAN sync is disabled for this Nearbytes configuration.'
+        : `${entry.label} is disabled for this Nearbytes configuration.`;
+    }
     if (entry.provider === 'local-network') {
       if (localNetworkLoadError) {
         return localNetworkLoadError;
@@ -1640,6 +1651,7 @@
           ? 'Native MEGA syncing for public links plus incoming read-only and writable shares.'
           : 'Managed repo-backed shares synced through a configurable nearbytes subdirectory.',
       badges: provider === 'github' ? ['Device flow'] : provider === 'local-network' ? ['Auto'] : [],
+      enabled: providerEnabled(provider),
       isConnected: provider === 'local-network',
       connectionState: provider === 'local-network' ? 'connected' : 'available',
       setup: {
@@ -1671,9 +1683,40 @@
       merged.set(existing.provider, existing);
     }
     for (const next of nextEntries) {
-      merged.set(next.provider, next);
+      merged.set(next.provider, {
+        ...next,
+        enabled: providerEnabled(next.provider),
+      });
     }
-    return sortProviders(Array.from(merged.values()));
+    return sortProviders(Array.from(merged.values()).map((entry) => ({
+      ...entry,
+      enabled: providerEnabled(entry.provider),
+    })));
+  }
+
+  function providerEnabled(provider: string): boolean {
+    const config = runtimeAppConfig;
+    if (!config) {
+      return provider !== 'github' && provider !== 'gdrive' && provider !== 'google-drive';
+    }
+    switch (provider) {
+      case 'mega':
+        return config.features.providers.mega;
+      case 'github':
+        return config.features.providers.github;
+      case 'gdrive':
+      case 'google-drive':
+        return config.features.providers.googleDrive;
+      case 'local-network':
+        return config.features.providers.localNetwork;
+      default:
+        return true;
+    }
+  }
+
+  function applyAppConfigResponse(response: { config: AppConfig }): void {
+    runtimeAppConfig = response.config;
+    providerCatalog = mergeProviderCatalogEntries(providerCatalog);
   }
 
   function sortManagedShareSummaries(entries: readonly ManagedShareSummary[]): ManagedShareSummary[] {
@@ -1751,12 +1794,20 @@
     );
   }
 
+  function shouldRefreshMegaIncomingDiscovery(): boolean {
+    const account = connectedAccountForProvider('mega');
+    return account?.state === 'connected' || account?.state === 'attention';
+  }
+
   function scheduleManagedShareStateRefresh(delayMs = AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS): void {
     if (managedShareStateRefreshTimer) {
       clearTimeout(managedShareStateRefreshTimer);
       managedShareStateRefreshTimer = null;
     }
-    if (providerShares('mega').filter((summary) => shouldAuthoritativelyRefreshMegaShare(summary)).length === 0) {
+    if (
+      providerShares('mega').filter((summary) => shouldAuthoritativelyRefreshMegaShare(summary)).length === 0 &&
+      !shouldRefreshMegaIncomingDiscovery()
+    ) {
       return;
     }
     managedShareStateRefreshTimer = setTimeout(() => {
@@ -1770,25 +1821,41 @@
       return;
     }
     const megaShares = providerShares('mega').filter((summary) => shouldAuthoritativelyRefreshMegaShare(summary));
-    if (megaShares.length === 0) {
+    const shouldRefreshIncomingDiscovery = shouldRefreshMegaIncomingDiscovery();
+    if (megaShares.length === 0 && !shouldRefreshIncomingDiscovery) {
       return;
     }
     managedShareStateRefreshInFlight = true;
     try {
-      const refreshed = await Promise.all(
-        megaShares.map(async (summary) => {
-          try {
-            const response = await getManagedShareState(summary.share.id);
-            return response.summary;
-          } catch {
-            return null;
-          }
-        })
-      );
+      const [refreshed, incomingSharesResponse, incomingInvitesResponse] = await Promise.all([
+        Promise.all(
+          megaShares.map(async (summary) => {
+            try {
+              const response = await getManagedShareState(summary.share.id);
+              return response.summary;
+            } catch {
+              return null;
+            }
+          })
+        ),
+        listIncomingManagedShares({ fast: false }).catch(() => null),
+        listIncomingProviderContactInvites({ fast: false }).catch(() => null),
+      ]);
+
+      if (incomingSharesResponse) {
+        incomingManagedShareOffers = sortIncomingManagedShareOffers(incomingSharesResponse.shares);
+      }
+      if (incomingInvitesResponse) {
+        incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(incomingInvitesResponse.invites);
+      }
+
       const merged = mergeManagedShareSummaries(
         refreshed.filter((summary): summary is ManagedShareSummary => summary !== null)
       );
-      if (merged.some((summary) => shouldAuthoritativelyRefreshMegaShare(summary))) {
+      if (
+        merged.some((summary) => shouldAuthoritativelyRefreshMegaShare(summary)) ||
+        shouldRefreshMegaIncomingDiscovery()
+      ) {
         scheduleManagedShareStateRefresh(
           megaShareStatesNeedRapidRefresh(merged)
             ? AUTHORITATIVE_MANAGED_SHARE_RAPID_REFRESH_MS
@@ -2098,7 +2165,10 @@
       return `All ${countLabel(total, 'location')} ready`;
     }
     if (working > 0 && ready < total) {
-      return `${countLabel(working, 'location')} still being checked`;
+      const activeStep = shares
+        .map((summary) => megaShareActivityStep(summary))
+        .find((step) => step.tone !== 'good');
+      return activeStep ? `${activeStep.name}: ${activeStep.phase}` : `${countLabel(working, 'location')} syncing`;
     }
     return `${countLabel(ready, 'location')} ready`;
   }
@@ -4172,6 +4242,18 @@
           providersLoading = false;
         });
 
+      const appConfigPromise = withPanelRequestTimeout(
+        'Provider configuration',
+        (signal) => getAppConfig({ signal })
+      )
+        .then((appConfigResponse) => {
+          applyAppConfigResponse(appConfigResponse);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          providerLoadError = providerLoadError || `Provider configuration is delayed: ${detail}`;
+        });
+
       const localNetworkPromise = withPanelRequestTimeout(
         'Local network peer discovery',
         (signal) => listLocalNetworkPeers({ signal })
@@ -4202,7 +4284,7 @@
           sharesLoading = false;
         });
 
-      await Promise.allSettled([rootsPromise, accountsPromise, localNetworkPromise, sharesPromise]);
+      await Promise.allSettled([rootsPromise, accountsPromise, appConfigPromise, localNetworkPromise, sharesPromise]);
 
       if (rootsLoadError) {
         incomingLoading = false;
@@ -4711,6 +4793,23 @@
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : `Failed to disconnect ${provider.label}`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function toggleProvider(provider: ProviderCatalogEntry): Promise<void> {
+    const nextEnabled = !providerEnabled(provider.provider);
+    integrationBusyKey = `provider-toggle:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      const response = await updateProviderEnabled(provider.provider, nextEnabled);
+      applyAppConfigResponse(response);
+      successMessage = `${provider.label} ${nextEnabled ? 'enabled' : 'disabled'}.`;
+      await loadPanel({ background: true });
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to update ${provider.label}`;
     } finally {
       integrationBusyKey = null;
     }
@@ -5830,6 +5929,16 @@
           <section class="panel-section">
             <div class="section-head compact global-panel-head global-panel-head-actions">
               <div class="button-row compact-panel-actions">
+                <IconToggle
+                  icon={Power}
+                  label={providerEnabled(provider.provider) ? 'On' : 'Off'}
+                  active={providerEnabled(provider.provider)}
+                  disabled={integrationBusyKey === `provider-toggle:${provider.provider}`}
+                  title={providerEnabled(provider.provider) ? `Disable ${provider.label}` : `Enable ${provider.label}`}
+                  ariaLabel={providerEnabled(provider.provider) ? `Disable ${provider.label}` : `Enable ${provider.label}`}
+                  onclick={() => void toggleProvider(provider)}
+                />
+                {#if providerEnabled(provider.provider)}
                 {#if provider.provider === 'local-network'}
                   <button
                     type="button"
@@ -5927,10 +6036,11 @@
                     </span>
                   </button>
                 {/if}
+                {/if}
               </div>
             </div>
 
-            {#if provider.provider === 'local-network'}
+            {#if provider.provider === 'local-network' && providerEnabled(provider.provider)}
               <div class="section-stack">
                 <ProviderStatusCard
                   title={localNetworkService?.listening ? 'Local network sync is active' : 'Preparing local network sync'}
@@ -6000,7 +6110,7 @@
               </div>
             {/if}
 
-            {#if provider.provider !== 'local-network'}
+            {#if provider.provider !== 'local-network' && providerEnabled(provider.provider)}
             {#if provider.provider === 'mega'}
               {@const megaStatus = megaStatusView()}
               {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}

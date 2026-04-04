@@ -3,6 +3,7 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import type express from 'express';
 import { createCryptoOperations } from '../crypto/index.js';
+import { isProviderEnabled } from '../config/appConfig.js';
 import { createChatService } from '../domain/chatService.js';
 import { createFileService } from '../domain/fileService.js';
 import { getDefaultStorageDir } from '../storagePath.js';
@@ -108,9 +109,11 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     readMaintenanceMode: 'background',
     ...options.integrationOptions,
   });
-  const localNetworkSyncService = new LocalNetworkSyncService(storage, {
-    storageDir: defaultStorageDir,
-  });
+  const localNetworkSyncService = isProviderEnabled('local-network')
+    ? new LocalNetworkSyncService(storage, {
+        storageDir: defaultStorageDir,
+      })
+    : undefined;
   void managedShareService.warmupBackgroundActivity('runtime startup').catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`Warning: managed share startup bootstrap failed: ${message}`);
@@ -136,14 +139,18 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
 
   const server = await listen(app, host, port);
   const bound = getBoundPort(server);
-  void localNetworkSyncService.start(bound).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`Warning: local network sync startup failed: ${message}`);
-  });
+  if (localNetworkSyncService) {
+    void localNetworkSyncService.start(bound).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`Warning: local network sync startup failed: ${message}`);
+    });
+  }
 
   const stop = createStop(server, async () => {
     storage.stopRepairMonitor();
-    await localNetworkSyncService.stop();
+    if (localNetworkSyncService) {
+      await localNetworkSyncService.stop();
+    }
     await managedShareService.dispose();
   });
   latestStop = stop;

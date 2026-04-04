@@ -2346,19 +2346,47 @@ export class MegaTransportAdapter {
       readonly expectedRootName?: string;
     } = {}
   ): Promise<MegaFetchedTree> {
-    return fetchMegaDecryptedTree(
+    const cachedShareKeys = this.accountShareKeyCache.get(session.userHandle);
+    let fetched = await fetchMegaDecryptedTree(
       this.apiClient,
       session,
       rootHandle,
       {
         useCache: false,
         allowTransientFullFallback: options.allowTransientFullFallback,
-        extraShareKeys: this.accountShareKeyCache.get(session.userHandle),
+        extraShareKeys: cachedShareKeys,
         expectedRootName: options.expectedRootName,
       },
       signal,
       this.runtime.logger
     );
+
+    if (this.shouldRetryIncomingTreeWithoutCachedShareKeys(rootHandle, fetched, cachedShareKeys)) {
+      const invalidatedCount = await this.invalidateCachedShareKeysForRoot(session.userHandle, rootHandle, fetched.snapshot);
+      if (invalidatedCount > 0) {
+        this.runtime.logger.warn('MEGA incoming share self-heal: invalidated cached share keys after empty tree decrypt.', {
+          email: session.email,
+          rootHandle,
+          invalidatedCount,
+          snapshotNodeCount: fetched.snapshot.nodes.length,
+        });
+        fetched = await fetchMegaDecryptedTree(
+          this.apiClient,
+          session,
+          rootHandle,
+          {
+            useCache: false,
+            allowTransientFullFallback: options.allowTransientFullFallback,
+            extraShareKeys: this.accountShareKeyCache.get(session.userHandle),
+            expectedRootName: options.expectedRootName,
+          },
+          signal,
+          this.runtime.logger
+        );
+      }
+    }
+
+    return fetched;
   }
 
   private async fetchPartialTreeWithRetry(
@@ -2747,6 +2775,60 @@ export class MegaTransportAdapter {
       ...secret,
       shareKeys: encodePersistedMegaShareKeys(this.accountShareKeyCache.get(userHandle)),
     } satisfies MegaAccountSecret);
+  }
+
+  private shouldRetryIncomingTreeWithoutCachedShareKeys(
+    rootHandle: string,
+    fetched: MegaFetchedTree,
+    cachedShareKeys: ReadonlyMap<string, Buffer> | undefined
+  ): boolean {
+    if (!cachedShareKeys || cachedShareKeys.size === 0) {
+      return false;
+    }
+    if (fetched.snapshot.nodes.length <= 1) {
+      return false;
+    }
+    const relatedHandles = collectMegaShareKeyRelatedHandles(rootHandle, fetched.snapshot);
+    if (!relatedHandles.some((handle) => {
+      const shareKey = cachedShareKeys.get(handle);
+      return Buffer.isBuffer(shareKey) && shareKey.length > 0;
+    })) {
+      return false;
+    }
+    return listMegaTopLevelEntryNames(fetched.tree).length === 0;
+  }
+
+  private async invalidateCachedShareKeysForRoot(
+    userHandleRaw: string,
+    rootHandle: string,
+    snapshot: MegaFetchNodesSnapshot
+  ): Promise<number> {
+    const userHandle = userHandleRaw.trim();
+    if (!userHandle) {
+      return 0;
+    }
+    const cachedShareKeys = this.accountShareKeyCache.get(userHandle);
+    if (!cachedShareKeys || cachedShareKeys.size === 0) {
+      return 0;
+    }
+    const nextShareKeys = new Map(cachedShareKeys);
+    let invalidatedCount = 0;
+    for (const handle of collectMegaShareKeyRelatedHandles(rootHandle, snapshot)) {
+      if (!nextShareKeys.delete(handle)) {
+        continue;
+      }
+      invalidatedCount += 1;
+    }
+    if (invalidatedCount === 0) {
+      return 0;
+    }
+    if (nextShareKeys.size > 0) {
+      this.accountShareKeyCache.set(userHandle, nextShareKeys);
+    } else {
+      this.accountShareKeyCache.delete(userHandle);
+    }
+    await this.persistCachedShareKeysForUser(userHandle);
+    return invalidatedCount;
   }
 
   private async fetchActionPackets(session: MegaSession, scsn: string, signal?: AbortSignal): Promise<MegaActionPacketBatch> {
@@ -5889,6 +5971,36 @@ function registerMegaShareKeyHandlesForNode(shareKeys: Map<string, Buffer>, node
       shareKeys.set(handle, shareKey);
     }
   }
+}
+
+function collectMegaShareKeyRelatedHandles(rootHandle: string, snapshot: MegaFetchNodesSnapshot): string[] {
+  const handles = new Set<string>();
+  const normalizedRootHandle = rootHandle.trim();
+  if (isMegaNodeHandle(normalizedRootHandle)) {
+    handles.add(normalizedRootHandle);
+  }
+
+  const rootNode = snapshot.nodes.find(
+    (node) => typeof node.h === 'string' && node.h.trim() === normalizedRootHandle
+  );
+  if (!rootNode) {
+    return [...handles];
+  }
+
+  for (const owner of listMegaNodeKeyOwners(typeof rootNode.k === 'string' ? rootNode.k : undefined)) {
+    if (isMegaNodeHandle(owner)) {
+      handles.add(owner);
+    }
+  }
+
+  const ownerHandle = typeof (rootNode as Record<string, unknown>).su === 'string'
+    ? String((rootNode as Record<string, unknown>).su).trim()
+    : '';
+  if (isMegaNodeHandle(ownerHandle)) {
+    handles.add(ownerHandle);
+  }
+
+  return [...handles];
 }
 
 function propagateMegaResolvedShareKeyAliases(

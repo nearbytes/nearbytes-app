@@ -16,14 +16,19 @@ const maxUploadBytes = parseMaxUploadBytes(process.env.NEARBYTES_MAX_UPLOAD_MB);
 const tokenKey = process.env.NEARBYTES_SERVER_TOKEN_KEY
   ? parseTokenKey(process.env.NEARBYTES_SERVER_TOKEN_KEY)
   : undefined;
+const parsedArgs = parseCliArgs(process.argv.slice(2));
 
 async function main(): Promise<void> {
+  if (parsedArgs.appConfigPath) {
+    process.env.NEARBYTES_APP_CONFIG = parsedArgs.appConfigPath;
+  }
   installBootLogFile();
   const runtime = await startApiRuntime({
     port,
     corsOrigin,
     maxUploadBytes,
     tokenKey,
+    rootsConfigPath: parsedArgs.rootsConfigPath,
   });
 
   console.log(`Using roots config: ${runtime.rootsConfigPath}`);
@@ -69,6 +74,32 @@ function parseMaxUploadBytes(value: string | undefined): number {
     return 50 * 1024 * 1024;
   }
   return parsed * 1024 * 1024;
+}
+
+function parseCliArgs(args: string[]): { rootsConfigPath?: string; appConfigPath?: string } {
+  let rootsConfigPath: string | undefined;
+  let appConfigPath: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--roots-config') {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new Error('Missing value for --roots-config');
+      }
+      rootsConfigPath = path.resolve(value);
+      index += 1;
+      continue;
+    }
+    if (arg === '--app-config') {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new Error('Missing value for --app-config');
+      }
+      appConfigPath = path.resolve(value);
+      index += 1;
+    }
+  }
+  return { rootsConfigPath, appConfigPath };
 }
 
 function installBootLogFile(): void {

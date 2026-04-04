@@ -118,6 +118,7 @@ export class ManagedShareService {
   private readonly collaboratorLookupCooldowns = new Map<string, number>();
   private readonly pendingMarkerRefreshes = new Set<string>();
   private readonly lastGetManagedShareScheduledSyncAt = new Map<string, number>();
+  private readonly recentlyOpenedVolumeIds = new Map<string, number>();
   private readonly stopStorageWriteSubscription: (() => void) | null;
   private maintenanceRequested = false;
   private maintenanceTask: Promise<void> | null = null;
@@ -153,6 +154,7 @@ export class ManagedShareService {
     this.maintenanceRequested = false;
     this.pendingMarkerRefreshes.clear();
     this.lastGetManagedShareScheduledSyncAt.clear();
+    this.recentlyOpenedVolumeIds.clear();
     this.autoRepairCooldowns.clear();
     this.collaboratorLookupCooldowns.clear();
     this.stopStorageWriteSubscription?.();
@@ -168,6 +170,17 @@ export class ManagedShareService {
         await adapter.dispose?.();
       })
     );
+  }
+
+  rememberOpenedVolume(volumeId: string): void {
+    const normalized = normalizeVolumeId(volumeId);
+    if (!normalized) {
+      return;
+    }
+    const now = this.runtime.now();
+    this.recentlyOpenedVolumeIds.delete(normalized);
+    this.recentlyOpenedVolumeIds.set(normalized, now);
+    this.pruneRememberedOpenedVolumes(now);
   }
 
   async warmupBackgroundActivity(reason = 'startup'): Promise<void> {
@@ -546,10 +559,10 @@ export class ManagedShareService {
         shares: [],
       };
     }
-      if (this.readMaintenanceMode === 'background') {
-        this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState);
-      }
-    const attachedKeys = buildAttachedShareKeys(preparedState.managedShares);
+    if (this.readMaintenanceMode === 'background') {
+      this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState);
+    }
+    const attachedKeys = buildAttachedShareKeys(this.options.storage.getRootsConfig(), preparedState.managedShares);
     const offers = await Promise.all(
       preparedState.accounts
         .filter((account) => this.canReadIncomingProviderState(account) && isProviderEnabled(account.provider))
@@ -789,9 +802,9 @@ export class ManagedShareService {
           changed = nextConfig !== config;
           config = nextConfig;
         } else if (shouldAutoAttachTrackedVolumesToManagedShare(existing)) {
-          const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(config.sources, existing.sourceId);
-          for (const trackedVolumeId of trackedVolumeIds) {
-            const nextConfig = ensureVolumeAttachment(config, trackedVolumeId, existing.sourceId);
+          const autoAttachVolumeIds = await this.collectAutoAttachVolumeIds(existing.sourceId);
+          for (const autoAttachVolumeId of autoAttachVolumeIds) {
+            const nextConfig = ensureVolumeAttachment(config, autoAttachVolumeId, existing.sourceId);
             changed = changed || nextConfig !== config;
             config = nextConfig;
           }
@@ -829,9 +842,9 @@ export class ManagedShareService {
     if (input.volumeId) {
       config = ensureVolumeAttachment(config, input.volumeId, sourceId);
     } else if (shouldAutoAttachTrackedVolumesToManagedShare(nextShare)) {
-      const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(config.sources, sourceId);
-      for (const trackedVolumeId of trackedVolumeIds) {
-        config = ensureVolumeAttachment(config, trackedVolumeId, sourceId);
+      const autoAttachVolumeIds = await this.collectAutoAttachVolumeIds(sourceId);
+      for (const autoAttachVolumeId of autoAttachVolumeIds) {
+        config = ensureVolumeAttachment(config, autoAttachVolumeId, sourceId);
       }
     }
     await this.persistRootsConfig(config);
@@ -897,7 +910,7 @@ export class ManagedShareService {
     });
   }
 
-  async removeManagedShare(shareId: string): Promise<void> {
+  async removeManagedShare(shareId: string, options: { skipMigration?: boolean } = {}): Promise<void> {
     const state = await this.loadState();
     const share = state.managedShares.find((entry) => entry.id === shareId);
     if (!share) {
@@ -905,7 +918,9 @@ export class ManagedShareService {
     }
 
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
-    await this.retireManagedShareEntry(share, state, account);
+    await this.retireManagedShareEntry(share, state, account, {
+      skipMigration: options.skipMigration === true,
+    });
   }
 
   async acceptManagedShare(input: AcceptManagedShareInput): Promise<ManagedShareSummary> {
@@ -1371,6 +1386,9 @@ export class ManagedShareService {
     for (const offer of offers) {
       const existing = findManagedShareByRemoteDescriptor(state.managedShares, provider, account.id, offer.remoteDescriptor);
       if (existing) {
+        if (shouldAutoAttachTrackedVolumesToManagedShare(existing)) {
+          await this.attachTrackedLocalVolumesToManagedShare(existing);
+        }
         try {
           await this.prepareManagedShareForSync(existing.id);
         } catch (error) {
@@ -2246,8 +2264,9 @@ export class ManagedShareService {
   }): Promise<{ plan: JoinLinkPlan; space: JoinLinkSpace }> {
     const link = this.parseJoinLinkInput(input.serialized, input.link);
     const state = await this.loadState();
+    const config = this.options.storage.getRootsConfig();
     const context = createPlannerContext({
-      attachedShareKeys: buildAttachedShareKeys(state.managedShares),
+      attachedShareKeys: buildAttachedShareKeys(config, state.managedShares),
       connectedProviders: state.accounts
         .filter((account) => this.isOperationalAccount(account))
         .map((account) => account.provider),
@@ -3036,17 +3055,14 @@ export class ManagedShareService {
       return null;
     }
 
-    const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(
-      this.options.storage.getRootsConfig().sources,
-      sourceId
-    );
-    if (trackedVolumeIds.length === 0) {
+    const autoAttachVolumeIds = await this.collectAutoAttachVolumeIds(sourceId);
+    if (autoAttachVolumeIds.length === 0) {
       return null;
     }
 
     let nextConfig = cloneConfig(this.options.storage.getRootsConfig());
     let changed = false;
-    for (const volumeId of trackedVolumeIds) {
+    for (const volumeId of autoAttachVolumeIds) {
       const updated = ensureVolumeAttachment(nextConfig, volumeId, sourceId);
       if (updated !== nextConfig) {
         nextConfig = updated;
@@ -3059,6 +3075,42 @@ export class ManagedShareService {
 
     await this.persistRootsConfig(nextConfig);
     return nextConfig;
+  }
+
+  private async collectAutoAttachVolumeIds(sourceId: string): Promise<string[]> {
+    const config = this.options.storage.getRootsConfig();
+    const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(config.sources, sourceId);
+    if (trackedVolumeIds.length > 0) {
+      return trackedVolumeIds;
+    }
+    return this.listRememberedOpenedVolumes();
+  }
+
+  private listRememberedOpenedVolumes(): string[] {
+    const now = this.runtime.now();
+    this.pruneRememberedOpenedVolumes(now);
+    return Array.from(this.recentlyOpenedVolumeIds.entries())
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 1)
+      .map(([volumeId]) => volumeId);
+  }
+
+  private pruneRememberedOpenedVolumes(now: number): void {
+    for (const [volumeId, openedAt] of Array.from(this.recentlyOpenedVolumeIds.entries())) {
+      if (now - openedAt > 60 * 60 * 1000) {
+        this.recentlyOpenedVolumeIds.delete(volumeId);
+      }
+    }
+    const overflow = this.recentlyOpenedVolumeIds.size - 8;
+    if (overflow <= 0) {
+      return;
+    }
+    const oldest = Array.from(this.recentlyOpenedVolumeIds.entries())
+      .sort((left, right) => left[1] - right[1])
+      .slice(0, overflow);
+    for (const [volumeId] of oldest) {
+      this.recentlyOpenedVolumeIds.delete(volumeId);
+    }
   }
 
   private async relocateMegaRecipientShareIfNeeded(
@@ -4004,9 +4056,12 @@ async function collectTrackedVolumeIdsFromNonManagedRoots(
   return [...volumeIds].sort((left, right) => left.localeCompare(right));
 }
 
-function buildAttachedShareKeys(shares: readonly ManagedShare[]): Set<string> {
+function buildAttachedShareKeys(config: RootsConfig, shares: readonly ManagedShare[]): Set<string> {
   const keys = new Set<string>();
   for (const share of shares) {
+    if (computeManagedShareAttachments(config, share).length === 0) {
+      continue;
+    }
     for (const key of buildManagedShareMatchKeys(share)) {
       keys.add(key);
     }

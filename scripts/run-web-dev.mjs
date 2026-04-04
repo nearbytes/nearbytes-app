@@ -8,16 +8,25 @@ import process from 'node:process';
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const uiDir = path.join(repoRoot, 'ui');
-const sessionPath = path.join(repoRoot, '.nearbytes-web-dev.json');
-const devRunSessionPath = path.join(repoRoot, '.nearbytes-dev-run.json');
+const sessionPath =
+  process.env.NEARBYTES_WEB_DEV_SESSION_FILE && process.env.NEARBYTES_WEB_DEV_SESSION_FILE.trim().length > 0
+    ? path.resolve(process.env.NEARBYTES_WEB_DEV_SESSION_FILE)
+    : path.join(repoRoot, '.nearbytes-web-dev.json');
+const devRunSessionPath =
+  process.env.NEARBYTES_DEV_RUN_SESSION_FILE && process.env.NEARBYTES_DEV_RUN_SESSION_FILE.trim().length > 0
+    ? path.resolve(process.env.NEARBYTES_DEV_RUN_SESSION_FILE)
+    : path.join(repoRoot, '.nearbytes-dev-run.json');
+const backendPort = parsePort(process.env.PORT, 3000);
 const desktopSessionPath =
   process.env.NEARBYTES_DESKTOP_SESSION_FILE && process.env.NEARBYTES_DESKTOP_SESSION_FILE.trim().length > 0
     ? path.resolve(process.env.NEARBYTES_DESKTOP_SESSION_FILE)
     : path.join(os.homedir(), '.nearbytes', 'desktop-session.json');
-const apiUrl = 'http://127.0.0.1:3000/config/roots';
+const apiUrl = `http://127.0.0.1:${backendPort}/config/roots`;
 const devUiPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
 const devUiHost = '127.0.0.1';
 const devUiUrl = `http://${devUiHost}:${devUiPort}`;
+const rootsConfigPath = process.env.NEARBYTES_ROOTS_CONFIG?.trim() ? path.resolve(process.env.NEARBYTES_ROOTS_CONFIG) : null;
+const appConfigPath = process.env.NEARBYTES_APP_CONFIG?.trim() ? path.resolve(process.env.NEARBYTES_APP_CONFIG) : null;
 
 await main();
 
@@ -25,7 +34,15 @@ async function main() {
   await killPreviousSession();
   await ensureBackendBuild();
 
-  const backend = spawn(process.execPath, ['dist/server/index.js'], {
+  const backendArgs = ['dist/server/index.js'];
+  if (rootsConfigPath) {
+    backendArgs.push('--roots-config', rootsConfigPath);
+  }
+  if (appConfigPath) {
+    backendArgs.push('--app-config', appConfigPath);
+  }
+
+  const backend = spawn(process.execPath, backendArgs, {
     cwd: repoRoot,
     env: {
       ...process.env,

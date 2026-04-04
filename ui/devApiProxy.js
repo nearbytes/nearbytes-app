@@ -3,7 +3,7 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 
-const DEFAULT_SERVER_PROXY_TARGET = 'http://127.0.0.1:3000';
+const DEFAULT_SERVER_PROXY_TARGET = `http://127.0.0.1:${parsePort(process.env.PORT, 3000)}`;
 const DESKTOP_SESSION_PATH = process.env.NEARBYTES_DESKTOP_SESSION_FILE?.trim()
   ? path.resolve(process.env.NEARBYTES_DESKTOP_SESSION_FILE)
   : path.join(os.homedir(), '.nearbytes', 'desktop-session.json');
@@ -172,6 +172,14 @@ export async function waitForRecoverableProxyTarget(_previousSession) {
 
 export function getProxyTargetUrl(session) {
   return new URL(session ? `http://127.0.0.1:${session.port}` : DEFAULT_SERVER_PROXY_TARGET);
+}
+
+function parsePort(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 async function probeProxyTarget(targetUrl, session) {
