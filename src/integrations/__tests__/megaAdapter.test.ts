@@ -1771,7 +1771,8 @@ describe('MegaTransportAdapter', () => {
       ])
     );
 
-    let pkPayload: Record<string, unknown> | null = null;
+  let pkPayload: Record<string, unknown> | null = null;
+  let kPayload: Record<string, unknown> | null = null;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (url.startsWith('https://g.api.mega.co.nz/cs')) {
@@ -1847,6 +1848,12 @@ describe('MegaTransportAdapter', () => {
               status: 200,
               headers: { 'content-type': 'application/json' },
             });
+          case 'k':
+            kPayload = payload;
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
           default:
             throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
         }
@@ -1905,6 +1912,20 @@ describe('MegaTransportAdapter', () => {
     expect(committedPendingKeyPayload.h).toBe(shareHandle);
     const pairwiseKey = deriveMegaPairwiseKey(ownerPrivateCu25519, friendPublicCu25519);
     expect(decryptAesEcb(decodeMegaBase64Url(String(committedPendingKeyPayload.k)), pairwiseKey)).toEqual(shareKey);
+
+    expect(kPayload).toBeDefined();
+    if (!kPayload) {
+      throw new Error('Expected owner sync healing to republish tree keys.');
+    }
+    const committedTreeKeyPayload: Record<string, unknown> = kPayload;
+    const treeKeyRecords = Array.isArray(committedTreeKeyPayload.cr) ? committedTreeKeyPayload.cr : [];
+    const treeKeyShares = Array.isArray(treeKeyRecords[0]) ? treeKeyRecords[0] : [];
+    const treeKeyItems = Array.isArray(treeKeyRecords[1]) ? treeKeyRecords[1] : [];
+    const treeKeyLinks = Array.isArray(treeKeyRecords[2]) ? treeKeyRecords[2] : [];
+    expect(treeKeyShares).toEqual([shareHandle]);
+    expect(treeKeyItems).toEqual(expect.arrayContaining([shareHandle, 'blocks0001', 'chans00001']));
+    expect(treeKeyLinks.length).toBeGreaterThanOrEqual(9);
+    expect(decryptAesEcb(decodeMegaBase64Url(String(treeKeyLinks[2])), shareKey)).toEqual(nearbytesNodeKey);
 
     await adapter.detachManagedShare(share, account);
     await adapter.dispose();

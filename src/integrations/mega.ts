@@ -2841,81 +2841,20 @@ export class MegaTransportAdapter {
 
     try {
       const snapshot = await this.fetchNodesSnapshot(session, signal);
-      const inviteTargets = collectMegaOwnerShareInviteTargets(snapshot, root.root.handle, root.root.shareHandle);
-      const usersByHandle = buildMegaUsersByHandle(snapshot);
-      const pendingContactsByHandle = new Map<string, string>();
-      for (const pending of snapshot.outgoingPendingContacts) {
-        const handle = typeof pending.p === 'string' ? pending.p.trim() : '';
-        const email = typeof pending.e === 'string' ? pending.e.trim().toLowerCase() : '';
-        if (handle && email) {
-          pendingContactsByHandle.set(handle, email);
-        }
-      }
-      const accessLevels = new Map<string, number>();
-      for (const record of [...snapshot.outgoingShares, ...snapshot.pendingShares]) {
-        const handles = megaOutgoingShareRecordNodeHandles(record);
-        if (
-          !handles.some(
-            (handle) =>
-              handle === root.root.handle ||
-              (typeof root.root.shareHandle === 'string' && root.root.shareHandle.trim() !== '' && handle === root.root.shareHandle.trim())
-          )
-        ) {
-          continue;
-        }
-        const userHandle = typeof record.u === 'string' ? record.u.trim() : '';
-        const accessLevel = Number.isFinite(Number(record.r ?? 0)) ? Number(record.r ?? 0) : 0;
-        if (userHandle) {
-          accessLevels.set(`u:${userHandle}`, accessLevel);
-        }
-        const email = resolveOutgoingSharePeerEmail(record, usersByHandle, pendingContactsByHandle)?.trim().toLowerCase();
-        if (email) {
-          accessLevels.set(`e:${email}`, accessLevel);
-        }
-      }
-      const targets = inviteTargets.map((target) => ({
-        target,
-        accessLevel: accessLevels.get(`u:${target.u}`)
-          ?? (target.e ? accessLevels.get(`e:${target.e.trim().toLowerCase()}`) : undefined)
-          ?? 0,
-      }));
-      if (targets.length === 0) {
+      const targetCount = countMegaOwnerSharePeers(snapshot, root.root.handle, root.root.shareHandle);
+      if (targetCount === 0) {
         this.ownerShareTreeHealAt.set(cooldownKey, Date.now());
         return;
       }
 
-      for (const target of targets) {
-        try {
-          await this.republishOwnerShareTreeNodeKeysForTarget(
-            session,
-            root,
-            shareCrypto,
-            target.target,
-            Number.isFinite(target.accessLevel) ? target.accessLevel : 0,
-            signal
-          );
-        } catch (error) {
-          const code = getMegaApiErrorCode(error);
-          if (code === -3) {
-            this.runtime.logger.warn('MEGA owner share tree republish was rejected; leaving the current collaborator share in place.', {
-              shareId: share.id,
-              accountId: share.accountId,
-              shareHandle: shareCrypto.shareHandle,
-              target: target.target.e ?? target.target.u,
-              accessLevel: target.accessLevel,
-            });
-            continue;
-          }
-          throw error;
-        }
-      }
+      await this.republishOwnerShareTreeNodeKeys(session, root, shareCrypto, signal);
       await this.rememberOwnerShareKey(session, root, shareCrypto.shareKey);
       this.ownerShareTreeHealAt.set(cooldownKey, Date.now());
       this.runtime.logger.log('MEGA owner share tree key republish completed.', {
         shareId: share.id,
         accountId: share.accountId,
         shareHandle: shareCrypto.shareHandle,
-        targetCount: targets.length,
+        targetCount,
         nodeCount: root.tree.nodesByHandle.size,
       });
     } catch (error) {
@@ -2929,39 +2868,22 @@ export class MegaTransportAdapter {
     }
   }
 
-  private async republishOwnerShareTreeNodeKeysForTarget(
+  private async republishOwnerShareTreeNodeKeys(
     session: MegaSession,
     root: MegaOwnerRemoteRoot,
     shareCrypto: MegaShareCryptoContext,
-    target: MegaShareInviteTarget,
-    accessLevel: number,
     signal?: AbortSignal
-  ): Promise<MegaShareInviteTarget> {
-    const command = buildMegaSetShareCommand(root, session, target, accessLevel, {
-      includeNodeKeyRecords: true,
-      shareKey: shareCrypto.shareKey,
-    });
-    try {
-      await this.apiCommand(command.command, session, signal);
-      return target;
-    } catch (error) {
-      const code = getMegaApiErrorCode(error);
-      const canFallbackToDirectEmail =
-        code === -3 &&
-        typeof target.e === 'string' &&
-        target.e.trim().length > 0 &&
-        target.e.trim() !== target.u.trim();
-      if (!canFallbackToDirectEmail) {
-        throw error;
-      }
-      const fallbackTarget: MegaShareInviteTarget = { u: target.e!.trim() };
-      const fallbackCommand = buildMegaSetShareCommand(root, session, fallbackTarget, accessLevel, {
-        includeNodeKeyRecords: true,
-        shareKey: shareCrypto.shareKey,
-      });
-      await this.apiCommand(fallbackCommand.command, session, signal);
-      return fallbackTarget;
+  ): Promise<void> {
+    const shareHandle = root.root.handle.trim();
+    if (!shareHandle) {
+      throw new Error('MEGA owner share tree republish requires a share handle.');
     }
+
+    const command: Record<string, unknown> = {
+      a: 'k',
+      cr: buildMegaShareNodeKeyRecords(root, shareCrypto.shareKey),
+    };
+    await this.apiCommand(command, session, signal);
   }
 
   private async replayMissingOwnerManagedShareInvitesInline(
@@ -4288,6 +4210,14 @@ function snapshotReflectsOutgoingInvitees(
     }
   }
   return expectedLowercaseEmails.every((email) => fromCollaborators.has(email) || fromRawRows.has(email));
+}
+
+function countMegaOwnerSharePeers(
+  snapshot: MegaFetchNodesSnapshot,
+  rootNodeHandle: string,
+  rootShareHandle?: string
+): number {
+  return collectMegaOwnerShareInviteTargets(snapshot, rootNodeHandle, rootShareHandle).length;
 }
 
 function snapshotHasOutgoingShareForRoot(
