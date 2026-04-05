@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorBadge from './ErrorBadge.svelte';
   import type { Snippet } from 'svelte';
 
   export type ShareCardBadgeTone = 'good' | 'warn' | 'muted' | 'durable' | 'replica' | 'off';
@@ -38,9 +39,18 @@
     {#if statusBadges.length > 0}
       <span class="card-head-badges">
         {#each statusBadges as badge}
-          <span class={`status-pill tone-${badge.tone ?? 'muted'}`} title={badge.description ?? badge.label}>
-            {badge.label}
-          </span>
+          {#if badge.tone === 'warn' && badge.description?.trim()}
+            <ErrorBadge
+              label={badge.label}
+              description={badge.description}
+              title={title}
+              tone={badge.tone}
+            />
+          {:else}
+            <span class={`status-pill tone-${badge.tone ?? 'muted'}`} title={badge.description ?? badge.label}>
+              {badge.label}
+            </span>
+          {/if}
         {/each}
       </span>
     {/if}

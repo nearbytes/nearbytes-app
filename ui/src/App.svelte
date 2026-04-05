@@ -936,14 +936,15 @@
   }
 
   function mountDisplayLabel(mount: VolumeMount): string {
+    const passwordLabel = trimSecretPart(mount.password) !== '' ? ' · password' : '';
     if (trimSecretPart(mount.secretFileName) !== '') {
-      return trimSecretPart(mount.secretFileName);
+      return `${trimSecretPart(mount.secretFileName)} · file`;
     }
     const seedLabel = trimSecretPart(mount.address);
     if (seedLabel !== '') {
-      return seedLabel;
+      return `${seedLabel}${passwordLabel}`;
     }
-      return mount.volumeId ? 'Shared hub' : '';
+    return mount.volumeId ? 'Shared hub' : '';
   }
 
   function base64UrlToBase64(value: string): string {

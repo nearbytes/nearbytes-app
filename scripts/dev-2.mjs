@@ -48,6 +48,7 @@ const localBaseUrl = `http://127.0.0.1:${localPort}`;
 const remoteBaseUrl = `http://127.0.0.1:${remotePort}`;
 const localUiUrl = `http://127.0.0.1:${localUiPort}`;
 const remoteUiUrl = `http://127.0.0.1:${remoteUiPort}`;
+const cliOptions = parseCliOptions(process.argv.slice(2));
 
 const children = [];
 let shuttingDown = false;
@@ -110,6 +111,7 @@ try {
   const shouldWipe = await confirmDestructiveWipe({
     localEmail,
     remoteEmail,
+    mode: cliOptions.wipeMode,
   });
   if (shouldWipe) {
     process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = '1';
@@ -385,7 +387,15 @@ function waitForExit(child) {
   });
 }
 
-async function confirmDestructiveWipe({ localEmail, remoteEmail }) {
+async function confirmDestructiveWipe({ localEmail, remoteEmail, mode }) {
+  if (mode === 'wipe') {
+    console.error('[dev-2] destructive wipe forced by --wipe');
+    return true;
+  }
+  if (mode === 'skip') {
+    console.error('[dev-2] destructive wipe skipped by --no-wipe');
+    return false;
+  }
   console.error('[dev-2] destructive action available');
   console.error(`[dev-2] local account: ${localEmail}`);
   console.error(`[dev-2] remote account: ${remoteEmail}`);
@@ -400,6 +410,20 @@ async function confirmDestructiveWipe({ localEmail, remoteEmail }) {
   } finally {
     rl.close();
   }
+}
+
+function parseCliOptions(argv) {
+  let wipeMode = 'prompt';
+  for (const arg of argv) {
+    if (arg === '--wipe') {
+      wipeMode = 'wipe';
+      continue;
+    }
+    if (arg === '--no-wipe') {
+      wipeMode = 'skip';
+    }
+  }
+  return { wipeMode };
 }
 
 function appendLog(filePath, text) {
