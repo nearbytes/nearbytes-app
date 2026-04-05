@@ -3251,6 +3251,12 @@ export class MegaTransportAdapter {
       return false;
     }
     const handles = collectRecipientImmediatePacketHandles(actionBatch.packets, rootHandle);
+    debugMegaLog('[MEGA:immediate-apply] candidate handles resolved.', {
+      shareId: share.id,
+      rootHandle,
+      handles,
+      actions: summarizeActionPacketActions(actionBatch.packets),
+    });
     if (handles.length === 0) {
       return false;
     }
@@ -3259,6 +3265,7 @@ export class MegaTransportAdapter {
       return this.withRecoveredAccountSession(account, async (session) => {
         const nextEntries = { ...manifest.entries };
         const handlePathIndex = buildManifestHandlePathIndex(nextEntries);
+        let appliedCount = 0;
 
         for (const handle of handles) {
           const applied = await this.applyRecipientHandleUpdate(
@@ -3277,8 +3284,18 @@ export class MegaTransportAdapter {
             }
           );
           if (!applied) {
-            return false;
+            continue;
           }
+          appliedCount += 1;
+        }
+
+        if (appliedCount === 0) {
+          debugMegaLog('[MEGA:immediate-apply] no candidate handle could be applied.', {
+            shareId: share.id,
+            rootHandle,
+            handles,
+          });
+          return false;
         }
 
         const nextManifest: MegaMirrorManifest = {
@@ -3338,7 +3355,19 @@ export class MegaTransportAdapter {
     });
     const fetchCompletedAt = this.runtime.now();
     const baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
-    if (!baseRelativePath || !isMirrorRelativePath(baseRelativePath)) {
+    const isMirrorContainer = baseRelativePath ? isMirrorContainerPath(baseRelativePath) : false;
+    if (!baseRelativePath || (!isMirrorRelativePath(baseRelativePath) && !isMirrorContainer)) {
+      debugMegaLog('[MEGA:immediate-apply] fetched subtree could not be resolved to a mirror path.', {
+        shareId: share.id,
+        rootHandle,
+        handle,
+        fetchedRootHandle: fetched.tree.root.handle,
+        fetchedRootName: fetched.tree.root.name,
+        fetchedRootParentHandle: fetched.tree.root.parentHandle,
+        baseRelativePath,
+        knownParentPath: fetched.tree.root.parentHandle ? handlePathIndex.get(fetched.tree.root.parentHandle) : undefined,
+        knownHandlePath: handlePathIndex.get(fetched.tree.root.handle),
+      });
       return false;
     }
 
@@ -3348,15 +3377,17 @@ export class MegaTransportAdapter {
       fetchCompletedAt,
     };
 
-    await this.applyRecipientFetchedNode(
-      share,
-      session,
-      fetched.tree.root,
-      baseRelativePath,
-      entries,
-      handlePathIndex,
-      resolvedProbeContext
-    );
+    if (!isMirrorContainer) {
+      await this.applyRecipientFetchedNode(
+        share,
+        session,
+        fetched.tree.root,
+        baseRelativePath,
+        entries,
+        handlePathIndex,
+        resolvedProbeContext
+      );
+    }
     await visitTree(fetched.tree, async (relativePath, node) => {
       const fullRelativePath = normalizeRelativePath(path.join(baseRelativePath, relativePath));
       if (!isMirrorRelativePath(fullRelativePath)) {
@@ -3399,6 +3430,21 @@ export class MegaTransportAdapter {
       return;
     }
 
+    const nextEntry = createProviderRefreshManifestEntry(node);
+    const existingEntry = entries[relativePath];
+    if (
+      existingEntry?.kind === 'file' &&
+      existingEntry.fingerprint === nextEntry.fingerprint &&
+      existingEntry.handle === nextEntry.handle
+    ) {
+      const localFileExists = await fs.access(targetPath).then(() => true).catch(() => false);
+      if (localFileExists) {
+        entries[relativePath] = nextEntry;
+        handlePathIndex.set(node.handle, relativePath);
+        return;
+      }
+    }
+
     const receiveProbe = this.createManagedShareReceiveProbe(share.id, relativePath, node, probeContext);
     const remoteBytes = await downloadAuthenticatedMegaFileContent(
       this.fetchImpl,
@@ -3437,7 +3483,7 @@ export class MegaTransportAdapter {
       packetToLocalVisibleMs: Math.max(0, localVisibleAt - receiveProbe.packetReceivedAt),
       status: 'applied',
     });
-    entries[relativePath] = createProviderRefreshManifestEntry(node);
+    entries[relativePath] = nextEntry;
     handlePathIndex.set(node.handle, relativePath);
   }
 
@@ -4484,6 +4530,10 @@ class MegaOwnerRemoteAdapter {
 
 function isMirrorRelativePath(value: string): boolean {
   return value.startsWith('blocks/') || value.startsWith('channels/');
+}
+
+function isMirrorContainerPath(value: string): boolean {
+  return value === 'blocks' || value === 'channels';
 }
 
 function summarizeOwnerMirrorResult(
@@ -7938,19 +7988,42 @@ function collectRecipientImmediatePacketHandles(
   packets: readonly Record<string, unknown>[],
   rootHandle: string
 ): string[] {
-  const handles = new Set<string>();
+  const handles: string[] = [];
+  const seen = new Set<string>();
+  const addHandle = (handle: string | undefined): void => {
+    const normalized = handle?.trim();
+    if (!normalized || normalized === rootHandle || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    handles.push(normalized);
+  };
+
   for (const packet of packets) {
     const action = typeof packet.a === 'string' ? packet.a.trim() : '';
     if (action === 't') {
-      return [];
+      const tree = packet.t;
+      const fetchedNodes =
+        tree && typeof tree === 'object' && Array.isArray((tree as { f?: unknown }).f)
+          ? (tree as { f: unknown[] }).f
+          : [];
+      for (const node of fetchedNodes) {
+        if (!node || typeof node !== 'object') {
+          continue;
+        }
+        const parentHandle = typeof (node as { p?: unknown }).p === 'string' ? (node as { p: string }).p : undefined;
+        if (parentHandle && parentHandle.trim() && parentHandle.trim() !== rootHandle) {
+          addHandle(parentHandle);
+        }
+        addHandle(typeof (node as { h?: unknown }).h === 'string' ? (node as { h: string }).h : undefined);
+      }
+      continue;
     }
     for (const handle of collectActionPacketHandles(packet)) {
-      if (handle !== rootHandle) {
-        handles.add(handle);
-      }
+      addHandle(handle);
     }
   }
-  return [...handles];
+  return handles;
 }
 
 function extractMegaShareKeysFromActionPackets(
