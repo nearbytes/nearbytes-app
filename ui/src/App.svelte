@@ -59,12 +59,27 @@
   } from './lib/nearbytesReferenceTransfer.js';
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import {
-    getDesktopBridge,
     type DesktopRemoteFile,
     type DesktopUpdaterState,
-    type NearbytesDesktopBridge,
     type PersistedUiState,
   } from './lib/host/desktopBridge.js';
+  import {
+    canWipeStoredConfig,
+    connectDesktopDeepLinks,
+    exportDesktopLogoPng,
+    fetchDesktopRemoteFile,
+    getDesktopClipboardImageStatus,
+    loadDesktopUiState,
+    readDesktopClipboardImage,
+    readDesktopUpdaterState,
+    requestDesktopUpdateInstall,
+    requestDesktopUpdateReleasePage,
+    saveDesktopThemeRegistry,
+    saveDesktopUiState,
+    subscribeDesktopDeepLinks,
+    subscribeDesktopUpdaterState,
+    wipeStoredConfig,
+  } from './lib/host/desktopShell.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AppDialog from './components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
@@ -1277,29 +1292,21 @@
   }
 
   async function handleDesktopUpdaterPrimaryAction(): Promise<void> {
-    const bridge = getDesktopBridge();
-    if (!bridge || !desktopUpdaterState) {
+    if (!desktopUpdaterState) {
       return;
     }
-    if (desktopUpdaterState.canInstall && typeof bridge.installDownloadedUpdate === 'function') {
-      await bridge.installDownloadedUpdate();
+    if (desktopUpdaterState.canInstall && (await requestDesktopUpdateInstall())) {
       return;
     }
-    if (typeof bridge.openUpdateReleasePage === 'function') {
-      await bridge.openUpdateReleasePage();
-    }
+    await requestDesktopUpdateReleasePage();
   }
 
   async function openDesktopUpdaterReleasePage(): Promise<void> {
-    const bridge = getDesktopBridge();
-    if (!bridge || typeof bridge.openUpdateReleasePage !== 'function') {
-      return;
-    }
-    await bridge.openUpdateReleasePage();
+    await requestDesktopUpdateReleasePage();
   }
 
   function openResetDialog(): void {
-    if (!getDesktopBridge()?.wipeStoredConfig) {
+    if (!canWipeStoredConfig()) {
       return;
     }
     resetDialogDeleteLocalData = false;
@@ -1318,15 +1325,10 @@
   }
 
   async function confirmStoredConfigReset(): Promise<void> {
-    const bridge = getDesktopBridge();
-    if (!bridge || typeof bridge.wipeStoredConfig !== 'function') {
-      resetDialogError = 'Desktop reset controls are unavailable in this build.';
-      return;
-    }
     resetDialogBusy = true;
     resetDialogError = '';
     try {
-      await bridge.wipeStoredConfig({
+      await wipeStoredConfig({
         deleteLocalData: resetDialogDeleteLocalData,
       });
     } catch (error) {
@@ -1345,12 +1347,10 @@
   }
 
   async function fileFromDesktopRemoteDrop(descriptor: RemoteDropDescriptor): Promise<File | null> {
-    const bridge = getDesktopBridge();
-    if (!bridge || typeof bridge.fetchRemoteFile !== 'function') {
+    const fetched = await fetchDesktopRemoteFile(descriptor.url);
+    if (!fetched) {
       return null;
     }
-
-    const fetched = await bridge.fetchRemoteFile(descriptor.url);
     const bytes = base64ToBytes(fetched.bytesBase64);
     const mimeType = trimSecretPart(fetched.mimeType) || descriptor.mimeType || 'application/octet-stream';
     let filename = trimSecretPart(fetched.filename) || trimSecretPart(descriptor.filename ?? '');
@@ -1368,12 +1368,7 @@
   }
 
   async function fileFromClipboardImage(): Promise<File | null> {
-    const bridge = getDesktopBridge();
-    if (!bridge || typeof bridge.readClipboardImage !== 'function') {
-      return null;
-    }
-
-    const clipboardFile = await bridge.readClipboardImage();
+    const clipboardFile = await readDesktopClipboardImage();
     if (!clipboardFile) {
       return null;
     }
@@ -1668,11 +1663,7 @@
     nextRegistry: NearbytesThemeRegistry,
     successMessage: string
   ): Promise<void> {
-    const bridge = getDesktopBridge();
-    if (!bridge || typeof bridge.saveThemeRegistry !== 'function') {
-      throw new Error('Desktop theme registry save is unavailable.');
-    }
-    const result = await bridge.saveThemeRegistry(nextRegistry);
+    const result = await saveDesktopThemeRegistry(nextRegistry);
     themeDialogFeedback = {
       tone: 'success',
       message: result?.path ? `${successMessage} ${result.path}` : successMessage,
@@ -1722,11 +1713,6 @@
     if (!isDevThemeStudio) {
       return;
     }
-    const bridge = getDesktopBridge();
-    if (!bridge || typeof bridge.exportLogoPng !== 'function') {
-      themeDialogError = 'Desktop logo export is unavailable.';
-      return;
-    }
     themeDialogBusy = true;
     themeDialogError = '';
     themeDialogFeedback = null;
@@ -1735,7 +1721,7 @@
       if (!dataUrl) {
         throw new Error('Logo preview is not ready yet.');
       }
-      const result = await bridge.exportLogoPng(dataUrl);
+      const result = await exportDesktopLogoPng(dataUrl);
       themeDialogFeedback = {
         tone: 'success',
         message:
@@ -1804,68 +1790,48 @@
     latestSourceDiscoveryRunKey = localDiscoveryState.latestRunKey;
     lastAcknowledgedSourceDiscoveryRunKey = localDiscoveryState.lastAcknowledgedRunKey;
 
-    const bridge = getDesktopBridge();
     let cancelUpdaterSubscription: (() => void) | null = null;
     let cancelDeepLinkSubscription: (() => void) | null = null;
-    if (bridge) {
-      if (typeof bridge.getUpdaterState === 'function') {
-        void bridge
-          .getUpdaterState()
-          .then((nextState) => {
-            const normalized = normalizeDesktopUpdaterState(nextState);
-            if (normalized) {
-              desktopUpdaterState = normalized;
-            }
-          })
-          .catch((error) => {
-            console.warn('Failed to read desktop updater state:', error);
-          });
-      }
-      if (typeof bridge.onUpdaterState === 'function') {
-        const unsubscribe = bridge.onUpdaterState((nextState) => {
-          const normalized = normalizeDesktopUpdaterState(nextState);
-          if (normalized) {
-            desktopUpdaterState = normalized;
-          }
-        });
-        if (typeof unsubscribe === 'function') {
-          cancelUpdaterSubscription = unsubscribe;
-        }
-      }
-      if (typeof bridge.onDeepLink === 'function') {
-        const unsubscribe = bridge.onDeepLink((url) => {
-          void handleDesktopDeepLink(url);
-        });
-        if (typeof unsubscribe === 'function') {
-          cancelDeepLinkSubscription = unsubscribe;
-        }
-      }
-      if (typeof bridge.connectDeepLinks === 'function') {
-        void bridge
-          .connectDeepLinks()
-          .then((urls) => {
-            for (const url of urls) {
-              void handleDesktopDeepLink(url);
-            }
-          })
-          .catch((error) => {
-            console.warn('Failed to connect desktop deep link stream:', error);
-          });
-      }
-    }
-    if (!bridge || typeof bridge.loadUiState !== 'function') {
-      persistedUiStateReady = true;
-      return () => {
-        cancelUpdaterSubscription?.();
-        cancelDeepLinkSubscription?.();
-      };
-    }
 
-    const loadUiState = bridge.loadUiState;
+    void readDesktopUpdaterState()
+      .then((nextState) => {
+        const normalized = normalizeDesktopUpdaterState(nextState);
+        if (normalized) {
+          desktopUpdaterState = normalized;
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to read desktop updater state:', error);
+      });
+
+    cancelUpdaterSubscription = subscribeDesktopUpdaterState((nextState) => {
+      const normalized = normalizeDesktopUpdaterState(nextState);
+      if (normalized) {
+        desktopUpdaterState = normalized;
+      }
+    });
+
+    cancelDeepLinkSubscription = subscribeDesktopDeepLinks((url) => {
+      void handleDesktopDeepLink(url);
+    });
+
+    void connectDesktopDeepLinks()
+      .then((urls) => {
+        for (const url of urls) {
+          void handleDesktopDeepLink(url);
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to connect desktop deep link stream:', error);
+      });
 
     void (async () => {
       try {
-        const nextState = choosePreferredPersistedUiState(await loadUiState(), loadPersistedUiStateLocally());
+        const persistedState = await loadDesktopUiState();
+        if (!persistedState) {
+          return;
+        }
+        const nextState = choosePreferredPersistedUiState(persistedState, loadPersistedUiStateLocally());
         const hasPersistedMounts = Object.prototype.hasOwnProperty.call(nextState ?? {}, 'volumeMounts');
         const nextMounts = normalizeMounts(nextState.volumeMounts);
         if (hasPersistedMounts) {
@@ -1972,18 +1938,12 @@
       return;
     }
 
-    const bridge = getDesktopBridge();
-    if (!bridge || typeof bridge.getClipboardImageStatus !== 'function') {
-      clipboardImageAvailable = false;
-      return;
-    }
-
     let cancelled = false;
     let pollingTimer: ReturnType<typeof setInterval> | null = null;
 
     const refresh = async () => {
       try {
-        const status = await bridge.getClipboardImageStatus?.();
+        const status = await getDesktopClipboardImageStatus();
         if (!cancelled) {
           clipboardImageAvailable = Boolean(status?.hasImage);
         }
@@ -2071,15 +2031,14 @@
     };
     const desktopPayload = clonePersistedUiStateForBridge(payload);
     persistUiStateLocally(payload);
-    const bridge = getDesktopBridge();
     const persistTimer = setTimeout(() => {
-      if (bridge && typeof bridge.saveUiState === 'function') {
-        void bridge.saveUiState(desktopPayload).catch((error) => {
+      void saveDesktopUiState(desktopPayload).then((saved) => {
+        if (!saved) {
+          persistUiStateLocally(payload);
+        }
+      }).catch((error) => {
           console.warn('Failed to persist desktop volume mounts:', error);
-        });
-        return;
-      }
-      persistUiStateLocally(payload);
+      });
     }, 120);
 
     return () => {
@@ -2107,15 +2066,14 @@
     };
     const desktopPayload = clonePersistedUiStateForBridge(payload);
     persistUiStateLocally(payload);
-    const bridge = getDesktopBridge();
     const persistTimer = setTimeout(() => {
-      if (bridge && typeof bridge.saveUiState === 'function') {
-        void bridge.saveUiState(desktopPayload).catch((error) => {
+      void saveDesktopUiState(desktopPayload).then((saved) => {
+        if (!saved) {
+          persistUiStateLocally(payload);
+        }
+      }).catch((error) => {
           console.warn('Failed to persist desktop source discovery state:', error);
-        });
-        return;
-      }
-      persistUiStateLocally(payload);
+      });
     }, 120);
 
     return () => {
@@ -2134,15 +2092,14 @@
     };
     const desktopPayload = clonePersistedUiStateForBridge(payload);
     persistUiStateLocally(payload);
-    const bridge = getDesktopBridge();
     const persistTimer = setTimeout(() => {
-      if (bridge && typeof bridge.saveUiState === 'function') {
-        void bridge.saveUiState(desktopPayload).catch((error) => {
+      void saveDesktopUiState(desktopPayload).then((saved) => {
+        if (!saved) {
+          persistUiStateLocally(payload);
+        }
+      }).catch((error) => {
           console.warn('Failed to persist desktop theme state:', error);
-        });
-        return;
-      }
-      persistUiStateLocally(payload);
+      });
     }, 120);
 
     return () => {
@@ -2167,12 +2124,9 @@
       };
       const desktopPayload = clonePersistedUiStateForBridge(payload);
       persistUiStateLocally(payload);
-      const bridge = getDesktopBridge();
-      if (bridge && typeof bridge.saveUiState === 'function') {
-        void bridge.saveUiState(desktopPayload).catch((error) => {
+      void saveDesktopUiState(desktopPayload).catch((error) => {
           console.warn('Failed to flush desktop UI state:', error);
-        });
-      }
+      });
     };
 
     window.addEventListener('beforeunload', flushPersistedUiState);
@@ -6329,7 +6283,7 @@
                 >
                   <UserRound class="button-icon" size={14} strokeWidth={2} />
                 </button>
-                {#if getDesktopBridge()?.wipeStoredConfig}
+                {#if canWipeStoredConfig()}
                   <button
                     type="button"
                     class="header-tool-btn"

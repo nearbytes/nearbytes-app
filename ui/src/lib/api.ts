@@ -945,6 +945,13 @@ import {
   type DesktopRuntimeLogsResponse,
 } from './host/desktopBridge.js';
 import {
+  chooseDesktopDirectoryPath,
+  hasDesktopDirectoryPicker as shellHasDesktopDirectoryPicker,
+  hasDesktopRuntimeLogsBridge as shellHasDesktopRuntimeLogsBridge,
+  readDesktopRuntimeLogs as shellReadDesktopRuntimeLogs,
+  tryRevealPathInFileManager,
+} from './host/desktopShell.js';
+import {
   openHostStream,
   requestHostBlob,
   requestHostJson,
@@ -1020,30 +1027,20 @@ function createAuthHeaders(auth: Auth): HeadersInit {
 }
 
 export function hasDesktopDirectoryPicker(): boolean {
-  const bridge = getDesktopBridge();
-  return Boolean(bridge && typeof bridge.chooseDirectory === 'function');
+  return shellHasDesktopDirectoryPicker();
 }
 
 export async function chooseDirectoryPath(initialPath = ''): Promise<string | null> {
-  const bridge = getDesktopBridge();
-  if (!bridge || typeof bridge.chooseDirectory !== 'function') {
-    return null;
-  }
-  return bridge.chooseDirectory(initialPath);
+  return chooseDesktopDirectoryPath(initialPath);
 }
 
 export async function readDesktopRuntimeLogs(): Promise<DesktopRuntimeLogsResponse | null> {
-  const bridge = getDesktopBridge();
-  if (!bridge || typeof bridge.readRuntimeLogs !== 'function') {
-    return null;
-  }
-  return bridge.readRuntimeLogs();
+  return shellReadDesktopRuntimeLogs();
 }
 
 /** True when the desktop bridge can read dev backend log files (stdout/stderr tails). Not used for native MEGA sync state. */
 export function hasDesktopRuntimeLogsBridge(): boolean {
-  const bridge = getDesktopBridge();
-  return Boolean(bridge && typeof bridge.readRuntimeLogs === 'function');
+  return shellHasDesktopRuntimeLogsBridge();
 }
 
 /**
@@ -1367,9 +1364,7 @@ export async function repairStorageLocation(
  * Opens an explicit path in the OS file manager.
  */
 export async function openPathInFileManager(targetPath: string): Promise<void> {
-  const bridge = getDesktopBridge();
-  if (bridge && typeof bridge.revealPathInFileManager === 'function') {
-    await bridge.revealPathInFileManager(targetPath);
+  if (await tryRevealPathInFileManager(targetPath)) {
     return;
   }
   await apiRequest('/config/open-path-in-file-manager', {
