@@ -1,5 +1,6 @@
 <script lang="ts">
   import { HardDrive, KeyRound, Link2 } from 'lucide-svelte';
+  import StatusNotice from './StatusNotice.svelte';
 
   type ShareLinkFeedback = { tone: 'success' | 'warning'; message: string } | null;
 
@@ -71,12 +72,21 @@
       If the secret payload is too large for nearbytes://, Nearbytes copies raw share data JSON instead. The recipient can still use it by pasting that text into Open from clipboard.
     </p>
     {#if !canCopySecretLink}
-      <p class="share-link-note warning">Open this hub from its secret on this device before copying the secret payload variant.</p>
+      <StatusNotice
+        tone="warning"
+        compact={true}
+        title="Secret payload unavailable"
+        message="Open this hub from its secret on this device before copying the secret payload variant."
+      />
     {/if}
   </div>
 
   {#if shareLinkFeedback}
-    <p class:warning={shareLinkFeedback.tone === 'warning'} class="share-link-feedback">{shareLinkFeedback.message}</p>
+    <StatusNotice
+      tone={shareLinkFeedback.tone === 'warning' ? 'warning' : 'success'}
+      compact={true}
+      message={shareLinkFeedback.message}
+    />
   {/if}
 </section>
 
@@ -108,8 +118,7 @@
   .share-link-copy,
   .share-link-summary-label,
   .share-link-summary,
-  .share-link-note,
-  .share-link-feedback {
+  .share-link-note {
     margin: 0;
   }
 
@@ -128,8 +137,7 @@
 
   .share-link-copy,
   .share-link-summary,
-  .share-link-note,
-  .share-link-feedback {
+  .share-link-note {
     font-size: 0.83rem;
     line-height: 1.5;
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
@@ -193,11 +201,6 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--nb-text-faint, rgba(110, 110, 115, 0.76));
-  }
-
-  .share-link-note.warning,
-  .share-link-feedback.warning {
-    color: rgba(126, 76, 34, 0.96);
   }
 
   @media (max-width: 720px) {

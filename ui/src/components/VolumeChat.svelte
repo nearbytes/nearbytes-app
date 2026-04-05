@@ -25,6 +25,7 @@
     Send,
     X,
   } from 'lucide-svelte';
+  import StatusNotice from './StatusNotice.svelte';
 
   let {
     auth = null,
@@ -466,7 +467,7 @@
   {/if}
 
   {#if errorMessage}
-    <p class="chat-banner error">{errorMessage}</p>
+    <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
   {/if}
 
   <div class="chat-layout">
@@ -721,8 +722,7 @@
     color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
   }
 
-  .chat-status-pill,
-  .chat-banner {
+  .chat-status-pill {
     border-radius: 999px;
     padding: 0.28rem 0.82rem;
     font-size: 0.72rem;
@@ -733,16 +733,6 @@
     background: color-mix(in srgb, var(--nb-accent, #d27a54) 7%, #fff9f4);
     border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 12%, transparent);
     color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
-  }
-
-  .chat-banner {
-    align-self: flex-start;
-    margin: 0.72rem 1rem 0;
-  }
-
-  .chat-banner.error {
-    background: var(--chat-warning-bg);
-    color: var(--chat-warning-text);
   }
 
   .chat-layout {

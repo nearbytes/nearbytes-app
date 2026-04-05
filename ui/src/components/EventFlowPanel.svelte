@@ -13,6 +13,7 @@
     type VolumeWatchUpdate,
     type SourceWatchUpdate,
   } from '../lib/api.js';
+  import StatusNotice from './StatusNotice.svelte';
 
   let {
     auth = undefined,
@@ -686,7 +687,7 @@
   </div>
 
   {#if error}
-    <div class="ef-error">{error}</div>
+    <StatusNotice tone="error" role="alert" compact={true} message={error} />
   {/if}
 
   <div class="ef-canvas-wrap">

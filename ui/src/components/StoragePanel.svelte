@@ -65,6 +65,7 @@
   import IconToggle from './IconToggle.svelte';
   import ProviderStatusCard from './ProviderStatusCard.svelte';
   import ShareCard from './ShareCard.svelte';
+  import StatusNotice from './StatusNotice.svelte';
   import {
     ArrowRightLeft,
     BookOpen,
@@ -5202,14 +5203,14 @@
       <p class="storage-message">{startupRecoveryMessage}</p>
     {/if}
     {#if errorMessage}
-      <p class="panel-error">{errorMessage}</p>
+      <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
     {/if}
   </section>
 {:else if !configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
     <p class="storage-message">Storage locations are not ready yet.</p>
     {#if errorMessage}
-      <p class="panel-error">{errorMessage}</p>
+      <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
     {/if}
     <div class="button-row">
       <button type="button" class="panel-btn subtle" onclick={() => void loadPanel()}>
@@ -5319,23 +5320,24 @@
         {/snippet}
         {#snippet footer()}
           {#if view.warning}
-            <p class="warning-copy">Last write problem: {view.warning}</p>
+            <StatusNotice tone="warning" compact={true} title="Last write problem" message={view.warning} />
           {/if}
           {#if view.repairSummary}
-            <div class="card-inline-warning">
-              <p class="warning-copy">{view.repairSummary}</p>
-              {#if view.onTrashIssues}
-                <button
-                  type="button"
-                  class="panel-btn subtle compact"
-                  onclick={view.onTrashIssues}
-                  disabled={view.repairBusy}
-                  title="Move unexpected or invalid files to the system trash"
-                >
-                  <span>{view.repairBusy ? 'Cleaning...' : 'Clean up'}</span>
-                </button>
-              {/if}
-            </div>
+            <StatusNotice tone="warning" compact={true} message={view.repairSummary}>
+              {#snippet actions()}
+                {#if view.onTrashIssues}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={view.onTrashIssues}
+                    disabled={view.repairBusy}
+                    title="Move unexpected or invalid files to the system trash"
+                  >
+                    <span>{view.repairBusy ? 'Cleaning...' : 'Clean up'}</span>
+                  </button>
+                {/if}
+              {/snippet}
+            </StatusNotice>
           {/if}
           {#if view.attachments.length > 0}
             <div class="fact-row share-volume-row">
@@ -5486,23 +5488,24 @@
           {/snippet}
           {#snippet footer()}
             {#if view.warning}
-              <p class="warning-copy">Last write problem: {view.warning}</p>
+              <StatusNotice tone="warning" compact={true} title="Last write problem" message={view.warning} />
             {/if}
             {#if view.repairSummary}
-              <div class="card-inline-warning">
-                <p class="warning-copy">{view.repairSummary}</p>
-                {#if view.onTrashIssues}
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={view.onTrashIssues}
-                    disabled={view.repairBusy}
-                    title="Move unexpected or invalid files to the system trash"
-                  >
-                    <span>{view.repairBusy ? 'Cleaning...' : 'Clean up'}</span>
-                  </button>
-                {/if}
-              </div>
+              <StatusNotice tone="warning" compact={true} message={view.repairSummary}>
+                {#snippet actions()}
+                  {#if view.onTrashIssues}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={view.onTrashIssues}
+                      disabled={view.repairBusy}
+                      title="Move unexpected or invalid files to the system trash"
+                    >
+                      <span>{view.repairBusy ? 'Cleaning...' : 'Clean up'}</span>
+                    </button>
+                  {/if}
+                {/snippet}
+              </StatusNotice>
             {/if}
             {#if view.attachments.length > 0}
               <div class="fact-row share-volume-row">
@@ -5612,7 +5615,7 @@
             {#if incomingLoading}
               <p class="muted-copy">Checking…</p>
             {:else if incomingLoadError}
-              <p class="warning-copy">{incomingLoadError}</p>
+              <StatusNotice tone="warning" compact={true} message={incomingLoadError} />
             {/if}
             {#if hiddenIncomingSharesHere > 0}
               <div class="button-row">
@@ -5771,10 +5774,10 @@
       </div>
 
       {#if errorMessage}
-        <p class="panel-error">{errorMessage}</p>
+        <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
       {/if}
       {#if successMessage}
-        <p class="panel-success">{successMessage}</p>
+        <StatusNotice tone="success" compact={true} message={successMessage} />
       {/if}
 
       {#if selectedGlobalView === 'local'}
@@ -5791,7 +5794,7 @@
         </div>
 
         {#if discoveryError}
-          <p class="warning-copy">{discoveryError}</p>
+          <StatusNotice tone="warning" compact={true} message={discoveryError} />
         {/if}
 
         <div class="section-stack">
@@ -6055,7 +6058,7 @@
                 </ProviderStatusCard>
 
                 {#if localNetworkLoadError}
-                  <p class="warning-copy">{localNetworkLoadError}</p>
+                  <StatusNotice tone="warning" compact={true} message={localNetworkLoadError} />
                 {/if}
 
                 <div class="compact-share-grid">
@@ -6096,7 +6099,7 @@
                               <p class="provider-step-detail">Last sync: {peer.lastSyncAt ? formatAbsoluteTimestamp(peer.lastSyncAt) : 'Waiting'}</p>
                               <p class="provider-step-detail">Imported recently: {peer.lastImportedEvents} events, {peer.lastImportedBlocks} blocks</p>
                               {#if peer.lastSyncError}
-                                <p class="warning-copy">{peer.lastSyncError}</p>
+                                <StatusNotice tone="warning" compact={true} message={peer.lastSyncError} />
                               {:else if peer.lastSyncNotice}
                                 <p class="provider-step-detail">{peer.lastSyncNotice}</p>
                               {/if}
@@ -6218,7 +6221,7 @@
                         </div>
                       </div>
                       {#if megaRuntimeLogsError}
-                        <p class="warning-copy">{megaRuntimeLogsError}</p>
+                        <StatusNotice tone="warning" compact={true} message={megaRuntimeLogsError} />
                       {:else if visibleRuntimeLogs.length === 0}
                         <p class="provider-step-detail">
                           No log files found yet. With the built-in MEGA runtime this is normal; use the folder status list for sync progress.
@@ -6562,17 +6565,17 @@
       {/if}
 
       {#if errorMessage}
-        <p class="panel-error">{errorMessage}</p>
+        <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
       {/if}
       {#if successMessage}
-        <p class="panel-success">{successMessage}</p>
+        <StatusNotice tone="success" compact={true} message={successMessage} />
       {/if}
 
       {#if !volumeId}
         <p class="storage-message">Open something first, then choose the places that should keep everything.</p>
       {:else}
         {#if discoveryError}
-          <p class="warning-copy">{discoveryError}</p>
+          <StatusNotice tone="warning" compact={true} message={discoveryError} />
         {/if}
 
         <section class="panel-section">
@@ -6825,19 +6828,23 @@
             {/if}
 
             {#if dialogMegaReconnectIssue}
-              <p class="panel-error">
-                Nearbytes cannot discover incoming MEGA shares until this MEGA account is recovered. If MEGA locked it, finish the unlock and password-change flow on mega.io first. Nearbytes will retry the saved sign-in automatically; reconnect here only if the credentials changed.
-              </p>
+              <StatusNotice
+                tone="error"
+                role="alert"
+                compact={true}
+                message="Nearbytes cannot discover incoming MEGA shares until this MEGA account is recovered. If MEGA locked it, finish the unlock and password-change flow on mega.io first. Nearbytes will retry the saved sign-in automatically; reconnect here only if the credentials changed."
+              />
             {/if}
 
             {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
-              <p class="panel-error">
-                {#if dialogDisconnectImpact.inaccessibleSpaces.length > 0}
-                  Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'hub')} not accessible until you reconnect it.
-                {:else}
-                  Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'location')} from {countLabel(dialogDisconnectImpact.spaces, 'hub')}, but those hubs will stay accessible.
-                {/if}
-              </p>
+              <StatusNotice
+                tone="error"
+                role="alert"
+                compact={true}
+                message={dialogDisconnectImpact.inaccessibleSpaces.length > 0
+                  ? `Disconnecting ${dialogProvider.label} will make ${countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'hub')} not accessible until you reconnect it.`
+                  : `Disconnecting ${dialogProvider.label} will remove ${countLabel(dialogDisconnectImpact.shares, 'location')} from ${countLabel(dialogDisconnectImpact.spaces, 'hub')}, but those hubs will stay accessible.`}
+              />
             {/if}
 
             {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.inaccessibleSpaces.some((targetVolumeId) => knownVolumeLabel(targetVolumeId))}

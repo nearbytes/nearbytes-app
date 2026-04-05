@@ -65,6 +65,7 @@
   import MountRail from './components/MountRail.svelte';
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
   import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
+  import StatusNotice from './components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import EventFlowPanel from './components/EventFlowPanel.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
@@ -6914,7 +6915,7 @@
                         {#if previewLoading}
                           <p class="preview-message">Loading preview…</p>
                         {:else if previewError}
-                          <p class="preview-message error">{previewError}</p>
+                          <StatusNotice tone="error" role="alert" compact={true} message={previewError} />
                         {:else if previewKind === 'image' && previewUrl}
                           <img class="preview-image" src={previewUrl} alt={"Preview of " + currentPreviewFile.filename} />
                         {:else if previewKind === 'video' && previewUrl}
@@ -7170,7 +7171,7 @@
               <span>Loading event…</span>
             </div>
           {:else if timelineDetailError}
-            <p class="tm-details-error">{timelineDetailError}</p>
+            <StatusNotice tone="error" role="alert" compact={true} message={timelineDetailError} />
           {:else if timelineDetailPayload}
             {@const payload = timelineDetailPayloadDecrypted}
             {@const hasEncryptedPayload = payload?.type === 'CREATE_FILE'}
@@ -7205,7 +7206,7 @@
               </div>
 
               {#if timelineDetailStorageError}
-                <p class="tm-details-error">{timelineDetailStorageError}</p>
+                <StatusNotice tone="error" role="alert" compact={true} message={timelineDetailStorageError} />
               {/if}
 
               {#if timelineStorageHits().length > 0}
@@ -7493,7 +7494,7 @@
                   Trusted local rendering of decrypted app-record JSON extracted from the opaque event payload.
                 </p>
                 {#if timelineDetailRecordError}
-                  <p class="tm-details-error">Record parse error: {timelineDetailRecordError}</p>
+                  <StatusNotice tone="error" role="alert" compact={true} title="Record parse error" message={timelineDetailRecordError} />
                 {/if}
                 {#if timelineDetailRecord}
                   <pre class="tm-details-pre">{timelineDetailRecord}</pre>
@@ -7508,7 +7509,7 @@
                   Trusted local rendering of decrypted chat/message JSON extracted from the opaque event payload.
                 </p>
                 {#if timelineDetailMessageError}
-                  <p class="tm-details-error">Message parse error: {timelineDetailMessageError}</p>
+                  <StatusNotice tone="error" role="alert" compact={true} title="Message parse error" message={timelineDetailMessageError} />
                 {/if}
                 {#if timelineDetailMessage}
                   <pre class="tm-details-pre">{timelineDetailMessage}</pre>
@@ -7711,7 +7712,7 @@
                 </div>
               {/if}
               {#if mountDialogResolvedError}
-                <p class="mount-dialog-inline-message">{mountDialogResolvedError}</p>
+                <StatusNotice tone="error" role="alert" compact={true} message={mountDialogResolvedError} />
               {/if}
             {/if}
             {#if isMountEmpty(mountDialogMount)}
@@ -7782,7 +7783,7 @@
               </div>
 
               {#if joinDialogError}
-                <p class="join-dialog-message error">{joinDialogError}</p>
+                <StatusNotice tone="error" role="alert" compact={true} message={joinDialogError} />
               {/if}
             </section>
 
@@ -8082,9 +8083,9 @@
           </p>
 
           {#if identityManagerError}
-            <p class="identity-row-banner error">{identityManagerError}</p>
+            <StatusNotice tone="error" role="alert" compact={true} message={identityManagerError} />
           {:else if identityManagerMessage}
-            <p class="identity-row-banner success">{identityManagerMessage}</p>
+            <StatusNotice tone="success" compact={true} message={identityManagerMessage} />
           {/if}
 
           {#if selectedChatIdentity}
@@ -8315,7 +8316,7 @@
             </div>
 
             {#if joinDialogError}
-              <p class="join-dialog-message error">{joinDialogError}</p>
+              <StatusNotice tone="error" role="alert" compact={true} message={joinDialogError} />
             {/if}
           </section>
 
@@ -8428,7 +8429,7 @@
             </label>
 
             {#if resetDialogError}
-              <p class="theme-dialog-status error">{resetDialogError}</p>
+              <StatusNotice tone="error" role="alert" compact={true} message={resetDialogError} />
             {/if}
 
             <div class="theme-dialog-actions">
@@ -8582,10 +8583,14 @@
             {/if}
 
             {#if themeDialogFeedback}
-              <p class={`theme-dialog-status ${themeDialogFeedback.tone}`}>{themeDialogFeedback.message}</p>
+              <StatusNotice
+                tone={themeDialogFeedback.tone === 'warning' ? 'warning' : 'success'}
+                compact={true}
+                message={themeDialogFeedback.message}
+              />
             {/if}
             {#if themeDialogError}
-              <p class="theme-dialog-status error">{themeDialogError}</p>
+              <StatusNotice tone="error" role="alert" compact={true} message={themeDialogError} />
             {/if}
 
             <div class="theme-dialog-actions">
