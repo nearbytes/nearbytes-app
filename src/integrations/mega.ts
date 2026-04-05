@@ -2948,9 +2948,9 @@ export class MegaTransportAdapter {
       const code = getMegaApiErrorCode(error);
       const canFallbackToDirectEmail =
         code === -3 &&
-        target.u === MEGA_SHARE_INVITE_NON_CONTACT_USER &&
         typeof target.e === 'string' &&
-        target.e.trim().length > 0;
+        target.e.trim().length > 0 &&
+        target.e.trim() !== target.u.trim();
       if (!canFallbackToDirectEmail) {
         throw error;
       }
@@ -4177,7 +4177,7 @@ function collectMegaOwnerShareInviteTargets(
     const userHandle = typeof record.u === 'string' ? record.u.trim() : '';
     const email = resolveOutgoingSharePeerEmail(record, usersByHandle, pendingContactsByHandle)?.trim();
     if (isMegaUserHandle(userHandle)) {
-      targets.set(`user:${userHandle}`, { u: userHandle });
+      targets.set(`user:${userHandle}`, email ? { u: userHandle, e: email } : { u: userHandle });
       continue;
     }
     if (email) {
