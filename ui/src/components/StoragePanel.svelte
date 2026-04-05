@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import {
+    acceptManagedShare,
+    acceptIncomingProviderContactInvite,
     attachManagedShare,
     chooseDirectoryPath,
     configureProviderSetup,
@@ -9,14 +11,33 @@
     consolidateRoot,
     disconnectProviderAccount,
     discoverSources,
+    getAppConfig,
+    readDesktopRuntimeLogs,
+    getManagedShareState,
+    getStorageLocationRepairReport,
     getRootsConfig,
     hasDesktopDirectoryPicker,
     installProviderHelper,
     inviteManagedShare,
+    listLocalNetworkPeers,
+    listIncomingManagedShares,
+    listIncomingProviderContactInvites,
     listManagedShares,
     listProviderAccounts,
+    syncLocalNetworkPeer,
+    updateProviderEnabled,
+    openPathInFileManager,
     openRootInFileManager,
+    repairStorageLocation,
+    removeManagedShare,
+    watchSources,
     type DiscoveredNearbytesSource,
+    type DesktopRuntimeLogEntry,
+    type AppConfig,
+    type IncomingManagedShareOffer,
+    type IncomingProviderContactInvite,
+    type LocalNetworkPeer,
+    type LocalNetworkPeersResponse,
     type ManagedShareSummary,
     type ProviderAccount,
     type ProviderAuthSession,
@@ -26,22 +47,36 @@
     type RootsRuntimeSnapshot,
     type SourceConfigEntry,
     type SourceProvider,
-    type StorageFullPolicy,
+    type StorageLocationRepairReport,
     type VolumeDestinationConfig,
     type VolumePolicyEntry,
     updateRootsConfig,
   } from '../lib/api.js';
+  import {
+    formatAccessLevelLabel,
+    getCollaboratorDedupeKey,
+    getCollaboratorDisplayLabel,
+    getCollaboratorRoleLabel,
+    getIncomingSharePresentation,
+    getManagedShareAccessLabel,
+  } from '../lib/megaSharePresentation.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
+  import AppDialog from './AppDialog.svelte';
+  import IconToggle from './IconToggle.svelte';
+  import ProviderStatusCard from './ProviderStatusCard.svelte';
   import ShareCard from './ShareCard.svelte';
+  import StatusNotice from './StatusNotice.svelte';
   import {
     ArrowRightLeft,
-    Check,
+    BookOpen,
     FolderOpen,
     HardDrive,
+    Link2,
+    Power,
     Plus,
     RefreshCw,
     Search,
-    Shield,
+    SquarePen,
     Trash2,
   } from 'lucide-svelte';
 
@@ -51,10 +86,7 @@
     currentVolumePresentation = null,
     knownVolumes = [],
     onOpenVolumeRouting = undefined,
-    onCopyShareLink = undefined,
-    canCopySecretLink = false,
-    shareLinkBusy = false,
-    shareLinkFeedback = null,
+    onOpenStorageSetup = undefined,
     discoveryDetails = null,
     refreshToken = 0,
     focusSection = null,
@@ -70,33 +102,87 @@
     } | null;
     knownVolumes?: Array<{ volumeId: string; label: string }>;
     onOpenVolumeRouting?: ((volumeId: string) => void) | undefined;
-    onCopyShareLink?: ((includeSecret: boolean) => Promise<void> | void) | undefined;
-    canCopySecretLink?: boolean;
-    shareLinkBusy?: boolean;
-    shareLinkFeedback?: { tone: 'success' | 'warning'; message: string } | null;
+    onOpenStorageSetup?: (() => void) | undefined;
     discoveryDetails?: ReconcileSourcesResponse | null;
     refreshToken?: number;
     focusSection?: 'discovery' | 'defaults' | 'shares' | null;
   }>();
 
   type StatusTone = 'good' | 'warn' | 'muted';
-  type VolumeStorageView = 'copies' | 'shares' | 'folders';
-  type ProviderFlowStep = {
+  type HubLocationMode = 'store' | 'off';
+
+  type ProviderTabLoadingState = {
     label: string;
     detail: string;
-    state: 'done' | 'active' | 'pending';
+  };
+
+  type MegaDiagnosticView = {
+    id: string;
+    title: string;
+    summary: string;
+    detail: string;
+    facts: Array<{ label: string; value: string }>;
+  };
+
+  type MegaLocationActivityStep = {
+    shareId: string;
+    name: string;
+    phase: string;
+    tone: 'good' | 'muted' | 'warn';
+  };
+
+  type MegaStatusView = {
+    headline: string;
+    detail: string;
+    tone: 'good' | 'muted' | 'warn';
+    syncing: boolean;
+    progressPercent: number | null;
+    progressLabel: string;
+    selfRepairCopy: string;
+    showProgressBar: boolean;
+    /** Per-folder native sync phase; clearer than a single ready/total ratio. */
+    locationSteps: MegaLocationActivityStep[];
+  };
+
+  type MegaTabFocusTarget = 'overview' | 'account' | 'publishing' | 'incoming';
+
+  type MegaToastAction = {
+    label: string;
+    kind: 'focus' | 'refresh' | 'logs';
+    target?: MegaTabFocusTarget;
+  };
+
+  type MegaToast = {
+    key: string;
+    tone: 'good' | 'muted' | 'warn';
+    title: string;
+    detail: string;
+    action: MegaToastAction | null;
+    persistent: boolean;
   };
 
   type CollaboratorView = {
+    key: string;
     label: string;
+    role?: string;
     status: 'active' | 'invited';
+    source: 'provider' | 'nearbytes';
   };
 
   const DISMISSED_DISCOVERY_KEY = 'nearbytes-source-discovery-dismissed-v1';
+  const DISMISSED_INCOMING_OFFERS_KEY = 'nearbytes-incoming-share-dismissed-v1';
   const RESERVE_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
   const DEFAULT_RESERVE_PERCENT = 5;
+  const GENERIC_FOLDER_NAMES = new Set(['data', 'files', 'local', 'nearbytes', 'shared', 'storage', 'sync']);
   const DISCOVERY_SCAN_MAX_DEPTH = 1;
   const DISCOVERY_SCAN_MAX_DIRECTORIES = 600;
+  const PANEL_REQUEST_TIMEOUT_MS: number | null = null;
+  const INITIAL_ROOTS_REQUEST_TIMEOUT_MS = 2_500;
+  const BACKGROUND_ROOTS_FALLBACK_TIMEOUT_MS = 2_500;
+  const INITIAL_ROOTS_REQUEST_MAX_WAIT_MS = 20_000;
+  const INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS = 500;
+  const AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS = 3_000;
+  const AUTHORITATIVE_MANAGED_SHARE_RAPID_REFRESH_MS = 1_200;
   const DEFAULT_DESTINATION: VolumeDestinationConfig = {
     sourceId: '',
     enabled: true,
@@ -107,25 +193,75 @@
     fullPolicy: 'block-writes',
   };
 
+  function sanitizeSource(source: SourceConfigEntry): SourceConfigEntry {
+    return {
+      ...source,
+      reservePercent: source.reservePercent ?? DEFAULT_RESERVE_PERCENT,
+      opportunisticPolicy: 'block-writes',
+    };
+  }
+
+  function sanitizeDestination(destination: VolumeDestinationConfig): VolumeDestinationConfig {
+    return {
+      ...destination,
+      enabled: destination.enabled,
+      storeEvents: destination.enabled,
+      storeBlocks: destination.enabled,
+      copySourceBlocks: destination.enabled,
+      reservePercent: destination.reservePercent ?? DEFAULT_RESERVE_PERCENT,
+      fullPolicy: 'block-writes',
+    };
+  }
+
+  function sanitizeConfig(config: RootsConfig): RootsConfig {
+    return {
+      version: 2,
+      sources: config.sources.map((source) => sanitizeSource(source)),
+      defaultVolume: {
+        destinations: config.defaultVolume.destinations.map((destination) => sanitizeDestination(destination)),
+      },
+      volumes: config.volumes.map((volume) => ({
+        volumeId: volume.volumeId,
+        destinations: volume.destinations.map((destination) => sanitizeDestination(destination)),
+      })),
+    };
+  }
+
   let configPath = $state<string | null>(null);
   let configDraft = $state<RootsConfig | null>(null);
   let runtime = $state<RootsRuntimeSnapshot | null>(null);
   let loading = $state(true);
   let errorMessage = $state('');
   let successMessage = $state('');
+  let startupRecoveryMessage = $state('');
   let discoveryLoading = $state(false);
   let discoveryError = $state('');
   let discoveredSources = $state<DiscoveredNearbytesSource[]>([]);
   let dismissedDiscoveries = $state<string[]>(loadDismissedDiscoveries());
+  let dismissedIncomingOffers = $state<string[]>(loadDismissedIncomingOffers());
   let movingSourceId = $state<string | null>(null);
+  let repairingSourceId = $state<string | null>(null);
   let providerAccounts = $state<ProviderAccount[]>([]);
-  let providerCatalog = $state<ProviderCatalogEntry[]>([]);
+  let runtimeAppConfig = $state<AppConfig | null>(null);
+  let providerCatalog = $state<ProviderCatalogEntry[]>(defaultProviderCatalogEntries());
+  let localNetworkService = $state<LocalNetworkPeersResponse['service'] | null>(null);
+  let localNetworkPeers = $state<LocalNetworkPeer[]>([]);
   let managedShares = $state<ManagedShareSummary[]>([]);
+  let incomingManagedShareOffers = $state<IncomingManagedShareOffer[]>([]);
+  let incomingProviderContactInvites = $state<IncomingProviderContactInvite[]>([]);
+  let providersLoading = $state(false);
+  let sharesLoading = $state(false);
+  let incomingLoading = $state(false);
+  let providerLoadError = $state('');
+  let localNetworkLoadError = $state('');
+  let shareLoadError = $state('');
+  let incomingLoadError = $state('');
   let integrationBusyKey = $state<string | null>(null);
+  let syncingLocalNetworkPeerId = $state<string | null>(null);
   let providerAuthSessions = $state<Record<string, ProviderAuthSession>>({});
   let providerFlowStates = $state<Record<string, ProviderFlowState>>({});
   let providerCredentialDrafts = $state<Record<string, {
-    mode: 'login' | 'signup';
+    mode: 'login';
     name: string;
     email: string;
     password: string;
@@ -135,18 +271,50 @@
   }>>({});
   let providerSetupDrafts = $state<Record<string, { clientId: string }>>({});
   let providerShareDrafts = $state<Record<string, { repoOwner: string; repoName: string; branch: string; basePath: string }>>({});
+  let providerLocationNameDrafts = $state<Record<string, string>>({});
+  let providerCreateComposerOpen = $state<Record<string, boolean>>({});
   let managedShareInviteDrafts = $state<Record<string, string>>({});
+  let megaIssueLogExpanded = $state<Record<string, boolean>>({});
+  let megaRuntimeLogsVisible = $state(false);
+  let megaRuntimeLogs = $state<DesktopRuntimeLogEntry[]>([]);
+  let megaRuntimeLogsLoading = $state(false);
+  let megaRuntimeLogsError = $state('');
+  let megaRuntimeLogsUpdatedAt = $state<number | null>(null);
+  let megaRuntimeLogSelection = $state<string | null>(null);
+  let megaRuntimeLogAutoRefresh = $state(true);
+  let megaRuntimeLogWrap = $state(true);
+  let megaRuntimeLogFilter = $state('');
+  let megaRuntimeLogCopyFeedback = $state('');
   let providerDisconnectArmed = $state<Record<string, boolean>>({});
   let providerConnectionDialog = $state<string | null>(null);
+  let sourceRepairReports = $state<Record<string, StorageLocationRepairReport>>({});
+  let hubLocationDialogVolumeId = $state<string | null>(null);
   let selectedGlobalProvider = $state('local');
-  let volumeView = $state<VolumeStorageView>('copies');
+  let selectedGlobalView = $state<'local' | 'provider' | 'incoming'>('local');
+  let megaToastDismissals = $state<Record<string, string>>({});
   let autosaveStatus = $state<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   let lastSavedSignature = $state('');
   let lastRefreshToken = $state(0);
+  let activeReserveEditorKey = $state<string | null>(null);
   let discoveryRunId = 0;
 
-  type ShareBadge = { label: string; tone?: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' };
-  type ShareAttachmentChip = { volumeId: string; label: string; known: boolean };
+  let megaOverviewSection = $state<HTMLElement | null>(null);
+  let megaAccountSection = $state<HTMLElement | null>(null);
+  let megaPublishingSection = $state<HTMLElement | null>(null);
+  let megaIncomingSection = $state<HTMLElement | null>(null);
+
+  type ShareBadge = {
+    label: string;
+    tone?: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off';
+    description?: string;
+  };
+  type ShareAttachmentChip = {
+    volumeId: string;
+    label: string;
+    known: boolean;
+    usageBytes: number;
+    usagePercent: number;
+  };
   type ProviderFlowState = {
     phase:
       | 'installing'
@@ -163,23 +331,30 @@
   type UnifiedShareView = {
     provider: string;
     title: string;
+    pathLabel?: string;
     copy: string;
     active: boolean;
     statusBadges: ShareBadge[];
     meta: string[];
     readable: boolean;
     writable: boolean;
-    defaultEnabled: boolean;
+    writableDisabled?: boolean;
+    writableTitle?: string;
     reservePercent: number;
+    reserveKey: string;
     warning?: string;
+    repairSummary?: string;
+    repairDetails?: string[];
     attachments: ShareAttachmentChip[];
     onToggleReadable: () => void;
     onToggleWritable: () => void;
-    onToggleDefault: () => void;
     onReserveChange: (nextValue: number) => void;
     onOpen?: () => void;
     openDisabled?: boolean;
     openTitle?: string;
+    onTrashIssues?: () => void;
+    onDeleteIssues?: () => void;
+    repairBusy?: boolean;
     onMove?: () => void;
     moveDisabled?: boolean;
     moveLabel?: string;
@@ -190,9 +365,32 @@
 
   const providerSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const providerAbortControllers = new Map<string, AbortController>();
+  let sourceWatchConnection: { close(): void } | null = null;
+  let runtimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let backfillPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let megaRuntimeLogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let panelRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let startupLoadRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let managedShareStateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let runtimeRefreshInFlight = false;
+  let managedShareStateRefreshInFlight = false;
+  let backfillPollIdleRounds = 0;
+  let lastBackfillProgressSignature = '';
 
   onMount(() => {
     void loadPanel();
+
+    sourceWatchConnection = watchSources({
+      onUpdate() {
+        scheduleRuntimeRefresh();
+      },
+      onError(error) {
+        console.warn('Storage panel source watch unavailable:', error);
+      },
+      onClose() {
+        sourceWatchConnection = null;
+      },
+    });
   });
 
   onDestroy(() => {
@@ -204,6 +402,32 @@
       controller.abort();
     }
     providerAbortControllers.clear();
+    if (runtimeRefreshTimer) {
+      clearTimeout(runtimeRefreshTimer);
+      runtimeRefreshTimer = null;
+    }
+    if (backfillPollTimer) {
+      clearTimeout(backfillPollTimer);
+      backfillPollTimer = null;
+    }
+    if (megaRuntimeLogRefreshTimer) {
+      clearTimeout(megaRuntimeLogRefreshTimer);
+      megaRuntimeLogRefreshTimer = null;
+    }
+    if (panelRefreshTimer) {
+      clearTimeout(panelRefreshTimer);
+      panelRefreshTimer = null;
+    }
+    if (startupLoadRetryTimer) {
+      clearTimeout(startupLoadRetryTimer);
+      startupLoadRetryTimer = null;
+    }
+    if (managedShareStateRefreshTimer) {
+      clearTimeout(managedShareStateRefreshTimer);
+      managedShareStateRefreshTimer = null;
+    }
+    sourceWatchConnection?.close();
+    sourceWatchConnection = null;
   });
 
   $effect(() => {
@@ -217,13 +441,46 @@
   });
 
   $effect(() => {
-    if (mode === 'global') return;
-    if (focusSection === 'discovery' || focusSection === 'defaults' || focusSection === 'shares') {
-      if (focusSection === 'shares') {
-        volumeView = 'shares';
-        return;
+    persistDismissedIncomingOffers(dismissedIncomingOffers);
+  });
+
+  $effect(() => {
+    if (megaRuntimeLogCopyFeedback === '') return;
+    const timer = setTimeout(() => {
+      megaRuntimeLogCopyFeedback = '';
+    }, 1800);
+    return () => {
+      clearTimeout(timer);
+    };
+  });
+
+  $effect(() => {
+    if (megaRuntimeLogRefreshTimer) {
+      clearTimeout(megaRuntimeLogRefreshTimer);
+      megaRuntimeLogRefreshTimer = null;
+    }
+    if (!megaRuntimeLogsVisible || !megaRuntimeLogAutoRefresh) {
+      return;
+    }
+    megaRuntimeLogRefreshTimer = setTimeout(() => {
+      megaRuntimeLogRefreshTimer = null;
+      void loadMegaRuntimeLogs();
+    }, 2500);
+    return () => {
+      if (megaRuntimeLogRefreshTimer) {
+        clearTimeout(megaRuntimeLogRefreshTimer);
+        megaRuntimeLogRefreshTimer = null;
       }
-      volumeView = 'folders';
+    };
+  });
+
+  $effect(() => {
+    if (mode === 'global') return;
+  });
+
+  $effect(() => {
+    if (mode !== 'volume' || !volumeId || hubLocationDialogVolumeId !== volumeId) {
+      hubLocationDialogVolumeId = null;
     }
   });
 
@@ -231,6 +488,20 @@
     const availableProviders = new Set(['local', ...providerCatalog.map((provider) => provider.provider)]);
     if (!availableProviders.has(selectedGlobalProvider)) {
       selectedGlobalProvider = 'local';
+      selectedGlobalView = 'local';
+      return;
+    }
+    if (selectedGlobalProvider === 'local' && selectedGlobalView !== 'local') {
+      selectedGlobalView = 'local';
+    }
+  });
+
+  $effect(() => {
+    if (selectedGlobalView !== 'incoming') {
+      return;
+    }
+    if (incomingReviewTargetProvider() === null) {
+      selectedGlobalView = selectedGlobalProvider === 'local' ? 'local' : 'provider';
     }
   });
 
@@ -241,7 +512,7 @@
     autosaveStatus = 'pending';
     const timer = setTimeout(() => {
       void autosavePanel(nextSignature);
-    }, 450);
+    }, 700);
     return () => {
       clearTimeout(timer);
     };
@@ -270,27 +541,39 @@
     }
   }
 
+  function normalizeDismissedIncomingOfferKey(value: string): string {
+    return value.trim().toLowerCase();
+  }
+
+  function incomingOfferDismissKey(offer: Pick<IncomingManagedShareOffer, 'provider' | 'accountId' | 'id'>): string {
+    return normalizeDismissedIncomingOfferKey(`${offer.provider}:${offer.accountId}:${offer.id}`);
+  }
+
+  function loadDismissedIncomingOffers(): string[] {
+    try {
+      const raw = localStorage.getItem(DISMISSED_INCOMING_OFFERS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((value) => typeof value === 'string')
+        .map((value) => normalizeDismissedIncomingOfferKey(value))
+        .filter((value, index, values) => value !== '' && values.indexOf(value) === index);
+    } catch {
+      return [];
+    }
+  }
+
+  function persistDismissedIncomingOffers(values: string[]): void {
+    try {
+      localStorage.setItem(DISMISSED_INCOMING_OFFERS_KEY, JSON.stringify(values));
+    } catch {
+      // Ignore local storage failures.
+    }
+  }
+
   function cloneConfig(config: RootsConfig): RootsConfig {
-    return {
-      version: 2,
-      sources: config.sources.map((source) => ({
-        ...source,
-        reservePercent: source.reservePercent ?? DEFAULT_RESERVE_PERCENT,
-      })),
-      defaultVolume: {
-        destinations: config.defaultVolume.destinations.map((destination) => ({
-          ...destination,
-          reservePercent: destination.reservePercent ?? DEFAULT_RESERVE_PERCENT,
-        })),
-      },
-      volumes: config.volumes.map((volume) => ({
-        volumeId: volume.volumeId,
-        destinations: volume.destinations.map((destination) => ({
-          ...destination,
-          reservePercent: destination.reservePercent ?? DEFAULT_RESERVE_PERCENT,
-        })),
-      })),
-    };
+    return sanitizeConfig(config);
   }
 
   function serializeConfig(config: RootsConfig): string {
@@ -299,6 +582,14 @@
 
   function normalizeComparablePath(value: string): string {
     return value.trim().replace(/\\/g, '/').replace(/\/+$/u, '').toLowerCase();
+  }
+
+  function normalizeDisplayPath(value: string): string {
+    return value.trim().replace(/\\/g, '/').replace(/\/+$/u, '');
+  }
+
+  function pathSegments(value: string): string[] {
+    return normalizeDisplayPath(value).split('/').filter((segment) => segment.length > 0);
   }
 
   function detectProviderFromPath(value: string): SourceProvider {
@@ -324,8 +615,33 @@
     return 'Local folder';
   }
 
+  function sourceLocationKindLabel(provider: SourceProvider): string {
+    if (provider === 'gdrive') return 'Google Drive sync folder';
+    if (provider === 'dropbox') return 'Dropbox sync folder';
+    if (provider === 'mega') return 'MEGA sync folder';
+    if (provider === 'icloud') return 'iCloud sync folder';
+    if (provider === 'onedrive') return 'OneDrive sync folder';
+    return 'Folder on this device';
+  }
+
+  function sourceLocationTitle(path: string): string {
+    const segments = pathSegments(path);
+    if (segments.length === 0) return 'Choose a folder';
+    const leaf = segments[segments.length - 1];
+    const parent = segments.length > 1 ? segments[segments.length - 2] : null;
+    if (!parent) {
+      return leaf;
+    }
+    return `${parent} / ${leaf}`;
+  }
+
+  function sourceLocationPath(path: string): string {
+    const normalized = normalizeDisplayPath(path);
+    return normalized || 'Choose a folder';
+  }
+
   function compactPath(value: string): string {
-    const normalized = value.trim().replace(/\\/g, '/');
+    const normalized = normalizeDisplayPath(value);
     if (normalized === '') return 'Choose a folder';
     const parts = normalized.split('/').filter((part) => part.length > 0);
     return parts[parts.length - 1] ?? normalized;
@@ -345,6 +661,17 @@
       unit += 1;
     }
     return `${value >= 100 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+  }
+
+  function storageMeasurementSummary(usedBytes: number | null | undefined, freeBytes: number | null | undefined): string | null {
+    const parts: string[] = [];
+    if (typeof usedBytes === 'number' && usedBytes > 0) {
+      parts.push(`${formatSize(usedBytes)} used`);
+    }
+    if (typeof freeBytes === 'number' && freeBytes > 0) {
+      parts.push(`${formatSize(freeBytes)} free`);
+    }
+    return parts.length > 0 ? parts.join(' / ') : null;
   }
 
   function countLabel(count: number, singular: string, plural = `${singular}s`): string {
@@ -367,6 +694,71 @@
     return localShares().filter((source) => source.enabled).length;
   }
 
+  function totalIncomingReviewCount(): number {
+    return incomingManagedShareOffers.length + incomingProviderContactInvites.length;
+  }
+
+  function providerIncomingActionableCount(provider: string): number {
+    return incomingManagedSharesForProvider(provider).length + incomingProviderInvitesForProvider(provider).length;
+  }
+
+  function isIncomingManagedShareOfferDismissed(offer: IncomingManagedShareOffer): boolean {
+    return dismissedIncomingOffers.includes(incomingOfferDismissKey(offer));
+  }
+
+  function dismissedIncomingManagedShareCount(provider: string): number {
+    return incomingManagedShareOffers.filter(
+      (offer) => offer.provider === provider && isIncomingManagedShareOfferDismissed(offer)
+    ).length;
+  }
+
+  function dismissIncomingManagedShareOffer(offer: IncomingManagedShareOffer): void {
+    const key = incomingOfferDismissKey(offer);
+    if (dismissedIncomingOffers.includes(key)) {
+      return;
+    }
+    dismissedIncomingOffers = [...dismissedIncomingOffers, key];
+    successMessage = `${incomingManagedShareTitle(offer)} hidden on this device.`;
+  }
+
+  function restoreDismissedIncomingManagedShares(provider: string): void {
+    const prefix = normalizeDismissedIncomingOfferKey(`${provider}:`);
+    const nextValues = dismissedIncomingOffers.filter((key) => !key.startsWith(prefix));
+    if (nextValues.length === dismissedIncomingOffers.length) {
+      return;
+    }
+    dismissedIncomingOffers = nextValues;
+    successMessage = `Hidden ${providerLabelForIncoming(provider)} shares are visible again.`;
+  }
+
+  function incomingReviewTargetProvider(): string | null {
+    for (const provider of providerCatalog) {
+      if (providerIncomingActionableCount(provider.provider) > 0) {
+        return provider.provider;
+      }
+    }
+    return providerCatalog.find((entry) => entry.isConnected && providerShowsIncomingShareSection(entry.provider))?.provider ?? null;
+  }
+
+  function providerSelectionDetail(entry: ProviderCatalogEntry): string {
+    if (entry.provider === 'local-network') {
+      return 'Nearby Nearbytes peers appear here automatically and sync without manual addresses or ports.';
+    }
+    if (!entry.isConnected) {
+      if (entry.provider === 'mega') {
+        return 'Connect this if you want Nearbytes to use MEGA for your own locations or incoming locations.';
+      }
+      return `Connect ${entry.label} only if you want a storage location there.`;
+    }
+    if (entry.provider === 'mega') {
+      return 'Nearbytes keeps your own MEGA locations separate from incoming locations.';
+    }
+    if (providerShowsIncomingShareSection(entry.provider)) {
+      return 'Your own locations stay separate from incoming locations.';
+    }
+    return 'Use this service only for the storage locations you choose here.';
+  }
+
   function connectedAccountForProvider(provider: string): ProviderAccount | null {
     return providerAccounts.find((account) => account.provider === provider) ?? null;
   }
@@ -376,7 +768,7 @@
   }
 
   function providerCredentialDraft(provider: string): {
-    mode: 'login' | 'signup';
+    mode: 'login';
     name: string;
     email: string;
     password: string;
@@ -410,6 +802,18 @@
       branch: 'main',
       basePath: '',
     };
+  }
+
+  function providerLocationNameDraft(provider: string): string {
+    return providerLocationNameDrafts[provider] ?? '';
+  }
+
+  function isInlineLocationComposerProvider(provider: string): boolean {
+    return provider !== 'github';
+  }
+
+  function isProviderCreateComposerOpen(provider: string): boolean {
+    return providerCreateComposerOpen[provider] ?? false;
   }
 
   function setProviderCredential(
@@ -452,6 +856,29 @@
         [field]: value,
       },
     };
+  }
+
+  function setProviderLocationName(provider: string, value: string): void {
+    providerLocationNameDrafts = {
+      ...providerLocationNameDrafts,
+      [provider]: value,
+    };
+  }
+
+  function setProviderCreateComposerOpenState(provider: string, open: boolean): void {
+    providerCreateComposerOpen = {
+      ...providerCreateComposerOpen,
+      [provider]: open,
+    };
+  }
+
+  function openProviderCreateComposer(provider: string): void {
+    setProviderCreateComposerOpenState(provider, true);
+  }
+
+  function closeProviderCreateComposer(provider: string): void {
+    setProviderCreateComposerOpenState(provider, false);
+    setProviderLocationName(provider, '');
   }
 
   function setProviderFlowState(provider: string, state: ProviderFlowState | null): void {
@@ -500,7 +927,6 @@
         draft.password ||
         draft.mfaCode.trim() ||
         draft.confirmationLink.trim() ||
-        draft.mode !== 'login' ||
         draft.useMfa
     );
   }
@@ -511,12 +937,6 @@
 
   function canSubmitMegaAction(provider: string): boolean {
     const draft = providerCredentialDraft(provider);
-    if (pendingSessionForProvider(provider)) {
-      return draft.confirmationLink.trim() !== '';
-    }
-    if (draft.mode === 'signup') {
-      return draft.name.trim() !== '' && draft.email.trim() !== '' && draft.password.trim() !== '';
-    }
     if (draft.email.trim() === '' || draft.password.trim() === '') {
       return false;
     }
@@ -528,32 +948,20 @@
       return 'Confirming...';
     }
     if (integrationBusyKey === `connect:${provider}`) {
-      const draft = providerCredentialDraft(provider);
-      return draft.mode === 'signup' ? 'Creating...' : 'Signing in...';
+      return 'Signing in...';
     }
-    if (pendingSessionForProvider(provider)) {
-      return 'Confirm account';
-    }
-    return providerCredentialDraft(provider).mode === 'signup' ? 'Create account' : 'Sign in to MEGA';
+    return 'Sign in to MEGA';
   }
 
   function megaOnboardingCopy(provider: string): string {
-    const draft = providerCredentialDraft(provider);
     const pending = pendingSessionForProvider(provider);
     if (pending) {
-      return pending.detail || 'Paste the MEGA confirmation link from your email to finish creating the account.';
+      return pending.detail || 'Pending signup confirmations are no longer supported in-app. Complete setup on mega.io, then sign in here.';
     }
-    if (draft.mode === 'signup') {
-      return 'Create the MEGA account here, then finish the email confirmation step inside Nearbytes.';
-    }
-    return 'Sign in here so Nearbytes can create the live mirror, keep it synced, and send MEGA storage invites for this space.';
+    return 'Sign in once. Nearbytes creates or reuses your writable MEGA root, refreshes incoming shares locally, and keeps publishing isolated to your own account.';
   }
 
   async function submitMegaAction(provider: ProviderCatalogEntry): Promise<void> {
-    if (pendingSessionForProvider(provider.provider)) {
-      await confirmMegaSignup(provider);
-      return;
-    }
     await connectProvider(provider);
   }
 
@@ -596,55 +1004,326 @@
     successMessage = '';
   }
 
-  function managedSharesForVolume(targetVolumeId: string | null): ManagedShareSummary[] {
-    if (!targetVolumeId) return [];
-    return managedShares.filter((summary) =>
-      summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId)
-    );
-  }
-
-  function availableManagedSharesForVolume(targetVolumeId: string | null): ManagedShareSummary[] {
-    if (!targetVolumeId) return managedShares;
-    return managedShares.filter(
-      (summary) => !summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId)
-    );
-  }
-
   function shareStatusTone(summary: ManagedShareSummary): StatusTone {
     if (summary.state.status === 'ready') return 'good';
     if (summary.state.status === 'idle' || summary.state.status === 'syncing') return 'muted';
     return 'warn';
   }
 
+  function compactShareStatusDetail(detail: string | undefined): string | null {
+    const normalized = detail?.trim().replace(/\s+/gu, ' ');
+    if (!normalized) {
+      return null;
+    }
+    if (/sync issues?/i.test(normalized)) {
+      return 'Sync problem';
+    }
+    if (/missing or invalid/i.test(normalized)) {
+      return 'Folder missing';
+    }
+    if (/not running/i.test(normalized)) {
+      return 'Sync not running';
+    }
+    if (/cannot write/i.test(normalized)) {
+      return 'Cannot write';
+    }
+    if (/login|session|auth|connected again/i.test(normalized)) {
+      return 'Sign-in needed';
+    }
+    if (normalized.length <= 28) {
+      return normalized;
+    }
+    return `${normalized.slice(0, 25).trimEnd()}...`;
+  }
+
   function shareStatusLabel(summary: ManagedShareSummary): string {
     if (summary.state.status === 'ready') return 'Connected';
-    if (summary.state.status === 'syncing') return 'Updating';
     if (summary.state.status === 'idle') return 'Available';
+    if (summary.state.status === 'syncing') return compactShareStatusDetail(summary.state.detail) ?? 'Syncing';
     if (summary.state.status === 'needs-auth') return 'Reconnect';
-    if (summary.state.status === 'unsupported') return 'Other option';
-    return 'Check storage';
+    if (summary.state.status === 'attention') return compactShareStatusDetail(summary.state.detail) ?? 'Needs attention';
+    return summary.state.status === 'unsupported' ? 'Unsupported' : 'Available';
   }
 
-  function shareAttachmentSummary(summary: ManagedShareSummary): string {
-    const count = summary.attachments.length;
-    if (count === 0) {
-      return 'Not attached to a space yet.';
+  function expectedVolumeBytes(targetVolumeId: string): number {
+    let historyBytes = 0;
+    let fileBytes = 0;
+    for (const source of runtime?.sources ?? []) {
+      const entry = source.usage?.volumeUsages.find((item) => item.volumeId === targetVolumeId);
+      if (!entry) {
+        continue;
+      }
+      historyBytes = Math.max(historyBytes, entry.historyBytes ?? 0);
+      fileBytes = Math.max(fileBytes, entry.fileBytes ?? 0);
     }
-    return `${countLabel(count, 'space')} attached`;
+    return historyBytes + fileBytes;
   }
 
-  function shareAttachmentLabels(summary: ManagedShareSummary): Array<{ volumeId: string; label: string; known: boolean }> {
-    if (summary.attachments.length === 0) {
+  function candidateAttachmentVolumeIds(sourceId: string | null): string[] {
+    if (!configDraft || !sourceId) {
       return [];
     }
-    return summary.attachments.map((attachment) => {
-      const knownLabel = knownVolumeLabel(attachment.volumeId);
-      return {
-        volumeId: attachment.volumeId,
-        label: knownLabel ?? `Space ${attachment.volumeId.slice(0, 8)}`,
-        known: Boolean(knownLabel),
+
+    const ids = new Set<string>();
+    for (const volume of knownVolumes) {
+      ids.add(volume.volumeId);
+    }
+    if (currentVolumePresentation?.volumeId) {
+      ids.add(currentVolumePresentation.volumeId);
+    }
+    for (const volume of configDraft.volumes) {
+      if (volume.destinations.some((destination) => destination.sourceId === sourceId)) {
+        ids.add(volume.volumeId);
+      }
+    }
+    return Array.from(ids.values());
+  }
+
+  function effectiveAttachmentLabels(sourceId: string | null, fallbackVolumeIds: string[] = []): ShareAttachmentChip[] {
+    if (!configDraft || !sourceId) {
+      return [];
+    }
+
+    const candidates = new Set<string>(candidateAttachmentVolumeIds(sourceId));
+    for (const volumeId of fallbackVolumeIds) {
+      candidates.add(volumeId);
+    }
+
+    return Array.from(candidates.values())
+      .filter((targetVolumeId) => effectiveDestinations(targetVolumeId).some((destination) => destination.sourceId === sourceId))
+      .map((targetVolumeId) => {
+        const knownLabel = knownVolumeLabel(targetVolumeId);
+        const usage = sourceVolumeUsage(sourceId, targetVolumeId);
+        return {
+          volumeId: targetVolumeId,
+          label: knownLabel ?? `Hub ${targetVolumeId.slice(0, 8)}`,
+          known: Boolean(knownLabel),
+          usageBytes: usage.usageBytes,
+          usagePercent: usage.usagePercent,
+        };
+      })
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }
+
+  function sourceVolumeUsage(sourceId: string, targetVolumeId: string): { usageBytes: number; usagePercent: number } {
+    const usage = sourceStatus(sourceId)?.usage;
+    const entry = usage?.volumeUsages.find((item) => item.volumeId === targetVolumeId);
+    const usageBytes = (entry?.historyBytes ?? 0) + (entry?.fileBytes ?? 0);
+    const expectedBytes = expectedVolumeBytes(targetVolumeId);
+    const usagePercent = expectedBytes > 0 ? Math.min(100, Math.round((usageBytes / expectedBytes) * 100)) : 100;
+    return {
+      usageBytes,
+      usagePercent,
+    };
+  }
+
+  function sourceAttachmentLabels(sourceId: string): ShareAttachmentChip[] {
+    return effectiveAttachmentLabels(sourceId);
+  }
+
+  function sourceAttachmentSummary(sourceId: string): string {
+    const count = sourceAttachmentLabels(sourceId).length;
+    if (count === 0) {
+      return 'Available to attach to a hub. No hub is using it yet.';
+    }
+    return `Used by ${countLabel(count, 'hub')}.`;
+  }
+
+  function sourceRepairReport(sourceId: string): StorageLocationRepairReport | null {
+    return sourceRepairReports[sourceId] ?? null;
+  }
+
+  function sourceRepairSummary(sourceId: string): string | null {
+    const report = sourceRepairReport(sourceId);
+    if (!report || report.issueCount === 0) {
+      return null;
+    }
+    const malformedFileCount = report.issues.filter(
+      (issue) => issue.code === 'invalid-event-file-name' || issue.code === 'invalid-block-file-name'
+    ).length;
+    if (malformedFileCount > 0) {
+      return malformedFileCount === 1
+        ? 'Nearbytes found 1 malformed event/block file or provider conflict copy. Reads ignore it, but you should clean up this location.'
+        : `Nearbytes found ${malformedFileCount} malformed event/block files or provider conflict copies. Reads ignore them, but you should clean up this location.`;
+    }
+    return report.issueCount === 1
+      ? '1 storage issue found. Review and clean up this location.'
+      : `${report.issueCount} storage issues found. Review and clean up this location.`;
+  }
+
+  function sourceRepairDetails(sourceId: string): string[] {
+    const report = sourceRepairReport(sourceId);
+    if (!report || report.issueCount === 0) {
+      return [];
+    }
+
+    const counts = new Map<string, number>();
+    for (const issue of report.issues) {
+      counts.set(issue.code, (counts.get(issue.code) ?? 0) + 1);
+    }
+
+    const details: string[] = [];
+    const malformedEventFiles = counts.get('invalid-event-file-name') ?? 0;
+    const malformedBlockFiles = counts.get('invalid-block-file-name') ?? 0;
+    const invalidChannelDirectories = counts.get('invalid-channel-directory') ?? 0;
+    const corruptedFiles =
+      (counts.get('block-hash-mismatch') ?? 0) +
+      (counts.get('event-deserialize-failed') ?? 0) +
+      (counts.get('event-hash-mismatch') ?? 0) +
+      (counts.get('event-signature-invalid') ?? 0);
+
+    if (malformedEventFiles > 0) {
+      details.push(`${countLabel(malformedEventFiles, 'malformed event file')}`);
+    }
+    if (malformedBlockFiles > 0) {
+      details.push(`${countLabel(malformedBlockFiles, 'malformed block file')}`);
+    }
+    if (invalidChannelDirectories > 0) {
+      details.push(`${countLabel(invalidChannelDirectories, 'invalid channel folder')}`);
+    }
+    if (corruptedFiles > 0) {
+      details.push(`${countLabel(corruptedFiles, 'corrupted stored file')}`);
+    }
+
+    if (details.length > 0) {
+      return details;
+    }
+
+    return report.issues.slice(0, 3).map((issue) => issue.detail);
+  }
+
+  async function loadSourceRepairReports(sourceIds: string[]): Promise<void> {
+    const reports = await Promise.all(
+      sourceIds.map(async (sourceId) => {
+        try {
+          const response = await getStorageLocationRepairReport(sourceId);
+          return [sourceId, response.report] as const;
+        } catch {
+          return [sourceId, null] as const;
+        }
+      })
+    );
+
+    sourceRepairReports = {
+      ...sourceRepairReports,
+      ...Object.fromEntries(reports.filter((entry): entry is readonly [string, StorageLocationRepairReport] => entry[1] !== null)),
+    };
+  }
+
+  async function runSourceRepair(sourceId: string, action: 'trash' | 'delete'): Promise<void> {
+    const report = sourceRepairReport(sourceId);
+    const warning = action === 'trash'
+      ? 'Trash the invalid Nearbytes files in this storage location? Nearbytes will remove malformed event names, malformed block names, corrupted blocks, and invalidly signed events.'
+      : 'Delete the invalid Nearbytes files in this storage location permanently? Nearbytes will remove malformed event names, malformed block names, corrupted blocks, and invalidly signed events.';
+    const detail = report && report.issueCount > 0
+      ? `\n\nThis will target ${countLabel(report.issueCount, 'detected issue')} in the selected Nearbytes storage location.`
+      : '';
+    if (!globalThis.confirm(`${warning}${detail}`)) {
+      return;
+    }
+    repairingSourceId = sourceId;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      const response = await repairStorageLocation(sourceId, action);
+      sourceRepairReports = {
+        ...sourceRepairReports,
+        [sourceId]: response.report,
       };
-    });
+      void loadSourceRepairReports([sourceId]);
+      successMessage = response.result.removedCount === 0
+        ? 'Nothing needed cleanup.'
+        : action === 'trash'
+          ? `Moved ${countLabel(response.result.removedCount, 'issue')} to the system trash.`
+          : `Deleted ${countLabel(response.result.removedCount, 'issue')}.`;
+      scheduleRuntimeRefresh();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to repair storage location';
+    } finally {
+      repairingSourceId = null;
+    }
+  }
+
+  function activeBackfillTargets(): Array<{ sourceId: string; volumeId: string; usagePercent: number }> {
+    if (!configDraft || !runtime) {
+      return [];
+    }
+    const trackedVolumeIds = new Set<string>();
+    for (const source of runtime.sources) {
+      for (const entry of source.usage.volumeUsages) {
+        trackedVolumeIds.add(entry.volumeId);
+      }
+    }
+
+    const active: Array<{ sourceId: string; volumeId: string; usagePercent: number }> = [];
+    for (const volumeId of Array.from(trackedVolumeIds.values()).sort()) {
+      for (const destination of effectiveDestinations(volumeId)) {
+        if (!keepsFullCopy(destination)) {
+          continue;
+        }
+        const source = configDraft.sources.find((entry) => entry.id === destination.sourceId);
+        if (!source || !source.enabled || !source.writable) {
+          continue;
+        }
+        const usage = sourceVolumeUsage(destination.sourceId, volumeId);
+        if (usage.usagePercent >= 100) {
+          continue;
+        }
+        active.push({
+          sourceId: destination.sourceId,
+          volumeId,
+          usagePercent: usage.usagePercent,
+        });
+      }
+    }
+
+    return active;
+  }
+
+  function clearBackfillPolling(): void {
+    if (backfillPollTimer) {
+      clearTimeout(backfillPollTimer);
+      backfillPollTimer = null;
+    }
+  }
+
+  function updateBackfillPolling(): void {
+    const activeTargets = activeBackfillTargets();
+    if (activeTargets.length === 0) {
+      backfillPollIdleRounds = 0;
+      lastBackfillProgressSignature = '';
+      clearBackfillPolling();
+      return;
+    }
+
+    const signature = activeTargets
+      .map((target) => `${target.sourceId}:${target.volumeId}:${target.usagePercent}`)
+      .sort()
+      .join('|');
+
+    if (signature === lastBackfillProgressSignature) {
+      backfillPollIdleRounds += 1;
+    } else {
+      lastBackfillProgressSignature = signature;
+      backfillPollIdleRounds = 0;
+    }
+
+    if (backfillPollTimer || runtimeRefreshInFlight) {
+      return;
+    }
+
+    const delayMs = backfillPollIdleRounds >= 3 ? 4500 : 1500;
+    backfillPollTimer = setTimeout(() => {
+      backfillPollTimer = null;
+      void refreshRuntimeSnapshot();
+    }, delayMs);
+  }
+
+  function shareAttachmentLabels(summary: ManagedShareSummary): ShareAttachmentChip[] {
+    return effectiveAttachmentLabels(
+      summary.share.sourceId ?? null,
+      summary.attachments.map((attachment) => attachment.volumeId)
+    );
   }
 
   function providerDisconnectImpact(provider: string): {
@@ -675,7 +1354,7 @@
 
   function knownVolumeLabel(targetVolumeId: string): string | null {
     if (currentVolumePresentation && currentVolumePresentation.volumeId === targetVolumeId) {
-      return currentVolumePresentation.label.trim() || 'Current space';
+      return currentVolumePresentation.label.trim() || 'Current selection';
     }
     return knownVolumes.find((entry: { volumeId: string; label: string }) => entry.volumeId === targetVolumeId)?.label ?? null;
   }
@@ -702,18 +1381,16 @@
     providerConnectionDialog = null;
   }
 
-  function providerCardTone(entry: ProviderCatalogEntry): StatusTone {
-    const pending = pendingSessionForProvider(entry.provider);
-    if (pending && pending.status === 'pending') return 'muted';
-    if (pending && pending.status === 'failed') return 'warn';
-    if (entry.setup.status === 'needs-config' || entry.setup.status === 'needs-install' || entry.setup.status === 'unsupported') {
-      return entry.setup.status === 'unsupported' ? 'warn' : 'muted';
-    }
-    if (entry.setup.status === 'installing') return 'muted';
-    return entry.isConnected ? 'good' : entry.connectionState === 'setup' ? 'warn' : 'muted';
-  }
-
   function providerCardStatus(entry: ProviderCatalogEntry): string {
+    if (!providerEnabled(entry.provider)) return 'Off';
+    if (providersLoading) return 'Loading';
+    if (entry.provider === 'local-network') {
+      if (localNetworkPeers.some((peer) => peer.status === 'syncing')) return 'Syncing';
+      if (localNetworkLoadError) return 'Delayed';
+      return localNetworkPeers.length > 0 ? 'Live' : 'Listening';
+    }
+    if (entry.provider === 'mega' && megaProviderReconnectIssue()) return 'Sign-in needed';
+    if (entry.provider === 'mega' && sharesLoading) return 'Syncing';
     const pending = pendingSessionForProvider(entry.provider);
     if (pending?.status === 'pending') return 'Almost ready';
     if (pending?.status === 'failed') return 'Try again';
@@ -726,14 +1403,33 @@
     return 'Available';
   }
 
-  function providerCardHeadline(entry: ProviderCatalogEntry): string {
-    if (entry.provider === 'mega') return entry.isConnected ? 'Shared storage in MEGA' : 'Share storage with MEGA';
-    if (entry.provider === 'gdrive') return entry.isConnected ? 'Shared storage in Google Drive' : 'Use Google Drive storage';
-    if (entry.provider === 'github') return entry.isConnected ? 'Shared storage in GitHub' : 'Use GitHub storage';
-    return `Use ${entry.label} storage`;
-  }
-
   function providerCardDetail(entry: ProviderCatalogEntry): string {
+    if (!providerEnabled(entry.provider)) {
+      return entry.provider === 'local-network'
+        ? 'LAN sync is disabled for this Nearbytes configuration.'
+        : `${entry.label} is disabled for this Nearbytes configuration.`;
+    }
+    if (entry.provider === 'local-network') {
+      if (localNetworkLoadError) {
+        return localNetworkLoadError;
+      }
+      if (!localNetworkService?.listening) {
+        return 'Nearbytes is preparing local network discovery.';
+      }
+      if (localNetworkPeers.length === 0) {
+        return 'LAN discovery is active. Nearby Nearbytes peers will appear here automatically.';
+      }
+      return `Found ${countLabel(localNetworkPeers.length, 'peer')} via ${localNetworkService.serviceType} over ${localNetworkService.transport}.`;
+    }
+    if (entry.provider === 'mega' && shareLoadError) {
+      return shareLoadError;
+    }
+    if (entry.provider === 'mega') {
+      const reconnectIssue = megaProviderReconnectIssue();
+      if (reconnectIssue) {
+        return 'MEGA rejected the saved session. Nearbytes will reuse the saved MEGA sign-in when it can; if recovery changed the credentials, reconnect this account to resume incoming-share mirroring.';
+      }
+    }
     const pending = pendingSessionForProvider(entry.provider);
     if (pending) {
       return pending.detail;
@@ -742,37 +1438,197 @@
       return 'Nearbytes is preparing the local connection in the background.';
     }
     if (entry.setup.status === 'needs-install' && entry.provider === 'mega') {
-      return 'Nearbytes will set up MEGA the first time you use a shared storage space.';
+      return 'Nearbytes will set up MEGA the first time you create a storage location there.';
     }
     if (entry.provider === 'github') {
       return entry.isConnected
-        ? 'Use GitHub as a shared storage space for this space.'
+        ? 'Use GitHub as a provider for storage locations in Nearbytes.'
         : entry.setup.status === 'needs-config'
           ? 'Add the GitHub app details once, then connect.'
-          : 'Use GitHub as another shared storage space.';
+          : 'Use GitHub as another storage location provider.';
     }
     if (entry.provider === 'gdrive') {
       return entry.isConnected
-        ? 'Use Google Drive as a shared storage space for this space.'
-        : 'Use Google Drive as another shared storage space.';
+        ? 'Use Google Drive as a provider for storage locations in Nearbytes.'
+        : 'Use Google Drive as another storage location provider.';
     }
     if (entry.provider === 'mega') {
       return entry.isConnected
-        ? 'Use MEGA as the shared storage space for this space.'
-        : 'Use MEGA as the default shared storage space.';
+        ? megaProviderReconnectIssue()
+          ? 'Nearbytes can see the MEGA account, but MEGA requires account recovery before incoming-share mirroring can resume.'
+          : 'Use MEGA for locations in the connected account.'
+        : 'Connect MEGA to use locations from that account.';
     }
     return entry.setup.detail || entry.description;
   }
 
   function providerShares(provider: string): ManagedShareSummary[] {
-    return managedShares.filter((summary) => summary.share.provider === provider);
+    return sortManagedShareSummaries(managedShares.filter((summary) => summary.share.provider === provider));
+  }
+
+  function incomingManagedSharesForProvider(provider: string): IncomingManagedShareOffer[] {
+    return sortIncomingManagedShareOffers(
+      incomingManagedShareOffers.filter(
+        (offer) => offer.provider === provider && visibleIncomingManagedShareOffer(offer)
+      )
+    );
+  }
+
+  function incomingProviderInvitesForProvider(provider: string): IncomingProviderContactInvite[] {
+    return sortIncomingProviderContactInviteEntries(
+      incomingProviderContactInvites.filter((invite) => invite.provider === provider)
+    );
+  }
+
+  function providerShowsIncomingShareSection(provider: string): boolean {
+    return provider === 'mega' || provider === 'gdrive';
+  }
+
+  function megaOwnerShares(): ManagedShareSummary[] {
+    return providerVisibleShares('mega').filter((summary) => managedShareIsOwned(summary));
+  }
+
+  function megaRecipientShares(): ManagedShareSummary[] {
+    return providerVisibleShares('mega').filter((summary) => managedShareIsIncoming(summary));
+  }
+
+  function megaPendingIncomingCount(): number {
+    return incomingManagedSharesForProvider('mega').length + incomingProviderInvitesForProvider('mega').length;
+  }
+
+  function megaToastSignature(toast: MegaToast): string {
+    return `${toast.tone}|${toast.title}|${toast.detail}|${toast.action?.kind ?? ''}|${toast.action?.label ?? ''}|${toast.action?.target ?? ''}`;
+  }
+
+  function dismissMegaToast(toast: MegaToast): void {
+    megaToastDismissals = {
+      ...megaToastDismissals,
+      [toast.key]: megaToastSignature(toast),
+    };
+  }
+
+  function megaToastList(): MegaToast[] {
+    const reconnectIssue = megaProviderReconnectIssue();
+    const flow = providerFlowState('mega');
+    const issue = reconnectIssue ? null : megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
+    const account = connectedAccountForProvider('mega');
+    const hasWorkingShares = providerShares('mega').some(
+      (summary) => summary.state.status === 'syncing' || summary.state.status === 'idle'
+    );
+    const status = megaStatusView();
+    const toasts: MegaToast[] = [];
+
+    if (flow) {
+      toasts.push({
+        key: 'mega-flow',
+        tone: flow.phase === 'cancelled' ? 'warn' : 'muted',
+        title: flow.title,
+        detail: flow.detail,
+        action: {
+          label: flow.phase === 'cancelled' ? 'Open account' : 'Show sign-in',
+          kind: 'focus',
+          target: 'account',
+        },
+        persistent: true,
+      });
+    }
+
+    if (reconnectIssue) {
+      toasts.push({
+        key: 'mega-reconnect',
+        tone: 'warn',
+        title: reconnectIssue.diagnostic.title,
+        detail: reconnectIssue.diagnostic.summary,
+        action: {
+          label: 'Open recovery',
+          kind: 'focus',
+          target: 'account',
+        },
+        persistent: true,
+      });
+    } else if (issue) {
+      toasts.push({
+        key: 'mega-diagnostic',
+        tone: 'warn',
+        title: issue.summary,
+        detail: issue.title,
+        action: {
+          label: 'Review status',
+          kind: 'focus',
+          target: 'overview',
+        },
+        persistent: true,
+      });
+    }
+
+    if (account !== null && (providersLoading || sharesLoading || incomingLoading || hasWorkingShares) && !reconnectIssue) {
+      toasts.push({
+        key: 'mega-progress',
+        tone: 'muted',
+        title: status.headline,
+        detail: status.progressLabel || status.detail || 'Nearbytes is checking your MEGA account and local copies.',
+        action: {
+          label: incomingLoading ? 'Open inbox' : 'Open status',
+          kind: 'focus',
+          target: incomingLoading ? 'incoming' : 'overview',
+        },
+        persistent: true,
+      });
+    }
+
+    return toasts.filter((toast) => megaToastDismissals[toast.key] !== megaToastSignature(toast));
+  }
+
+  function megaFocusElement(target: MegaTabFocusTarget): HTMLElement | null {
+    switch (target) {
+      case 'account':
+        return megaAccountSection;
+      case 'publishing':
+        return megaPublishingSection;
+      case 'incoming':
+        return megaIncomingSection;
+      case 'overview':
+      default:
+        return megaOverviewSection;
+    }
+  }
+
+  async function focusMegaArea(target: MegaTabFocusTarget): Promise<void> {
+    if (mode === 'global' && selectedGlobalProvider !== 'mega') {
+      selectedGlobalProvider = 'mega';
+      selectedGlobalView = 'provider';
+      await tick();
+    }
+    const element = megaFocusElement(target);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+  }
+
+  async function runMegaToastAction(action: MegaToastAction): Promise<void> {
+    if (action.kind === 'focus') {
+      if (action.target) {
+        await focusMegaArea(action.target);
+      }
+      return;
+    }
+    if (action.kind === 'logs') {
+      if (action.target) {
+        await focusMegaArea(action.target);
+      }
+      openMegaRuntimeLogsInspector();
+      return;
+    }
+    if (action.target) {
+      await focusMegaArea(action.target);
+    }
+    await loadPanel({ background: configDraft !== null });
   }
 
   function providerPriority(provider: string): number {
-    if (provider === 'mega') return 0;
-    if (provider === 'gdrive') return 1;
-    if (provider === 'github') return 2;
-    return 3;
+    if (provider === 'local-network') return 0;
+    if (provider === 'mega') return 1;
+    if (provider === 'gdrive') return 2;
+    if (provider === 'github') return 3;
+    return 4;
   }
 
   function sortProviders(entries: readonly ProviderCatalogEntry[]): ProviderCatalogEntry[] {
@@ -785,6 +1641,85 @@
     });
   }
 
+  function providerPlaceholder(provider: 'local-network' | 'mega' | 'github'): ProviderCatalogEntry {
+    return {
+      provider,
+      label: provider === 'local-network' ? 'Local network' : provider === 'mega' ? 'MEGA' : 'GitHub',
+      description:
+        provider === 'local-network'
+          ? 'Automatic LAN discovery and peer-to-peer Nearbytes sync with nearby devices.'
+          : provider === 'mega'
+          ? 'Native MEGA syncing for public links plus incoming read-only and writable shares.'
+          : 'Managed repo-backed shares synced through a configurable nearbytes subdirectory.',
+      badges: provider === 'github' ? ['Device flow'] : provider === 'local-network' ? ['Auto'] : [],
+      enabled: providerEnabled(provider),
+      isConnected: provider === 'local-network',
+      connectionState: provider === 'local-network' ? 'connected' : 'available',
+      setup: {
+        status: 'ready',
+        detail:
+          provider === 'local-network'
+            ? 'LAN sync is active and scans for nearby Nearbytes peers automatically.'
+            : provider === 'mega'
+              ? 'MEGA native sync is ready to use.'
+              : 'GitHub is available to connect.',
+      },
+    };
+  }
+
+  function defaultProviderCatalogEntries(): ProviderCatalogEntry[] {
+    return sortProviders([
+      providerPlaceholder('local-network'),
+      providerPlaceholder('mega'),
+      providerPlaceholder('github'),
+    ]);
+  }
+
+  function mergeProviderCatalogEntries(nextEntries: readonly ProviderCatalogEntry[]): ProviderCatalogEntry[] {
+    const merged = new Map<string, ProviderCatalogEntry>();
+    for (const fallback of defaultProviderCatalogEntries()) {
+      merged.set(fallback.provider, fallback);
+    }
+    for (const existing of providerCatalog) {
+      merged.set(existing.provider, existing);
+    }
+    for (const next of nextEntries) {
+      merged.set(next.provider, {
+        ...next,
+        enabled: providerEnabled(next.provider),
+      });
+    }
+    return sortProviders(Array.from(merged.values()).map((entry) => ({
+      ...entry,
+      enabled: providerEnabled(entry.provider),
+    })));
+  }
+
+  function providerEnabled(provider: string): boolean {
+    const config = runtimeAppConfig;
+    if (!config) {
+      return provider !== 'github' && provider !== 'gdrive' && provider !== 'google-drive';
+    }
+    switch (provider) {
+      case 'mega':
+        return config.features.providers.mega;
+      case 'github':
+        return config.features.providers.github;
+      case 'gdrive':
+      case 'google-drive':
+        return config.features.providers.googleDrive;
+      case 'local-network':
+        return config.features.providers.localNetwork;
+      default:
+        return true;
+    }
+  }
+
+  function applyAppConfigResponse(response: { config: AppConfig }): void {
+    runtimeAppConfig = response.config;
+    providerCatalog = mergeProviderCatalogEntries(providerCatalog);
+  }
+
   function sortManagedShareSummaries(entries: readonly ManagedShareSummary[]): ManagedShareSummary[] {
     return [...entries].sort((left, right) => {
       const attachedOrder = right.attachments.length - left.attachments.length;
@@ -795,15 +1730,235 @@
     });
   }
 
+  function mergeManagedShareSummaries(entries: readonly ManagedShareSummary[]): ManagedShareSummary[] {
+    if (entries.length === 0) {
+      return managedShares;
+    }
+    const byId = new Map(entries.map((summary) => [summary.share.id, summary]));
+    const merged = managedShares.map((summary) => byId.get(summary.share.id) ?? summary);
+    managedShares = sortManagedShareSummaries(merged);
+    return managedShares;
+  }
+
+  function sortIncomingManagedShareOffers(entries: readonly IncomingManagedShareOffer[]): IncomingManagedShareOffer[] {
+    return [...entries].sort((left, right) => {
+      const providerOrder = providerPriority(left.provider) - providerPriority(right.provider);
+      if (providerOrder !== 0) return providerOrder;
+      return left.label.localeCompare(right.label);
+    });
+  }
+
+  function sortIncomingProviderContactInviteEntries(entries: readonly IncomingProviderContactInvite[]): IncomingProviderContactInvite[] {
+    return [...entries].sort((left, right) => {
+      const providerOrder = providerPriority(left.provider) - providerPriority(right.provider);
+      if (providerOrder !== 0) return providerOrder;
+      return left.label.localeCompare(right.label);
+    });
+  }
+
   function providerShareCount(provider: string): number {
     return providerShares(provider).length;
   }
 
+  function visibleManagedShare(summary: ManagedShareSummary): boolean {
+    return sourceById(summary.share.sourceId) !== null;
+  }
+
+  function providerVisibleShares(provider: string): ManagedShareSummary[] {
+    return providerShares(provider).filter((summary) => visibleManagedShare(summary));
+  }
+
+  function providerOwnedVisibleShares(provider: string): ManagedShareSummary[] {
+    return providerVisibleShares(provider).filter((summary) => managedShareIsOwned(summary));
+  }
+
+  function providerReceivedVisibleShares(provider: string): ManagedShareSummary[] {
+    return providerVisibleShares(provider).filter((summary) => managedShareIsIncoming(summary));
+  }
+
+  function providerVisibleShareCount(provider: string): number {
+    return providerVisibleShares(provider).length;
+  }
+
+  function megaShareStatesNeedRapidRefresh(entries: readonly ManagedShareSummary[]): boolean {
+    return entries.some((summary) =>
+      summary.share.provider === 'mega' && (summary.state.status === 'syncing' || summary.state.status === 'idle')
+    );
+  }
+
+  function shouldAuthoritativelyRefreshMegaShare(summary: ManagedShareSummary): boolean {
+    return summary.share.provider === 'mega' && (
+      summary.state.status === 'syncing' ||
+      summary.state.status === 'idle' ||
+      summary.state.status === 'attention' ||
+      summary.state.status === 'needs-auth'
+    );
+  }
+
+  function shouldRefreshMegaIncomingDiscovery(): boolean {
+    const account = connectedAccountForProvider('mega');
+    return account?.state === 'connected' || account?.state === 'attention';
+  }
+
+  function scheduleManagedShareStateRefresh(delayMs = AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS): void {
+    if (managedShareStateRefreshTimer) {
+      clearTimeout(managedShareStateRefreshTimer);
+      managedShareStateRefreshTimer = null;
+    }
+    if (
+      providerShares('mega').filter((summary) => shouldAuthoritativelyRefreshMegaShare(summary)).length === 0 &&
+      !shouldRefreshMegaIncomingDiscovery()
+    ) {
+      return;
+    }
+    managedShareStateRefreshTimer = setTimeout(() => {
+      managedShareStateRefreshTimer = null;
+      void refreshAuthoritativeManagedShareStates();
+    }, delayMs);
+  }
+
+  async function refreshAuthoritativeManagedShareStates(): Promise<void> {
+    if (managedShareStateRefreshInFlight) {
+      return;
+    }
+    const megaShares = providerShares('mega').filter((summary) => shouldAuthoritativelyRefreshMegaShare(summary));
+    const shouldRefreshIncomingDiscovery = shouldRefreshMegaIncomingDiscovery();
+    if (megaShares.length === 0 && !shouldRefreshIncomingDiscovery) {
+      return;
+    }
+    managedShareStateRefreshInFlight = true;
+    try {
+      const [refreshed, incomingSharesResponse, incomingInvitesResponse] = await Promise.all([
+        Promise.all(
+          megaShares.map(async (summary) => {
+            try {
+              const response = await getManagedShareState(summary.share.id);
+              return response.summary;
+            } catch {
+              return null;
+            }
+          })
+        ),
+        listIncomingManagedShares({ fast: false }).catch(() => null),
+        listIncomingProviderContactInvites({ fast: false }).catch(() => null),
+      ]);
+
+      if (incomingSharesResponse) {
+        incomingManagedShareOffers = sortIncomingManagedShareOffers(incomingSharesResponse.shares);
+      }
+      if (incomingInvitesResponse) {
+        incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(incomingInvitesResponse.invites);
+      }
+
+      const merged = mergeManagedShareSummaries(
+        refreshed.filter((summary): summary is ManagedShareSummary => summary !== null)
+      );
+      if (
+        merged.some((summary) => shouldAuthoritativelyRefreshMegaShare(summary)) ||
+        shouldRefreshMegaIncomingDiscovery()
+      ) {
+        scheduleManagedShareStateRefresh(
+          megaShareStatesNeedRapidRefresh(merged)
+            ? AUTHORITATIVE_MANAGED_SHARE_RAPID_REFRESH_MS
+            : AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS
+        );
+      }
+    } finally {
+      managedShareStateRefreshInFlight = false;
+    }
+  }
+
+  function providerIncomingShareCount(provider: string): number {
+    return incomingManagedSharesForProvider(provider).length;
+  }
+
+  function providerTabLoadingState(entry: ProviderCatalogEntry): ProviderTabLoadingState | null {
+    if (providersLoading) {
+      return {
+        label: 'Loading',
+        detail: 'Checking account',
+      };
+    }
+    if (entry.provider === 'mega' && sharesLoading) {
+      return {
+        label: 'Sync check',
+        detail: 'Checking mirrors',
+      };
+    }
+    if (entry.provider === 'mega' && incomingLoading) {
+      return {
+        label: 'Incoming',
+        detail: 'Checking shared',
+      };
+    }
+    return null;
+  }
+
+  function providerTabCopy(entry: ProviderCatalogEntry): string {
+    const loadingState = providerTabLoadingState(entry);
+    if (loadingState) {
+      return loadingState.detail;
+    }
+    if (!entry.isConnected) {
+      return providerCardStatus(entry);
+    }
+    if (entry.provider === 'local-network') {
+      const peerCopy = countLabel(localNetworkPeers.length, 'peer');
+      if (localNetworkPeers.length === 0) {
+        return localNetworkService?.listening ? 'Listening for peers' : 'Starting discovery';
+      }
+      const syncingCount = localNetworkPeers.filter((peer) => peer.status === 'syncing').length;
+      return syncingCount > 0 ? `${peerCopy} • ${countLabel(syncingCount, 'sync active')}` : peerCopy;
+    }
+    if (entry.provider === 'mega') {
+      return connectedAccountForProvider('mega')?.email ?? 'No account connected';
+    }
+    const locationCopy = countLabel(
+      providerVisibleShareCount(entry.provider),
+      entry.provider === 'mega' ? 'mirror' : 'location'
+    );
+    const incomingShareCount = providerIncomingShareCount(entry.provider);
+    if (incomingShareCount === 0) {
+      return locationCopy;
+    }
+    return `${locationCopy} + ${incomingShareCount} shared`;
+  }
+
+  function providerSupportsCreateAction(provider: string): boolean {
+    return provider !== 'mega' && provider !== 'local-network';
+  }
+
+  function destinationComparisonKey(destination: VolumeDestinationConfig): string {
+    return JSON.stringify({
+      sourceId: destination.sourceId,
+      enabled: destination.enabled,
+      storeEvents: destination.storeEvents,
+      storeBlocks: destination.storeBlocks,
+      copySourceBlocks: destination.copySourceBlocks,
+      reservePercent: destination.reservePercent,
+      fullPolicy: destination.fullPolicy,
+    });
+  }
+
+  function destinationsEqual(
+    left: readonly VolumeDestinationConfig[],
+    right: readonly VolumeDestinationConfig[]
+  ): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+    const leftKeys = [...left].map(destinationComparisonKey).sort((a, b) => a.localeCompare(b));
+    const rightKeys = [...right].map(destinationComparisonKey).sort((a, b) => a.localeCompare(b));
+    return leftKeys.every((entry, index) => entry === rightKeys[index]);
+  }
+
   function providerAttachedShareCount(provider: string): number {
-    if (!volumeId) {
+    if (mode !== 'volume' || !volumeId) {
       return 0;
     }
-    return managedSharesForVolume(volumeId).filter((summary) => summary.share.provider === provider).length;
+    return providerShares(provider).filter((summary) =>
+      summary.attachments.some((attachment) => attachment.volumeId === volumeId)
+    ).length;
   }
 
   function providerPrimaryMirrorPath(entry: ProviderCatalogEntry): string | null {
@@ -824,97 +1979,806 @@
     return Array.from(unique.values());
   }
 
-  function providerNextAction(entry: ProviderCatalogEntry): string {
-    const pending = pendingSessionForProvider(entry.provider);
-    const shareCount = providerShareCount(entry.provider);
-    const attachedCount = providerAttachedShareCount(entry.provider);
-    if (pending) {
-      return entry.provider === 'mega'
-        ? 'Nearbytes is waiting for you to finish the MEGA confirmation step before it can create the local mirror and live location.'
-        : `Nearbytes is waiting for ${entry.label} to finish sign-in in the browser.`;
+  function providerMirrorPathEntries(entry: ProviderCatalogEntry): Array<{
+    heading: string;
+    title: string;
+    path: string;
+  }> {
+    const unique = new Map<string, { heading: string; title: string; path: string }>();
+    for (const share of providerShares(entry.provider)) {
+      const resolved = summarySourcePath(share).trim();
+      if (!resolved || unique.has(resolved)) {
+        continue;
+      }
+      unique.set(resolved, {
+        heading: managedShareIsIncoming(share) ? 'Mirror folder for shared location' : 'Local mirror folder',
+        title: managedShareTitle(share),
+        path: resolved,
+      });
     }
-    if (entry.setup.status === 'needs-install') {
-      return `Nearbytes still needs the local ${entry.label} helper before this provider can carry live updates.`;
-    }
-    if (entry.setup.status === 'needs-config') {
-      return `Nearbytes still needs one setup value before it can hand off to ${entry.label}.`;
-    }
-    if (!entry.isConnected) {
-      return `Connect ${entry.label}, then Nearbytes can create a local mirror folder and bind it to a live provider location.`;
-    }
-    if (shareCount === 0) {
-      return `Your ${entry.label} account is connected. The next step is to create a live location so this provider can actually carry updates.`;
-    }
-    if (volumeId && attachedCount === 0) {
-      return `This provider already has a live location. Attach one to this space so Nearbytes can use it for incoming and outgoing updates.`;
-    }
-    return `This provider is ready. Nearbytes knows where the local mirror lives and can use it for this space.`;
+    return Array.from(unique.values());
   }
 
   function providerTransparencyFacts(entry: ProviderCatalogEntry): string[] {
-    const shareCount = providerShareCount(entry.provider);
+    const shareCount = providerVisibleShareCount(entry.provider);
     const attachedCount = providerAttachedShareCount(entry.provider);
-    const account = connectedAccountForProvider(entry.provider);
+    const providerSharesForEntry = providerShares(entry.provider);
+    const recipientCount = providerSharesForEntry.filter((summary) => managedShareIsIncoming(summary)).length;
+    const ownerCount = providerSharesForEntry.filter((summary) => managedShareIsOwned(summary)).length;
     const facts = [
-      entry.isConnected ? account?.email || account?.label || 'Account connected' : 'No account connected',
-      countLabel(shareCount, 'live location'),
+      countLabel(
+        shareCount,
+        entry.provider === 'mega' ? 'mirrored location' : 'live location'
+      ),
     ];
-    if (volumeId) {
-      facts.push(countLabel(attachedCount, 'attached route'));
+    const incomingInviteCount = incomingProviderInvitesForProvider(entry.provider).length;
+    const incomingShareCount = incomingManagedSharesForProvider(entry.provider).length;
+    if (incomingInviteCount > 0) {
+      facts.push(countLabel(incomingInviteCount, 'incoming contact invite'));
+    }
+    if (incomingShareCount > 0) {
+      facts.push(countLabel(incomingShareCount, 'incoming storage location'));
+    }
+    if (mode === 'volume' && volumeId) {
+      facts.push(countLabel(attachedCount, 'attached location'));
     }
     if (entry.provider === 'mega') {
-      facts.push(entry.setup.status === 'needs-install' ? 'Needs local helper' : 'Uses local mirror folder');
+      if (recipientCount > 0) {
+        facts.push(countLabel(recipientCount, 'incoming mirror'));
+      }
+      if (ownerCount > 0) {
+        facts.push(countLabel(ownerCount, 'owner mirror'));
+      }
+      facts.push('Connected account identifies remote shares; mirror folders belong to those shared locations');
     }
     return facts.filter((value, index, values) => value && values.indexOf(value) === index);
   }
 
-  function providerFlowSteps(entry: ProviderCatalogEntry): ProviderFlowStep[] {
-    const pending = pendingSessionForProvider(entry.provider);
-    const helperBlocked = entry.setup.status === 'needs-install' || entry.setup.status === 'installing';
-    const configBlocked = entry.setup.status === 'needs-config';
-    const connected = entry.isConnected;
-    const hasShare = providerShareCount(entry.provider) > 0;
-    const attachedToVolume = volumeId ? providerAttachedShareCount(entry.provider) > 0 : hasShare;
-    return [
-      {
-        label: helperBlocked ? 'Install local helper' : configBlocked ? 'Finish provider setup' : 'Provider ready',
-        detail:
-          helperBlocked
-            ? `Nearbytes prepares the local ${entry.label} helper first.`
-            : configBlocked
-              ? `Nearbytes needs one setup value before it can start ${entry.label} sign-in.`
-              : `${entry.label} is ready for connection on this device.`,
-        state: helperBlocked || configBlocked ? 'active' : 'done',
+  function summarizeMegaStateDetail(detail: string): string {
+    const normalized = detail.trim();
+    if (!normalized) {
+      return 'MEGA is still checking this location.';
+    }
+    return firstMegaDetailLine(normalized);
+  }
+
+  function firstMegaDetailLine(detail: string): string {
+    const line = detail
+      .split(/\r?\n/u)
+      .map((entry) => entry.trim())
+      .find((entry) => entry !== '');
+    return line ?? '';
+  }
+
+  function isNoisyMegaLog(detail: string): boolean {
+    const normalized = detail.trim();
+    if (!normalized) {
+      return false;
+    }
+    if (normalized.includes('\n') || normalized.includes('\r')) {
+      return true;
+    }
+    return /(transfer|\|#{4,}|mb:\s*\d|kb:\s*\d|state change\)|\[[^\]]*%\])/i.test(normalized);
+  }
+
+  function conciseMegaDetail(detail: string): string {
+    const line = firstMegaDetailLine(detail);
+    if (!line || isNoisyMegaLog(detail)) {
+      return '';
+    }
+    return line.length > 140 ? `${line.slice(0, 137).trimEnd()}...` : line;
+  }
+
+  function openMegaRuntimeLogsInspector(): void {
+    megaRuntimeLogsVisible = true;
+    void loadMegaRuntimeLogs();
+  }
+
+  function isPreparingManagedShare(summary: ManagedShareSummary): boolean {
+    return summary.state.badges.some((badge) => badge.trim() === 'Preparing') || /prepar/i.test(summary.state.detail);
+  }
+
+  function isMegaNativeOnlyRuntime(): boolean {
+    const entry = providerCatalog.find((e) => e.provider === 'mega');
+    if (!entry) {
+      return true;
+    }
+    const helperPath = entry.setup.config?.helperPath?.trim() || '';
+    return helperPath === '' || helperPath === 'PATH';
+  }
+
+  function megaShareActivityStep(summary: ManagedShareSummary): MegaLocationActivityStep {
+    const name = managedShareCardTitle(summary);
+    const status = summary.state.status;
+    const rawDetail = summary.state.diagnostic?.summary?.trim() || summary.state.detail.trim();
+    const detail = rawDetail ? summarizeMegaStateDetail(rawDetail) : '';
+    const shortDetail = detail.length > 140 ? `${detail.slice(0, 137).trimEnd()}…` : detail;
+
+    if (status === 'ready') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'Up to date with MEGA',
+        tone: 'good',
+      };
+    }
+    if (status === 'syncing') {
+      const preparing = isPreparingManagedShare(summary);
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: preparing ? 'Preparing local mirror…' : shortDetail || 'Syncing with MEGA…',
+        tone: 'muted',
+      };
+    }
+    if (status === 'idle') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'Checking connection and mirror health…',
+        tone: 'muted',
+      };
+    }
+    if (status === 'needs-auth') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'MEGA needs you to sign in again.',
+        tone: 'warn',
+      };
+    }
+    if (status === 'attention') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'This location needs attention.',
+        tone: 'warn',
+      };
+    }
+    if (status === 'unsupported') {
+      return {
+        shareId: summary.share.id,
+        name,
+        phase: shortDetail || 'Not supported in this build.',
+        tone: 'warn',
+      };
+    }
+    return {
+      shareId: summary.share.id,
+      name,
+      phase: shortDetail || String(status),
+      tone: 'muted',
+    };
+  }
+
+  function megaOverallProgressLabel(shares: ManagedShareSummary[]): string {
+    const total = shares.length;
+    if (total === 0) {
+      return '';
+    }
+    const ready = shares.filter((s) => s.state.status === 'ready').length;
+    const working = shares.filter((s) => s.state.status === 'syncing' || s.state.status === 'idle').length;
+    const blocked = shares.filter((s) => s.state.status === 'attention' || s.state.status === 'needs-auth').length;
+    if (blocked > 0) {
+      return `${countLabel(blocked, 'location')} need attention`;
+    }
+    if (ready === total) {
+      return `All ${countLabel(total, 'location')} ready`;
+    }
+    if (working > 0 && ready < total) {
+      const activeStep = shares
+        .map((summary) => megaShareActivityStep(summary))
+        .find((step) => step.tone !== 'good');
+      return activeStep ? `${activeStep.name}: ${activeStep.phase}` : `${countLabel(working, 'location')} syncing`;
+    }
+    return `${countLabel(ready, 'location')} ready`;
+  }
+
+  function megaRuntimeReconnectLine(detail: string): string | null {
+    const lines = detail
+      .split(/\r?\n/u)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (/MEGA API error -15/i.test(line)) {
+        return line;
+      }
+      if (
+        /incoming managed share discovery failed/i.test(line) &&
+        /(session|auth|login|reconnect|expired|invalid)/i.test(line)
+      ) {
+        return line;
+      }
+    }
+    return null;
+  }
+
+  function megaProviderReconnectIssue(): { diagnostic: MegaDiagnosticView; updatedAt: number } | null {
+    const account = connectedAccountForProvider('mega');
+    if (account?.state === 'attention') {
+      return {
+        diagnostic: {
+          id: 'mega-provider-reconnect',
+          title: 'MEGA account needs recovery',
+          summary: 'Incoming MEGA shares are unavailable until the MEGA account is recovered.',
+          detail: account.detail?.trim() || 'Recover the MEGA account on mega.io. Nearbytes will retry the saved sign-in automatically, and you only need to reconnect if the credentials changed.',
+          facts: [
+            account.email?.trim() ? { label: 'Account', value: account.email.trim() } : null,
+            { label: 'Last change', value: formatMegaRuntimeLogTimestamp(account.updatedAt) },
+          ].filter((value): value is { label: string; value: string } => value !== null),
+        },
+        updatedAt: account.updatedAt,
+      };
+    }
+
+    if (!account || account.state !== 'connected') {
+      return null;
+    }
+
+    // Native MEGA uses in-process API + per-location status; stale dev log files must not
+    // trigger a false "reconnect" banner (previously tied to MEGA.cmd verification output).
+    if (isMegaNativeOnlyRuntime()) {
+      return null;
+    }
+
+    let bestMatch:
+      | {
+          entry: DesktopRuntimeLogEntry;
+          line: string;
+          updatedAt: number;
+        }
+      | null = null;
+
+    for (const entry of megaRuntimeLogs) {
+      if (!entry.exists) {
+        continue;
+      }
+      const line = megaRuntimeReconnectLine(normalizeMegaLogContent(entry.content, entry.id));
+      if (!line) {
+        continue;
+      }
+      const updatedAt = entry.updatedAt ?? 0;
+      if (!bestMatch || updatedAt >= bestMatch.updatedAt) {
+        bestMatch = {
+          entry,
+          line,
+          updatedAt,
+        };
+      }
+    }
+
+    if (!bestMatch) {
+      return null;
+    }
+
+    const facts = [
+      account.email?.trim() ? { label: 'Account', value: account.email.trim() } : null,
+      { label: 'Runtime log', value: bestMatch.entry.label },
+      bestMatch.updatedAt > 0 ? { label: 'Observed', value: formatMegaRuntimeLogTimestamp(bestMatch.updatedAt) } : null,
+    ].filter((value): value is { label: string; value: string } => value !== null);
+
+    return {
+      diagnostic: {
+        id: 'mega-provider-reconnect',
+        title: 'MEGA account needs recovery',
+        summary: 'Incoming MEGA shares are unavailable until the MEGA account is recovered and reconnected.',
+        detail: bestMatch.line,
+        facts,
       },
-      {
-        label: pending ? 'Finish account confirmation' : 'Connect account',
+      updatedAt: bestMatch.updatedAt,
+    };
+  }
+
+  function toggleMegaIssueLog(issueId: string): void {
+    megaIssueLogExpanded = {
+      ...megaIssueLogExpanded,
+      [issueId]: !(megaIssueLogExpanded[issueId] ?? false),
+    };
+  }
+
+  function selectMegaRuntimeLog(entryId: string): void {
+    megaRuntimeLogSelection = entryId;
+  }
+
+  function normalizeMegaLogContent(raw: string, entryId: string): string {
+    if (raw.trim() === '') {
+      return '';
+    }
+    if (entryId.includes('verify-runtime')) {
+      try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+      } catch {
+        return raw;
+      }
+    }
+    return raw;
+  }
+
+  function escapeLogHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function stripUnsupportedControlChars(value: string): string {
+    return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, '');
+  }
+
+  function ansiCodeToClass(code: number): string | null {
+    if (code === 1) return 'ansi-bold';
+    if (code === 2) return 'ansi-dim';
+    if (code >= 30 && code <= 37) return `ansi-fg-${code - 30}`;
+    if (code >= 40 && code <= 47) return `ansi-bg-${code - 40}`;
+    if (code >= 90 && code <= 97) return `ansi-fg-bright-${code - 90}`;
+    if (code >= 100 && code <= 107) return `ansi-bg-bright-${code - 100}`;
+    return null;
+  }
+
+  function ansiStateClass(state: {
+    bold: boolean;
+    dim: boolean;
+    fg: number | null;
+    fgBright: boolean;
+    bg: number | null;
+    bgBright: boolean;
+  }): string {
+    const classes: string[] = [];
+    if (state.bold) classes.push('ansi-bold');
+    if (state.dim) classes.push('ansi-dim');
+    if (state.fg !== null) {
+      classes.push(state.fgBright ? `ansi-fg-bright-${state.fg}` : `ansi-fg-${state.fg}`);
+    }
+    if (state.bg !== null) {
+      classes.push(state.bgBright ? `ansi-bg-bright-${state.bg}` : `ansi-bg-${state.bg}`);
+    }
+    return classes.join(' ');
+  }
+
+  function renderAnsiLogHtml(value: string): string {
+    const input = stripUnsupportedControlChars(value);
+    const pattern = /\u001b\[([0-9;]*)m/gu;
+    const state = {
+      bold: false,
+      dim: false,
+      fg: null as number | null,
+      fgBright: false,
+      bg: null as number | null,
+      bgBright: false,
+    };
+
+    let result = '';
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+
+    const appendChunk = (chunk: string) => {
+      if (chunk === '') return;
+      const escaped = escapeLogHtml(chunk);
+      const classes = ansiStateClass(state);
+      result += classes ? `<span class="${classes}">${escaped}</span>` : escaped;
+    };
+
+    while ((match = pattern.exec(input)) !== null) {
+      appendChunk(input.slice(cursor, match.index));
+      cursor = match.index + match[0].length;
+
+      const rawCodes = match[1]?.trim() ?? '';
+      const codes = rawCodes === '' ? [0] : rawCodes.split(';').map((entry) => Number.parseInt(entry, 10));
+      for (const code of codes) {
+        if (!Number.isFinite(code)) {
+          continue;
+        }
+        if (code === 0) {
+          state.bold = false;
+          state.dim = false;
+          state.fg = null;
+          state.fgBright = false;
+          state.bg = null;
+          state.bgBright = false;
+          continue;
+        }
+        if (code === 22) {
+          state.bold = false;
+          state.dim = false;
+          continue;
+        }
+        if (code === 39) {
+          state.fg = null;
+          state.fgBright = false;
+          continue;
+        }
+        if (code === 49) {
+          state.bg = null;
+          state.bgBright = false;
+          continue;
+        }
+        if (code === 1) {
+          state.bold = true;
+          continue;
+        }
+        if (code === 2) {
+          state.dim = true;
+          continue;
+        }
+        const className = ansiCodeToClass(code);
+        if (!className) {
+          continue;
+        }
+        if (code >= 30 && code <= 37) {
+          state.fg = code - 30;
+          state.fgBright = false;
+          continue;
+        }
+        if (code >= 40 && code <= 47) {
+          state.bg = code - 40;
+          state.bgBright = false;
+          continue;
+        }
+        if (code >= 90 && code <= 97) {
+          state.fg = code - 90;
+          state.fgBright = true;
+          continue;
+        }
+        if (code >= 100 && code <= 107) {
+          state.bg = code - 100;
+          state.bgBright = true;
+        }
+      }
+    }
+
+    appendChunk(input.slice(cursor));
+    return result;
+  }
+
+  function visibleMegaRuntimeLogs(): DesktopRuntimeLogEntry[] {
+    const filter = megaRuntimeLogFilter.trim().toLowerCase();
+    if (filter === '') {
+      return megaRuntimeLogs;
+    }
+    return megaRuntimeLogs.filter((entry) => {
+      const haystack = `${entry.label}\n${entry.path}\n${normalizeMegaLogContent(entry.content, entry.id)}`.toLowerCase();
+      return haystack.includes(filter);
+    });
+  }
+
+  function activeMegaRuntimeLog(): DesktopRuntimeLogEntry | null {
+    const visible = visibleMegaRuntimeLogs();
+    if (visible.length === 0) {
+      return null;
+    }
+    const exact = megaRuntimeLogSelection
+      ? visible.find((entry) => entry.id === megaRuntimeLogSelection) ?? null
+      : null;
+    return exact ?? visible[0] ?? null;
+  }
+
+  function megaRuntimeLogContent(entry: DesktopRuntimeLogEntry | null): string {
+    if (!entry) {
+      return '';
+    }
+    return normalizeMegaLogContent(entry.content, entry.id);
+  }
+
+  function megaRuntimeLogHtml(entry: DesktopRuntimeLogEntry | null): string {
+    return renderAnsiLogHtml(megaRuntimeLogContent(entry));
+  }
+
+  function megaRuntimeLogLineCount(entry: DesktopRuntimeLogEntry | null): number {
+    const content = megaRuntimeLogContent(entry).trim();
+    if (content === '') {
+      return 0;
+    }
+    return content.split(/\r?\n/u).length;
+  }
+
+  function formatMegaRuntimeLogTimestamp(value: number | null): string {
+    if (!value || !Number.isFinite(value)) {
+      return 'Not written yet';
+    }
+    return new Date(value).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  }
+
+  function formatAbsoluteTimestamp(value: number | null): string {
+    if (!value || !Number.isFinite(value)) {
+      return 'Waiting';
+    }
+    return new Date(value).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  }
+
+  async function loadMegaRuntimeLogs(): Promise<void> {
+    megaRuntimeLogsLoading = true;
+    megaRuntimeLogsError = '';
+    try {
+      const response = await readDesktopRuntimeLogs();
+      if (!response) {
+        megaRuntimeLogs = [];
+        megaRuntimeLogsUpdatedAt = null;
+        megaRuntimeLogSelection = null;
+        return;
+      }
+      megaRuntimeLogs = response.entries;
+      megaRuntimeLogsUpdatedAt = response.generatedAt;
+      if (
+        !megaRuntimeLogSelection ||
+        !response.entries.some((entry) => entry.id === megaRuntimeLogSelection)
+      ) {
+        megaRuntimeLogSelection = response.entries[0]?.id ?? null;
+      }
+    } catch (error) {
+      megaRuntimeLogsError = error instanceof Error ? error.message : 'Failed to load runtime logs';
+    } finally {
+      megaRuntimeLogsLoading = false;
+    }
+  }
+
+  async function copyMegaRuntimeLog(entry: DesktopRuntimeLogEntry | null): Promise<void> {
+    if (!entry) {
+      megaRuntimeLogCopyFeedback = 'Nothing to copy';
+      return;
+    }
+    const content = megaRuntimeLogContent(entry);
+    if (content.trim() === '') {
+      megaRuntimeLogCopyFeedback = 'Log is empty';
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(content);
+      megaRuntimeLogCopyFeedback = 'Copied';
+    } catch (error) {
+      megaRuntimeLogCopyFeedback = error instanceof Error ? error.message : 'Copy failed';
+    }
+  }
+
+  async function withPanelRequestTimeout<T>(
+    label: string,
+    run: (signal: AbortSignal) => Promise<T>,
+    timeoutMs = PANEL_REQUEST_TIMEOUT_MS
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timer =
+      timeoutMs !== null && timeoutMs > 0
+        ? setTimeout(() => {
+            controller.abort();
+          }, timeoutMs)
+        : null;
+    try {
+      return await run(controller.signal);
+    } catch (error) {
+      if (isAbortError(error)) {
+        const timeoutLabel = timeoutMs !== null && timeoutMs > 0 ? `${Math.ceil(timeoutMs / 1000)}s` : 'the request window';
+        throw new Error(`${label} timed out after ${timeoutLabel}.`);
+      }
+      throw error;
+    } finally {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  function megaDiagnostics(limit = 3, options?: { onlyProblems?: boolean }): MegaDiagnosticView[] {
+    const onlyProblems = options?.onlyProblems === true;
+    const ranked: Array<{
+      id: string;
+      severity: number;
+      title: string;
+      code: string | undefined;
+      summaryText: string;
+      detail: string;
+      facts: Array<{ label: string; value: string }>;
+      updatedAt: number;
+    }> = [];
+
+    const providerReconnectIssue = megaProviderReconnectIssue();
+    if (providerReconnectIssue) {
+      ranked.push({
+        id: providerReconnectIssue.diagnostic.id,
+        severity: 4,
+        title: providerReconnectIssue.diagnostic.title,
+        code: undefined,
+        summaryText: providerReconnectIssue.diagnostic.summary,
+        detail: providerReconnectIssue.diagnostic.detail,
+        facts: providerReconnectIssue.diagnostic.facts,
+        updatedAt: providerReconnectIssue.updatedAt,
+      });
+    }
+
+    for (const summary of providerShares('mega')) {
+      if (onlyProblems && summary.state.status !== 'attention' && summary.state.status !== 'needs-auth') {
+        continue;
+      }
+      const diagnostic = summary.state.diagnostic;
+      const detail = diagnostic?.detail?.trim() || summary.state.detail.trim();
+      if (!detail) {
+        continue;
+      }
+      const severity = summary.state.status === 'needs-auth' || summary.state.status === 'attention'
+        ? 3
+        : summary.state.status === 'syncing'
+          ? 2
+          : 1;
+      ranked.push({
+        id: summary.share.id,
+        severity,
+        title: diagnostic?.title || managedShareTitle(summary),
+        code: diagnostic?.code,
+        summaryText: diagnostic?.summary || summarizeMegaStateDetail(detail),
+        detail,
+        facts: diagnostic?.facts ?? [],
+        updatedAt: summary.state.lastSyncAt ?? 0,
+      });
+    }
+
+    const topRanked = ranked
+      .sort((left, right) => {
+        if (right.severity !== left.severity) {
+          return right.severity - left.severity;
+        }
+        return right.updatedAt - left.updatedAt;
+      })
+      .slice(0, Math.max(1, limit));
+
+    return topRanked.map((entry) => ({
+      id: entry.id,
+      title: entry.code ? `${entry.title} (${entry.code})` : entry.title,
+      summary: entry.summaryText,
+      detail: entry.detail,
+      facts: entry.facts,
+    }));
+  }
+
+  function megaStatusView(): MegaStatusView {
+    const shares = providerShares('mega');
+    const locationSteps = shares.map((s) => megaShareActivityStep(s));
+    const total = shares.length;
+    const ready = shares.filter((summary) => summary.state.status === 'ready').length;
+    const syncing = shares.filter((summary) => summary.state.status === 'syncing').length;
+    const preparing = shares.filter((summary) => summary.state.status === 'syncing' && isPreparingManagedShare(summary)).length;
+    const checking = shares.filter((summary) => summary.state.status === 'idle').length;
+    const blocked = shares.filter((s) => s.state.status === 'attention' || s.state.status === 'needs-auth').length;
+    const working = syncing > 0 || checking > 0;
+    const issue = megaDiagnostics(1, { onlyProblems: true })[0] ?? null;
+    const reconnectIssue = megaProviderReconnectIssue();
+    const loading = providersLoading || sharesLoading || incomingLoading;
+    const hasUsableMegaShare = shares.some((summary) => summary.state.status === 'ready');
+    const hasBlockingError = shareLoadError || (!hasUsableMegaShare ? incomingLoadError : '');
+    const inProgress = syncing > 0 || (loading && total === 0);
+    const progressSummary = megaOverallProgressLabel(shares);
+
+    let progressPercent: number | null = null;
+    if (total > 0 && ready < total && blocked === 0) {
+      if (ready === 0 && working) {
+        progressPercent = null;
+      } else {
+        progressPercent = Math.max(10, Math.min(94, Math.round((ready / total) * 100)));
+      }
+    }
+
+    const showProgressBar = total > 0 && ready < total && !reconnectIssue;
+
+    const base = {
+      locationSteps,
+      showProgressBar,
+    };
+
+    if (reconnectIssue) {
+      return {
+        ...base,
+        headline: 'Finish MEGA account recovery',
+        detail: conciseMegaDetail(reconnectIssue.diagnostic.detail),
+        tone: 'warn' as const,
+        syncing: false,
+        progressPercent: null,
+        progressLabel: 'Recovery required',
+        showProgressBar: false,
+        selfRepairCopy:
+          'Nearbytes retried the saved MEGA session. If MEGA locked the account, unlock it and complete the password change on mega.io. Nearbytes will retry the saved sign-in automatically; reconnect this account only if the credentials changed.',
+      };
+    }
+
+    if (issue) {
+      const detail = conciseMegaDetail(issue.detail);
+      return {
+        ...base,
+        headline: issue.summary,
+        detail: detail || (locationSteps[0]?.phase ?? ''),
+        tone: 'warn' as const,
+        syncing: inProgress,
+        progressPercent,
+        progressLabel: progressSummary || (total > 0 ? 'Working on locations…' : 'Recovering MEGA status'),
+        showProgressBar,
+        selfRepairCopy:
+          'Details for each folder appear below. Nearbytes retries transient MEGA API issues; use Refresh if something stays stuck.',
+      };
+    }
+
+    if (hasBlockingError) {
+      return {
+        ...base,
+        headline: hasBlockingError,
+        detail: total > 0 ? 'Location status below reflects the last check once the panel finishes loading.' : '',
+        tone: 'warn' as const,
+        syncing: false,
+        progressPercent: null,
+        progressLabel: total > 0 ? progressSummary : 'Status unavailable',
+        showProgressBar: total > 0 && ready < total,
+        selfRepairCopy: 'Nearbytes keeps retrying in the background. Use Refresh if status does not recover quickly.',
+      };
+    }
+
+    if (checking > 0 && !inProgress && ready < total) {
+      return {
+        ...base,
+        headline: 'Checking MEGA locations',
         detail:
-          pending
-            ? pending.detail
-            : connected
-              ? `${entry.label} account connected.`
-              : `Sign in so Nearbytes can create and monitor live locations for ${entry.label}.`,
-        state: connected ? 'done' : helperBlocked || configBlocked ? 'pending' : pending ? 'active' : 'active',
-      },
-      {
-        label: volumeId ? 'Create or pick a live location' : 'Create a live location',
-        detail:
-          hasShare
-            ? 'Nearbytes already has at least one live location for this provider.'
-            : 'This is the first point where Nearbytes creates the provider-backed sync location and local mirror folder.',
-        state: hasShare ? 'done' : connected ? 'active' : 'pending',
-      },
-      {
-        label: volumeId ? 'Attach it to this space' : 'Ready for spaces',
-        detail:
-          volumeId
-            ? attachedToVolume
-              ? 'This provider already has a live route attached to the current space.'
-              : 'Attach the live location so this space can receive provider-backed updates.'
-            : 'Once a live location exists, any space can attach it later.',
-        state: attachedToVolume ? 'done' : hasShare ? 'active' : 'pending',
-      },
-    ];
+          total > 0
+            ? `Nearbytes is verifying ${countLabel(total, 'location')}. Status for each location is listed below.`
+            : 'Nearbytes is verifying the connected MEGA account in the background.',
+        tone: 'muted' as const,
+        syncing: false,
+        progressPercent,
+        progressLabel: progressSummary,
+        showProgressBar,
+        selfRepairCopy:
+          '“Idle” on a location usually means the app is still validating the mirror or waiting on MEGA; it should move to ready on its own.',
+      };
+    }
+
+    if (inProgress) {
+      return {
+        ...base,
+        headline: preparing > 0 ? 'Preparing MEGA locations' : 'Syncing with MEGA',
+        detail: loading
+          ? 'Loading the connected account and visible locations. Each location shows its own step below.'
+          : preparing > 0
+            ? 'Nearbytes is creating or validating the local mirror. Watch the location row below for the exact step.'
+            : 'Pulling updates from MEGA. Per-location status is below.',
+        tone: 'muted' as const,
+        syncing: true,
+        progressPercent,
+        progressLabel: progressSummary || (preparing > 0 ? 'Preparing local mirror' : 'Refreshing locations'),
+        showProgressBar,
+        selfRepairCopy:
+          'If a folder stays in “Preparing” or “Checking…”, wait for a full sync cycle or tap Refresh MEGA status.',
+      };
+    }
+
+    if (total > 0) {
+      return {
+        ...base,
+        headline: `${countLabel(total, 'location')} ready`,
+        detail: 'All visible MEGA locations are healthy.',
+        tone: 'good' as const,
+        syncing: false,
+        progressPercent: null,
+        progressLabel: '',
+        showProgressBar: false,
+        selfRepairCopy: 'Automatic MEGA recovery runs if a mirror reports a problem.',
+      };
+    }
+
+    return {
+      ...base,
+      headline: 'No MEGA locations yet',
+      detail: 'Create or accept a MEGA location to start syncing.',
+      tone: 'muted' as const,
+      syncing: false,
+      progressPercent: null,
+      progressLabel: '',
+      showProgressBar: false,
+      selfRepairCopy: 'Automatic recovery runs as soon as a MEGA location exists.',
+    };
   }
 
   function localMachineShareCount(): number {
@@ -922,6 +2786,9 @@
   }
 
   function shouldShowProviderDocs(entry: ProviderCatalogEntry): boolean {
+    if (entry.provider === 'local-network') {
+      return false;
+    }
     if (entry.provider === 'gdrive') {
       return entry.setup.status === 'needs-config' || entry.setup.status === 'unsupported';
     }
@@ -937,7 +2804,7 @@
       const basePath = typeof summary.share.remoteDescriptor.basePath === 'string' ? summary.share.remoteDescriptor.basePath : null;
       return repoFullName && basePath ? `${repoFullName} → ${basePath}` : 'GitHub repository share';
     }
-    return summary.share.sourceId ? 'Local folder managed by Nearbytes' : 'Waiting for local folder';
+    return summary.share.sourceId ? 'Local mirror folder managed by Nearbytes' : 'Mirror folder needs attention';
   }
 
   function localShares(): SourceConfigEntry[] {
@@ -945,29 +2812,194 @@
   }
 
   function managedShareAccessLabel(summary: ManagedShareSummary): string {
-    return summary.share.capabilities.includes('write') ? 'Read and write' : 'Read only';
+    return getManagedShareAccessLabel(summary);
   }
 
   function summarySourcePath(summary: ManagedShareSummary): string {
     return summary.storage?.sourcePath?.trim() || summary.share.localPath;
   }
 
+  function normalizeIdentity(value: string | null | undefined): string {
+    return value?.trim().toLowerCase() ?? '';
+  }
+
+  function managedShareAccountEmail(summary: ManagedShareSummary): string | null {
+    const account = providerAccounts.find((entry) => entry.id === summary.share.accountId);
+    const email = typeof account?.email === 'string' ? account.email.trim() : '';
+    return email || null;
+  }
+
+  function managedShareOwnerEmail(summary: ManagedShareSummary): string | null {
+    const ownerEmail = typeof summary.share.remoteDescriptor.ownerEmail === 'string'
+      ? summary.share.remoteDescriptor.ownerEmail.trim()
+      : '';
+    return ownerEmail || null;
+  }
+
+  function managedShareRemoteName(summary: ManagedShareSummary): string | null {
+    const shareName = typeof summary.share.remoteDescriptor.shareName === 'string'
+      ? summary.share.remoteDescriptor.shareName.trim()
+      : '';
+    return shareName || null;
+  }
+
+  function managedShareIsOwned(summary: ManagedShareSummary): boolean {
+    if (summary.share.provider !== 'mega') {
+      return summary.share.role !== 'recipient';
+    }
+    if (summary.share.role === 'owner') {
+      return true;
+    }
+    const accountIdentity = normalizeIdentity(managedShareAccountEmail(summary));
+    const ownerIdentity = normalizeIdentity(managedShareOwnerEmail(summary));
+    return Boolean(accountIdentity && ownerIdentity && accountIdentity === ownerIdentity);
+  }
+
+  function managedShareIsIncoming(summary: ManagedShareSummary): boolean {
+    return !managedShareIsOwned(summary);
+  }
+
+  function incomingManagedShareOwnerEmail(offer: IncomingManagedShareOffer): string | null {
+    const ownerEmail = typeof offer.remoteDescriptor.ownerEmail === 'string'
+      ? offer.remoteDescriptor.ownerEmail.trim()
+      : '';
+    return ownerEmail || null;
+  }
+
+  function incomingManagedShareName(offer: IncomingManagedShareOffer): string | null {
+    const shareName = typeof offer.remoteDescriptor.shareName === 'string'
+      ? offer.remoteDescriptor.shareName.trim()
+      : offer.label.trim();
+    return shareName || null;
+  }
+
+  function incomingManagedShareBelongsToConnectedAccount(offer: IncomingManagedShareOffer): boolean {
+    if (offer.provider !== 'mega') {
+      return false;
+    }
+    const account = providerAccounts.find((entry) => entry.id === offer.accountId);
+    const accountIdentity = normalizeIdentity(account?.email);
+    const ownerIdentity = normalizeIdentity(incomingManagedShareOwnerEmail(offer));
+    return Boolean(accountIdentity && ownerIdentity && accountIdentity === ownerIdentity);
+  }
+
+  function incomingManagedShareMatchesExistingShare(offer: IncomingManagedShareOffer): boolean {
+    const offerName = normalizeIdentity(incomingManagedShareName(offer));
+    const offerOwner = normalizeIdentity(incomingManagedShareOwnerEmail(offer));
+    return providerShares(offer.provider).some((summary) => {
+      if (summary.share.accountId !== offer.accountId) {
+        return false;
+      }
+      const summaryName = normalizeIdentity(managedShareRemoteName(summary) ?? summary.share.label);
+      if (offerName && summaryName && offerName !== summaryName) {
+        return false;
+      }
+      if (offer.provider === 'mega' && offerOwner) {
+        const summaryOwner = normalizeIdentity(managedShareOwnerEmail(summary) ?? managedShareAccountEmail(summary));
+        if (summaryOwner && offerOwner !== summaryOwner) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+
+  function visibleIncomingManagedShareOffer(offer: IncomingManagedShareOffer): boolean {
+    if (isIncomingManagedShareOfferDismissed(offer)) {
+      return false;
+    }
+    if (incomingManagedShareBelongsToConnectedAccount(offer)) {
+      return false;
+    }
+    if (incomingManagedShareMatchesExistingShare(offer)) {
+      return false;
+    }
+    return true;
+  }
+
+  function managedShareTitle(summary: ManagedShareSummary): string {
+    if (summary.share.provider === 'mega') {
+      const remoteName = managedShareRemoteName(summary) ?? summary.share.label;
+      if (managedShareIsIncoming(summary)) {
+        const ownerEmail = managedShareOwnerEmail(summary);
+        if (ownerEmail && remoteName) {
+          return `${ownerEmail}/${remoteName}`;
+        }
+      } else {
+        const accountEmail = managedShareAccountEmail(summary);
+        if (accountEmail && remoteName) {
+          return `${accountEmail}/${remoteName}`;
+        }
+      }
+    }
+    return summary.share.label;
+  }
+
+  function managedShareCardTitle(summary: ManagedShareSummary): string {
+    if (summary.share.provider === 'mega') {
+      return managedShareRemoteName(summary) ?? summary.share.label;
+    }
+    return managedShareTitle(summary);
+  }
+
+  function managedShareOwnershipLabel(summary: ManagedShareSummary): string | null {
+    if (summary.share.provider !== 'mega') {
+      return null;
+    }
+    if (managedShareIsOwned(summary)) {
+      const accountEmail = managedShareAccountEmail(summary);
+      return accountEmail || 'Your MEGA location';
+    }
+    const ownerEmail = managedShareOwnerEmail(summary);
+    return ownerEmail ? `Owner: ${ownerEmail}` : 'Owner: another MEGA account';
+  }
+
+  function sourceDisplayTitle(source: SourceConfigEntry): string {
+    const linkedSummary = managedShares.find((summary) => summary.share.sourceId === source.id)
+      ?? (source.integration?.managedShareId
+        ? managedShares.find((summary) => summary.share.id === source.integration?.managedShareId)
+        : undefined);
+    if (linkedSummary) {
+      return managedShareCardTitle(linkedSummary);
+    }
+    return sourceLocationTitle(source.path);
+  }
+
   function managedShareRoleLabel(summary: ManagedShareSummary): string {
-    return summary.share.role === 'owner' ? 'You own this live location' : 'Received from someone else';
+    if (managedShareIsOwned(summary)) {
+      return 'You own this live location';
+    }
+    const ownerEmail = managedShareOwnerEmail(summary);
+    return ownerEmail ? `Received from ${ownerEmail}` : 'Received from someone else';
   }
 
   function managedShareNarrative(summary: ManagedShareSummary): string {
-    if (summary.state.status === 'ready' && summary.attachments.length > 0) {
-      return 'Nearbytes can use this live location right now. The folder below is the local mirror that should stay in sync with the provider copy.';
+    if (summary.state.status === 'ready') {
+      if (summary.share.provider === 'mega' && managedShareIsOwned(summary)) {
+        return 'This is your writable Nearbytes publication root for this MEGA account. Nearbytes publishes your updates here, keeps it synced with MEGA, and retries automatically after transient provider errors.';
+      }
+      if (summary.share.provider === 'mega' && managedShareIsIncoming(summary)) {
+        const ownerEmail = managedShareOwnerEmail(summary);
+        return ownerEmail
+          ? `This is an automatic local copy of the MEGA location shared with you by ${ownerEmail}. Nearbytes reads from it here, but it never publishes your changes back into ${ownerEmail}'s folder directly.`
+          : 'This is an automatic local copy of a MEGA location shared with you. Nearbytes reads from it here, but it never publishes your changes back into the other account directly.';
+      }
+      return 'This live location is ready. Nearbytes keeps the local copy aligned with the provider and uses your configured writable destinations for publication.';
     }
-    if (summary.attachments.length === 0) {
-      return 'This live location exists, but it is not attached to the current space yet.';
-    }
-    if (summary.state.status === 'syncing') {
-      return 'Nearbytes is still waiting for the provider mirror to settle before treating this route as ready.';
+    if (summary.state.status === 'attention') {
+      return summary.state.detail || 'This live location needs attention before Nearbytes can rely on it.';
     }
     if (summary.state.status === 'needs-auth') {
-      return 'Nearbytes cannot use this live location until the provider account is connected again.';
+      return 'Nearbytes cannot use this location until the provider account is connected again.';
+    }
+    if (summary.state.status === 'syncing') {
+      if (isPreparingManagedShare(summary)) {
+        return `${summary.state.detail} If it does not clear soon, inspect the MEGA runtime logs from the provider card.`;
+      }
+      return summary.state.detail || 'Nearbytes is still getting this location ready.';
+    }
+    if (summary.attachments.length === 0) {
+      return 'This live location exists in Nearbytes and is ready when you need it.';
     }
     return summary.state.detail;
   }
@@ -978,12 +3010,20 @@
       managedShareAccessLabel(summary),
       shareAttachmentSummary(summary),
       summary.storage?.keepFullCopy ? 'Keeps a full copy' : 'On-demand copy policy',
-      summary.storage?.availableBytes !== undefined ? `${formatSize(summary.storage.availableBytes)} free locally` : null,
+      summary.storage?.availableBytes !== undefined ? `Available storage: ${formatSize(summary.storage.availableBytes)} locally` : null,
       summary.storage?.remoteAvailableBytes !== undefined
-        ? `${formatSize(summary.storage.remoteAvailableBytes)} free in ${providerLabelForManagedShare(summary)}`
+        ? `Available storage: ${formatSize(summary.storage.remoteAvailableBytes)} in ${providerLabelForManagedShare(summary)}`
         : null,
     ];
     return facts.filter((value): value is string => Boolean(value));
+  }
+
+  function shareAttachmentSummary(summary: ManagedShareSummary): string {
+    const count = summary.attachments.length;
+    if (count === 0) {
+      return summary.storage?.keepFullCopy ? 'Ready for hub writes by default. No hub is using it yet.' : 'Readable now. No hub is using it yet.';
+    }
+    return `Used in ${countLabel(count, 'place')}.`;
   }
 
   function canInviteManagedShare(summary: ManagedShareSummary): boolean {
@@ -1001,6 +3041,22 @@
     };
   }
 
+  function toCollaboratorView(
+    collaborator: { label: string; email?: string; role?: string; status: 'active' | 'invited'; source: 'provider' | 'nearbytes' }
+  ): CollaboratorView {
+    return {
+      key: getCollaboratorDedupeKey(collaborator),
+      label: getCollaboratorDisplayLabel(collaborator),
+      role: collaborator.role,
+      status: collaborator.status,
+      source: collaborator.source,
+    };
+  }
+
+  function collaboratorRoleLabel(collaborator: CollaboratorView): string | null {
+    return getCollaboratorRoleLabel(collaborator);
+  }
+
   function parseInviteEmails(value: string): string[] {
     return value
       .split(/[\s,;]+/u)
@@ -1015,19 +3071,15 @@
   function participantCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
     return summary.collaborators
       .filter((collaborator) => collaborator.status === 'active')
-      .map((collaborator) => ({
-        label: collaborator.email ?? collaborator.label,
-        status: collaborator.status,
-      }));
+      .map((collaborator) => toCollaboratorView(collaborator));
   }
 
   function pendingCollaborators(summary: ManagedShareSummary): CollaboratorView[] {
+    const activeKeys = new Set(participantCollaborators(summary).map((collaborator) => collaborator.key));
     return summary.collaborators
       .filter((collaborator) => collaborator.status === 'invited')
-      .map((collaborator) => ({
-        label: collaborator.email ?? collaborator.label,
-        status: collaborator.status,
-      }));
+        .filter((collaborator) => !activeKeys.has(getCollaboratorDedupeKey(collaborator)))
+      .map((collaborator) => toCollaboratorView(collaborator));
   }
 
   function sourceById(sourceId: string | undefined): SourceConfigEntry | null {
@@ -1035,27 +3087,99 @@
     return configDraft?.sources.find((source) => source.id === sourceId) ?? null;
   }
 
-  function shareCardBadgeForSource(source: SourceConfigEntry): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
+  function shareCardBadgeForSource(source: SourceConfigEntry): ShareBadge[] {
     const availability = locationAvailability(source);
+    if (availability.label === 'Ready') {
+      return [];
+    }
     return [
       {
         label: availability.label,
         tone: availability.tone,
+        description: locationSummary(source),
       },
     ];
   }
 
-  function shareCardBadgesForManaged(summary: ManagedShareSummary): Array<{ label: string; tone: 'good' | 'muted' | 'warn' | 'durable' | 'replica' | 'off' }> {
-    return [
-      {
-        label: shareStatusLabel(summary),
+  function shareCardBadgesForManaged(summary: ManagedShareSummary): ShareBadge[] {
+    const badges: ShareBadge[] = [];
+    if (summary.share.provider === 'mega') {
+      badges.push({
+        label: managedShareIsOwned(summary) ? 'Your location' : 'Incoming',
+        tone: managedShareIsOwned(summary) ? 'durable' : 'replica',
+        description: managedShareOwnershipLabel(summary) ?? undefined,
+      });
+    }
+    const label = shareStatusLabel(summary);
+    if (label !== 'Connected' && label !== 'Available') {
+      badges.push({
+        label,
         tone: shareStatusTone(summary),
-      },
-    ];
+        description: summary.state.detail,
+      });
+    }
+    return badges;
   }
 
   function defaultManagedShareLabel(): string {
-    return 'Shared storage';
+    return 'Storage location';
+  }
+
+  function nextManagedShareLabel(provider: string): string {
+    const baseLabel = defaultManagedShareLabel();
+    const matchingCount = providerShares(provider).filter((summary) => {
+      const label = summary.share.label.trim();
+      return label === baseLabel || /^Storage location \d+$/u.test(label);
+    }).length;
+    return matchingCount === 0 ? baseLabel : `${baseLabel} ${matchingCount + 1}`;
+  }
+
+  function providerEmptyShareCopy(provider: ProviderCatalogEntry): string {
+    if (!provider.isConnected) {
+      return `Connect ${provider.label} first, then Nearbytes will manage its shares here.`;
+    }
+    if (provider.provider === 'local-network') {
+      return 'Discovery is active. When another Nearbytes device appears on the same LAN, it will show up here and sync automatically.';
+    }
+    if (provider.provider === 'mega') {
+      return 'No MEGA locations yet. After sign-in, Nearbytes will show your writable publication root here and any accepted incoming shares as local read-only copies.';
+    }
+    return 'Create a storage location here to make it available in Nearbytes.';
+  }
+
+  async function refreshLocalNetworkPeers(options?: { background?: boolean }): Promise<void> {
+    try {
+      const response = await listLocalNetworkPeers();
+      applyLocalNetworkResponse(response);
+      if (!options?.background) {
+        localNetworkLoadError = '';
+      }
+    } catch (error) {
+      if (!options?.background) {
+        localNetworkLoadError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
+  async function triggerLocalNetworkSync(peerId: string): Promise<void> {
+    syncingLocalNetworkPeerId = peerId;
+    try {
+      const response = await syncLocalNetworkPeer(peerId);
+      localNetworkPeers = localNetworkPeers.map((peer) => (peer.peerId === response.peer.peerId ? response.peer : peer));
+      await refreshLocalNetworkPeers({ background: true });
+    } catch (error) {
+      localNetworkLoadError = error instanceof Error ? error.message : String(error);
+    } finally {
+      syncingLocalNetworkPeerId = null;
+    }
+  }
+
+  function managedShareCreateLabel(provider: string): string {
+    if (provider === 'github') {
+      return githubShareLabel();
+    }
+    const draft = providerLocationNameDraft(provider).trim();
+    return draft || nextManagedShareLabel(provider);
   }
 
   function defaultGithubBasePath(label: string): string {
@@ -1069,53 +3193,48 @@
     return `nearbytes/${slug}`;
   }
 
-  function sourceReservePercent(source: SourceConfigEntry): number {
-    return Number.isFinite(source.reservePercent) ? source.reservePercent : DEFAULT_RESERVE_PERCENT;
-  }
-
-  function managedShareReservePercent(summary: ManagedShareSummary, source: SourceConfigEntry | null): number {
-    return Number.isFinite(summary.storage?.reservePercent)
-      ? summary.storage!.reservePercent!
-      : source
-        ? sourceReservePercent(source)
-        : DEFAULT_RESERVE_PERCENT;
-  }
-
-  function destinationReservePercent(destination: VolumeDestinationConfig | null): number {
-    return Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT;
-  }
-
   function localShareView(source: SourceConfigEntry): UnifiedShareView {
     const status = sourceStatus(source.id);
     const defaultDestination = destinationFor(null, source.id);
+    const attachments = sourceAttachmentLabels(source.id);
+    const repairSummary = sourceRepairSummary(source.id);
+    const repairReport = sourceRepairReport(source.id);
+    const effectiveReserve = Number.isFinite(defaultDestination?.reservePercent)
+      ? defaultDestination!.reservePercent
+      : Number.isFinite(source.reservePercent)
+        ? source.reservePercent
+        : DEFAULT_RESERVE_PERCENT;
+    const measurement = storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes);
     return {
-      provider: formatProvider(source.provider),
-      title: compactPath(source.path),
+      provider: sourceLocationKindLabel(source.provider),
+      title: sourceLocationTitle(source.path),
+      pathLabel: sourceLocationPath(source.path),
       copy: locationSummary(source),
-      active: protectionTone(defaultDestination, source.id) === 'durable',
+      active: source.enabled,
       statusBadges: shareCardBadgeForSource(source),
       meta: [
-        status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown',
-        usageSummary(source.id),
-      ],
+        measurement,
+      ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
-      defaultEnabled: keepsFullCopy(defaultDestination),
-      reservePercent: sourceReservePercent(source),
+      reservePercent: effectiveReserve,
+      reserveKey: `source:${source.id}`,
       warning: status?.lastWriteFailure?.message,
-      attachments: [],
+      repairSummary: repairSummary ?? undefined,
+      repairDetails: sourceRepairDetails(source.id),
+      attachments,
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
-      onToggleDefault: () => setKeepFullCopy(null, source.id, !keepsFullCopy(defaultDestination)),
       onReserveChange: (nextValue) => {
         updateSourceField(source.id, 'reservePercent', nextValue);
-        if (keepsFullCopy(defaultDestination)) {
-          updateDestinationField(null, source.id, 'reservePercent', nextValue);
-        }
+        updateDestinationField(null, source.id, 'reservePercent', nextValue);
       },
-      onOpen: hasSourcePath(source) ? () => openSourceFolder(source.id) : undefined,
+      onOpen: hasSourcePath(source) ? () => openSourceFolder(source.id, source.path) : undefined,
       openDisabled: !hasSourcePath(source),
       openTitle: source.path || 'Open folder',
+      onTrashIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'trash') : undefined,
+      onDeleteIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'delete') : undefined,
+      repairBusy: repairingSourceId === source.id,
       onMove: () => void (hasSourcePath(source) ? moveSourceFolder(source.id) : chooseSourceFolder(source.id)),
       moveDisabled: movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id),
       moveLabel: movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move' : 'Choose folder',
@@ -1131,43 +3250,58 @@
       return null;
     }
     const defaultDestination = destinationFor(null, source.id);
-    const keepFullCopy = keepsFullCopy(defaultDestination);
-    const reservePercent = managedShareReservePercent(summary, source);
+    const repairSummary = sourceRepairSummary(source.id);
+    const repairReport = sourceRepairReport(source.id);
+    const effectiveReserve = Number.isFinite(defaultDestination?.reservePercent)
+      ? defaultDestination!.reservePercent
+      : Number.isFinite(source.reservePercent)
+        ? source.reservePercent
+        : DEFAULT_RESERVE_PERCENT;
+    const measurement = storageMeasurementSummary(
+      summary.storage?.usageTotalBytes,
+      summary.storage?.availableBytes ?? summary.storage?.remoteAvailableBytes
+    );
+    const ownershipLabel = managedShareOwnershipLabel(summary);
     return {
       provider: summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider === 'github' ? 'GitHub' : summary.share.provider,
-      title: summary.share.label,
-      copy: summary.state.detail,
+      title: managedShareCardTitle(summary),
+      copy: managedShareNarrative(summary),
       active: summary.state.status === 'ready',
       statusBadges: shareCardBadgesForManaged(summary),
       meta: [
-        managedShareAccessLabel(summary),
-        summary.storage?.availableBytes !== undefined ? `${formatSize(summary.storage.availableBytes)} free` : 'Free space unknown',
-        summary.storage?.remoteAvailableBytes !== undefined
-          ? `${formatSize(summary.storage.remoteAvailableBytes)} free in ${providerLabelForManagedShare(summary)}`
-          : null,
-        typeof summary.storage?.usageTotalBytes === 'number'
-          ? `Nearbytes is using ${formatSize(summary.storage.usageTotalBytes)} in this location.`
-          : 'Local usage unavailable',
-        managedShareOpenLabel(summary),
+        ownershipLabel,
+        measurement,
+        !measurement ? managedShareOpenLabel(summary) : null,
       ].filter((value): value is string => Boolean(value)),
       readable: source.enabled,
       writable: source.writable,
-      defaultEnabled: keepFullCopy,
-      reservePercent,
+      writableDisabled: summary.storage?.writable === false,
+      writableTitle: summary.storage?.writable === false
+        ? 'This shared location is read-only here. Nearbytes refreshes it from the provider but does not upload changes from this folder.'
+        : undefined,
+      reservePercent: effectiveReserve,
+      reserveKey: `managed:${summary.share.id}`,
       warning: summary.storage?.lastWriteFailureMessage,
+      repairSummary: repairSummary ?? undefined,
+      repairDetails: sourceRepairDetails(source.id),
       attachments: shareAttachmentLabels(summary),
       onToggleReadable: () => updateSourceField(source.id, 'enabled', !source.enabled),
       onToggleWritable: () => updateSourceField(source.id, 'writable', !source.writable),
-      onToggleDefault: () => setKeepFullCopy(null, source.id, !keepFullCopy),
       onReserveChange: (nextValue) => {
         updateSourceField(source.id, 'reservePercent', nextValue);
-        if (keepFullCopy) {
-          updateDestinationField(null, source.id, 'reservePercent', nextValue);
-        }
+        updateDestinationField(null, source.id, 'reservePercent', nextValue);
       },
-      onOpen: summary.share.sourceId ? () => openSourceFolder(summary.share.sourceId!) : undefined,
+      onOpen: summary.share.sourceId
+        ? () => openSourceFolder(summary.share.sourceId!, summarySourcePath(summary))
+        : undefined,
       openDisabled: !summary.share.sourceId,
       openTitle: source.path || summary.share.localPath,
+      onTrashIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'trash') : undefined,
+      onDeleteIssues: repairReport && repairReport.issueCount > 0 ? () => void runSourceRepair(source.id, 'delete') : undefined,
+      repairBusy: repairingSourceId === source.id,
+      onRemove: () => void removeManagedShareSummary(summary),
+      canRemove: true,
+      removeResetKey: `managed:${summary.share.id}:${summary.share.label}:${summary.attachments.length}`,
     };
   }
 
@@ -1176,6 +3310,50 @@
     if (summary.share.provider === 'mega') return 'MEGA cloud';
     if (summary.share.provider === 'github') return 'GitHub';
     return summary.share.provider;
+  }
+
+  function providerLabelForIncoming(provider: string): string {
+    if (provider === 'local-network') return 'Local network';
+    if (provider === 'gdrive') return 'Google Drive';
+    if (provider === 'mega') return 'MEGA';
+    if (provider === 'github') return 'GitHub';
+    return provider;
+  }
+
+  function incomingSharePresentation(offer: IncomingManagedShareOffer): ReturnType<typeof getIncomingSharePresentation> {
+    return getIncomingSharePresentation(offer, { hasVolumeTarget: Boolean(volumeId) });
+  }
+
+  function incomingShareActionLabel(offer: IncomingManagedShareOffer): string {
+    return incomingSharePresentation(offer).actionLabel;
+  }
+
+  function incomingShareMetaDetail(offer: IncomingManagedShareOffer): string {
+    return incomingSharePresentation(offer).metaDetail;
+  }
+
+  function incomingShareStatusBadge(offer: IncomingManagedShareOffer): { label: string; tone: 'good' | 'muted' } {
+    return incomingSharePresentation(offer).statusBadge;
+  }
+
+  function incomingShareKindLabel(offer: IncomingManagedShareOffer): string {
+    return incomingShareActionLabel(offer) === 'Add mirror' ? 'mirror' : 'incoming share';
+  }
+
+  function incomingManagedShareTitle(offer: IncomingManagedShareOffer): string {
+    if (offer.provider === 'mega') {
+      const shareName = typeof offer.remoteDescriptor.shareName === 'string'
+        ? offer.remoteDescriptor.shareName.trim()
+        : offer.label;
+      if (shareName) {
+        return shareName;
+      }
+    }
+    const label = offer.label.trim();
+    if (label) {
+      return label;
+    }
+    return offer.ownerLabel;
   }
 
   function generateSourceId(provider: SourceProvider): string {
@@ -1197,7 +3375,7 @@
       enabled: true,
       writable: true,
       reservePercent: DEFAULT_RESERVE_PERCENT,
-      opportunisticPolicy: 'drop-older-blocks',
+      opportunisticPolicy: 'block-writes',
     };
   }
 
@@ -1294,6 +3472,27 @@
     return configDraft?.volumes.find((entry) => entry.volumeId === targetVolumeId);
   }
 
+  function hasMeaningfulExplicitVolumePolicy(targetVolumeId: string): boolean {
+    if (!configDraft) {
+      return false;
+    }
+    const explicit = explicitVolumePolicy(targetVolumeId);
+    if (!explicit) {
+      return false;
+    }
+    return !destinationsEqual(effectiveDestinations(targetVolumeId), configDraft.defaultVolume.destinations);
+  }
+
+  function pruneRedundantVolumePolicy(targetVolumeId: string): void {
+    if (!configDraft || hasMeaningfulExplicitVolumePolicy(targetVolumeId)) {
+      return;
+    }
+    configDraft = {
+      ...configDraft,
+      volumes: configDraft.volumes.filter((entry) => entry.volumeId !== targetVolumeId),
+    };
+  }
+
   function ensureExplicitVolumePolicy(targetVolumeId: string): VolumePolicyEntry {
     if (!configDraft) {
       throw new Error('Config not loaded');
@@ -1344,6 +3543,7 @@
       ...configDraft,
       volumes: nextVolumes,
     };
+    pruneRedundantVolumePolicy(targetVolumeId);
   }
 
   function updateDestinationField<K extends keyof VolumeDestinationConfig>(
@@ -1465,15 +3665,131 @@
   function protectionTone(destination: VolumeDestinationConfig | null, sourceId: string): 'durable' | 'replica' | 'off' {
     if (!destination || !destination.enabled) return 'off';
     if (isDurableDestination(destination, sourceId)) return 'durable';
-    if (keepsFullCopy(destination)) return 'replica';
     return 'off';
   }
 
   function protectionLabel(destination: VolumeDestinationConfig | null, sourceId: string): string {
     const tone = protectionTone(destination, sourceId);
-    if (tone === 'durable') return 'Protected copy';
-    if (tone === 'replica') return 'Spare copy';
-    return 'Not keeping a copy';
+    if (tone === 'durable') return 'Full copy';
+    return 'Not a full copy';
+  }
+
+  function hubLocationMode(targetVolumeId: string, sourceId: string): HubLocationMode {
+    const destination = destinationFor(targetVolumeId, sourceId);
+    if (!destination || !destination.enabled || !destination.storeEvents) {
+      return 'off';
+    }
+    return 'store';
+  }
+
+  function setHubLocationMode(targetVolumeId: string, sourceId: string, mode: HubLocationMode): void {
+    if (!configDraft) return;
+    upsertDestination(targetVolumeId, sourceId);
+    const apply = (destination: VolumeDestinationConfig): VolumeDestinationConfig => {
+      if (mode === 'off') {
+        return {
+          ...destination,
+          enabled: false,
+          storeEvents: false,
+          storeBlocks: false,
+          copySourceBlocks: false,
+        };
+      }
+      return {
+        ...destination,
+        enabled: true,
+        storeEvents: true,
+        storeBlocks: true,
+        copySourceBlocks: true,
+      };
+    };
+
+    const entry = ensureExplicitVolumePolicy(targetVolumeId);
+    const volumeIndex = configDraft.volumes.findIndex((volume) => volume.volumeId === targetVolumeId);
+    const nextVolumes = [...configDraft.volumes];
+    nextVolumes[volumeIndex] = {
+      ...entry,
+      destinations: entry.destinations.map((destination) =>
+        destination.sourceId === sourceId ? apply(destination) : destination
+      ),
+    };
+    configDraft = {
+      ...configDraft,
+      sources:
+        mode === 'off'
+          ? configDraft.sources
+          : configDraft.sources.map((source) =>
+              source.id === sourceId
+                ? {
+                    ...source,
+                    enabled: true,
+                  }
+                : source
+            ),
+      volumes: nextVolumes,
+    };
+    pruneRedundantVolumePolicy(targetVolumeId);
+  }
+
+  function hubStorageHeading(targetVolumeId: string): string {
+    return hasMeaningfulExplicitVolumePolicy(targetVolumeId)
+      ? 'Storage locations for this hub'
+      : 'Saved storage locations';
+  }
+
+  function hubStorageIntro(targetVolumeId: string): string {
+    return hasMeaningfulExplicitVolumePolicy(targetVolumeId)
+      ? 'These choices apply only here.'
+      : 'These choices start from your saved locations. Change any location below if this hub needs something different.';
+  }
+
+  function hubAttachedSources(targetVolumeId: string): SourceConfigEntry[] {
+    return (configDraft?.sources ?? []).filter((source) => hubLocationMode(targetVolumeId, source.id) !== 'off');
+  }
+
+  function hubFullCopyCount(targetVolumeId: string): number {
+    return hubAttachedSources(targetVolumeId).filter((source) => hubLocationMode(targetVolumeId, source.id) === 'store').length;
+  }
+
+  function hubWriteOnlyCount(targetVolumeId: string): number {
+    return 0;
+  }
+
+  function hubModeLabel(mode: HubLocationMode): string {
+    if (mode === 'store') {
+      return 'Full copy';
+    }
+    return 'Not used';
+  }
+
+  function hubModeCopy(mode: HubLocationMode): string {
+    if (mode === 'store') {
+      return 'This location keeps the full hub available here.';
+    }
+    return 'This location is not part of this hub right now.';
+  }
+
+  function hubAvailableSources(targetVolumeId: string): SourceConfigEntry[] {
+    return (configDraft?.sources ?? []).filter((source) => hubLocationMode(targetVolumeId, source.id) === 'off');
+  }
+
+  function openHubLocationDialog(targetVolumeId: string): void {
+    hubLocationDialogVolumeId = targetVolumeId;
+  }
+
+  function closeHubLocationDialog(): void {
+    hubLocationDialogVolumeId = null;
+  }
+
+  function addSourceToHub(targetVolumeId: string, sourceId: string): void {
+    setHubLocationMode(targetVolumeId, sourceId, 'store');
+    hubLocationDialogVolumeId = null;
+    successMessage = 'Storage location added.';
+  }
+
+  function openStorageSetupFromHubDialog(): void {
+    hubLocationDialogVolumeId = null;
+    onOpenStorageSetup?.();
   }
 
   function canRemoveAnySource(): boolean {
@@ -1542,8 +3858,23 @@
     };
   }
 
-  function canReuseOtherGuaranteedCopies(destination: VolumeDestinationConfig | null): boolean {
-    return keepsFullCopy(destination) && destination?.fullPolicy === 'drop-older-blocks';
+  function canReuseOtherGuaranteedCopies(_destination: VolumeDestinationConfig | null): boolean {
+    return false;
+  }
+
+  function knownManagedMirrorPaths(): Set<string> {
+    const known = new Set<string>();
+    for (const summary of managedShares) {
+      const resolved = normalizeComparablePath(summarySourcePath(summary));
+      if (resolved) {
+        known.add(resolved);
+      }
+    }
+    return known;
+  }
+
+  function providerHasManagedStorage(provider: string): boolean {
+    return providerShares(provider).length > 0;
   }
 
   function sourceSuggestionRows(): Array<{
@@ -1553,8 +3884,15 @@
   }> {
     if (!configDraft) return [];
     const unique = new Map<string, DiscoveredNearbytesSource>();
+    const managedMirrorPaths = knownManagedMirrorPaths();
     for (const source of discoveredSources) {
+      if (source.sourceType === 'suggested' && providerHasManagedStorage(source.provider)) {
+        continue;
+      }
       const key = normalizeComparablePath(source.path);
+      if (managedMirrorPaths.has(key)) {
+        continue;
+      }
       const current = unique.get(key);
       if (!current || sourceSuggestionPriority(source.sourceType) < sourceSuggestionPriority(current.sourceType)) {
         unique.set(key, source);
@@ -1617,7 +3955,7 @@
       return { label: 'Move target', tone: 'good' as StatusTone };
     }
     if (!source.enabled) {
-      return { label: 'Turned off', tone: 'muted' as StatusTone };
+      return { label: 'Disabled', tone: 'muted' as StatusTone };
     }
     if (!hasSourcePath(source)) {
       return { label: 'Choose a folder', tone: 'warn' as StatusTone };
@@ -1642,7 +3980,7 @@
     if (status && status.exists && !status.canWrite) {
       return { label: 'Cannot write now', tone: 'warn' as StatusTone };
     }
-    return { label: 'Can save new data', tone: 'good' as StatusTone };
+    return { label: 'Can store here', tone: 'good' as StatusTone };
   }
 
   function locationSummary(source: SourceConfigEntry): string {
@@ -1654,76 +3992,106 @@
       return 'Nearbytes is moving this location to a new folder. Both folders stay active until the move finishes.';
     }
     if (!hasSourcePath(source)) {
-      return 'Choose a folder to finish setting up this storage location.';
+      return 'Choose a folder to finish setting up this location.';
     }
     if (!source.enabled) {
-      return 'Nearbytes will ignore this location until you turn it back on.';
+      return 'This location is disabled across Nearbytes. Turn it back on before Nearbytes can use it.';
     }
     if (status?.exists === false) {
-      return 'This folder is not available right now. Your rules stay saved, but Nearbytes cannot use it.';
+      return 'This folder is not available right now. Your choices stay stored, but Nearbytes cannot use this location.';
     }
     if (status && !status.isDirectory) {
       return 'This path exists, but it is not a folder.';
     }
     if (source.writable && status?.canWrite === false) {
-      return 'Nearbytes can read this location, but it cannot save new data here right now.';
+      return 'Nearbytes can look here, but it cannot store here right now.';
     }
     if (source.writable) {
-      return 'Nearbytes can read this location and save new encrypted data here.';
+      return 'This location is ready.';
     }
-    return 'Nearbytes can read this location, but it will not save new data here.';
+    return 'This location is ready for reading only.';
   }
 
   function usageSummary(sourceId: string): string {
     const totalBytes = sourceStatus(sourceId)?.usage.totalBytes ?? 0;
     if (totalBytes <= 0) {
-      return 'No Nearbytes data is stored here yet.';
+      return '';
     }
-    return `Nearbytes is using ${formatSize(totalBytes)} in this location.`;
+    return `${formatSize(totalBytes)} used`;
   }
 
   function protectionSummary(targetVolumeId: string | null): string {
     const count = durableLocationCount(targetVolumeId);
-    if (count === 0) return 'Choose at least one protected copy';
-    if (count === 1) return '1 protected copy ready';
-    return `${count} protected copies ready`;
+    if (count === 0) return 'Choose a full copy location';
+    if (count === 1) return '1 full copy location';
+    return `${count} full copy locations`;
   }
 
   function protectionHint(targetVolumeId: string | null): string {
     if (hasDurableDestination(targetVolumeId)) {
       return targetVolumeId
-        ? 'This space already has at least one writable protected copy.'
-        : 'New spaces will start with at least one writable protected copy.';
+        ? 'This selection already has at least one location keeping a full copy.'
+        : 'New storage setups will start with at least one location keeping a full copy.';
     }
     return targetVolumeId
-      ? 'Turn on "Keep a full copy" for at least one writable location below.'
-      : 'Every new space needs at least one writable location that keeps a protected copy.';
+      ? 'Choose at least one writable location below to keep a full copy here.'
+      : 'Every new storage setup needs at least one writable location that keeps a full copy.';
   }
 
   function copyHelpText(targetVolumeId: string | null, source: SourceConfigEntry): string {
     const destination = destinationFor(targetVolumeId, source.id);
     const status = sourceStatus(source.id);
     if (!keepsFullCopy(destination)) {
-      return targetVolumeId
-        ? 'This space is not being kept here.'
-        : 'New spaces will not keep a full copy here.';
+      return 'This location is not currently attached here.';
     }
     if (!source.enabled) {
-      return 'This rule is saved, but the location itself is turned off.';
+      return 'This location is chosen, but it is disabled across Nearbytes right now. Turn it back on before Nearbytes can keep a full copy here.';
     }
     if (!source.writable) {
-      return 'This rule is saved, but Nearbytes cannot keep a protected copy here until writing is allowed.';
+      return 'This location is chosen, but Nearbytes cannot keep a full copy here until writing is allowed.';
     }
     if (status?.exists === false) {
-      return 'This rule is saved, but the folder is not available right now.';
+      return 'This location is chosen, but the folder is not available right now.';
     }
     if (status && status.exists && !status.canWrite) {
-      return 'This rule is saved, but Nearbytes cannot write to this folder right now.';
+      return 'This location is chosen, but Nearbytes cannot write to this folder right now.';
     }
-    if (canReuseOtherGuaranteedCopies(destination)) {
-      return 'If space runs low, Nearbytes may delete blocks from this location, but only after another protected location already has them.';
+    return 'This location keeps a full copy.';
+  }
+
+  function hubLocationNote(targetVolumeId: string, source: SourceConfigEntry): string | null {
+    const status = sourceStatus(source.id);
+    const mode = hubLocationMode(targetVolumeId, source.id);
+    if (source.moveFromSourceId) {
+      return `Nearbytes is moving data here from ${source.moveFromSourceId}. Both folders stay active until the move finishes.`;
     }
-    return 'This location keeps a protected full copy.';
+    if (hasPendingMove(source.id)) {
+      return 'Nearbytes is moving this location to a new folder. Both folders stay active until the move finishes.';
+    }
+    if (!hasSourcePath(source)) {
+      return 'Choose a folder to finish setting up this location.';
+    }
+    if (!source.enabled) {
+      return mode === 'store'
+        ? 'This location is set to keep a full copy here, but it is disabled across Nearbytes right now.'
+        : 'This location is disabled across Nearbytes right now.';
+    }
+    if (status?.exists === false) {
+      return 'This folder is not available right now.';
+    }
+    if (status && !status.isDirectory) {
+      return 'This path exists, but it is not a folder.';
+    }
+    if (mode !== 'off' && !source.writable) {
+      return 'Writing is turned off here, so this location cannot keep a full copy yet.';
+    }
+    if (mode !== 'off' && status?.canWrite === false) {
+      return 'Nearbytes cannot write to this folder right now, so it cannot keep a full copy yet.';
+    }
+    if (mode === 'off') {
+      return 'This location is available, but it is not in use here.';
+    }
+    return null;
   }
 
   function applyRootsResponse(response: {
@@ -1732,19 +4100,52 @@
     runtime: RootsRuntimeSnapshot;
   }): void {
     configPath = response.configPath;
-    configDraft = cloneConfig(response.config);
+    configDraft = cloneConfig(sanitizeConfig(response.config));
     runtime = response.runtime;
-    lastSavedSignature = serializeConfig(cloneConfig(response.config));
+    lastSavedSignature = serializeConfig(cloneConfig(sanitizeConfig(response.config)));
+    updateBackfillPolling();
+    void loadSourceRepairReports(response.config.sources.map((source) => source.id));
+  }
+
+  async function refreshRuntimeSnapshot(): Promise<void> {
+    if (runtimeRefreshInFlight) {
+      return;
+    }
+    runtimeRefreshInFlight = true;
+    try {
+      const response = await getRootsConfig({ includeUsage: true });
+      configPath = response.configPath;
+      runtime = response.runtime;
+    } catch {
+      // Keep existing UI state if the background refresh fails.
+    } finally {
+      runtimeRefreshInFlight = false;
+      updateBackfillPolling();
+    }
+  }
+
+  function scheduleRuntimeRefresh(delayMs = 220): void {
+    if (runtimeRefreshTimer) {
+      clearTimeout(runtimeRefreshTimer);
+    }
+    runtimeRefreshTimer = setTimeout(() => {
+      runtimeRefreshTimer = null;
+      void refreshRuntimeSnapshot();
+    }, delayMs);
   }
 
   function applyIntegrationsResponse(input: {
     accounts: ProviderAccount[];
     providers: ProviderCatalogEntry[];
     shares: ManagedShareSummary[];
+    incomingShares: IncomingManagedShareOffer[];
+    incomingInvites: IncomingProviderContactInvite[];
   }): void {
     providerAccounts = input.accounts;
-    providerCatalog = sortProviders(input.providers);
+    providerCatalog = mergeProviderCatalogEntries(input.providers);
     managedShares = sortManagedShareSummaries(input.shares);
+    incomingManagedShareOffers = sortIncomingManagedShareOffers(input.incomingShares);
+    incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(input.incomingInvites);
     providerSetupDrafts = {
       ...providerSetupDrafts,
       ...Object.fromEntries(
@@ -1760,40 +4161,276 @@
       ),
     };
     for (const account of input.accounts) {
-      if (account.state === 'connected') {
+      if (account.state === 'connected' || account.state === 'attention') {
         clearProviderSession(account.provider);
       }
     }
   }
 
+  function applyLocalNetworkResponse(response: LocalNetworkPeersResponse): void {
+    localNetworkService = response.service;
+    localNetworkPeers = [...response.peers].sort((left, right) => left.label.localeCompare(right.label));
+  }
+
   async function loadPanel(options?: { background?: boolean }) {
     const keepVisible = options?.background === true && configDraft !== null;
+    const hadProviderData = providerCatalog.length > 0 || providerAccounts.length > 0;
+    let preserveLoadingState = false;
+    if (startupLoadRetryTimer) {
+      clearTimeout(startupLoadRetryTimer);
+      startupLoadRetryTimer = null;
+    }
     if (!keepVisible) {
       loading = true;
       errorMessage = '';
       successMessage = '';
     }
     try {
-      const [rootsResponse, accountsResponse, sharesResponse] = await Promise.all([
-        getRootsConfig(),
-        listProviderAccounts(),
-        listManagedShares(),
-      ]);
-      applyRootsResponse(rootsResponse);
-      applyIntegrationsResponse({
-        accounts: accountsResponse.accounts,
-        providers: accountsResponse.providers,
-        shares: sharesResponse.shares,
+      providersLoading = true;
+      sharesLoading = true;
+      incomingLoading = true;
+      providerLoadError = '';
+      localNetworkLoadError = '';
+      shareLoadError = '';
+      incomingLoadError = '';
+
+      let rootsLoadError: unknown = null;
+
+      const rootsPromise = loadRootsConfigWithRetry({ keepVisible })
+        .then((rootsResponse) => {
+          startupRecoveryMessage = '';
+          applyRootsResponse(rootsResponse);
+        })
+        .catch((error) => {
+          rootsLoadError = error;
+        });
+
+      const accountsPromise = withPanelRequestTimeout(
+        'Provider discovery',
+        (signal) => listProviderAccounts({ signal, fast: true })
+      )
+        .then((accountsResponse) => {
+          providerAccounts = accountsResponse.accounts;
+          providerCatalog = mergeProviderCatalogEntries(accountsResponse.providers);
+          providerSetupDrafts = {
+            ...providerSetupDrafts,
+            ...Object.fromEntries(
+              accountsResponse.providers.map((provider) => [
+                provider.provider,
+                {
+                  clientId:
+                    provider.provider === 'gdrive' || provider.provider === 'github'
+                      ? provider.setup.config?.clientId ?? providerSetupDraft(provider.provider).clientId
+                      : providerSetupDraft(provider.provider).clientId,
+                },
+              ])
+            ),
+          };
+          for (const account of accountsResponse.accounts) {
+            if (account.state === 'connected' || account.state === 'attention') {
+              clearProviderSession(account.provider);
+            }
+          }
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          if (keepVisible && hadProviderData) {
+            return;
+          }
+          providerLoadError = '';
+        })
+        .finally(() => {
+          providersLoading = false;
+        });
+
+      const appConfigPromise = withPanelRequestTimeout(
+        'Provider configuration',
+        (signal) => getAppConfig({ signal })
+      )
+        .then((appConfigResponse) => {
+          applyAppConfigResponse(appConfigResponse);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          providerLoadError = providerLoadError || `Provider configuration is delayed: ${detail}`;
+        });
+
+      const localNetworkPromise = withPanelRequestTimeout(
+        'Local network peer discovery',
+        (signal) => listLocalNetworkPeers({ signal })
+      )
+        .then((response) => {
+          applyLocalNetworkResponse(response);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          if (keepVisible && localNetworkPeers.length > 0) {
+            return;
+          }
+          localNetworkLoadError = `Local network discovery is delayed: ${detail}`;
+        });
+
+      const sharesPromise = withPanelRequestTimeout(
+        'MEGA and provider share status',
+        (signal) => listManagedShares({ signal, fast: !keepVisible })
+      )
+        .then((sharesResponse) => {
+          managedShares = sortManagedShareSummaries(sharesResponse.shares);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          shareLoadError = `Live locations are still syncing: ${detail}`;
+        })
+        .finally(() => {
+          sharesLoading = false;
+        });
+
+      await Promise.allSettled([rootsPromise, accountsPromise, appConfigPromise, localNetworkPromise, sharesPromise]);
+
+      if (rootsLoadError) {
+        incomingLoading = false;
+        throw rootsLoadError;
+      }
+
+      // Always load real incoming offers and contact requests (never `fast: true` here).
+      // `fast` skips server work and returns empty lists; combined with scheduled refreshes
+      // that rarely set `keepVisible`, the UI never showed "Shared with you" or any Add action.
+      // Run after share summaries so we do not hit MEGA with a duplicate full-tree fetch in parallel
+      // with the same panel refresh (reduces transient API lock / -3 warnings in logs).
+      // MEGA fetch-nodes for incoming shares can take 10—50s under load; keep this above
+      // `providerIncomingShareDiscoveryTimeoutMs` in managedShares so we do not abort early.
+      const incomingSharesPromise = withPanelRequestTimeout(
+        'Incoming share discovery',
+        (signal) => listIncomingManagedShares({ signal, fast: false }),
+        65_000
+      )
+        .then((incomingSharesResponse) => {
+          incomingManagedShareOffers = sortIncomingManagedShareOffers(incomingSharesResponse.shares);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          incomingLoadError = `Incoming shares are delayed: ${detail}`;
+        });
+
+      const incomingInvitesPromise = withPanelRequestTimeout(
+        'Incoming contact discovery',
+        (signal) => listIncomingProviderContactInvites({ signal, fast: false })
+      )
+        .then((incomingInvitesResponse) => {
+          incomingProviderContactInvites = sortIncomingProviderContactInviteEntries(incomingInvitesResponse.invites);
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          incomingLoadError = incomingLoadError || `Incoming invites are delayed: ${detail}`;
+        });
+
+      void Promise.allSettled([incomingSharesPromise, incomingInvitesPromise]).finally(() => {
+        incomingLoading = false;
       });
-      autosaveStatus = 'idle';
-      void refreshDiscoverySuggestions();
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to load storage locations';
-    } finally {
+
       if (!keepVisible) {
         loading = false;
       }
+
+      scheduleManagedShareStateRefresh(keepVisible ? 350 : 125);
+
+      if (!keepVisible) {
+        setTimeout(() => {
+          void loadPanel({ background: true });
+        }, 250);
+      }
+
+      autosaveStatus = 'idle';
+      if (megaRuntimeLogsVisible) {
+        void loadMegaRuntimeLogs();
+      }
+      void refreshDiscoverySuggestions();
+    } catch (error) {
+      if (keepVisible && isRetriableStorageStartupError(error)) {
+        return;
+      }
+      if (!keepVisible && isRetriableStorageStartupError(error)) {
+        preserveLoadingState = true;
+        errorMessage = '';
+        startupRecoveryMessage = 'Nearbytes is still preparing your storage locations. It will keep retrying automatically.';
+        scheduleStartupLoadRetry();
+        return;
+      }
+      errorMessage = error instanceof Error ? error.message : 'Failed to load storage locations';
+      startupRecoveryMessage = '';
+    } finally {
+      if (!keepVisible) {
+        loading = preserveLoadingState;
+      }
     }
+  }
+
+  function scheduleStartupLoadRetry(delayMs = 1_500): void {
+    if (startupLoadRetryTimer) {
+      clearTimeout(startupLoadRetryTimer);
+    }
+    startupLoadRetryTimer = setTimeout(() => {
+      startupLoadRetryTimer = null;
+      void loadPanel();
+    }, delayMs);
+  }
+
+  async function requestRootsConfig(includeUsage: boolean, timeoutMs: number | null) {
+    return withPanelRequestTimeout(
+      'Storage configuration',
+      (signal) => getRootsConfig({ signal, includeUsage }),
+      timeoutMs
+    );
+  }
+
+  async function loadRootsConfigWithRetry(options: { keepVisible: boolean }) {
+    const timeoutMs = options.keepVisible ? PANEL_REQUEST_TIMEOUT_MS : INITIAL_ROOTS_REQUEST_TIMEOUT_MS;
+    const maxWaitMs = options.keepVisible ? null : INITIAL_ROOTS_REQUEST_MAX_WAIT_MS;
+    const startedAt = Date.now();
+    let lastError: unknown = null;
+
+    while (maxWaitMs === null || Date.now() - startedAt < maxWaitMs) {
+      try {
+        return await requestRootsConfig(options.keepVisible, timeoutMs);
+      } catch (error) {
+        lastError = error;
+        if (options.keepVisible && isRetriableStorageStartupError(error)) {
+          try {
+            return await requestRootsConfig(false, BACKGROUND_ROOTS_FALLBACK_TIMEOUT_MS);
+          } catch (fallbackError) {
+            lastError = fallbackError;
+          }
+        }
+        if (!isRetriableStorageStartupError(error) || options.keepVisible) {
+          break;
+        }
+        await wait(INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS);
+      }
+    }
+
+    if (!options.keepVisible && isRetriableStorageStartupError(lastError)) {
+      throw new Error('Storage configuration is still starting. It should appear automatically in a few seconds.');
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Failed to load storage configuration');
+  }
+
+  function isRetriableStorageStartupError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    return (
+      /still starting/i.test(message) ||
+      /preparing your storage locations/i.test(message) ||
+      /timed out/i.test(message) ||
+      /failed to fetch/i.test(message) ||
+      /networkerror/i.test(message) ||
+      /load failed/i.test(message)
+    );
+  }
+
+  function wait(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, timeoutMs);
+    });
   }
 
   async function autosavePanel(expectedSignature: string) {
@@ -1801,7 +4438,7 @@
     errorMessage = '';
     autosaveStatus = 'saving';
     try {
-      const response = await updateRootsConfig(configDraft);
+      const response = await updateRootsConfig(sanitizeConfig(configDraft));
       applyRootsResponse(response);
       autosaveStatus = lastSavedSignature === expectedSignature ? 'saved' : 'pending';
       successMessage = '';
@@ -1948,18 +4585,35 @@
     dismissedDiscoveries = [...dismissedDiscoveries, normalized];
   }
 
-  async function openSourceFolder(sourceId: string) {
+  async function openSourceFolder(sourceId: string, explicitPath?: string | null) {
     errorMessage = '';
     successMessage = '';
     try {
-      await openRootInFileManager(sourceId);
-      successMessage = 'Opened folder.';
+      const targetPath = explicitPath?.trim() || '';
+      if (targetPath) {
+        await openPathInFileManager(targetPath);
+        successMessage = `Opened ${compactPath(targetPath)}.`;
+      } else {
+        await openRootInFileManager(sourceId);
+        successMessage = 'Opened folder.';
+      }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to open folder';
     }
   }
 
   async function connectProvider(provider: ProviderCatalogEntry): Promise<void> {
+    if (provider.provider === 'local-network') {
+      integrationBusyKey = `connect:${provider.provider}`;
+      errorMessage = '';
+      successMessage = '';
+      try {
+        await refreshLocalNetworkPeers();
+      } finally {
+        integrationBusyKey = null;
+      }
+      return;
+    }
     integrationBusyKey = `connect:${provider.provider}`;
     errorMessage = '';
     successMessage = '';
@@ -1968,7 +4622,7 @@
       title: provider.provider === 'mega' ? 'Preparing MEGA connection' : `Connecting ${provider.label}`,
       detail:
         provider.provider === 'mega'
-          ? 'Checking whether the local helper is ready before sending your credentials.'
+          ? 'Connecting directly to MEGA with the built-in native adapter.'
           : `Starting the ${provider.label} sign-in flow.`,
       canCancel: true,
       canReset: true,
@@ -1980,7 +4634,7 @@
           title: `Installing ${provider.label} helper`,
           detail:
             provider.provider === 'mega'
-              ? 'Downloading and installing the local MEGAcmd helper. This can take a few seconds.'
+              ? 'Preparing the MEGA provider flow. The native runtime is already built in.'
               : `Installing the ${provider.label} helper.`,
           canCancel: true,
           canReset: true,
@@ -1997,42 +4651,32 @@
       const draft = providerCredentialDraft(provider.provider);
       setProviderFlowState(provider.provider, {
         phase: 'connecting',
-        title:
-          provider.provider === 'mega' && draft.mode === 'signup'
-            ? 'Creating MEGA account'
-            : `Connecting ${provider.label}`,
+        title: `Connecting ${provider.label}`,
         detail:
-          provider.provider === 'mega' && draft.mode === 'signup'
-            ? 'Submitting your account details to MEGA and waiting for the confirmation step.'
-            : provider.provider === 'mega'
-              ? 'Submitting your MEGA credentials and opening a local session.'
-              : `Handing off to ${provider.label} to continue sign-in.`,
+          provider.provider === 'mega'
+            ? 'Submitting your MEGA credentials and opening a local session.'
+            : `Handing off to ${provider.label} to continue sign-in.`,
         canCancel: true,
         canReset: true,
       });
       if (provider.provider === 'mega') {
-        if (draft.mode === 'signup') {
-          if (draft.name.trim() === '' || draft.email.trim() === '' || draft.password.trim() === '') {
-            throw new Error('Enter your name, email, and password first.');
-          }
-        } else if (draft.email.trim() === '' || draft.password.trim() === '') {
+        if (draft.email.trim() === '' || draft.password.trim() === '') {
           throw new Error('Enter the MEGA email and password first.');
         }
       }
 
       const response = await connectProviderAccount({
         provider: provider.provider,
-        mode: provider.provider === 'mega' ? draft.mode : undefined,
+        mode: provider.provider === 'mega' ? 'login' : undefined,
         label: provider.label,
         preferred: provider.provider === 'gdrive',
         email: provider.provider === 'mega' ? draft.email.trim() || undefined : undefined,
         credentials:
           provider.provider === 'mega'
             ? {
-                name: draft.mode === 'signup' ? draft.name.trim() || undefined : undefined,
                 email: draft.email.trim() || undefined,
                 password: draft.password,
-                mfaCode: draft.mode === 'login' && draft.useMfa ? draft.mfaCode.trim() || undefined : undefined,
+                mfaCode: draft.useMfa ? draft.mfaCode.trim() || undefined : undefined,
               }
             : undefined,
       }, { signal: controller.signal });
@@ -2138,6 +4782,7 @@
   }
 
   async function disconnectProvider(provider: ProviderCatalogEntry): Promise<void> {
+    if (provider.provider === 'local-network') return;
     if (!provider.accountId) return;
     integrationBusyKey = `disconnect:${provider.provider}`;
     errorMessage = '';
@@ -2149,6 +4794,23 @@
       await loadPanel();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : `Failed to disconnect ${provider.label}`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function toggleProvider(provider: ProviderCatalogEntry): Promise<void> {
+    const nextEnabled = !providerEnabled(provider.provider);
+    integrationBusyKey = `provider-toggle:${provider.provider}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      const response = await updateProviderEnabled(provider.provider, nextEnabled);
+      applyAppConfigResponse(response);
+      successMessage = `${provider.label} ${nextEnabled ? 'enabled' : 'disabled'}.`;
+      await loadPanel({ background: true });
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to update ${provider.label}`;
     } finally {
       integrationBusyKey = null;
     }
@@ -2168,10 +4830,10 @@
         volumeId,
         remoteDescriptor,
       });
-      successMessage = `${provider.label} share created for this space.`;
+      successMessage = `${provider.label} location created.`;
       await loadPanel();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} share`;
+      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} location`;
     } finally {
       integrationBusyKey = null;
     }
@@ -2183,17 +4845,48 @@
     errorMessage = '';
     successMessage = '';
     try {
-      const label = provider.provider === 'github' ? githubShareLabel() : defaultManagedShareLabel();
+      const label = managedShareCreateLabel(provider.provider);
       await createManagedShare({
         provider: provider.provider,
         accountId: provider.accountId,
         label,
         remoteDescriptor: provider.provider === 'github' ? githubShareDescriptor(label) : undefined,
       });
-      successMessage = `${provider.label} share created.`;
+      if (providerLocationNameDraft(provider.provider).trim()) {
+        setProviderLocationName(provider.provider, '');
+      }
+      setProviderCreateComposerOpenState(provider.provider, false);
+      successMessage = `${provider.label} location created.`;
       await loadPanel();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} share`;
+      errorMessage = error instanceof Error ? error.message : `Failed to create ${provider.label} location`;
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  function handleProviderAddLocation(provider: ProviderCatalogEntry): void {
+    if (!providerSupportsCreateAction(provider.provider)) {
+      errorMessage = 'Nearbytes cannot create owner-side MEGA locations yet. Accept an incoming share or use a public link instead.';
+      return;
+    }
+    if (isInlineLocationComposerProvider(provider.provider)) {
+      openProviderCreateComposer(provider.provider);
+      return;
+    }
+    void createManagedShareForProvider(provider);
+  }
+
+  async function removeManagedShareSummary(summary: ManagedShareSummary): Promise<void> {
+    integrationBusyKey = `remove-share:${summary.share.id}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await removeManagedShare(summary.share.id);
+      successMessage = `${summary.share.label} removed.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : `Failed to remove ${summary.share.label}`;
     } finally {
       integrationBusyKey = null;
     }
@@ -2308,6 +5001,7 @@
   }
 
   async function confirmMegaSignup(provider: ProviderCatalogEntry): Promise<void> {
+    if (provider.provider === 'local-network') return;
     const session = pendingSessionForProvider(provider.provider);
     if (!session) {
       errorMessage = 'Start the MEGA account creation flow first.';
@@ -2370,6 +5064,7 @@
   }
 
   async function pollProviderSession(provider: ProviderCatalogEntry, authSessionId: string): Promise<void> {
+    if (provider.provider === 'local-network') return;
     const controller = beginProviderRequest(provider.provider, {
       phase: 'polling',
       title: `Waiting for ${provider.label}`,
@@ -2403,38 +5098,81 @@
     }
   }
 
-  async function attachManagedShareToVolume(summary: ManagedShareSummary): Promise<void> {
-    if (!volumeId) return;
-    integrationBusyKey = `attach:${summary.share.id}`;
-    errorMessage = '';
-    successMessage = '';
-    try {
-      await attachManagedShare(summary.share.id, volumeId);
-      successMessage = `${summary.share.label} attached to this space.`;
-      await loadPanel();
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to attach managed share';
-    } finally {
-      integrationBusyKey = null;
-    }
-  }
-
   async function inviteManagedSharePeers(summary: ManagedShareSummary): Promise<void> {
     const emails = parseInviteEmails(managedShareInviteDraft(summary.share.id));
     if (emails.length === 0) {
       errorMessage = 'Enter at least one email address to invite.';
       return;
     }
+    const accessLevel = summary.share.provider === 'mega' ? 'read/write' : undefined;
     integrationBusyKey = `invite:${summary.share.id}`;
     errorMessage = '';
     successMessage = '';
     try {
-      await inviteManagedShare(summary.share.id, emails);
+      await inviteManagedShare(summary.share.id, emails, accessLevel);
       setManagedShareInviteDraft(summary.share.id, '');
-      successMessage = `${summary.share.label} shared with ${emails.join(', ')}.`;
+      successMessage = accessLevel
+        ? `${summary.share.label} location shared with ${emails.join(', ')} as ${formatAccessLevelLabel(accessLevel)}.`
+        : `${summary.share.label} location shared with ${emails.join(', ')}.`;
       await loadPanel();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to share managed location';
+      errorMessage = error instanceof Error ? error.message : 'Failed to invite people to this location';
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function acceptProviderContactInviteEntry(invite: IncomingProviderContactInvite): Promise<void> {
+    integrationBusyKey = `accept-contact:${invite.id}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      await acceptIncomingProviderContactInvite({
+        provider: invite.provider,
+        accountId: invite.accountId,
+        inviteId: invite.id,
+      });
+      successMessage = `${invite.label} is now an accepted ${providerLabelForIncoming(invite.provider)} contact.`;
+      await loadPanel();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to accept provider contact invite';
+    } finally {
+      integrationBusyKey = null;
+    }
+  }
+
+  async function acceptIncomingManagedShareOffer(offer: IncomingManagedShareOffer): Promise<void> {
+    integrationBusyKey = `accept-share:${offer.id}`;
+    errorMessage = '';
+    successMessage = '';
+    try {
+      const response = await acceptManagedShare({
+        provider: offer.provider,
+        accountId: offer.accountId,
+        label: offer.label,
+        volumeId: mode === 'volume' ? volumeId ?? undefined : undefined,
+        localPath: offer.suggestedLocalPath,
+        remoteDescriptor: offer.remoteDescriptor,
+      });
+      const writable = response.summary.share.capabilities.includes('write');
+      successMessage = response.summary.attachments.length > 0
+        ? `${offer.label} is attached and ready in this hub.`
+        : writable
+          ? `${offer.label} is connected as an incoming share. Nearbytes reads from this local copy, while your own updates still publish through your MEGA Nearbytes root.`
+          : `${offer.label} is connected as a read-only mirror. Nearbytes can read from it now.`;
+      await loadPanel();
+      if (response.summary.state.status === 'syncing') {
+        successMessage = `${offer.label} is attached. Nearbytes is preparing the local mirror now.`;
+        if (panelRefreshTimer) {
+          clearTimeout(panelRefreshTimer);
+        }
+        panelRefreshTimer = setTimeout(() => {
+          panelRefreshTimer = null;
+          void loadPanel({ background: true });
+        }, 900);
+      }
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to accept incoming storage location';
     } finally {
       integrationBusyKey = null;
     }
@@ -2445,130 +5183,162 @@
     if (!Number.isFinite(parsed)) return DEFAULT_RESERVE_PERCENT;
     return Math.max(0, Math.min(95, parsed));
   }
+
+  function toggleReserveEditor(key: string): void {
+    activeReserveEditorKey = activeReserveEditorKey === key ? null : key;
+  }
+
+  function closeReserveEditor(key: string): void {
+    if (activeReserveEditorKey === key) {
+      activeReserveEditorKey = null;
+    }
+  }
+
 </script>
 
 {#if loading && !configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
     <p class="storage-message">Loading storage locations...</p>
+    {#if startupRecoveryMessage}
+      <p class="storage-message">{startupRecoveryMessage}</p>
+    {/if}
+    {#if errorMessage}
+      <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
+    {/if}
+  </section>
+{:else if !configDraft}
+  <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
+    <p class="storage-message">Storage locations are not ready yet.</p>
+    {#if errorMessage}
+      <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
+    {/if}
+    <div class="button-row">
+      <button type="button" class="panel-btn subtle" onclick={() => void loadPanel()}>
+        <RefreshCw size={14} strokeWidth={2} />
+        <span>Retry</span>
+      </button>
+    </div>
   </section>
 {:else if configDraft}
   <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
-    {#snippet unifiedShareCard(view: UnifiedShareView)}
-      <ShareCard
-        provider={view.provider}
-        title={view.title}
-        copy={view.copy}
-        active={view.active}
-        statusBadges={view.statusBadges}
-        meta={view.meta}
-      >
-        {#snippet controls()}
-          <div class="share-toggle-row">
-            <button
-              type="button"
-              class="share-toggle-pill"
-              class:active={view.readable}
-              aria-pressed={view.readable}
-              onclick={view.onToggleReadable}
-            >
-              <span class="share-toggle-icon" aria-hidden="true">
-                {#if view.readable}
-                  <Check size={13} strokeWidth={2.6} />
-                {/if}
-              </span>
-              <span>Readable</span>
-            </button>
-            <button
-              type="button"
-              class="share-toggle-pill"
-              class:active={view.writable}
-              aria-pressed={view.writable}
-              onclick={view.onToggleWritable}
-            >
-              <span class="share-toggle-icon" aria-hidden="true">
-                {#if view.writable}
-                  <Check size={13} strokeWidth={2.6} />
-                {/if}
-              </span>
-              <span>Writable</span>
-            </button>
-            <button
-              type="button"
-              class="share-toggle-pill"
-              class:active={view.defaultEnabled}
-              aria-pressed={view.defaultEnabled}
-              onclick={view.onToggleDefault}
-            >
-              <span class="share-toggle-icon" aria-hidden="true">
-                {#if view.defaultEnabled}
-                  <Check size={13} strokeWidth={2.6} />
-                {/if}
-              </span>
-              <span>Default</span>
-            </button>
-          </div>
-        {/snippet}
-        {#snippet details()}
-          <details class="details-card inline-details compact-share-advanced">
-            <summary>Advanced</summary>
-            <div class="card-control-row">
-              <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
-                <span>Keep free</span>
-                <select
-                  class="panel-input"
-                  value={String(view.reservePercent)}
-                  onchange={(event) => view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value))}
-                >
-                  {#each RESERVE_OPTIONS as option}
-                    <option value={option}>{formatPercent(option)}</option>
-                  {/each}
-                </select>
-              </label>
-              <div class="button-row">
-                {#if view.onMove}
+    {#if mode === 'global'}
+      {@const visibleMegaToasts = megaToastList()}
+      {#if visibleMegaToasts.length > 0}
+        <div class="mega-toast-region" aria-live="polite" aria-label="MEGA activity">
+          {#each visibleMegaToasts as toast (toast.key)}
+            <article class="mega-toast" data-tone={toast.tone}>
+              <div class="mega-toast-copy">
+                <p class="subheading">MEGA</p>
+                <p class="mega-toast-title">{toast.title}</p>
+                <p class="provider-step-detail">{toast.detail}</p>
+              </div>
+              <div class="mega-toast-actions">
+                {#if toast.action}
+                  {@const action = toast.action}
                   <button
                     type="button"
-                    class="panel-btn subtle compact"
-                    onclick={view.onMove}
-                    disabled={view.moveDisabled}
+                    class="panel-btn primary compact"
+                    onclick={() => void runMegaToastAction(action)}
                   >
-                    <ArrowRightLeft size={14} strokeWidth={2} />
-                    <span>{view.moveLabel ?? 'Move'}</span>
+                    <span>{action.label}</span>
                   </button>
                 {/if}
-                {#if view.onRemove && view.canRemove}
-                  <ArmedActionButton
-                    class="panel-btn subtle compact danger"
-                    icon={Trash2}
-                    text="Remove"
-                    armed={true}
-                    autoDisarmMs={3000}
-                    resetKey={view.removeResetKey}
-                    onPress={view.onRemove}
-                  />
-                {/if}
+                <button type="button" class="panel-btn subtle compact" onclick={() => dismissMegaToast(toast)}>
+                  <span>Hide</span>
+                </button>
               </div>
-            </div>
-            {#if view.warning}
-              <p class="warning-copy">Last write problem: {view.warning}</p>
-            {/if}
-          </details>
+            </article>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+    {#snippet unifiedShareCard(view: UnifiedShareView)}
+      <div class="compact-share-item">
+        <ShareCard
+          title={view.title}
+          copy={view.active && !view.warning && !view.repairSummary ? '' : view.copy}
+          active={view.active}
+          compact={true}
+          statusBadges={view.statusBadges}
+          meta={view.meta}
+        >
+        {#snippet metaActions()}
+          <button
+            type="button"
+            class="meta-reserve-btn"
+            title="Change free-space buffer"
+            onclick={() => toggleReserveEditor(view.reserveKey)}
+          >{formatPercent(view.reservePercent)} reserved</button>
+          {#if activeReserveEditorKey === view.reserveKey}
+            <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
+              <span>Free-space buffer</span>
+              <select
+                class="panel-input inline-reserve-select"
+                value={String(view.reservePercent)}
+                onchange={(event) => {
+                  view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value));
+                  closeReserveEditor(view.reserveKey);
+                }}
+                onblur={() => closeReserveEditor(view.reserveKey)}
+              >
+                {#each RESERVE_OPTIONS as option}
+                  <option value={option}>{formatPercent(option)}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
+        {/snippet}
+        {#snippet controls()}
+          <div class="setting-list compact-toggle-row">
+            <IconToggle
+              icon={BookOpen}
+              label="Read"
+              active={view.readable}
+              title="Allow this location to serve this app"
+              onclick={view.onToggleReadable}
+            />
+            <IconToggle
+              icon={SquarePen}
+              label="Write"
+              active={view.writable}
+              onclick={view.onToggleWritable}
+              disabled={view.writableDisabled}
+              title={view.writableTitle ?? 'Allow writes here'}
+            />
+          </div>
         {/snippet}
         {#snippet actions()}
-          {#if view.onOpen}
+          {#if view.onRemove && view.canRemove}
             <button
               type="button"
-              class="panel-btn subtle compact"
-              onclick={view.onOpen}
-              disabled={view.openDisabled}
-              title={view.openTitle}
-            >
-              <FolderOpen size={14} strokeWidth={2} />
-              <span>Open</span>
-            </button>
+              class="panel-btn subtle compact icon-btn armed-icon-danger"
+              title="Remove location"
+              aria-label="Remove location"
+              onclick={() => { if (confirm('Remove this location from nearbytes?')) view.onRemove?.(); }}
+            ><Trash2 size={14} strokeWidth={2} /></button>
           {/if}
         {/snippet}
         {#snippet footer()}
+          {#if view.warning}
+            <StatusNotice tone="warning" compact={true} title="Last write problem" message={view.warning} />
+          {/if}
+          {#if view.repairSummary}
+            <StatusNotice tone="warning" compact={true} message={view.repairSummary}>
+              {#snippet actions()}
+                {#if view.onTrashIssues}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={view.onTrashIssues}
+                    disabled={view.repairBusy}
+                    title="Move unexpected or invalid files to the system trash"
+                  >
+                    <span>{view.repairBusy ? 'Cleaning...' : 'Clean up'}</span>
+                  </button>
+                {/if}
+              {/snippet}
+            </StatusNotice>
+          {/if}
           {#if view.attachments.length > 0}
             <div class="fact-row share-volume-row">
               {#each view.attachments as attachment}
@@ -2576,232 +5346,965 @@
                   <button
                     type="button"
                     class="mini-pill mini-pill-button"
+                    title={`${attachment.label}: ${attachment.usagePercent}% of this content is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
                     onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
                   >
-                    {attachment.label}
+                    <span>{attachment.label}</span>
+                    <span class="mini-pill-metric">{attachment.usagePercent}%</span>
                   </button>
                 {:else}
-                  <span class="mini-pill">{attachment.label}</span>
+                  <span
+                    class="mini-pill"
+                    title={`${attachment.label}: ${attachment.usagePercent}% of this content is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                  >
+                    <span>{attachment.label}</span>
+                    <span class="mini-pill-metric">{attachment.usagePercent}%</span>
+                  </span>
                 {/if}
               {/each}
             </div>
           {/if}
         {/snippet}
-      </ShareCard>
+        </ShareCard>
+      </div>
     {/snippet}
-    {#if mode === 'global'}
-      <div class="overview-grid">
-        <article class="overview-card tab-card tab-card-shell" class:active={selectedGlobalProvider === 'local'}>
-          <button type="button" class="tab-card-select" onclick={() => (selectedGlobalProvider = 'local')}>
-            <p class="provider-label">Local machine</p>
-            <h3>{countLabel(localMachineShareCount(), 'share')}</h3>
-            <p class="card-copy">{activeFolderCount()} enabled on this device.</p>
-          </button>
-          {#if selectedGlobalProvider === 'local'}
-            <div class="tab-card-meta">
-              <div class="card-status">
-                <span class="status-pill tone-good">Available</span>
-                <span class="status-pill tone-muted">{countLabel(localShares().length, 'share')}</span>
+    {#snippet managedShareCard(summary: ManagedShareSummary)}
+      {@const view = managedShareView(summary)}
+      {#if view}
+        <div class="compact-share-item" data-managed-share-id={summary.share.id}>
+          <ShareCard
+            title={view.title}
+            active={view.active}
+            compact={true}
+            statusBadges={view.statusBadges}
+            meta={view.meta}
+          >
+          {#snippet metaActions()}
+            <button
+              type="button"
+              class="meta-reserve-btn"
+              title="Change free-space buffer"
+              onclick={() => toggleReserveEditor(view.reserveKey)}
+            >{formatPercent(view.reservePercent)} reserved</button>
+            {#if activeReserveEditorKey === view.reserveKey}
+              <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
+                <span>Free-space buffer</span>
+                <select
+                  class="panel-input inline-reserve-select"
+                  value={String(view.reservePercent)}
+                  onchange={(event) => {
+                    view.onReserveChange(clampReserve((event.currentTarget as HTMLSelectElement).value));
+                    closeReserveEditor(view.reserveKey);
+                  }}
+                  onblur={() => closeReserveEditor(view.reserveKey)}
+                >
+                  {#each RESERVE_OPTIONS as option}
+                    <option value={option}>{formatPercent(option)}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
+          {/snippet}
+          {#snippet controls()}
+            <div class="setting-list compact-toggle-row">
+              <IconToggle
+                icon={BookOpen}
+                label="Read"
+                active={view.readable}
+                title="Allow this location to serve this app"
+                onclick={view.onToggleReadable}
+              />
+              <IconToggle
+                icon={SquarePen}
+                label="Write"
+                active={view.writable}
+                onclick={view.onToggleWritable}
+                disabled={view.writableDisabled}
+                title={view.writableTitle ?? 'Allow writes here'}
+              />
+            </div>
+          {/snippet}
+          {#snippet details()}
+            {@const activeCollaborators = participantCollaborators(summary)}
+            {@const invitedCollaboratorViews = pendingCollaborators(summary)}
+            {#if activeCollaborators.length > 0 || invitedCollaboratorViews.length > 0}
+              <div class="managed-share-members managed-share-members-inline">
+                <p class="subheading">{managedShareIsOwned(summary) ? 'People' : 'Shared with'}</p>
+                <div class="managed-share-members-list">
+                  {#each activeCollaborators as collaborator (collaborator.key)}
+                    <span class="mini-pill">
+                      <span>{collaborator.label}</span>
+                      {#if collaboratorRoleLabel(collaborator)}
+                        <span class="mini-pill-metric">{collaboratorRoleLabel(collaborator)}</span>
+                      {/if}
+                    </span>
+                  {/each}
+                  {#each invitedCollaboratorViews as collaborator (collaborator.key)}
+                    <span class="mini-pill">
+                      <span>{collaborator.label}</span>
+                      <span class="mini-pill-metric">Invited</span>
+                    </span>
+                  {/each}
+                </div>
               </div>
+            {/if}
 
-              <div class="button-row tab-card-actions">
+            {#if canInviteManagedShare(summary)}
+              <form class="managed-share-invite-row managed-share-invite-row-compact" onsubmit={(event) => {
+                event.preventDefault();
+                void inviteManagedSharePeers(summary);
+              }}>
+                <label class="field-block managed-share-invite-field">
+                  <span>Invite</span>
+                  <input
+                    class="panel-input"
+                    type="text"
+                    value={managedShareInviteDraft(summary.share.id)}
+                    placeholder="name@example.com"
+                    oninput={(event) =>
+                      setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
+                  />
+                </label>
+                <button
+                  type="submit"
+                  class="panel-btn subtle compact"
+                  disabled={integrationBusyKey === `invite:${summary.share.id}`}
+                >
+                  <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Invite'}</span>
+                </button>
+              </form>
+            {/if}
+          {/snippet}
+          {#snippet actions()}
+            {#if view.onRemove && view.canRemove}
+              <button
+                type="button"
+                class="panel-btn subtle compact icon-btn armed-icon-danger"
+                title="Remove location"
+                aria-label="Remove location"
+                onclick={() => { if (confirm('Remove this location from nearbytes?')) view.onRemove?.(); }}
+              ><Trash2 size={14} strokeWidth={2} /></button>
+            {/if}
+          {/snippet}
+          {#snippet footer()}
+            {#if view.warning}
+              <StatusNotice tone="warning" compact={true} title="Last write problem" message={view.warning} />
+            {/if}
+            {#if view.repairSummary}
+              <StatusNotice tone="warning" compact={true} message={view.repairSummary}>
+                {#snippet actions()}
+                  {#if view.onTrashIssues}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={view.onTrashIssues}
+                      disabled={view.repairBusy}
+                      title="Move unexpected or invalid files to the system trash"
+                    >
+                      <span>{view.repairBusy ? 'Cleaning...' : 'Clean up'}</span>
+                    </button>
+                  {/if}
+                {/snippet}
+              </StatusNotice>
+            {/if}
+            {#if view.attachments.length > 0}
+              <div class="fact-row share-volume-row">
+                {#each view.attachments as attachment}
+                  {#if attachment.known}
+                    <button
+                      type="button"
+                      class="mini-pill mini-pill-button"
+                        title={`${attachment.label}: ${attachment.usagePercent}% of this content is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                      onclick={() => onOpenVolumeRouting?.(attachment.volumeId)}
+                    >
+                        <span>{attachment.label}</span>
+                        <span class="mini-pill-metric">{attachment.usagePercent}%</span>
+                    </button>
+                  {:else}
+                      <span
+                        class="mini-pill"
+                        title={`${attachment.label}: ${attachment.usagePercent}% of this content is stored here, ${formatSize(attachment.usageBytes)} currently present on this location.`}
+                      >
+                        <span>{attachment.label}</span>
+                        <span class="mini-pill-metric">{attachment.usagePercent}%</span>
+                      </span>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+          {/snippet}
+          </ShareCard>
+        </div>
+      {/if}
+    {/snippet}
+    {#snippet incomingContactInviteCard(invite: IncomingProviderContactInvite)}
+      <div class="compact-share-item">
+        <ShareCard
+          title={invite.label}
+          compact={true}
+          statusBadges={[{ label: 'Contact invite', tone: 'warn' }]}
+          meta={[]}
+        >
+          {#snippet actions()}
+            <button
+              type="button"
+              class="panel-btn subtle compact"
+              onclick={() => void acceptProviderContactInviteEntry(invite)}
+              disabled={integrationBusyKey === `accept-contact:${invite.id}`}
+            >
+              <span>{integrationBusyKey === `accept-contact:${invite.id}` ? 'Accepting...' : 'Accept contact'}</span>
+            </button>
+          {/snippet}
+        </ShareCard>
+      </div>
+    {/snippet}
+    {#snippet incomingManagedShareCard(offer: IncomingManagedShareOffer)}
+      <div class="compact-share-item">
+        <ShareCard
+          title={incomingManagedShareTitle(offer)}
+          compact={true}
+          statusBadges={[incomingShareStatusBadge(offer)]}
+          meta={[
+            `Shared by ${offer.ownerLabel}`,
+            incomingShareMetaDetail(offer),
+          ]}
+        >
+          {#snippet details()}
+            {#if offer.suggestedLocalPath}
+              <div class="provider-path-card managed-share-path-card">
+                <p class="subheading">Suggested local {incomingShareKindLabel(offer)}</p>
+                <p class="provider-path-copy">{offer.suggestedLocalPath}</p>
+              </div>
+            {/if}
+          {/snippet}
+          {#snippet actions()}
+            <div class="button-row incoming-share-actions">
+              <button
+                type="button"
+                class="panel-btn subtle compact"
+                onclick={() => void acceptIncomingManagedShareOffer(offer)}
+                disabled={integrationBusyKey === `accept-share:${offer.id}`}
+              >
+                {#if integrationBusyKey !== `accept-share:${offer.id}`}
+                  <Plus size={14} strokeWidth={2} />
+                {/if}
+                <span>{integrationBusyKey === `accept-share:${offer.id}` ? 'Adding...' : incomingShareActionLabel(offer)}</span>
+              </button>
+              <button
+                type="button"
+                class="panel-btn subtle compact danger"
+                onclick={() => dismissIncomingManagedShareOffer(offer)}
+                disabled={integrationBusyKey === `accept-share:${offer.id}`}
+                title="Hide this incoming share on this device"
+              >
+                <span>Hide</span>
+              </button>
+            </div>
+          {/snippet}
+        </ShareCard>
+      </div>
+    {/snippet}
+    {#snippet incomingFromOthersSection(providerKey: string, heading: string)}
+      {@const incomingInvitesHere = incomingProviderInvitesForProvider(providerKey)}
+      {@const incomingSharesHere = incomingManagedSharesForProvider(providerKey)}
+      {@const hiddenIncomingSharesHere = dismissedIncomingManagedShareCount(providerKey)}
+      {#if providerCatalog.some((entry) => entry.provider === providerKey && entry.isConnected)}
+        <div class="provider-incoming-section">
+          <div class="provider-flow-status">
+            <p class="provider-flow-title">{heading}</p>
+            {#if incomingLoading}
+              <p class="muted-copy">Checking…</p>
+            {:else if incomingLoadError}
+              <StatusNotice tone="warning" compact={true} message={incomingLoadError} />
+            {/if}
+            {#if hiddenIncomingSharesHere > 0}
+              <div class="button-row">
                 <button
                   type="button"
-                  class="panel-btn subtle compact icon-btn"
-                  onclick={() => void refreshDiscoverySuggestions()}
-                  disabled={discoveryLoading}
-                  title="Scan again"
+                  class="panel-btn subtle compact"
+                  onclick={() => restoreDismissedIncomingManagedShares(providerKey)}
                 >
-                  <RefreshCw size={14} strokeWidth={2} />
+                  <span>Show hidden {countLabel(hiddenIncomingSharesHere, 'share')}</span>
                 </button>
-                {#if dismissedSuggestionCount() > 0}
-                  <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
-                    <span>Show hidden</span>
+              </div>
+            {/if}
+          </div>
+          {#if incomingInvitesHere.length > 0 || incomingSharesHere.length > 0}
+            <div class="compact-share-grid">
+              {#each incomingInvitesHere as invite (invite.id)}
+                {@render incomingContactInviteCard(invite)}
+              {/each}
+              {#each incomingSharesHere as offer (offer.id)}
+                {@render incomingManagedShareCard(offer)}
+              {/each}
+            </div>
+          {:else if !incomingLoading}
+            <p class="managed-share-invite-copy">
+              {#if hiddenIncomingSharesHere > 0}
+                No incoming locations are visible right now. {countLabel(hiddenIncomingSharesHere, 'hidden share')} can be shown again from the button above.
+              {:else}
+                No incoming locations detected yet. When a location is visible in {providerLabelForIncoming(providerKey)}, it will list here with an add action.
+              {/if}
+            </p>
+          {/if}
+        </div>
+      {/if}
+    {/snippet}
+    {#snippet addLocationAction(label: string, title: string, onPress: () => void, disabled: boolean)}
+      <button type="button" class="panel-btn subtle compact" onclick={onPress} {title} {disabled}>
+        <Plus size={14} strokeWidth={2} />
+        <span>{label}</span>
+      </button>
+    {/snippet}
+    {#snippet addLocationComposer(provider: ProviderCatalogEntry)}
+      <form class="provider-create-inline" onsubmit={(event) => {
+        event.preventDefault();
+        void createManagedShareForProvider(provider);
+      }}>
+        <input
+          class="panel-input provider-create-inline-input"
+          type="text"
+          value={providerLocationNameDraft(provider.provider)}
+          placeholder={nextManagedShareLabel(provider.provider)}
+          oninput={(event) => setProviderLocationName(provider.provider, (event.currentTarget as HTMLInputElement).value)}
+        />
+        <button
+          type="submit"
+          class="panel-btn primary compact"
+          disabled={integrationBusyKey === `create:${provider.provider}`}
+        >
+          <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create'}</span>
+        </button>
+        <button
+          type="button"
+          class="panel-btn subtle compact"
+          onclick={() => closeProviderCreateComposer(provider.provider)}
+          disabled={integrationBusyKey === `create:${provider.provider}`}
+        >
+          <span>Cancel</span>
+        </button>
+      </form>
+    {/snippet}
+    {#if mode === 'global'}
+      <div class="storage-shell-facts">
+          <span class="summary-pill">{countLabel(localMachineShareCount(), 'saved location')}</span>
+          <span class="summary-pill">{countLabel(connectedProviderCount(), 'connected service')}</span>
+          {#if totalIncomingReviewCount() > 0}<span class="summary-pill tone-warn">{countLabel(totalIncomingReviewCount(), 'incoming item')}</span>{/if}
+        </div>
+
+      <div class="provider-choice-grid" role="group" aria-label="Choose a storage provider">
+        <button
+          type="button"
+          class="provider-choice-card"
+          class:active={selectedGlobalView === 'local'}
+          aria-pressed={selectedGlobalView === 'local'}
+          onclick={() => {
+            selectedGlobalProvider = 'local';
+            selectedGlobalView = 'local';
+          }}
+        >
+          <span class="provider-choice-eyebrow">Start here</span>
+          <span class="provider-choice-head">
+            <span class="provider-choice-title">This Mac</span>
+            <span class="status-pill tone-good">{countLabel(localMachineShareCount(), 'saved location')}</span>
+          </span>
+          <span class="provider-choice-copy">
+            {sourceSuggestionRows().length > 0
+              ? `${countLabel(sourceSuggestionRows().length, 'suggestion')} ready to review`
+              : 'Choose folders already on this Mac'}
+          </span>
+        </button>
+
+        {#each providerCatalog as provider (provider.provider)}
+          {@const tabLoadingState = providerTabLoadingState(provider)}
+          <button
+            type="button"
+            class="provider-choice-card"
+            class:active={selectedGlobalView === 'provider' && selectedGlobalProvider === provider.provider}
+            aria-pressed={selectedGlobalView === 'provider' && selectedGlobalProvider === provider.provider}
+            onclick={() => {
+              selectedGlobalProvider = provider.provider;
+              selectedGlobalView = 'provider';
+            }}
+          >
+            <span class="provider-choice-eyebrow">{provider.isConnected ? 'Connected service' : 'Optional service'}</span>
+            <span class="provider-choice-head">
+              <span class="provider-choice-title">{provider.label}</span>
+              <span class={`status-pill tone-${provider.isConnected ? 'good' : provider.setup.status === 'unsupported' ? 'warn' : 'muted'}`}>
+                {providerCardStatus(provider)}
+              </span>
+            </span>
+            <span class="provider-choice-copy">
+              {#if tabLoadingState}
+                {tabLoadingState.detail}
+              {:else}
+                {providerTabCopy(provider)}
+              {/if}
+            </span>
+          </button>
+        {/each}
+
+        <button
+          type="button"
+          class="provider-choice-card incoming-choice-card"
+          class:active={selectedGlobalView === 'incoming'}
+          aria-pressed={selectedGlobalView === 'incoming'}
+          onclick={() => {
+            const provider = incomingReviewTargetProvider();
+            if (provider) {
+              selectedGlobalProvider = provider;
+              selectedGlobalView = 'incoming';
+            }
+          }}
+          disabled={incomingReviewTargetProvider() === null}
+        >
+          <span class="provider-choice-eyebrow">From other people</span>
+          <span class="provider-choice-head">
+            <span class="provider-choice-title">Incoming items</span>
+            <span class={`status-pill tone-${totalIncomingReviewCount() > 0 ? 'warn' : 'muted'}`}>
+              {countLabel(totalIncomingReviewCount(), 'item')}
+            </span>
+          </span>
+          <span class="provider-choice-copy">
+            {totalIncomingReviewCount() > 0
+              ? 'Review contact requests and incoming locations here'
+              : 'No incoming items right now'}
+          </span>
+        </button>
+      </div>
+
+      {#if errorMessage}
+        <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
+      {/if}
+      {#if successMessage}
+        <StatusNotice tone="success" compact={true} message={successMessage} />
+      {/if}
+
+      {#if selectedGlobalView === 'local'}
+      <section class="panel-section">
+        <div class="section-head compact global-panel-head global-panel-head-actions">
+          <div class="button-row compact-panel-actions">
+            {@render addLocationAction('Add folder', 'Add a folder on this device', addSourceCard, false)}
+            {#if dismissedSuggestionCount() > 0}
+              <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
+                <span>Show hidden</span>
+              </button>
+            {/if}
+          </div>
+        </div>
+
+        {#if discoveryError}
+          <StatusNotice tone="warning" compact={true} message={discoveryError} />
+        {/if}
+
+        <div class="section-stack">
+          {#if localShares().length > 0}
+            <div class="compact-share-grid">
+              {#each localShares() as source (source.id)}
+                {@render unifiedShareCard(localShareView(source))}
+              {/each}
+            </div>
+          {:else}
+            <article class="rule-card">
+              <p class="card-copy">No folders are saved on this device yet.</p>
+              <div class="button-row inline-dialog-actions">
+                <button type="button" class="panel-btn subtle compact" onclick={addSourceCard}>
+                  <Plus size={14} strokeWidth={2} />
+                  <span>Add folder</span>
+                </button>
+              </div>
+            </article>
+          {/if}
+        </div>
+
+        {#if sourceSuggestionRows().length > 0}
+          <div class="section-stack section-stack-secondary">
+            <div class="section-copy-stack">
+              <p class="subheading">Suggested locations</p>
+              <p class="managed-share-invite-copy">Folders that already look ready. Add only the ones you want.</p>
+            </div>
+
+            <div class="compact-share-grid">
+              {#each sourceSuggestionRows() as row (row.source.path)}
+                <article class="location-card suggestion-card">
+                  <div class="card-head">
+                    <div class="card-title">
+                      <div class="card-icon" title={row.source.path}>
+                        <Search size={16} strokeWidth={2.1} />
+                      </div>
+                      <div title={row.source.path}>
+                        <p class="provider-label">{sourceLocationKindLabel(row.source.provider)}</p>
+                        <h4>{sourceLocationTitle(row.source.path)}</h4>
+                        <p class="card-path">{sourceLocationPath(row.source.path)}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
+
+                  <div class="button-row">
+                    <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
+                      <Plus size={14} strokeWidth={2} />
+                      <span>Use this location</span>
+                    </button>
+                    <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
+                      <span>Hide</span>
+                    </button>
+                  </div>
+                </article>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </section>
+
+      {:else if selectedGlobalView === 'incoming'}
+        {@const incomingProviders = providerCatalog.filter((entry) => {
+          if (!entry.isConnected || !providerShowsIncomingShareSection(entry.provider)) {
+            return false;
+          }
+          const hasReceivedShares = providerReceivedVisibleShares(entry.provider).length > 0;
+          const hasIncomingReviewState =
+            incomingProviderInvitesForProvider(entry.provider).length > 0
+            || incomingManagedSharesForProvider(entry.provider).length > 0
+            || dismissedIncomingManagedShareCount(entry.provider) > 0
+            || incomingLoading
+            || Boolean(incomingLoadError);
+          return hasReceivedShares || hasIncomingReviewState;
+        })}
+        <section class="panel-section">
+          {#if incomingProviders.length === 0}
+            <article class="rule-card">
+              <p class="card-copy">No incoming items right now.</p>
+            </article>
+          {:else}
+            <div class="section-stack">
+              {#each incomingProviders as incomingProvider (incomingProvider.provider)}
+                {@const receivedShares = providerReceivedVisibleShares(incomingProvider.provider)}
+                {@const hasIncomingReviewState =
+                  incomingProviderInvitesForProvider(incomingProvider.provider).length > 0
+                  || incomingManagedSharesForProvider(incomingProvider.provider).length > 0
+                  || dismissedIncomingManagedShareCount(incomingProvider.provider) > 0
+                  || incomingLoading
+                  || Boolean(incomingLoadError)}
+                <div class="section-stack section-stack-secondary provider-incoming-hub-wrap">
+                  <div class="section-copy-stack">
+                    <p class="subheading">{incomingProvider.label}</p>
+                    <p class="managed-share-invite-copy">Only locations and invites coming from other people appear here.</p>
+                  </div>
+
+                  {#if receivedShares.length > 0}
+                    <div class="compact-share-grid" class:mega-share-grid={incomingProvider.provider === 'mega'}>
+                      {#each receivedShares as summary (summary.share.id)}
+                        {@render managedShareCard(summary)}
+                      {/each}
+                    </div>
+                  {/if}
+
+                  {#if hasIncomingReviewState}
+                    {@render incomingFromOthersSection(
+                      incomingProvider.provider,
+                      receivedShares.length > 0
+                        ? 'Still to review'
+                        : incomingProvider.provider === 'mega'
+                          ? 'Incoming locations'
+                          : 'Shared with you'
+                    )}
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {:else}
+        {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
+        {#if provider}
+          {@const ownedShares = providerOwnedVisibleShares(provider.provider)}
+          {@const receivedShares = providerReceivedVisibleShares(provider.provider)}
+          {@const hasIncomingReviewState = providerShowsIncomingShareSection(provider.provider)
+            && (
+              incomingProviderInvitesForProvider(provider.provider).length > 0
+              || incomingManagedSharesForProvider(provider.provider).length > 0
+              || dismissedIncomingManagedShareCount(provider.provider) > 0
+              || incomingLoading
+              || Boolean(incomingLoadError)
+            )}
+          <section class="panel-section">
+            <div class="section-head compact global-panel-head global-panel-head-actions">
+              <div class="button-row compact-panel-actions">
+                <IconToggle
+                  icon={Power}
+                  label={providerEnabled(provider.provider) ? 'On' : 'Off'}
+                  active={providerEnabled(provider.provider)}
+                  disabled={integrationBusyKey === `provider-toggle:${provider.provider}`}
+                  title={providerEnabled(provider.provider) ? `Disable ${provider.label}` : `Enable ${provider.label}`}
+                  ariaLabel={providerEnabled(provider.provider) ? `Disable ${provider.label}` : `Enable ${provider.label}`}
+                  onclick={() => void toggleProvider(provider)}
+                />
+                {#if providerEnabled(provider.provider)}
+                {#if provider.provider === 'local-network'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void refreshLocalNetworkPeers()}
+                  >
+                    <span>Refresh peers</span>
                   </button>
+                {:else if provider.isConnected && providerSupportsCreateAction(provider.provider)}
+                  {#if isInlineLocationComposerProvider(provider.provider) && isProviderCreateComposerOpen(provider.provider)}
+                    {@render addLocationComposer(provider)}
+                  {:else}
+                    {@render addLocationAction(
+                      'Add a location',
+                      `Add a ${provider.label} storage location`,
+                      () => handleProviderAddLocation(provider),
+                      integrationBusyKey === `create:${provider.provider}`
+                    )}
+                  {/if}
+                {/if}
+                {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => openProviderDocs(provider.setup.docsUrl)}
+                  >
+                    <span>{provider.provider === 'gdrive' ? 'Open Google Console' : 'Open docs'}</span>
+                  </button>
+                {/if}
+                {#if !provider.isConnected && provider.setup.status === 'needs-config'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void configureProvider(provider)}
+                    disabled={integrationBusyKey === `setup:${provider.provider}`}
+                  >
+                    <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
+                  </button>
+                {/if}
+                {#if provider.provider === 'mega'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    bind:this={megaAccountSection}
+                    onclick={() => openProviderConnectionDialog(provider.provider)}
+                  >
+                    <span>{provider.isConnected ? (megaProviderReconnectIssue() ? 'Reconnect' : 'Disconnect') : 'Connect'}</span>
+                  </button>
+                {:else if provider.isConnected && provider.provider !== 'local-network'}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => openProviderConnectionDialog(provider.provider)}
+                  >
+                    <span>{providerCardStatus(provider)}</span>
+                  </button>
+                {:else if provider.provider !== 'mega'}
+                  {#if providerFlowState(provider.provider)?.canCancel}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => cancelProviderFlow(provider.provider)}
+                    >
+                      <span>Cancel</span>
+                    </button>
+                  {/if}
+                  {#if canResetProviderFlow(provider.provider)}
+                    <button
+                      type="button"
+                      class="panel-btn subtle compact"
+                      onclick={() => resetProviderFlow(provider.provider)}
+                      disabled={providerFlowState(provider.provider)?.canCancel === true}
+                    >
+                      <span>Reset</span>
+                    </button>
+                  {/if}
+                  <button
+                    type="button"
+                    class="panel-btn subtle compact"
+                    onclick={() => void connectProvider(provider)}
+                    disabled={
+                      integrationBusyKey === `connect:${provider.provider}` ||
+                      provider.setup.status === 'needs-config' ||
+                      provider.setup.status === 'unsupported'
+                    }
+                  >
+                    <span>
+                      {integrationBusyKey === `connect:${provider.provider}`
+                        ? provider.setup.status === 'needs-install'
+                          ? 'Installing...'
+                          : 'Connecting...'
+                        : provider.provider === 'gdrive'
+                          ? 'Connect with Google'
+                          : 'Connect'}
+                    </span>
+                  </button>
+                {/if}
                 {/if}
               </div>
             </div>
-          {/if}
-        </article>
-        {#each providerCatalog as provider (provider.provider)}
-          {@const isSelected = selectedGlobalProvider === provider.provider}
-          <article class="overview-card tab-card tab-card-shell" class:active={isSelected}>
-            <button type="button" class="tab-card-select" onclick={() => (selectedGlobalProvider = provider.provider)}>
-              <p class="provider-label">{provider.label}</p>
-              <h3>{provider.isConnected ? provider.label : providerCardStatus(provider)}</h3>
-              <p class="card-copy">{providerShares(provider.provider).length} shares</p>
-            </button>
-            {#if isSelected}
-              <div class="tab-card-meta">
-                <div class="card-status">
-                  {#if provider.isConnected}
-                    <button
-                      type="button"
-                      class={`status-pill status-pill-button tone-${providerCardTone(provider)}`}
-                      onclick={() => openProviderConnectionDialog(provider.provider)}
-                    >
-                      {providerCardStatus(provider)}
-                    </button>
-                  {:else}
-                    <span class={`status-pill tone-${providerCardTone(provider)}`}>{providerCardStatus(provider)}</span>
-                  {/if}
-                  {#each provider.badges as badge}
-                    <span class="status-pill tone-muted">{badge}</span>
-                  {/each}
-                </div>
 
-                <div class="button-row tab-card-actions">
-                  {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => openProviderDocs(provider.setup.docsUrl)}
-                    >
-                      <span>{provider.provider === 'gdrive' ? 'Open Google Console' : 'Open docs'}</span>
-                    </button>
-                  {/if}
-                  {#if !provider.isConnected && provider.setup.status === 'needs-config'}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void configureProvider(provider)}
-                      disabled={integrationBusyKey === `setup:${provider.provider}`}
-                    >
-                      <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
-                    </button>
-                  {/if}
-                  {#if provider.isConnected}
-                    {#if provider.provider === 'github'}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => void createManagedShareForProvider(provider)}
-                        disabled={integrationBusyKey === `create:${provider.provider}`}
-                      >
-                        <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : 'Create share'}</span>
-                      </button>
+            {#if provider.provider === 'local-network' && providerEnabled(provider.provider)}
+              <div class="section-stack">
+                <ProviderStatusCard
+                  title={localNetworkService?.listening ? 'Local network sync is active' : 'Preparing local network sync'}
+                  detail={providerCardDetail(provider)}
+                  tone={localNetworkLoadError ? 'warn' : localNetworkPeers.length > 0 ? 'good' : 'muted'}
+                >
+                  {#snippet actions()}
+                    {#if localNetworkService}
+                      <span class="provider-step-detail">Peer ID {localNetworkService.peerId.slice(0, 8)}</span>
                     {/if}
-                  {:else if provider.provider !== 'mega'}
-                    {#if providerFlowState(provider.provider)?.canCancel}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => cancelProviderFlow(provider.provider)}
-                      >
-                        <span>Cancel</span>
-                      </button>
-                    {/if}
-                    {#if canResetProviderFlow(provider.provider)}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => resetProviderFlow(provider.provider)}
-                        disabled={providerFlowState(provider.provider)?.canCancel === true}
-                      >
-                        <span>Reset</span>
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void connectProvider(provider)}
-                      disabled={
-                        integrationBusyKey === `connect:${provider.provider}` ||
-                        provider.setup.status === 'needs-config' ||
-                        provider.setup.status === 'unsupported'
-                      }
-                    >
-                      <span>
-                        {integrationBusyKey === `connect:${provider.provider}`
-                          ? provider.setup.status === 'needs-install'
-                            ? 'Installing...'
-                            : 'Connecting...'
-                          : provider.provider === 'gdrive'
-                            ? 'Connect with Google'
-                            : 'Connect'}
-                      </span>
-                    </button>
+                  {/snippet}
+                </ProviderStatusCard>
+
+                {#if localNetworkLoadError}
+                  <StatusNotice tone="warning" compact={true} message={localNetworkLoadError} />
+                {/if}
+
+                <div class="compact-share-grid">
+                  {#if localNetworkPeers.length === 0}
+                    <div class="compact-share-item">
+                      <ShareCard
+                        title="No nearby peers yet"
+                        copy="Keep Nearbytes open on another machine on the same LAN. As soon as it announces itself, this panel will populate and sync will start automatically."
+                        statusBadges={localNetworkService?.listening ? [{ label: 'Listening', tone: 'muted' }] : []}
+                        meta={localNetworkService ? [localNetworkService.serviceType, localNetworkService.transport.toUpperCase()] : []}
+                      />
+                    </div>
+                  {:else}
+                    {#each localNetworkPeers as peer (peer.peerId)}
+                      <div class="compact-share-item">
+                        <ShareCard
+                          title={peer.label}
+                          copy={peer.detail}
+                          statusBadges={[
+                            { label: peer.status === 'ready' ? 'Live' : peer.status === 'syncing' ? 'Syncing' : peer.status === 'error' ? 'Attention' : 'Waiting', tone: peer.status === 'ready' ? 'good' : peer.status === 'syncing' ? 'muted' : peer.status === 'error' ? 'warn' : 'muted' },
+                            { label: countLabel(peer.volumeIds.length, 'volume'), tone: 'replica' }
+                          ]}
+                          meta={[peer.address, `Port ${peer.port}`]}
+                        >
+                          {#snippet controls()}
+                            <button
+                              type="button"
+                              class="panel-btn subtle compact"
+                              onclick={() => void triggerLocalNetworkSync(peer.peerId)}
+                              disabled={syncingLocalNetworkPeerId === peer.peerId}
+                            >
+                              <span>{syncingLocalNetworkPeerId === peer.peerId ? 'Syncing...' : 'Sync now'}</span>
+                            </button>
+                          {/snippet}
+                          {#snippet details()}
+                            <div class="provider-fact-list">
+                              <p class="provider-step-detail">Last seen: {formatAbsoluteTimestamp(peer.lastSeenAt)}</p>
+                              <p class="provider-step-detail">Last sync: {peer.lastSyncAt ? formatAbsoluteTimestamp(peer.lastSyncAt) : 'Waiting'}</p>
+                              <p class="provider-step-detail">Imported recently: {peer.lastImportedEvents} events, {peer.lastImportedBlocks} blocks</p>
+                              {#if peer.lastSyncError}
+                                <StatusNotice tone="warning" compact={true} message={peer.lastSyncError} />
+                              {:else if peer.lastSyncNotice}
+                                <p class="provider-step-detail">{peer.lastSyncNotice}</p>
+                              {/if}
+                            </div>
+                          {/snippet}
+                        </ShareCard>
+                      </div>
+                    {/each}
                   {/if}
                 </div>
               </div>
             {/if}
-          </article>
-        {/each}
-      </div>
 
-      {#if errorMessage}
-        <p class="panel-error">{errorMessage}</p>
-      {/if}
-      {#if successMessage}
-        <p class="panel-success">{successMessage}</p>
-      {/if}
+            {#if provider.provider !== 'local-network' && providerEnabled(provider.provider)}
+            {#if provider.provider === 'mega'}
+              {@const megaStatus = megaStatusView()}
+              {@const megaIssue = megaDiagnostics(1, { onlyProblems: true })[0]}
+              {@const megaReconnectIssue = megaProviderReconnectIssue()}
+              {#if megaReconnectIssue || shareLoadError || (megaStatus.tone !== 'good' && (megaStatus.detail || megaStatus.progressLabel)) || megaRuntimeLogsVisible}
+                <div class="mega-command-deck" bind:this={megaOverviewSection}>
+                  {#if megaReconnectIssue || shareLoadError || (megaStatus.tone !== 'good' && (megaStatus.detail || megaStatus.progressLabel))}
+                    <ProviderStatusCard
+                      title={megaReconnectIssue ? 'Finish MEGA account recovery' : megaStatus.headline}
+                      detail={megaReconnectIssue
+                        ? 'Recovery is required before Nearbytes can keep MEGA locations in sync.'
+                        : shareLoadError || megaStatus.detail || megaStatus.headline}
+                      tone={megaReconnectIssue ? 'warn' : megaStatus.tone}
+                      showProgress={megaStatus.showProgressBar}
+                      progressPercent={megaStatus.progressPercent}
+                      progressLabel={megaStatus.progressLabel}
+                    >
+                      {#snippet actions()}
+                        {#if megaReconnectIssue}
+                          <button
+                            type="button"
+                            class="panel-btn primary compact"
+                            onclick={() => openProviderConnectionDialog(provider.provider)}
+                          >
+                            <span>Reconnect account</span>
+                          </button>
+                        {/if}
+                      {/snippet}
+                    </ProviderStatusCard>
+                  {/if}
 
-      {#if selectedGlobalProvider === 'local'}
-      <section class="panel-section">
-        {#if discoveryError}
-          <p class="warning-copy">{discoveryError}</p>
-        {/if}
+                  {#if megaRuntimeLogsVisible}
+                    {@const visibleRuntimeLogs = visibleMegaRuntimeLogs()}
+                    {@const activeRuntimeLog = activeMegaRuntimeLog()}
+                    <div class="provider-path-card mega-runtime-log-card">
+                      <div class="mega-runtime-log-header">
+                        <div>
+                          <p class="subheading">Developer backend logs</p>
+                          <p class="provider-step-detail">
+                            {megaRuntimeLogsUpdatedAt ? `Updated ${formatMegaRuntimeLogTimestamp(megaRuntimeLogsUpdatedAt)}` : ''}
+                          </p>
+                        </div>
+                        <div class="mega-runtime-log-header-actions">
+                          <button
+                            type="button"
+                            class="panel-btn subtle compact"
+                            onclick={() => void loadMegaRuntimeLogs()}
+                            disabled={megaRuntimeLogsLoading}
+                          >
+                            <span>{megaRuntimeLogsLoading ? 'Loading...' : 'Refresh logs'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="panel-btn subtle compact"
+                            onclick={() => {
+                              megaRuntimeLogsVisible = false;
+                            }}
+                          >
+                            <span>Close</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="mega-runtime-log-toolbar">
+                        <label class="mega-runtime-log-search">
+                          <span class="subheading">Filter</span>
+                          <input
+                            class="panel-input"
+                            type="text"
+                            value={megaRuntimeLogFilter}
+                            placeholder="Search paths or log text"
+                            oninput={(event) => {
+                              megaRuntimeLogFilter = (event.currentTarget as HTMLInputElement).value;
+                            }}
+                          />
+                        </label>
+                        <div class="mega-runtime-log-toggle-row">
+                          <button
+                            type="button"
+                            class:primary={megaRuntimeLogAutoRefresh}
+                            class="panel-btn subtle compact"
+                            onclick={() => {
+                              megaRuntimeLogAutoRefresh = !megaRuntimeLogAutoRefresh;
+                            }}
+                          >
+                            <span>{megaRuntimeLogAutoRefresh ? 'Auto-refresh on' : 'Auto-refresh off'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class:primary={megaRuntimeLogWrap}
+                            class="panel-btn subtle compact"
+                            onclick={() => {
+                              megaRuntimeLogWrap = !megaRuntimeLogWrap;
+                            }}
+                          >
+                            <span>{megaRuntimeLogWrap ? 'Wrap on' : 'Wrap off'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="panel-btn subtle compact"
+                            onclick={() => void copyMegaRuntimeLog(activeRuntimeLog)}
+                            disabled={!activeRuntimeLog}
+                          >
+                            <span>{megaRuntimeLogCopyFeedback || 'Copy active log'}</span>
+                          </button>
+                        </div>
+                      </div>
+                      {#if megaRuntimeLogsError}
+                        <StatusNotice tone="warning" compact={true} message={megaRuntimeLogsError} />
+                      {:else if visibleRuntimeLogs.length === 0}
+                        <p class="provider-step-detail">
+                          No log files found yet. With the built-in MEGA runtime this is normal; use the folder status list for sync progress.
+                        </p>
+                      {:else}
+                        <div class="mega-runtime-log-layout">
+                          <div class="mega-runtime-log-list">
+                            {#each visibleRuntimeLogs as entry}
+                              <button
+                                type="button"
+                                class="mega-runtime-log-tab"
+                                class:active={activeRuntimeLog?.id === entry.id}
+                                onclick={() => selectMegaRuntimeLog(entry.id)}
+                              >
+                                <span class="mega-runtime-log-tab-title">{entry.label}</span>
+                                <span class="mega-runtime-log-tab-meta">
+                                  {entry.exists
+                                    ? `${compactPath(entry.path)} • ${formatSize(entry.size)}`
+                                    : `${compactPath(entry.path)} • waiting`}
+                                </span>
+                              </button>
+                            {/each}
+                          </div>
+                          {#if activeRuntimeLog}
+                            <div class="provider-path-card mega-runtime-log-entry">
+                              <div class="mega-runtime-log-entry-head">
+                                <div>
+                                  <p class="provider-step-title">{activeRuntimeLog.label}</p>
+                                  <p class="provider-step-detail">{activeRuntimeLog.path}</p>
+                                </div>
+                                <div class="provider-fact-list">
+                                  <p class="provider-step-detail">
+                                    {activeRuntimeLog.exists ? formatMegaRuntimeLogTimestamp(activeRuntimeLog.updatedAt) : 'Not written yet'}
+                                  </p>
+                                  <p class="provider-step-detail">
+                                    {countLabel(megaRuntimeLogLineCount(activeRuntimeLog), 'line')}
+                                  </p>
+                                </div>
+                              </div>
+                              <pre class:wrap={megaRuntimeLogWrap} class="mega-log-view mega-log-view-large">{#if activeRuntimeLog.exists && megaRuntimeLogContent(activeRuntimeLog).trim() !== ''}{@html megaRuntimeLogHtml(activeRuntimeLog)}{:else}No log content yet.{/if}</pre>
+                            </div>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
 
-        <div class="compact-share-grid">
-          {#each localShares() as source (source.id)}
-            {@render unifiedShareCard(localShareView(source))}
-          {/each}
-          {#each sourceSuggestionRows() as row (row.source.path)}
-            <article class="location-card suggestion-card">
-              <div class="card-head">
-                <div class="card-title">
-                  <div class="card-icon" title={row.source.path}>
-                    <Search size={16} strokeWidth={2.1} />
-                  </div>
-                  <div title={row.source.path}>
-                    <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                    <h4>{compactPath(row.source.path)}</h4>
+              {#if megaIssue}
+                <div class="provider-story-card compact-provider-card">
+                  <p class="subheading">Needs attention</p>
+                  <div class="provider-fact-list">
+                    <div class="provider-path-card mega-diagnostic-card">
+                      <p class="provider-step-title">{megaIssue.title}</p>
+                      <p class="provider-step-detail">{megaIssue.summary}</p>
+                      {#if megaIssue.detail.trim() !== ''}
+                        <div class="button-row">
+                          <button
+                            type="button"
+                            class="panel-btn subtle compact"
+                            onclick={() => toggleMegaIssueLog(megaIssue.id)}
+                          >
+                            <span>{megaIssueLogExpanded[megaIssue.id] ? 'Hide logs' : 'View logs'}</span>
+                          </button>
+                        </div>
+                        {#if megaIssueLogExpanded[megaIssue.id]}
+                          <pre class="mega-log-view">{megaIssue.detail}</pre>
+                        {/if}
+                      {/if}
+                      {#if megaIssue.facts.length > 0}
+                        <div class="provider-fact-list">
+                          {#each megaIssue.facts as fact}
+                            <p class="provider-story-copy"><strong>{fact.label}:</strong> {fact.value}</p>
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
                   </div>
                 </div>
-                <div class="card-status">
-                  <span class="status-pill tone-muted">Found automatically</span>
-                </div>
-              </div>
+              {/if}
+            {/if}
 
-              <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
-
-              <div class="button-row">
-                <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                  <Plus size={14} strokeWidth={2} />
-                  <span>Use folder</span>
-                </button>
-                <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
-                  <span>Hide</span>
-                </button>
-              </div>
-            </article>
-          {/each}
-
-          <article class="location-card add-card">
-            <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
-              <Plus size={20} strokeWidth={2.1} />
-            </button>
-            <div class="usage-main">
-              <p class="provider-label">Manual</p>
-              <h4>Add a folder</h4>
-            </div>
-            <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
-          </article>
-        </div>
-      </section>
-
-      {#if configPath}
-        <details class="details-card minor-details">
-          <summary>Configuration file</summary>
-          <p class="mono-copy">{configPath}</p>
-        </details>
-      {/if}
-      {:else}
-        {@const provider = providerCatalog.find((entry) => entry.provider === selectedGlobalProvider) ?? null}
-        {@const shares = provider ? providerShares(provider.provider) : []}
-        {@const disconnectImpact = provider ? providerDisconnectImpact(provider.provider) : { shares: 0, spaces: 0, inaccessibleSpaces: [] }}
-        {#if provider}
-          <section class="panel-section">
             {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
               <div class="inline-progress" aria-label="Installing provider helper">
                 <div class="inline-progress-bar"></div>
@@ -2810,7 +6313,7 @@
 
             {#if !provider.isConnected && provider.provider === 'gdrive' && provider.setup.status === 'needs-config'}
                 {@const draft = providerSetupDraft(provider.provider)}
-                <div class="provider-credentials">
+                <div class="provider-story-card compact-provider-card">
                   <label class="field-block compact-field">
                     <span>Client ID</span>
                     <input
@@ -2822,12 +6325,11 @@
                     />
                   </label>
                 </div>
-                <p class="muted-copy">Create an OAuth client in Google Cloud, choose <strong>Desktop app</strong>, then paste the client ID here.</p>
             {/if}
 
             {#if !provider.isConnected && provider.provider === 'github' && provider.setup.status === 'needs-config'}
                 {@const draft = providerSetupDraft(provider.provider)}
-                <div class="provider-credentials">
+                <div class="provider-story-card compact-provider-card">
                   <label class="field-block compact-field">
                     <span>Client ID</span>
                     <input
@@ -2839,7 +6341,6 @@
                     />
                   </label>
                 </div>
-                <p class="muted-copy">Create a GitHub OAuth app, enable device flow, then paste the client ID here.</p>
             {/if}
 
             {#if !provider.isConnected && provider.provider === 'mega'}
@@ -2850,13 +6351,8 @@
                   void submitMegaAction(provider);
                 }}>
                   <div class="mega-onboarding-head">
-                    <div>
-                      <p class="subheading">MEGA onboarding</p>
-                      <p class="provider-story-copy">{megaOnboardingCopy(provider.provider)}</p>
-                    </div>
-                    <span class={`status-pill ${pendingSession ? 'tone-warn' : draft.mode === 'signup' ? 'tone-durable' : 'tone-muted'}`}>
-                      {pendingSession ? 'Email confirmation' : draft.mode === 'signup' ? 'Create account' : 'Sign in'}
-                    </span>
+                    <h4>MEGA account</h4>
+                    <p class="muted-copy compact-mode-copy">{pendingSession ? 'Email confirmation' : 'Sign in'}</p>
                   </div>
 
                   <div class="provider-credentials">
@@ -2872,36 +6368,6 @@
                         />
                       </label>
                     {:else}
-                      <div class="segmented-toggle">
-                        <button
-                          type="button"
-                          class="segmented-toggle-btn"
-                          class:active={draft.mode === 'login'}
-                          onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
-                        >
-                          Sign in
-                        </button>
-                        <button
-                          type="button"
-                          class="segmented-toggle-btn"
-                          class:active={draft.mode === 'signup'}
-                          onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
-                        >
-                          Create account
-                        </button>
-                      </div>
-                      {#if draft.mode === 'signup'}
-                        <label class="field-block compact-field">
-                          <span>Name</span>
-                          <input
-                            class="panel-input"
-                            type="text"
-                            value={draft.name}
-                            placeholder="Your name"
-                            oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
-                          />
-                        </label>
-                      {/if}
                       <label class="field-block compact-field">
                         <span>Email</span>
                         <input
@@ -2922,19 +6388,17 @@
                           oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
                         />
                       </label>
-                      {#if draft.mode === 'login'}
-                        <label class="field-block compact-field">
-                          <span class="toggle-only-label">
-                            <input
-                              type="checkbox"
-                              checked={draft.useMfa}
-                              onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
-                            />
-                            <span>I enabled 2-factor authentication on MEGA</span>
-                          </span>
-                        </label>
-                      {/if}
-                      {#if draft.mode === 'login' && draft.useMfa}
+                      <label class="field-block compact-field">
+                        <span class="toggle-only-label">
+                          <input
+                            type="checkbox"
+                            checked={draft.useMfa}
+                            onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
+                          />
+                          <span>I enabled 2-factor authentication on MEGA</span>
+                        </span>
+                      </label>
+                      {#if draft.useMfa}
                         <label class="field-block compact-field">
                           <span>2FA code</span>
                           <input
@@ -3048,764 +6512,197 @@
               </div>
             {/if}
 
-            <div class="compact-share-grid">
-              {#if shares.length === 0}
-                <ShareCard
-                  provider={provider.label}
-                  title="No shares yet"
-                  copy={provider.isConnected ? `Nearbytes should create or adopt the default nearbytes share automatically.` : `Connect ${provider.label} first, then Nearbytes will manage its shares here.`}
-                  statusBadges={[{ label: provider.isConnected ? 'Connected' : providerCardStatus(provider), tone: providerCardTone(provider) }]}
-                  meta={[provider.label]}
-                />
-              {:else}
-                {#each shares as summary (summary.share.id)}
-                  {@const view = managedShareView(summary)}
-                  {#if view}
-                    {@render unifiedShareCard(view)}
-                  {/if}
-                {/each}
-              {/if}
+            <div class="section-stack" bind:this={megaPublishingSection}>
+              <div class="compact-share-grid" class:mega-share-grid={provider.provider === 'mega'}>
+                {#if ownedShares.length === 0}
+                  <div class="compact-share-item">
+                    <ShareCard
+                      title="No locations from this account yet"
+                      copy={providerEmptyShareCopy(provider)}
+                      statusBadges={[]}
+                      meta={[]}
+                    />
+                  </div>
+                {:else}
+                  {#each ownedShares as summary (summary.share.id)}
+                    {@render managedShareCard(summary)}
+                  {/each}
+                {/if}
+              </div>
             </div>
+
+            {#if receivedShares.length > 0 || hasIncomingReviewState}
+              <div class="section-stack section-stack-secondary" bind:this={megaIncomingSection}>
+                <div class="section-copy-stack">
+                  <p class="subheading">{provider.provider === 'mega' ? 'Incoming locations' : 'Shared with you'}</p>
+                  <p class="managed-share-invite-copy">Locations someone else shared into this account stay separate from the ones you manage yourself.</p>
+                </div>
+
+                {#if receivedShares.length > 0}
+                  <div class="compact-share-grid" class:mega-share-grid={provider.provider === 'mega'}>
+                    {#each receivedShares as summary (summary.share.id)}
+                      {@render managedShareCard(summary)}
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if hasIncomingReviewState}
+                  {@render incomingFromOthersSection(provider.provider, receivedShares.length > 0 ? 'Still to review' : provider.provider === 'mega' ? 'Incoming locations' : 'Shared with you')}
+                {/if}
+              </div>
+            {/if}
+            {/if}
           </section>
         {/if}
       {/if}
     {:else}
-      <div class="toolbar-row">
-        {#if volumeId}
-          <span class="summary-pill" class:warning={!hasDurableDestination(volumeId)}>{protectionSummary(volumeId)}</span>
-        {/if}
-        <button
-          type="button"
-          class="panel-btn subtle compact icon-btn"
-          onclick={() => void refreshDiscoverySuggestions()}
-          disabled={discoveryLoading}
-          title="Scan again"
-        >
-          <RefreshCw size={14} strokeWidth={2} />
-        </button>
-        {#if dismissedSuggestionCount() > 0}
+      {#if dismissedSuggestionCount() > 0}
+        <div class="toolbar-row">
           <button type="button" class="panel-btn subtle compact" onclick={restoreDismissedSuggestions}>
-            <span>Show hidden</span>
-          </button>
-        {/if}
-      </div>
-
-      {#if volumeId}
-        <div class="overview-grid">
-          <button type="button" class="overview-card tab-card" class:active={volumeView === 'copies'} onclick={() => (volumeView = 'copies')}>
-            <p class="provider-label">Copies</p>
-            <h3>{protectionSummary(volumeId)}</h3>
-            <p class="card-copy">{hasDurableDestination(volumeId) ? 'This space is protected.' : 'Choose at least one protected copy.'}</p>
-          </button>
-          <button type="button" class="overview-card tab-card" class:active={volumeView === 'shares'} onclick={() => (volumeView = 'shares')}>
-            <p class="provider-label">Shares</p>
-            <h3>{countLabel(managedSharesForVolume(volumeId).length, 'share')}</h3>
-            <p class="card-copy">{countLabel(availableManagedSharesForVolume(volumeId).length, 'share')} available to attach.</p>
-          </button>
-          <button type="button" class="overview-card tab-card" class:active={volumeView === 'folders'} onclick={() => (volumeView = 'folders')}>
-            <p class="provider-label">Folders</p>
-            <h3>{countLabel(configDraft.sources.length, 'folder')}</h3>
-            <p class="card-copy">Machine-level storage shared by all spaces on this device.</p>
+            <span>Restore hidden suggestions</span>
           </button>
         </div>
       {/if}
 
       {#if errorMessage}
-        <p class="panel-error">{errorMessage}</p>
+        <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
       {/if}
       {#if successMessage}
-        <p class="panel-success">{successMessage}</p>
+        <StatusNotice tone="success" compact={true} message={successMessage} />
       {/if}
 
       {#if !volumeId}
-        <p class="storage-message">Open this space first, then choose which locations keep a full copy.</p>
+        <p class="storage-message">Open something first, then choose the places that should keep everything.</p>
       {:else}
-        {#if volumeView === 'shares'}
-        <section class="panel-section">
-          <div class="section-head">
-            <div>
-              <p class="section-step">Sharing</p>
-              <h3>Share this space</h3>
-              <p class="section-copy">Share the space link. Add a shared storage space if you also want to share a direct route for data.</p>
-            </div>
-          </div>
-
-          <div class="rule-card active volume-share-link-card">
-            <div class="card-head">
-              <div class="card-title">
-                <div>
-                  <p class="provider-label">Volume link</p>
-                  <h4>Share this space</h4>
-                </div>
-              </div>
-              <div class="card-status">
-                <span class="status-pill tone-muted">nearbytes://</span>
-              </div>
-            </div>
-
-            <p class="card-copy">Send this first.</p>
-
-            <div class="button-row">
-              <button
-                type="button"
-                class="panel-btn subtle compact"
-                onclick={() => void onCopyShareLink?.(false)}
-                disabled={shareLinkBusy}
-              >
-                <span>{shareLinkBusy ? 'Preparing...' : 'Share this space'}</span>
-              </button>
-            </div>
-
-            {#if shareLinkFeedback}
-              <p class="managed-share-invite-copy" class:warning-copy={shareLinkFeedback.tone === 'warning'}>{shareLinkFeedback.message}</p>
-            {/if}
-          </div>
-
-          <div class="card-grid">
-            {#each providerCatalog as provider (provider.provider)}
-              {@const account = connectedAccountForProvider(provider.provider)}
-              <article class="rule-card provider-card provider-card-compact" class:active={provider.isConnected}>
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">Provider</p>
-                      <h4>
-                        {provider.label}
-                        {#if account?.email || account?.label}
-                          <span class="provider-account-inline">{account?.email ?? account?.label}</span>
-                        {/if}
-                      </h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    {#if provider.isConnected}
-                      <button
-                        type="button"
-                        class={`status-pill status-pill-button ${providerDisconnectArmed[provider.provider] ? 'tone-danger' : 'tone-good'}`}
-                        onclick={() =>
-                          providerDisconnectArmed[provider.provider]
-                            ? void disconnectProvider(provider)
-                            : setProviderDisconnectArmed(provider.provider, true)}
-                        disabled={integrationBusyKey === `disconnect:${provider.provider}`}
-                        title={providerDisconnectArmed[provider.provider] ? `Disconnect ${provider.label}` : `Disconnect ${provider.label}`}
-                      >
-                        {integrationBusyKey === `disconnect:${provider.provider}`
-                          ? 'Disconnecting...'
-                          : providerDisconnectArmed[provider.provider]
-                            ? 'Disconnect'
-                            : 'Connected'}
-                      </button>
-                    {:else}
-                      <span class={`status-pill tone-${providerCardTone(provider)}`}>{providerCardStatus(provider)}</span>
-                      {#each provider.badges as badge}
-                        <span class="status-pill tone-muted">{badge}</span>
-                      {/each}
-                    {/if}
-                  </div>
-                </div>
-
-                {#if !provider.isConnected}
-                  <p class="card-copy">{providerCardDetail(provider)}</p>
-                {/if}
-
-                {#if provider.setup.status === 'installing' || (integrationBusyKey === `connect:${provider.provider}` && provider.setup.status === 'needs-install')}
-                  <div class="inline-progress" aria-label="Installing provider helper">
-                    <div class="inline-progress-bar"></div>
-                  </div>
-                {/if}
-
-                {#if !provider.isConnected && provider.provider === 'gdrive' && provider.setup.status === 'needs-config'}
-                  {@const draft = providerSetupDraft(provider.provider)}
-                  <div class="provider-credentials">
-                    <label class="field-block compact-field">
-                      <span>Client ID</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.clientId}
-                        placeholder="Google Desktop app client id"
-                        oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                  </div>
-                  <p class="muted-copy">Create a Google OAuth Desktop app client, paste the client ID here, then connect. Nearbytes uses the installed-app PKCE flow, so you do not need a client secret.</p>
-                {/if}
-
-                {#if !provider.isConnected && provider.provider === 'github' && provider.setup.status === 'needs-config'}
-                  {@const draft = providerSetupDraft(provider.provider)}
-                  <div class="provider-credentials">
-                    <label class="field-block compact-field">
-                      <span>Client ID</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.clientId}
-                        placeholder="GitHub OAuth app client id"
-                        oninput={(event) => setProviderSetupField(provider.provider, 'clientId', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                  </div>
-                  <p class="muted-copy">Create a GitHub OAuth app, enable device flow, then paste the client ID here.</p>
-                {/if}
-
-                {#if !provider.isConnected && provider.provider === 'mega'}
-                  {@const draft = providerCredentialDraft(provider.provider)}
-                  {@const pendingSession = pendingSessionForProvider(provider.provider)}
-                  <form class="provider-story-card mega-onboarding-card" onsubmit={(event) => {
-                    event.preventDefault();
-                    void submitMegaAction(provider);
-                  }}>
-                    <div class="mega-onboarding-head">
-                      <div>
-                        <p class="subheading">MEGA onboarding</p>
-                        <p class="provider-story-copy">{megaOnboardingCopy(provider.provider)}</p>
-                      </div>
-                      <span class={`status-pill ${pendingSession ? 'tone-warn' : draft.mode === 'signup' ? 'tone-durable' : 'tone-muted'}`}>
-                        {pendingSession ? 'Email confirmation' : draft.mode === 'signup' ? 'Create account' : 'Sign in'}
-                      </span>
-                    </div>
-
-                    <div class="provider-credentials">
-                      {#if pendingSession}
-                        <label class="field-block compact-field">
-                          <span>Confirmation link</span>
-                          <input
-                            class="panel-input"
-                            type="url"
-                            value={draft.confirmationLink}
-                            placeholder="https://mega.nz/confirm#..."
-                            oninput={(event) => setProviderCredential(provider.provider, 'confirmationLink', (event.currentTarget as HTMLInputElement).value)}
-                          />
-                        </label>
-                      {:else}
-                        <div class="segmented-toggle">
-                          <button
-                            type="button"
-                            class="segmented-toggle-btn"
-                            class:active={draft.mode === 'login'}
-                            onclick={() => setProviderCredential(provider.provider, 'mode', 'login')}
-                          >
-                            Sign in
-                          </button>
-                          <button
-                            type="button"
-                            class="segmented-toggle-btn"
-                            class:active={draft.mode === 'signup'}
-                            onclick={() => setProviderCredential(provider.provider, 'mode', 'signup')}
-                          >
-                            Create account
-                          </button>
-                        </div>
-                        {#if draft.mode === 'signup'}
-                          <label class="field-block compact-field">
-                            <span>Name</span>
-                            <input
-                              class="panel-input"
-                              type="text"
-                              value={draft.name}
-                              placeholder="Your name"
-                              oninput={(event) => setProviderCredential(provider.provider, 'name', (event.currentTarget as HTMLInputElement).value)}
-                            />
-                          </label>
-                        {/if}
-                        <label class="field-block compact-field">
-                          <span>Email</span>
-                          <input
-                            class="panel-input"
-                            type="email"
-                            value={draft.email}
-                            placeholder="name@example.com"
-                            oninput={(event) => setProviderCredential(provider.provider, 'email', (event.currentTarget as HTMLInputElement).value)}
-                          />
-                        </label>
-                        <label class="field-block compact-field">
-                          <span>Password</span>
-                          <input
-                            class="panel-input"
-                            type="password"
-                            value={draft.password}
-                            placeholder="MEGA password"
-                            oninput={(event) => setProviderCredential(provider.provider, 'password', (event.currentTarget as HTMLInputElement).value)}
-                          />
-                        </label>
-                        {#if draft.mode === 'login'}
-                          <label class="field-block compact-field">
-                            <span class="toggle-only-label">
-                              <input
-                                type="checkbox"
-                                checked={draft.useMfa}
-                                onchange={(event) => setProviderCredential(provider.provider, 'useMfa', (event.currentTarget as HTMLInputElement).checked)}
-                              />
-                              <span>I enabled 2-factor authentication on MEGA</span>
-                            </span>
-                          </label>
-                        {/if}
-                        {#if draft.mode === 'login' && draft.useMfa}
-                          <label class="field-block compact-field">
-                            <span>2FA code</span>
-                            <input
-                              class="panel-input"
-                              type="text"
-                              value={draft.mfaCode}
-                              placeholder="6-digit code"
-                              oninput={(event) => setProviderCredential(provider.provider, 'mfaCode', (event.currentTarget as HTMLInputElement).value)}
-                            />
-                          </label>
-                        {/if}
-                      {/if}
-                    </div>
-
-                    <div class="mega-onboarding-actions">
-                      {#if providerFlowState(provider.provider)?.canCancel}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => cancelProviderFlow(provider.provider)}
-                        >
-                          <span>Cancel</span>
-                        </button>
-                      {/if}
-                      {#if pendingSession}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => clearProviderSession(provider.provider)}
-                          disabled={integrationBusyKey === `confirm:${provider.provider}`}
-                        >
-                          <span>Start again</span>
-                        </button>
-                      {:else if canResetProviderFlow(provider.provider)}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => resetProviderFlow(provider.provider)}
-                          disabled={providerFlowState(provider.provider)?.canCancel === true}
-                        >
-                          <span>Reset</span>
-                        </button>
-                      {/if}
-                      <button
-                        type="submit"
-                        class="panel-btn primary"
-                        disabled={
-                          !canSubmitMegaAction(provider.provider) ||
-                          integrationBusyKey === `connect:${provider.provider}` ||
-                          integrationBusyKey === `confirm:${provider.provider}` ||
-                          provider.setup.status === 'needs-config' ||
-                          provider.setup.status === 'unsupported'
-                        }
-                      >
-                        <span>{megaPrimaryActionLabel(provider.provider)}</span>
-                      </button>
-                    </div>
-                  </form>
-                {/if}
-
-                {#if provider.isConnected && provider.provider === 'github'}
-                  {@const draft = providerShareDraft(provider.provider)}
-                  <div class="provider-credentials">
-                    <label class="field-block compact-field">
-                      <span>Owner</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.repoOwner}
-                        placeholder="nearbytes"
-                        oninput={(event) => setProviderShareField(provider.provider, 'repoOwner', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block compact-field">
-                      <span>Repo</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.repoName}
-                        placeholder="nearbytes-sync"
-                        oninput={(event) => setProviderShareField(provider.provider, 'repoName', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block compact-field">
-                      <span>Branch</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.branch}
-                        placeholder="main"
-                        oninput={(event) => setProviderShareField(provider.provider, 'branch', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <label class="field-block">
-                      <span>nearbytes path</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={draft.basePath}
-                        placeholder={defaultGithubBasePath(defaultManagedShareLabel())}
-                        oninput={(event) => setProviderShareField(provider.provider, 'basePath', (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                  </div>
-                {/if}
-
-                {#if providerFlowState(provider.provider)}
-                  <div class="provider-flow-status" data-phase={providerFlowState(provider.provider)?.phase}>
-                    <p class="provider-flow-title">{providerFlowState(provider.provider)?.title}</p>
-                    <p class="muted-copy">{providerFlowState(provider.provider)?.detail}</p>
-                  </div>
-                {/if}
-
-                <div class="button-row">
-                  {#if shouldShowProviderDocs(provider) && provider.setup.docsUrl}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => openProviderDocs(provider.setup.docsUrl)}
-                    >
-                      <span>{provider.provider === 'gdrive' ? 'Open Google setup' : 'Open help'}</span>
-                    </button>
-                  {/if}
-                  {#if !provider.isConnected && provider.setup.status === 'needs-config'}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void configureProvider(provider)}
-                      disabled={integrationBusyKey === `setup:${provider.provider}`}
-                    >
-                      <span>{integrationBusyKey === `setup:${provider.provider}` ? 'Saving...' : 'Save setup'}</span>
-                    </button>
-                  {/if}
-                  {#if provider.isConnected}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void createManagedShareForVolume(provider)}
-                      disabled={integrationBusyKey === `create:${provider.provider}`}
-                    >
-                      <span>{integrationBusyKey === `create:${provider.provider}` ? 'Creating...' : provider.provider === 'mega' ? 'Use MEGA shared storage' : `Use ${provider.label} storage`}</span>
-                    </button>
-                  {:else if provider.provider !== 'mega'}
-                    {#if providerFlowState(provider.provider)?.canCancel}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => cancelProviderFlow(provider.provider)}
-                      >
-                        <span>Cancel</span>
-                      </button>
-                    {/if}
-                    {#if canResetProviderFlow(provider.provider)}
-                      <button
-                        type="button"
-                        class="panel-btn subtle compact"
-                        onclick={() => resetProviderFlow(provider.provider)}
-                        disabled={providerFlowState(provider.provider)?.canCancel === true}
-                      >
-                        <span>Reset</span>
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      class="panel-btn subtle compact"
-                      onclick={() => void connectProvider(provider)}
-                      disabled={
-                        integrationBusyKey === `connect:${provider.provider}` ||
-                        provider.setup.status === 'needs-config' ||
-                        provider.setup.status === 'unsupported'
-                      }
-                    >
-                      <span>
-                        {integrationBusyKey === `connect:${provider.provider}`
-                          ? provider.setup.status === 'needs-install'
-                            ? 'Installing...'
-                            : 'Connecting...'
-                          : provider.provider === 'gdrive'
-                            ? 'Connect with Google'
-                            : 'Connect'}
-                      </span>
-                    </button>
-                  {/if}
-                </div>
-              </article>
-            {/each}
-
-            {#each managedSharesForVolume(volumeId) as summary (summary.share.id)}
-              <article class="rule-card" class:active={true}>
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
-                      <h4>{summary.share.label}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class={`status-pill tone-${shareStatusTone(summary)}`}>Shared storage connected</span>
-                    <span class={`status-pill tone-${shareStatusTone(summary)} ${shareStatusLabel(summary) === 'Ready' ? 'ready-badge' : ''}`}>{shareStatusLabel(summary)}</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{summary.state.detail}</p>
-
-                <div class="provider-path-card managed-share-path-card">
-                  <p class="subheading">Local mirror folder</p>
-                  <p class="provider-path-copy">{summarySourcePath(summary)}</p>
-                </div>
-                {#if summary.storage?.lastWriteFailureMessage}
-                  <p class="panel-error inline-panel-error">{summary.storage.lastWriteFailureMessage}</p>
-                {/if}
-
-                <div class="fact-row">
-                  <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
-                  <span>{managedShareAccessLabel(summary)}</span>
-                  <span>{shareAttachmentSummary(summary)}</span>
-                </div>
-
-                {#if canInviteManagedShare(summary)}
-                  <form class="managed-share-invite-row" onsubmit={(event) => {
-                    event.preventDefault();
-                    void inviteManagedSharePeers(summary);
-                  }}>
-                    <label class="field-block managed-share-invite-field">
-                      <span>Invite friends</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={managedShareInviteDraft(summary.share.id)}
-                        placeholder="name@example.com"
-                        oninput={(event) =>
-                          setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <button
-                      type="submit"
-                      class="panel-btn subtle compact"
-                      disabled={integrationBusyKey === `invite:${summary.share.id}`}
-                    >
-                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
-                    </button>
-                  </form>
-                  <p class="managed-share-invite-copy">Invite people here if you want to share this storage route directly.</p>
-                {/if}
-
-                <div class="managed-share-members">
-                  <p class="subheading">Participants</p>
-                  {#if participantCollaborators(summary).length > 0}
-                    <div class="managed-share-members-list">
-                      {#each participantCollaborators(summary) as collaborator (collaborator.label)}
-                        <span class="mini-pill">{collaborator.label}</span>
-                      {/each}
-                    </div>
-                  {:else}
-                    <p class="managed-share-invite-copy">No active participants yet.</p>
-                  {/if}
-                </div>
-
-                <div class="managed-share-members">
-                  <p class="subheading">Invited</p>
-                  {#if pendingCollaborators(summary).length > 0}
-                    <div class="managed-share-members-list">
-                      {#each pendingCollaborators(summary) as collaborator (collaborator.label)}
-                        <span class="mini-pill">{collaborator.label}</span>
-                      {/each}
-                    </div>
-                  {:else}
-                    <p class="managed-share-invite-copy">No pending invitations.</p>
-                  {/if}
-                </div>
-
-                <div class="button-row">
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => summary.share.sourceId && openSourceFolder(summary.share.sourceId)}
-                    disabled={!summary.share.sourceId}
-                  >
-                    <FolderOpen size={14} strokeWidth={2} />
-                    <span>Open</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
-            {#each availableManagedSharesForVolume(volumeId) as summary (summary.share.id)}
-              <article class="rule-card suggestion-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div>
-                      <p class="provider-label">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
-                      <h4>{summary.share.label}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class={`status-pill tone-${shareStatusTone(summary)} ${shareStatusLabel(summary) === 'Ready' ? 'ready-badge' : ''}`}>{shareStatusLabel(summary)}</span>
-                    <span class="status-pill tone-muted">Ready to use</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{summary.state.detail}</p>
-
-                <div class="provider-path-card managed-share-path-card">
-                  <p class="subheading">Local mirror folder</p>
-                  <p class="provider-path-copy">{summarySourcePath(summary)}</p>
-                </div>
-                {#if summary.storage?.lastWriteFailureMessage}
-                  <p class="panel-error inline-panel-error">{summary.storage.lastWriteFailureMessage}</p>
-                {/if}
-
-                <div class="fact-row">
-                  <span title={summary.share.localPath}>{managedShareOpenLabel(summary)}</span>
-                  <span>{managedShareAccessLabel(summary)}</span>
-                  <span>{shareAttachmentSummary(summary)}</span>
-                </div>
-
-                {#if canInviteManagedShare(summary)}
-                  <form class="managed-share-invite-row" onsubmit={(event) => {
-                    event.preventDefault();
-                    void inviteManagedSharePeers(summary);
-                  }}>
-                    <label class="field-block managed-share-invite-field">
-                      <span>Invite friends</span>
-                      <input
-                        class="panel-input"
-                        type="text"
-                        value={managedShareInviteDraft(summary.share.id)}
-                        placeholder="name@example.com"
-                        oninput={(event) =>
-                          setManagedShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                      />
-                    </label>
-                    <button
-                      type="submit"
-                      class="panel-btn subtle compact"
-                      disabled={integrationBusyKey === `invite:${summary.share.id}`}
-                    >
-                      <span>{integrationBusyKey === `invite:${summary.share.id}` ? 'Sending...' : 'Send invite'}</span>
-                    </button>
-                  </form>
-                  <p class="managed-share-invite-copy">Invite people to this provider location now, then attach it to this volume when you want Nearbytes to use it here.</p>
-                {/if}
-
-                <div class="button-row">
-                  <button
-                    type="button"
-                    class="panel-btn subtle compact"
-                    onclick={() => void attachManagedShareToVolume(summary)}
-                    disabled={integrationBusyKey === `attach:${summary.share.id}`}
-                  >
-                    <span>{integrationBusyKey === `attach:${summary.share.id}` ? 'Attaching...' : 'Attach to this space'}</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-          </div>
-        </section>
-        {/if}
-
-        {#if volumeView === 'copies'}
-        <div class="protection-banner" class:warning={!hasDurableDestination(volumeId)}>
-          <Shield size={15} strokeWidth={2} />
-          <span>{protectionHint(volumeId)}</span>
-        </div>
-
         {#if discoveryError}
-          <p class="warning-copy">{discoveryError}</p>
+          <StatusNotice tone="warning" compact={true} message={discoveryError} />
         {/if}
 
         <section class="panel-section">
           <div class="section-head">
             <div>
-              <p class="section-step">Copies</p>
-              <h3>{explicitVolumePolicy(volumeId) ? 'This space has its own copy rule' : 'This space currently inherits the default copy rule'}</h3>
-              <p class="section-copy">
-                {#if explicitVolumePolicy(volumeId)}
-                  Changes below are saved only for this space. Remove the custom rule to use the default rule again.
-                {:else}
-                  The switches below start from your default rule. Changing them will create a saved rule for this space only.
-                {/if}
-              </p>
+              {#if knownVolumeLabel(volumeId)}<p class="subheading">{knownVolumeLabel(volumeId)}</p>{/if}
+              <h3>Storage locations</h3>
             </div>
-            {#if explicitVolumePolicy(volumeId)}
-              <ArmedActionButton
-                class="panel-btn subtle compact danger"
-                icon={Trash2}
-                text="Use default rules again"
-                armed={true}
-                autoDisarmMs={3000}
-                onPress={() => removeVolumePolicy(volumeId)}
-              />
-            {/if}
+            <div class="section-actions">
+              <button type="button" class="panel-btn subtle compact" onclick={() => openHubLocationDialog(volumeId)}>
+                <Plus size={14} strokeWidth={2} />
+                <span>Add another location</span>
+              </button>
+              {#if hasMeaningfulExplicitVolumePolicy(volumeId)}
+                <ArmedActionButton
+                  class="panel-btn subtle compact danger"
+                  icon={Trash2}
+                  text="Use default storage locations again"
+                  armed={true}
+                  autoDisarmMs={3000}
+                  onPress={() => removeVolumePolicy(volumeId)}
+                />
+              {/if}
+            </div>
           </div>
 
           <div class="rule-grid">
-            {#each configDraft.sources as source (source.id)}
+            {#if hubAttachedSources(volumeId).length === 0}
+              <article class="rule-card">
+                <p class="card-copy">This hub is not using any storage locations yet. Add one of your saved locations here, or open storage setup if you need to create another first.</p>
+                <div class="button-row inline-dialog-actions">
+                  <button type="button" class="panel-btn subtle compact" onclick={() => openHubLocationDialog(volumeId)}>
+                    <Plus size={14} strokeWidth={2} />
+                    <span>Choose a saved location</span>
+                  </button>
+                  <button type="button" class="panel-btn subtle compact" onclick={openStorageSetupFromHubDialog}>
+                    <Link2 size={14} strokeWidth={2} />
+                    <span>Open storage setup</span>
+                  </button>
+                </div>
+              </article>
+            {/if}
+
+            {#each hubAttachedSources(volumeId) as source (source.id)}
               {@const destination = destinationFor(volumeId, source.id)}
-              {@const availability = locationAvailability(source)}
-              {@const writeState = locationWriteState(source)}
-              <article class="rule-card" class:active={protectionTone(destination, source.id) === 'durable'}>
+              {@const mode = hubLocationMode(volumeId, source.id)}
+              {@const status = sourceStatus(source.id)}
+              <article class="rule-card" class:active={mode !== 'off'}>
                 <div class="card-head">
                   <div class="card-title">
                     <div>
-                      <p class="provider-label">{formatProvider(source.provider)}</p>
-                      <h4>{compactPath(source.path)}</h4>
+                      <p class="provider-label">{sourceLocationKindLabel(source.provider)}</p>
+                      {#if hasSourcePath(source)}
+                        <button
+                          type="button"
+                          class="storage-title-link"
+                          onclick={() => openSourceFolder(source.id, source.path)}
+                          title={source.path}
+                        >
+                          <span class="storage-title-link-text">{sourceLocationTitle(source.path)}</span>
+                        </button>
+                        <p class="card-path">{sourceLocationPath(source.path)}</p>
+                      {:else}
+                        <h4>{sourceLocationTitle(source.path)}</h4>
+                      {/if}
                     </div>
-                  </div>
-                  <div class="card-status">
-                    <span class={`status-pill tone-${availability.tone}`}>{availability.label}</span>
-                    <span class={`status-pill tone-${writeState.tone}`}>{writeState.label}</span>
-                    <span class={`status-pill tone-${protectionTone(destination, source.id)}`}>{protectionLabel(destination, source.id)}</span>
                   </div>
                 </div>
 
-                <label class="inline-toggle">
-                  <input
-                    type="checkbox"
-                    checked={keepsFullCopy(destination)}
-                    onchange={(event) => setKeepFullCopy(volumeId, source.id, (event.currentTarget as HTMLInputElement).checked)}
-                  />
-                  <div>
-                    <span class="toggle-title">Keep this space here</span>
-                    <span class="toggle-copy">Full history and file data.</span>
+                <p class="managed-share-invite-copy">{hubLocationNote(volumeId, source) ?? 'This location keeps a best-effort full copy for this hub.'}</p>
+
+                {#if !source.enabled}
+                  <div class="button-row inline-dialog-actions">
+                    <button type="button" class="panel-btn subtle compact" onclick={() => updateSourceField(source.id, 'enabled', true)}>
+                      <span>Turn location back on</span>
+                    </button>
+                    {#if onOpenStorageSetup}
+                      <button type="button" class="panel-btn subtle compact" onclick={openStorageSetupFromHubDialog}>
+                        <span>Open storage setup</span>
+                      </button>
+                    {/if}
                   </div>
-                </label>
+                {/if}
 
-                <p class="card-copy">{copyHelpText(volumeId, source)}</p>
-
-                <details class="details-card inline-details">
-                  <summary>Advanced</summary>
-                  {#if keepsFullCopy(destination)}
-                    <div class="field-grid">
-                      <label class="field-block">
-                        <span>Keep free</span>
+                <div class="fact-row">
+                  {#if storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes)}
+                    <span>{storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes)}</span>
+                  {/if}
+                  <div class="inline-reserve-slot">
+                    {#if activeReserveEditorKey === `hub:${volumeId}:${source.id}`}
+                      <label class="inline-reserve-editor" title="Minimum available storage to leave on this drive.">
+                        <span>Free-space buffer</span>
                         <select
-                          class="panel-input"
-                          value={String(destinationReservePercent(destination))}
-                          onchange={(event) =>
-                            updateDestinationField(volumeId, source.id, 'reservePercent', clampReserve((event.currentTarget as HTMLSelectElement).value))}
+                          class="panel-input inline-reserve-select"
+                          value={String(Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT)}
+                          onchange={(event) => {
+                            updateDestinationField(volumeId, source.id, 'reservePercent', clampReserve((event.currentTarget as HTMLSelectElement).value));
+                            closeReserveEditor(`hub:${volumeId}:${source.id}`);
+                          }}
+                          onblur={() => closeReserveEditor(`hub:${volumeId}:${source.id}`)}
                         >
                           {#each RESERVE_OPTIONS as option}
                             <option value={option}>{formatPercent(option)}</option>
                           {/each}
                         </select>
                       </label>
-                      <label class="field-block">
-                        <span>If space runs low</span>
-                        <select
-                          class="panel-input"
-                          value={destination?.fullPolicy ?? 'block-writes'}
-                          onchange={(event) =>
-                            updateDestinationField(volumeId, source.id, 'fullPolicy', (event.currentTarget as HTMLSelectElement).value as StorageFullPolicy)}
-                        >
-                          <option value="block-writes">Never delete this protected copy</option>
-                          <option value="drop-older-blocks">Delete blocks here after another protected copy exists</option>
-                        </select>
-                      </label>
-                    </div>
-                  {/if}
+                    {:else}
+                      <button type="button" class="inline-reserve-button" onclick={() => toggleReserveEditor(`hub:${volumeId}:${source.id}`)} title="Change free-space buffer">
+                        <SquarePen size={13} strokeWidth={2} />
+                        <span>Reserve {formatPercent(Number.isFinite(destination?.reservePercent) ? destination!.reservePercent : DEFAULT_RESERVE_PERCENT)} free</span>
+                      </button>
+                    {/if}
+                  </div>
+                </div>
 
-                  <div class="button-row">
-                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id)} disabled={!hasSourcePath(source)}>
-                      <FolderOpen size={14} strokeWidth={2} />
-                      <span>Open</span>
-                    </button>
+                <div class="storage-card-actions">
+                  <div class="button-row storage-card-actions-left">
+                    <ArmedActionButton
+                      class="panel-btn subtle compact icon-btn armed-icon-danger"
+                      icon={Trash2}
+                      text=""
+                      armed={true}
+                      autoDisarmMs={3000}
+                      title="Stop using this location here"
+                      ariaLabel="Stop using this location here"
+                      onPress={() => setHubLocationMode(volumeId, source.id, 'off')}
+                    />
                     <button
                       type="button"
                       class="panel-btn subtle compact"
@@ -3814,275 +6711,77 @@
                       title={hasSourcePath(source) ? 'Move this storage location without interrupting service' : 'Choose folder'}
                     >
                       <ArrowRightLeft size={14} strokeWidth={2} />
-                      <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move folder' : 'Choose folder'}</span>
+                      <span>{movingSourceId === source.id ? 'Moving...' : hasSourcePath(source) ? 'Move' : 'Choose folder'}</span>
                     </button>
-                    {#if canRemoveAnySource()}
-                      <ArmedActionButton
-                        class="panel-btn subtle compact danger"
-                        icon={Trash2}
-                        text="Remove"
-                        armed={true}
-                        autoDisarmMs={3000}
-                        onPress={() => removeSource(source.id)}
-                      />
-                    {/if}
                   </div>
-                </details>
 
-                <div class="fact-row">
-                  <span>{locationSummary(source)}</span>
+                  <div class="button-row storage-card-actions-right">
+                    <button type="button" class="panel-btn subtle compact" onclick={() => openSourceFolder(source.id, source.path)} disabled={!hasSourcePath(source)}>
+                      <FolderOpen size={14} strokeWidth={2} />
+                      <span>Open</span>
+                    </button>
+                  </div>
                 </div>
               </article>
             {/each}
-            {#each sourceSuggestionRows() as row (row.source.path)}
-              <article class="rule-card suggestion-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div class="card-icon" title={row.source.path}>
-                      <Search size={16} strokeWidth={2.1} />
-                    </div>
-                    <div title={row.source.path}>
-                      <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                      <h4>{compactPath(row.source.path)}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class="status-pill tone-muted">Found automatically</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
-
-                <div class="button-row">
-                  <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                    <Plus size={14} strokeWidth={2} />
-                    <span>Add location</span>
-                  </button>
-                  <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
-                    <span>Hide</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
-            <article class="rule-card add-card">
-              <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
-                <Plus size={20} strokeWidth={2.1} />
-              </button>
-              <div class="usage-main">
-                <p class="provider-label">Manual</p>
-                <h4>Add a folder</h4>
-              </div>
-              <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
-            </article>
           </div>
         </section>
+
+        {#each providerCatalog.filter((entry) => entry.isConnected && providerShowsIncomingShareSection(entry.provider) && (incomingProviderInvitesForProvider(entry.provider).length > 0 || incomingManagedSharesForProvider(entry.provider).length > 0)) as incomingProvider (incomingProvider.provider)}
+          <section class="panel-section provider-incoming-hub-wrap">
+            {@render incomingFromOthersSection(incomingProvider.provider, 'Incoming items')}
+          </section>
+        {/each}
+
+        {#if hubLocationDialogVolumeId === volumeId}
+          {@const availableSources = hubAvailableSources(volumeId)}
+          <AppDialog
+            ariaLabel="Add storage location"
+            eyebrow="Storage"
+            title="Add another location"
+            width="wide"
+            onClose={closeHubLocationDialog}
+          >
+            {#snippet body()}
+              {#if availableSources.length > 0}
+                <div class="rule-grid dialog-rule-grid">
+                  {#each availableSources as source (source.id)}
+                    {@const status = sourceStatus(source.id)}
+                    <article class="rule-card active">
+                      <div class="card-head">
+                        <div class="card-title">
+                          <div>
+                            <p class="provider-label">{sourceLocationKindLabel(source.provider)}</p>
+                            <h4>{sourceDisplayTitle(source)}</h4>
+                            <p class="card-path">{sourceLocationPath(source.path)}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="fact-row">
+                        {#if storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes)}
+                          <span>{storageMeasurementSummary(status?.usage.totalBytes, status?.availableBytes)}</span>
+                        {/if}
+                      </div>
+
+                      <div class="button-row inline-dialog-actions">
+                        <button type="button" class="panel-btn subtle compact" onclick={() => addSourceToHub(volumeId, source.id)}>
+                          <Plus size={14} strokeWidth={2} />
+                          <span>Add to this hub</span>
+                        </button>
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              {:else}
+                <article class="rule-card active">
+                  <p class="card-copy">You do not have any saved storage locations left to add here.</p>
+                </article>
+              {/if}
+            {/snippet}
+          </AppDialog>
         {/if}
 
-        {#if volumeView === 'folders'}
-        <section class="panel-section">
-          <div class="section-head">
-            <div>
-              <p class="section-step">Folders</p>
-              <h3>Machine-level folders</h3>
-              <p class="section-copy">Changes here affect every space on this device. Use this view when you want to add, move, or disable a local storage folder.</p>
-            </div>
-            <div class="section-metrics">
-              <span class="summary-pill">{countLabel(configDraft.sources.length, 'folder')} saved</span>
-              <span class="summary-pill" class:warning={!hasDurableDestination(null)}>{protectionSummary(null)}</span>
-            </div>
-          </div>
-
-          {#if discoveryError}
-            <p class="warning-copy">{discoveryError}</p>
-          {/if}
-
-          <div class="protection-banner" class:warning={!hasDurableDestination(null)}>
-            <Shield size={15} strokeWidth={2} />
-            <span>{protectionHint(null)}</span>
-          </div>
-
-          <div class="card-grid">
-            {#each configDraft.sources as source (source.id)}
-              {@const status = sourceStatus(source.id)}
-              {@const availability = locationAvailability(source)}
-              {@const writeState = locationWriteState(source)}
-              {@const defaultDestination = destinationFor(null, source.id)}
-              <article class="location-card" class:active={protectionTone(defaultDestination, source.id) === 'durable'}>
-                <div class="card-head">
-                  <div class="card-title">
-                    <div class="card-icon" title={source.path || 'No folder selected yet'}>
-                      <HardDrive size={16} strokeWidth={2.1} />
-                    </div>
-                    <div title={source.path || 'No folder selected yet'}>
-                      <p class="provider-label">{formatProvider(source.provider)}</p>
-                      <h4>{compactPath(source.path)}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class={`status-pill tone-${availability.tone}`}>{availability.label}</span>
-                    <span class={`status-pill tone-${writeState.tone}`}>{writeState.label}</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{locationSummary(source)}</p>
-
-                <div class="toggle-stack">
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={source.enabled}
-                      aria-label="Use this folder for reads"
-                      onchange={(event) => updateSourceField(source.id, 'enabled', (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Use for reads</span>
-                      <span class="toggle-copy">Read existing Nearbytes data from this folder.</span>
-                    </div>
-                  </label>
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={source.writable}
-                      aria-label="Save new data here"
-                      onchange={(event) => updateSourceField(source.id, 'writable', (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Save new data here</span>
-                      <span class="toggle-copy">Allow Nearbytes to write new encrypted data here.</span>
-                    </div>
-                  </label>
-                  <label class="inline-toggle compact-toggle-line">
-                    <input
-                      type="checkbox"
-                      checked={keepsFullCopy(defaultDestination)}
-                      aria-label="Use by default for new spaces"
-                      onchange={(event) => setKeepFullCopy(null, source.id, (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <div>
-                      <span class="toggle-title">Use by default for new spaces</span>
-                      <span class="toggle-copy">{copyHelpText(null, source)}</span>
-                    </div>
-                  </label>
-                </div>
-
-                <div class="fact-row">
-                  <span>{status?.availableBytes !== undefined ? `${formatSize(status.availableBytes)} free` : 'Free space unknown'}</span>
-                  <span>{usageSummary(source.id)}</span>
-                </div>
-
-                <details class="details-card inline-details">
-                  <summary>Advanced</summary>
-                  <div class="card-control-row">
-                    <label class="field-block compact-field" title="Minimum free space to leave on this drive. Default is 5%.">
-                      <span>Keep free</span>
-                      <select
-                        class="panel-input"
-                        value={String(sourceReservePercent(source))}
-                        onchange={(event) => {
-                          const nextValue = clampReserve((event.currentTarget as HTMLSelectElement).value);
-                          updateSourceField(source.id, 'reservePercent', nextValue);
-                          if (keepsFullCopy(defaultDestination)) {
-                            updateDestinationField(null, source.id, 'reservePercent', nextValue);
-                          }
-                        }}
-                      >
-                        {#each RESERVE_OPTIONS as option}
-                          <option value={option}>{formatPercent(option)}</option>
-                        {/each}
-                      </select>
-                    </label>
-
-                    <div class="button-row">
-                      {#if hasSourcePath(source)}
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => void moveSourceFolder(source.id)}
-                          disabled={movingSourceId === source.id || Boolean(source.moveFromSourceId) || hasPendingMove(source.id)}
-                          title="Move this storage location to a different folder without interrupting service"
-                        >
-                          <ArrowRightLeft size={14} strokeWidth={2} />
-                          <span>{movingSourceId === source.id ? 'Moving...' : 'Move folder'}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="panel-btn subtle compact"
-                          onclick={() => openSourceFolder(source.id)}
-                          title={source.path || 'Open folder'}
-                        >
-                          <FolderOpen size={14} strokeWidth={2} />
-                          <span>Open</span>
-                        </button>
-                      {:else}
-                        <button type="button" class="panel-btn subtle compact" onclick={() => chooseSourceFolder(source.id)}>
-                          <Search size={14} strokeWidth={2} />
-                          <span>Choose folder</span>
-                        </button>
-                      {/if}
-                      {#if canRemoveAnySource()}
-                        <ArmedActionButton
-                          class="panel-btn subtle compact danger"
-                          icon={Trash2}
-                          text="Remove"
-                          armed={true}
-                          autoDisarmMs={3000}
-                          onPress={() => removeSource(source.id)}
-                        />
-                      {/if}
-                    </div>
-                  </div>
-
-                  {#if status?.lastWriteFailure}
-                    <p class="warning-copy">Last write problem: {status.lastWriteFailure.message}</p>
-                  {/if}
-                </details>
-              </article>
-            {/each}
-            {#each sourceSuggestionRows() as row (row.source.path)}
-              <article class="location-card suggestion-card">
-                <div class="card-head">
-                  <div class="card-title">
-                    <div class="card-icon" title={row.source.path}>
-                      <Search size={16} strokeWidth={2.1} />
-                    </div>
-                    <div title={row.source.path}>
-                      <p class="provider-label">{formatProvider(row.source.provider)}</p>
-                      <h4>{compactPath(row.source.path)}</h4>
-                    </div>
-                  </div>
-                  <div class="card-status">
-                    <span class="status-pill tone-muted">Found automatically</span>
-                  </div>
-                </div>
-
-                <p class="card-copy">{sourceSuggestionCopy(row.source)}</p>
-
-                <div class="button-row">
-                  <button type="button" class="panel-btn subtle compact" onclick={() => addDiscoveredSource(row.source)}>
-                    <Plus size={14} strokeWidth={2} />
-                    <span>Use folder</span>
-                  </button>
-                  <button type="button" class="panel-btn subtle compact danger" onclick={() => dismissDiscovery(row.source)}>
-                    <span>Hide</span>
-                  </button>
-                </div>
-              </article>
-            {/each}
-
-            <article class="location-card add-card">
-              <button type="button" class="add-card-button" onclick={addSourceCard} title="Add a storage location manually">
-                <Plus size={20} strokeWidth={2.1} />
-              </button>
-              <div class="usage-main">
-                <p class="provider-label">Manual</p>
-                <h4>Add a folder</h4>
-              </div>
-              <p class="card-copy">Choose a folder yourself if Nearbytes did not find it automatically.</p>
-            </article>
-          </div>
-        </section>
-        {/if}
       {/if}
     {/if}
 
@@ -4091,94 +6790,126 @@
       {@const dialogDisconnectImpact = dialogProvider ? providerDisconnectImpact(dialogProvider.provider) : { shares: 0, spaces: 0, inaccessibleSpaces: [] }}
       {@const dialogAccount = dialogProvider ? connectedAccountForProvider(dialogProvider.provider) : null}
       {#if dialogProvider}
-        <div class="provider-dialog-backdrop" role="presentation" onclick={closeProviderConnectionDialog}></div>
-        <div class="provider-dialog" role="dialog" aria-modal="true" aria-label={`${dialogProvider.label} connection`}>
-          <div class="section-head compact provider-dialog-head">
-            <div>
-              <p class="section-step">Connection</p>
-              <h3>{dialogProvider.label}</h3>
-            </div>
-            <button type="button" class="panel-btn subtle compact" onclick={closeProviderConnectionDialog}>
-              <span>Close</span>
-            </button>
-          </div>
+        {@const dialogMegaReconnectIssue = dialogProvider.provider === 'mega' ? megaProviderReconnectIssue() : null}
+        <AppDialog
+          ariaLabel={`${dialogProvider.label} connection`}
+          eyebrow={dialogProvider.label}
+          title="Connection details"
+          width="wide"
+          onClose={closeProviderConnectionDialog}
+        >
+          {#snippet body()}
+            <div class="provider-dialog-grid">
+              <div class="provider-path-card">
+                <p class="subheading">Account</p>
+                <p class="provider-path-copy">{dialogAccount?.email ?? dialogAccount?.label ?? 'No account connected'}</p>
+              </div>
 
-          <div class="provider-dialog-grid">
-            <div class="provider-path-card">
-              <p class="subheading">Account</p>
-              <p class="provider-path-copy">{dialogAccount?.email ?? dialogAccount?.label ?? 'No account connected'}</p>
-            </div>
-
-            <div class="provider-path-card">
-              <p class="subheading">Mirror settings</p>
-              <div class="provider-fact-grid">
-                {#each providerTransparencyFacts(dialogProvider) as fact}
-                  <span class="provider-fact-chip">{fact}</span>
-                {/each}
+              <div class="provider-path-card">
+                <p class="subheading">Mirror settings</p>
+                <div class="provider-fact-list">
+                  {#each providerTransparencyFacts(dialogProvider) as fact}
+                    <p class="provider-story-copy">{fact}</p>
+                  {/each}
+                </div>
               </div>
             </div>
-          </div>
 
-          {#if providerMirrorPaths(dialogProvider).length > 0}
-            <div class="provider-dialog-path-list">
-              {#each providerMirrorPaths(dialogProvider) as mirrorPath}
-                <div class="provider-path-card">
-                  <p class="subheading">Local mirror folder</p>
-                  <p class="provider-path-copy">{mirrorPath}</p>
-                </div>
-              {/each}
-            </div>
-          {/if}
+            {#if providerMirrorPathEntries(dialogProvider).length > 0}
+              <div class="provider-dialog-path-list">
+                {#each providerMirrorPathEntries(dialogProvider) as mirrorEntry}
+                  <div class="provider-path-card">
+                    <p class="subheading">{mirrorEntry.heading}</p>
+                    <p class="provider-step-title">{mirrorEntry.title}</p>
+                    <p class="provider-path-copy">{mirrorEntry.path}</p>
+                  </div>
+                {/each}
+              </div>
+            {/if}
 
-          {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
-            <p class="panel-error">
-              {#if dialogDisconnectImpact.inaccessibleSpaces.length > 0}
-                Disconnecting {dialogProvider.label} will make {countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'space')} not accessible until you reconnect it.
+            {#if dialogMegaReconnectIssue}
+              <StatusNotice
+                tone="error"
+                role="alert"
+                compact={true}
+                message="Nearbytes cannot discover incoming MEGA shares until this MEGA account is recovered. If MEGA locked it, finish the unlock and password-change flow on mega.io first. Nearbytes will retry the saved sign-in automatically; reconnect here only if the credentials changed."
+              />
+            {/if}
+
+            {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.spaces > 0}
+              <StatusNotice
+                tone="error"
+                role="alert"
+                compact={true}
+                message={dialogDisconnectImpact.inaccessibleSpaces.length > 0
+                  ? `Disconnecting ${dialogProvider.label} will make ${countLabel(dialogDisconnectImpact.inaccessibleSpaces.length, 'hub')} not accessible until you reconnect it.`
+                  : `Disconnecting ${dialogProvider.label} will remove ${countLabel(dialogDisconnectImpact.shares, 'location')} from ${countLabel(dialogDisconnectImpact.spaces, 'hub')}, but those hubs will stay accessible.`}
+              />
+            {/if}
+
+            {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.inaccessibleSpaces.some((targetVolumeId) => knownVolumeLabel(targetVolumeId))}
+              <div class="fact-row share-volume-row">
+                {#each dialogDisconnectImpact.inaccessibleSpaces as targetVolumeId}
+                  {@const label = knownVolumeLabel(targetVolumeId)}
+                  {#if label}
+                    <button
+                      type="button"
+                      class="mini-pill mini-pill-button"
+                      onclick={() => onOpenVolumeRouting?.(targetVolumeId)}
+                    >
+                      {label}
+                    </button>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+
+            <div class="button-row provider-dialog-actions">
+              {#if dialogProvider.isConnected}
+                <button
+                  type="button"
+                  class={`panel-btn subtle compact ${providerDisconnectArmed[dialogProvider.provider] ? 'danger' : ''}`}
+                  onclick={async () => {
+                    if (providerDisconnectArmed[dialogProvider.provider]) {
+                      await disconnectProvider(dialogProvider);
+                      closeProviderConnectionDialog();
+                      return;
+                    }
+                    setProviderDisconnectArmed(dialogProvider.provider, true);
+                  }}
+                  disabled={integrationBusyKey === `disconnect:${dialogProvider.provider}`}
+                >
+                  {integrationBusyKey === `disconnect:${dialogProvider.provider}`
+                    ? 'Disconnecting...'
+                    : providerDisconnectArmed[dialogProvider.provider]
+                      ? 'Confirm disconnect'
+                      : dialogMegaReconnectIssue
+                        ? 'Disconnect to recover'
+                        : 'Disconnect'}
+                </button>
               {:else}
-                Disconnecting {dialogProvider.label} will remove {countLabel(dialogDisconnectImpact.shares, 'share')} from {countLabel(dialogDisconnectImpact.spaces, 'space')}, but those spaces will stay accessible.
+                <button
+                  type="button"
+                  class="panel-btn primary compact"
+                  onclick={() => void connectProvider(dialogProvider)}
+                  disabled={
+                    integrationBusyKey === `connect:${dialogProvider.provider}` ||
+                    dialogProvider.setup.status === 'needs-config' ||
+                    dialogProvider.setup.status === 'unsupported'
+                  }
+                >
+                  <span>
+                    {integrationBusyKey === `connect:${dialogProvider.provider}`
+                      ? dialogProvider.setup.status === 'needs-install'
+                        ? 'Installing...'
+                        : 'Connecting...'
+                      : 'Connect'}
+                  </span>
+                </button>
               {/if}
-            </p>
-          {/if}
-
-          {#if dialogProvider.isConnected && providerDisconnectArmed[dialogProvider.provider] && dialogDisconnectImpact.inaccessibleSpaces.some((targetVolumeId) => knownVolumeLabel(targetVolumeId))}
-            <div class="fact-row share-volume-row">
-              {#each dialogDisconnectImpact.inaccessibleSpaces as targetVolumeId}
-                {@const label = knownVolumeLabel(targetVolumeId)}
-                {#if label}
-                  <button
-                    type="button"
-                    class="mini-pill mini-pill-button"
-                    onclick={() => onOpenVolumeRouting?.(targetVolumeId)}
-                  >
-                    {label}
-                  </button>
-                {/if}
-              {/each}
             </div>
-          {/if}
-
-          <div class="button-row provider-dialog-actions">
-            <button
-              type="button"
-              class={`status-pill status-pill-button ${providerDisconnectArmed[dialogProvider.provider] ? 'tone-danger' : 'tone-good'}`}
-              onclick={async () => {
-                if (providerDisconnectArmed[dialogProvider.provider]) {
-                  await disconnectProvider(dialogProvider);
-                  closeProviderConnectionDialog();
-                  return;
-                }
-                setProviderDisconnectArmed(dialogProvider.provider, true);
-              }}
-              disabled={integrationBusyKey === `disconnect:${dialogProvider.provider}`}
-            >
-              {integrationBusyKey === `disconnect:${dialogProvider.provider}`
-                ? 'Disconnecting...'
-                : providerDisconnectArmed[dialogProvider.provider]
-                  ? 'Confirm disconnect'
-                  : 'Connected'}
-            </button>
-          </div>
-        </div>
+          {/snippet}
+        </AppDialog>
       {/if}
     {/if}
   </section>
@@ -4186,27 +6917,27 @@
 
 <style>
   .storage-panel {
-    --panel-border: var(--nb-border, rgba(111, 173, 252, 0.18));
-    --panel-soft-border: color-mix(in srgb, var(--nb-border, rgba(111, 173, 252, 0.18)) 70%, transparent);
-    --panel-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.88));
-    --card-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.82));
-    --card-bg-strong: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(248, 236, 227, 0.92));
-    --text-main: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-    --text-soft: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
-    --text-faint: var(--nb-text-faint, rgba(110, 110, 115, 0.62));
-    --teal: color-mix(in srgb, var(--nb-success, #6aa975) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
-    --warn: color-mix(in srgb, var(--nb-warning, #d4945f) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
-    --danger: color-mix(in srgb, var(--nb-danger, #c86a6a) 86%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    --panel-border: var(--nb-border, rgba(0, 0, 0, 0.10));
+    --panel-soft-border: color-mix(in srgb, var(--nb-border, rgba(0, 0, 0, 0.10)) 70%, transparent);
+    --panel-bg: var(--nb-panel-bg, #ffffff);
+    --card-bg: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(245, 245, 247, 0.9));
+    --card-bg-strong: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(240, 240, 245, 0.94));
+    --text-main: var(--nb-text-main, rgba(0, 0, 0, 0.88));
+    --text-soft: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
+    --text-faint: var(--nb-text-faint, rgba(60, 60, 67, 0.36));
+    --teal: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 52%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
+    --warn: color-mix(in srgb, var(--nb-warning, #FF9500) 78%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
+    --danger: color-mix(in srgb, var(--nb-danger, #FF3B30) 82%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
     display: grid;
-    gap: 0.85rem;
+    gap: 1.25rem;
     width: 100%;
     min-height: 0;
-    padding: 0.9rem;
+    padding: 1.5rem;
     overflow: auto;
     border: 1px solid var(--panel-border);
-    border-radius: 22px;
+    border-radius: 16px;
     background: var(--panel-bg);
-    box-shadow: 0 18px 40px rgba(93, 56, 34, 0.08);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   }
 
   .section-head,
@@ -4221,7 +6952,7 @@
   .usage-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.75rem;
+    gap: 1rem;
     align-items: center;
   }
 
@@ -4232,78 +6963,261 @@
   }
 
   .toolbar-row {
-    margin-bottom: 0.15rem;
+    margin-bottom: 0.25rem;
   }
 
-  .overview-grid {
+  .storage-shell-intro,
+  .storage-shell-copy,
+  .section-stack,
+  .section-copy-stack,
+  .provider-overview-grid,
+  .setup-guidance-grid,
+  .hub-mode-panel,
+  .hub-mode-summary,
+  .mega-inline-status-grid {
     display: grid;
-    gap: 0.75rem;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   }
 
-  .overview-card {
+  .storage-shell-intro {
+    gap: 1.1rem;
+    padding: 0.25rem 0 0.35rem;
+  }
+
+  .storage-shell-intro-volume {
+    padding-top: 0;
+  }
+
+  .storage-shell-copy {
+    gap: 0.5rem;
+    max-width: 68ch;
+  }
+
+  .storage-shell-title,
+  .storage-shell-note,
+  .provider-choice-copy,
+  .provider-choice-detail,
+  .provider-overview-value {
+    margin: 0;
+  }
+
+  .storage-shell-title {
+    color: var(--text-main);
+    font-size: 1.25rem;
+    line-height: 1.3;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .storage-shell-note {
+    color: var(--text-soft);
+    font-size: 0.85rem;
+    line-height: 1.55;
+  }
+
+  .storage-shell-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .provider-choice-grid {
     display: grid;
-    text-align: left;
-    gap: 0.35rem;
-    padding: 0.82rem;
-    border-radius: 16px;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+
+  .provider-choice-card {
+    display: grid;
+    gap: 0.5rem;
+    padding: 1.1rem;
+    border-radius: 12px;
     border: 1px solid var(--panel-soft-border);
     background: var(--card-bg);
-  }
-
-  .tab-card {
-    cursor: pointer;
-    transition:
-      transform 120ms ease,
-      border-color 120ms ease,
-      background 120ms ease,
-      box-shadow 120ms ease;
-  }
-
-  .tab-card:hover {
-    transform: translateY(-1px);
-    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
-    background: color-mix(in srgb, var(--card-bg) 92%, rgba(255, 249, 245, 0.92));
-  }
-
-  .tab-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--card-bg-strong) 95%, rgba(255, 255, 255, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 74%, rgba(210, 122, 84, 0.08));
-  }
-
-  .tab-card-shell {
-    padding: 0;
-    overflow: hidden;
-  }
-
-  .tab-card-select {
-    width: 100%;
-    display: grid;
-    gap: 0.35rem;
-    padding: 0.82rem;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.04),
+      0 1px 2px rgba(0, 0, 0, 0.02);
     text-align: left;
+    font: inherit;
     cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
   }
 
-  .tab-card-meta {
-    display: grid;
-    gap: 0.52rem;
-    padding: 0 0.82rem 0.72rem;
-    border-top: 1px solid var(--panel-soft-border);
+  .provider-choice-card:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--card-bg) 96%, rgba(245, 243, 240, 0.94));
+    box-shadow:
+      0 4px 12px rgba(0, 0, 0, 0.06),
+      0 1px 3px rgba(0, 0, 0, 0.03);
   }
 
-  .tab-card-actions {
-    margin-top: 0.05rem;
+  .provider-choice-card.active {
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--card-bg-strong) 96%, rgba(245, 243, 240, 0.94));
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.04),
+      0 1px 2px rgba(0, 0, 0, 0.02);
   }
 
-  .provider-section-meta {
-    display: grid;
+  .provider-choice-card:disabled {
+    opacity: 0.62;
+    cursor: default;
+    transform: none;
+  }
+
+  .provider-choice-eyebrow {
+    color: var(--text-soft);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .provider-choice-head {
+    display: flex;
+    gap: 0.55rem;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .provider-choice-title {
+    color: var(--text-main);
+    font-size: 0.95rem;
+    line-height: 1.35;
+    font-weight: 600;
+  }
+
+  .provider-choice-copy {
+    color: var(--text-main);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+
+  .provider-choice-detail {
+    color: var(--text-soft);
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+
+  .section-stack {
+    gap: 1rem;
+  }
+
+  .section-stack-secondary {
+    padding-top: 0.5rem;
+    border-top: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 75%, transparent);
+  }
+
+  .section-copy-stack {
+    gap: 0.35rem;
+  }
+
+  .provider-overview-grid,
+  .setup-guidance-grid,
+  .mega-inline-status-grid {
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+
+  .setup-guidance-card {
+    gap: 0.28rem;
+    padding: 0.78rem 0.82rem;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
+  }
+
+  .provider-overview-value {
+    color: var(--text-main);
+    font-size: 0.96rem;
+    line-height: 1.3;
+    font-weight: 700;
+  }
+
+  .hub-mode-panel {
     gap: 0.62rem;
+  }
+
+  .provider-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.62rem;
+    align-items: stretch;
+  }
+
+  .provider-tab {
+    min-height: 60px;
+    min-width: 160px;
+    padding: 0.9rem 1rem;
+    border-radius: 12px;
+    border: 1px solid var(--panel-soft-border);
+    background: var(--card-bg);
+    color: var(--text-main);
+    display: grid;
+    align-content: center;
+    gap: 0.16rem;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+  }
+
+  .provider-tab:hover {
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 12%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--card-bg) 96%, rgba(255, 252, 249, 0.92));
+  }
+
+  .provider-tab.active {
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--card-bg-strong) 96%, rgba(255, 255, 255, 0.92));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(0, 0, 0, 0.03));
+  }
+
+  .provider-tab-label {
+    font-size: 0.86rem;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .provider-tab-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.42rem;
+  }
+
+  .provider-tab-loading {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    min-height: 20px;
+    padding: 0.08rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
+    color: var(--text-soft);
+    font-size: 0.67rem;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: 0.01em;
+  }
+
+  .provider-tab-spinner {
+    width: 0.72rem;
+    height: 0.72rem;
+    border-radius: 999px;
+    border: 2px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 28%, transparent);
+    border-top-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 82%, var(--text-main));
+    animation: provider-tab-spin 0.72s linear infinite;
+  }
+
+  .provider-tab-copy {
+    color: var(--text-soft);
+    font-size: 0.75rem;
+    line-height: 1.2;
   }
 
   .provider-dialog-backdrop {
@@ -4322,9 +7236,9 @@
     max-height: min(78vh, 720px);
     overflow: auto;
     display: grid;
-    gap: 0.82rem;
-    padding: 0.95rem;
-    border-radius: 20px;
+    gap: 1.1rem;
+    padding: 1.5rem;
+    border-radius: 16px;
     border: 1px solid var(--panel-soft-border);
     background: var(--panel-bg);
     box-shadow: 0 24px 60px rgba(93, 56, 34, 0.16);
@@ -4338,7 +7252,19 @@
   .provider-dialog-grid,
   .provider-dialog-path-list {
     display: grid;
-    gap: 0.72rem;
+    gap: 1rem;
+  }
+
+  .section-actions,
+  .inline-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem;
+  }
+
+  .dialog-rule-grid {
+    margin-top: 0.15rem;
   }
 
   .provider-dialog-grid {
@@ -4347,6 +7273,37 @@
 
   .provider-dialog-actions {
     justify-content: flex-end;
+  }
+
+  .global-panel-head {
+    gap: 0.9rem;
+  }
+
+  .global-panel-head-actions {
+    justify-content: flex-end;
+  }
+
+  .compact-panel-actions {
+    gap: 0.5rem;
+    justify-content: flex-end;
+  }
+
+  .provider-create-inline {
+    display: inline-grid;
+    grid-template-columns: minmax(160px, 220px) auto auto;
+    gap: 0.45rem;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .provider-create-inline-input {
+    min-width: 0;
+    height: 30px;
+    padding-block: 0.2rem;
+  }
+
+  .compact-provider-card {
+    padding: 0.76rem 0.82rem;
   }
 
   .section-head > div:first-child,
@@ -4361,10 +7318,11 @@
   .provider-label,
   .scan-group-title {
     margin: 0;
-    font-size: 0.7rem;
-    letter-spacing: 0.14em;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
+    font-weight: 600;
+    color: var(--text-soft);
   }
 
   h3,
@@ -4377,8 +7335,7 @@
   .scan-note,
   .scan-path,
   .muted-copy,
-  .warning-copy,
-  .mono-copy {
+  .warning-copy {
     margin: 0;
   }
 
@@ -4388,12 +7345,44 @@
   }
 
   h3 {
-    font-size: 0.96rem;
-    line-height: 1.35;
+    font-size: 1rem;
+    line-height: 1.4;
   }
 
   h4 {
-    font-size: 0.92rem;
+    font-size: 0.95rem;
+  }
+
+  .storage-title-link {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .storage-title-link:hover .storage-title-link-text {
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, transparent);
+  }
+
+  .storage-title-link-text {
+    display: block;
+    color: var(--text-main);
+    font-size: 0.95rem;
+    line-height: 1.3;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  .card-path {
+    margin: 0.3rem 0 0;
+    color: var(--text-soft);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    word-break: break-word;
   }
 
   .hero-text,
@@ -4405,8 +7394,8 @@
   .scan-path,
   .muted-copy {
     color: var(--text-soft);
-    font-size: 0.8rem;
-    line-height: 1.4;
+    font-size: 0.84rem;
+    line-height: 1.5;
   }
 
   .warning-copy {
@@ -4415,37 +7404,28 @@
     line-height: 1.4;
   }
 
-  .mono-copy {
-    font-family: 'Monaco', 'Menlo', monospace;
-    font-size: 0.75rem;
-    color: var(--text-soft);
-    word-break: break-all;
-  }
-
   .panel-section,
-  .details-card,
   .location-card,
   .rule-card,
   .scan-card,
   .scan-group {
     display: grid;
-    gap: 0.75rem;
+    gap: 1rem;
     min-width: 0;
-    border-radius: 16px;
+    border-radius: 12px;
     border: 1px solid var(--panel-soft-border);
     background: var(--card-bg);
   }
 
-  .panel-section,
-  .details-card {
-    padding: 0.82rem;
+  .panel-section {
+    padding: 1.1rem;
   }
 
   .location-card,
   .rule-card,
   .scan-card,
   .scan-group {
-    padding: 0.85rem;
+    padding: 1.1rem;
   }
 
   .card-grid,
@@ -4453,7 +7433,7 @@
   .scan-card-list,
   .scan-group-list {
     display: grid;
-    gap: 0.75rem;
+    gap: 1rem;
   }
 
   .card-grid,
@@ -4468,9 +7448,9 @@
 
   .location-card.active,
   .rule-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--card-bg-strong) 95%, rgba(255, 255, 255, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 74%, rgba(210, 122, 84, 0.08));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--card-bg-strong) 95%, rgba(245, 243, 240, 0.92));
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   }
 
   .card-title {
@@ -4484,7 +7464,6 @@
   .card-title > div,
   .card-head,
   .card-status,
-  .inline-toggle > div,
   .usage-main,
   .field-block {
     min-width: 0;
@@ -4497,7 +7476,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.9));
     color: var(--text-soft);
   }
@@ -4514,7 +7493,7 @@
     max-width: 100%;
     padding: 0.22rem 1.08rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
     color: var(--text-main);
     font-size: 0.7rem;
@@ -4538,29 +7517,17 @@
 
   .mini-pill-button:hover {
     transform: translateY(-1px);
-    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
+    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #7c6f64) 8%));
     background: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%));
     color: var(--nb-btn-hover-color, rgba(28, 28, 30, 0.96));
   }
 
-  .status-pill-button {
-    cursor: pointer;
-    font: inherit;
-    transition:
-      border-color 120ms ease,
-      background 120ms ease,
-      color 120ms ease,
-      transform 120ms ease;
-  }
-
-  .status-pill-button:hover:not(:disabled) {
-    transform: translateY(-1px);
-  }
-
-  .status-pill-button:disabled {
-    opacity: 0.55;
-    cursor: default;
-    transform: none;
+  .mini-pill-metric {
+    margin-left: 0.42rem;
+    color: var(--text-main);
+    font-size: 0.68rem;
+    font-weight: 700;
+    opacity: 0.9;
   }
 
   .summary-pill.warning,
@@ -4572,8 +7539,8 @@
 
   .status-pill.tone-good,
   .status-pill.tone-durable {
-    border-color: color-mix(in srgb, var(--nb-success, rgba(45, 212, 191, 0.28)) 62%, transparent);
-    background: color-mix(in srgb, var(--nb-success-surface, rgba(9, 58, 58, 0.42)) 90%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, rgba(60, 60, 67, 0.12));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.92));
     color: var(--teal);
   }
 
@@ -4587,15 +7554,15 @@
   .status-pill.tone-replica,
   .status-pill.tone-off,
   .mini-pill {
-    border-color: color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border-color: color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
     color: var(--text-soft);
   }
 
   .panel-btn,
   :global(.panel-btn) {
-    min-height: 34px;
-    border-radius: 12px;
+    min-height: 36px;
+    border-radius: 8px;
     border: 1px solid var(--nb-btn-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 80%, transparent));
     background: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
     color: var(--nb-btn-color, rgba(70, 70, 73, 0.94));
@@ -4603,8 +7570,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.48rem;
-    font-size: 0.79rem;
+    gap: 0.5rem;
+    font-size: 0.82rem;
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -4616,7 +7583,7 @@
   .panel-btn:hover,
   :global(.panel-btn:hover) {
     transform: translateY(-1px);
-    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
+    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #7c6f64) 8%));
     background: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%));
     color: var(--nb-btn-hover-color, rgba(28, 28, 30, 0.96));
   }
@@ -4631,14 +7598,14 @@
   .panel-btn.primary,
   :global(.panel-btn.primary) {
     background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92)));
-    border-color: var(--nb-btn-active-border, color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12))));
+    border-color: var(--nb-btn-active-border, color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, var(--nb-border, rgba(60, 60, 67, 0.12))));
     color: var(--nb-btn-active-color, rgba(28, 28, 30, 0.96));
-    box-shadow: var(--nb-btn-active-shadow, 0 1px 2px rgba(82, 53, 33, 0.05));
+    box-shadow: var(--nb-btn-active-shadow, 0 1px 2px rgba(0, 0, 0, 0.03));
   }
 
   .panel-btn.subtle,
   :global(.panel-btn.subtle) {
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.88));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(245, 243, 240, 0.88));
   }
 
   .panel-btn.compact,
@@ -4657,6 +7624,18 @@
   .panel-btn.danger,
   :global(.panel-btn.danger) {
     border-color: var(--nb-btn-danger-border, color-mix(in srgb, var(--nb-danger, #c86a6a) 22%, transparent));
+    color: var(--nb-btn-danger-color, rgba(166, 63, 63, 0.94));
+  }
+
+  .panel-btn.armed-icon-danger,
+  :global(.panel-btn.armed-icon-danger) {
+    color: var(--nb-btn-color, rgba(70, 70, 73, 0.94));
+  }
+
+  .panel-btn.armed-icon-danger.armed,
+  :global(.panel-btn.armed-icon-danger.armed) {
+    border-color: var(--nb-btn-danger-border, color-mix(in srgb, var(--nb-danger, #c86a6a) 22%, transparent));
+    background: color-mix(in srgb, var(--nb-danger-surface, rgba(254, 202, 202, 0.12)) 84%, rgba(255, 248, 247, 0.96));
     color: var(--nb-btn-danger-color, rgba(166, 63, 63, 0.94));
   }
 
@@ -4681,20 +7660,67 @@
 
   .panel-success {
     color: var(--teal);
-    border: 1px solid color-mix(in srgb, var(--nb-success, #6aa975) 24%, transparent);
-    background: color-mix(in srgb, var(--nb-success-surface, rgba(134, 239, 172, 0.12)) 84%, rgba(247, 252, 248, 0.96));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
   }
 
   .protection-banner {
     color: var(--teal);
-    border: 1px solid color-mix(in srgb, var(--nb-success, #6aa975) 20%, transparent);
-    background: color-mix(in srgb, var(--nb-success-surface, rgba(134, 239, 172, 0.12)) 78%, rgba(247, 252, 248, 0.96));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.9));
   }
 
   .protection-banner.warning {
     color: var(--warn);
     border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 24%, transparent);
     background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 82%, rgba(255, 250, 245, 0.96));
+  }
+
+  .mega-toast-region {
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .mega-toast {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.8rem;
+    align-items: center;
+    padding: 0.82rem 0.9rem;
+    border-radius: 16px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(0, 0, 0, 0.03));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(250, 246, 243, 0.94)), color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 240, 234, 0.92))),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #7c6f64) 10%, transparent), transparent 62%);
+  }
+
+  .mega-toast[data-tone='warn'] {
+    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 32%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, rgba(255, 250, 245, 0.98) 92%, rgba(253, 230, 138, 0.12)), color-mix(in srgb, rgba(255, 248, 242, 0.96) 90%, rgba(253, 230, 138, 0.16))),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-warning, #d4945f) 10%, transparent), transparent 58%);
+  }
+
+  .mega-toast-copy {
+    display: grid;
+    gap: 0.22rem;
+    min-width: 0;
+  }
+
+  .mega-toast-title {
+    margin: 0;
+    color: var(--text-main);
+    font-size: 0.92rem;
+    line-height: 1.3;
+    font-weight: 650;
+  }
+
+  .mega-toast-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .toggle-list,
@@ -4704,9 +7730,47 @@
     gap: 0.68rem;
   }
 
-  .toggle-stack {
+  .setting-list {
     display: grid;
-    gap: 0.55rem;
+    gap: 0.42rem;
+  }
+
+  .compact-toggle-row {
+    display: flex;
+    gap: 0.4rem;
+    justify-content: flex-start;
+  }
+
+  .setting-list-preface {
+    margin: 0 0 0.25rem;
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+
+  .provider-incoming-section {
+    display: grid;
+    gap: 0.65rem;
+    margin-top: 0.75rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 75%, transparent);
+  }
+
+  .provider-incoming-hub-wrap .provider-incoming-section {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+  }
+
+  .setting-row {
+    min-height: 36px;
+    padding: 0.48rem 0.06rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: center;
+    color: var(--text-main);
+    font-size: 0.79rem;
+    font-weight: 600;
   }
 
   .card-control-row {
@@ -4726,39 +7790,6 @@
     max-width: 148px;
   }
 
-  .inline-toggle {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.55rem;
-    align-items: start;
-  }
-
-  .inline-toggle input {
-    margin-top: 0.22rem;
-    width: 17px;
-    height: 17px;
-    accent-color: var(--nb-accent-strong, #8f6a3b);
-  }
-
-  .inline-toggle > div {
-    display: grid;
-    gap: 0.12rem;
-  }
-
-  .compact-toggle-line {
-    padding: 0.68rem 0.74rem;
-    border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
-  }
-
-  .toggle-title {
-    color: var(--text-main);
-    font-size: 0.82rem;
-    font-weight: 600;
-  }
-
-  .toggle-copy,
   .fact-row,
   .usage-meta,
   .subheading {
@@ -4771,9 +7802,92 @@
     gap: 0.5rem 1rem;
   }
 
+  .share-volume-row {
+    margin-top: 0.48rem;
+    justify-content: flex-start;
+    align-items: flex-start;
+    gap: 0.45rem;
+  }
+
+  .card-inline-warning {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    align-items: center;
+    justify-content: space-between;
+  }
+
   .fact-row span {
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+
+  .inline-reserve-slot {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .inline-reserve-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    justify-content: center;
+    min-height: 30px;
+    padding: 0.28rem 0.78rem;
+    border-radius: 999px;
+    border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
+    background: var(--nb-panel-bg, #ffffff);
+    color: var(--nb-accent-strong, #5d524a);
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease,
+      box-shadow 120ms ease,
+      transform 120ms ease;
+  }
+
+  .inline-reserve-button:hover {
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 24%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 4%, var(--nb-panel-bg, #ffffff));
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    transform: translateY(-1px);
+  }
+
+  .meta-reserve-btn {
+    all: unset;
+    cursor: pointer;
+    color: var(--text-soft);
+    font-size: 0.75rem;
+    opacity: 0.85;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+  }
+  .meta-reserve-btn:hover {
+    opacity: 1;
+    color: var(--accent);
+  }
+
+  .inline-reserve-editor {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-soft);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .inline-reserve-select {
+    min-width: 86px;
+    height: 30px;
+    padding-block: 0.15rem;
+    padding-inline: 0.55rem 1.7rem;
+    border-radius: 999px;
   }
 
   .subheading {
@@ -4788,14 +7902,57 @@
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   }
 
-  .managed-share-invite-row {
+  .storage-card-actions {
+    width: 100%;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 0.75rem;
+  }
+
+  .storage-card-actions-left {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .storage-card-actions-right {
+    min-width: 0;
+    align-items: center;
+  }
+
+  .storage-card-actions-right {
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+
+  .storage-card-actions-left,
+  .storage-card-actions-right {
+    width: 100%;
+  }
+
+  .storage-card-actions .button-row > :global(*),
+  .storage-card-actions .button-row > * {
+    min-width: 0;
+  }
+
+  .compact-visible-fields {
+    margin-top: -0.05rem;
+  }
+
+  .managed-share-invite-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 180px) auto;
     gap: 0.65rem;
     align-items: end;
   }
 
   .managed-share-invite-field {
+    min-width: 0;
+  }
+
+  .managed-share-invite-access {
     min-width: 0;
   }
 
@@ -4811,16 +7968,16 @@
     gap: 0.35rem;
     padding: 0.76rem 0.82rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
   }
 
   .onboarding-note-card {
     gap: 0.65rem;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 16%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background:
       linear-gradient(180deg, color-mix(in srgb, var(--card-bg-strong) 94%, rgba(255, 250, 246, 0.96)), color-mix(in srgb, var(--card-bg) 98%, rgba(249, 244, 240, 0.88))),
-      radial-gradient(circle at top left, color-mix(in srgb, var(--nb-accent, #d27a54) 10%, transparent), transparent 58%);
+      radial-gradient(circle at top left, color-mix(in srgb, var(--nb-accent, #7c6f64) 10%, transparent), transparent 58%);
   }
 
   .section-head.compact {
@@ -4836,10 +7993,25 @@
     gap: 0.42rem;
   }
 
+  .managed-share-members-inline {
+    gap: 0.34rem;
+  }
+
   .managed-share-members-list {
     display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
+  }
+
+  .managed-share-invite-row-compact {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+
+  @media (max-width: 720px) {
+    .managed-share-invite-row {
+      grid-template-columns: 1fr;
+    }
   }
 
   .provider-credentials {
@@ -4850,24 +8022,92 @@
 
   .mega-onboarding-card {
     gap: 0.9rem;
-    padding: 0.88rem 0.92rem;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--card-bg-strong) 95%, rgba(255, 251, 247, 0.96)), color-mix(in srgb, var(--card-bg) 98%, rgba(249, 244, 240, 0.88))),
-      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent, #d27a54) 10%, transparent), transparent 56%);
+    padding: 0.82rem 0.88rem;
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 12%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.88));
+  }
+
+  .mega-account-card-actions {
+    justify-content: flex-start;
+  }
+
+  .mega-share-grid {
+    display: grid;
+    gap: 0.9rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mega-share-grid > .compact-share-item {
+    width: 100%;
+    max-width: 560px;
+    flex-basis: 560px;
+  }
+
+  .mega-command-metrics,
+  .mega-automation-note-grid {
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .mega-metric-card {
+    display: grid;
+    gap: 0.32rem;
+    min-width: 0;
+    padding: 0.8rem 0.82rem;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(251, 247, 244, 0.9));
+    text-align: left;
+    cursor: pointer;
+    transition:
+      transform 140ms ease,
+      border-color 140ms ease,
+      background 140ms ease;
+  }
+
+  .mega-metric-card:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
+  }
+
+  .mega-metric-value {
+    color: var(--text-main);
+    font-size: 0.95rem;
+    line-height: 1.3;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+
+  .mega-metric-detail,
+  .mega-metric-pending {
+    color: var(--text-soft);
+    font-size: 0.76rem;
+    line-height: 1.4;
+  }
+
+  .mega-metric-pending {
+    margin-left: 0.35rem;
+    font-weight: 600;
+  }
+
+  .mega-command-actions {
+    gap: 0.55rem;
+    align-items: center;
+  }
+
+  .mega-note-card {
+    min-height: 100%;
   }
 
   .mega-onboarding-head {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.72rem;
-    justify-content: space-between;
-    align-items: start;
+    display: grid;
+    gap: 0.28rem;
   }
 
-  .mega-onboarding-head > div {
-    display: grid;
-    gap: 0.22rem;
+  .compact-mode-copy {
+    margin: 0;
   }
 
   .mega-onboarding-actions {
@@ -4884,7 +8124,7 @@
     gap: 0.22rem;
     padding: 0.22rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
   }
 
@@ -4914,16 +8154,16 @@
   .segmented-toggle-btn.active {
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.94));
     color: var(--text-main);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, var(--nb-border, rgba(60, 60, 67, 0.12)));
   }
 
   .provider-flow-status {
     display: grid;
     gap: 0.25rem;
-    padding: 0.7rem 0.85rem;
+    padding: 0.62rem 0.78rem;
     border-radius: 0.8rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(249, 244, 240, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(249, 244, 240, 0.8));
   }
 
   .provider-story-card,
@@ -4932,9 +8172,184 @@
     gap: 0.65rem;
     padding: 0.82rem 0.9rem;
     border-radius: 0.9rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
   }
+
+  .mega-helper-card {
+    gap: 0.32rem;
+  }
+
+  .mega-runtime-log-card,
+  .mega-runtime-log-entry,
+  .mega-runtime-log-list {
+    gap: 0.48rem;
+  }
+
+  .mega-runtime-log-layout {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2fr);
+    align-items: start;
+  }
+
+  .mega-runtime-log-header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .mega-runtime-log-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .mega-runtime-log-toolbar {
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .mega-runtime-log-search {
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .mega-runtime-log-toggle-row {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .mega-runtime-log-tab {
+    display: grid;
+    gap: 0.22rem;
+    width: 100%;
+    text-align: left;
+    padding: 0.65rem 0.72rem;
+    border-radius: 0.78rem;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.84));
+    cursor: pointer;
+    transition:
+      border-color 120ms ease,
+      transform 120ms ease,
+      background 120ms ease;
+  }
+
+  .mega-runtime-log-tab:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+  }
+
+  .mega-runtime-log-tab.active {
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 22%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 236, 227, 0.92));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #7c6f64) 12%, transparent);
+  }
+
+  .mega-runtime-log-tab-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text-main);
+  }
+
+  .mega-runtime-log-tab-meta {
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--text-faint);
+    word-break: break-word;
+  }
+
+  .mega-runtime-log-entry-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .mega-status-headline {
+    color: var(--text-main);
+    font-size: 0.84rem;
+    font-weight: 640;
+  }
+
+  .mega-log-view {
+    margin: 0;
+    padding: 0.55rem 0.62rem;
+    border-radius: 0.62rem;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(248, 243, 239, 0.8));
+    color: var(--text-soft);
+    font-size: 0.71rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 180px;
+    overflow: auto;
+    font-family: var(--nb-font-mono, 'SF Mono', 'Cascadia Code', Consolas, monospace);
+  }
+
+  .mega-log-view.wrap {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .mega-log-view-large {
+    min-height: 280px;
+    max-height: 520px;
+    white-space: pre;
+    word-break: normal;
+  }
+
+  .mega-log-view :global(.ansi-bold) {
+    font-weight: 700;
+  }
+
+  .mega-log-view :global(.ansi-dim) {
+    opacity: 0.72;
+  }
+
+  .mega-log-view :global(.ansi-fg-0) { color: #1f2937; }
+  .mega-log-view :global(.ansi-fg-1) { color: #b42318; }
+  .mega-log-view :global(.ansi-fg-2) { color: #18794e; }
+  .mega-log-view :global(.ansi-fg-3) { color: #9a6700; }
+  .mega-log-view :global(.ansi-fg-4) { color: #175cd3; }
+  .mega-log-view :global(.ansi-fg-5) { color: #a23dad; }
+  .mega-log-view :global(.ansi-fg-6) { color: #0f766e; }
+  .mega-log-view :global(.ansi-fg-7) { color: #6b7280; }
+
+  .mega-log-view :global(.ansi-fg-bright-0) { color: #4b5563; }
+  .mega-log-view :global(.ansi-fg-bright-1) { color: #dc2626; }
+  .mega-log-view :global(.ansi-fg-bright-2) { color: #16a34a; }
+  .mega-log-view :global(.ansi-fg-bright-3) { color: #ca8a04; }
+  .mega-log-view :global(.ansi-fg-bright-4) { color: #2563eb; }
+  .mega-log-view :global(.ansi-fg-bright-5) { color: #c026d3; }
+  .mega-log-view :global(.ansi-fg-bright-6) { color: #0891b2; }
+  .mega-log-view :global(.ansi-fg-bright-7) { color: #9ca3af; }
+
+  .mega-log-view :global(.ansi-bg-0) { background: rgba(31, 41, 55, 0.12); }
+  .mega-log-view :global(.ansi-bg-1) { background: rgba(180, 35, 24, 0.12); }
+  .mega-log-view :global(.ansi-bg-2) { background: rgba(24, 121, 78, 0.12); }
+  .mega-log-view :global(.ansi-bg-3) { background: rgba(154, 103, 0, 0.12); }
+  .mega-log-view :global(.ansi-bg-4) { background: rgba(23, 92, 211, 0.12); }
+  .mega-log-view :global(.ansi-bg-5) { background: rgba(162, 61, 173, 0.12); }
+  .mega-log-view :global(.ansi-bg-6) { background: rgba(15, 118, 110, 0.12); }
+  .mega-log-view :global(.ansi-bg-7) { background: rgba(107, 114, 128, 0.12); }
+
+  .mega-log-view :global(.ansi-bg-bright-0) { background: rgba(75, 85, 99, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-1) { background: rgba(220, 38, 38, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-2) { background: rgba(22, 163, 74, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-3) { background: rgba(202, 138, 4, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-4) { background: rgba(37, 99, 235, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-5) { background: rgba(192, 38, 211, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-6) { background: rgba(8, 145, 178, 0.12); }
+  .mega-log-view :global(.ansi-bg-bright-7) { background: rgba(156, 163, 175, 0.12); }
 
   .managed-share-story-card.compact {
     padding: 0.74rem 0.82rem;
@@ -4950,45 +8365,15 @@
     color: var(--text-soft);
   }
 
-  .provider-fact-grid,
   .managed-share-fact-grid {
     display: flex;
     flex-wrap: wrap;
     gap: 0.42rem;
   }
 
-  .provider-fact-chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 28px;
-    padding: 0.28rem 0.62rem;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
-    color: var(--text-main);
-    font-size: 0.74rem;
-    font-weight: 600;
-  }
-
-  .provider-step-list {
+  .provider-fact-list {
     display: grid;
-    gap: 0.55rem;
-  }
-
-  .provider-step {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 0.65rem;
-    align-items: start;
-  }
-
-  .provider-step-marker {
-    width: 0.7rem;
-    height: 0.7rem;
-    border-radius: 999px;
-    margin-top: 0.28rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, var(--nb-accent, #d27a54) 10%);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(248, 243, 239, 0.92));
+    gap: 0.24rem;
   }
 
   .provider-step-title {
@@ -4998,17 +8383,21 @@
     color: var(--text);
   }
 
+  .mega-diagnostic-card {
+    gap: 0.45rem;
+  }
+
   .provider-path-card {
     display: grid;
     gap: 0.28rem;
-    padding: 0.68rem 0.76rem;
+    padding: 0.62rem 0.72rem;
     border-radius: 0.78rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.9));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.84));
   }
 
   .provider-path-copy {
-    font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+    font-family: var(--nb-font-mono, 'SF Mono', 'Cascadia Code', Consolas, monospace);
     word-break: break-word;
   }
 
@@ -5033,81 +8422,53 @@
   }
 
   @media (max-width: 640px) {
+    .mega-toast {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .mega-toast-actions {
+      justify-content: flex-start;
+    }
+
+    .mega-runtime-log-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .provider-dialog {
       width: calc(100vw - 1rem);
       padding: 0.82rem;
     }
+
+    .section-actions,
+    .inline-dialog-actions {
+      width: 100%;
+    }
   }
 
   .compact-share-grid {
-    display: grid;
-    gap: 0.72rem;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  }
-
-  .share-toggle-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.46rem;
+    align-items: stretch;
+    gap: 0.72rem;
   }
 
-  .share-toggle-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    min-height: 32px;
-    padding: 0.28rem 0.78rem 0.28rem 0.62rem;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
-    color: var(--text-soft);
-    font: inherit;
-    font-size: 0.78rem;
-    font-weight: 600;
-    line-height: 1.1;
-    cursor: pointer;
-    transition:
-      border-color 140ms ease,
-      background 140ms ease,
-      color 140ms ease,
-      transform 140ms ease;
+  .compact-share-item,
+  .compact-share-grid > .location-card {
+    flex: 0 1 320px;
+    width: min(100%, 320px);
   }
 
-  .share-toggle-pill:hover {
-    transform: translateY(-1px);
-    border-color: var(--nb-btn-hover-border, color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, var(--nb-accent, #d27a54) 8%));
-    background: var(--nb-btn-hover-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%));
-    color: var(--nb-btn-hover-color, rgba(28, 28, 30, 0.96));
+  .compact-share-item {
+    display: flex;
   }
 
-  .share-toggle-pill.active {
-    border-color: var(--nb-btn-active-border, color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12))));
-    background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92)));
-    color: var(--nb-btn-active-color, rgba(28, 28, 30, 0.96));
+  .compact-share-item :global(.share-card) {
+    width: 100%;
+    height: 100%;
   }
 
-  .share-toggle-icon {
-    width: 16px;
-    height: 16px;
-    border-radius: 999px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.9));
-    color: inherit;
-    flex: 0 0 auto;
-  }
-
-  .share-toggle-pill.active .share-toggle-icon {
-    border-color: var(--nb-btn-active-border, color-mix(in srgb, var(--nb-accent, #d27a54) 14%, var(--nb-border, rgba(60, 60, 67, 0.12))));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 243, 239, 0.92));
-  }
-
-  .compact-share-advanced {
-    padding: 0.72rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(248, 243, 239, 0.88));
+  .compact-share-grid > .location-card {
+    height: 100%;
   }
 
   .field-block {
@@ -5143,7 +8504,7 @@
     height: 6px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(248, 240, 234, 0.9));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(0, 0, 0, 0.03));
   }
 
   .inline-progress-bar {
@@ -5151,14 +8512,14 @@
     inset: 0 auto 0 0;
     width: 34%;
     border-radius: inherit;
-    background: color-mix(in srgb, var(--nb-accent, #d27a54) 54%, rgba(255, 249, 246, 0.98));
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 54%, rgba(255, 249, 246, 0.98));
     animation: provider-progress-slide 1.1s ease-in-out infinite;
   }
 
   .panel-input {
     min-height: 34px;
     border-radius: 10px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.9));
     color: var(--text-main);
     padding: 0 0.68rem;
@@ -5167,7 +8528,7 @@
 
   .panel-input:focus {
     outline: none;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, rgba(60, 60, 67, 0.14));
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-panel-bg, #ffffff) 72%, rgba(240, 232, 226, 0.8));
   }
 
@@ -5175,51 +8536,27 @@
     opacity: 0.55;
   }
 
-  .details-card summary {
-    cursor: pointer;
-    color: var(--text-main);
-    font-size: 0.83rem;
-    font-weight: 600;
-    list-style: none;
-  }
-
-  .details-card summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .details-card summary::before {
-    content: '+';
-    display: inline-block;
-    width: 1rem;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
-  }
-
-  .details-card[open] summary::before {
-    content: '-';
-  }
-
   .suggestion-card {
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.9));
   }
 
   .add-card {
-    place-items: center;
     align-content: center;
-    text-align: center;
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.9));
     border-style: dashed;
   }
 
   .add-card-button {
-    width: 46px;
-    height: 46px;
+    min-height: 38px;
     border-radius: 16px;
-    border: 1px dashed color-mix(in srgb, var(--nb-accent, #d27a54) 22%, rgba(60, 60, 67, 0.14));
+    border: 1px dashed color-mix(in srgb, var(--nb-accent, #7c6f64) 22%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.9));
     color: var(--text-main);
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 0.45rem;
+    padding: 0 0.82rem;
     cursor: pointer;
     transition:
       transform 120ms ease,
@@ -5227,9 +8564,13 @@
       background 120ms ease;
   }
 
+  .add-card-button.wide {
+    width: fit-content;
+  }
+
   .add-card-button:hover {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, rgba(60, 60, 67, 0.14));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(248, 243, 239, 0.92));
   }
 
@@ -5250,7 +8591,7 @@
     padding: 0.75rem 0.85rem;
     border-radius: 14px;
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.88));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
   }
 
   .merge-box {
@@ -5258,7 +8599,7 @@
     gap: 0.7rem;
     padding: 0.78rem;
     border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(248, 243, 239, 0.88));
   }
 
@@ -5273,15 +8614,6 @@
     margin-top: -0.12rem;
   }
 
-  .minor-details {
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
-  }
-
-  .inline-details {
-    padding: 0.72rem 0.78rem;
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
-  }
-
   @keyframes provider-progress-slide {
     0% {
       transform: translateX(-110%);
@@ -5291,10 +8623,65 @@
     }
   }
 
+  @keyframes provider-tab-spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   @media (max-width: 760px) {
     .storage-panel {
-      padding: 0.85rem;
-      border-radius: 18px;
+      padding: 1.1rem;
+      border-radius: 12px;
+    }
+
+    .provider-choice-grid,
+    .provider-overview-grid,
+    .setup-guidance-grid,
+    .mega-inline-status-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .storage-card-actions {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+
+    .storage-card-actions-right {
+      margin-left: 0;
+      justify-content: flex-start;
+    }
+
+    .storage-card-actions-left,
+    .storage-card-actions-right,
+    .storage-card-actions .button-row {
+      width: 100%;
+    }
+
+    .storage-card-actions .button-row > :global(*),
+    .storage-card-actions .button-row > * {
+      flex: 1 1 100%;
+    }
+
+    .inline-reserve-slot {
+      margin-left: 0;
+    }
+
+    .inline-reserve-editor {
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    .provider-tabs {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    }
+
+    .provider-tab {
+      min-width: 0;
     }
 
     .section-head,
@@ -5314,7 +8701,7 @@
 
     .button-row > :global(*),
     .toolbar-row > *,
-    .tab-card {
+    .provider-tab {
       flex: 1 1 100%;
     }
   }

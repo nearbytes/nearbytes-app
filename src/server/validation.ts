@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ApiError } from './errors.js';
+import { VOLUME_ID_HEX_REGEX } from '../storage/integrity.js';
 
 export const openBodySchema = z.object({
   secret: z.string().min(1, 'Secret is required'),
@@ -73,13 +74,25 @@ export const openRootInFileManagerBodySchema = z.object({
   rootId: z.string().trim().min(1, 'Root id is required'),
 });
 
+export const sourceIdParamSchema = z.object({
+  sourceId: z.string().trim().min(1, 'Source id is required'),
+});
+
+export const repairStorageLocationBodySchema = z.object({
+  action: z.enum(['trash', 'delete']).default('trash'),
+});
+
+export const openPathInFileManagerBodySchema = z.object({
+  path: z.string().trim().min(1, 'Path is required'),
+});
+
 export const reconcileDiscoveredSourcesBodySchema = z.object({
   knownVolumeIds: z
     .array(
       z
         .string()
         .trim()
-        .regex(/^[a-f0-9]{64,200}$/i, 'Known volume ids must be lowercase or uppercase hex')
+        .regex(VOLUME_ID_HEX_REGEX, 'Known volume ids must be 130-hex public keys')
     )
     .optional()
     .default([]),
@@ -101,7 +114,7 @@ export const managedShareIdParamSchema = z.object({
 
 export const connectProviderAccountBodySchema = z.object({
   provider: z.string().trim().min(1, 'Provider is required'),
-  mode: z.enum(['login', 'signup', 'confirm-signup']).optional(),
+  mode: z.enum(['login']).optional(),
   label: providerLabelSchema.optional(),
   email: z.string().trim().email('Provider email must be valid').optional(),
   preferred: z.boolean().optional().default(false),
@@ -131,7 +144,7 @@ export const createManagedShareBodySchema = z.object({
   volumeId: z
     .string()
     .trim()
-    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .regex(VOLUME_ID_HEX_REGEX, 'Volume id must be a 130-hex public key')
     .optional(),
   remoteDescriptor: z.record(z.string(), z.unknown()).optional(),
   capabilities: z.array(z.string().trim().min(1)).optional(),
@@ -139,13 +152,14 @@ export const createManagedShareBodySchema = z.object({
 
 export const inviteManagedShareBodySchema = z.object({
   emails: z.array(z.string().trim().email('Invite emails must be valid')).min(1, 'At least one email is required'),
+  accessLevel: z.enum(['read', 'read/write', 'full access']).optional(),
 });
 
 export const attachManagedShareBodySchema = z.object({
   volumeId: z
     .string()
     .trim()
-    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex'),
+    .regex(VOLUME_ID_HEX_REGEX, 'Volume id must be a 130-hex public key'),
 });
 
 export const acceptManagedShareBodySchema = z.object({
@@ -155,10 +169,17 @@ export const acceptManagedShareBodySchema = z.object({
   volumeId: z
     .string()
     .trim()
-    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .regex(VOLUME_ID_HEX_REGEX, 'Volume id must be a 130-hex public key')
     .optional(),
   localPath: z.string().trim().min(1).optional(),
   remoteDescriptor: z.record(z.string(), z.unknown()).optional(),
+  capabilities: z.array(z.string().trim().min(1)).optional(),
+});
+
+export const acceptProviderContactInviteBodySchema = z.object({
+  provider: z.string().trim().min(1, 'Provider is required'),
+  accountId: z.string().trim().min(1, 'Provider account id is required'),
+  inviteId: z.string().trim().min(1, 'Invite id is required'),
 });
 
 export const parseJoinLinkBodySchema = z.object({
@@ -172,8 +193,97 @@ export const openJoinLinkBodySchema = parseJoinLinkBodySchema.extend({
   volumeId: z
     .string()
     .trim()
-    .regex(/^[a-f0-9]{64,200}$/i, 'Volume id must be lowercase or uppercase hex')
+    .regex(VOLUME_ID_HEX_REGEX, 'Volume id must be a 130-hex public key')
     .optional(),
+});
+
+const uiDebugActionSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('inspect'),
+  }),
+  z.object({
+    type: z.literal('navigate'),
+    path: z.string().trim().min(1).optional(),
+    url: z.string().trim().url('UI debug URL must be a valid URL').optional(),
+    waitForLoad: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('quitApp'),
+  }),
+  z.object({
+    type: z.literal('waitFor'),
+    selector: z.string().trim().min(1, 'UI debug selector is required'),
+    state: z.enum(['present', 'visible', 'hidden']).optional(),
+    timeoutMs: z.number().int().positive().max(120_000).optional(),
+    pollIntervalMs: z.number().int().positive().max(5_000).optional(),
+  }),
+  z.object({
+    type: z.literal('click'),
+    selector: z.string().trim().min(1, 'UI debug selector is required'),
+  }),
+  z.object({
+    type: z.literal('type'),
+    selector: z.string().trim().min(1, 'UI debug selector is required'),
+    value: z.string(),
+    clear: z.boolean().optional(),
+    submit: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('pressKey'),
+    key: z.string().trim().min(1, 'UI debug key is required'),
+    alt: z.boolean().optional(),
+    control: z.boolean().optional(),
+    meta: z.boolean().optional(),
+    shift: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('read'),
+    selector: z.string().trim().min(1, 'UI debug selector is required'),
+    field: z.enum(['text', 'html', 'outerHtml', 'value']).optional(),
+    attribute: z.string().trim().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal('screenshot'),
+    path: z.string().trim().min(1).optional(),
+    selector: z.string().trim().min(1).optional(),
+    fullPage: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('snapshotDom'),
+    selector: z.string().trim().min(1).optional(),
+    maxLength: z.number().int().positive().max(2_000_000).optional(),
+  }),
+  z.object({
+    type: z.literal('filesystem.readTextFile'),
+    path: z.string().trim().min(1, 'Filesystem path is required'),
+    maxBytes: z.number().int().positive().max(2_000_000).optional(),
+  }),
+  z.object({
+    type: z.literal('mega.syncUntilFileReadable'),
+    shareId: z.string().trim().min(1).optional(),
+    ownerEmail: z.string().trim().email('Owner email must be valid').optional(),
+    shareName: z.string().trim().min(1).optional(),
+    relativePath: z.string().trim().min(1).optional(),
+    timeoutMs: z.number().int().positive().max(300_000).optional(),
+    pollIntervalMs: z.number().int().positive().max(10_000).optional(),
+    maxBytes: z.number().int().positive().max(2_000_000).optional(),
+  }),
+]);
+
+export const runUiDebugActionsBodySchema = z.object({
+  actions: z.array(uiDebugActionSchema).min(1, 'At least one UI debug action is required'),
+  stopOnError: z.boolean().optional().default(true),
+});
+
+export const uiDebugScreenshotBodySchema = z.object({
+  path: z.string().trim().min(1).optional(),
+  selector: z.string().trim().min(1).optional(),
+  fullPage: z.boolean().optional().default(false),
+});
+
+export const uiDebugDomSnapshotBodySchema = z.object({
+  selector: z.string().trim().min(1).optional(),
+  maxLength: z.number().int().positive().max(2_000_000).optional(),
 });
 
 /**

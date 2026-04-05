@@ -112,3 +112,4 @@ Command-line interface:
 3. **Error Handling**: Custom error types with proper chaining
 4. **Immutability**: Use `readonly` and immutable data structures
 5. **Web Crypto Only**: No external crypto libraries for security
+6. **Node-only Provider Adapters**: All provider integrations (MEGA, GitHub, Google Drive) use pure Node.js HTTP APIs — no external CLI tools required at runtime

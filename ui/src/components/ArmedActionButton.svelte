@@ -25,7 +25,7 @@
     disabled?: boolean;
     title?: string;
     ariaLabel?: string;
-    ariaHasPopup?: string;
+    ariaHasPopup?: 'false' | 'true' | 'dialog' | 'menu' | 'grid' | 'listbox' | 'tree';
     ariaExpanded?: boolean;
     resetKey?: string | number | null;
     keepTextWhenArmed?: boolean;
@@ -104,6 +104,7 @@
   }
 
   const buttonLabel = $derived.by(() => {
+    if (text.trim() === '') return '';
     if (!armed) return text;
     if (keepTextWhenArmed) return text;
     if (!isArmedState) return text;
@@ -114,6 +115,8 @@
     if (!armed || !isArmedState) return title;
     return 'Click again to confirm';
   });
+
+  const Icon = $derived(icon);
 
   const computedDisabled = $derived.by(() => disabled);
 
@@ -151,11 +154,13 @@
   aria-expanded={ariaExpanded}
   onclick={handleClick}
 >
-  <span class="armed-button-content">
-    {#if icon}
-      <icon class="armed-button-icon" size={iconSize} strokeWidth={iconStrokeWidth}></icon>
+  <span class="armed-button-content" class:icon-only={buttonLabel === ''}>
+    {#if Icon}
+      <Icon class="armed-button-icon" size={iconSize} strokeWidth={iconStrokeWidth} />
     {/if}
-    <span>{buttonLabel}</span>
+    {#if buttonLabel !== ''}
+      <span>{buttonLabel}</span>
+    {/if}
   </span>
 </button>
 
@@ -165,6 +170,10 @@
     align-items: center;
     justify-content: center;
     gap: 0.45rem;
+  }
+
+  .armed-button-content.icon-only {
+    gap: 0;
   }
 
   .armed-button-icon {

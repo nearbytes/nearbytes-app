@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('nearbytesDesktop', {
   getClipboardImageStatus: () => ipcRenderer.invoke('nearbytes-desktop:get-clipboard-image-status'),
   readClipboardImage: () => ipcRenderer.invoke('nearbytes-desktop:read-clipboard-image'),
   loadUiState: () => ipcRenderer.invoke('nearbytes-desktop:load-ui-state'),
+  wipeStoredConfig: (options) => ipcRenderer.invoke('nearbytes-desktop:wipe-stored-config', options),
   getUpdaterState: () => ipcRenderer.invoke('nearbytes-desktop:get-updater-state'),
   installDownloadedUpdate: () => ipcRenderer.invoke('nearbytes-desktop:install-downloaded-update'),
   debugTriggerUpdateInstall: () => ipcRenderer.invoke('nearbytes-desktop:debug-trigger-update-install'),
@@ -35,6 +36,8 @@ contextBridge.exposeInMainWorld('nearbytesDesktop', {
   saveThemeRegistry: (registry) => ipcRenderer.invoke('nearbytes-desktop:save-theme-registry', registry),
   exportLogoPng: (dataUrl) => ipcRenderer.invoke('nearbytes-desktop:export-logo-png', dataUrl),
   chooseDirectory: (initialPath) => ipcRenderer.invoke('nearbytes-desktop:choose-directory', initialPath),
+  revealPathInFileManager: (targetPath) => ipcRenderer.invoke('nearbytes-desktop:reveal-path-in-file-manager', targetPath),
+  readRuntimeLogs: () => ipcRenderer.invoke('nearbytes-desktop:read-runtime-logs'),
   getApiBaseUrl: async () => {
     const config = await ipcRenderer.invoke('nearbytes-desktop:get-runtime-config');
     return config.apiBaseUrl ?? '';

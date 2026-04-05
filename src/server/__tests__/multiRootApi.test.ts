@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import type { Response } from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCryptoOperations } from '../../crypto/index.js';
 import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from '../../domain/fileService.js';
@@ -16,6 +16,19 @@ import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import { createApp } from '../app.js';
 
 const SECRET = 'nearbytes-multi-root-secret';
+
+vi.mock('../../config/appConfig.js', async () => {
+  const actual = await vi.importActual<typeof import('../../config/appConfig.js')>('../../config/appConfig.js');
+  return {
+    ...actual,
+    isProviderEnabled(provider: string): boolean {
+      if (provider.trim().toLowerCase() === 'gdrive') {
+        return true;
+      }
+      return actual.isProviderEnabled(provider);
+    },
+  };
+});
 
 interface ConfigRootsResponseBody {
   configPath: string | null;
@@ -118,6 +131,30 @@ interface ManagedShareSummaryBody {
 
 interface ManagedShareMutationResponseBody {
   summary: ManagedShareSummaryBody;
+}
+
+interface ReconcileProviderManagedSharesResponseBody {
+  provider: string;
+  adoptedShares: number;
+  retiredShares: number;
+  migratedShares: number;
+}
+
+interface UiDebugCapabilitiesBody {
+  available: boolean;
+  screenshot: boolean;
+  actions: string[];
+}
+
+interface UiDebugRunResponseBody {
+  ok: boolean;
+  actionCount: number;
+  results: Array<{
+    type: string;
+    ok: boolean;
+    result?: Record<string, unknown>;
+    error?: string;
+  }>;
 }
 
 interface JoinLinkParseResponseBody {
@@ -379,7 +416,7 @@ describe('Nearbytes API (multi-root)', () => {
       integrationOptions: {
         adapters: [
           new FakeProviderAdapter('gdrive', 'Google Drive', 'Managed folders backed by Google Drive.'),
-          new FakeProviderAdapter('mega', 'MEGA', 'Managed folders backed by MEGA CLI.'),
+          new FakeProviderAdapter('mega', 'MEGA', 'Native MEGA readonly mirroring for public links and incoming shares.'),
         ],
       },
     });
@@ -387,7 +424,7 @@ describe('Nearbytes API (multi-root)', () => {
 
   afterAll(async () => {
     process.env.HOME = previousHome;
-    await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('allows local root config access and blocks forwarded non-loopback requests', async () => {
@@ -635,6 +672,17 @@ describe('Nearbytes API (multi-root)', () => {
       .expect(200);
     const accountId = typedBody<{ account?: { id: string } }>(connectRes).account?.id as string;
 
+    const reconcileRes = await request(app)
+      .post('/integrations/providers/gdrive/reconcile')
+      .send({})
+      .expect(200);
+    expect(typedBody<ReconcileProviderManagedSharesResponseBody>(reconcileRes)).toEqual({
+      provider: 'gdrive',
+      adoptedShares: 0,
+      retiredShares: 0,
+      migratedShares: 0,
+    });
+
     const openRes = await request(app).post('/open').send({ secret: SECRET }).expect(200);
     const openBody = typedBody<OpenResponseBody>(openRes);
 
@@ -754,6 +802,28 @@ describe('Nearbytes API (multi-root)', () => {
     expect(openLinkBody.volumeId).toBe(openBody.volumeId);
     expect(openLinkBody.actions[0]?.status).toBe('attached');
     expect(openLinkBody.actions[0]?.shareId).toBe(createShareBody.summary.share.id);
+  });
+
+  it('reports unavailable desktop UI debug capabilities when no executor is wired', async () => {
+    const response = await request(app).get('/__debug/ui').expect(200);
+    expect(typedBody<UiDebugCapabilitiesBody>(response)).toEqual({
+      available: false,
+      screenshot: false,
+      actions: [],
+    });
+  });
+
+  it('rejects DOM snapshot requests when no desktop UI debug executor is wired', async () => {
+    const response = await request(app)
+      .post('/__debug/ui/dom')
+      .send({ maxLength: 1024 })
+      .expect(501);
+
+    expect(typedBody<UiDebugRunResponseBody | { error?: { code?: string; message?: string } }>(response)).toMatchObject({
+      error: {
+        code: 'NOT_IMPLEMENTED',
+      },
+    });
   });
 
   it('recreates Nearbytes.html marker after deletion for configured sources', async () => {

@@ -5,6 +5,15 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./src/test/setup.ts'],
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/dist-electron/**',
+      '**/e2e/**',
+      '**/*.live.test.ts',
+      'src/integrations/__tests__/megaAdapter.test.ts',
+      'src/server/__tests__/megaManagedShareApi.test.ts',
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

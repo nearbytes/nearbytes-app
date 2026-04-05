@@ -1,30 +1,30 @@
 <script lang="ts">
+  import ErrorBadge from './ErrorBadge.svelte';
   import type { Snippet } from 'svelte';
-  import { HardDrive } from 'lucide-svelte';
 
   export type ShareCardBadgeTone = 'good' | 'warn' | 'muted' | 'durable' | 'replica' | 'off';
 
   const {
-    eyebrow = 'Share',
-    provider = '',
     title,
     copy = '',
     active = false,
+    compact = false,
     statusBadges = [],
     meta = [],
+    metaActions,
     body,
     controls,
     details,
     actions,
     footer,
   } = $props<{
-    eyebrow?: string;
-    provider?: string;
     title: string;
     copy?: string;
     active?: boolean;
-    statusBadges?: Array<{ label: string; tone?: ShareCardBadgeTone }>;
+    compact?: boolean;
+    statusBadges?: Array<{ label: string; tone?: ShareCardBadgeTone; description?: string }>;
     meta?: string[];
+    metaActions?: Snippet;
     body?: Snippet;
     controls?: Snippet;
     details?: Snippet;
@@ -33,25 +33,44 @@
   }>();
 </script>
 
-<article class="share-card" class:active>
+<article class="share-card" class:active class:compact>
   <div class="card-head">
-    <div class="card-title">
-      <div class="card-icon">
-        <HardDrive size={16} strokeWidth={2.1} />
-      </div>
-      <div>
-        <p class="provider-label">{provider || eyebrow}</p>
-        <h4>{title}</h4>
-      </div>
-    </div>
+    <span class="card-title-text">{title}</span>
     {#if statusBadges.length > 0}
-      <div class="card-status">
+      <span class="card-head-badges">
         {#each statusBadges as badge}
-          <span class={`status-pill tone-${badge.tone ?? 'muted'} ${badge.label === 'Ready' ? 'ready-badge' : ''}`}>{badge.label}</span>
+          {#if badge.tone === 'warn' && badge.description?.trim()}
+            <ErrorBadge
+              label={badge.label}
+              description={badge.description}
+              title={title}
+              tone={badge.tone}
+            />
+          {:else}
+            <span class={`status-pill tone-${badge.tone ?? 'muted'}`} title={badge.description ?? badge.label}>
+              {badge.label}
+            </span>
+          {/if}
         {/each}
-      </div>
+      </span>
+    {/if}
+    {#if actions}
+      <span class="card-head-actions">
+        {@render actions()}
+      </span>
     {/if}
   </div>
+
+  {#if meta.length > 0 || metaActions}
+    <div class="card-sub">
+      {#each meta as item}
+        <span>{item}</span>
+      {/each}
+      {#if metaActions}
+        {@render metaActions()}
+      {/if}
+    </div>
+  {/if}
 
   {#if copy}
     <p class="card-copy">{copy}</p>
@@ -69,23 +88,9 @@
     </div>
   {/if}
 
-  {#if meta.length > 0}
-    <div class="fact-row">
-      {#each meta as item}
-        <span>{item}</span>
-      {/each}
-    </div>
-  {/if}
-
   {#if details}
     <div class="card-details">
       {@render details()}
-    </div>
-  {/if}
-
-  {#if actions}
-    <div class="button-row">
-      {@render actions()}
     </div>
   {/if}
 
@@ -99,172 +104,136 @@
 <style>
   .share-card {
     display: grid;
-    gap: 0.72rem;
-    padding: 0.82rem;
-    border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    gap: 0.55rem;
+    align-content: start;
+    height: 100%;
+    padding: 0.85rem 0.95rem;
+    border-radius: 10px;
+    border: 1px solid var(--nb-border, rgba(0, 0, 0, 0.08));
+    background: var(--nb-panel-bg, #ffffff);
   }
 
   .share-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 74%, rgba(210, 122, 84, 0.08));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(0, 0, 0, 0.08)));
   }
 
-  .card-head,
-  .card-title,
-  .card-status,
-  .button-row,
-  .fact-row {
-    display: flex;
-    gap: 0.58rem;
-    min-width: 0;
+  .share-card.compact {
+    gap: 0.45rem;
+    padding: 0.7rem 0.82rem;
   }
 
   .card-head {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.68rem;
-    align-items: start;
-  }
-
-  .card-title {
-    flex: 1 1 0;
-    align-items: flex-start;
-    min-width: 0;
-  }
-
-  .card-title > div,
-  .fact-row,
-  .card-copy,
-  .card-body,
-  .card-controls,
-  .card-details,
-  .card-footer {
-    min-width: 0;
-  }
-
-  .card-title > div {
-    display: grid;
-    gap: 0.08rem;
-  }
-
-  .card-status,
-  .button-row,
-  .fact-row {
-    flex-wrap: wrap;
-  }
-
-  .card-status {
-    justify-content: flex-end;
-    align-self: start;
-    min-width: 0;
-    max-width: min(48%, 100%);
-  }
-
-  .card-icon {
-    width: 34px;
-    height: 34px;
-    border-radius: 12px;
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    justify-content: center;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.9));
-    color: var(--nb-text-soft, rgba(70, 70, 73, 0.86));
-    flex: 0 0 auto;
-  }
-
-  .provider-label {
-    margin: 0 0 0.18rem;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.82));
-    font-size: 0.72rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-  }
-
-  h4 {
-    margin: 0;
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-    font-size: 1rem;
-    line-height: 1.18;
-  }
-
-  .card-copy,
-  .fact-row {
-    margin: 0;
-    color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
-    font-size: 0.8rem;
-    line-height: 1.38;
-  }
-
-  .card-copy {
-    overflow-wrap: anywhere;
-  }
-
-  .fact-row span {
+    gap: 0.5rem;
     min-width: 0;
-    overflow-wrap: anywhere;
+  }
+
+  .card-title-text {
+    margin: 0;
+    color: var(--nb-text-main, rgba(0, 0, 0, 0.88));
+    font: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1 1 0;
+  }
+
+  .share-card.compact .card-title-text {
+    font-size: 0.84rem;
+  }
+
+  .card-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-shrink: 0;
+  }
+
+  .card-head-badges {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.28rem;
+    align-items: center;
+    min-width: 0;
   }
 
   .status-pill {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    align-self: flex-start;
-    flex: 0 0 auto;
-    min-height: 28px;
-    max-width: 100%;
-    padding: 0.22rem 1.08rem;
+    min-height: 20px;
+    padding: 0 0.48rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
-    font-size: 0.7rem;
-    font-weight: 600;
-    line-height: 1.2;
+    border: 1px solid var(--nb-border, rgba(0, 0, 0, 0.08));
+    background: var(--nb-panel-bg, #ffffff);
+    color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
+    font-size: 0.58rem;
+    font-weight: 700;
+    line-height: 1;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    box-sizing: border-box;
-  }
-
-  .status-pill.ready-badge {
-    padding-inline: 1.22rem;
   }
 
   .tone-good,
   .tone-durable {
-    border-color: color-mix(in srgb, var(--nb-success, #6aa975) 24%, transparent);
-    background: color-mix(in srgb, var(--nb-success-surface, rgba(134, 239, 172, 0.12)) 82%, rgba(247, 252, 248, 0.96));
-    color: color-mix(in srgb, var(--nb-success, #6aa975) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    border-color: color-mix(in srgb, var(--nb-success, #34C759) 22%, var(--nb-border, rgba(0, 0, 0, 0.08)));
+    background: color-mix(in srgb, var(--nb-success, #34C759) 7%, var(--nb-panel-bg, #ffffff));
+    color: color-mix(in srgb, var(--nb-success, #34C759) 72%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
   }
 
   .tone-warn {
-    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 24%, transparent);
-    background: color-mix(in srgb, var(--nb-warning-surface, rgba(253, 230, 138, 0.12)) 82%, rgba(255, 250, 245, 0.96));
-    color: color-mix(in srgb, var(--nb-warning, #d4945f) 82%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    border-color: color-mix(in srgb, var(--nb-warning, #FF9500) 28%, var(--nb-border, rgba(0, 0, 0, 0.08)));
+    background: color-mix(in srgb, var(--nb-warning, #FF9500) 8%, var(--nb-panel-bg, #ffffff));
+    color: color-mix(in srgb, var(--nb-warning, #FF9500) 72%, var(--nb-text-main, rgba(0, 0, 0, 0.88)));
   }
 
-  .tone-muted,
   .tone-replica,
-  .tone-off {
-    color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
+  .tone-off,
+  .tone-muted {
+    color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
   }
 
-  .button-row {
+  .card-sub {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
     align-items: center;
+    color: var(--nb-text-faint, rgba(60, 60, 67, 0.36));
+    font-size: 0.73rem;
+    line-height: 1.3;
   }
 
-  @media (max-width: 760px) {
-    .card-head {
-      grid-template-columns: 1fr;
-    }
+  .share-card.compact .card-sub {
+    font-size: 0.7rem;
+  }
 
-    .card-status {
-      justify-content: flex-start;
-      max-width: 100%;
+  .card-copy {
+    margin: 0;
+    color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
+    font-size: 0.73rem;
+    line-height: 1.38;
+    overflow-wrap: anywhere;
+  }
+
+  .card-controls {
+    display: flex;
+    gap: 0.35rem;
+    align-items: center;
+    padding-top: 0.15rem;
+  }
+
+  .card-body,
+  .card-details,
+  .card-footer {
+    min-width: 0;
+  }
+
+  @media (max-width: 480px) {
+    .card-head {
+      flex-wrap: wrap;
     }
   }
 </style>

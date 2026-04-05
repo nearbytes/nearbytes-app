@@ -1,126 +1,10 @@
-import fs from 'fs';
-import http from 'http';
-import os from 'os';
 import path from 'path';
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
+import { nearbytesDevApiProxy } from './devApiProxy.js';
 
-const DEFAULT_SERVER_PROXY_TARGET = 'http://127.0.0.1:3000';
-const DESKTOP_SESSION_PATH = process.env.NEARBYTES_DESKTOP_SESSION_FILE?.trim()
-  ? path.resolve(process.env.NEARBYTES_DESKTOP_SESSION_FILE)
-  : path.join(os.homedir(), '.nearbytes', 'desktop-session.json');
-const API_PREFIXES = [
-  '/open',
-  '/files',
-  '/upload',
-  '/file',
-  '/events',
-  '/references',
-  '/chat',
-  '/health',
-  '/timeline',
-  '/snapshot',
-  '/__debug',
-  '/config',
-  '/sources',
-  '/integrations',
-  '/links',
-  '/watch',
-  '/folders',
-];
-
-function nearbytesDevApiProxy() {
-  return {
-    name: 'nearbytes-dev-api-proxy',
-    configureServer(server) {
-      server.middlewares.use((req, res, next) => {
-        if (!req.url || !isApiRequest(req.url)) {
-          next();
-          return;
-        }
-
-        const session = readDesktopSession();
-        const targetUrl = new URL(
-          session ? `http://127.0.0.1:${session.port}` : DEFAULT_SERVER_PROXY_TARGET
-        );
-        const headers = { ...req.headers, host: targetUrl.host };
-        if (session?.token && !headers['x-nearbytes-desktop-token']) {
-          headers['x-nearbytes-desktop-token'] = session.token;
-        }
-
-        const proxyReq = http.request(
-          {
-            protocol: targetUrl.protocol,
-            hostname: targetUrl.hostname,
-            port: targetUrl.port,
-            method: req.method,
-            path: req.url,
-            headers,
-          },
-          (proxyRes) => {
-            res.statusCode = proxyRes.statusCode ?? 502;
-            Object.entries(proxyRes.headers).forEach(([key, value]) => {
-              if (value !== undefined) {
-                res.setHeader(key, value);
-              }
-            });
-            proxyRes.pipe(res);
-          }
-        );
-
-        proxyReq.on('error', (error) => {
-          if (res.headersSent) {
-            res.end();
-            return;
-          }
-          res.statusCode = 502;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(
-            JSON.stringify({
-              error: {
-                code: 'BAD_GATEWAY',
-                message: `Nearbytes dev proxy error: ${error.message}`,
-              },
-            })
-          );
-        });
-
-        req.pipe(proxyReq);
-      });
-    },
-  };
-}
-
-function isApiRequest(url) {
-  return API_PREFIXES.some(
-    (prefix) => url === prefix || url.startsWith(`${prefix}/`) || url.startsWith(`${prefix}?`)
-  );
-}
-
-function readDesktopSession() {
-  try {
-    const raw = fs.readFileSync(DESKTOP_SESSION_PATH, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      typeof parsed.port !== 'number' ||
-      !Number.isFinite(parsed.port) ||
-      parsed.port <= 0 ||
-      typeof parsed.token !== 'string' ||
-      parsed.token.trim().length === 0
-    ) {
-      return null;
-    }
-    return {
-      port: parsed.port,
-      token: parsed.token,
-    };
-  } catch {
-    return null;
-  }
-}
+const devPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
 
 export default defineConfig({
   plugins: [
@@ -174,9 +58,19 @@ export default defineConfig({
     }),
   ],
   server: {
-    port: 5173,
+    host: '127.0.0.1',
+    port: devPort,
+    strictPort: true,
     fs: {
       allow: [path.resolve(process.cwd(), '..')],
     },
   },
 });
+
+function parsePort(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}

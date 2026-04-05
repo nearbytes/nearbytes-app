@@ -1,4 +1,5 @@
 import { base64UrlToBytes } from '../utils/encoding.js';
+import { normalizeVolumeId } from '../storage/integrity.js';
 import { canonicalJsonString } from './fileReferenceCodec.js';
 import type {
   JoinLink,
@@ -179,8 +180,8 @@ function parseJoinLinkAttachment(value: unknown, index: number): JoinLinkAttachm
 }
 
 function parseJoinLinkSpace(value: unknown): JoinLinkSpace {
-  const object = asObject(value, 'Join link space is invalid');
-  const mode = parseNonEmptyString(object.mode, 'Join link space mode is invalid');
+  const object = asObject(value, 'Join link hub is invalid');
+  const mode = parseNonEmptyString(object.mode, 'Join link hub mode is invalid');
   if (mode === 'seed') {
     return {
       mode: 'seed',
@@ -199,16 +200,16 @@ function parseJoinLinkSpace(value: unknown): JoinLinkSpace {
     };
   }
   if (mode === 'volume-id') {
-    const value = parseNonEmptyString(object.value, 'Join link volume id is invalid');
-    if (!/^[a-f0-9]{64,200}$/iu.test(value)) {
+    const value = normalizeVolumeId(parseNonEmptyString(object.value, 'Join link volume id is invalid'));
+    if (!value) {
       throw new Error('Join link volume id is invalid');
     }
     return {
       mode: 'volume-id',
-      value: value.toLowerCase(),
+      value,
     };
   }
-  throw new Error(`Unsupported join link space mode: ${mode}`);
+  throw new Error(`Unsupported join link hub mode: ${mode}`);
 }
 
 function parseOptionalTransportEndpointBootstrap(

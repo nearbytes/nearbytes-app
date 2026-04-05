@@ -12,6 +12,7 @@ if (typeof runtimeModule.startApiRuntime !== 'function') {
 
 const desktopToken = randomBytes(24).toString('base64url');
 const storageDir = await mkdtemp(path.join(os.tmpdir(), 'nearbytes-desktop-smoke-'));
+const rootsConfigPath = path.join(storageDir, 'roots.json');
 
 let runtime;
 try {
@@ -19,6 +20,7 @@ try {
     host: '127.0.0.1',
     port: 0,
     defaultStorageDir: storageDir,
+    rootsConfigPath,
     corsOrigin: false,
     desktopApiToken: desktopToken,
   });

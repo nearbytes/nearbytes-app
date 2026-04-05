@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "status": 404,
+  "text": "{\"error\":{\"code\":\"NOT_FOUND\",\"message\":\"Route not found\"}}"
+}

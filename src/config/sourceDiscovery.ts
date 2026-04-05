@@ -2,6 +2,7 @@ import { promises as fs, type Dirent, type Stats } from 'fs';
 import os from 'os';
 import path from 'path';
 import type { RootProvider, SourceConfigEntry } from './roots.js';
+import { normalizeVolumeId } from '../storage/integrity.js';
 
 export interface DiscoveredNearbytesSource {
   readonly provider: RootProvider;
@@ -40,6 +41,12 @@ export interface MarkerEnsureResult {
   readonly error?: string;
 }
 
+export interface NearbytesRootNormalizationResult {
+  readonly createdMarker: boolean;
+  readonly rewroteMarker: boolean;
+  readonly removedLegacyMetadata: boolean;
+}
+
 interface ScanCandidate {
   readonly provider: RootProvider;
   readonly path: string;
@@ -66,12 +73,19 @@ const DEFAULT_PROVIDER_MAX_DIRECTORIES: Readonly<Partial<Record<RootProvider, nu
   onedrive: 600,
   icloud: 600,
 };
-const CHANNEL_DIRECTORY_REGEX = /^[a-f0-9]{64,200}$/i;
 export const NEARBYTES_MARKER_FILE = 'Nearbytes.html';
+export const NEARBYTES_LEGACY_METADATA_FILE = 'Nearbytes.json';
 export const NEARBYTES_LEGACY_MARKER_FILE = '.nearbytes';
 export const NEARBYTES_MARKER_FILES = [NEARBYTES_MARKER_FILE, NEARBYTES_LEGACY_MARKER_FILE] as const;
+export const NEARBYTES_IGNORED_ROOT_FILES = [
+  NEARBYTES_MARKER_FILE,
+  NEARBYTES_LEGACY_MARKER_FILE,
+  NEARBYTES_LEGACY_METADATA_FILE,
+] as const;
+export const NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES = ['.debris', '.megaignore', 'Rubbish', 'local-network'] as const;
 export const NEARBYTES_HOME_URL = 'https://anymatix.github.io/nearbytes/';
 const DEFAULT_NEARBYTES_DIRECTORY = 'nearbytes';
+const WATCH_IGNORED_TOP_LEVEL_ENTRY_NAMES = ['.Trash', ...NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES] as const;
 const SKIP_DIRECTORY_NAMES = new Set([
   '.git',
   '.idea',
@@ -80,7 +94,15 @@ const SKIP_DIRECTORY_NAMES = new Set([
   'node_modules',
   '.Trash',
   '.cache',
+  'Rubbish',
 ]);
+const NEARBYTES_IGNORED_ROOT_FILE_SET = new Set(NEARBYTES_IGNORED_ROOT_FILES.map((entry) => entry.toLowerCase()));
+const NEARBYTES_HOUSEKEEPING_ROOT_ENTRY_SET = new Set(
+  NEARBYTES_HOUSEKEEPING_ROOT_ENTRIES.map((entry) => entry.toLowerCase())
+);
+const WATCH_IGNORED_TOP_LEVEL_ENTRY_SET = new Set(
+  WATCH_IGNORED_TOP_LEVEL_ENTRY_NAMES.map((entry) => entry.toLowerCase())
+);
 
 export async function discoverNearbytesScanRoots(options?: {
   readonly includeDefaultRoots?: boolean;
@@ -183,8 +205,20 @@ export async function ensureNearbytesMarkers(sources: readonly SourceConfigEntry
 
   for (const source of sources) {
     const markerFile = path.join(source.path, NEARBYTES_MARKER_FILE);
+    const shouldSkipReadonlyRoot =
+      source.writable === false && source.integration?.kind !== 'provider-managed';
+    if (shouldSkipReadonlyRoot) {
+      results.push({
+        rootId: source.id,
+        path: source.path,
+        markerFile,
+        created: false,
+        ok: true,
+      });
+      continue;
+    }
     try {
-      const created = await ensureNearbytesMarker(source.path);
+      const { created } = await ensureNearbytesMarker(source.path);
       results.push({
         rootId: source.id,
         path: source.path,
@@ -211,16 +245,38 @@ export async function ensureNearbytesMarkers(sources: readonly SourceConfigEntry
  * Ensures `Nearbytes.html` exists in a root directory.
  * Returns true if created now, false if already present.
  */
-export async function ensureNearbytesMarker(rootPath: string): Promise<boolean> {
+export async function ensureNearbytesMarker(rootPath: string): Promise<{
+  readonly created: boolean;
+}> {
+  const { createdMarker } = await normalizeNearbytesRoot(rootPath);
+  return {
+    created: createdMarker,
+  };
+}
+
+export async function normalizeNearbytesRoot(
+  rootPath: string,
+  options: {
+    readonly rewriteMarker?: boolean;
+    readonly ensureMarker?: boolean;
+  } = {}
+): Promise<NearbytesRootNormalizationResult> {
   const markerPath = path.join(rootPath, NEARBYTES_MARKER_FILE);
   await fs.mkdir(rootPath, { recursive: true });
+  const ensureMarker = options.ensureMarker ?? true;
+  const hasMarker = await hasNamedMarkerFile(rootPath, NEARBYTES_MARKER_FILE);
+  const createdMarker = !hasMarker && ensureMarker;
+  const removedLegacyMetadata = await removeLegacyNearbytesMetadata(rootPath);
 
-  if (await hasNamedMarkerFile(rootPath, NEARBYTES_MARKER_FILE)) {
-    return false;
+  if ((createdMarker || options.rewriteMarker) && ensureMarker) {
+    await fs.writeFile(markerPath, buildNearbytesMarkerHtml(), 'utf8');
   }
 
-  await fs.writeFile(markerPath, buildNearbytesMarkerHtml(), 'utf8');
-  return true;
+  return {
+    createdMarker,
+    rewroteMarker: hasMarker && ensureMarker && Boolean(options.rewriteMarker),
+    removedLegacyMetadata,
+  };
 }
 
 export async function inspectNearbytesRoot(rootPath: string): Promise<NearbytesRootInspection | null> {
@@ -384,6 +440,29 @@ export function getProviderScanLimits(provider: RootProvider): {
   };
 }
 
+export function isNearbytesIgnoredTopLevelEntryName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return (
+    NEARBYTES_IGNORED_ROOT_FILE_SET.has(normalized) || NEARBYTES_HOUSEKEEPING_ROOT_ENTRY_SET.has(normalized)
+  );
+}
+
+export function isNearbytesWatchIgnoredPath(targetPath: string, watchRoots: readonly string[]): boolean {
+  const normalizedTarget = normalizeComparablePath(targetPath);
+  for (const watchRoot of watchRoots) {
+    const normalizedRoot = normalizeComparablePath(watchRoot);
+    if (normalizedTarget === normalizedRoot || !normalizedTarget.startsWith(`${normalizedRoot}/`)) {
+      continue;
+    }
+    const relativePath = normalizedTarget.slice(normalizedRoot.length + 1);
+    const firstSegment = relativePath.split('/')[0]?.trim().toLowerCase();
+    if (firstSegment && WATCH_IGNORED_TOP_LEVEL_ENTRY_SET.has(firstSegment)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function hasMarkerFile(dirPath: string): Promise<boolean> {
   for (const markerFile of NEARBYTES_MARKER_FILES) {
     if (await hasNamedMarkerFile(dirPath, markerFile)) {
@@ -410,6 +489,19 @@ async function resolveMarkerFile(dirPath: string): Promise<string | null> {
     }
   }
   return null;
+}
+
+async function removeLegacyNearbytesMetadata(rootPath: string): Promise<boolean> {
+  const metadataPath = path.join(rootPath, NEARBYTES_LEGACY_METADATA_FILE);
+  if (!(await hasNamedMarkerFile(rootPath, NEARBYTES_LEGACY_METADATA_FILE))) {
+    return false;
+  }
+  try {
+    await fs.rm(metadataPath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function buildNearbytesMarkerHtml(): string {
@@ -512,6 +604,10 @@ function toCanonicalPathKey(targetPath: string): string {
   return normalized;
 }
 
+function normalizeComparablePath(targetPath: string): string {
+  return toCanonicalPathKey(path.resolve(targetPath));
+}
+
 export function classifyNearbytesProviderName(entryName: string): RootProvider | null {
   const lower = entryName.toLowerCase();
   if (lower.includes('dropbox')) {
@@ -560,8 +656,8 @@ function parseScanPathsFromEnv(value: string | undefined): string[] {
 async function listVolumeIds(channelsPath: string): Promise<string[]> {
   const entries = await safeReadDir(channelsPath);
   return entries
-    .filter((entry) => entry.isDirectory() && CHANNEL_DIRECTORY_REGEX.test(entry.name))
-    .map((entry) => entry.name.toLowerCase())
+    .map((entry) => (entry.isDirectory() ? normalizeVolumeId(entry.name) : null))
+    .filter((entry): entry is string => entry !== null)
     .sort((left, right) => left.localeCompare(right));
 }
 

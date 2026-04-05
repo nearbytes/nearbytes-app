@@ -3,15 +3,19 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import type express from 'express';
 import { createCryptoOperations } from '../crypto/index.js';
+import { isProviderEnabled } from '../config/appConfig.js';
 import { createChatService } from '../domain/chatService.js';
 import { createFileService } from '../domain/fileService.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../config/roots.js';
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
+import { ManagedShareService } from '../integrations/managedShares.js';
 import type { ManagedShareServiceOptions } from '../integrations/managedShares.js';
+import { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { StorageError } from '../types/errors.js';
 import { createApp } from './app.js';
+import type { UiDebugExecutor } from './uiDebug.js';
 
 export interface RuntimeLogger {
   readonly log: (...args: unknown[]) => void;
@@ -30,6 +34,7 @@ export interface ApiRuntimeOptions {
   readonly uiDistPath?: string;
   readonly logger?: RuntimeLogger;
   readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
+  readonly uiDebugExecutor?: UiDebugExecutor;
 }
 
 export interface ApiRuntimeHandle {
@@ -92,7 +97,27 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
       .find((source) => source?.enabled)?.path ?? defaultStorageDir;
 
   await ensureBootstrapDirectories(storage, logger);
-  await storage.reconcileConfiguredVolumes();
+  storage.startRepairMonitor();
+  void storage.reconcileConfiguredVolumes().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`Warning: background storage reconcile failed during startup: ${message}`);
+  });
+
+  const managedShareService = new ManagedShareService({
+    storage,
+    rootsConfigPath: loaded.configPath,
+    readMaintenanceMode: 'background',
+    ...options.integrationOptions,
+  });
+  const localNetworkSyncService = isProviderEnabled('local-network')
+    ? new LocalNetworkSyncService(storage, {
+        storageDir: defaultStorageDir,
+      })
+    : undefined;
+  void managedShareService.warmupBackgroundActivity('runtime startup').catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`Warning: managed share startup bootstrap failed: ${message}`);
+  });
 
   const app = createApp({
     fileService,
@@ -107,12 +132,27 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     desktopApiToken: options.desktopApiToken,
     uiDistPath: options.uiDistPath,
     integrationOptions: options.integrationOptions,
+    managedShareService,
+    localNetworkSyncService,
+    uiDebugExecutor: options.uiDebugExecutor,
   });
 
   const server = await listen(app, host, port);
   const bound = getBoundPort(server);
+  if (localNetworkSyncService) {
+    void localNetworkSyncService.start(bound).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`Warning: local network sync startup failed: ${message}`);
+    });
+  }
 
-  const stop = createStop(server);
+  const stop = createStop(server, async () => {
+    storage.stopRepairMonitor();
+    if (localNetworkSyncService) {
+      await localNetworkSyncService.stop();
+    }
+    await managedShareService.dispose();
+  });
   latestStop = stop;
 
   return {
@@ -247,7 +287,7 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-function createStop(server: Server): () => Promise<void> {
+function createStop(server: Server, onStop?: () => Promise<void> | void): () => Promise<void> {
   let stopped = false;
   const stopFn = async () => {
     if (stopped) {
@@ -255,6 +295,7 @@ function createStop(server: Server): () => Promise<void> {
     }
     stopped = true;
     await closeServer(server);
+    await onStop?.();
     if (latestStop === stopFn) {
       latestStop = null;
     }

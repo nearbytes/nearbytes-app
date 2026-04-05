@@ -165,9 +165,10 @@ export interface SnapshotResponse {
 
 export interface TimelineEvent {
   eventHash: string;
-  type: 'CREATE_FILE' | 'DELETE_FILE' | 'RENAME_FILE' | 'DECLARE_IDENTITY' | 'CHAT_MESSAGE';
+  type: 'CREATE_FILE' | 'DELETE_FILE' | 'RENAME_FILE' | 'DECLARE_IDENTITY' | 'CHAT_MESSAGE' | 'APP_RECORD';
   filename: string;
   timestamp: number;
+  protocol?: string;
   blobHash?: string;
   contentType?: 'b' | 'm';
   toFilename?: string;
@@ -192,24 +193,31 @@ export interface TimelineResponse {
   events: TimelineEvent[];
 }
 
+export interface SerializedEventPayload {
+  type: string;
+  fileName: string;
+  toFileName?: string;
+  hash: string;
+  encryptedKey: string;
+  contentType?: 'b' | 'm';
+  size?: number;
+  mimeType?: string;
+  createdAt?: number;
+  deletedAt?: number;
+  renamedAt?: number;
+  authorPublicKey?: string;
+  protocol?: string;
+  record?: string;
+  message?: string;
+  publishedAt?: number;
+}
+
 export interface SerializedEvent {
-  payload: {
-    type: string;
-    fileName: string;
-    toFileName?: string;
-    hash: string;
-    encryptedKey: string;
-    contentType?: 'b' | 'm';
-    size?: number;
-    mimeType?: string;
-    createdAt?: number;
-    deletedAt?: number;
-    renamedAt?: number;
-    authorPublicKey?: string;
-    protocol?: string;
-    record?: string;
-    message?: string;
-    publishedAt?: number;
+  envelope: {
+    version: string;
+    publicKey: string;
+    blockRefs: string[];
+    ciphertext: string;
   };
   signature: string;
 }
@@ -217,6 +225,25 @@ export interface SerializedEvent {
 export interface EventDetailResponse {
   eventHash: string;
   event: SerializedEvent;
+  decryptedPayload?: SerializedEventPayload;
+}
+
+export interface EventStorageLocationEntry {
+  rootId: string | null;
+  provider: SourceProvider | string;
+  rootPath: string;
+  eventPath: string;
+  dataPath: string | null;
+  hasEventFile: boolean;
+  hasDataBlock: boolean;
+}
+
+export interface EventStorageLocationsResponse {
+  eventHash: string;
+  volumeId: string;
+  expectedEventRelativePath: string;
+  expectedDataRelativePath: string | null;
+  locations: EventStorageLocationEntry[];
 }
 
 export interface RenameFolderSummary {
@@ -392,10 +419,26 @@ export interface ProviderCatalogEntry {
   label: string;
   description: string;
   badges: string[];
+  enabled?: boolean;
   isConnected: boolean;
   connectionState: 'available' | 'connected' | 'setup';
   accountId?: string;
   setup: ProviderSetupState;
+}
+
+export interface AppConfig {
+  version: 1;
+  features: {
+    providers: {
+      googleDrive: boolean;
+      mega: boolean;
+      github: boolean;
+      localNetwork: boolean;
+    };
+    performance: {
+      appMetrics: boolean;
+    };
+  };
 }
 
 export interface ProviderSetupState {
@@ -448,6 +491,16 @@ export interface TransportState {
   detail: string;
   badges: string[];
   lastSyncAt?: number;
+  diagnostic?: {
+    code: string;
+    title: string;
+    summary: string;
+    detail?: string;
+    facts?: Array<{
+      label: string;
+      value: string;
+    }>;
+  };
 }
 
 export interface ManagedShareSummary {
@@ -468,6 +521,25 @@ export interface ManagedShareSummary {
     remoteTotalBytes?: number;
     remoteUsedBytes?: number;
   };
+}
+
+export interface IncomingManagedShareOffer {
+  id: string;
+  provider: string;
+  accountId: string;
+  label: string;
+  ownerLabel: string;
+  detail: string;
+  remoteDescriptor: Record<string, unknown>;
+  suggestedLocalPath?: string;
+}
+
+export interface IncomingProviderContactInvite {
+  id: string;
+  provider: string;
+  accountId: string;
+  label: string;
+  detail: string;
 }
 
 export interface PlannedTransportCandidate {
@@ -496,8 +568,65 @@ export interface ProviderAccountsResponse {
   preferredProviders: string[];
 }
 
+export interface AppConfigResponse {
+  config: AppConfig;
+}
+
 export interface ManagedSharesResponse {
   shares: ManagedShareSummary[];
+}
+
+export interface IncomingManagedSharesResponse {
+  shares: IncomingManagedShareOffer[];
+}
+
+export interface IncomingProviderContactInvitesResponse {
+  invites: IncomingProviderContactInvite[];
+}
+
+export interface LocalNetworkPeer {
+  peerId: string;
+  label: string;
+  address: string;
+  port: number;
+  endpointUrl: string;
+  capabilities: string[];
+  volumeIds: string[];
+  firstSeenAt: number;
+  lastSeenAt: number;
+  lastHelloAt: number | null;
+  lastSyncAt: number | null;
+  lastSyncStartedAt: number | null;
+  lastSyncError: string | null;
+  lastSyncNotice: string | null;
+  lastImportedEvents: number;
+  lastImportedBlocks: number;
+  remoteCursorObservationId?: string | null;
+  lastRemoteHeadObservationId?: string | null;
+  status: 'ready' | 'syncing' | 'error' | 'stale';
+  detail: string;
+}
+
+export interface LocalNetworkServiceState {
+  protocol: string;
+  peerId: string;
+  label: string;
+  listening: boolean;
+  port: number | null;
+  discovery: 'dns-sd+multicast-fallback';
+  transport: 'webrtc';
+  serviceType: string;
+  announceIntervalMs: number;
+  peerCount: number;
+}
+
+export interface LocalNetworkPeersResponse {
+  service: LocalNetworkServiceState;
+  peers: LocalNetworkPeer[];
+}
+
+export interface LocalNetworkPeerMutationResponse {
+  peer: LocalNetworkPeer;
 }
 
 export interface ConnectProviderAccountResponse {
@@ -508,6 +637,13 @@ export interface ConnectProviderAccountResponse {
 
 export interface ConfigureProviderResponse {
   setup: ProviderSetupState;
+}
+
+export interface ReconcileProviderManagedSharesResponse {
+  provider: string;
+  adoptedShares: number;
+  retiredShares: number;
+  migratedShares: number;
 }
 
 export interface ManagedShareMutationResponse {
@@ -582,6 +718,47 @@ export interface RootRuntimeStatus {
 export interface RootsRuntimeSnapshot {
   sources: RootRuntimeStatus[];
   writeFailures: RootWriteFailure[];
+}
+
+export interface StorageLocationIssue {
+  code:
+    | 'unexpected-top-level-entry'
+    | 'invalid-block-file-name'
+    | 'invalid-channel-directory'
+    | 'invalid-event-file-name'
+    | 'block-hash-mismatch'
+    | 'event-deserialize-failed'
+    | 'event-hash-mismatch'
+    | 'event-signature-invalid';
+  severity: 'warn' | 'error';
+  relativePath: string;
+  absolutePath: string;
+  detail: string;
+}
+
+export interface StorageLocationRepairReport {
+  sourceId: string;
+  path: string;
+  issueCount: number;
+  cleanupCandidateCount: number;
+  issues: StorageLocationIssue[];
+}
+
+export interface StorageLocationRepairResult {
+  sourceId: string;
+  removedCount: number;
+  issueCount: number;
+  cleanupCandidateCount: number;
+  action: 'delete' | 'trash';
+}
+
+export interface StorageLocationRepairReportResponse {
+  report: StorageLocationRepairReport;
+}
+
+export interface StorageLocationRepairResponse {
+  result: StorageLocationRepairResult;
+  report: StorageLocationRepairReport;
 }
 
 export interface RootsConfigResponse {
@@ -774,7 +951,80 @@ interface NearbytesDesktopBridge {
   getApiBaseUrl?: () => Promise<string>;
   getDesktopToken?: () => Promise<string>;
   chooseDirectory?: (initialPath?: string) => Promise<string | null>;
+  revealPathInFileManager?: (targetPath: string) => Promise<unknown>;
+  readRuntimeLogs?: () => Promise<DesktopRuntimeLogsResponse>;
   isDesktop?: (() => boolean) | boolean;
+}
+
+export interface UiDebugCapabilities {
+  available: boolean;
+  actions: Array<
+    'inspect'
+    | 'quitApp'
+    | 'navigate'
+    | 'waitFor'
+    | 'click'
+    | 'type'
+    | 'pressKey'
+    | 'read'
+    | 'screenshot'
+    | 'snapshotDom'
+    | 'filesystem.readTextFile'
+    | 'mega.syncUntilFileReadable'
+  >;
+  screenshot: boolean;
+  title?: string;
+  url?: string;
+}
+
+export type UiDebugAction =
+  | { type: 'inspect' }
+  | { type: 'quitApp' }
+  | { type: 'navigate'; path?: string; url?: string; waitForLoad?: boolean }
+  | { type: 'waitFor'; selector: string; state?: 'present' | 'visible' | 'hidden'; timeoutMs?: number; pollIntervalMs?: number }
+  | { type: 'click'; selector: string }
+  | { type: 'type'; selector: string; value: string; clear?: boolean; submit?: boolean }
+  | { type: 'pressKey'; key: string; alt?: boolean; control?: boolean; meta?: boolean; shift?: boolean }
+  | { type: 'read'; selector: string; field?: 'text' | 'html' | 'outerHtml' | 'value'; attribute?: string }
+  | { type: 'screenshot'; path?: string; selector?: string; fullPage?: boolean }
+  | { type: 'snapshotDom'; selector?: string; maxLength?: number }
+  | { type: 'filesystem.readTextFile'; path: string; maxBytes?: number }
+  | {
+      type: 'mega.syncUntilFileReadable';
+      shareId?: string;
+      ownerEmail?: string;
+      shareName?: string;
+      relativePath?: string;
+      timeoutMs?: number;
+      pollIntervalMs?: number;
+      maxBytes?: number;
+    };
+
+export interface UiDebugRunResponse {
+  ok: boolean;
+  actionCount: number;
+  results: Array<{
+    type: UiDebugAction['type'];
+    ok: boolean;
+    durationMs: number;
+    result?: Record<string, unknown>;
+    error?: string;
+  }>;
+}
+
+export interface DesktopRuntimeLogEntry {
+  id: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  size: number;
+  updatedAt: number | null;
+  content: string;
+}
+
+export interface DesktopRuntimeLogsResponse {
+  generatedAt: number;
+  entries: DesktopRuntimeLogEntry[];
 }
 
 const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
@@ -823,11 +1073,18 @@ export async function chooseDirectoryPath(initialPath = ''): Promise<string | nu
   return bridge.chooseDirectory(initialPath);
 }
 
-function isElectronRenderer(): boolean {
-  if (typeof navigator === 'undefined') {
-    return false;
+export async function readDesktopRuntimeLogs(): Promise<DesktopRuntimeLogsResponse | null> {
+  const bridge = getDesktopBridge();
+  if (!bridge || typeof bridge.readRuntimeLogs !== 'function') {
+    return null;
   }
-  return /\bElectron\//.test(navigator.userAgent);
+  return bridge.readRuntimeLogs();
+}
+
+/** True when the desktop bridge can read dev backend log files (stdout/stderr tails). Not used for native MEGA sync state. */
+export function hasDesktopRuntimeLogsBridge(): boolean {
+  const bridge = getDesktopBridge();
+  return Boolean(bridge && typeof bridge.readRuntimeLogs === 'function');
 }
 
 function useSameOriginDesktopProxy(runtimeConfig: DesktopRuntimeConfig): boolean {
@@ -838,7 +1095,7 @@ function useSameOriginDesktopProxy(runtimeConfig: DesktopRuntimeConfig): boolean
   return (
     (protocol === 'http:' || protocol === 'https:') &&
     (hostname === '127.0.0.1' || hostname === 'localhost') &&
-    port === '5173'
+    port === getConfiguredDesktopDevPort()
   );
 }
 
@@ -849,24 +1106,22 @@ function getRequestBaseUrl(runtimeConfig: DesktopRuntimeConfig): string {
   return runtimeConfig.apiBaseUrl;
 }
 
+function getConfiguredDesktopDevPort(): string {
+  const configured = import.meta.env?.VITE_NEARBYTES_WEB_DEV_PORT;
+  return typeof configured === 'string' && configured.trim().length > 0 ? configured.trim() : '5177';
+}
+
 async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {
   if (runtimeConfigPromise) {
     return runtimeConfigPromise;
   }
 
-  const bridge = getDesktopBridge();
-  if (!bridge) {
-    if (isElectronRenderer()) {
-      runtimeConfigPromise = Promise.reject(
-        new Error('Nearbytes desktop bridge is unavailable in Electron renderer.')
-      );
-      return runtimeConfigPromise;
+  const nextPromise = (async () => {
+    const bridge = getDesktopBridge();
+    if (!bridge) {
+      return WEB_RUNTIME_CONFIG;
     }
-    runtimeConfigPromise = Promise.resolve(WEB_RUNTIME_CONFIG);
-    return runtimeConfigPromise;
-  }
 
-  runtimeConfigPromise = (async () => {
     if (typeof bridge.getRuntimeConfig !== 'function') {
       throw new Error('Nearbytes desktop bridge is missing getRuntimeConfig().');
     }
@@ -880,7 +1135,16 @@ async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {
       isDesktop: config.isDesktop === true,
     };
   })();
-  return runtimeConfigPromise;
+
+  runtimeConfigPromise = nextPromise;
+  try {
+    return await nextPromise;
+  } catch (error) {
+    if (runtimeConfigPromise === nextPromise) {
+      runtimeConfigPromise = null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -987,6 +1251,19 @@ export async function getTimeline(auth: Auth): Promise<TimelineResponse> {
  */
 export async function getEventDetail(auth: Auth, eventHash: string): Promise<EventDetailResponse> {
   return apiRequest<EventDetailResponse>(`/events/${eventHash}`, {
+    method: 'GET',
+    auth,
+  });
+}
+
+/**
+ * Returns expected event/block paths and per-root presence for a specific event.
+ */
+export async function getEventStorageLocations(
+  auth: Auth,
+  eventHash: string
+): Promise<EventStorageLocationsResponse> {
+  return apiRequest<EventStorageLocationsResponse>(`/events/${eventHash}/storage-locations`, {
     method: 'GET',
     auth,
   });
@@ -1156,9 +1433,11 @@ export async function computeSnapshot(auth: Auth): Promise<SnapshotResponse> {
 /**
  * Reads local multi-root storage configuration.
  */
-export async function getRootsConfig(): Promise<RootsConfigResponse> {
-  return apiRequest<RootsConfigResponse>('/config/roots', {
+export async function getRootsConfig(options: { signal?: AbortSignal; includeUsage?: boolean } = {}): Promise<RootsConfigResponse> {
+  const query = options.includeUsage === true ? '?includeUsage=1' : '';
+  return apiRequest<RootsConfigResponse>(`/config/roots${query}`, {
     method: 'GET',
+    signal: options.signal,
   });
 }
 
@@ -1212,6 +1491,39 @@ export async function openRootInFileManager(rootId: string): Promise<void> {
   }
 }
 
+export async function getStorageLocationRepairReport(sourceId: string): Promise<StorageLocationRepairReportResponse> {
+  const encodedSourceId = encodeURIComponent(sourceId);
+  return apiRequest<StorageLocationRepairReportResponse>(`/config/roots/sources/${encodedSourceId}/repair`, {
+    method: 'GET',
+  });
+}
+
+export async function repairStorageLocation(
+  sourceId: string,
+  action: 'trash' | 'delete'
+): Promise<StorageLocationRepairResponse> {
+  const encodedSourceId = encodeURIComponent(sourceId);
+  return apiRequest<StorageLocationRepairResponse>(`/config/roots/sources/${encodedSourceId}/repair`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  });
+}
+
+/**
+ * Opens an explicit path in the OS file manager.
+ */
+export async function openPathInFileManager(targetPath: string): Promise<void> {
+  const bridge = getDesktopBridge();
+  if (bridge && typeof bridge.revealPathInFileManager === 'function') {
+    await bridge.revealPathInFileManager(targetPath);
+    return;
+  }
+  await apiRequest('/config/open-path-in-file-manager', {
+    method: 'POST',
+    body: JSON.stringify({ path: targetPath }),
+  });
+}
+
 /**
  * Scans local synced directories for Nearbytes marker locations.
  */
@@ -1243,9 +1555,28 @@ export async function reconcileDiscoveredSources(
   });
 }
 
-export async function listProviderAccounts(): Promise<ProviderAccountsResponse> {
-  return apiRequest<ProviderAccountsResponse>('/integrations/accounts', {
+export async function listProviderAccounts(
+  options: { signal?: AbortSignal; fast?: boolean } = {}
+): Promise<ProviderAccountsResponse> {
+  const endpoint = options.fast ? '/integrations/accounts?fast=1' : '/integrations/accounts';
+  return apiRequest<ProviderAccountsResponse>(endpoint, {
     method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function getAppConfig(options: { signal?: AbortSignal } = {}): Promise<AppConfigResponse> {
+  return apiRequest<AppConfigResponse>('/config/app', {
+    method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function updateProviderEnabled(provider: string, enabled: boolean): Promise<AppConfigResponse> {
+  const encoded = encodeURIComponent(provider);
+  return apiRequest<AppConfigResponse>(`/config/app/providers/${encoded}`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
   });
 }
 
@@ -1303,9 +1634,66 @@ export async function installProviderHelper(
   });
 }
 
-export async function listManagedShares(): Promise<ManagedSharesResponse> {
-  return apiRequest<ManagedSharesResponse>('/integrations/shares', {
+export async function reconcileProviderManagedShares(
+  provider: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<ReconcileProviderManagedSharesResponse> {
+  const encoded = encodeURIComponent(provider);
+  return apiRequest<ReconcileProviderManagedSharesResponse>(`/integrations/providers/${encoded}/reconcile`, {
+    method: 'POST',
+    signal: options.signal,
+  });
+}
+
+export async function listManagedShares(
+  options: { signal?: AbortSignal; fast?: boolean } = {}
+): Promise<ManagedSharesResponse> {
+  const endpoint = options.fast ? '/integrations/shares?fast=1' : '/integrations/shares';
+  return apiRequest<ManagedSharesResponse>(endpoint, {
     method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function listIncomingManagedShares(
+  options: { signal?: AbortSignal; fast?: boolean } = {}
+): Promise<IncomingManagedSharesResponse> {
+  const endpoint = options.fast ? '/integrations/shares/incoming?fast=1' : '/integrations/shares/incoming';
+  return apiRequest<IncomingManagedSharesResponse>(endpoint, {
+    method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function listIncomingProviderContactInvites(
+  options: { signal?: AbortSignal; fast?: boolean } = {}
+): Promise<IncomingProviderContactInvitesResponse> {
+  const endpoint = options.fast
+    ? '/integrations/providers/contact-invites?fast=1'
+    : '/integrations/providers/contact-invites';
+  return apiRequest<IncomingProviderContactInvitesResponse>(endpoint, {
+    method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function listLocalNetworkPeers(
+  options: { signal?: AbortSignal } = {}
+): Promise<LocalNetworkPeersResponse> {
+  return apiRequest<LocalNetworkPeersResponse>('/integrations/local-network/peers', {
+    method: 'GET',
+    signal: options.signal,
+  });
+}
+
+export async function syncLocalNetworkPeer(
+  peerId: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<LocalNetworkPeerMutationResponse> {
+  const encoded = encodeURIComponent(peerId);
+  return apiRequest<LocalNetworkPeerMutationResponse>(`/integrations/local-network/peers/${encoded}/sync`, {
+    method: 'POST',
+    signal: options.signal,
   });
 }
 
@@ -1327,12 +1715,13 @@ export async function createManagedShare(input: {
 
 export async function inviteManagedShare(
   shareId: string,
-  emails: string[]
+  emails: string[],
+  accessLevel?: 'read' | 'read/write' | 'full access'
 ): Promise<ManagedShareMutationResponse> {
   const encoded = encodeURIComponent(shareId);
   return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/invite`, {
     method: 'POST',
-    body: JSON.stringify({ emails }),
+    body: JSON.stringify({ emails, accessLevel }),
   });
 }
 
@@ -1347,6 +1736,13 @@ export async function attachManagedShare(
   });
 }
 
+export async function removeManagedShare(shareId: string): Promise<void> {
+  const encoded = encodeURIComponent(shareId);
+  await apiRequest<{ ok: true }>(`/integrations/shares/${encoded}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function acceptManagedShare(input: {
   provider: string;
   accountId: string;
@@ -1354,8 +1750,20 @@ export async function acceptManagedShare(input: {
   volumeId?: string;
   localPath?: string;
   remoteDescriptor?: Record<string, unknown>;
+  capabilities?: string[];
 }): Promise<ManagedShareMutationResponse> {
   return apiRequest<ManagedShareMutationResponse>('/integrations/shares/accept', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function acceptIncomingProviderContactInvite(input: {
+  provider: string;
+  accountId: string;
+  inviteId: string;
+}): Promise<void> {
+  await apiRequest<{ ok: true }>('/integrations/providers/contact-invites/accept', {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -1365,6 +1773,46 @@ export async function getManagedShareState(shareId: string): Promise<ManagedShar
   const encoded = encodeURIComponent(shareId);
   return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/state`, {
     method: 'GET',
+  });
+}
+
+export async function getUiDebugCapabilities(): Promise<UiDebugCapabilities> {
+  return apiRequest<UiDebugCapabilities>('/__debug/ui', {
+    method: 'GET',
+  });
+}
+
+export async function runUiDebugActions(
+  actions: UiDebugAction[],
+  options: { stopOnError?: boolean } = {}
+): Promise<UiDebugRunResponse> {
+  return apiRequest<UiDebugRunResponse>('/__debug/ui/actions/run', {
+    method: 'POST',
+    body: JSON.stringify({
+      actions,
+      stopOnError: options.stopOnError ?? true,
+    }),
+  });
+}
+
+export async function captureUiDebugScreenshot(input: {
+  path?: string;
+  selector?: string;
+  fullPage?: boolean;
+} = {}): Promise<UiDebugRunResponse> {
+  return apiRequest<UiDebugRunResponse>('/__debug/ui/screenshot', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function captureUiDebugDomSnapshot(input: {
+  selector?: string;
+  maxLength?: number;
+} = {}): Promise<UiDebugRunResponse> {
+  return apiRequest<UiDebugRunResponse>('/__debug/ui/dom', {
+    method: 'POST',
+    body: JSON.stringify(input),
   });
 }
 
@@ -1392,13 +1840,15 @@ export async function openJoinLink(input: {
   });
 }
 
+import { uiDebugLog } from './debug.js';
+
 export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnection {
   const abortController = new AbortController();
   const connectionId = Math.random().toString(36).slice(2, 8);
 
   void (async () => {
     try {
-      console.log(`[watch-sources:${connectionId}] opening`);
+      uiDebugLog('watchers', `[watch-sources:${connectionId}] opening`);
       const runtimeConfig = await getRuntimeConfig();
       const headers = new Headers();
       if (runtimeConfig.desktopToken.trim().length > 0) {
@@ -1420,7 +1870,7 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
         throw new Error('Source watch stream is not available');
       }
 
-      console.log(`[watch-sources:${connectionId}] opened`);
+      uiDebugLog('watchers', `[watch-sources:${connectionId}] opened`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -1441,11 +1891,11 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
         }
       }
 
-      console.log(`[watch-sources:${connectionId}] stream ended`);
+      uiDebugLog('watchers', `[watch-sources:${connectionId}] stream ended`);
       handlers.onClose?.();
     } catch (error) {
       if (abortController.signal.aborted) {
-        console.log(`[watch-sources:${connectionId}] aborted`);
+        uiDebugLog('watchers', `[watch-sources:${connectionId}] aborted`);
         handlers.onClose?.();
         return;
       }
@@ -1460,7 +1910,7 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
 
   return {
     close() {
-      console.log(`[watch-sources:${connectionId}] close requested`);
+      uiDebugLog('watchers', `[watch-sources:${connectionId}] close requested`);
       abortController.abort();
     },
   };
@@ -1475,7 +1925,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
 
   void (async () => {
     try {
-      console.log(`[watch-volume:${connectionId}] opening`);
+      uiDebugLog('watchers', `[watch-volume:${connectionId}] opening`);
       const runtimeConfig = await getRuntimeConfig();
       const headers = new Headers(createAuthHeaders(auth));
       if (runtimeConfig.desktopToken.trim().length > 0) {
@@ -1497,7 +1947,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
         throw new Error('Watch stream is not available');
       }
 
-      console.log(`[watch-volume:${connectionId}] opened`);
+      uiDebugLog('watchers', `[watch-volume:${connectionId}] opened`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -1518,11 +1968,11 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
         }
       }
 
-      console.log(`[watch-volume:${connectionId}] stream ended`);
+      uiDebugLog('watchers', `[watch-volume:${connectionId}] stream ended`);
       handlers.onClose?.();
     } catch (error) {
       if (abortController.signal.aborted) {
-        console.log(`[watch-volume:${connectionId}] aborted`);
+        uiDebugLog('watchers', `[watch-volume:${connectionId}] aborted`);
         handlers.onClose?.();
         return;
       }
@@ -1537,7 +1987,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
 
   return {
     close() {
-      console.log(`[watch-volume:${connectionId}] close requested`);
+      uiDebugLog('watchers', `[watch-volume:${connectionId}] close requested`);
       abortController.abort();
     },
   };

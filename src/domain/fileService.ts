@@ -8,9 +8,10 @@ import { createCryptoOperations } from '../crypto/index.js';
 import { DecryptionError } from '../crypto/errors.js';
 import { FilesystemStorageBackend } from '../storage/filesystem.js';
 import { ChannelStorage } from '../storage/channel.js';
+import { validateBlockBytes } from '../storage/integrity.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { defaultPathMapper } from '../types/storage.js';
-import { serializeEvent, serializeEventPayload } from '../storage/serialization.js';
+import { serializeEvent, serializeEventEnvelope, serializeInnerEventPayloadJson } from '../storage/serialization.js';
 import { openVolume, loadEventLog, verifyEventLog } from './volume.js';
 import type { FileMetadata } from './fileEvents.js';
 import type { EventLogEntry } from '../types/volume.js';
@@ -43,6 +44,7 @@ import {
   type SourceReferenceBundle,
 } from './fileReferenceCodec.js';
 import { dedupeOrderedFilenames, resolveImportedFilename } from './fileCommands.js';
+import { createSignedEvent } from './eventEnvelope.js';
 
 const SNAPSHOT_FILE_NAME = 'snapshot.latest.json';
 const SNAPSHOT_VERSION = 1;
@@ -81,6 +83,7 @@ export interface TimelineEvent {
   type: EventType;
   filename: string;
   timestamp: number;
+  protocol?: string;
   toFilename?: string;
   blobHash?: string;
   contentType?: FileContentType;
@@ -102,6 +105,7 @@ export interface TimelineEvent {
 export interface EventDetail {
   eventHash: string;
   event: SerializedEvent;
+  decryptedPayload?: ReturnType<typeof serializeInnerEventPayloadJson>;
 }
 
 export interface RenameFolderSummary {
@@ -175,6 +179,7 @@ interface StoredTimelineRow {
   timestamp: number;
   hasExplicitTimestamp: boolean;
   sequence: number;
+  protocol?: string;
   toFilename?: string;
   blobHash?: string;
   encryptedKey?: EncryptedData;
@@ -552,7 +557,7 @@ async function renameFolderWithDeps(
 
   const normalizedSecret = normalizeSecret(secret);
   const volume = await openVolume(normalizedSecret, crypto, storage, pathMapper);
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
 
   const files = materializeFilesFromEntries(entries);
@@ -634,7 +639,7 @@ async function renameFileWithDeps(
 
   const normalizedSecret = normalizeSecret(secret);
   const volume = await openVolume(normalizedSecret, crypto, storage, pathMapper);
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
 
   const files = materializeFilesFromEntries(entries);
@@ -666,7 +671,7 @@ async function listFilesWithDeps(
   pathMapper: ChannelPathMapper
 ): Promise<FileMetadata[]> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
   return materializeFilesFromEntries(entries);
 }
@@ -681,7 +686,7 @@ async function getFileWithDeps(
 ): Promise<Buffer> {
   const normalizedSecret = normalizeSecret(secret);
   const volume = await openVolume(normalizedSecret, crypto, storage, pathMapper);
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
 
   const currentFile = materializeStoredFilesFromEntries(entries).find((file) => file.blobHash === blobHash);
@@ -709,7 +714,7 @@ async function computeSnapshotWithDeps(
   now: () => number
 ): Promise<SnapshotSummary> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
 
   const snapshot: StoredVolumeSnapshot = {
@@ -740,7 +745,7 @@ async function getTimelineWithDeps(
   pathMapper: ChannelPathMapper
 ): Promise<TimelineEvent[]> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
   return mapEntriesToTimeline(entries);
 }
@@ -755,15 +760,19 @@ async function getEventWithDeps(
 ): Promise<EventDetail> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
   const hash = createHash(eventHash);
-  const signedEvent = await channelStorage.retrieveEvent(volume.publicKey, hash);
-  const payloadBytes = serializeEventPayload(signedEvent.payload);
+  const keyPair = await crypto.deriveKeys(volume.secret);
+  const signedEvent = await channelStorage.retrieveEvent(keyPair.publicKey, hash);
+  const payloadBytes = serializeEventEnvelope(signedEvent.envelope);
   const isValid = await crypto.verifyPU(payloadBytes, signedEvent.signature, volume.publicKey);
   if (!isValid) {
     throw new Error(`Event signature verification failed for event ${hash}`);
   }
+  const entries = await loadEventLog(volume, channelStorage, crypto);
+  const entry = entries.find((candidate) => candidate.eventHash === hash);
   return {
     eventHash: hash,
     event: serializeEvent(signedEvent),
+    decryptedPayload: entry ? serializeInnerEventPayloadJson(entry.signedEvent.payload) : undefined,
   };
 }
 
@@ -1036,6 +1045,7 @@ function mapEntriesToTimeline(entries: EventLogEntry[]): TimelineEvent[] {
     type: row.type,
     filename: row.filename,
     timestamp: row.timestamp,
+    protocol: row.protocol,
     toFilename: row.toFilename,
     blobHash: row.blobHash,
     contentType: row.contentType,
@@ -1217,11 +1227,12 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
         const displayName = identityRecord?.profile.displayName;
         rows.push({
           eventHash: entry.eventHash,
-          type: EventType.DECLARE_IDENTITY,
+          type: EventType.APP_RECORD,
           filename: '',
           timestamp: inferredTimestamp,
           hasExplicitTimestamp: true,
           sequence,
+          protocol: payload.protocol,
           publishedAt: inferredTimestamp,
           authorPublicKey: payload.authorPublicKey,
           displayName,
@@ -1237,11 +1248,12 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
         const displayName = identityRecord?.profile.displayName;
         rows.push({
           eventHash: entry.eventHash,
-          type: EventType.DECLARE_IDENTITY,
+          type: EventType.APP_RECORD,
           filename: '',
           timestamp: inferredTimestamp,
           hasExplicitTimestamp: true,
           sequence,
+          protocol: payload.protocol,
           publishedAt: inferredTimestamp,
           authorPublicKey: payload.authorPublicKey,
           displayName,
@@ -1257,11 +1269,12 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
         const attachmentName = chatMessage?.attachment?.name;
         rows.push({
           eventHash: entry.eventHash,
-          type: EventType.CHAT_MESSAGE,
+          type: EventType.APP_RECORD,
           filename: '',
           timestamp: inferredTimestamp,
           hasExplicitTimestamp: true,
           sequence,
+          protocol: payload.protocol,
           publishedAt: inferredTimestamp,
           authorPublicKey: payload.authorPublicKey,
           body,
@@ -1269,7 +1282,21 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
           summary: body ?? attachmentName ?? 'Attachment message',
           message: chatMessage ?? undefined,
         });
+        continue;
       }
+
+      rows.push({
+        eventHash: entry.eventHash,
+        type: EventType.APP_RECORD,
+        filename: '',
+        timestamp: inferredTimestamp,
+        hasExplicitTimestamp: true,
+        sequence,
+        protocol: payload.protocol,
+        publishedAt: inferredTimestamp,
+        authorPublicKey: payload.authorPublicKey,
+        summary: payload.protocol,
+      });
     }
   }
 
@@ -1282,7 +1309,7 @@ async function loadVolumeFiles(
   channelStorage: ChannelStorage,
   volume: Awaited<ReturnType<typeof openVolume>>
 ): Promise<{ entries: EventLogEntry[]; files: StoredFileRecord[] }> {
-  const entries = await loadEventLog(volume, channelStorage);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
   return {
     entries,
@@ -1398,6 +1425,10 @@ async function ensureDestinationBlockAvailable(
 ): Promise<void> {
   const dataPath = `blocks/${blobHash}.bin`;
   const encryptedData = await storage.readFile(dataPath);
+  const validation = await validateBlockBytes(blobHash, encryptedData);
+  if (!validation.ok) {
+    throw new Error(validation.detail ?? `Invalid block data for ${blobHash}`);
+  }
   await channelStorage.storeEncryptedData(blobHash as Hash, encryptedData as EncryptedData, false, destinationPublicKey);
 }
 
@@ -1525,9 +1556,8 @@ async function appendCreateEvent(
     mimeType: input.mimeType,
     createdAt: input.createdAt,
   };
-  const payloadBytes = serializeEventPayload(payload);
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
-  await channelStorage.storeEvent(keyPair.publicKey, { payload, signature });
+  const event = await createSignedEvent(crypto, keyPair, payload, [input.blobHash as Hash]);
+  await channelStorage.storeEvent(keyPair.publicKey, event);
 }
 
 async function appendDeleteEvent(
@@ -1544,9 +1574,8 @@ async function appendDeleteEvent(
     encryptedKey: createEncryptedData(new Uint8Array(0)),
     deletedAt,
   };
-  const payloadBytes = serializeEventPayload(payload);
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
-  await channelStorage.storeEvent(keyPair.publicKey, { payload, signature });
+  const event = await createSignedEvent(crypto, keyPair, payload, []);
+  await channelStorage.storeEvent(keyPair.publicKey, event);
 }
 
 async function appendRenameEvent(
@@ -1565,9 +1594,8 @@ async function appendRenameEvent(
     encryptedKey: createEncryptedData(new Uint8Array(0)),
     renamedAt,
   };
-  const payloadBytes = serializeEventPayload(payload);
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
-  await channelStorage.storeEvent(keyPair.publicKey, { payload, signature });
+  const event = await createSignedEvent(crypto, keyPair, payload, []);
+  await channelStorage.storeEvent(keyPair.publicKey, event);
 }
 
 function normalizeSecret(secret: string): Secret {

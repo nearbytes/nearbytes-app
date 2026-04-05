@@ -1,182 +1,105 @@
 # MEGA Integration Guide
 
-This guide explains how Nearbytes integrates with MEGA for cloud-backed encrypted storage.
+This guide describes the current Nearbytes MEGA model.
 
-## Overview
+## Current Model
 
-Two MEGA modes are now available:
+Nearbytes has two MEGA paths:
 
-- Legacy folder mode: Nearbytes writes directly into a local MEGA-synced folder controlled by `NEARBYTES_STORAGE_DIR`.
-- Managed provider mode: the desktop app can control MEGAcmd directly for provider-managed shares. Set `NEARBYTES_MEGACMD_DIR` if the MEGAcmd binaries are not already on `PATH`.
+- Managed provider mode: preferred. The desktop app talks to MEGA directly through the JavaScript implementation.
+- Legacy folder mode: optional. Nearbytes writes into a local MEGA-synced folder controlled by `NEARBYTES_STORAGE_DIR`.
 
-The legacy path below still works and remains useful for manual setups. The provider-managed flow is the preferred desktop onboarding path when you want Nearbytes to control login, sharing, and sync startup.
+Managed provider mode now supports writable owner shares, invite handling, incoming-share discovery, and automatic repair. The key rule is simple:
 
-**Shared workflow:** The team uses a shared MEGA folder with structure **MEGA** (top level) → **NearbytesStorage** → **NearbytesStorage** → **blocks**, **channels**. Anyone who clones the repo and is a shared member of that MEGA folder should sync it locally to the standard path (or set `NEARBYTES_STORAGE_DIR`); with the shared secrets they can run the app and see the same photos; new channels and uploads sync via MEGA.
+- Nearbytes publishes through your own writable MEGA Nearbytes root.
+- Nearbytes reads from incoming MEGA shares as local copies.
+- Nearbytes does not write directly into other people’s shared MEGA folders.
 
-## Storage Structure
+That keeps MEGA as a one-way publication channel per user while the existing Nearbytes storage merge layer combines local reads across sources.
 
-When the app uses the default path or you set `NEARBYTES_STORAGE_DIR` to a MEGA sync folder, Nearbytes writes the following structure:
+## Managed Provider Behavior
 
-```
-$HOME/MEGA/NearbytesStorage/NearbytesStorage/
-├── blocks/
-│   ├── <hash1>.bin
-│   ├── <hash2>.bin
-│   └── ...
-└── channels/
-    └── <channel-id>/
-        └── <event-hash>.bin
-```
+When you connect a MEGA account, Nearbytes automatically:
 
-### Blocks Directory
+1. Creates or reuses one writable owner base share at `/nearbytes` for that account.
+2. Repairs the local source entry for that share if paths drift.
+3. Adds that owner share to `defaultVolume` so it can publish blocks and channels.
+4. Discovers incoming shares and exposes them as local sources for reading and merge input.
 
-- Contains encrypted file blobs
-- Each blob is named by its SHA-256 hash
-- Files are encrypted with AES-256-GCM before storage
-- Content-addressed: same file content = same hash = same blob
+Incoming shares may carry MEGA permissions such as `read/write` or `full access`, and Nearbytes shows that provider access in the UI. Even so, accepted incoming shares stay read-only at the Nearbytes storage-routing layer. Local writes still go to the user’s own Nearbytes root.
 
-### Channels Directory
+## Storage Semantics
 
-- Contains event logs organized by channel (volume)
-- Each channel is identified by a public key derived from the secret
-- Event logs are signed and immutable
-- File state is reconstructed by replaying events
+In managed provider mode, think of the local storage view like this:
 
-## Setup Instructions
+- Owner MEGA root: writable publication destination.
+- Incoming MEGA shares: readable local copies.
+- Multi-root merge: combines reads from all enabled sources locally.
 
-### 1. Create MEGA Sync Folder
+This avoids remote cross-account writes while still letting Nearbytes absorb updates from collaborators.
 
-Create the folder that will be synced:
+## Read/Write Invites
 
-```bash
-mkdir -p "$HOME/MEGA/NearbytesStorage/NearbytesStorage"
-```
+Nearbytes can send MEGA invites with these access levels:
 
-### 2. Configure MEGA Desktop App
+- `read`
+- `read/write`
+- `full access`
 
-1. Open MEGA desktop application
-2. Go to Settings → Sync
-3. Add `$HOME/MEGA/NearbytesStorage/NearbytesStorage` as a sync folder
-4. Wait for initial sync to complete (folder should appear in MEGA web UI)
+The access level matters for MEGA itself and is reported in the share UI, but Nearbytes still treats accepted incoming shares as local read-only inputs. The writable publication path remains the owner’s `/nearbytes` share.
 
-### 3. Configure Nearbytes
+## Reliability Notes
 
-If your MEGA folder is at the standard path (`$HOME/MEGA/NearbytesStorage/NearbytesStorage`), no environment variable is needed—the app uses it by default. If your MEGA folder is elsewhere, set the environment variable before starting the server:
+The validated product path is the read/write owner-share flow. The old late-stage flake in the live test came from the test harness polling the wrong owner-side metadata path, not from the real app accept flow.
 
-```bash
-export NEARBYTES_STORAGE_DIR="$HOME/MEGA/NearbytesStorage/NearbytesStorage"
-npm run build
-npm run server
-```
+After switching validation to the same recipient-side incoming-offer discovery that the app uses, the read/write live matrix passed 5/5.
 
-The server will log: `Using storage dir: /Users/yourname/MEGA/NearbytesStorage/NearbytesStorage`
-
-### 4. Verify Sync
-
-1. Upload a file via the UI
-2. Check local directory: `ls "$HOME/MEGA/NearbytesStorage/NearbytesStorage/blocks"`
-3. Check MEGA web UI: files should appear in the MEGA web interface
+Readonly incoming-share reverse transport remains a MEGA-specific weak path and is not the recommended product configuration.
 
 ## Security Model
 
-### What MEGA Sees
+MEGA stores encrypted Nearbytes data only:
 
-MEGA only sees:
-- Encrypted blobs (AES-256-GCM encrypted)
-- Signed event files (events are signed; metadata is not additionally encrypted at the storage layer)
-- Hash-based block/event filenames
+- encrypted block blobs
+- signed channel/event files
+- hash-based filenames and share metadata needed by the provider
 
-MEGA **never** sees:
-- Plaintext file contents
-- Secrets or encryption keys
+MEGA does not receive plaintext file contents or Nearbytes secrets. Secrets stay local and keys are derived locally.
 
-### Key Derivation
+## Legacy Folder Mode
 
-- Secrets are never stored in MEGA
-- Keys are derived locally using PBKDF2 (100,000 iterations)
-- Each volume has a unique key pair derived from its secret
-- Without the secret, encrypted blobs are useless
+Legacy folder mode still works if you want MEGA desktop sync to mirror a local directory. In that setup, Nearbytes writes under the usual structure:
 
-## Cross-Machine Sync
+```text
+$HOME/MEGA/NearbytesStorage/NearbytesStorage/
+blocks/
+channels/
+```
 
-### Setup on Second Machine
-
-1. Install MEGA desktop app on second machine
-2. Configure same sync folder: `$HOME/MEGA/NearbytesStorage/NearbytesStorage`
-3. Wait for MEGA to sync files from cloud
-4. Start Nearbytes server with same `NEARBYTES_STORAGE_DIR`
-5. Enter the same secret in UI
-6. Files will materialize (decrypted locally using the secret)
-
-### Important Notes
-
-- **Same secret required**: Files are encrypted with keys derived from the secret. You must use the same secret on all machines.
-- **MEGA sync is automatic**: Once files are written locally, MEGA syncs them automatically. No manual upload needed.
-- **Offline support**: If MEGA is offline, Nearbytes continues to work locally. Files will sync when MEGA reconnects.
-
-## File Operations
-
-### Upload
-
-1. User uploads file via UI
-2. Nearbytes encrypts file locally
-3. Encrypted blob written to `blocks/<hash>.bin`
-4. Event log entry written to `channels/<channel-id>/<event-hash>.bin`
-5. MEGA desktop app detects new files and syncs to cloud
-
-### Download
-
-1. User requests file via UI
-2. Nearbytes reads encrypted blob from `blocks/<hash>.bin`
-3. Decrypts locally using secret-derived key
-4. Returns plaintext to user
-
-### Delete
-
-1. User deletes file via UI
-2. Nearbytes writes DELETE_FILE event to event log
-3. File disappears from volume (but encrypted blob remains in blocks/)
-4. Event log syncs to MEGA
+Use this only when you explicitly want the MEGA desktop client in the loop. Managed provider mode is the main desktop path now.
 
 ## Troubleshooting
 
-### Files Not Syncing
+If the MEGA storage panel looks stalled:
 
-- Check MEGA desktop app is running
-- Verify sync folder is configured in MEGA settings
-- Check MEGA web UI to see if files appear there
-- Ensure `NEARBYTES_STORAGE_DIR` points to the MEGA sync folder
+- check whether the account needs recovery on mega.io
+- wait for incoming-share discovery instead of reconnecting immediately
+- inspect the MEGA runtime logs from the storage panel before changing credentials
 
-### Files Not Appearing on Second Machine
+If a share appears writable in MEGA but read-only in Nearbytes, that is expected for incoming shares. Nearbytes intentionally reads from those local copies and publishes only through the connected account’s own Nearbytes root.
 
-- Wait for MEGA sync to complete (check MEGA desktop app status)
-- Verify same `NEARBYTES_STORAGE_DIR` path on both machines
-- Ensure you're using the same secret
-- Check MEGA web UI to confirm files are synced
+If a dev or E2E account was previously repaired with the old destructive reset flow and now shows the MEGA browser error about missing cryptographic keys, use the documented rebuild procedure in `docs/mega-key-manager-recovery.md` instead of deleting `^!keys` again.
 
-### Storage Directory Not Found
+## Recommendations
 
-- Ensure directory exists: `mkdir -p "$HOME/MEGA/NearbytesStorage/NearbytesStorage"`
-- Check permissions: directory must be writable
-- Verify path in server startup log
-
-## Best Practices
-
-1. **Keep MEGA client running**: Files only sync when MEGA desktop app is running
-2. **Don't move the folder**: If you move the MEGA folder, update `NEARBYTES_STORAGE_DIR` accordingly
-3. **Backup your secrets**: Without the secret, encrypted files cannot be decrypted
-4. **Monitor sync status**: Check MEGA desktop app to ensure files are syncing
-5. **Don't commit to git**: Add MEGA folder to `.gitignore` if it's in your repository
-
-## Limitations
-
-- **No MEGA API**: Nearbytes does not use MEGA API. It relies entirely on desktop sync folder.
-- **Sync delay**: Files sync asynchronously. There may be a delay before files appear on other machines.
-- **Storage quota**: Subject to your MEGA storage quota limits.
-- **No conflict resolution**: If two machines write simultaneously, MEGA handles conflicts at the file level.
+1. Use one connected MEGA account per user as that user’s publication root.
+2. Accept incoming shares for reading and merge input, not as write targets.
+3. Keep the owner `/nearbytes` share durable so new recipients can catch up later.
+4. Prefer the managed provider flow over MEGA desktop sync unless you specifically need the legacy local folder path.
 
 ## See Also
 
-- [Verification Checklist](verify-mega.md) - Step-by-step verification steps
-- [API Server Documentation](api-server.md) - Server configuration details
-- [File System Model](file-system.md) - Storage structure details
+- [verify-mega.md](verify-mega.md)
+- [mega-key-manager-recovery.md](mega-key-manager-recovery.md)
+- [mega-protocol.md](mega-protocol.md)
+- [file-system.md](file-system.md)

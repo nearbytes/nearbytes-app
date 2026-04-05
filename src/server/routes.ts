@@ -1,10 +1,11 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { Router } from 'express';
-import { spawn } from 'child_process';
 import { timingSafeEqual } from 'crypto';
-import { promises as fs } from 'fs';
+import { promises as fs, constants as fsConstants } from 'fs';
+import { join, resolve } from 'path';
 import os from 'os';
 import multer from 'multer';
+import { getAppConfig, setProviderEnabled } from '../config/appConfig.js';
 import { getSourceById, parseRootsConfig, saveRootsConfig } from '../config/roots.js';
 import { discoverNearbytesSources, ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { reconcileDiscoveredSources } from '../config/sourceReconcile.js';
@@ -19,10 +20,12 @@ import {
   ManagedShareServiceError,
   type ManagedShareServiceOptions,
 } from '../integrations/managedShares.js';
+import type { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { isProviderEnabled } from '../config/appConfig.js';
 import { bytesToHex } from '../utils/encoding.js';
 import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import { ApiError } from './errors.js';
+import { openInFileManager as revealPathInFileManager } from './fileManager.js';
 import { encodeSecretToken, getSecretFromRequest, validateSecret } from './auth.js';
 import type { SecretSessionStore } from './secretSessions.js';
 import { VolumeWatchHub } from './volumeWatchHub.js';
@@ -31,6 +34,7 @@ import {
   getStorageDiagnostics,
   getChannelDiagnostics,
 } from './storageDiagnostics.js';
+import type { UiDebugExecutor } from './uiDebug.js';
 import {
   consolidateRootBodySchema,
   consolidateRootParamSchema,
@@ -40,6 +44,7 @@ import {
   inviteManagedShareBodySchema,
   attachManagedShareBodySchema,
   acceptManagedShareBodySchema,
+  acceptProviderContactInviteBodySchema,
   exportRecipientReferencesBodySchema,
   exportReferencesBodySchema,
   fileHashParamSchema,
@@ -47,7 +52,9 @@ import {
   importRecipientReferencesBodySchema,
   importSourceReferencesBodySchema,
   managedShareIdParamSchema,
+  openPathInFileManagerBodySchema,
   openRootInFileManagerBodySchema,
+  repairStorageLocationBodySchema,
   openJoinLinkBodySchema,
   openBodySchema,
   parseWithSchema,
@@ -58,6 +65,10 @@ import {
   reconcileDiscoveredSourcesBodySchema,
   renameFileBodySchema,
   renameFolderBodySchema,
+  runUiDebugActionsBodySchema,
+  sourceIdParamSchema,
+  uiDebugDomSnapshotBodySchema,
+  uiDebugScreenshotBodySchema,
   sendChatMessageBodySchema,
   uploadFieldsSchema,
 } from './validation.js';
@@ -83,6 +94,10 @@ export interface RouteDependencies {
   readonly integrationOptions?: Omit<ManagedShareServiceOptions, 'storage' | 'rootsConfigPath'>;
   /** Optional pre-built service, mainly for tests. */
   readonly managedShareService?: ManagedShareService;
+  /** Optional LAN sync service for local discovery and peer replication. */
+  readonly localNetworkSyncService?: LocalNetworkSyncService;
+  /** Optional desktop-only UI automation/debugging bridge. */
+  readonly uiDebugExecutor?: UiDebugExecutor;
 }
 
 /**
@@ -98,6 +113,7 @@ export function createRoutes(deps: RouteDependencies): Router {
       ? new ManagedShareService({
           storage: deps.storage,
           rootsConfigPath: deps.rootsConfigPath,
+          readMaintenanceMode: 'background',
           ...deps.integrationOptions,
         })
       : null);
@@ -115,6 +131,98 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
+
+  router.get('/lan/hello', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.buildHello());
+  }));
+
+  router.get('/lan/peers/self', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.buildHello());
+  }));
+
+  router.get('/lan/debug', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.getDebugResponse());
+  }));
+
+  router.get('/lan/volumes', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.listVolumes());
+  }));
+
+  router.get('/lan/observations', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const afterObservationId = typeof req.query.after === 'string' ? req.query.after.trim() || null : null;
+    const limit = parseOptionalInt(req.query.limit);
+    const rawVolumes = req.query.volumes;
+    const volumeIds =
+      typeof rawVolumes === 'string'
+        ? rawVolumes.split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+        : Array.isArray(rawVolumes)
+          ? rawVolumes.map((entry) => String(entry).trim()).filter((entry) => entry.length > 0)
+          : undefined;
+    res.json(
+      deps.localNetworkSyncService.listObservations({
+        afterObservationId,
+        limit,
+        volumeIds,
+      })
+    );
+  }));
+
+  router.get('/lan/volumes/:volumeId/inventory', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const volumeId = String(req.params.volumeId ?? '');
+    res.json(await deps.localNetworkSyncService.getVolumeInventory(volumeId));
+  }));
+
+  router.get('/lan/volumes/:volumeId/events/:eventHash', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const volumeId = String(req.params.volumeId ?? '');
+    const eventHash = String(req.params.eventHash ?? '');
+    const bytes = await deps.localNetworkSyncService.readEventBytes(volumeId, eventHash);
+    res.type('application/octet-stream').send(Buffer.from(bytes));
+  }));
+
+  router.get('/lan/blocks/:blockHash', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const blockHash = String(req.params.blockHash ?? '');
+    const bytes = await deps.localNetworkSyncService.readBlockBytes(blockHash);
+    res.type('application/octet-stream').send(Buffer.from(bytes));
+  }));
+
+  router.post('/lan/sync', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    deps.localNetworkSyncService.notifySyncHint(req.body as { reason?: string } | undefined);
+    res.json({ ok: true, acceptedAt: Date.now() });
+  }));
+
+  router.post('/lan/transport/signal', asyncHandler(async (req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(await deps.localNetworkSyncService.handleTransportSignal(req.body));
+  }));
 
   if (isProviderEnabled('gdrive')) {
     router.get('/oauth/google/callback', asyncHandler(async (req, res) => {
@@ -143,13 +251,29 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/config/roots', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
-    await ensureNearbytesMarkers(multiRootStorage.getRootsConfig().sources);
-    const runtime = await multiRootStorage.getRuntimeSnapshot();
+    const includeUsage = req.query.includeUsage === '1';
+    void ensureNearbytesMarkers(multiRootStorage.getRootsConfig().sources).catch(() => undefined);
+    const runtime = await multiRootStorage.getRuntimeSnapshot({ includeUsage });
     res.json({
       configPath: deps.rootsConfigPath ?? null,
       config: multiRootStorage.getRootsConfig(),
       runtime,
     });
+  }));
+
+  router.get('/config/app', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    res.json({ config: getAppConfig() });
+  }));
+
+  router.put('/config/app/providers/:providerId', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const { provider } = parseWithSchema(providerIdParamSchema, req.params);
+    const enabled = (req.body as { enabled?: unknown } | null | undefined)?.enabled;
+    if (typeof enabled !== 'boolean') {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Provider enabled must be a boolean.');
+    }
+    res.json({ config: setProviderEnabled(provider, enabled) });
   }));
 
   router.put('/config/roots', asyncHandler(async (req, res) => {
@@ -173,7 +297,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     await saveRootsConfig(deps.rootsConfigPath, nextConfig);
     const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
     multiRootStorage.updateRootsConfig(nextConfig);
-    await multiRootStorage.reconcileConfiguredVolumes();
+    multiRootStorage.scheduleReconcileConfiguredVolumes();
     await ensureNearbytesMarkers(nextConfig.sources);
     const runtime = await multiRootStorage.getRuntimeSnapshot();
 
@@ -232,6 +356,46 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.post('/config/roots/open-file-manager', openRootInFileManagerHandler);
   router.post('/config/open-file-manager', openRootInFileManagerHandler);
 
+  router.get('/config/roots/sources/:sourceId/repair', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const { sourceId } = parseWithSchema(sourceIdParamSchema, req.params);
+    res.json({
+      report: await multiRootStorage.inspectStorageLocation(sourceId),
+    });
+  }));
+
+  router.post('/config/roots/sources/:sourceId/repair', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const { sourceId } = parseWithSchema(sourceIdParamSchema, req.params);
+    const { action } = parseWithSchema(repairStorageLocationBodySchema, req.body);
+    const result = await multiRootStorage.repairStorageLocation(sourceId, action);
+    res.json({
+      result,
+      report: await multiRootStorage.inspectStorageLocation(sourceId),
+    });
+  }));
+
+  router.post('/config/open-path-in-file-manager', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const { path: targetPath } = parseWithSchema(openPathInFileManagerBodySchema, req.body);
+    const resolvedTargetPath = resolve(targetPath);
+    const allowedRoots = getAllowedFileManagerRoots(deps);
+    if (allowedRoots.length > 0 && !allowedRoots.some((root) => isPathInsideRoot(root, resolvedTargetPath))) {
+      throw new ApiError(
+        400,
+        'INVALID_REQUEST',
+        'Path is outside configured Nearbytes storage roots and cannot be revealed.'
+      );
+    }
+    await openInFileManager(resolvedTargetPath);
+    res.json({
+      ok: true,
+      path: resolvedTargetPath,
+    });
+  }));
+
   router.get('/sources/discover', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const maxDepth = parseOptionalInt(req.query.maxDepth);
@@ -251,7 +415,31 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/integrations/accounts', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
-    res.json(await service.listAccounts());
+    res.json(await service.listAccounts({ fast: req.query.fast === '1' }));
+  }));
+
+  router.get('/integrations/local-network/peers', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json(deps.localNetworkSyncService.getPeersResponse());
+  }));
+
+  router.post('/integrations/local-network/peers/:peerId/sync', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    const peerId = String(req.params.peerId ?? '').trim();
+    if (!peerId) {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Peer id is required');
+    }
+    const peer = await deps.localNetworkSyncService.syncPeer(peerId);
+    if (!peer) {
+      throw new ApiError(404, 'NOT_FOUND', `Peer not found: ${peerId}`);
+    }
+    res.json({ peer });
   }));
 
   router.post('/integrations/accounts/connect', asyncHandler(async (req, res) => {
@@ -284,18 +472,47 @@ export function createRoutes(deps: RouteDependencies): Router {
     });
   }));
 
+  router.post('/integrations/providers/:provider/reconcile', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { provider } = parseWithSchema(providerIdParamSchema, req.params);
+    res.json(await service.reconcileProviderManagedShareInventory(provider));
+  }));
+
   router.delete('/integrations/accounts/:id', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
     const { id } = parseWithSchema(providerAccountIdParamSchema, req.params);
-    await service.disconnectAccount(id);
+    await service.disconnectAccount(id, {
+      skipManagedShareMigration: req.query.mode === 'reset',
+    });
     res.json({ ok: true });
   }));
 
   router.get('/integrations/shares', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);
-    res.json(await service.listManagedShares());
+    res.json(await service.listManagedShares({ fast: req.query.fast === '1' }));
+  }));
+
+  router.get('/integrations/shares/incoming', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    res.json(await service.listIncomingManagedShares({ fast: req.query.fast === '1' }));
+  }));
+
+  router.get('/integrations/providers/contact-invites', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    res.json(await service.listIncomingProviderContactInvites({ fast: req.query.fast === '1' }));
+  }));
+
+  router.post('/integrations/providers/contact-invites/accept', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const input = parseWithSchema(acceptProviderContactInviteBodySchema, req.body);
+    await service.acceptIncomingProviderContactInvite(input.provider, input.accountId, input.inviteId);
+    res.json({ ok: true });
   }));
 
   router.post('/integrations/shares', asyncHandler(async (req, res) => {
@@ -313,7 +530,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
     const input = parseWithSchema(inviteManagedShareBodySchema, req.body);
     res.json({
-      summary: await service.inviteManagedShare(shareId, input.emails),
+      summary: await service.inviteManagedShare(shareId, input.emails, input.accessLevel),
     });
   }));
 
@@ -325,6 +542,16 @@ export function createRoutes(deps: RouteDependencies): Router {
     res.json({
       summary: await service.attachManagedShare(shareId, input),
     });
+  }));
+
+  router.delete('/integrations/shares/:shareId', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    await service.removeManagedShare(shareId, {
+      skipMigration: req.query.mode === 'reset',
+    });
+    res.json({ ok: true });
   }));
 
   router.post('/integrations/shares/accept', asyncHandler(async (req, res) => {
@@ -342,6 +569,15 @@ export function createRoutes(deps: RouteDependencies): Router {
     const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
     res.json({
       summary: await service.getManagedShareState(shareId),
+    });
+  }));
+
+  router.post('/integrations/shares/:shareId/repair', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    res.json({
+      summary: await service.repairManagedShare(shareId),
     });
   }));
 
@@ -479,12 +715,201 @@ export function createRoutes(deps: RouteDependencies): Router {
     }));
   }
 
+  router.get('/__debug/integrations/shares/:shareId/remote-entry', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const pathQuery = req.query.path;
+    const relativePath = typeof pathQuery === 'string'
+      ? pathQuery
+      : Array.isArray(pathQuery) && typeof pathQuery[0] === 'string'
+        ? pathQuery[0]
+        : '';
+    if (!relativePath.trim()) {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Query parameter "path" is required.');
+    }
+    const entry = await service.probeManagedShareRemoteEntry(shareId, relativePath);
+    res.json({
+      exists: entry !== null,
+      entry,
+    });
+  }));
+
+  router.get('/__debug/integrations/shares/:shareId/upload-probes', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const pathQuery = req.query.path;
+    const relativePath = typeof pathQuery === 'string'
+      ? pathQuery
+      : Array.isArray(pathQuery) && typeof pathQuery[0] === 'string'
+        ? pathQuery[0]
+        : undefined;
+    const limitQuery = req.query.limit;
+    const rawLimit = typeof limitQuery === 'string'
+      ? Number.parseInt(limitQuery, 10)
+      : Array.isArray(limitQuery) && typeof limitQuery[0] === 'string'
+        ? Number.parseInt(limitQuery[0], 10)
+        : Number.NaN;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    res.json({
+      probes: await service.getManagedShareUploadProbes(shareId, {
+        relativePath,
+        limit,
+      }),
+    });
+  }));
+
+  router.get('/__debug/integrations/shares/:shareId/receive-probes', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const pathQuery = req.query.path;
+    const relativePath = typeof pathQuery === 'string'
+      ? pathQuery
+      : Array.isArray(pathQuery) && typeof pathQuery[0] === 'string'
+        ? pathQuery[0]
+        : undefined;
+    const limitQuery = req.query.limit;
+    const rawLimit = typeof limitQuery === 'string'
+      ? Number.parseInt(limitQuery, 10)
+      : Array.isArray(limitQuery) && typeof limitQuery[0] === 'string'
+        ? Number.parseInt(limitQuery[0], 10)
+        : Number.NaN;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    res.json({
+      probes: await service.getManagedShareReceiveProbes(shareId, {
+        relativePath,
+        limit,
+      }),
+    });
+  }));
+
+  router.get('/__debug/integrations/probes/roundtrip', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const pathQuery = req.query.path;
+    const relativePath = typeof pathQuery === 'string'
+      ? pathQuery
+      : Array.isArray(pathQuery) && typeof pathQuery[0] === 'string'
+        ? pathQuery[0]
+        : '';
+    if (!relativePath.trim()) {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Query parameter "path" is required.');
+    }
+    const limitQuery = req.query.limit;
+    const rawLimit = typeof limitQuery === 'string'
+      ? Number.parseInt(limitQuery, 10)
+      : Array.isArray(limitQuery) && typeof limitQuery[0] === 'string'
+        ? Number.parseInt(limitQuery[0], 10)
+        : Number.NaN;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    res.json(await service.getManagedShareRoundtripProbes({
+      relativePath,
+      limit,
+    }));
+  }));
+
+  router.post('/__debug/integrations/shares/:shareId/push-path', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    const body = req.body as { path?: unknown };
+    const relativePath = typeof body?.path === 'string' ? body.path : '';
+    if (!relativePath.trim()) {
+      throw new ApiError(400, 'INVALID_REQUEST', 'Request body field "path" is required.');
+    }
+    await service.forceManagedShareUpload(shareId, relativePath);
+    res.json({
+      ok: true,
+      path: relativePath,
+    });
+  }));
+
+  router.post('/__debug/integrations/shares/:shareId/trigger-sync', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    await service.triggerManagedShareSync(shareId);
+    res.json({
+      ok: true,
+      shareId,
+    });
+  }));
+
+  router.get('/__debug/integrations/providers/:provider/share-inventory', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { provider } = parseWithSchema(providerIdParamSchema, req.params);
+    res.json(await service.debugProviderShareInventory(provider));
+  }));
+
+  router.get('/__debug/ui', asyncHandler(async (_req, res) => {
+    if (!deps.uiDebugExecutor) {
+      res.json({
+        available: false,
+        actions: [],
+        screenshot: false,
+      });
+      return;
+    }
+    res.json(await deps.uiDebugExecutor.getCapabilities());
+  }));
+
+  router.post('/__debug/ui/actions/run', asyncHandler(async (req, res) => {
+    if (!deps.uiDebugExecutor) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Desktop UI debugging is not available in this runtime.');
+    }
+    const input = parseWithSchema(runUiDebugActionsBodySchema, req.body);
+    res.json(await deps.uiDebugExecutor.run(input));
+  }));
+
+  router.post('/__debug/ui/screenshot', asyncHandler(async (req, res) => {
+    if (!deps.uiDebugExecutor) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Desktop UI screenshots are not available in this runtime.');
+    }
+    const input = parseWithSchema(uiDebugScreenshotBodySchema, req.body);
+    res.json(
+      await deps.uiDebugExecutor.run({
+        actions: [
+          {
+            type: 'screenshot',
+            path: input.path,
+            selector: input.selector,
+            fullPage: input.fullPage,
+          },
+        ],
+        stopOnError: true,
+      })
+    );
+  }));
+
+  router.post('/__debug/ui/dom', asyncHandler(async (req, res) => {
+    if (!deps.uiDebugExecutor) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Desktop UI DOM snapshots are not available in this runtime.');
+    }
+    const input = parseWithSchema(uiDebugDomSnapshotBodySchema, req.body);
+    res.json(
+      await deps.uiDebugExecutor.run({
+        actions: [
+          {
+            type: 'snapshotDom',
+            selector: input.selector,
+            maxLength: input.maxLength,
+          },
+        ],
+        stopOnError: true,
+      })
+    );
+  }));
+
   router.post(
     '/open',
     asyncHandler(async (req, res) => {
       const { secret } = parseWithSchema(openBodySchema, req.body);
       const validatedSecret = validateSecret(secret);
       const volumeId = await getVolumeId(validatedSecret, deps.crypto, deps.storage);
+      managedShareService?.rememberOpenedVolume(volumeId);
       const files = await deps.fileService.listFiles(validatedSecret);
 
       const response: {
@@ -609,6 +1034,66 @@ export function createRoutes(deps: RouteDependencies): Router {
       const secret = res.locals.secret as string;
       const detail = await deps.fileService.getEvent(secret, hash);
       res.json(detail);
+    })
+  );
+
+  router.get(
+    '/events/:hash/storage-locations',
+    requireSecret(deps),
+    asyncHandler(async (req, res) => {
+      const { hash } = parseWithSchema(fileHashParamSchema, req.params);
+      const secret = res.locals.secret as string;
+      const detail = await deps.fileService.getEvent(secret, hash);
+      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+
+      const expectedEventRelativePath = join('channels', volumeId, `${hash}.bin`);
+      const payloadHash = detail.decryptedPayload?.hash?.trim() ?? '';
+      const expectedDataRelativePath =
+        /^[a-f0-9]{64}$/i.test(payloadHash) && !/^0+$/i.test(payloadHash)
+          ? join('blocks', `${payloadHash}.bin`)
+          : null;
+
+      const sourceEntries = isMultiRootStorageBackend(deps.storage)
+        ? getMultiRootStorageOrThrow(deps.storage).getRootsConfig().sources.map((source) => ({
+            rootId: source.id,
+            provider: source.provider,
+            path: source.path,
+          }))
+        : deps.resolvedStorageDir
+          ? [
+              {
+                rootId: null,
+                provider: 'local',
+                path: deps.resolvedStorageDir,
+              },
+            ]
+          : [];
+
+      const locations = await Promise.all(
+        sourceEntries.map(async (source) => {
+          const eventPath = join(source.path, expectedEventRelativePath);
+          const dataPath = expectedDataRelativePath ? join(source.path, expectedDataRelativePath) : null;
+          const hasEventFile = await pathExists(eventPath);
+          const hasDataBlock = dataPath ? await pathExists(dataPath) : false;
+          return {
+            rootId: source.rootId,
+            provider: source.provider,
+            rootPath: source.path,
+            eventPath,
+            dataPath,
+            hasEventFile,
+            hasDataBlock,
+          };
+        })
+      );
+
+      res.json({
+        eventHash: hash,
+        volumeId,
+        expectedEventRelativePath,
+        expectedDataRelativePath,
+        locations,
+      });
     })
   );
 
@@ -879,6 +1364,15 @@ async function safeUnlink(path: string): Promise<void> {
   }
 }
 
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function extractRootsConfigBody(value: unknown): unknown {
   if (!value || typeof value !== 'object' || !('config' in value)) {
     return value;
@@ -1015,26 +1509,33 @@ function isDesktopProtectedApiPath(pathname: string): boolean {
 }
 
 async function openInFileManager(targetPath: string): Promise<void> {
-  const launcher =
-    process.platform === 'darwin'
-      ? { command: 'open', args: [targetPath] }
-      : process.platform === 'win32'
-        ? { command: 'explorer', args: [targetPath] }
-        : { command: 'xdg-open', args: [targetPath] };
-
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(launcher.command, launcher.args, {
-      stdio: 'ignore',
-      detached: true,
-    });
-
-    child.once('error', (error) => reject(error));
-    child.once('spawn', () => {
-      child.unref();
-      resolve();
-    });
-  }).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ApiError(500, 'INTERNAL_ERROR', `Failed to open file manager: ${message}`);
-  });
+  await revealPathInFileManager(targetPath);
 }
+
+function getAllowedFileManagerRoots(deps: RouteDependencies): string[] {
+  if (isMultiRootStorageBackend(deps.storage)) {
+    return getMultiRootStorageOrThrow(deps.storage)
+      .getRootsConfig()
+      .sources
+      .map((source) => resolve(source.path));
+  }
+  if (deps.resolvedStorageDir) {
+    return [resolve(deps.resolvedStorageDir)];
+  }
+  return [];
+}
+
+function normalizeComparablePath(value: string): string {
+  const normalized = resolve(value).replace(/\\/g, '/').replace(/\/+$/u, '');
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
+  const normalizedRoot = normalizeComparablePath(rootPath);
+  const normalizedTarget = normalizeComparablePath(targetPath);
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+}
+

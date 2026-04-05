@@ -1,3 +1,4 @@
+import { createECDH } from 'crypto';
 import type { Secret, KeyPair, PrivateKey, PublicKey, SymmetricKey } from '../types/keys.js';
 import type { Signature } from '../types/events.js';
 import { createPrivateKey, createPublicKey, createSymmetricKey } from '../types/keys.js';
@@ -38,32 +39,7 @@ export async function deriveKeys(secret: Secret): Promise<KeyPair> {
     const privateKeySeed = await deriveSeed(crypto, secretBytes, PRIVATE_KEY_SALT, 32);
     const privateKeyScalar = reduceModuloCurveOrder(privateKeySeed);
 
-    // Create PKCS8 structure and import it
-    const pkcs8 = createPKCS8PrivateKey(crypto, privateKeyScalar);
-    const privateCryptoKey = await crypto.importKey(
-      'pkcs8',
-      pkcs8,
-      {
-        name: 'ECDSA',
-        namedCurve: 'P-256',
-      },
-      true, // extractable
-      ['sign']
-    );
-
-    // Export private key as JWK to get the public key coordinates
-    const jwk = await crypto.exportKey('jwk', privateCryptoKey);
-    if (!jwk.x || !jwk.y) {
-      throw new KeyDerivationError('Failed to extract public key coordinates from JWK');
-    }
-
-    // Convert JWK coordinates to raw format (0x04 + x + y)
-    const xBytes = base64UrlToBytes(jwk.x);
-    const yBytes = base64UrlToBytes(jwk.y);
-    const publicKeyBytes = new Uint8Array(65);
-    publicKeyBytes[0] = 0x04; // Uncompressed point
-    publicKeyBytes.set(xBytes, 1);
-    publicKeyBytes.set(yBytes, 33);
+    const publicKeyBytes = await derivePublicKeyBytes(privateKeyScalar, crypto);
 
     return {
       privateKey: createPrivateKey(privateKeyScalar),
@@ -75,6 +51,43 @@ export async function deriveKeys(secret: Secret): Promise<KeyPair> {
       error instanceof Error ? error : undefined
     );
   }
+}
+
+async function derivePublicKeyBytes(privateKeyScalar: Uint8Array, crypto: SubtleCrypto): Promise<Uint8Array> {
+  try {
+    const ecdh = createECDH('prime256v1');
+    ecdh.setPrivateKey(Buffer.from(privateKeyScalar));
+    return new Uint8Array(ecdh.getPublicKey(undefined, 'uncompressed'));
+  } catch {
+    return await derivePublicKeyBytesWithWebCrypto(privateKeyScalar, crypto);
+  }
+}
+
+async function derivePublicKeyBytesWithWebCrypto(privateKeyScalar: Uint8Array, crypto: SubtleCrypto): Promise<Uint8Array> {
+  const pkcs8 = createPKCS8PrivateKey(crypto, privateKeyScalar);
+  const privateCryptoKey = await crypto.importKey(
+    'pkcs8',
+    pkcs8,
+    {
+      name: 'ECDSA',
+      namedCurve: 'P-256',
+    },
+    true,
+    ['sign']
+  );
+
+  const jwk = await crypto.exportKey('jwk', privateCryptoKey);
+  if (!jwk.x || !jwk.y) {
+    throw new KeyDerivationError('Failed to extract public key coordinates from JWK');
+  }
+
+  const xBytes = base64UrlToBytes(jwk.x);
+  const yBytes = base64UrlToBytes(jwk.y);
+  const publicKeyBytes = new Uint8Array(65);
+  publicKeyBytes[0] = 0x04;
+  publicKeyBytes.set(xBytes, 1);
+  publicKeyBytes.set(yBytes, 33);
+  return publicKeyBytes;
 }
 
 function decodeSecretBytes(secret: Secret): Uint8Array {

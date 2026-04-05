@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { parseTokenKey } from './auth.js';
 import { startApiRuntime } from './runtime.js';
 import {
@@ -13,13 +16,19 @@ const maxUploadBytes = parseMaxUploadBytes(process.env.NEARBYTES_MAX_UPLOAD_MB);
 const tokenKey = process.env.NEARBYTES_SERVER_TOKEN_KEY
   ? parseTokenKey(process.env.NEARBYTES_SERVER_TOKEN_KEY)
   : undefined;
+const parsedArgs = parseCliArgs(process.argv.slice(2));
 
 async function main(): Promise<void> {
+  if (parsedArgs.appConfigPath) {
+    process.env.NEARBYTES_APP_CONFIG = parsedArgs.appConfigPath;
+  }
+  installBootLogFile();
   const runtime = await startApiRuntime({
     port,
     corsOrigin,
     maxUploadBytes,
     tokenKey,
+    rootsConfigPath: parsedArgs.rootsConfigPath,
   });
 
   console.log(`Using roots config: ${runtime.rootsConfigPath}`);
@@ -65,4 +74,76 @@ function parseMaxUploadBytes(value: string | undefined): number {
     return 50 * 1024 * 1024;
   }
   return parsed * 1024 * 1024;
+}
+
+function parseCliArgs(args: string[]): { rootsConfigPath?: string; appConfigPath?: string } {
+  let rootsConfigPath: string | undefined;
+  let appConfigPath: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--roots-config') {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new Error('Missing value for --roots-config');
+      }
+      rootsConfigPath = path.resolve(value);
+      index += 1;
+      continue;
+    }
+    if (arg === '--app-config') {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new Error('Missing value for --app-config');
+      }
+      appConfigPath = path.resolve(value);
+      index += 1;
+    }
+  }
+  return { rootsConfigPath, appConfigPath };
+}
+
+function installBootLogFile(): void {
+  const marker = '__nearbytesBootLogInstalled';
+  const globalObject = globalThis as Record<string, unknown>;
+  if (globalObject[marker] === true) {
+    return;
+  }
+  globalObject[marker] = true;
+
+  const logFilePath = path.join(os.homedir(), '.nearbytes', 'logs', 'runtime.log');
+  mkdirSync(path.dirname(logFilePath), { recursive: true });
+  // Reset per process boot as requested.
+  writeFileSync(logFilePath, '', 'utf8');
+
+  const methods: Array<'log' | 'info' | 'warn' | 'error' | 'debug'> = ['log', 'info', 'warn', 'error', 'debug'];
+  for (const method of methods) {
+    const original = console[method];
+    if (typeof original !== 'function') {
+      continue;
+    }
+    console[method] = ((...args: unknown[]) => {
+      original(...args);
+      try {
+        const timestamp = new Date().toISOString();
+        const payload = args.map(stringifyLogArg).join(' ');
+        appendFileSync(logFilePath, `[${timestamp}] ${method.toUpperCase()} ${payload}\n`, 'utf8');
+      } catch {
+        // Best-effort only: logging to file must never break runtime logging.
+      }
+    }) as Console[typeof method];
+  }
+}
+
+function stringifyLogArg(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value instanceof Error) {
+    return value.stack ?? value.message;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }

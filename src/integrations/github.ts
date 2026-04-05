@@ -268,12 +268,26 @@ export class GitHubTransportAdapter {
     if (this.syncTimers.has(share.id)) {
       return;
     }
+    this.runtime.logger.log('Provider sync bootstrap entered.', {
+      provider: this.provider,
+      accountId: account.id,
+      shareId: share.id,
+      role: share.role,
+      localPath: share.localPath,
+      remoteDescriptor: share.remoteDescriptor,
+    });
     await this.syncShareNow(share, account);
     const timer = setInterval(() => {
       void this.syncShareNow(share, account);
     }, this.runtime.github.syncIntervalMs);
     timer.unref?.();
     this.syncTimers.set(share.id, timer);
+    this.runtime.logger.log('Provider recurring sync timer started.', {
+      provider: this.provider,
+      accountId: account.id,
+      shareId: share.id,
+      intervalMs: this.runtime.github.syncIntervalMs,
+    });
   }
 
   async detachManagedShare(share: ManagedShare): Promise<void> {

@@ -41,9 +41,12 @@ export interface GoogleDriveRuntimeConfig {
 }
 
 export interface MegaRuntimeConfig {
-  readonly commandDirectory?: string;
   readonly remoteBasePath: string;
   readonly syncIntervalMs: number;
+  readonly syncTimeoutMs: number;
+  /** After `s2` invites, briefly poll fetch-nodes for collaborator reflection as a best-effort diagnostic. 0 = skip wait. */
+  readonly inviteReflectionTimeoutMs: number;
+  readonly inviteReflectionPollMs: number;
 }
 
 export interface GitHubRuntimeConfig {
@@ -78,14 +81,13 @@ export interface IntegrationRuntimeOptions {
   readonly github?: Partial<GitHubRuntimeConfig>;
 }
 
-export interface ResolvedMegaInvocation {
-  readonly command: string;
-  readonly args: readonly string[];
-}
-
 const DEFAULT_GOOGLE_SCOPES = ['https://www.googleapis.com/auth/drive.file'] as const;
 const DEFAULT_GITHUB_SCOPES = ['repo', 'read:user', 'user:email'] as const;
 const DEFAULT_SYNC_INTERVAL_MS = 20_000;
+const DEFAULT_MEGA_SYNC_INTERVAL_MS = 300_000;
+const DEFAULT_MEGA_SYNC_TIMEOUT_MS = 180_000;
+const DEFAULT_MEGA_INVITE_REFLECTION_TIMEOUT_MS = 5_000;
+const DEFAULT_MEGA_INVITE_REFLECTION_POLL_MS = 1_500;
 export const DEFAULT_GOOGLE_DESKTOP_CLIENT_ID =
   '381193316033-b1g7h9dovqs5j22fi7obc4jug4o77vmi.apps.googleusercontent.com';
 
@@ -111,12 +113,19 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
       syncIntervalMs: positiveInt(options.google?.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS),
     },
     mega: {
-      commandDirectory:
-        options.mega?.commandDirectory?.trim() || process.env.NEARBYTES_MEGACMD_DIR?.trim() || undefined,
       remoteBasePath: normalizeMegaRemotePath(
         options.mega?.remoteBasePath?.trim() || process.env.NEARBYTES_MEGA_REMOTE_BASE?.trim() || '/nearbytes'
       ),
-      syncIntervalMs: positiveInt(options.mega?.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS),
+      syncIntervalMs: positiveInt(options.mega?.syncIntervalMs, DEFAULT_MEGA_SYNC_INTERVAL_MS),
+      syncTimeoutMs: positiveInt(options.mega?.syncTimeoutMs, DEFAULT_MEGA_SYNC_TIMEOUT_MS),
+      inviteReflectionTimeoutMs: nonNegativeInt(
+        options.mega?.inviteReflectionTimeoutMs,
+        envMegaInviteReflectionTimeoutMs() ?? DEFAULT_MEGA_INVITE_REFLECTION_TIMEOUT_MS
+      ),
+      inviteReflectionPollMs: Math.max(
+        250,
+        positiveInt(options.mega?.inviteReflectionPollMs, DEFAULT_MEGA_INVITE_REFLECTION_POLL_MS)
+      ),
     },
     github: {
       clientId:
@@ -137,42 +146,13 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
   };
 }
 
-export function resolveMegaCommand(
-  commandDirectory: string | undefined,
-  subcommand: string,
-  platform: NodeJS.Platform = process.platform
-): string {
-  const filename = platform === 'win32' ? 'MegaClient.exe' : `mega-${subcommand}`;
-  if (!commandDirectory) {
-    return filename;
-  }
-  const normalizedDirectory = commandDirectory.trim().replace(/[\\/]+$/u, '');
-  if (normalizedDirectory === '') {
-    return filename;
-  }
-  return `${normalizedDirectory}/${filename}`;
-}
-
-export function resolveMegaInvocation(
-  commandDirectory: string | undefined,
-  subcommand: string,
-  args: readonly string[],
-  platform: NodeJS.Platform = process.platform
-): ResolvedMegaInvocation {
-  if (platform === 'win32') {
-    return {
-      command: resolveMegaCommand(commandDirectory, subcommand, platform),
-      args: [subcommand, ...args],
-    };
-  }
-  return {
-    command: resolveMegaCommand(commandDirectory, subcommand, platform),
-    args,
-  };
-}
-
 class DefaultCommandExecutor implements CommandExecutor {
   async run(invocation: CommandInvocation): Promise<CommandResult> {
+    return runCommandInvocation(invocation);
+  }
+}
+
+export async function runCommandInvocation(invocation: CommandInvocation): Promise<CommandResult> {
     return new Promise<CommandResult>((resolve, reject) => {
       const child = spawn(invocation.command, [...(invocation.args ?? [])], {
         cwd: invocation.cwd,
@@ -230,7 +210,6 @@ class DefaultCommandExecutor implements CommandExecutor {
       child.stdin.end();
     });
   }
-}
 
 function normalizeEnv(env: Readonly<Record<string, string | undefined>> | undefined): Record<string, string> {
   if (!env) {
@@ -243,6 +222,22 @@ function normalizeEnv(env: Readonly<Record<string, string | undefined>> | undefi
     }
   }
   return result;
+}
+
+function nonNegativeInt(value: number | undefined, fallback: number): number {
+  if (!Number.isFinite(value) || (value ?? 0) < 0) {
+    return fallback;
+  }
+  return Math.trunc(value!);
+}
+
+function envMegaInviteReflectionTimeoutMs(): number | undefined {
+  const raw = process.env.NEARBYTES_MEGA_INVITE_REFLECTION_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function positiveInt(value: number | undefined, fallback: number): number {

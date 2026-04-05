@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import { randomBytes } from 'crypto';
 import path from 'path';
 import type { ProviderSecretStore } from './runtime.js';
 
@@ -78,7 +79,7 @@ export class JsonFileSecretStore implements ProviderSecretStore {
   private async writeFile(snapshot: SerializedSecretsFile): Promise<void> {
     const directory = path.dirname(this.options.filePath);
     await fs.mkdir(directory, { recursive: true });
-    const tempPath = `${this.options.filePath}.${process.pid}.tmp`;
+    const tempPath = `${this.options.filePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
     await fs.writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
     await fs.rename(tempPath, this.options.filePath);
   }

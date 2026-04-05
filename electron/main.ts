@@ -1,14 +1,22 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, type OpenDialogOptions } from 'electron';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, promises as fs } from 'fs';
+import { randomUUID } from 'crypto';
+import { appendFileSync, existsSync, mkdirSync, promises as fs, writeFileSync } from 'fs';
+import os from 'node:os';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { promisify } from 'util';
+import { createDesktopCommandExecutor, type DisposableCommandExecutor } from './desktopCommandExecutor.js';
 import { clearPublishedDesktopSession, publishDesktopSession } from './session.js';
 import { generateDesktopApiToken } from './security.js';
-import { readDesktopUiState, writeDesktopUiState } from './uiState.js';
+import { clearDesktopUiState, readDesktopUiState, writeDesktopUiState } from './uiState.js';
 import { debugTriggerUpdateInstall, getUpdaterState, installDownloadedUpdate, openUpdateReleasePage, setupAutoUpdater } from './updater.js';
 import { APP_CONFIG } from '../src/config/appConfig.js';
+import { resolveDefaultRootsConfigPath } from '../src/config/roots.js';
+import type { CommandExecutor } from '../src/integrations/runtime.js';
+import { resolveIntegrationStatePath } from '../src/integrations/store.js';
+import { getDefaultStorageDir } from '../src/storagePath.js';
+import type { UiDebugAction, UiDebugActionResult, UiDebugExecutor, UiDebugRunRequest, UiDebugRunResponse } from '../src/server/uiDebug.js';
 
 interface RuntimeHandle {
   readonly port: number;
@@ -30,9 +38,11 @@ interface RuntimeModule {
           set<T>(key: string, value: T): Promise<void>;
           delete(key: string): Promise<void>;
         };
+        commandExecutor?: CommandExecutor;
         openExternalUrl?: (url: string) => Promise<void>;
       };
     };
+    uiDebugExecutor?: UiDebugExecutor;
   }): Promise<RuntimeHandle>;
 }
 
@@ -40,6 +50,23 @@ interface DesktopRuntimeConfig {
   readonly apiBaseUrl: string;
   readonly desktopToken: string;
   readonly isDesktop: true;
+}
+
+interface DesktopApiJsonOptions extends RequestInit {
+  readonly timeoutMs?: number;
+  readonly timeoutLabel?: string;
+}
+
+interface ProviderAccountsResponse {
+  readonly accounts: Array<{
+    readonly id: string;
+    readonly provider: string;
+    readonly state: string;
+  }>;
+}
+
+interface WipeStoredConfigOptions {
+  readonly deleteLocalData?: boolean;
 }
 
 interface RendererProfileState {
@@ -50,11 +77,37 @@ interface RendererProfileState {
 interface DiagnosticsState {
   metricsTimer: ReturnType<typeof setInterval> | null;
   isShuttingDown: boolean;
+  shutdownPromise: Promise<void> | null;
+  quitAllowed: boolean;
+}
+
+interface DesktopElementState {
+  readonly found: boolean;
+  readonly visible: boolean;
+  readonly text?: string;
+  readonly value?: string;
+  readonly html?: string;
+  readonly outerHtml?: string;
+  readonly attribute?: string | null;
+  readonly rect?: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
 }
 
 const DEFAULT_DESKTOP_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEEP_LINK_PROTOCOL = 'nearbytes';
+const DEFAULT_DESKTOP_API_TIMEOUT_MS = 15_000;
+const DESKTOP_RUNTIME_LOG_TAIL_BYTES = 64 * 1024;
+const DESKTOP_FORCE_EXIT_TIMEOUT_MS = 5_000;
+const UI_DEBUG_FILE_READ_MAX_BYTES = 128 * 1024;
 const execFileAsync = promisify(execFile);
+
+installSafeConsoleWrites();
+
+applyDebugFlagFromArgv(process.argv);
 
 const initialDeepLinkUrls = extractDeepLinkUrls(process.argv);
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -62,6 +115,7 @@ const singleInstanceLock = app.requestSingleInstanceLock();
 const state: {
   window: BrowserWindow | null;
   runtime: RuntimeHandle | null;
+  commandExecutor: DisposableCommandExecutor | null;
   config: DesktopRuntimeConfig | null;
   devUiProcess: ChildProcess | null;
   rendererProfile: RendererProfileState;
@@ -73,6 +127,7 @@ const state: {
 } = {
   window: null,
   runtime: null,
+  commandExecutor: null,
   config: null,
   devUiProcess: null,
   rendererProfile: {
@@ -82,6 +137,8 @@ const state: {
   diagnostics: {
     metricsTimer: null,
     isShuttingDown: false,
+    shutdownPromise: null,
+    quitAllowed: false,
   },
   deepLinks: {
     pendingUrls: [],
@@ -95,7 +152,10 @@ if (!singleInstanceLock) {
 
 const desktopToken = generateDesktopApiToken();
 const devUiUrl = process.env.NEARBYTES_ELECTRON_DEV_SERVER_URL?.trim() ?? '';
+const devUiPort = parseDevUiPort(devUiUrl);
+const desktopApiPort = parsePositiveInt(process.env.NEARBYTES_DESKTOP_API_PORT, 3000);
 const isDev = devUiUrl.length > 0;
+const hasExternalDevUiServer = process.env.NEARBYTES_EXTERNAL_DEV_SERVER === '1';
 const enableRendererCpuProfile = process.env.NEARBYTES_RENDERER_PROFILE === '1';
 const enableAutoUpdater = !isDev && process.env.NEARBYTES_DISABLE_AUTO_UPDATE !== '1';
 const maxUploadBytes = parseMaxUploadBytes(process.env.NEARBYTES_MAX_UPLOAD_MB);
@@ -105,7 +165,7 @@ const sessionTtlMs = parsePositiveInt(
 );
 
 app.on('window-all-closed', () => {
-  app.quit();
+  void requestAppQuit('window-all-closed');
 });
 
 app.on('second-instance', (_event, argv) => {
@@ -118,9 +178,12 @@ app.on('open-url', (event, url) => {
   void enqueueDeepLinkUrls([url]);
 });
 
-app.on('before-quit', () => {
-  void prepareDiagnosticsShutdown('before-quit');
-  void shutdown();
+app.on('before-quit', (event) => {
+  if (state.diagnostics.quitAllowed) {
+    return;
+  }
+  event.preventDefault();
+  void requestAppQuit('before-quit');
 });
 
 app.on('activate', () => {
@@ -133,8 +196,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox('Nearbytes desktop startup failed', message);
-    await shutdown();
-    app.quit();
+    await requestAppQuit('startup-failed', 1);
   }
 });
 
@@ -146,30 +208,116 @@ process.once('SIGTERM', () => {
   void handleTerminationSignal('SIGTERM', 143);
 });
 
+
+
+function installSafeConsoleWrites(): void {
+  const logFilePath = path.join(os.homedir(), '.nearbytes', 'logs', 'runtime.log');
+  mkdirSync(path.dirname(logFilePath), { recursive: true });
+  // Reset at every app boot, as requested.
+  writeFileSync(logFilePath, '', 'utf8');
+  const methods: Array<'log' | 'info' | 'warn' | 'error' | 'debug'> = ['log', 'info', 'warn', 'error', 'debug'];
+  for (const method of methods) {
+    const original = console[method].bind(console);
+    console[method] = ((...args: unknown[]) => {
+      try {
+        original(...args);
+        const timestamp = new Date().toISOString();
+        const payload = args.map(stringifyLogArg).join(' ');
+        appendFileSync(logFilePath, `[${timestamp}] ${method.toUpperCase()} ${payload}\n`, 'utf8');
+      } catch (error) {
+        if (!isIgnorableConsoleWriteError(error)) {
+          throw error;
+        }
+      }
+    }) as Console[typeof method];
+  }
+
+  process.stdout.on('error', (error) => {
+    if (!isIgnorableConsoleWriteError(error)) {
+      throw error;
+    }
+  });
+  process.stderr.on('error', (error) => {
+    if (!isIgnorableConsoleWriteError(error)) {
+      throw error;
+    }
+  });
+}
+
+function stringifyLogArg(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value instanceof Error) {
+    return value.stack ?? value.message;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function isIgnorableConsoleWriteError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
+}
+
+function parseDevUiPort(url: string): number {
+  if (url.length > 0) {
+    try {
+      const parsed = new URL(url);
+      const port = Number.parseInt(parsed.port, 10);
+      if (Number.isInteger(port) && port > 0) {
+        return port;
+      }
+    } catch {
+      // Fall back to the default dev port when the URL is malformed.
+    }
+  }
+  return 5177;
+}
+
 async function startDesktop(): Promise<void> {
   app.setName('Nearbytes');
   applyDesktopIcon();
   registerDeepLinkProtocol();
+  console.log('[desktop] starting API runtime');
   const runtimeModule = await loadRuntimeModule();
-  const runtime = await runtimeModule.startApiRuntime({
-    host: '127.0.0.1',
-    port: 0,
-    corsOrigin: isDev
-      ? ['http://127.0.0.1:5173', 'http://localhost:5173']
-      : false,
-    desktopApiToken: desktopToken,
-    uiDistPath: isDev ? undefined : resolveUiDistPath(),
-    maxUploadBytes,
-    integrationOptions: {
-      runtime: {
-        secretStore: createDesktopSecretStore(),
-        openExternalUrl: async (url: string) => {
-          await shell.openExternal(url);
+  const commandExecutor = createDesktopCommandExecutor(console);
+  state.commandExecutor = commandExecutor;
+  let runtime: RuntimeHandle;
+  try {
+    runtime = await runtimeModule.startApiRuntime({
+      host: process.env.NEARBYTES_DESKTOP_API_HOST?.trim() || '0.0.0.0',
+      port: desktopApiPort,
+      corsOrigin: isDev
+        ? [`http://127.0.0.1:${devUiPort}`, `http://localhost:${devUiPort}`]
+        : false,
+      desktopApiToken: desktopToken,
+      uiDistPath: isDev ? undefined : resolveUiDistPath(),
+      maxUploadBytes,
+      integrationOptions: {
+        runtime: {
+          secretStore: createDesktopSecretStore(),
+          commandExecutor,
+          openExternalUrl: async (url: string) => {
+            await shell.openExternal(url);
+          },
         },
       },
-    },
-  });
+      uiDebugExecutor: isDev || isDesktopDebugEnabled() ? createDesktopUiDebugExecutor() : undefined,
+    });
+  } catch (error) {
+    state.commandExecutor = null;
+    commandExecutor.dispose();
+    throw error;
+  }
   state.runtime = runtime;
+  console.log(`[desktop] API runtime ready on http://127.0.0.1:${runtime.port}`);
 
   const apiBaseUrl = `http://127.0.0.1:${runtime.port}`;
   state.config = {
@@ -186,6 +334,7 @@ async function startDesktop(): Promise<void> {
     expiresAt: Date.now() + sessionTtlMs,
     createdAt: Date.now(),
   });
+  console.log('[desktop] desktop session published');
 
   registerIpc();
   startMetricsSampling();
@@ -209,7 +358,13 @@ function createDesktopSecretStore(): {
       if (!encoded) {
         return null;
       }
-      const decrypted = decryptDesktopSecret(Buffer.from(encoded, 'base64'));
+      const decoded = Buffer.from(encoded, 'base64');
+      const decrypted = decryptDesktopSecret(decoded);
+      if (shouldUseDesktopSecretEncryption() && isLegacyPlaintextDesktopSecret(decoded, decrypted)) {
+        const encrypted = encryptDesktopSecret(decrypted);
+        entries[key] = encrypted.toString('base64');
+        await writeSecretEntries(filePath, entries);
+      }
       return JSON.parse(decrypted.toString('utf8')) as T;
     },
     async set<T>(key: string, value: T): Promise<void> {
@@ -227,6 +382,750 @@ function createDesktopSecretStore(): {
       await writeSecretEntries(filePath, entries);
     },
   };
+}
+
+function createDesktopUiDebugExecutor(): UiDebugExecutor {
+  return {
+    async getCapabilities() {
+      return {
+        available: true,
+        actions: [
+          'inspect',
+          'quitApp',
+          'navigate',
+          'waitFor',
+          'click',
+          'type',
+          'pressKey',
+          'read',
+          'screenshot',
+          'snapshotDom',
+          'filesystem.readTextFile',
+          'mega.syncUntilFileReadable',
+        ],
+        screenshot: true,
+        title: requireDesktopWindow().getTitle(),
+        url: requireDesktopWindow().webContents.getURL(),
+      };
+    },
+    async run(request: UiDebugRunRequest): Promise<UiDebugRunResponse> {
+      const results: UiDebugActionResult[] = [];
+      const stopOnError = request.stopOnError !== false;
+      for (const action of request.actions) {
+        const startedAt = Date.now();
+        try {
+          const result = await runDesktopUiDebugAction(action);
+          results.push({
+            type: action.type,
+            ok: true,
+            durationMs: Date.now() - startedAt,
+            result,
+          });
+        } catch (error) {
+          results.push({
+            type: action.type,
+            ok: false,
+            durationMs: Date.now() - startedAt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (stopOnError) {
+            break;
+          }
+        }
+      }
+      return {
+        ok: results.every((entry) => entry.ok),
+        actionCount: request.actions.length,
+        results,
+      };
+    },
+  };
+}
+
+async function runDesktopUiDebugAction(action: UiDebugAction): Promise<Record<string, unknown>> {
+  switch (action.type) {
+    case 'inspect':
+      return inspectDesktopDocument();
+    case 'quitApp':
+      return quitDesktopApp();
+    case 'navigate':
+      return navigateDesktopWindow(action);
+    case 'waitFor':
+      return waitForDesktopSelector(action.selector, action.state, action.timeoutMs, action.pollIntervalMs);
+    case 'click':
+      return clickDesktopSelector(action.selector);
+    case 'type':
+      return typeIntoDesktopSelector(action.selector, action.value, action.clear, action.submit);
+    case 'pressKey':
+      return pressDesktopKey(action);
+    case 'read':
+      return readDesktopSelector(action.selector, action.field, action.attribute);
+    case 'screenshot':
+      return captureDesktopScreenshot(action);
+    case 'snapshotDom':
+      return captureDesktopDomSnapshot(action);
+    case 'filesystem.readTextFile':
+      return readDesktopTextFile(action.path, action.maxBytes);
+    case 'mega.syncUntilFileReadable':
+      return syncMegaUntilFileReadable(action);
+    default:
+      throw new Error(`Unsupported UI debug action: ${(action as { type?: string }).type ?? 'unknown'}`);
+  }
+}
+
+function requireDesktopRuntimeConfig(): DesktopRuntimeConfig {
+  if (!state.config) {
+    throw new Error('Nearbytes desktop runtime config is not available.');
+  }
+  return state.config;
+}
+
+async function desktopApiJson<T = unknown>(apiPath: string, init: DesktopApiJsonOptions = {}): Promise<T> {
+  const config = requireDesktopRuntimeConfig();
+  const headers = new Headers(init.headers ?? {});
+  headers.set('x-nearbytes-desktop-token', config.desktopToken);
+  const method = init.method?.toUpperCase() ?? 'GET';
+  if (init.body && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  const timeoutMs = Math.max(250, Math.floor(init.timeoutMs ?? DEFAULT_DESKTOP_API_TIMEOUT_MS));
+  const timeoutLabel = init.timeoutLabel?.trim() || `${method} ${apiPath}`;
+  const timeoutController = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    timeoutController.abort();
+  }, timeoutMs);
+  timeout.unref?.();
+
+  const upstreamSignal = init.signal;
+  const onAbort = () => {
+    timeoutController.abort();
+  };
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      timeoutController.abort();
+    } else {
+      upstreamSignal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(new URL(apiPath, config.apiBaseUrl), {
+      ...init,
+      method,
+      headers,
+      signal: timeoutController.signal,
+    });
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`Desktop API request timed out after ${timeoutMs}ms: ${timeoutLabel}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (upstreamSignal) {
+      upstreamSignal.removeEventListener('abort', onAbort);
+    }
+  }
+  const text = await response.text();
+  const payload = text.trim().length > 0 ? JSON.parse(text) as T | { error?: { message?: string } } : ({} as T);
+  if (!response.ok) {
+    const message = typeof payload === 'object' && payload && 'error' in payload && payload.error?.message
+      ? payload.error.message
+      : `Desktop API request failed with HTTP ${response.status}.`;
+    throw new Error(message);
+  }
+  return payload as T;
+}
+
+async function wipeStoredConfig(options: WipeStoredConfigOptions = {}): Promise<{ relaunching: true }> {
+  const deleteLocalData = options.deleteLocalData === true;
+  console.log(`[desktop] wipeStoredConfig starting (deleteLocalData=${deleteLocalData})`);
+  await disconnectAllProviderAccounts();
+  console.log('[desktop] wipeStoredConfig disconnected provider accounts');
+
+  if (state.window && !state.window.isDestroyed()) {
+    await state.window.webContents.session.clearStorageData({
+      storages: ['localstorage', 'indexdb', 'serviceworkers', 'cachestorage'],
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`Failed to clear desktop browser storage: ${message}`);
+    });
+  }
+  console.log('[desktop] wipeStoredConfig cleared renderer browser storage');
+
+  const rootsConfigPath = resolveDefaultRootsConfigPath();
+  const integrationStatePath = resolveIntegrationStatePath();
+  const desktopSecretStorePath = path.join(app.getPath('userData'), 'integration-secrets.json');
+  const storageRoots = deleteLocalData ? await resolveLocalDataRootsForWipe(rootsConfigPath) : [];
+
+  await clearPublishedDesktopSession();
+  await clearDesktopUiState();
+  await removePathIfPresent(rootsConfigPath);
+  await removePathIfPresent(integrationStatePath);
+  await removePathIfPresent(desktopSecretStorePath);
+  console.log('[desktop] wipeStoredConfig removed persisted desktop config files');
+
+  if (deleteLocalData) {
+    for (const storageRoot of storageRoots) {
+      await removePathIfPresent(path.join(storageRoot, 'blocks'));
+      await removePathIfPresent(path.join(storageRoot, 'channels'));
+    }
+    console.log(`[desktop] wipeStoredConfig removed local blocks/channels from ${storageRoots.length} storage roots`);
+  }
+
+  setTimeout(() => {
+    app.relaunch();
+    void requestAppQuit('wipe-stored-config');
+  }, 0);
+
+  console.log('[desktop] wipeStoredConfig scheduled relaunch');
+
+  return { relaunching: true };
+}
+
+async function disconnectAllProviderAccounts(): Promise<void> {
+  console.log('[desktop] wipeStoredConfig fetching provider accounts');
+  const accountsResponse = await desktopApiJson<ProviderAccountsResponse>('/integrations/accounts?fast=1', {
+    timeoutMs: 2_500,
+    timeoutLabel: 'list provider accounts for reset',
+  });
+  console.log(`[desktop] wipeStoredConfig found ${accountsResponse.accounts.length} provider accounts to disconnect`);
+  for (const account of accountsResponse.accounts) {
+    const encodedAccountId = encodeURIComponent(account.id);
+    try {
+      await desktopApiJson(`/integrations/accounts/${encodedAccountId}?mode=reset`, {
+        method: 'DELETE',
+        timeoutMs: 10_000,
+        timeoutLabel: `disconnect provider ${account.provider}:${account.id} for reset`,
+      });
+      console.log(`[desktop] wipeStoredConfig disconnected provider ${account.provider}:${account.id}`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Nearbytes could not safely disconnect provider ${account.provider.toUpperCase()} before starting from scratch: ${detail}`);
+    }
+  }
+
+  const remainingAccounts = await desktopApiJson<ProviderAccountsResponse>('/integrations/accounts?fast=1', {
+    timeoutMs: 2_500,
+    timeoutLabel: 'verify provider disconnects for reset',
+  });
+  if (remainingAccounts.accounts.length > 0) {
+    throw new Error('Nearbytes could not disconnect all provider accounts before reset.');
+  }
+  console.log('[desktop] wipeStoredConfig verified all provider accounts are disconnected');
+}
+
+async function resolveLocalDataRootsForWipe(rootsConfigPath: string): Promise<string[]> {
+  const candidates = new Set<string>([path.resolve(getDefaultStorageDir())]);
+  try {
+    const raw = await fs.readFile(rootsConfigPath, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      sources?: Array<{
+        provider?: unknown;
+        path?: unknown;
+      }>;
+    };
+    for (const source of parsed.sources ?? []) {
+      if (source?.provider !== 'local' || typeof source.path !== 'string' || source.path.trim() === '') {
+        continue;
+      }
+      candidates.add(path.resolve(source.path));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      console.warn('Failed to inspect roots config before deleting local data:', error);
+    }
+  }
+  return Array.from(candidates.values());
+}
+
+async function removePathIfPresent(targetPath: string): Promise<void> {
+  try {
+    await fs.rm(targetPath, { recursive: true, force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
+async function readDesktopTextFile(rawPath: string, maxBytes = UI_DEBUG_FILE_READ_MAX_BYTES): Promise<Record<string, unknown>> {
+  const resolvedPath = path.resolve(rawPath.trim());
+  const limit = clampUiDebugFileLength(maxBytes);
+  const content = await fs.readFile(resolvedPath, 'utf8');
+  return {
+    path: resolvedPath,
+    bytes: Buffer.byteLength(content, 'utf8'),
+    content: content.length > limit ? content.slice(0, limit) : content,
+    truncated: content.length > limit,
+  };
+}
+
+function clampUiDebugFileLength(maxBytes: number | undefined): number {
+  if (!Number.isFinite(maxBytes) || maxBytes === undefined) {
+    return UI_DEBUG_FILE_READ_MAX_BYTES;
+  }
+  return Math.max(256, Math.min(2_000_000, Math.floor(maxBytes)));
+}
+
+async function syncMegaUntilFileReadable(
+  action: Extract<UiDebugAction, { type: 'mega.syncUntilFileReadable' }>
+): Promise<Record<string, unknown>> {
+  const timeoutMs = Math.max(1_000, Math.min(300_000, Math.floor(action.timeoutMs ?? 60_000)));
+  const pollIntervalMs = Math.max(100, Math.min(10_000, Math.floor(action.pollIntervalMs ?? 1_000)));
+  const relativePath = action.relativePath?.trim() || 'Nearbytes.html';
+  const startedAt = Date.now();
+  let attempts = 0;
+  let lastState: Record<string, unknown> | null = null;
+  let lastError = '';
+
+  while (Date.now() - startedAt < timeoutMs) {
+    attempts += 1;
+    const sharesResponse = await desktopApiJson<{ shares: Array<Record<string, unknown>> }>('/integrations/shares');
+    const targetShare = selectMegaDebugShare(sharesResponse.shares, action);
+    if (!targetShare) {
+      throw new Error('No matching MEGA recipient share is currently available for debug sync.');
+    }
+
+    const   share = targetShare.share as { id: string; localPath: string };
+    const stateResponse = await desktopApiJson<{ summary: Record<string, unknown> }>(
+      `/integrations/shares/${encodeURIComponent(share.id)}/state`
+    );
+    const summary = stateResponse.summary as {
+      share: { id: string; localPath: string };
+      state: { status?: string; detail?: string };
+    };
+    lastState = summary as unknown as Record<string, unknown>;
+
+    const filePath = path.join(summary.share.localPath, relativePath);
+    try {
+      const fileResult = await readDesktopTextFile(filePath, action.maxBytes);
+      return {
+        attempts,
+        waitedMs: Date.now() - startedAt,
+        shareId: summary.share.id,
+        localPath: summary.share.localPath,
+        relativePath,
+        state: summary.state,
+        ...fileResult,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    const status = summary.state.status?.trim().toLowerCase() ?? '';
+    if (status === 'needs-auth') {
+      throw new Error(summary.state.detail?.trim() || 'MEGA requires sign-in before the mirror can refresh.');
+    }
+
+    await delay(pollIntervalMs);
+  }
+
+  const stateLabel =
+    lastState && typeof lastState === 'object' && 'state' in lastState
+      ? JSON.stringify((lastState as { state?: unknown }).state)
+      : 'unknown';
+  throw new Error(
+    `Timed out after ${Math.ceil(timeoutMs / 1000)}s waiting for MEGA mirror file ${relativePath}. Last state: ${stateLabel}. Last read error: ${lastError}`
+  );
+}
+
+function selectMegaDebugShare(
+  shares: Array<Record<string, unknown>>,
+  action: Extract<UiDebugAction, { type: 'mega.syncUntilFileReadable' }>
+): Record<string, unknown> | null {
+  const requestedShareId = action.shareId?.trim();
+  const requestedOwnerEmail = action.ownerEmail?.trim().toLowerCase();
+  const requestedShareName = action.shareName?.trim().toLowerCase();
+  const entries = shares.filter((entry) => {
+    const share = entry.share as { id?: string; provider?: string; role?: string; label?: string; remoteDescriptor?: Record<string, unknown> } | undefined;
+    if (!share || share.provider !== 'mega' || share.role !== 'recipient') {
+      return false;
+    }
+    if (requestedShareId && share.id !== requestedShareId) {
+      return false;
+    }
+    const remoteDescriptor = share.remoteDescriptor ?? {};
+    const ownerEmail = typeof remoteDescriptor.ownerEmail === 'string' ? remoteDescriptor.ownerEmail.trim().toLowerCase() : '';
+    const shareName = typeof remoteDescriptor.shareName === 'string'
+      ? remoteDescriptor.shareName.trim().toLowerCase()
+      : typeof share.label === 'string'
+        ? share.label.trim().toLowerCase()
+        : '';
+    if (requestedOwnerEmail && ownerEmail !== requestedOwnerEmail) {
+      return false;
+    }
+    if (requestedShareName && shareName !== requestedShareName) {
+      return false;
+    }
+    return true;
+  });
+  return entries[0] ?? null;
+}
+
+async function quitDesktopApp(): Promise<Record<string, unknown>> {
+  setTimeout(() => {
+    void requestAppQuit('ui-debug');
+  }, 0);
+  setTimeout(() => {
+    state.diagnostics.quitAllowed = true;
+    process.exit(0);
+  }, DESKTOP_FORCE_EXIT_TIMEOUT_MS);
+  return {
+    quitting: true,
+  };
+}
+
+function requireDesktopWindow(): BrowserWindow {
+  if (!state.window || state.window.isDestroyed()) {
+    throw new Error('Nearbytes desktop window is not available.');
+  }
+  return state.window;
+}
+
+async function inspectDesktopDocument(): Promise<Record<string, unknown>> {
+  const snapshot = await evaluateInDesktopWindow<{
+    title: string;
+    url: string;
+    readyState: string;
+  }>(`(() => ({
+    title: document.title,
+    url: window.location.href,
+    readyState: document.readyState,
+  }))()`);
+  return snapshot;
+}
+
+async function navigateDesktopWindow(action: Extract<UiDebugAction, { type: 'navigate' }>): Promise<Record<string, unknown>> {
+  const window = requireDesktopWindow();
+  const currentUrl = window.webContents.getURL();
+  const targetUrl = action.url?.trim()
+    ? action.url.trim()
+    : action.path?.trim()
+      ? new URL(action.path.trim(), currentUrl).toString()
+      : currentUrl;
+  await window.loadURL(targetUrl);
+  if (action.waitForLoad !== false) {
+    await waitForDesktopReadyState('complete', 10_000);
+  }
+  return {
+    url: window.webContents.getURL(),
+    title: window.getTitle(),
+  };
+}
+
+async function waitForDesktopReadyState(expectedState: 'interactive' | 'complete', timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const stateValue = await evaluateInDesktopWindow<string>('document.readyState');
+    if (stateValue === expectedState || (expectedState === 'interactive' && stateValue === 'complete')) {
+      return;
+    }
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for document.readyState=${expectedState}.`);
+}
+
+async function waitForDesktopSelector(
+  selector: string,
+  stateName: 'present' | 'visible' | 'hidden' = 'visible',
+  timeoutMs = 10_000,
+  pollIntervalMs = 100
+): Promise<Record<string, unknown>> {
+  const trimmedSelector = selector.trim();
+  if (!trimmedSelector) {
+    throw new Error('UI debug selector is required.');
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const entry = await readDesktopElementState(trimmedSelector);
+    if (
+      (stateName === 'present' && entry.found) ||
+      (stateName === 'visible' && entry.found && entry.visible) ||
+      (stateName === 'hidden' && (!entry.found || !entry.visible))
+    ) {
+      return {
+        selector: trimmedSelector,
+        state: stateName,
+        found: entry.found,
+        visible: entry.visible,
+      };
+    }
+    await delay(pollIntervalMs);
+  }
+  throw new Error(`Timed out waiting for selector "${trimmedSelector}" to become ${stateName}.`);
+}
+
+async function clickDesktopSelector(selector: string): Promise<Record<string, unknown>> {
+  const trimmedSelector = selector.trim();
+  const entry = await readDesktopElementState(trimmedSelector);
+  if (!entry.found) {
+    throw new Error(`Selector not found: ${trimmedSelector}`);
+  }
+  if (!entry.visible) {
+    throw new Error(`Selector is not visible: ${trimmedSelector}`);
+  }
+  await evaluateInDesktopWindow<boolean>(buildSelectorScript(trimmedSelector, `
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+    element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
+    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
+    if (typeof element.click === 'function') {
+      element.click();
+    } else {
+      element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    }
+    return true;
+  `));
+  return {
+    selector: trimmedSelector,
+    clicked: true,
+  };
+}
+
+async function typeIntoDesktopSelector(
+  selector: string,
+  value: string,
+  clear = true,
+  submit = false
+): Promise<Record<string, unknown>> {
+  const trimmedSelector = selector.trim();
+  const entry = await readDesktopElementState(trimmedSelector);
+  if (!entry.found) {
+    throw new Error(`Selector not found: ${trimmedSelector}`);
+  }
+  await evaluateInDesktopWindow<boolean>(buildSelectorScript(trimmedSelector, `
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+      throw new Error('Target element is not a text input.');
+    }
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+    element.focus();
+    ${clear ? `element.value = '';` : ''}
+    element.value = ${JSON.stringify(value)};
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    ${submit ? `element.form?.requestSubmit?.();` : ''}
+    return true;
+  `));
+  return {
+    selector: trimmedSelector,
+    valueLength: value.length,
+    submitted: submit,
+  };
+}
+
+async function pressDesktopKey(
+  action: Extract<UiDebugAction, { type: 'pressKey' }>
+): Promise<Record<string, unknown>> {
+  const window = requireDesktopWindow();
+  const modifiers: Array<'alt' | 'control' | 'meta' | 'shift'> = [];
+  if (action.alt) modifiers.push('alt');
+  if (action.control) modifiers.push('control');
+  if (action.meta) modifiers.push('meta');
+  if (action.shift) modifiers.push('shift');
+  window.webContents.sendInputEvent({
+    type: 'keyDown',
+    keyCode: action.key,
+    modifiers,
+  });
+  if (action.key.length === 1) {
+    window.webContents.sendInputEvent({
+      type: 'char',
+      keyCode: action.key,
+      modifiers,
+    });
+  }
+  window.webContents.sendInputEvent({
+    type: 'keyUp',
+    keyCode: action.key,
+    modifiers,
+  });
+  return {
+    key: action.key,
+    modifiers,
+  };
+}
+
+async function readDesktopSelector(
+  selector: string,
+  field: 'text' | 'html' | 'outerHtml' | 'value' = 'text',
+  attribute?: string
+): Promise<Record<string, unknown>> {
+  const trimmedSelector = selector.trim();
+  const entry = await readDesktopElementState(trimmedSelector, attribute?.trim() || undefined);
+  if (!entry.found) {
+    throw new Error(`Selector not found: ${trimmedSelector}`);
+  }
+  const value =
+    field === 'html'
+      ? entry.html
+      : field === 'outerHtml'
+        ? entry.outerHtml
+        : field === 'value'
+          ? entry.value
+          : entry.text;
+  return {
+    selector: trimmedSelector,
+    field,
+    value: value ?? '',
+    attribute: attribute?.trim() ? entry.attribute ?? null : undefined,
+  };
+}
+
+async function captureDesktopScreenshot(
+  action: Extract<UiDebugAction, { type: 'screenshot' }>
+): Promise<Record<string, unknown>> {
+  const window = requireDesktopWindow();
+  const targetPath = await resolveDesktopScreenshotPath(action.path);
+  const rect = action.selector?.trim()
+    ? await readDesktopElementState(action.selector.trim()).then((entry) => {
+        if (!entry.found || !entry.rect) {
+          throw new Error(`Selector not found for screenshot: ${action.selector}`);
+        }
+        return {
+          x: Math.max(0, Math.floor(entry.rect.x)),
+          y: Math.max(0, Math.floor(entry.rect.y)),
+          width: Math.max(1, Math.ceil(entry.rect.width)),
+          height: Math.max(1, Math.ceil(entry.rect.height)),
+        };
+      })
+    : undefined;
+  const image = rect && action.fullPage !== true
+    ? await window.webContents.capturePage(rect)
+    : await window.webContents.capturePage();
+  const png = image.toPNG();
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(targetPath, png);
+  return {
+    path: targetPath,
+    selector: action.selector?.trim() || undefined,
+    width: image.getSize().width,
+    height: image.getSize().height,
+  };
+}
+
+async function captureDesktopDomSnapshot(
+  action: Extract<UiDebugAction, { type: 'snapshotDom' }>
+): Promise<Record<string, unknown>> {
+  const selector = action.selector?.trim() || undefined;
+  const maxLength = clampUiDebugDomLength(action.maxLength);
+  if (selector) {
+    const entry = await readDesktopElementState(selector);
+    if (!entry.found) {
+      throw new Error(`Selector not found: ${selector}`);
+    }
+    const html = entry.outerHtml ?? '';
+    const text = entry.text ?? '';
+    return {
+      selector,
+      title: requireDesktopWindow().getTitle(),
+      url: requireDesktopWindow().webContents.getURL(),
+      html: truncateUiDebugDom(html, maxLength),
+      htmlLength: html.length,
+      text: truncateUiDebugDom(text, maxLength),
+      textLength: text.length,
+      truncated: html.length > maxLength || text.length > maxLength,
+      visible: entry.visible,
+    };
+  }
+
+  const snapshot = await evaluateInDesktopWindow<{
+    title: string;
+    url: string;
+    readyState: string;
+    html: string;
+    text: string;
+  }>(`(() => ({
+    title: document.title,
+    url: window.location.href,
+    readyState: document.readyState,
+    html: document.documentElement?.outerHTML ?? '',
+    text: document.body?.innerText ?? '',
+  }))()`);
+
+  return {
+    selector: null,
+    title: snapshot.title,
+    url: snapshot.url,
+    readyState: snapshot.readyState,
+    html: truncateUiDebugDom(snapshot.html, maxLength),
+    htmlLength: snapshot.html.length,
+    text: truncateUiDebugDom(snapshot.text, maxLength),
+    textLength: snapshot.text.length,
+    truncated: snapshot.html.length > maxLength || snapshot.text.length > maxLength,
+  };
+}
+
+function clampUiDebugDomLength(maxLength: number | undefined): number {
+  if (!Number.isFinite(maxLength) || maxLength === undefined) {
+    return 200_000;
+  }
+  return Math.max(1_000, Math.min(2_000_000, Math.floor(maxLength)));
+}
+
+function truncateUiDebugDom(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength)}\n<!-- truncated -->`;
+}
+
+async function resolveDesktopScreenshotPath(rawPath: string | undefined): Promise<string> {
+  if (rawPath?.trim()) {
+    return path.resolve(rawPath.trim());
+  }
+  const diagnosticsDir = path.join(app.getPath('userData'), 'diagnostics', 'screenshots');
+  await fs.mkdir(diagnosticsDir, { recursive: true });
+  return path.join(diagnosticsDir, `nearbytes-ui-${Date.now()}.png`);
+}
+
+async function readDesktopElementState(selector: string, attribute?: string): Promise<DesktopElementState> {
+  return evaluateInDesktopWindow<DesktopElementState>(buildSelectorScript(selector, `
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      found: true,
+      visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
+      text: element.textContent ?? '',
+      value: 'value' in element ? String(element.value ?? '') : undefined,
+      html: element instanceof HTMLElement ? element.innerHTML : undefined,
+      outerHtml: element instanceof HTMLElement ? element.outerHTML : undefined,
+      attribute: ${attribute ? `element.getAttribute(${JSON.stringify(attribute)})` : 'undefined'},
+      rect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      },
+    };
+  `, `
+    return {
+      found: false,
+      visible: false,
+    };
+  `));
+}
+
+function buildSelectorScript(selector: string, onFound: string, onMissing?: string): string {
+  return `(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) {
+      ${onMissing ?? `throw new Error(${JSON.stringify(`Selector not found: ${selector}`)});`}
+    }
+    ${onFound}
+  })()`;
+}
+
+async function evaluateInDesktopWindow<T>(source: string): Promise<T> {
+  const window = requireDesktopWindow();
+  return window.webContents.executeJavaScript(source, true) as Promise<T>;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function registerIpc(): void {
@@ -309,6 +1208,12 @@ function registerIpc(): void {
     );
     return true;
   });
+  ipcMain.handle('nearbytes-desktop:wipe-stored-config', async (_event, rawOptions: unknown) => {
+    if (rawOptions !== undefined && (!rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions))) {
+      throw new Error('Stored config wipe options must be an object.');
+    }
+    return wipeStoredConfig((rawOptions ?? {}) as WipeStoredConfigOptions);
+  });
   ipcMain.handle('nearbytes-desktop:save-theme-registry', async (_event, rawRegistry: unknown) => {
     if (!isDev) {
       throw new Error('Theme registry editing is only available in development.');
@@ -356,6 +1261,26 @@ function registerIpc(): void {
     }
     return result.filePaths[0] ?? null;
   });
+  ipcMain.handle('nearbytes-desktop:reveal-path-in-file-manager', async (_event, rawTargetPath: unknown) => {
+    if (typeof rawTargetPath !== 'string' || rawTargetPath.trim().length === 0) {
+      throw new Error('A target path is required.');
+    }
+    const targetPath = rawTargetPath.trim();
+    const stat = await fs.stat(targetPath).catch(() => null);
+    if (stat?.isFile()) {
+      shell.showItemInFolder(targetPath);
+      return { path: targetPath, selected: true };
+    }
+    const openTarget = stat?.isDirectory() ? targetPath : path.dirname(targetPath);
+    const error = await shell.openPath(openTarget);
+    if (error) {
+      throw new Error(error);
+    }
+    return { path: openTarget, selected: false };
+  });
+  ipcMain.handle('nearbytes-desktop:read-runtime-logs', async () => {
+    return readDesktopRuntimeLogs();
+  });
 }
 
 function resolveThemePresetRegistryPath(): string {
@@ -390,6 +1315,88 @@ function resolveProjectRoot(): string {
   return process.cwd();
 }
 
+async function readDesktopRuntimeLogs(): Promise<{
+  generatedAt: number;
+  entries: Array<{
+    id: string;
+    label: string;
+    path: string;
+    exists: boolean;
+    size: number;
+    updatedAt: number | null;
+    content: string;
+  }>;
+}> {
+  const entries = await Promise.all(
+    resolveDesktopRuntimeLogCandidates().map(async (entry) => {
+      try {
+        const stats = await fs.stat(entry.path);
+        if (!stats.isFile()) {
+          return {
+            ...entry,
+            exists: false,
+            size: 0,
+            updatedAt: null,
+            content: '',
+          };
+        }
+        const raw = await fs.readFile(entry.path, 'utf8');
+        const content = raw.length > DESKTOP_RUNTIME_LOG_TAIL_BYTES
+          ? raw.slice(-DESKTOP_RUNTIME_LOG_TAIL_BYTES)
+          : raw;
+        return {
+          ...entry,
+          exists: true,
+          size: stats.size,
+          updatedAt: stats.mtimeMs,
+          content,
+        };
+      } catch (error) {
+        if (isFileNotFound(error)) {
+          return {
+            ...entry,
+            exists: false,
+            size: 0,
+            updatedAt: null,
+            content: '',
+          };
+        }
+        throw error;
+      }
+    })
+  );
+
+  return {
+    generatedAt: Date.now(),
+    entries,
+  };
+}
+
+function resolveDesktopRuntimeLogCandidates(): Array<{
+  id: string;
+  label: string;
+  path: string;
+}> {
+  const projectRoot = resolveProjectRoot();
+  return [
+    {
+      id: 'server-stdout',
+      label: 'Backend stdout',
+      path: path.join(projectRoot, '.nearbytes-dev', 'server.stdout.log'),
+    },
+    {
+      id: 'server-stderr',
+      label: 'Backend stderr',
+      path: path.join(projectRoot, '.nearbytes-dev', 'server.stderr.log'),
+    },
+    {
+      id: 'mega-verify-runtime',
+      label: 'Last MEGA runtime check',
+      path: path.join(projectRoot, '.nearbytes-dev', 'verify-mega-runtime.json'),
+    },
+  ];
+}
+
 async function syncPackagedIconAssets(inputPath: string): Promise<{
   pngPath: string;
   icnsPath: string;
@@ -422,8 +1429,8 @@ async function createWindow(apiBaseUrl: string): Promise<void> {
     show: false,
     width: 1400,
     height: 900,
-    minWidth: 980,
-    minHeight: 680,
+    minWidth: 480,
+    minHeight: 420,
     icon: resolveDesktopIconPath() ?? undefined,
     webPreferences: {
       preload: preloadPath,
@@ -613,12 +1620,68 @@ function resolveDesktopIconPath(): string | null {
 
 async function shutdown(): Promise<void> {
   stopMetricsSampling();
-  if (state.runtime) {
-    await state.runtime.stop();
-    state.runtime = null;
+  const errors: unknown[] = [];
+
+  try {
+    await clearPublishedDesktopSession();
+  } catch (error) {
+    errors.push(error);
   }
-  await stopDevUiServer();
-  await clearPublishedDesktopSession();
+
+  const runtime = state.runtime;
+  state.runtime = null;
+  if (runtime) {
+    try {
+      await runtime.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  const commandExecutor = state.commandExecutor;
+  state.commandExecutor = null;
+  if (commandExecutor) {
+    try {
+      commandExecutor.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  try {
+    await stopDevUiServer();
+  } catch (error) {
+    errors.push(error);
+  }
+
+  if (errors.length > 0) {
+    throw errors[0];
+  }
+}
+
+async function requestAppQuit(reason: string, exitCode = 0): Promise<void> {
+  const forceExitTimer = setTimeout(() => {
+    state.diagnostics.quitAllowed = true;
+    process.exit(exitCode);
+  }, DESKTOP_FORCE_EXIT_TIMEOUT_MS);
+
+  try {
+    await ensureAppShutdown(reason);
+  } finally {
+    clearTimeout(forceExitTimer);
+    state.diagnostics.quitAllowed = true;
+    app.exit(exitCode);
+  }
+}
+
+function ensureAppShutdown(reason: string): Promise<void> {
+  if (!state.diagnostics.shutdownPromise) {
+    state.diagnostics.shutdownPromise = (async () => {
+      await prepareDiagnosticsShutdown(reason);
+      await shutdown();
+    })();
+  }
+  return state.diagnostics.shutdownPromise;
 }
 
 async function loadRuntimeModule(): Promise<RuntimeModule> {
@@ -727,6 +1790,9 @@ async function ensureDevUiServer(): Promise<void> {
   if (!info) {
     return;
   }
+  if (hasExternalDevUiServer) {
+    return;
+  }
   if (await isDevUiReachable(info.url)) {
     return;
   }
@@ -760,7 +1826,7 @@ async function readSecretEntries(filePath: string): Promise<Record<string, strin
 
 async function writeSecretEntries(filePath: string, entries: Record<string, string>): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(
     tempPath,
     `${JSON.stringify({ version: 1, entries }, null, 2)}\n`,
@@ -770,21 +1836,55 @@ async function writeSecretEntries(filePath: string, entries: Record<string, stri
 }
 
 function encryptDesktopSecret(value: Buffer): Buffer {
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!shouldUseDesktopSecretEncryption()) {
     return value;
   }
   return safeStorage.encryptString(value.toString('utf8'));
 }
 
 function decryptDesktopSecret(value: Buffer): Buffer {
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!shouldUseDesktopSecretEncryption()) {
     return value;
   }
-  return Buffer.from(safeStorage.decryptString(value), 'utf8');
+  try {
+    return Buffer.from(safeStorage.decryptString(value), 'utf8');
+  } catch (error) {
+    if (looksLikePlaintextDesktopSecret(value)) {
+      return value;
+    }
+    throw error;
+  }
+}
+
+function shouldUseDesktopSecretEncryption(): boolean {
+  const override = process.env.NEARBYTES_DISABLE_SAFE_STORAGE?.trim().toLowerCase();
+  if (override === '1' || override === 'true') {
+    return false;
+  }
+  if (isDev) {
+    return false;
+  }
+  return safeStorage.isEncryptionAvailable();
 }
 
 function isFileNotFound(error: unknown): error is NodeJS.ErrnoException {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'ENOENT');
+}
+
+function looksLikePlaintextDesktopSecret(value: Buffer): boolean {
+  const text = value.toString('utf8').trim();
+  return (
+    (text.startsWith('{') && text.endsWith('}')) ||
+    (text.startsWith('[') && text.endsWith(']')) ||
+    text === 'null' ||
+    text === 'true' ||
+    text === 'false' ||
+    /^-?\d+(?:\.\d+)?$/u.test(text)
+  );
+}
+
+function isLegacyPlaintextDesktopSecret(original: Buffer, decrypted: Buffer): boolean {
+  return original.equals(decrypted) && looksLikePlaintextDesktopSecret(decrypted);
 }
 
 function resolvePreloadPath(): string | undefined {
@@ -858,6 +1958,9 @@ async function assertRuntimeBridge(window: BrowserWindow): Promise<void> {
 }
 
 async function installRendererDiagnostics(window: BrowserWindow): Promise<void> {
+  if (!isDesktopDebugEnabled('renderer-diag')) {
+    return;
+  }
   try {
     await window.webContents.executeJavaScript(
       `(() => {
@@ -886,6 +1989,8 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
         let lastInputSummary = 'none';
         let lastInputAt = performance.now();
         let lastFrameAt = performance.now();
+
+        const isRendererVisible = () => !document.hidden && document.visibilityState === 'visible';
 
         const describeTarget = (target) => {
           try {
@@ -935,6 +2040,14 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
         };
         trackedEvents.forEach((type) => {
           window.addEventListener(type, inputCapture, { capture: true, passive: true });
+        });
+        document.addEventListener('visibilitychange', () => {
+          const now = performance.now();
+          lastFrameAt = now;
+          lastInputAt = now;
+          if (!isRendererVisible()) {
+            lastInputSummary = 'none';
+          }
         });
 
         const originalAddEventListener = EventTarget.prototype.addEventListener;
@@ -1051,6 +2164,10 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
         let lastTickAt = performance.now();
         setInterval(() => {
           const now = performance.now();
+          if (!isRendererVisible()) {
+            lastTickAt = now;
+            return;
+          }
           const driftMs = now - lastTickAt - 1000;
           if (driftMs >= stallThresholdMs) {
             console.warn(
@@ -1066,6 +2183,11 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
         }, 1000);
 
         const monitorFrames = (timestamp) => {
+          if (!isRendererVisible()) {
+            lastFrameAt = timestamp;
+            window.requestAnimationFrame(monitorFrames);
+            return;
+          }
           const gapMs = timestamp - lastFrameAt;
           if (gapMs >= frameGapThresholdMs) {
             console.warn(
@@ -1090,6 +2212,55 @@ async function installRendererDiagnostics(window: BrowserWindow): Promise<void> 
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     console.error(`[desktop] failed to install renderer diagnostics: ${message}`);
   }
+}
+
+function isDesktopDebugEnabled(scope?: string): boolean {
+  const value = process.env.DEBUG?.trim();
+  if (!value) {
+    return false;
+  }
+  const tokens = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+  const normalizedScope = scope?.trim().toLowerCase();
+  return tokens.some((token) => {
+    const normalized = token.toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === '*' || normalized === 'nearbytes') {
+      return true;
+    }
+    if (!normalizedScope) {
+      return false;
+    }
+    return normalized === normalizedScope || normalized === `nearbytes:${normalizedScope}`;
+  });
+}
+
+function applyDebugFlagFromArgv(argv: readonly string[]): void {
+  const debugValue = readDebugFlagFromArgv(argv);
+  if (!debugValue) {
+    return;
+  }
+  const existing = process.env.DEBUG?.trim();
+  process.env.DEBUG = existing ? `${existing},${debugValue}` : debugValue;
+}
+
+function readDebugFlagFromArgv(argv: readonly string[]): string | null {
+  for (let index = 0; index < argv.length; index += 1) {
+    const entry = argv[index]?.trim();
+    if (!entry) {
+      continue;
+    }
+    if (entry === '--debug') {
+      const next = argv[index + 1]?.trim();
+      if (next && !next.startsWith('-')) {
+        return next;
+      }
+      return 'nearbytes';
+    }
+    if (entry.startsWith('--debug=')) {
+      const value = entry.slice('--debug='.length).trim();
+      return value || 'nearbytes';
+    }
+  }
+  return null;
 }
 
 async function startRendererCpuProfile(window: BrowserWindow): Promise<void> {
@@ -1203,9 +2374,5 @@ async function prepareDiagnosticsShutdown(reason: string): Promise<void> {
 
 async function handleTerminationSignal(signal: 'SIGINT' | 'SIGTERM', exitCode: number): Promise<void> {
   console.log(`[desktop] received ${signal}, flushing diagnostics`);
-  try {
-    await prepareDiagnosticsShutdown(signal.toLowerCase());
-  } finally {
-    process.exit(exitCode);
-  }
+  await requestAppQuit(signal.toLowerCase(), exitCode);
 }

@@ -10,6 +10,7 @@ import { ChannelStorage } from '../../storage/channel.js';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';
 import { createChatService } from '../chatService.js';
 import { createFileService } from '../fileService.js';
+import { hydrateSignedEvent } from '../eventEnvelope.js';
 
 const START_TIME = 1800000000000;
 
@@ -43,13 +44,17 @@ describe('ChatService', () => {
     expect(identityEventHashes).toHaveLength(1);
     expect(volumeEventHashes).toHaveLength(2);
 
-    const identityEvent = await channelStorage.retrieveEvent(identityKeyPair.publicKey, identityEventHashes[0]);
+    const identityEvent = await hydrateSignedEvent(
+      crypto,
+      identityKeyPair.privateKey,
+      await channelStorage.retrieveEvent(identityKeyPair.publicKey, identityEventHashes[0])
+    );
     expect(identityEvent.payload.type).toBe(EventType.APP_RECORD);
     expect(identityEvent.payload.protocol).toBe('nb.identity.record.v1');
 
     const volumeEvents = await Promise.all(
       volumeEventHashes.map((eventHash) => channelStorage.retrieveEvent(volumeKeyPair.publicKey, eventHash))
-    );
+    ).then((events) => Promise.all(events.map((event) => hydrateSignedEvent(crypto, volumeKeyPair.privateKey, event))));
     const volumeProtocols = volumeEvents
       .map((event) => event.payload.protocol)
       .filter((value): value is string => typeof value === 'string')

@@ -131,6 +131,16 @@ export interface TransportState {
   readonly detail: string;
   readonly badges: string[];
   readonly lastSyncAt?: number;
+  readonly diagnostic?: {
+    readonly code: string;
+    readonly title: string;
+    readonly summary: string;
+    readonly detail?: string;
+    readonly facts?: ReadonlyArray<{
+      readonly label: string;
+      readonly value: string;
+    }>;
+  };
 }
 
 export interface ProviderSetupState {
@@ -175,6 +185,25 @@ export interface ManagedShareSummary {
     readonly remoteTotalBytes?: number;
     readonly remoteUsedBytes?: number;
   };
+}
+
+export interface IncomingManagedShareOffer {
+  readonly id: string;
+  readonly provider: string;
+  readonly accountId: string;
+  readonly label: string;
+  readonly ownerLabel: string;
+  readonly detail: string;
+  readonly remoteDescriptor: Record<string, unknown>;
+  readonly suggestedLocalPath?: string;
+}
+
+export interface IncomingProviderContactInvite {
+  readonly id: string;
+  readonly provider: string;
+  readonly accountId: string;
+  readonly label: string;
+  readonly detail: string;
 }
 
 export interface ShareStorageMetrics {
@@ -230,6 +259,7 @@ export interface CreateManagedShareInput {
 
 export interface InviteManagedShareInput {
   readonly emails: string[];
+  readonly accessLevel?: 'read' | 'read/write' | 'full access';
 }
 
 export interface AttachManagedShareInput {
@@ -243,6 +273,7 @@ export interface AcceptManagedShareInput {
   readonly volumeId?: string;
   readonly localPath?: string;
   readonly remoteDescriptor?: Record<string, unknown>;
+  readonly capabilities?: string[];
 }
 
 export interface JoinLinkPlannerContext {
@@ -271,4 +302,28 @@ export interface PlannedAttachment {
 export interface JoinLinkPlan {
   readonly link: JoinLink;
   readonly attachments: PlannedAttachment[];
+}
+
+export type ProviderObservedObjectKind = 'event' | 'block';
+
+export interface ProviderObservedObjectRef {
+  readonly kind: ProviderObservedObjectKind;
+  readonly hash: string;
+}
+
+export interface ProviderQueueObservation extends ProviderObservedObjectRef {
+  readonly observationId: string;
+  readonly prevObservationId: string | null;
+  readonly sourceId: string;
+  readonly relativePath: string;
+  readonly observedAt: number;
+  readonly volumeId?: string;
+}
+
+export interface ProviderQueueRouteState {
+  readonly provider: string;
+  readonly routeKey: string;
+  readonly lastAckedObservationId: string | null;
+  readonly lastAttemptedObservationId: string | null;
+  readonly updatedAt: number;
 }

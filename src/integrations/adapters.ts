@@ -9,6 +9,8 @@ import type {
   ConnectProviderAccountResult,
   ConfigureProviderInput,
   CreateManagedShareInput,
+  IncomingManagedShareOffer,
+  IncomingProviderContactInvite,
   ManagedShareCollaborator,
   InviteManagedShareInput,
   ManagedShare,
@@ -25,10 +27,83 @@ export interface MirrorRemoteEntry {
   readonly size: number;
 }
 
+export interface ManagedShareMirrorEntry {
+  readonly label: string;
+  readonly localPath: string;
+  readonly remotePath: string;
+}
+
+export interface ManagedShareRemoteEntryProbe {
+  readonly path: string;
+  readonly kind: 'file' | 'folder';
+  readonly size?: number;
+  readonly handle?: string;
+  readonly modifiedAt?: string;
+}
+
+export interface ProviderShareInventoryDebugEntry {
+  readonly shareHandle: string;
+  readonly rootHandle?: string;
+  readonly ownerEmail?: string;
+  readonly label: string;
+}
+
+export interface ManagedShareUploadProbe {
+  readonly id: string;
+  readonly shareId: string;
+  readonly path: string;
+  readonly localSize: number;
+  readonly startedAt: number;
+  readonly committedAt: number;
+  readonly timeoutMs: number;
+  readonly attempts: number;
+  readonly status: 'pending' | 'available' | 'timeout' | 'error';
+  readonly firstCheckStartedAt?: number;
+  readonly firstCheckCompletedAt?: number;
+  readonly firstCheckDurationMs?: number;
+  readonly lastCheckedAt?: number;
+  readonly availableAt?: number;
+  readonly availabilityDelayMs?: number;
+  readonly remoteHandle?: string;
+  readonly lastError?: string;
+}
+
+export interface ManagedShareReceiveProbe {
+  readonly id: string;
+  readonly shareId: string;
+  readonly path: string;
+  readonly trigger: 'sc' | 'sync';
+  readonly triggerHandle: string;
+  readonly rootHandle: string;
+  readonly packetReceivedAt: number;
+  readonly applyStartedAt: number;
+  readonly remoteHandle?: string;
+  readonly scsn?: string;
+  readonly fetchStartedAt?: number;
+  readonly fetchCompletedAt?: number;
+  readonly downloadStartedAt?: number;
+  readonly downloadCompletedAt?: number;
+  readonly validationCompletedAt?: number;
+  readonly localWriteStartedAt?: number;
+  readonly localWriteCompletedAt?: number;
+  readonly localVisibleAt?: number;
+  readonly applyCompletedAt?: number;
+  readonly totalApplyMs?: number;
+  readonly packetToLocalVisibleMs?: number;
+  readonly status: 'pending' | 'applied' | 'error';
+  readonly lastError?: string;
+}
+
 export interface MirrorRemoteAdapter {
   list(): Promise<readonly MirrorRemoteEntry[]>;
   download(path: string): Promise<Uint8Array>;
   upload(path: string, data: Uint8Array): Promise<void>;
+  confirmEntry?(path: string, expectedSize: number): Promise<boolean>;
+  /**
+   * When true, replaces remote files when a path exists remotely but the stored size differs from local
+   * (MEGA owner writable mirror). Other mirrors keep the legacy behavior (skip if path exists).
+   */
+  reconcileUploadsByRemoteSize?(): boolean;
 }
 
 export interface TransportAdapter {
@@ -36,6 +111,7 @@ export interface TransportAdapter {
   readonly label: string;
   readonly description: string;
   readonly supportsAccountConnection: boolean;
+  dispose?(): Promise<void>;
   getSetupState?(): Promise<ProviderSetupState>;
   configure?(input: ConfigureProviderInput): Promise<ProviderSetupState>;
   install?(): Promise<ProviderSetupState>;
@@ -49,11 +125,47 @@ export interface TransportAdapter {
   createManagedShare?(input: CreateManagedShareInput, account: ProviderAccount): Promise<Partial<ManagedShare>>;
   invite?(share: ManagedShare, input: InviteManagedShareInput, account: ProviderAccount): Promise<void>;
   acceptInvite?(input: AcceptManagedShareInput, account: ProviderAccount): Promise<Partial<ManagedShare>>;
+  listIncomingShares?(account: ProviderAccount): Promise<IncomingManagedShareOffer[]>;
+  listManagedShareMirrors?(account: ProviderAccount): Promise<ManagedShareMirrorEntry[]>;
+  listIncomingContactInvites?(account: ProviderAccount): Promise<IncomingProviderContactInvite[]>;
+  acceptIncomingContactInvite?(account: ProviderAccount, inviteId: string): Promise<void>;
   getState?(share: ManagedShare, account: ProviderAccount | null): Promise<TransportState>;
   getCollaborators?(share: ManagedShare, account: ProviderAccount | null): Promise<ManagedShareCollaborator[]>;
   getShareStorageMetrics?(share: ManagedShare, account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined>;
   ensureSync?(share: ManagedShare, account: ProviderAccount): Promise<void>;
+  triggerManagedShareSync?(share: ManagedShare, account: ProviderAccount): Promise<void>;
   detachManagedShare?(share: ManagedShare, account: ProviderAccount | null): Promise<void>;
+  probeManagedShareRemoteEntry?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<ManagedShareRemoteEntryProbe | null>;
+  forceManagedShareUpload?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void>;
+  handleManagedShareLocalWrite?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void>;
+  getManagedShareUploadProbes?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath?: string,
+    limit?: number
+  ): Promise<ManagedShareUploadProbe[]>;
+  getManagedShareReceiveProbes?(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath?: string,
+    limit?: number
+  ): Promise<ManagedShareReceiveProbe[]>;
+  getShareInventoryDebug?(account: ProviderAccount): Promise<{
+    incoming: ProviderShareInventoryDebugEntry[];
+    outgoing: ProviderShareInventoryDebugEntry[];
+  }>;
 }
 
 export function createDefaultTransportAdapters(runtime: IntegrationRuntime): TransportAdapter[] {
@@ -85,6 +197,7 @@ export function createProviderCatalog(
 
   return adapters.map((adapter) => {
     const account = accountByProvider.get(adapter.provider);
+    const isActiveAccount = account?.state === 'connected' || account?.state === 'attention';
     return {
       provider: adapter.provider,
       label: adapter.label,
@@ -94,13 +207,13 @@ export function createProviderCatalog(
         : adapter.provider === 'gdrive'
           ? ['OAuth']
           : adapter.provider === 'mega'
-            ? ['CLI']
+            ? ['Native']
             : adapter.provider === 'github'
               ? ['Device flow']
               : ['Available'],
-      isConnected: account?.state === 'connected',
+      isConnected: isActiveAccount,
       connectionState:
-        account?.state === 'connected' ? 'connected' : adapter.supportsAccountConnection ? 'available' : 'setup',
+        isActiveAccount ? 'connected' : adapter.supportsAccountConnection ? 'available' : 'setup',
       accountId: account?.id,
       setup:
         setupStates.get(adapter.provider) ?? {

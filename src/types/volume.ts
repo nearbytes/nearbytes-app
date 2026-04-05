@@ -1,5 +1,5 @@
 import type { PublicKey, Secret } from './keys.js';
-import type { Hash } from './events.js';
+import type { DecryptedEvent, Hash } from './events.js';
 
 /**
  * Content address for encrypted data blocks
@@ -23,7 +23,7 @@ export interface FileMetadata {
  */
 export interface EventLogEntry {
   readonly eventHash: Hash;
-  readonly signedEvent: import('./events.js').SignedEvent;
+  readonly signedEvent: DecryptedEvent;
 }
 
 /**

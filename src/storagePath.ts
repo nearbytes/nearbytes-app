@@ -7,6 +7,7 @@ import os from 'os';
 
 /** Default Nearbytes storage container. */
 const DEFAULT_STORAGE_HOME_DIR = path.join(os.homedir(), 'nearbytes');
+const DEFAULT_RUNTIME_HOME_DIR = path.join(os.homedir(), '.nearbytes');
 
 /** Default local storage path. Can be moved to any local or synced folder via NEARBYTES_STORAGE_DIR. */
 const DEFAULT_STORAGE_DIR = path.join(DEFAULT_STORAGE_HOME_DIR, 'local');
@@ -27,6 +28,10 @@ export function getDefaultStorageDir(): string {
  */
 export function getDefaultStorageHomeDir(): string {
   return resolveStorageHomeDir(getDefaultStorageDir());
+}
+
+export function getDefaultRuntimeHomeDir(): string {
+  return DEFAULT_RUNTIME_HOME_DIR;
 }
 
 export function getProviderStorageFolderName(provider: string): string {

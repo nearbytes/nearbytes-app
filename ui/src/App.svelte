@@ -7,12 +7,12 @@
     parseJoinLink,
     type JoinLinkOpenResponse,
     type JoinLinkParseResponse,
-    listManagedShares,
-    listProviderAccounts,
     listFiles,
     getTimeline,
-    inviteManagedShare,
     getEventDetail,
+    getEventStorageLocations,
+    getRootsConfig,
+    openPathInFileManager,
     uploadFiles,
     deleteFile,
     downloadFile,
@@ -26,21 +26,24 @@
     type ChatAttachment,
     type FileMetadata,
     type JoinLink,
-    type ManagedShareSummary,
-    type ProviderAccount,
     type SerializedEvent,
+    type SerializedEventPayload,
     type SourceFileReference,
     type RecipientFileReference,
     type ReconcileSourcesResponse,
+    type EventStorageLocationsResponse,
     type SourceReferenceBundle,
     type SourceProvider,
     type TimelineEvent,
+    type RootsConfig,
+    type VolumeDestinationConfig,
     type VolumeChatState,
   } from './lib/api.js';
-  import { getCachedFiles, setCachedFiles } from './lib/cache.js';
+  import { clearCache, getCachedFiles, setCachedFiles } from './lib/cache.js';
   import {
     buildIdentitySecret,
     createConfiguredIdentity,
+    hasConfiguredIdentitySecret,
     loadActiveIdentityId,
     loadConfiguredIdentities,
     loadVolumeIdentityAssignments,
@@ -56,11 +59,15 @@
   } from './lib/nearbytesReferenceTransfer.js';
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
+  import AppDialog from './components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
+  import SharedSecretEditor from './components/SharedSecretEditor.svelte';
+  import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
+  import StatusNotice from './components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
-  import SecretSeedFields from './components/SecretSeedFields.svelte';
+  import EventFlowPanel from './components/EventFlowPanel.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
@@ -81,7 +88,6 @@
   import {
     ClipboardPaste,
     Download,
-    File,
     FileArchive,
     FileAudio,
     FileCode2,
@@ -89,6 +95,7 @@
     FileVideo,
     GripVertical,
     HardDrive,
+    Activity,
     History,
     Image as ImageIcon,
     LayoutGrid,
@@ -114,8 +121,9 @@
   const WORKSPACE_CHAT_PANE_MIN_WIDTH = 180;
   const PARKED_MOUNT_WIDTH = 46;
   const isDevThemeStudio = import.meta.env.DEV;
-  const SPEC_DOC_CONTENTS = import.meta.glob('../../docs/specs/*.md', {
-    as: 'raw',
+  const SPEC_DOC_CONTENTS = import.meta.glob('../../docs/specs/**/*.md', {
+    query: '?raw',
+    import: 'default',
     eager: true,
   }) as Record<string, string>;
   const SPEC_CONTENT_BY_FILE = new Map<string, string>();
@@ -127,26 +135,40 @@
   }
   const SPEC_DOCS: SpecDoc[] = [
     {
-      id: 'app-records-v1',
-      title: 'App records v1',
-      filename: 'app-records-v1.md',
+      id: 'hub-model-v0.2',
+      title: 'Hub model v0.2',
+      filename: 'hub-model-v0.2.md',
+      summary: 'Hub log model and subsystem projection rules.',
+      always: true,
+    },
+    {
+      id: 'app-records-v0.2',
+      title: 'App records v0.2',
+      filename: 'app-records-v0.2.md',
       summary: 'APP_RECORD envelope + replay rules.',
       eventTypes: ['APP_RECORD'],
     },
     {
-      id: 'file-events-v2',
-      title: 'File events v2',
-      filename: 'file-events-v2.md',
-      summary: 'CREATE/DELETE/RENAME semantics for file events.',
+      id: 'file-events-v0.3',
+      title: 'File protocol v0.3',
+      filename: 'file-events-v0.3.md',
+      summary: 'CREATE/DELETE/RENAME file replay semantics.',
       eventTypes: ['CREATE_FILE', 'DELETE_FILE', 'RENAME_FILE'],
     },
     {
-      id: 'chat-events-v1',
-      title: 'Chat events v1',
-      filename: 'chat-events-v1.md',
-      summary: 'Chat events + nb.chat.message.v1 payload rules.',
+      id: 'chat-events-v0.2',
+      title: 'Chat protocol v0.2',
+      filename: 'chat-events-v0.2.md',
+      summary: 'Hub chat payload and replay rules.',
       protocols: ['nb.chat.message.v1'],
       eventTypes: ['CHAT_MESSAGE', 'DECLARE_IDENTITY'],
+    },
+    {
+      id: 'identity-management-v1',
+      title: 'Identity management v1',
+      filename: 'identity-management-v1.md',
+      summary: 'Identity lifecycle from local creation to hub materialization.',
+      always: true,
     },
     {
       id: 'identity-record-v1',
@@ -165,15 +187,15 @@
     },
     {
       id: 'identity-channel-v1',
-      title: 'Identity channel v1',
+      title: 'Identity publication v1',
       filename: 'identity-channel-v1.md',
-      summary: 'How identity records are emitted in channels.',
+      summary: 'Canonical publication rules for identity records.',
       protocols: ['nb.identity.record.v1'],
     },
     {
-      id: 'log-command-map-v1',
-      title: 'Log command map v1',
-      filename: 'log-command-map-v1.md',
+      id: 'log-command-map-v0.2',
+      title: 'Log command map v0.2',
+      filename: 'log-command-map-v0.2.md',
       summary: 'Lookup from event/protocol to governing spec.',
       always: true,
     },
@@ -186,6 +208,7 @@
     },
   ];
   const NEARBYTES_JOIN_DEEP_LINK_MAX_LENGTH = 16_384;
+  const DEFAULT_VOLUME_RESERVE_PERCENT = 5;
 
   type PreviewKind = 'none' | 'image' | 'text' | 'pdf' | 'video' | 'audio' | 'unsupported';
   type EventReference = {
@@ -195,6 +218,7 @@
     createdAt?: number;
     ref: SourceFileReference | RecipientFileReference;
   };
+  type TimelineStorageLocationView = EventStorageLocationsResponse['locations'][number];
   type SpecDoc = {
     id: string;
     title: string;
@@ -251,6 +275,7 @@
     getClipboardImageStatus?: () => Promise<{ hasImage: boolean }>;
     readClipboardImage?: () => Promise<DesktopRemoteFile | null>;
     loadUiState?: () => Promise<PersistedUiState>;
+    wipeStoredConfig?: (options?: { deleteLocalData?: boolean }) => Promise<{ relaunching: true }>;
     getUpdaterState?: () => Promise<DesktopUpdaterState | null>;
     installDownloadedUpdate?: () => Promise<boolean>;
     openUpdateReleasePage?: () => Promise<boolean>;
@@ -258,6 +283,7 @@
     onUpdaterState?: (listener: (state: DesktopUpdaterState) => void) => (() => void) | void;
     saveUiState?: (state: PersistedUiState) => Promise<unknown>;
     saveThemeRegistry?: (registry: NearbytesThemeRegistry) => Promise<{ path?: string } | null>;
+    revealPathInFileManager?: (targetPath: string) => Promise<unknown>;
   };
 
   type ThemeDialogSection = 'preset' | 'material' | 'accent' | 'logo';
@@ -313,11 +339,88 @@
   };
 
   type FileManagerViewMode = 'icons' | 'details';
+  type MountDialogMode = 'secret' | 'join-link';
+  type MountStorageMode = 'default' | 'custom' | 'unknown';
 
   type AppReferenceClipboard = {
     bundle: SourceReferenceBundle;
     itemCount: number;
   };
+
+  function normalizeVolumeKey(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value.trim().toLowerCase();
+    return normalized || null;
+  }
+
+  function sanitizeMountStorageDestination(destination: VolumeDestinationConfig): VolumeDestinationConfig {
+    return {
+      ...destination,
+      enabled: destination.enabled,
+      storeEvents: destination.enabled,
+      storeBlocks: destination.enabled,
+      copySourceBlocks: destination.enabled,
+      reservePercent: destination.reservePercent ?? DEFAULT_VOLUME_RESERVE_PERCENT,
+      fullPolicy: 'block-writes',
+    };
+  }
+
+  function mountStorageDestinationKey(destination: VolumeDestinationConfig): string {
+    return JSON.stringify({
+      sourceId: destination.sourceId,
+      enabled: destination.enabled,
+      storeEvents: destination.storeEvents,
+      storeBlocks: destination.storeBlocks,
+      copySourceBlocks: destination.copySourceBlocks,
+      reservePercent: destination.reservePercent,
+      fullPolicy: destination.fullPolicy,
+    });
+  }
+
+  function mountStorageDestinationsEqual(
+    left: readonly VolumeDestinationConfig[],
+    right: readonly VolumeDestinationConfig[]
+  ): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+    const leftKeys = [...left].map(mountStorageDestinationKey).sort((a, b) => a.localeCompare(b));
+    const rightKeys = [...right].map(mountStorageDestinationKey).sort((a, b) => a.localeCompare(b));
+    return leftKeys.every((entry, index) => entry === rightKeys[index]);
+  }
+
+  function effectiveMountStorageDestinations(config: RootsConfig, targetVolumeId: string): VolumeDestinationConfig[] {
+    const normalizedVolumeId = normalizeVolumeKey(targetVolumeId);
+    const merged = new Map<string, VolumeDestinationConfig>();
+    for (const destination of config.defaultVolume.destinations) {
+      merged.set(destination.sourceId, sanitizeMountStorageDestination(destination));
+    }
+    if (!normalizedVolumeId) {
+      return Array.from(merged.values());
+    }
+    const explicit = config.volumes.find((entry) => normalizeVolumeKey(entry.volumeId) === normalizedVolumeId);
+    if (!explicit) {
+      return Array.from(merged.values());
+    }
+    for (const destination of explicit.destinations) {
+      merged.set(destination.sourceId, sanitizeMountStorageDestination(destination));
+    }
+    return Array.from(merged.values());
+  }
+
+  function resolveMountStorageMode(config: RootsConfig, targetVolumeId: string): MountStorageMode {
+    const normalizedVolumeId = normalizeVolumeKey(targetVolumeId);
+    if (!normalizedVolumeId) {
+      return 'unknown';
+    }
+    const defaultDestinations = config.defaultVolume.destinations.map((destination) =>
+      sanitizeMountStorageDestination(destination)
+    );
+    const effectiveDestinations = effectiveMountStorageDestinations(config, normalizedVolumeId);
+    return mountStorageDestinationsEqual(effectiveDestinations, defaultDestinations) ? 'default' : 'custom';
+  }
 
   type DiscoveryToastState = {
     runKey: string;
@@ -514,9 +617,7 @@
       details.push(`${result.summary.sourcesAdded} location${result.summary.sourcesAdded === 1 ? '' : 's'} added`);
     }
     if (result.summary.volumeTargetsAdded > 0) {
-      details.push(
-        `sync enabled for ${result.summary.volumeTargetsAdded} known space${result.summary.volumeTargetsAdded === 1 ? '' : 's'}`
-      );
+        details.push(`sync enabled for ${result.summary.volumeTargetsAdded} known hub${result.summary.volumeTargetsAdded === 1 ? '' : 's'}`);
     }
     if (result.summary.availableShares > 0) {
       details.push(`${result.summary.availableShares} location${result.summary.availableShares === 1 ? '' : 's'} to review`);
@@ -552,6 +653,38 @@
     sourceDiscoveryPanelFocus = focus;
     showSourcesPanel = true;
     showVolumeStoragePanel = false;
+  }
+
+  function openVolumeStoragePanel(): void {
+    sourceDiscoveryPanelFocus = null;
+    showVolumeStoragePanel = true;
+    showSourcesPanel = false;
+  }
+
+  function openMountStorageDialog(targetMountId: string | null = activeMountId): void {
+    const targetMount = targetMountId ? mounts.find((mount) => mount.id === targetMountId) ?? null : activeMount;
+    const targetVolumeId = normalizeVolumeKey(
+      targetMount?.id === activeMountId ? shareableVolumeId ?? targetMount?.volumeId ?? null : targetMount?.volumeId ?? null
+    );
+    if (!targetMount || !targetVolumeId) {
+      return;
+    }
+    sourceDiscoveryPanelFocus = null;
+    mountStorageDialogMountId = targetMount.id;
+    if (mountDialogMountId) {
+      mountDialogMountId = null;
+      mountDialogMode = 'secret';
+      resetJoinDialogState();
+    }
+    if (secretPasteTargetMountId === targetMount.id) {
+      secretPasteTargetMountId = null;
+    }
+    showMountStorageDialog = true;
+  }
+
+  function closeMountStorageDialog(): void {
+    showMountStorageDialog = false;
+    mountStorageDialogMountId = null;
   }
 
   function stopSourceDiscoveryWatch(): void {
@@ -804,10 +937,15 @@
   }
 
   function mountDisplayLabel(mount: VolumeMount): string {
+    const passwordLabel = trimSecretPart(mount.password) !== '' ? ' · password' : '';
     if (trimSecretPart(mount.secretFileName) !== '') {
-      return trimSecretPart(mount.secretFileName);
+      return `${trimSecretPart(mount.secretFileName)} · file`;
     }
-    return trimSecretPart(mount.address);
+    const seedLabel = trimSecretPart(mount.address);
+    if (seedLabel !== '') {
+      return `${seedLabel}${passwordLabel}`;
+    }
+    return mount.volumeId ? 'Shared hub' : '';
   }
 
   function base64UrlToBase64(value: string): string {
@@ -851,6 +989,47 @@
     if (encoded === '') return null;
     const mimeType = trimSecretPart(mount.secretFileMimeType) || 'application/octet-stream';
     return `data:${mimeType};base64,${base64UrlToBase64(encoded)}`;
+  }
+
+  function configuredIdentitySecretDataUrl(identity: ConfiguredIdentity): string | null {
+    const payload = trimSecretPart(identity.secretFilePayload);
+    if (!payload.startsWith(FILE_SECRET_PREFIX)) return null;
+    const encoded = payload.slice(FILE_SECRET_PREFIX.length);
+    if (encoded === '') return null;
+    const mimeType = trimSecretPart(identity.secretFileMimeType) || 'application/octet-stream';
+    return `data:${mimeType};base64,${base64UrlToBase64(encoded)}`;
+  }
+
+  function configuredIdentityHasImageSecret(identity: ConfiguredIdentity): boolean {
+    return (
+      trimSecretPart(identity.secretFilePayload) !== '' &&
+      trimSecretPart(identity.secretFileMimeType).startsWith('image/')
+    );
+  }
+
+  function configuredIdentityAvatarLabel(identity: ConfiguredIdentity): string {
+    const displayName = identity.displayName.trim();
+    if (displayName !== '') {
+      return displayName.charAt(0).toUpperCase();
+    }
+    return '?';
+  }
+
+  function readFileAsDataUrl(file: globalThis.File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error('Failed to read file'));
+      };
+      reader.onerror = () => {
+        reject(reader.error ?? new Error('Failed to read file'));
+      };
+      reader.readAsDataURL(file);
+    });
   }
 
   function secretFileBytesFromPayload(payload: string): Uint8Array | null {
@@ -906,7 +1085,7 @@
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = mount.secretFileName || mount.address || 'secret-file';
+      anchor.download = mount.secretFileName || mount.address || 'hub-secret-file';
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
@@ -1168,6 +1347,43 @@
     await bridge.openUpdateReleasePage();
   }
 
+  function openResetDialog(): void {
+    if (!getDesktopBridge()?.wipeStoredConfig) {
+      return;
+    }
+    resetDialogDeleteLocalData = false;
+    resetDialogBusy = false;
+    resetDialogError = '';
+    showResetDialog = true;
+  }
+
+  function closeResetDialog(): void {
+    if (resetDialogBusy) {
+      return;
+    }
+    showResetDialog = false;
+    resetDialogDeleteLocalData = false;
+    resetDialogError = '';
+  }
+
+  async function confirmStoredConfigReset(): Promise<void> {
+    const bridge = getDesktopBridge();
+    if (!bridge || typeof bridge.wipeStoredConfig !== 'function') {
+      resetDialogError = 'Desktop reset controls are unavailable in this build.';
+      return;
+    }
+    resetDialogBusy = true;
+    resetDialogError = '';
+    try {
+      await bridge.wipeStoredConfig({
+        deleteLocalData: resetDialogDeleteLocalData,
+      });
+    } catch (error) {
+      resetDialogError = error instanceof Error ? error.message : 'Failed to wipe stored configuration';
+      resetDialogBusy = false;
+    }
+  }
+
   function base64ToBytes(value: string): Uint8Array {
     const binary = atob(value);
     const bytes = new Uint8Array(binary.length);
@@ -1339,18 +1555,25 @@
   let timelineDetailAppSignatureSource = $state('');
   let timelineDetailReferences = $state<EventReference[]>([]);
   let timelineDetailEventRefs = $state<string[]>([]);
+  let timelineDetailStorage = $state<EventStorageLocationsResponse | null>(null);
+  let timelineDetailStorageError = $state('');
+  let timelineDetailRevealBusyPath = $state('');
   let timelineDetailRequestId = 0;
   let specModalOpen = $state(false);
   let specModalDoc = $state<SpecDoc | null>(null);
   let specModalContent = $state('');
   let currentPreviewObjectUrl: string | null = null;
   const previewBlobCache = new Map<string, Blob>();
+  const thumbnailLoadGuard = new Set<string>();
+  let thumbnailUrls = $state(new Map<string, string>());
+  const thumbnailBlobUrls: string[] = [];
   const initialMounts = loadVolumeMounts();
   let mounts = $state<VolumeMount[]>(initialMounts);
   let activeMountId = $state(initialMounts[0]?.id ?? '');
   let mountRuntimeById = $state<Record<string, MountRuntimeState>>({});
   let pendingMountId = $state<string | null>(null);
   let mountDialogMountId = $state<string | null>(null);
+  let mountDialogMode = $state<MountDialogMode>('secret');
   let secretPasteTargetMountId = $state<string | null>(null);
   let secretFileHashes = $state<Record<string, SecretFileHashEntry>>({});
   let clipboardImageAvailable = $state(false);
@@ -1359,6 +1582,10 @@
   let themeRegistry = $state<NearbytesThemeRegistry>(defaultThemeRegistry());
   let themeSettings = $state<NearbytesThemeSettings>(defaultThemeSettings());
   let showThemeDialog = $state(false);
+  let showResetDialog = $state(false);
+  let resetDialogDeleteLocalData = $state(false);
+  let resetDialogBusy = $state(false);
+  let resetDialogError = $state('');
   let themeDialogSection = $state<ThemeDialogSection>('preset');
   let themeDialogBusy = $state(false);
   let themeDialogFeedback = $state<{ tone: 'success' | 'warning'; message: string } | null>(null);
@@ -1371,6 +1598,11 @@
   let showTimeMachinePanel = $state(false);
   let showSourcesPanel = $state(false);
   let showVolumeStoragePanel = $state(false);
+  let showMountStorageDialog = $state(false);
+  let mountStorageDialogMountId = $state<string | null>(null);
+  let mountDialogStorageMode = $state<MountStorageMode>('unknown');
+  let mountDialogStorageModeLoading = $state(false);
+  let showEventFlowPanel = $state(false);
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
   let isRefreshing = $state(false);
@@ -1379,9 +1611,11 @@
   let activeChatIdentityId = $state('');
   let volumeChatIdentityAssignments = $state<Record<string, string>>({});
   let showIdentityManager = $state(false);
+  let showCreateChooser = $state(false);
   let identityManagerLoading = $state(false);
   let identityManagerMessage = $state('');
   let identityManagerError = $state('');
+  let identityAvatarFileInput = $state<HTMLInputElement | null>(null);
   let identityHydrated = false;
   let chatRefreshVersion = $state(0);
   let fileManagerViewMode = $state<FileManagerViewMode>('icons');
@@ -1413,10 +1647,6 @@
   let joinDialogPreviewBusy = $state(false);
   let joinDialogOpenBusy = $state(false);
   let showVolumeShareDialog = $state(false);
-  let currentVolumeManagedShares = $state<ManagedShareSummary[]>([]);
-  let currentVolumeSharingLoading = $state(false);
-  let currentVolumeShareInviteBusyKey = $state<string | null>(null);
-  let currentVolumeShareInviteDrafts = $state<Record<string, string>>({});
   let sourceDiscoveryRefreshToken = $state(0);
   let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | 'shares' | null>(null);
   let sourceDiscoveryInFlight = false;
@@ -1436,21 +1666,18 @@
   let dragOffsetX = $state(0);
   let dragTranslateX = $state(0);
   let dragMoved = $state(false);
-  let suppressMountClick = $state(false);
+  let suppressMountClickMountId = $state<string | null>(null);
   let dragRaf = 0;
   let dragClientX = 0;
   let dragCaptureElement: HTMLElement | null = null;
   let joinLinkCopyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let suppressMountClickTimer: ReturnType<typeof setTimeout> | null = null;
   const mountNodes = new Map<string, HTMLElement>();
   let mountDragListenersActive = false;
   const mountWarmPromises = new Map<string, Promise<void>>();
   const mountRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const MOUNT_RUNTIME_REFRESH_MS = 15000;
-
-  type ShareDialogCollaboratorView = {
-    label: string;
-    status: 'active' | 'invited';
-  };
+  const ACTIVE_MOUNT_RUNTIME_STALE_MS = 2500;
 
   async function loadThemeRegistryAsset(): Promise<void> {
     try {
@@ -1595,7 +1822,7 @@
   }
 
   function isMountReorderActive(mountId: string): boolean {
-    return dragPreparedMountId === mountId || draggingMountId === mountId;
+    return draggingMountId === mountId;
   }
 
   async function handleDesktopDeepLink(url: string): Promise<void> {
@@ -1719,6 +1946,10 @@
     if (mountPressReleaseTimer) {
       clearTimeout(mountPressReleaseTimer);
       mountPressReleaseTimer = null;
+    }
+    if (suppressMountClickTimer) {
+      clearTimeout(suppressMountClickTimer);
+      suppressMountClickTimer = null;
     }
     if (joinLinkCopyFeedbackTimer) {
       clearTimeout(joinLinkCopyFeedbackTimer);
@@ -2043,7 +2274,7 @@
   });
 
   $effect(() => {
-    const storagePanelOpen = showSourcesPanel || showVolumeStoragePanel;
+    const storagePanelOpen = showSourcesPanel || showVolumeStoragePanel || showEventFlowPanel;
     if (storagePanelOpen && !lastStoragePanelOpen) {
       scheduleSourceDiscovery(0);
     }
@@ -2053,14 +2284,25 @@
   const isHistoryMode = $derived.by(() => timelinePosition < timelineEvents.length);
   const timelineDetailTimestamp = $derived.by(() => {
     if (timelineDetailEvent) return timelineDetailEvent.timestamp;
-    if (!timelineDetailPayload) return null;
-    const payload = timelineDetailPayload.payload;
+    const payload = timelineDetailPayloadDecrypted;
+    if (!payload) return null;
     return (
       payload.createdAt ??
       payload.deletedAt ??
       payload.renamedAt ??
       payload.publishedAt ??
       null
+    );
+  });
+
+  const timelineDetailPayloadDecrypted = $derived.by<SerializedEventPayload>(() => {
+    return (
+      timelineDetailPayload?.decryptedPayload ?? {
+        type: 'ENCRYPTED_OPAQUE',
+        fileName: 'Opaque payload',
+        hash: '',
+        encryptedKey: '',
+      }
     );
   });
 
@@ -2076,6 +2318,14 @@
         return 'Identity';
       case 'CHAT_MESSAGE':
         return 'Chat';
+      case 'APP_RECORD':
+        if (event.protocol === 'nb.identity.record.v1' || event.protocol === 'nb.identity.snapshot.v1') {
+          return 'Identity';
+        }
+        if (event.protocol === 'nb.chat.message.v1') {
+          return 'Chat';
+        }
+        return 'App';
     }
   }
 
@@ -2093,6 +2343,17 @@
         return event.displayName ? `Publish ${event.displayName}` : 'Publish identity';
       case 'CHAT_MESSAGE':
         return event.summary ?? 'Chat message';
+      case 'APP_RECORD':
+        if (event.protocol === 'nb.identity.snapshot.v1') {
+          return event.displayName ? `Sync ${event.displayName}` : 'Sync identity';
+        }
+        if (event.protocol === 'nb.identity.record.v1') {
+          return event.displayName ? `Publish ${event.displayName}` : 'Publish identity';
+        }
+        if (event.protocol === 'nb.chat.message.v1') {
+          return event.summary ?? 'Chat message';
+        }
+        return event.protocol ?? event.summary ?? 'App record';
     }
   }
 
@@ -2108,7 +2369,33 @@
         return `${position}/${total} • ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
       case 'CHAT_MESSAGE':
         return `${position}/${total} • ${event.summary ?? 'Chat message'}`;
+      case 'APP_RECORD':
+        if (event.protocol === 'nb.identity.snapshot.v1') {
+          return `${position}/${total} • ${event.displayName ? `${event.displayName} synced` : 'Identity synced'}`;
+        }
+        if (event.protocol === 'nb.identity.record.v1') {
+          return `${position}/${total} • ${event.displayName ? `${event.displayName} published identity` : 'Identity published'}`;
+        }
+        if (event.protocol === 'nb.chat.message.v1') {
+          return `${position}/${total} • ${event.summary ?? 'Chat message'}`;
+        }
+        return `${position}/${total} • ${event.protocol ?? 'App record'}`;
     }
+  }
+
+  function isTimelineIdentityEvent(event: TimelineEvent): boolean {
+    return (
+      event.type === 'DECLARE_IDENTITY' ||
+      (event.type === 'APP_RECORD' &&
+        (event.protocol === 'nb.identity.record.v1' || event.protocol === 'nb.identity.snapshot.v1'))
+    );
+  }
+
+  function isTimelineChatEvent(event: TimelineEvent): boolean {
+    return (
+      event.type === 'CHAT_MESSAGE' ||
+      (event.type === 'APP_RECORD' && event.protocol === 'nb.chat.message.v1')
+    );
   }
 
   function timelineTitle(event: TimelineEvent): string {
@@ -2131,7 +2418,7 @@
     for (let index = 0; index < clampedLimit; index += 1) {
       const event = timelineEvents[index];
       if (
-        event.type === 'DECLARE_IDENTITY' &&
+        isTimelineIdentityEvent(event) &&
         event.authorPublicKey &&
         event.record
       ) {
@@ -2145,7 +2432,7 @@
       }
 
       if (
-        event.type === 'CHAT_MESSAGE' &&
+        isTimelineChatEvent(event) &&
         event.authorPublicKey &&
         event.message
       ) {
@@ -2314,6 +2601,56 @@
   const mountDialogMount = $derived.by(() =>
     mountDialogMountId ? mounts.find((mount) => mount.id === mountDialogMountId) ?? null : null
   );
+  const mountStorageDialogMount = $derived.by(() =>
+    mountStorageDialogMountId ? mounts.find((mount) => mount.id === mountStorageDialogMountId) ?? null : null
+  );
+  const mountDialogRuntime = $derived.by(() =>
+    mountDialogMount ? mountRuntimeById[mountDialogMount.id] ?? null : null
+  );
+  const mountStorageDialogRuntime = $derived.by(() =>
+    mountStorageDialogMount ? mountRuntimeById[mountStorageDialogMount.id] ?? null : null
+  );
+  const mountDialogResolvedVolumeId = $derived.by(() =>
+    normalizeVolumeKey(
+      mountDialogMount?.id === activeMountId
+        ? volumeId ?? mountDialogRuntime?.volumeId ?? mountDialogMount?.volumeId ?? null
+        : mountDialogRuntime?.volumeId ?? mountDialogMount?.volumeId ?? null
+    )
+  );
+  const mountStorageDialogVolumeId = $derived.by(() =>
+    normalizeVolumeKey(
+      mountStorageDialogMount?.id === activeMountId
+        ? shareableVolumeId ?? mountStorageDialogRuntime?.volumeId ?? mountStorageDialogMount?.volumeId ?? null
+        : mountStorageDialogRuntime?.volumeId ?? mountStorageDialogMount?.volumeId ?? null
+    )
+  );
+  const mountDialogResolvedLastRefresh = $derived.by(() =>
+    mountDialogMount?.id === activeMountId
+      ? lastRefresh ?? mountDialogRuntime?.lastRefresh ?? null
+      : mountDialogRuntime?.lastRefresh ?? null
+  );
+  const mountDialogResolvedOffline = $derived.by(() =>
+    mountDialogMount?.id === activeMountId
+      ? isOffline || mountDialogRuntime?.isOffline === true
+      : mountDialogRuntime?.isOffline === true
+  );
+  const mountDialogResolvedError = $derived.by(() =>
+    mountDialogMount?.id === activeMountId
+      ? errorMessage || mountDialogRuntime?.errorMessage || ''
+      : mountDialogRuntime?.errorMessage ?? ''
+  );
+  const mountDialogStorageLabel = $derived.by(() => {
+    if (mountDialogStorageModeLoading && mountDialogResolvedVolumeId) {
+      return 'checking';
+    }
+    if (mountDialogStorageMode === 'custom') {
+      return 'custom';
+    }
+    if (mountDialogStorageMode === 'default') {
+      return 'default';
+    }
+    return 'unavailable';
+  });
   const showFilesWorkspace = $derived.by(() => activeMount?.showFilesPane ?? true);
   const showChatWorkspace = $derived.by(() => activeMount?.showChatPane ?? false);
   const workspaceSplit = $derived.by(() => activeMount?.workspaceSplit ?? 56);
@@ -2336,15 +2673,28 @@
   );
   const currentPreviewFile = $derived.by(() => previewFileOverride ?? selectedFile);
   const currentMountedVolumePresentation = $derived.by<MountedVolumePresentation | null>(() => {
-    if (!activeMount || !volumeId) {
+    const currentVolumeId = volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null;
+    if (!activeMount || !currentVolumeId) {
       return null;
     }
     return {
-      volumeId,
+      volumeId: currentVolumeId,
       label: mountLabel(activeMount),
       filePayload: activeMount.secretFilePayload,
       fileMimeType: activeMount.secretFileMimeType,
       fileName: activeMount.secretFileName,
+    };
+  });
+  const mountStorageDialogPresentation = $derived.by<MountedVolumePresentation | null>(() => {
+    if (!mountStorageDialogMount || !mountStorageDialogVolumeId) {
+      return null;
+    }
+    return {
+      volumeId: mountStorageDialogVolumeId,
+      label: mountLabel(mountStorageDialogMount),
+      filePayload: mountStorageDialogMount.secretFilePayload,
+      fileMimeType: mountStorageDialogMount.secretFileMimeType,
+      fileName: mountStorageDialogMount.secretFileName,
     };
   });
   const shareableVolumeId = $derived.by(() => volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null);
@@ -2432,7 +2782,10 @@
     if (!left || !right || left.type !== right.type) {
       return false;
     }
-    return left.type === 'token' ? left.token === right.token : left.secret === right.secret;
+    if (left.type === 'token') {
+      return left.token === right.token;
+    }
+    return left.secret === right.secret;
   }
 
   function clearMountRuntimeRefresh(mountId: string): void {
@@ -2455,6 +2808,75 @@
     mountRefreshTimers.set(mountId, timer);
   }
 
+  function shouldKeepMountTimelineWarm(mount: VolumeMount | null, runtime?: MountRuntimeState | null): boolean {
+    if (!mount) {
+      return false;
+    }
+    if (showTimeMachinePanel && activeMountId === mount.id) {
+      return true;
+    }
+    if (mount.showChatPane) {
+      return true;
+    }
+    return (runtime?.timelineEvents.length ?? 0) > 0;
+  }
+
+  async function refreshMountTimeline(
+    mountId: string,
+    authOverride?: Auth,
+    options: { applyIfCurrent?: boolean; keepPosition?: boolean } = {}
+  ): Promise<void> {
+    const mount = mounts.find((entry) => entry.id === mountId) ?? null;
+    const runtime = mountRuntimeById[mountId] ?? null;
+    const targetAuth = authOverride ?? runtime?.auth ?? null;
+    if (!mount || !runtime || !targetAuth || matchingMountRuntime(mount) !== runtime) {
+      return;
+    }
+
+    const applyIfCurrent = options.applyIfCurrent === true;
+    const keepPosition = options.keepPosition !== false;
+    const previousEvents = runtime.timelineEvents;
+    const previousPosition = runtime.timelinePosition;
+    const isCurrentMount = activeMountId === mountId && authEquals(auth, runtime.auth);
+
+    if (applyIfCurrent && isCurrentMount) {
+      isTimelineLoading = true;
+    }
+
+    try {
+      const timeline = await getTimeline(targetAuth);
+      const nextRuntime: MountRuntimeState = {
+        ...runtime,
+        timelineEvents: timeline.events,
+        timelinePosition: keepPosition
+          ? previousPosition >= previousEvents.length
+            ? timeline.events.length
+            : Math.min(previousPosition, timeline.events.length)
+          : timeline.events.length,
+        isOffline: false,
+      };
+      writeMountRuntime(mountId, nextRuntime);
+      if (isCurrentMount) {
+        applyMountRuntime(nextRuntime);
+        chatRefreshVersion += 1;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load timeline';
+      const nextRuntime: MountRuntimeState = {
+        ...runtime,
+        errorMessage: runtime.errorMessage || message,
+      };
+      writeMountRuntime(mountId, nextRuntime);
+      if (isCurrentMount) {
+        errorMessage = runtime.errorMessage || message;
+      }
+    } finally {
+      if (applyIfCurrent && isCurrentMount) {
+        isTimelineLoading = false;
+      }
+    }
+  }
+
   async function refreshMountRuntime(mountId: string): Promise<void> {
     const mount = mounts.find((entry) => entry.id === mountId) ?? null;
     const runtime = mountRuntimeById[mountId];
@@ -2464,18 +2886,18 @@
     }
 
     try {
-      const [filesResponse, timelineResponse] = await Promise.all([
-        listFiles(runtime.auth),
-        getTimeline(runtime.auth),
-      ]);
+      const filesResponse = await listFiles(runtime.auth);
+      const nextTimelineEvents = shouldKeepMountTimelineWarm(mount, runtime)
+        ? await getTimeline(runtime.auth).then((response) => response.events)
+        : runtime.timelineEvents;
       const nextRuntime: MountRuntimeState = {
         ...runtime,
         files: filesResponse.files,
-        timelineEvents: timelineResponse.events,
+        timelineEvents: nextTimelineEvents,
         timelinePosition:
           runtime.timelinePosition >= runtime.timelineEvents.length
-            ? timelineResponse.events.length
-            : Math.min(runtime.timelinePosition, timelineResponse.events.length),
+            ? nextTimelineEvents.length
+            : Math.min(runtime.timelinePosition, nextTimelineEvents.length),
         lastRefresh: Date.now(),
         isOffline: false,
         errorMessage: '',
@@ -2490,7 +2912,7 @@
       const nextRuntime: MountRuntimeState = {
         ...runtime,
         isOffline: true,
-        errorMessage: error instanceof Error ? error.message : 'Failed to refresh space',
+        errorMessage: error instanceof Error ? error.message : 'Failed to refresh hub',
       };
       writeMountRuntime(mountId, nextRuntime);
       if (activeMountId === mountId && authEquals(auth, runtime.auth)) {
@@ -2524,6 +2946,7 @@
     previewFileOverride = null;
     previewBlobCache.clear();
     revokePreviewUrl();
+    revokeThumbnails();
     pendingMountId = null;
   }
 
@@ -2555,7 +2978,7 @@
     }
     if (mime.includes('zip') || mime.includes('tar') || mime.includes('compressed')) return FileArchive;
     if (mime.includes('pdf')) return FileText;
-    return File;
+    return FileText;
   }
 
   function formatRelativeDay(value: number): string {
@@ -2736,7 +3159,7 @@
 
   async function ensureMountRuntimeLoaded(
     mount: VolumeMount,
-    options: { activateIfCurrent?: boolean } = {}
+      options: { activateIfCurrent?: boolean; preloadTimeline?: boolean } = {}
   ): Promise<void> {
     const secret = buildMountSecret(mount);
     const label = mountLabel(mount);
@@ -2767,22 +3190,14 @@
       const response = await withTimeout(
         openVolume(secret),
         12000,
-        'Opening this space timed out. Check the storage locations and try again.'
+        'Opening this hub timed out. Check the storage locations and try again.'
       );
+      const shouldLoadTimeline = options.preloadTimeline ?? shouldKeepMountTimelineWarm(mount);
       const nextAuth =
         response.token
           ? ({ type: 'token', token: response.token } as const)
           : ({ type: 'secret', secret } as const);
-      let nextTimelineEvents: TimelineEvent[] = [];
-      let nextTimelinePosition = 0;
       let nextErrorMessage = response.storageHint ?? '';
-      try {
-        const timeline = await getTimeline(nextAuth);
-        nextTimelineEvents = timeline.events;
-        nextTimelinePosition = timeline.events.length;
-      } catch (error) {
-        nextErrorMessage = nextErrorMessage || (error instanceof Error ? error.message : 'Failed to load timeline');
-      }
 
       mounts = mounts.map((entry) =>
         entry.id === mount.id ? { ...entry, volumeId: response.volumeId } : entry
@@ -2794,8 +3209,8 @@
         auth: nextAuth,
         volumeId: response.volumeId,
         files: response.files,
-        timelineEvents: nextTimelineEvents,
-        timelinePosition: nextTimelinePosition,
+        timelineEvents: [],
+        timelinePosition: 0,
         lastRefresh: Date.now(),
         isOffline: false,
         errorMessage: nextErrorMessage,
@@ -2814,6 +3229,12 @@
       void setCachedFiles(response.volumeId, response.files).catch((error) => {
         console.warn('Failed to cache volume file list:', error);
       });
+      if (shouldLoadTimeline) {
+        void refreshMountTimeline(mount.id, nextAuth, {
+          applyIfCurrent: options.activateIfCurrent === true,
+          keepPosition: false,
+        });
+      }
       scheduleMountRuntimeRefresh(mount.id);
     })().finally(() => {
       mountWarmPromises.delete(mount.id);
@@ -2895,7 +3316,10 @@
         continue;
       }
       if (!matchingMountRuntime(mount) && !mountWarmPromises.has(mount.id)) {
-        void ensureMountRuntimeLoaded(mount, { activateIfCurrent: mount.id === activeMountId });
+        void ensureMountRuntimeLoaded(mount, {
+          activateIfCurrent: mount.id === activeMountId,
+          preloadTimeline: mount.id === activeMountId && shouldKeepMountTimelineWarm(mount),
+        });
       }
     }
     if (Object.keys(mountRuntimeById).some((mountId) => !nextKnownIds.has(mountId))) {
@@ -2988,6 +3412,43 @@
     });
   });
 
+  $effect(() => {
+    const dialogMountId = mountDialogMount?.id ?? null;
+    const targetVolumeId = mountDialogResolvedVolumeId;
+    let cancelled = false;
+
+    mountDialogStorageMode = 'unknown';
+    mountDialogStorageModeLoading = false;
+
+    if (!dialogMountId || !targetVolumeId) {
+      return;
+    }
+
+    mountDialogStorageModeLoading = true;
+    void (async () => {
+      try {
+        const response = await getRootsConfig();
+        if (cancelled) {
+          return;
+        }
+        mountDialogStorageMode = resolveMountStorageMode(response.config, targetVolumeId);
+      } catch {
+        if (cancelled) {
+          return;
+        }
+        mountDialogStorageMode = 'unknown';
+      } finally {
+        if (!cancelled) {
+          mountDialogStorageModeLoading = false;
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     const currentMount = mounts.find((mount) => mount.id === activeMountId);
@@ -3008,6 +3469,9 @@
         sessionStorage.removeItem('nearbytes-token');
       }
       applyMountRuntime(cachedRuntime);
+      if (Date.now() - (cachedRuntime.lastRefresh ?? 0) > ACTIVE_MOUNT_RUNTIME_STALE_MS) {
+        scheduleMountRuntimeRefresh(currentMount.id, 0);
+      }
       return;
     }
     isVolumeTransitioning = true;
@@ -3016,7 +3480,7 @@
         if (activeMountId !== currentMount.id) {
           return;
         }
-        errorMessage = error instanceof Error ? error.message : 'Failed to load space';
+        errorMessage = error instanceof Error ? error.message : 'Failed to load hub';
         isVolumeTransitioning = false;
         isLoading = false;
       });
@@ -3040,17 +3504,60 @@
     });
   }
 
-  function openMountDialog(mountId: string) {
+  function focusMountDialogJoinInput(mountId: string) {
+    void tick().then(() => {
+      const input = document.querySelector<HTMLTextAreaElement>(
+        `.mount-dialog[data-mount-id="${mountId}"] .join-dialog-textarea`
+      );
+      input?.focus();
+    });
+  }
+
+  function resetJoinDialogState(options: { preserveSerialized?: boolean } = {}): void {
+    if (!options.preserveSerialized) {
+      joinDialogSerialized = '';
+    }
+    joinDialogError = '';
+    joinDialogPreview = null;
+    joinDialogOpened = null;
+    joinDialogClipboardBusy = false;
+    joinDialogPreviewBusy = false;
+    joinDialogOpenBusy = false;
+  }
+
+  function openMountDialog(mountId: string, options: { mode?: MountDialogMode } = {}) {
     if (!mounts.some((mount) => mount.id === mountId)) {
       return;
     }
+    mountDialogMode = options.mode ?? 'secret';
+    resetJoinDialogState();
     mountDialogMountId = mountId;
     secretPasteTargetMountId = mountId;
+    if (mountDialogMode === 'join-link') {
+      focusMountDialogJoinInput(mountId);
+      return;
+    }
     focusMountDialogInput(mountId);
   }
 
+  function setMountDialogMode(mode: MountDialogMode): void {
+    if (mountDialogMode === mode) {
+      return;
+    }
+    mountDialogMode = mode;
+    resetJoinDialogState();
+    if (!mountDialogMountId) {
+      return;
+    }
+    if (mode === 'join-link') {
+      focusMountDialogJoinInput(mountDialogMountId);
+      return;
+    }
+    focusMountDialogInput(mountDialogMountId);
+  }
+
   function isMountEmpty(mount: VolumeMount): boolean {
-    return trimSecretPart(mount.address) === '' && trimSecretPart(mount.password) === '' && !hasFileSecret(mount);
+    return trimSecretPart(mount.address) === '' && trimSecretPart(mount.password) === '' && !hasFileSecret(mount) && !mount.volumeId;
   }
 
   function addMount() {
@@ -3059,7 +3566,7 @@
     mounts = [nextMount, ...collapsedExisting];
     activeMountId = nextMount.id;
     pendingMountId = null;
-    openMountDialog(nextMount.id);
+    openMountDialog(nextMount.id, { mode: 'secret' });
   }
 
   function selectMount(mountId: string) {
@@ -3104,6 +3611,8 @@
     }
     if (mountDialogMountId === mountId) {
       mountDialogMountId = null;
+      mountDialogMode = 'secret';
+      resetJoinDialogState();
     }
     if (secretPasteTargetMountId === mountId) {
       secretPasteTargetMountId = null;
@@ -3202,7 +3711,7 @@
     }
   }
 
-  async function applySecretFileToMount(file: File, mountId: string) {
+  async function applySecretFileToMount(file: globalThis.File, mountId: string) {
     clearMountRuntime(mountId);
     const fileBytes = new Uint8Array(await file.arrayBuffer());
     const payload = buildFileSecretPayload(fileBytes);
@@ -3257,6 +3766,17 @@
     dragOffsetX = 0;
   }
 
+  function suppressMountClickFor(mountId: string) {
+    if (suppressMountClickTimer) {
+      clearTimeout(suppressMountClickTimer);
+    }
+    suppressMountClickMountId = mountId;
+    suppressMountClickTimer = setTimeout(() => {
+      suppressMountClickMountId = null;
+      suppressMountClickTimer = null;
+    }, 220);
+  }
+
   function moveMountToIndex(draggedId: string, targetIndex: number) {
     const currentIndex = mounts.findIndex((mount) => mount.id === draggedId);
     if (currentIndex < 0) return;
@@ -3303,30 +3823,41 @@
     });
   }
 
+  function activateMountReorder(pointerEvent: PointerEvent, mountId: string): boolean {
+    const node = mountNodes.get(mountId);
+    if (!node) {
+      return false;
+    }
+    draggingMountId = mountId;
+    dragOriginIndex = mounts.findIndex((mount) => mount.id === mountId);
+    dragOverMountId = null;
+    dragClientX = pointerEvent.clientX;
+    const rect = node.getBoundingClientRect();
+    if (rect.width > PARKED_MOUNT_WIDTH + 4) {
+      dragOffsetX = PARKED_MOUNT_WIDTH / 2;
+    } else {
+      dragOffsetX = Math.max(0, Math.min(PARKED_MOUNT_WIDTH, pointerEvent.clientX - rect.left));
+    }
+    dragTranslateX = pointerEvent.clientX - rect.left - dragOffsetX;
+    dragMoved = true;
+    pressedMountId = null;
+    return true;
+  }
+
   function beginMountReorder(event: PointerEvent, mountId: string, isCollapsed: boolean) {
     if (!isCollapsed) return;
     if (event.button !== 0) return;
     const node = mountNodes.get(mountId);
     if (!node) return;
-    event.preventDefault();
     pressedMountId = mountId;
     dragPreparedMountId = mountId;
-    dragOriginIndex = mounts.findIndex((mount) => mount.id === mountId);
     dragPointerId = event.pointerId;
-    draggingMountId = mountId;
     dragOverMountId = null;
     dragStartX = event.clientX;
     dragStartY = event.clientY;
     dragClientX = event.clientX;
-    const rect = node.getBoundingClientRect();
-    if (rect.width > PARKED_MOUNT_WIDTH + 4) {
-      dragOffsetX = PARKED_MOUNT_WIDTH / 2;
-    } else {
-      dragOffsetX = Math.max(0, Math.min(PARKED_MOUNT_WIDTH, event.clientX - rect.left));
-    }
-    dragTranslateX = event.clientX - rect.left - dragOffsetX;
     dragMoved = false;
-    suppressMountClick = false;
+    suppressMountClickMountId = null;
     const captureTarget = event.currentTarget instanceof HTMLElement ? event.currentTarget : node;
     captureTarget.setPointerCapture(event.pointerId);
     dragCaptureElement = captureTarget;
@@ -3339,23 +3870,26 @@
   }
 
   function handleMountPointerMove(event: PointerEvent) {
-    if (!draggingMountId || dragPointerId !== event.pointerId) return;
+    if (!dragPreparedMountId || dragPointerId !== event.pointerId) return;
     const dx = event.clientX - dragStartX;
     const dy = event.clientY - dragStartY;
-    if (!dragMoved && Math.hypot(dx, dy) < 4) {
+    if (!draggingMountId && Math.hypot(dx, dy) < 4) {
       return;
     }
     event.preventDefault();
-    dragPreparedMountId = draggingMountId;
-    dragMoved = true;
+    if (!draggingMountId && !activateMountReorder(event, dragPreparedMountId)) {
+      clearMountDragState();
+      return;
+    }
     dragClientX = event.clientX;
     scheduleDragUpdate();
   }
 
   function handleMountPointerUp(event: PointerEvent) {
-    if (!draggingMountId || dragPointerId !== event.pointerId) return;
-    if (dragMoved) {
-      suppressMountClick = true;
+    if (dragPointerId !== event.pointerId) return;
+    const draggedMountId = draggingMountId;
+    if (draggedMountId && dragMoved) {
+      suppressMountClickFor(draggedMountId);
       dragClientX = event.clientX;
       applyDragUpdate(dragClientX);
     }
@@ -3377,8 +3911,12 @@
   }
 
   function handleMountClick(mountId: string) {
-    if (suppressMountClick) {
-      suppressMountClick = false;
+    if (suppressMountClickMountId === mountId) {
+      if (suppressMountClickTimer) {
+        clearTimeout(suppressMountClickTimer);
+        suppressMountClickTimer = null;
+      }
+      suppressMountClickMountId = null;
       pressedMountId = null;
       return;
     }
@@ -3470,6 +4008,7 @@
     sourceDiscoveryPanelFocus = null;
     if (showVolumeStoragePanel) {
       showSourcesPanel = false;
+      showEventFlowPanel = false;
     }
   }
 
@@ -3478,6 +4017,7 @@
     sourceDiscoveryPanelFocus = null;
     if (showSourcesPanel) {
       showVolumeStoragePanel = false;
+      showEventFlowPanel = false;
     }
   }
 
@@ -3488,27 +4028,30 @@
       return;
     }
     selectMountPreservingLayout(targetMount.id);
-    showVolumeStoragePanel = true;
-    showSourcesPanel = false;
-    sourceDiscoveryPanelFocus = null;
+    openVolumeStoragePanel();
   }
 
   function openVolumeShareStoragePanel(): void {
     showVolumeShareDialog = false;
-    showVolumeStoragePanel = true;
-    showSourcesPanel = false;
+    openVolumeStoragePanel();
     sourceDiscoveryPanelFocus = 'shares';
   }
 
   function openJoinVolumeDialog(): void {
     showVolumeShareDialog = false;
-    joinDialogError = '';
+    showCreateChooser = false;
+    resetJoinDialogState();
     showJoinVolumeDialog = true;
+  }
+
+  async function openJoinVolumeDialogFromClipboard(): Promise<void> {
+    openJoinVolumeDialog();
+    await readJoinDialogClipboard();
   }
 
   function closeJoinVolumeDialog(): void {
     showJoinVolumeDialog = false;
-    joinDialogError = '';
+    resetJoinDialogState();
   }
 
   function openVolumeShareDialog(): void {
@@ -3516,7 +4059,27 @@
       return;
     }
     showJoinVolumeDialog = false;
+    showCreateChooser = false;
     showVolumeShareDialog = true;
+  }
+
+  function openCreateChooser(): void {
+    showIdentityManager = false;
+    showCreateChooser = true;
+  }
+
+  function closeCreateChooser(): void {
+    showCreateChooser = false;
+  }
+
+  function startCreateHub(): void {
+    closeCreateChooser();
+    addMount();
+  }
+
+  function startCreateIdentity(): void {
+    closeCreateChooser();
+    addConfiguredChatIdentity();
   }
 
   function closeVolumeShareDialog(): void {
@@ -3527,23 +4090,38 @@
     candidate: NonNullable<JoinLinkParseResponse['plan']['attachments'][number]['selectedEndpoint']>
   ): string {
     const endpoint = candidate.endpoint;
-    if (endpoint.label?.trim()) {
-      return endpoint.label.trim();
+    const provider = endpoint.provider?.trim().toLowerCase() || '';
+    const providerLabel =
+      provider === 'mega'
+        ? 'MEGA'
+        : provider === 'gdrive'
+          ? 'Google Drive'
+          : provider === 'github'
+            ? 'GitHub'
+            : endpoint.provider?.trim() || '';
+    if (candidate.badges.includes('Connected') && providerLabel !== '') {
+      return `${providerLabel} ready here`;
+    }
+    if (candidate.badges.includes('Suggested folder') && providerLabel !== '') {
+      return `${providerLabel} suggested`;
+    }
+    if (providerLabel !== '') {
+      return `Via ${providerLabel}`;
     }
     if (endpoint.transport === 'provider-share') {
-      return endpoint.provider?.trim() || 'Provider share';
+      return 'Provider route';
     }
-    return endpoint.transport;
+    return `Via ${endpoint.transport}`;
   }
 
   function joinDialogSpaceSummary(space: JoinLinkParseResponse['space']): string {
     if (space.mode === 'volume-id') {
-      return 'Volume id only';
+      return 'Needs separate secret';
     }
     if (space.mode === 'secret-file') {
-      return 'Secret file';
+      return 'Secret file included';
     }
-    return space.password ? 'Seed + password' : 'Seed';
+    return space.password ? 'Secret and password included' : 'Secret included';
   }
 
   function joinDialogActionTone(
@@ -3561,11 +4139,11 @@
   function joinDialogActionStatusLabel(
     action: JoinLinkOpenResponse['actions'][number]
   ): string {
-    if (action.status === 'attached') return 'Attached';
-    if (action.status === 'planned') return 'Planned';
-    if (action.status === 'needs-account') return 'Needs account';
-    if (action.status === 'pending-auth') return 'Waiting for sign-in';
-    return 'Unsupported';
+    if (action.status === 'attached') return 'Added';
+    if (action.status === 'planned') return 'Recognized';
+    if (action.status === 'needs-account') return 'Sign in needed';
+    if (action.status === 'pending-auth') return 'Finish sign-in';
+    return 'Unavailable';
   }
 
   function joinDialogActionTitle(
@@ -3579,34 +4157,38 @@
           ? 'GitHub'
           : action.provider || action.endpointTransport || 'Route';
     if (action.status === 'attached') {
-      return `${provider} live route attached`;
+      return `${provider} storage added to this hub`;
     }
     if (action.status === 'planned') {
-      return `${provider} route recognized`;
+      return `${provider} storage found`;
     }
     if (action.status === 'needs-account') {
-      return `${provider} account required`;
+      return `Connect ${provider}`;
     }
     if (action.status === 'pending-auth') {
-      return `${provider} sign-in still pending`;
+      return `Finish ${provider} sign-in`;
     }
-    return `${provider} route unavailable`;
+    return `${provider} storage unavailable`;
   }
 
-  function joinDialogActionBadges(
-    action: JoinLinkOpenResponse['actions'][number]
-  ): string[] {
-    return [
-      action.provider === 'mega'
+  function joinDialogAttachmentTitle(
+    attachment: JoinLinkParseResponse['plan']['attachments'][number]
+  ): string {
+    const rawLabel = attachment.attachment.label.trim();
+    const normalized = rawLabel.toLowerCase();
+    const provider = attachment.selectedEndpoint?.endpoint.provider?.trim().toLowerCase() || '';
+    const providerLabel =
+      provider === 'mega'
         ? 'MEGA'
-        : action.provider === 'gdrive'
+        : provider === 'gdrive'
           ? 'Google Drive'
-          : action.provider === 'github'
+          : provider === 'github'
             ? 'GitHub'
-            : action.provider || action.endpointTransport || 'Transport route',
-      action.usedCredentialBootstrap ? 'Used embedded bootstrap' : null,
-      action.shareId ? `Share ${action.shareId}` : null,
-    ].filter((value): value is string => Boolean(value));
+            : attachment.selectedEndpoint?.endpoint.provider?.trim() || '';
+    if (normalized === '' || normalized === 'nearbytes' || normalized === 'shared storage' || normalized === 'share') {
+      return providerLabel !== '' ? `${providerLabel} shared storage` : 'Shared storage';
+    }
+    return rawLabel;
   }
 
   async function previewJoinDialogLink(): Promise<void> {
@@ -3659,6 +4241,12 @@
       joinDialogPreview = response;
       joinDialogOpened = response;
       await handleJoinLinkOpened(response);
+      if (mountDialogMode === 'join-link' && mountDialogMountId) {
+        const currentMountId = mountDialogMountId;
+        collapseMount(currentMountId);
+        return;
+      }
+      closeJoinVolumeDialog();
     } catch (error) {
       joinDialogOpened = null;
       joinDialogError = error instanceof Error ? error.message : 'Failed to join this Nearbytes link';
@@ -3669,9 +4257,25 @@
 
   async function handleJoinLinkOpened(response: JoinLinkOpenResponse): Promise<void> {
     if (response.space.mode === 'volume-id') {
+      const normalizedVolumeId = response.space.value.trim().toLowerCase();
+      const existingMount = mounts.find((mount) => mount.volumeId?.trim().toLowerCase() === normalizedVolumeId) ?? null;
+      const targetMountId = existingMount?.id ?? createCollapsedMount();
+      mounts = mounts.map((mount) => {
+        if (mount.id !== targetMountId) {
+          return { ...mount, collapsed: true };
+        }
+        return {
+          ...mount,
+          volumeId: normalizedVolumeId,
+          collapsed: true,
+        };
+      });
+      activeMountId = targetMountId;
+      pendingMountId = null;
+      secretPasteTargetMountId = null;
       showVolumeStoragePanel = true;
       showSourcesPanel = false;
-      sourceDiscoveryPanelFocus = null;
+      sourceDiscoveryPanelFocus = 'shares';
       return;
     }
 
@@ -3763,6 +4367,15 @@
     previewUrl = '';
   }
 
+  function revokeThumbnails(): void {
+    for (const url of thumbnailBlobUrls) {
+      URL.revokeObjectURL(url);
+    }
+    thumbnailBlobUrls.length = 0;
+    thumbnailLoadGuard.clear();
+    thumbnailUrls = new Map();
+  }
+
   function detectPreviewKind(file: FileMetadata): PreviewKind {
     const mime = file.mimeType ?? '';
     const filename = file.filename.toLowerCase();
@@ -3787,6 +4400,33 @@
     }
     return 'unsupported';
   }
+
+  function queueThumbnailLoad(file: FileMetadata): void {
+    if (!auth || thumbnailLoadGuard.has(file.blobHash)) return;
+    if (detectPreviewKind(file) !== 'image') return;
+    thumbnailLoadGuard.add(file.blobHash);
+    void (async () => {
+      try {
+        let blob = previewBlobCache.get(file.blobHash);
+        if (!blob) {
+          blob = await downloadFile(auth!, file.blobHash);
+          previewBlobCache.set(file.blobHash, blob);
+        }
+        const url = URL.createObjectURL(blob);
+        thumbnailBlobUrls.push(url);
+        thumbnailUrls = new Map(thumbnailUrls).set(file.blobHash, url);
+      } catch {
+        thumbnailLoadGuard.delete(file.blobHash);
+      }
+    })();
+  }
+
+  $effect(() => {
+    if (fileManagerViewMode !== 'icons' || !auth) return;
+    for (const file of visibleFiles) {
+      queueThumbnailLoad(file);
+    }
+  });
 
   function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -3960,18 +4600,21 @@
     return Array.from(hashes);
   }
 
-  function specDocsForPayload(payload: SerializedEvent['payload']): SpecDoc[] {
+  function specDocsForPayload(
+    payload: SerializedEventPayload | null,
+    seedEvent: TimelineEvent | null
+  ): SpecDoc[] {
     const docs: SpecDoc[] = [];
     for (const doc of SPEC_DOCS) {
       if (doc.always) {
         docs.push(doc);
         continue;
       }
-      if (doc.eventTypes?.includes(payload.type)) {
+      if (seedEvent && doc.eventTypes?.includes(seedEvent.type)) {
         docs.push(doc);
         continue;
       }
-      if (payload.protocol && doc.protocols?.includes(payload.protocol)) {
+      if (payload?.protocol && doc.protocols?.includes(payload.protocol)) {
         docs.push(doc);
       }
     }
@@ -4016,6 +4659,9 @@
     timelineDetailAppSignatureSource = '';
     timelineDetailReferences = [];
     timelineDetailEventRefs = [];
+    timelineDetailStorage = null;
+    timelineDetailStorageError = '';
+    timelineDetailRevealBusyPath = '';
     timelineDetailError = '';
     timelineDetailLoading = false;
     timelineDetailRequestId += 1;
@@ -4024,7 +4670,7 @@
 
   async function openTimelineDetailsByHash(eventHash: string, seedEvent?: TimelineEvent) {
     if (!auth) {
-      errorMessage = 'Open a space to view event details.';
+      errorMessage = 'Open a hub to view event details.';
       return;
     }
     timelineDetailOpen = true;
@@ -4041,31 +4687,58 @@
     timelineDetailAppSignatureSource = '';
     timelineDetailReferences = [];
     timelineDetailEventRefs = [];
+    timelineDetailStorage = null;
+    timelineDetailStorageError = '';
+    timelineDetailRevealBusyPath = '';
     timelineDetailEvent = seedEvent ?? timelineEvents.find((entry) => entry.eventHash === eventHash) ?? null;
 
     const requestId = (timelineDetailRequestId += 1);
     try {
-      const detail = await getEventDetail(auth, eventHash);
+      const [detailResult, storageResult] = await Promise.allSettled([
+        getEventDetail(auth, eventHash),
+        getEventStorageLocations(auth, eventHash),
+      ]);
+
+      if (detailResult.status !== 'fulfilled') {
+        throw detailResult.reason;
+      }
+      const detail = detailResult.value;
       if (requestId !== timelineDetailRequestId) return;
       timelineDetailPayload = detail.event;
       timelineDetailHash = detail.eventHash;
       timelineDetailEncoded = JSON.stringify(detail.event, null, 2);
 
-      const recordParse = tryParseJson(detail.event.payload.record);
+      if (storageResult.status === 'fulfilled') {
+        timelineDetailStorage = storageResult.value;
+      } else {
+        const message =
+          storageResult.reason instanceof Error
+            ? storageResult.reason.message
+            : String(storageResult.reason);
+        if (/route not found/i.test(message)) {
+          timelineDetailStorageError =
+            'Storage location debug info unavailable: this desktop backend is running an older API build. Restart Nearbytes desktop to load the storage debug route.';
+        } else {
+          timelineDetailStorageError = `Storage location debug info unavailable: ${message}`;
+        }
+      }
+
+      const decryptedPayload = detail.decryptedPayload ?? null;
+      const recordParse = tryParseJson(decryptedPayload?.record);
       if (recordParse.value !== undefined) {
         timelineDetailRecord = JSON.stringify(recordParse.value, null, 2);
-      } else if (detail.event.payload.record) {
-        timelineDetailRecord = detail.event.payload.record;
+      } else if (decryptedPayload?.record) {
+        timelineDetailRecord = decryptedPayload.record;
       }
       if (recordParse.error) {
         timelineDetailRecordError = recordParse.error;
       }
 
-      const messageParse = tryParseJson(detail.event.payload.message);
+      const messageParse = tryParseJson(decryptedPayload?.message);
       if (messageParse.value !== undefined) {
         timelineDetailMessage = JSON.stringify(messageParse.value, null, 2);
-      } else if (detail.event.payload.message) {
-        timelineDetailMessage = detail.event.payload.message;
+      } else if (decryptedPayload?.message) {
+        timelineDetailMessage = decryptedPayload.message;
       }
       if (messageParse.error) {
         timelineDetailMessageError = messageParse.error;
@@ -4112,14 +4785,96 @@
     await openTimelineDetailsByHash(event.eventHash, event);
   }
 
-  function findPreviewFileForPayload(payload: SerializedEvent['payload']): FileMetadata | null {
+  function timelineExpectedEventPath(): string {
+    if (timelineDetailStorage?.expectedEventRelativePath) {
+      return timelineDetailStorage.expectedEventRelativePath;
+    }
+    const resolvedVolumeId =
+      timelineDetailStorage?.volumeId?.trim() || volumeId?.trim() || activeMount?.volumeId?.trim() || '';
+    const eventHash = timelineDetailHash.trim();
+    if (resolvedVolumeId) {
+      return `channels/${resolvedVolumeId}/${eventHash || '<event-hash>'}.bin`;
+    }
+    if (!eventHash) {
+      return 'channels/<volume-id>/<event-hash>.bin';
+    }
+    return `channels/<volume-id>/${eventHash}.bin`;
+  }
+
+  function timelineExpectedBlockPath(): string | null {
+    const fromStorage = timelineDetailStorage?.expectedDataRelativePath;
+    if (typeof fromStorage === 'string' && fromStorage.trim() !== '') {
+      return fromStorage;
+    }
+    const hash = timelineDetailPayload?.decryptedPayload?.hash?.trim() ?? '';
+    if (!/^[a-f0-9]{64}$/i.test(hash) || /^0+$/i.test(hash)) {
+      return null;
+    }
+    return `blocks/${hash}.bin`;
+  }
+
+  function timelineStorageHits(): TimelineStorageLocationView[] {
+    if (!timelineDetailStorage) {
+      return [];
+    }
+    return timelineDetailStorage.locations.filter((location) => location.hasEventFile || location.hasDataBlock);
+  }
+
+  function timelineStorageLocationLabel(location: TimelineStorageLocationView): string {
+    const provider = String(location.provider).toUpperCase();
+    const normalizedPath = location.rootPath.replace(/\\/g, '/').replace(/\/+$/u, '');
+    const segments = normalizedPath.split('/').filter(Boolean);
+    const shareName = segments.length > 0 ? segments[segments.length - 1] : '';
+
+    if (shareName) {
+      return `${provider} • ${shareName}`;
+    }
+    return `${provider} • default storage`;
+  }
+
+  function timelineStorageLocationPath(location: TimelineStorageLocationView): string {
+    if (location.eventPath) {
+      return location.eventPath;
+    }
+    if (location.dataPath) {
+      return location.dataPath;
+    }
+    return location.eventPath;
+  }
+
+  function timelineStoragePresenceBadges(location: TimelineStorageLocationView): string {
+    const parts: string[] = [];
+    parts.push(location.hasEventFile ? 'event file' : 'event missing');
+    if (location.dataPath) {
+      parts.push(location.hasDataBlock ? 'block present' : 'block missing');
+    }
+    return parts.join(' • ');
+  }
+
+  async function revealTimelineStorageLocation(location: TimelineStorageLocationView): Promise<void> {
+    const targetPath = timelineStorageLocationPath(location);
+    if (!targetPath) {
+      return;
+    }
+    timelineDetailStorageError = '';
+    timelineDetailRevealBusyPath = targetPath;
+    try {
+      await openPathInFileManager(targetPath);
+    } catch (error) {
+      timelineDetailStorageError = error instanceof Error ? error.message : 'Failed to reveal storage location';
+    } finally {
+      timelineDetailRevealBusyPath = '';
+    }
+  }
+
+  function findPreviewFileForPayload(payload: SerializedEventPayload): FileMetadata | null {
     const byHash = visibleFiles.find((file) => file.blobHash === payload.hash) ?? null;
     if (byHash) return byHash;
     if (!payload.fileName) return null;
     return visibleFiles.find((file) => file.filename === payload.fileName) ?? null;
   }
 
-  function openEventPayloadPreview(payload: SerializedEvent['payload']): void {
+  function openEventPayloadPreview(payload: SerializedEventPayload): void {
     if (!auth || payload.type !== 'CREATE_FILE' || !payload.hash) {
       return;
     }
@@ -4350,7 +5105,6 @@
       fileManagerActive = false;
     }
     if (!nextShowChat) {
-      showIdentityManager = false;
     }
   }
 
@@ -4370,17 +5124,21 @@
         return identity;
       }
 
-      const nextAddress =
-        typeof patch.address === 'string' ? patch.address.trim() : identity.address;
-      const nextPassword =
-        typeof patch.password === 'string' ? patch.password.trim() : identity.password;
-      secretChanged = nextAddress !== identity.address || nextPassword !== identity.password;
-
-      return createConfiguredIdentity({
+      const previousSecret = buildIdentitySecret(identity);
+      const nextIdentity = createConfiguredIdentity({
         ...identity,
         ...patch,
-        publicKey: secretChanged ? undefined : patch.publicKey ?? identity.publicKey,
+        publicKey: patch.publicKey ?? identity.publicKey,
       });
+
+      secretChanged = buildIdentitySecret(nextIdentity) !== previousSecret;
+
+      return secretChanged
+        ? createConfiguredIdentity({
+            ...nextIdentity,
+            publicKey: undefined,
+          })
+        : nextIdentity;
     });
 
     if (secretChanged) {
@@ -4392,9 +5150,99 @@
       if (Object.keys(nextAssignments).length !== Object.keys(volumeChatIdentityAssignments).length) {
         volumeChatIdentityAssignments = nextAssignments;
         identityManagerError = '';
-        identityManagerMessage = 'Identity secret changed. Rejoin any space chats explicitly.';
+        identityManagerMessage = 'Identity secret changed. Rejoin any hub chats explicitly.';
       }
     }
+  }
+
+  function updateConfiguredChatIdentitySecretText(
+    identityId: string,
+    field: 'address' | 'password',
+    value: string
+  ) {
+    updateConfiguredChatIdentity(identityId, {
+      [field]: value,
+      secretFilePayload: '',
+      secretFileName: '',
+      secretFileMimeType: '',
+    });
+  }
+
+  function clearConfiguredChatIdentitySecretFile(identityId: string) {
+    updateConfiguredChatIdentity(identityId, {
+      secretFilePayload: '',
+      secretFileName: '',
+      secretFileMimeType: '',
+    });
+  }
+
+  async function applySecretFileToIdentity(file: globalThis.File, identityId: string) {
+    const fileBytes = new Uint8Array(await file.arrayBuffer());
+    const payload = buildFileSecretPayload(fileBytes);
+    const label = trimSecretPart(file.name) || 'identity-secret-file';
+
+    updateConfiguredChatIdentity(identityId, {
+      address: label,
+      password: '',
+      secretFilePayload: payload,
+      secretFileName: label,
+      secretFileMimeType: trimSecretPart(file.type),
+    });
+    identityManagerError = '';
+    identityManagerMessage = 'Identity secret file attached.';
+  }
+
+  function handleMountDialogSecretSelected(file: globalThis.File) {
+    if (!mountDialogMount) {
+      return;
+    }
+    return applySecretFileToMount(file, mountDialogMount.id);
+  }
+
+  function handleSelectedIdentitySecretSelected(file: globalThis.File) {
+    if (!selectedChatIdentity) {
+      return;
+    }
+    return applySecretFileToIdentity(file, selectedChatIdentity.id);
+  }
+
+  async function applyAvatarFileToIdentity(file: globalThis.File, identityId: string) {
+    if (!trimSecretPart(file.type).startsWith('image/')) {
+      throw new Error('Avatar must be an image file.');
+    }
+    const dataUrl = await readFileAsDataUrl(file);
+    updateConfiguredChatIdentity(identityId, {
+      avatarDataUrl: dataUrl,
+      avatarFileName: trimSecretPart(file.name) || 'avatar',
+      avatarMimeType: trimSecretPart(file.type),
+    });
+    identityManagerError = '';
+    identityManagerMessage = 'Identity picture updated.';
+  }
+
+  async function handleIdentityAvatarFileChange(event: Event, identityId: string) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) {
+      return;
+    }
+    try {
+      await applyAvatarFileToIdentity(file, identityId);
+    } catch (error) {
+      identityManagerError = error instanceof Error ? error.message : 'Failed to read avatar image';
+      identityManagerMessage = '';
+    }
+  }
+
+  function clearConfiguredChatIdentityAvatar(identityId: string) {
+    updateConfiguredChatIdentity(identityId, {
+      avatarDataUrl: '',
+      avatarFileName: '',
+      avatarMimeType: '',
+    });
+    identityManagerError = '';
+    identityManagerMessage = 'Identity picture removed.';
   }
 
   function removeConfiguredChatIdentity(identityId: string) {
@@ -4412,18 +5260,16 @@
     chatRefreshVersion += 1;
   }
 
-  function openIdentityManagerForChat() {
-    const currentMount = mounts.find((mount) => mount.id === activeMountId);
-    if (currentMount && !currentMount.showChatPane) {
-      updateActiveMountWorkspace({
-        showFilesPane: currentMount.showFilesPane,
-        showChatPane: true,
-      });
-    }
+  function openIdentityManager() {
+    showCreateChooser = false;
     if (currentVolumeChatIdentityId) {
       activeChatIdentityId = currentVolumeChatIdentityId;
     }
     showIdentityManager = true;
+  }
+
+  function closeIdentityManager() {
+    showIdentityManager = false;
   }
 
   function configuredIdentityNeedsPublish(identity: ConfiguredIdentity): boolean {
@@ -4445,7 +5291,7 @@
     options: { announceSuccess?: boolean; openManagerOnError?: boolean } = {}
   ): Promise<ConfiguredIdentity | null> {
     if (!auth) {
-      identityManagerError = 'Open a space before publishing an identity.';
+      identityManagerError = 'Open a hub before publishing an identity.';
       identityManagerMessage = '';
       return null;
     }
@@ -4454,7 +5300,7 @@
       identityManagerMessage = '';
       return null;
     }
-    if (identity.address.trim() === '') {
+    if (!hasConfiguredIdentitySecret(identity)) {
       identityManagerError = 'Identity secret is required.';
       identityManagerMessage = '';
       if (options.openManagerOnError) {
@@ -4487,9 +5333,13 @@
       updateConfiguredChatIdentity(identity.id, {
         publicKey: published.published.authorPublicKey,
       });
-      await handleChatMutated();
+      try {
+        await handleChatMutated();
+      } catch (refreshError) {
+        console.warn('Identity was published but chat refresh failed:', refreshError);
+      }
       if (options.announceSuccess) {
-        identityManagerMessage = `Published ${identity.displayName.trim()} to this space.`;
+        identityManagerMessage = `Published ${identity.displayName.trim()} to this hub.`;
       }
       return {
         ...identity,
@@ -4520,7 +5370,7 @@
 
   async function joinCurrentVolumeChat(): Promise<ConfiguredIdentity | null> {
     if (!auth || !volumeId) {
-      identityManagerError = 'Open a space before joining chat.';
+      identityManagerError = 'Open a hub before joining chat.';
       identityManagerMessage = '';
       return null;
     }
@@ -4546,7 +5396,7 @@
       [volumeId]: publishedIdentity.id,
     };
     identityManagerError = '';
-    identityManagerMessage = `Joined this space as ${publishedIdentity.displayName.trim()}.`;
+    identityManagerMessage = `Joined this hub as ${publishedIdentity.displayName.trim()}.`;
     return publishedIdentity;
   }
 
@@ -4579,6 +5429,18 @@
   }
 
   function handleManagerKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && showCreateChooser) {
+      event.preventDefault();
+      closeCreateChooser();
+      return;
+    }
+
+    if (event.key === 'Escape' && showIdentityManager) {
+      event.preventDefault();
+      closeIdentityManager();
+      return;
+    }
+
     const activeElement = document.activeElement;
     if (
       event.key === 'Escape' &&
@@ -4632,7 +5494,7 @@
 
   async function importNearbytesBundleIntoCurrentVolume(bundle: SourceReferenceBundle) {
     if (!auth || !effectiveSecret) {
-      throw new Error('Open a destination space before pasting.');
+      throw new Error('Open a destination hub before pasting.');
     }
     if (isHistoryMode) {
       throw new Error('History mode is read-only. Jump to Latest before pasting.');
@@ -4794,7 +5656,9 @@
 
       // Update cache
       await setCachedFiles(volumeId, response.files);
-      await refreshTimeline(true);
+      if (showTimeMachinePanel || showChatWorkspace || timelineEvents.length > 0) {
+        await refreshTimeline(true);
+      }
       chatRefreshVersion += 1;
     } catch (error) {
       // Try cached data
@@ -4810,6 +5674,23 @@
       isRefreshing = false;
     }
   }
+
+  $effect(() => {
+    if (!auth || !activeMount) {
+      return;
+    }
+    if (!showTimeMachinePanel && !showChatWorkspace) {
+      return;
+    }
+    const runtime = matchingMountRuntime(activeMount);
+    if (!runtime || isTimelineLoading || runtime.timelineEvents.length > 0) {
+      return;
+    }
+    void refreshMountTimeline(activeMount.id, runtime.auth, {
+      applyIfCurrent: true,
+      keepPosition: true,
+    });
+  });
 
   // Drag and drop handlers
   function handleDragOver(e: DragEvent) {
@@ -4838,7 +5719,7 @@
       errorMessage = '';
       if (e.dataTransfer?.types.includes(NEARBYTES_DRAG_TYPE)) {
         if (!auth || !effectiveSecret) {
-          throw new Error('Open a destination space before pasting.');
+          throw new Error('Open a destination hub before pasting.');
         }
         const bundle = await exportSourceReferenceBundleFromDrag(
           auth,
@@ -5030,10 +5911,10 @@
   }
 
   // Copy volumeId to clipboard
-  async function copyVolumeId() {
-    if (!volumeId) return;
+  async function copyVolumeId(targetVolumeId: string | null = volumeId) {
+    if (!targetVolumeId) return;
     try {
-      await navigator.clipboard.writeText(volumeId);
+      await navigator.clipboard.writeText(targetVolumeId);
       copiedVolumeId = true;
       setTimeout(() => {
         copiedVolumeId = false;
@@ -5067,11 +5948,6 @@
 
   function buildNearbytesJoinDeepLink(serialized: string): string {
     return `nearbytes://join?data=${bytesToBase64Url(new TextEncoder().encode(serialized))}`;
-  }
-
-  function lastPathSegment(value: string): string {
-    const normalized = value.replace(/\\/g, '/').split('/').filter(Boolean);
-    return normalized[normalized.length - 1] ?? value.trim();
   }
 
   function setJoinLinkCopyFeedback(tone: JoinLinkCopyFeedbackState['tone'], message: string): void {
@@ -5116,93 +5992,15 @@
     return buildCurrentJoinLinkSpace(true) !== null;
   }
 
-  function buildJoinLinkAttachmentFromManagedShare(
-    summary: ManagedShareSummary,
-    accountsById: Map<string, ProviderAccount>,
-    index: number
-  ): JoinLink['attachments'][number] | null {
-    const descriptor = normalizeJoinLinkJsonValue(summary.share.remoteDescriptor);
-    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor) || Object.keys(descriptor).length === 0) {
-      return null;
-    }
-    const provider = summary.share.provider.trim().toLowerCase();
-    const label = summary.share.label.trim() || `${provider} share`;
-    const account = accountsById.get(summary.share.accountId);
-    const localPathHint =
-      lastPathSegment(summary.storage?.sourcePath || '') ||
-      lastPathSegment(summary.share.localPath) ||
-      label;
-
-    return {
-      id: `attachment-${provider}-${index + 1}`,
-      label,
-      recipe: {
-        p: 'nb.transport.recipe.v1',
-        id: `recipe-${provider}-${index + 1}`,
-        label,
-        purpose: 'mirror',
-        endpoints: [
-          {
-            p: 'nb.transport.endpoint.v1',
-            transport: 'provider-share',
-            provider,
-            priority: Math.max(1, 100 - index),
-            capabilities: summary.share.capabilities.filter((value) => value.trim() !== ''),
-            descriptor: descriptor as Record<string, unknown>,
-            label,
-            badges: ['Attached share'],
-            bootstrap: {
-              account:
-                account && (account.label.trim() !== '' || (account.email ?? '').trim() !== '')
-                  ? {
-                      mode: 'login',
-                      label: account.label.trim() || undefined,
-                      email: account.email?.trim() || undefined,
-                      preferred: true,
-                    }
-                  : undefined,
-              storage: localPathHint
-                ? {
-                    localPathHint,
-                  }
-                : undefined,
-            },
-          },
-        ],
-      },
-    };
-  }
-
   async function buildCurrentJoinLink(includeSecret: boolean): Promise<JoinLink> {
     const space = buildCurrentJoinLinkSpace(includeSecret);
     if (!space) {
-      throw new Error(includeSecret ? 'Open a space with its secret before copying that link.' : 'Open a space first.');
+      throw new Error(includeSecret ? 'Open a hub with its secret before copying that link.' : 'Open a hub first.');
     }
-    const targetVolumeId = shareableVolumeId;
-    if (!targetVolumeId) {
-      return {
-        p: 'nb.join.v1',
-        space,
-        attachments: [],
-      };
-    }
-    const [sharesResponse, accountsResponse] = await Promise.all([listManagedShares(), listProviderAccounts()]);
-    const accountsById = new Map(accountsResponse.accounts.map((account) => [account.id, account]));
-    const attachments = sharesResponse.shares
-      .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === targetVolumeId))
-      .sort((left, right) => {
-        const providerOrder = providerPriority(left.share.provider) - providerPriority(right.share.provider);
-        if (providerOrder !== 0) {
-          return providerOrder;
-        }
-        return left.share.label.localeCompare(right.share.label);
-      })
-      .map((summary, index) => buildJoinLinkAttachmentFromManagedShare(summary, accountsById, index))
-      .filter((attachment): attachment is JoinLink['attachments'][number] => attachment !== null);
     return {
       p: 'nb.join.v1',
       space,
-      attachments,
+      attachments: [],
     };
   }
 
@@ -5213,14 +6011,17 @@
       const serialized = serializeCanonicalJoinLink(link);
       let clipboardText = buildNearbytesJoinDeepLink(serialized);
       let feedbackTone: JoinLinkCopyFeedbackState['tone'] = 'success';
-      let feedbackMessage = includeSecret ? 'Copied secret share link.' : 'Copied share link.';
+      let feedbackMessage = includeSecret ? 'Copied secret share payload.' : 'Copied share link.';
       if (clipboardText.length > NEARBYTES_JOIN_DEEP_LINK_MAX_LENGTH) {
         if (!includeSecret) {
-          throw new Error('This share link is too large to send as a practical nearbytes:// link. Try sharing fewer storage routes.');
+          throw new Error(
+            'This link is too large to fit in a nearbytes:// link. Copy the secret payload instead, or share the hub without embedding a large secret file.'
+          );
         }
         clipboardText = serialized;
         feedbackTone = 'warning';
-        feedbackMessage = 'The secret link was too large for nearbytes://. Copied the full share data instead.';
+        feedbackMessage =
+          'Copied raw share data JSON, not a nearbytes:// link. Send or paste this text into Open from clipboard. This happened because the embedded secret payload exceeded the 16 KB deep-link limit.';
       }
       await navigator.clipboard.writeText(clipboardText);
       setJoinLinkCopyFeedback(feedbackTone, feedbackMessage);
@@ -5230,50 +6031,6 @@
     } finally {
       joinLinkCopyBusy = false;
     }
-  }
-
-  function currentVolumeShareInviteDraft(shareId: string): string {
-    return currentVolumeShareInviteDrafts[shareId] ?? '';
-  }
-
-  function setCurrentVolumeShareInviteDraft(shareId: string, value: string): void {
-    currentVolumeShareInviteDrafts = {
-      ...currentVolumeShareInviteDrafts,
-      [shareId]: value,
-    };
-  }
-
-  function canInviteCurrentVolumeStorage(summary: ManagedShareSummary): boolean {
-    return summary.share.capabilities.includes('invite');
-  }
-
-  function parseInviteEmails(value: string): string[] {
-    return value
-      .split(/[\s,;]+/u)
-      .map((entry) => entry.trim())
-      .filter((entry, index, entries) => entry !== '' && entries.indexOf(entry) === index);
-  }
-
-  function currentVolumeStorageCollaborators(summary: ManagedShareSummary): string[] {
-    return summary.collaborators.map((collaborator) => collaborator.email ?? collaborator.label);
-  }
-
-  function currentVolumeStorageParticipants(summary: ManagedShareSummary): ShareDialogCollaboratorView[] {
-    return summary.collaborators
-      .filter((collaborator) => collaborator.status === 'active')
-      .map((collaborator) => ({
-        label: collaborator.email ?? collaborator.label,
-        status: collaborator.status,
-      }));
-  }
-
-  function currentVolumeStorageInvited(summary: ManagedShareSummary): ShareDialogCollaboratorView[] {
-    return summary.collaborators
-      .filter((collaborator) => collaborator.status === 'invited')
-      .map((collaborator) => ({
-        label: collaborator.email ?? collaborator.label,
-        status: collaborator.status,
-      }));
   }
 
   function activeThemePreset() {
@@ -5347,62 +6104,6 @@
     applyThemePreset(themeSettings.presetId);
   }
 
-  async function refreshCurrentVolumeManagedShares(): Promise<void> {
-    if (!shareableVolumeId) {
-      currentVolumeManagedShares = [];
-      return;
-    }
-    currentVolumeSharingLoading = true;
-    try {
-      const sharesResponse = await listManagedShares();
-      currentVolumeManagedShares = sharesResponse.shares
-        .filter((summary) => summary.attachments.some((attachment) => attachment.volumeId === shareableVolumeId))
-        .sort((left, right) => {
-          const providerOrder = providerPriority(left.share.provider) - providerPriority(right.share.provider);
-          if (providerOrder !== 0) {
-            return providerOrder;
-          }
-          return left.share.label.localeCompare(right.share.label);
-        });
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to load shared storage for this volume';
-    } finally {
-      currentVolumeSharingLoading = false;
-    }
-  }
-
-  async function inviteCurrentVolumeStorage(summary: ManagedShareSummary): Promise<void> {
-    const emails = parseInviteEmails(currentVolumeShareInviteDraft(summary.share.id));
-    if (emails.length === 0) {
-      errorMessage = 'Enter at least one friend email first.';
-      return;
-    }
-    currentVolumeShareInviteBusyKey = summary.share.id;
-    volumeSharingFeedback = null;
-    errorMessage = '';
-    try {
-      await inviteManagedShare(summary.share.id, emails);
-      setCurrentVolumeShareInviteDraft(summary.share.id, '');
-      volumeSharingFeedback = {
-        tone: 'success',
-        message: `${summary.share.label} storage shared with ${emails.join(', ')}.`,
-      };
-      await refreshCurrentVolumeManagedShares();
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to share storage for this volume';
-    } finally {
-      currentVolumeShareInviteBusyKey = null;
-    }
-  }
-
-  $effect(() => {
-    if (!showVolumeShareDialog || !shareableVolumeId) {
-      currentVolumeManagedShares = [];
-      return;
-    }
-    void refreshCurrentVolumeManagedShares();
-  });
-
   // Format file size
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -5434,6 +6135,11 @@
       showThemeDialog = false;
       return;
     }
+    if (showResetDialog) {
+      e.preventDefault();
+      closeResetDialog();
+      return;
+    }
     if (showJoinVolumeDialog) {
       e.preventDefault();
       closeJoinVolumeDialog();
@@ -5442,6 +6148,11 @@
     if (showVolumeShareDialog) {
       e.preventDefault();
       closeVolumeShareDialog();
+      return;
+    }
+    if (showEventFlowPanel) {
+      e.preventDefault();
+      showEventFlowPanel = false;
       return;
     }
     handleManagerKeydown(e);
@@ -5486,7 +6197,7 @@
       class="header-shell"
       class:secret-drop-target={isSecretDropTarget}
       role="group"
-      aria-label="Space controls"
+      aria-label="Hub controls"
       onmouseenter={() => {
         isHeaderHovering = true;
       }}
@@ -5512,7 +6223,9 @@
         if (!canHandleSecretDropPayload(event.dataTransfer)) return;
         event.preventDefault();
         isSecretDropTarget = true;
-        event.dataTransfer.dropEffect = 'copy';
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = 'copy';
+        }
       }}
       ondragleave={(event) => {
         const relatedTarget = event.relatedTarget;
@@ -5579,7 +6292,6 @@
                 class="volume-chip collapsed-shell parked"
                 class:selected={mount.id === activeMountId}
                 class:pressed={pressedMountId === mount.id}
-                class:drag-armed={isMountReorderActive(mount.id)}
                 class:dragging={draggingMountId === mount.id && dragMoved}
                 class:drag-over={dragOverMountId === mount.id && dragMoved}
                 data-mount-id={mount.id}
@@ -5588,9 +6300,13 @@
                 <button
                   type="button"
                   class="volume-chip-select"
-                  aria-label={mountLabel(mount) || 'Space entry'}
+                  aria-label={mountLabel(mount) || 'Hub entry'}
                   onclick={() => handleMountClick(mount.id)}
-                  title={mountLabel(mount) || 'Open space'}
+                  onpointerdown={(event) => beginMountReorder(event, mount.id, mount.collapsed)}
+                  onpointermove={handleMountPointerMove}
+                  onpointerup={handleMountPointerUp}
+                  onpointercancel={handleMountPointerCancel}
+                  title={mountLabel(mount) || 'Open hub'}
                 >
                   <div class="header-dock">
                     <div class="header-dock-main">
@@ -5616,24 +6332,9 @@
                 </button>
                 <button
                   type="button"
-                  class="volume-chip-action-btn volume-chip-drag-btn"
-                  aria-label={`Reorder ${mountLabel(mount) || 'space'}`}
-                  title="Drag to reorder"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                  }}
-                  onpointerdown={(event) => beginMountReorder(event, mount.id, mount.collapsed)}
-                  onpointermove={handleMountPointerMove}
-                  onpointerup={handleMountPointerUp}
-                  onpointercancel={handleMountPointerCancel}
-                >
-                  <GripVertical size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
                   class="volume-chip-action-btn volume-chip-config-btn"
-                  aria-label={`Edit ${mountLabel(mount) || 'space'}`}
-                  title="Edit space"
+                  aria-label={`Edit ${mountLabel(mount) || 'hub'}`}
+                  title="Edit hub"
                   onclick={(event) => {
                     event.stopPropagation();
                     reopenMount(mount.id);
@@ -5646,49 +6347,50 @@
           </div>
         {/each}
         {/snippet}
+        {#snippet actions()}
+          <div class="mount-quick-actions" class:revealed={isHeaderHovering}>
+            <button
+              type="button"
+              class="mount-add-btn mount-quick-primary"
+              onclick={openCreateChooser}
+              aria-label="Create"
+              title="Create"
+            >
+              <Plus size={15} strokeWidth={2.2} />
+            </button>
+          </div>
+        {/snippet}
               </MountRail>
 
               <div class="mounts-actions brand-actions">
                 <button
                   type="button"
                   class="header-tool-btn"
-                  class:active={showJoinVolumeDialog}
-                  aria-label="Join shared volume"
-                  title="Join shared volume"
+                  class:active={showIdentityManager}
+                  aria-label="Identities"
+                  title="Identities"
                   onclick={(event) => {
                     event.stopPropagation();
-                    openJoinVolumeDialog();
+                    openIdentityManager();
                   }}
                 >
-                  <ClipboardPaste class="button-icon" size={14} strokeWidth={2} />
+                  <UserRound class="button-icon" size={14} strokeWidth={2} />
                 </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showVolumeShareDialog}
-                  aria-label="Share"
-                  title="Share"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    openVolumeShareDialog();
-                  }}
-                  disabled={!activeMount && !shareableVolumeId}
-                >
-                  <Link2 class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="header-tool-btn"
-                  class:active={showTimeMachinePanel}
-                  aria-label="Timeline"
-                  title="Timeline"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    showTimeMachinePanel = !showTimeMachinePanel;
-                  }}
-                >
-                  <History class="button-icon" size={14} strokeWidth={2} />
-                </button>
+                {#if getDesktopBridge()?.wipeStoredConfig}
+                  <button
+                    type="button"
+                    class="header-tool-btn"
+                    class:danger={showResetDialog}
+                    aria-label="Reset app state"
+                    title="Reset app state"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      openResetDialog();
+                    }}
+                  >
+                    <Trash2 class="button-icon" size={14} strokeWidth={2} />
+                  </button>
+                {/if}
                 <button
                   type="button"
                   class="header-tool-btn"
@@ -5702,222 +6404,12 @@
                 >
                   <HardDrive class="button-icon" size={14} strokeWidth={2} />
                 </button>
-                {#if showChatWorkspace}
-                  <button
-                    type="button"
-                    class="header-tool-btn"
-                    class:active={showIdentityManager}
-                    aria-label="Identities"
-                    title="Identities"
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      showIdentityManager = !showIdentityManager;
-                    }}
-                  >
-                    <UserRound class="button-icon" size={14} strokeWidth={2} />
-                  </button>
-                {/if}
-                <button
-                  type="button"
-                  class="mount-add-btn"
-                  onclick={addMount}
-                  aria-label="Add space"
-                  title="Add space"
-                >
-                  <Plus size={15} strokeWidth={2.2} />
-                </button>
               </div>
             </div>
           </div>
         </div>
       </div>
-
-      {#if showChatWorkspace && showIdentityManager}
-        <div class="identity-row panel-surface">
-          <div class="identity-row-head">
-            <div class="identity-row-title">
-              <UserRound class="button-icon" size={15} strokeWidth={2} />
-              <span>Identities</span>
-            </div>
-            <div class="identity-row-actions">
-              <button
-                type="button"
-                class="workspace-toggle"
-                onclick={() => void joinCurrentVolumeChat()}
-                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
-                title={
-                  !auth
-                    ? 'Open a space before joining'
-                    : isHistoryMode
-                      ? 'Jump to Latest before joining'
-                      : ''
-                }
-              >
-                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                <span>
-                  {identityManagerLoading
-                    ? 'Joining…'
-                    : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
-                      ? 'Joined'
-                      : 'Join this space'}
-                </span>
-              </button>
-              <button
-                type="button"
-                class="workspace-toggle"
-                onclick={() => void publishSelectedChatIdentity()}
-                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
-                title={
-                  !auth
-                    ? 'Open a space before publishing'
-                    : isHistoryMode
-                      ? 'Jump to Latest before publishing'
-                      : ''
-                }
-              >
-                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                <span>
-                  {identityManagerLoading
-                    ? 'Publishing…'
-                    : selectedChatIdentityNeedsPublish
-                      ? 'Publish identity'
-                      : 'Published'}
-                </span>
-              </button>
-            </div>
-          </div>
-
-          <div class="identity-chip-row">
-            {#if configuredIdentities.length === 0}
-              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
-                <Plus size={14} strokeWidth={2} />
-                <span>Add identity</span>
-              </button>
-            {:else}
-              {#each configuredIdentities as identity (identity.id)}
-                <button
-                  type="button"
-                  class="identity-pill"
-                  class:active={identity.id === activeChatIdentityId}
-                  onclick={() => {
-                    activeChatIdentityId = identity.id;
-                    identityManagerError = '';
-                    identityManagerMessage = '';
-                  }}
-                >
-                  <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
-                  <span class="identity-pill-state">
-                    {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
-                      Joined · update pending
-                    {:else if identity.id === currentVolumeChatIdentityId}
-                      Joined
-                    {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
-                      Needs publish
-                    {:else if identity.publicKey}
-                      Published
-                    {:else}
-                      Local
-                    {/if}
-                  </span>
-                </button>
-              {/each}
-              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
-                <Plus size={14} strokeWidth={2} />
-                <span>New</span>
-              </button>
-            {/if}
-          </div>
-
-          <p class="identity-row-note">
-            This space will chat as
-            <strong>{joinedChatIdentity?.displayName || 'no identity yet'}</strong>.
-            Joining is an explicit per-space local choice.
-          </p>
-          <p class="identity-row-note">
-            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into this space.
-          </p>
-
-          {#if identityManagerError}
-            <p class="identity-row-banner error">{identityManagerError}</p>
-          {:else if identityManagerMessage}
-            <p class="identity-row-banner success">{identityManagerMessage}</p>
-          {/if}
-
-          {#if selectedChatIdentity}
-            <div class="identity-editor-panel">
-              <div class="identity-editor-panel-wide">
-                <SecretSeedFields
-                  value={selectedChatIdentity.address}
-                  password={selectedChatIdentity.password}
-                  valueLabel="Identity secret"
-                  valueAriaLabel="Identity secret"
-                  valuePlaceholder="address or secret seed"
-                  passwordLabel="Password (optional)"
-                  passwordAriaLabel="Optional identity password"
-                  passwordPlaceholder="optional"
-                  onValueInput={(value) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      address: value,
-                    })}
-                  onPasswordInput={(value) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      password: value,
-                    })}
-                />
-              </div>
-              <label>
-                <span>Display name</span>
-                <input
-                  type="text"
-                  value={selectedChatIdentity.displayName}
-                  oninput={(event) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      displayName: (event.currentTarget as HTMLInputElement).value,
-                    })}
-                  placeholder="Ada"
-                />
-              </label>
-              <label class="identity-editor-panel-wide">
-                <span>Bio</span>
-                <textarea
-                  rows="2"
-                  oninput={(event) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      bio: (event.currentTarget as HTMLTextAreaElement).value,
-                    })}
-                  placeholder="Who is speaking from this key?"
-                >{selectedChatIdentity.bio}</textarea>
-              </label>
-              <div class="identity-editor-panel-actions">
-                <button
-                  type="button"
-                  class="workspace-toggle remove"
-                  onclick={() => removeConfiguredChatIdentity(selectedChatIdentity.id)}
-                >
-                  <Trash2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>Remove</span>
-                </button>
-                <button
-                  type="button"
-                  class="workspace-toggle"
-                  onclick={() => void publishSelectedChatIdentity()}
-                  disabled={!auth || isHistoryMode || identityManagerLoading}
-                >
-                  <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                  <span>
-                    {identityManagerLoading
-                      ? 'Publishing…'
-                      : selectedChatIdentityNeedsPublish
-                        ? 'Publish to space'
-                        : 'Published'}
-                  </span>
-                </button>
-              </div>
-            </div>
-          {/if}
-        </div>
-      {/if}
-    </div>
+      </div>
   </header>
 
   <!-- Main file area -->
@@ -5933,10 +6425,11 @@
       <div class="workspace-panel-view">
         <StoragePanel
           mode="global"
-          {volumeId}
+          volumeId={shareableVolumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
           knownVolumes={knownMountedVolumes}
           onOpenVolumeRouting={openMountedVolumeRouting}
+          onOpenStorageSetup={() => openSourcesPanelWithFocus(null)}
           discoveryDetails={latestSourceDiscovery}
           refreshToken={sourceDiscoveryRefreshToken}
           focusSection={sourceDiscoveryPanelFocus}
@@ -5946,14 +6439,11 @@
       <div class="workspace-panel-view">
         <StoragePanel
           mode="volume"
-          {volumeId}
+          volumeId={shareableVolumeId}
           currentVolumePresentation={currentMountedVolumePresentation}
           knownVolumes={knownMountedVolumes}
           onOpenVolumeRouting={openMountedVolumeRouting}
-          onCopyShareLink={copyCurrentJoinLink}
-          canCopySecretLink={hasCopyableCurrentSecret()}
-          shareLinkBusy={joinLinkCopyBusy}
-          shareLinkFeedback={joinLinkCopyFeedback}
+          onOpenStorageSetup={() => openSourcesPanelWithFocus(null)}
           refreshToken={sourceDiscoveryRefreshToken}
         />
       </div>
@@ -5966,7 +6456,7 @@
           </div>
           <p class="empty-eyebrow">{activeThemePreset().palette.label}</p>
           <p class="empty-hint">Enter an address to access your files</p>
-          <p class="empty-subhint">Or drag and drop files here to create a new space.{#if isDevThemeStudio} Click the brand mark to edit presets and export the checked-in logo asset.{:else} The active preset stays consistent across launches.{/if}</p>
+          <p class="empty-subhint">Or drag and drop files here to create a new hub.{#if isDevThemeStudio} Click the brand mark to edit presets and export the checked-in logo asset.{:else} The active preset stays consistent across launches.{/if}</p>
         </div>
       </div>
     {:else}
@@ -5975,13 +6465,13 @@
         <div class="volume-transition-state panel-surface" aria-live="polite">
           <div class="volume-transition-spinner"></div>
           <div class="volume-transition-copy">
-            <p class="volume-transition-title">Switching space</p>
+            <p class="volume-transition-title">Switching hub</p>
             <p class="volume-transition-subtitle">Replaying history off-screen…</p>
           </div>
         </div>
       {:else}
       {#if showTimeMachinePanel}
-      <section class="time-machine panel-surface" aria-label="Space timeline">
+      <section class="time-machine panel-surface" aria-label="Hub timeline">
         <div class="time-machine-head">
           <div>
             <p class="time-machine-eyebrow">Timeline</p>
@@ -6038,8 +6528,8 @@
                   class:create={event.type === 'CREATE_FILE'}
                   class:delete={event.type === 'DELETE_FILE'}
                   class:rename={event.type === 'RENAME_FILE'}
-                  class:identity={event.type === 'DECLARE_IDENTITY'}
-                  class:chat={event.type === 'CHAT_MESSAGE'}
+                  class:identity={isTimelineIdentityEvent(event)}
+                  class:chat={isTimelineChatEvent(event)}
                   onclick={() => jumpToEvent(index)}
                   title={timelineTitle(event)}
                 >
@@ -6067,7 +6557,7 @@
       </section>
       {/if}
 
-      <div class="workspace-mode-bar panel-surface" role="group" aria-label="Space workspace">
+      <div class="workspace-mode-bar panel-surface" role="group" aria-label="Hub workspace">
         <div class="workspace-mode-primary">
           <button
             type="button"
@@ -6076,7 +6566,7 @@
             aria-pressed={showFilesWorkspace}
             onclick={() => toggleWorkspacePane('files')}
           >
-            <File size={15} strokeWidth={2} />
+            <FileText size={15} strokeWidth={2} />
             <span>Files</span>
           </button>
           <button
@@ -6090,63 +6580,115 @@
             <span>Chat</span>
           </button>
         </div>
-        {#if showFilesWorkspace}
+        {#if showFilesWorkspace || activeMount || shareableVolumeId}
           <div class="workspace-mode-secondary">
-            <span class="workspace-selection-summary">
-              {selectedFileNames.length === 0
-                ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
-                : selectedFileNames.length === 1 && selectedFile
-                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
-                  : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
-            </span>
-            <input
-              type="text"
-              class="manager-search workspace-compact-control"
-              placeholder="Search files"
-              bind:value={searchQuery}
-              aria-label="Search files"
-            />
-            <select class="manager-sort workspace-compact-control" bind:value={sortBy} aria-label="Sort files">
-              <option value="newest">Newest</option>
-              <option value="oldest">Oldest</option>
-              <option value="name">Name</option>
-              <option value="name-desc">Name (Z-A)</option>
-              <option value="size">Size</option>
-              <option value="size-asc">Size (Smallest)</option>
-            </select>
-            <div class="manager-view-switch" role="tablist" aria-label="File browser view">
+            {#if showFilesWorkspace}
+              <span class="workspace-selection-summary">
+                {selectedFileNames.length === 0
+                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
+                  : selectedFileNames.length === 1 && selectedFile
+                    ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
+                    : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
+              </span>
+              <input
+                type="text"
+                class="manager-search workspace-compact-control"
+                placeholder="Search files"
+                bind:value={searchQuery}
+                aria-label="Search files"
+              />
+              <select class="manager-sort workspace-compact-control" bind:value={sortBy} aria-label="Sort files">
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="name">Name</option>
+                <option value="name-desc">Name (Z-A)</option>
+                <option value="size">Size</option>
+                <option value="size-asc">Size (Smallest)</option>
+              </select>
+              {#if appReferenceClipboard}
+                <button
+                  type="button"
+                  class="manager-btn workspace-toolbar-btn"
+                  onclick={() => void pasteCopiedFiles()}
+                  disabled={!auth || isHistoryMode}
+                  title={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
+                >
+                  <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                  Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
+                </button>
+              {/if}
+            {/if}
+            <div class="workspace-utility-actions">
               <button
                 type="button"
-                class="view-toggle"
-                class:active={fileManagerViewMode === 'icons'}
-                onclick={() => (fileManagerViewMode = 'icons')}
-                aria-pressed={fileManagerViewMode === 'icons'}
-                title="Icon view"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showVolumeStoragePanel}
+                onclick={toggleVolumeStoragePanel}
+                disabled={!activeMount && !shareableVolumeId}
+                title="Choose storage locations for this hub"
               >
-                <LayoutGrid size={15} strokeWidth={2} />
+                <HardDrive class="button-icon" size={15} strokeWidth={2} />
+                <span>Storage</span>
               </button>
               <button
                 type="button"
-                class="view-toggle"
-                class:active={fileManagerViewMode === 'details'}
-                onclick={() => (fileManagerViewMode = 'details')}
-                aria-pressed={fileManagerViewMode === 'details'}
-                title="Details view"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showVolumeShareDialog}
+                onclick={openVolumeShareDialog}
+                disabled={!activeMount && !shareableVolumeId}
+                title="Share this hub"
               >
-                <Rows3 size={15} strokeWidth={2} />
+                <Link2 class="button-icon" size={15} strokeWidth={2} />
+                <span>Share</span>
+              </button>
+              <button
+                type="button"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showTimeMachinePanel}
+                onclick={() => {
+                  showTimeMachinePanel = !showTimeMachinePanel;
+                }}
+                title="Show hub timeline"
+              >
+                <History class="button-icon" size={15} strokeWidth={2} />
+                <span>Timeline</span>
+              </button>
+              <button
+                type="button"
+                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                class:active={showEventFlowPanel}
+                onclick={() => {
+                  showEventFlowPanel = !showEventFlowPanel;
+                }}
+                title="Event flow visualization"
+              >
+                <Activity class="button-icon" size={15} strokeWidth={2} />
+                <span>Flow</span>
               </button>
             </div>
-            {#if appReferenceClipboard}
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn"
-                onclick={() => void pasteCopiedFiles()}
-                disabled={!auth || isHistoryMode}
-                title={!auth ? 'Open a destination space before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
-              >
-                <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
-              </button>
+            {#if showFilesWorkspace}
+              <div class="manager-view-switch" role="tablist" aria-label="File browser view">
+                <button
+                  type="button"
+                  class="view-toggle"
+                  class:active={fileManagerViewMode === 'icons'}
+                  onclick={() => (fileManagerViewMode = 'icons')}
+                  aria-pressed={fileManagerViewMode === 'icons'}
+                  title="Icon view"
+                >
+                  <LayoutGrid size={15} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  class="view-toggle"
+                  class:active={fileManagerViewMode === 'details'}
+                  onclick={() => (fileManagerViewMode = 'details')}
+                  aria-pressed={fileManagerViewMode === 'details'}
+                  title="Details view"
+                >
+                  <Rows3 size={15} strokeWidth={2} />
+                </button>
+              </div>
             {/if}
           </div>
         {/if}
@@ -6229,8 +6771,13 @@
                           onkeydown={(e) => handleFileRowKeydown(e, file)}
                         >
                           {#if fileManagerViewMode === 'icons'}
+                            {@const thumbUrl = thumbnailUrls.get(file.blobHash)}
                             <div class={`file-card-art ${fileAccentTone(file)}`}>
-                              <FileIcon size={28} strokeWidth={1.8} />
+                              {#if thumbUrl}
+                                <img class="file-card-thumb" src={thumbUrl} alt="" aria-hidden="true" />
+                              {:else}
+                                <FileIcon size={28} strokeWidth={1.8} />
+                              {/if}
                             </div>
                             <div class="file-card-copy">
                               {#if renamingFileName === file.filename}
@@ -6368,7 +6915,7 @@
                         {#if previewLoading}
                           <p class="preview-message">Loading preview…</p>
                         {:else if previewError}
-                          <p class="preview-message error">{previewError}</p>
+                          <StatusNotice tone="error" role="alert" compact={true} message={previewError} />
                         {:else if previewKind === 'image' && previewUrl}
                           <img class="preview-image" src={previewUrl} alt={"Preview of " + currentPreviewFile.filename} />
                         {:else if previewKind === 'video' && previewUrl}
@@ -6422,7 +6969,7 @@
               historyState={isHistoryMode ? historicalChatState : null}
               activeIdentity={joinedChatIdentity}
               identityNeedsPublish={joinedChatIdentityNeedsPublish}
-              onOpenIdentityManager={openIdentityManagerForChat}
+              onOpenIdentityManager={openIdentityManager}
               onEnsureIdentityPublished={async (identity) =>
                 (await ensureChatIdentityPublished(identity, {
                   announceSuccess: false,
@@ -6435,6 +6982,60 @@
           </div>
         {/if}
       </div>
+      {/if}
+      {#if showMountStorageDialog}
+        <AppDialog
+          ariaLabel="Hub storage"
+          eyebrow="Hub storage"
+          title={mountStorageDialogPresentation ? `Storage for ${mountStorageDialogPresentation.label}` : 'Hub storage'}
+          subtitle="Choose which locations this hub can read from and write to."
+          width="full"
+          closeLabel="Close hub storage"
+          onClose={closeMountStorageDialog}
+        >
+          {#snippet body()}
+            <StoragePanel
+              mode="volume"
+              volumeId={mountStorageDialogVolumeId}
+              currentVolumePresentation={mountStorageDialogPresentation}
+              knownVolumes={knownMountedVolumes}
+              onOpenVolumeRouting={openMountedVolumeRouting}
+              onOpenStorageSetup={() => {
+                closeMountStorageDialog();
+                openSourcesPanelWithFocus(null);
+              }}
+              refreshToken={sourceDiscoveryRefreshToken}
+            />
+          {/snippet}
+        </AppDialog>
+      {/if}
+      {#if showEventFlowPanel}
+        <div
+          class="flow-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Event flow"
+          tabindex="-1"
+          onclick={(e) => { if (e.target === e.currentTarget) showEventFlowPanel = false; }}
+          onkeydown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              showEventFlowPanel = false;
+            }
+          }}
+        >
+          <div class="flow-overlay-panel panel-surface">
+            <button
+              type="button"
+              class="flow-overlay-close"
+              onclick={() => { showEventFlowPanel = false; }}
+              aria-label="Close event flow"
+            >
+              <X size={18} strokeWidth={2} />
+            </button>
+            <EventFlowPanel auth={auth} volumeId={shareableVolumeId} />
+          </div>
+        </div>
       {/if}
       </div>
     {/if}
@@ -6524,17 +7125,28 @@
       role="dialog"
       aria-modal="true"
       aria-label="Timeline event details"
-      onclick={closeTimelineDetails}
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeTimelineDetails();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeTimelineDetails();
+        }
+      }}
     >
-      <div class="tm-details-modal panel-surface" onclick={(event) => event.stopPropagation()}>
+      <div class="tm-details-modal panel-surface">
         <div class="tm-details-header">
           <div class="tm-details-head-meta">
             <p class="tm-details-eyebrow">Timeline details</p>
             <p class="tm-details-title">
               {#if timelineDetailEvent}
                 {timelineKindLabel(timelineDetailEvent)} {timelineHeadline(timelineDetailEvent)}
-              {:else if timelineDetailPayload}
-                {timelineDetailPayload.payload.type} {timelineDetailPayload.payload.fileName}
+              {:else if timelineDetailPayloadDecrypted}
+                {timelineDetailPayloadDecrypted.type} {timelineDetailPayloadDecrypted.fileName}
               {:else}
                 Event details
               {/if}
@@ -6559,21 +7171,73 @@
               <span>Loading event…</span>
             </div>
           {:else if timelineDetailError}
-            <p class="tm-details-error">{timelineDetailError}</p>
+            <StatusNotice tone="error" role="alert" compact={true} message={timelineDetailError} />
           {:else if timelineDetailPayload}
-            {@const payload = timelineDetailPayload.payload}
-            {@const hasEncryptedPayload = payload.type === 'CREATE_FILE'}
-            {@const relevantSpecs = specDocsForPayload(payload)}
+            {@const payload = timelineDetailPayloadDecrypted}
+            {@const hasEncryptedPayload = payload?.type === 'CREATE_FILE'}
+            {@const relevantSpecs = specDocsForPayload(payload, timelineDetailEvent)}
             <div class="tm-details-meta">
-              <span>{payload.type}</span>
+              <span>{payload?.type ?? 'Encrypted event'}</span>
               <span>{payload.fileName || '—'}</span>
             </div>
             {#if timelineDetailHash}
               <p class="tm-details-hash">{timelineDetailHash}</p>
               <p class="tm-details-hint">
-                Event hash = SHA-256 of the serialized payload bytes (signature not included).
+                Event hash = SHA-256 of the serialized visible envelope bytes (signature not included).
               </p>
             {/if}
+
+            <div class="tm-details-section tm-details-debug-section">
+              <p class="tm-details-section-title">Protocol storage</p>
+              <p class="tm-details-section-note">
+                Expected nearbytes-root paths for this event.
+              </p>
+              <div class="tm-details-path-shell">
+                <div class="tm-details-path-row">
+                  <span class="tm-details-label">event file</span>
+                  <span class="tm-details-value mono">{timelineExpectedEventPath()}</span>
+                </div>
+                {#if timelineExpectedBlockPath()}
+                  <div class="tm-details-path-row">
+                    <span class="tm-details-label">data block</span>
+                    <span class="tm-details-value mono">{timelineExpectedBlockPath()}</span>
+                  </div>
+                {/if}
+              </div>
+
+              {#if timelineDetailStorageError}
+                <StatusNotice tone="error" role="alert" compact={true} message={timelineDetailStorageError} />
+              {/if}
+
+              {#if timelineStorageHits().length > 0}
+                <div class="tm-details-hit-list">
+                  {#each timelineStorageHits() as location}
+                    {@const targetPath = timelineStorageLocationPath(location)}
+                    <div class="tm-details-hit-row">
+                      <div class="tm-details-hit-copy">
+                        <p class="tm-details-hit-title">{timelineStorageLocationLabel(location)}</p>
+                        <p class="tm-details-hit-meta">{timelineStoragePresenceBadges(location)}</p>
+                        <p class="tm-details-hit-path mono">{targetPath}</p>
+                      </div>
+                      <div class="tm-details-hit-actions">
+                        <button
+                          type="button"
+                          class="tm-details-ref-btn"
+                          onclick={() => void revealTimelineStorageLocation(location)}
+                          disabled={timelineDetailRevealBusyPath === targetPath}
+                        >
+                          {timelineDetailRevealBusyPath === targetPath ? 'Opening…' : 'Reveal in folder'}
+                        </button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="tm-details-section-note">
+                  No configured storage location currently reports this event path.
+                </p>
+              {/if}
+            </div>
 
             <div class="tm-details-section">
               <p class="tm-details-section-title">Summary</p>
@@ -6581,20 +7245,21 @@
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">signedBy</span>
                   <div class="tm-details-value-group">
-                    <span class="tm-details-value">volume key (space secret)</span>
-                    <span class="tm-details-help">Outer signature proves this event belongs to the space.</span>
+                    <span class="tm-details-value">event envelope public key</span>
+                    <span class="tm-details-help">The outer signature authenticates the visible envelope and ciphertext.</span>
                   </div>
                 </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">visibility</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value">
-                      {hasEncryptedPayload ? 'payload cleartext, file bytes encrypted' : 'payload cleartext, no encrypted file bytes'}
+                      {timelineDetailPayload?.decryptedPayload
+                        ? 'visible envelope + decrypted inner payload'
+                        : 'visible envelope + opaque inner payload'}
                     </span>
                     <span class="tm-details-help">
-                      {hasEncryptedPayload
-                        ? 'Decrypt file bytes with encryptedKey + volume key.'
-                        : 'App record/message fields are cleartext JSON.'}
+                      Semantic event content lives inside the encrypted payload. Storage only sees version, signer,
+                      referenced blocks, ciphertext, and signature.
                     </span>
                   </div>
                 </div>
@@ -6619,15 +7284,47 @@
             <div class="tm-details-section">
               <p class="tm-details-section-title">Signed envelope</p>
               <p class="tm-details-section-note">
-                The signature covers the serialized payload fields below and is verified with the volume public key
-                derived from this space secret.
+                The signature covers the serialized visible envelope plus ciphertext. The decrypted payload below is a
+                trusted local convenience view, not the stored outer structure.
               </p>
               <div class="tm-details-grid">
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">version</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value">{timelineDetailPayload.envelope.version}</span>
+                    <span class="tm-details-help">Protocol version for the visible event envelope.</span>
+                  </div>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">publicKey</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">{timelineDetailPayload.envelope.publicKey}</span>
+                    <span class="tm-details-help">Full signer public key stored in cleartext.</span>
+                  </div>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">blockRefs</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">
+                      {timelineDetailPayload.envelope.blockRefs.length > 0
+                        ? timelineDetailPayload.envelope.blockRefs.join(', ')
+                        : '[]'}
+                    </span>
+                    <span class="tm-details-help">Visible ciphertext block references mentioned by this event.</span>
+                  </div>
+                </div>
+                <div class="tm-details-grid-row">
+                  <span class="tm-details-label">ciphertext</span>
+                  <div class="tm-details-value-group">
+                    <span class="tm-details-value mono">{timelineDetailPayload.envelope.ciphertext}</span>
+                    <span class="tm-details-help">Base64-encoded encrypted inner payload bytes.</span>
+                  </div>
+                </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">signature</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value mono">{timelineDetailPayload.signature}</span>
-                    <span class="tm-details-help">Base64 signature bytes stored alongside the payload.</span>
+                    <span class="tm-details-help">Base64 signature bytes stored alongside the envelope.</span>
                   </div>
                 </div>
               </div>
@@ -6635,29 +7332,29 @@
 
             <div class="tm-details-section">
               <p class="tm-details-section-title">Encoded event</p>
-              <p class="tm-details-section-note">Raw JSON stored for this event (payload + signature).</p>
+              <p class="tm-details-section-note">Raw JSON stored for this event (visible envelope + signature).</p>
               <pre class="tm-details-pre">{timelineDetailEncoded}</pre>
             </div>
 
+            {#if timelineDetailPayload?.decryptedPayload}
             <div class="tm-details-section">
-              <p class="tm-details-section-title">Payload fields (signed)</p>
+              <p class="tm-details-section-title">Decrypted inner payload</p>
               <p class="tm-details-section-note">
-                Payload fields are cleartext metadata. File bytes are encrypted separately; record/message fields are
-                stored as canonical JSON strings.
+                This trusted local view appears only after decrypting the opaque event payload with the volume secret.
               </p>
               <div class="tm-details-grid">
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">type</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value">{payload.type}</span>
-                    <span class="tm-details-help">Event kind; controls which fields are used.</span>
+                    <span class="tm-details-help">Semantic event kind carried inside the encrypted payload.</span>
                   </div>
                 </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">fileName</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value">{payload.fileName}</span>
-                    <span class="tm-details-help">Logical file name in the volume (empty for app/chat events).</span>
+                    <span class="tm-details-help">Logical file name inside the decrypted event payload.</span>
                   </div>
                 </div>
                 {#if payload.toFileName}
@@ -6673,19 +7370,14 @@
                   <span class="tm-details-label">hash</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value mono">{payload.hash}</span>
-                    <span class="tm-details-help">
-                      SHA-256 of the encrypted data block. Empty (all zeros) for delete/rename/app events.
-                    </span>
+                    <span class="tm-details-help">Application-level primary block hash from the decrypted payload.</span>
                   </div>
                 </div>
                 <div class="tm-details-grid-row">
                   <span class="tm-details-label">encryptedKey</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value mono">{payload.encryptedKey}</span>
-                    <span class="tm-details-help">
-                      Wrapped file key (encrypted with a key derived from the volume private key). Empty for
-                      delete/rename/app events and legacy blocks.
-                    </span>
+                    <span class="tm-details-help">Wrapped file key carried inside the encrypted payload.</span>
                   </div>
                 </div>
                 {#if payload.contentType}
@@ -6773,12 +7465,13 @@
                 {/if}
               </div>
             </div>
+            {/if}
 
             {#if hasEncryptedPayload}
               <div class="tm-details-section">
                 <p class="tm-details-section-title">Encrypted file payload</p>
                 <p class="tm-details-section-note">
-                  Ciphertext is stored as a block addressed by the hash above. Use the space secret to decrypt; this
+                  Ciphertext is stored as a block addressed by the hash above. Use the hub secret to decrypt; this
                   panel can open a decrypted preview when available.
                 </p>
                 <div class="tm-details-action-row">
@@ -6798,11 +7491,10 @@
               <div class="tm-details-section">
                 <p class="tm-details-section-title">App record</p>
                 <p class="tm-details-section-note">
-                  Cleartext canonical JSON string embedded in the signed payload. Not encrypted; any app-level
-                  signature lives inside the record (for example a sig field).
+                  Trusted local rendering of decrypted app-record JSON extracted from the opaque event payload.
                 </p>
                 {#if timelineDetailRecordError}
-                  <p class="tm-details-error">Record parse error: {timelineDetailRecordError}</p>
+                  <StatusNotice tone="error" role="alert" compact={true} title="Record parse error" message={timelineDetailRecordError} />
                 {/if}
                 {#if timelineDetailRecord}
                   <pre class="tm-details-pre">{timelineDetailRecord}</pre>
@@ -6814,11 +7506,10 @@
               <div class="tm-details-section">
                 <p class="tm-details-section-title">App message</p>
                 <p class="tm-details-section-note">
-                  Cleartext canonical JSON string embedded in the signed payload. Not encrypted; chat protocols often
-                  include their own sig field.
+                  Trusted local rendering of decrypted chat/message JSON extracted from the opaque event payload.
                 </p>
                 {#if timelineDetailMessageError}
-                  <p class="tm-details-error">Message parse error: {timelineDetailMessageError}</p>
+                  <StatusNotice tone="error" role="alert" compact={true} title="Message parse error" message={timelineDetailMessageError} />
                 {/if}
                 {#if timelineDetailMessage}
                   <pre class="tm-details-pre">{timelineDetailMessage}</pre>
@@ -6922,9 +7613,20 @@
       role="dialog"
       aria-modal="true"
       aria-label="Spec details"
-      onclick={closeSpecDoc}
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeSpecDoc();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeSpecDoc();
+        }
+      }}
     >
-      <div class="tm-spec-modal panel-surface" onclick={(event) => event.stopPropagation()}>
+      <div class="tm-spec-modal panel-surface">
         <div class="tm-spec-header">
           <div class="tm-spec-head-meta">
             <p class="tm-spec-title">{specModalDoc.title}</p>
@@ -6946,7 +7648,7 @@
       class="mount-dialog-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label={isMountEmpty(mountDialogMount) ? 'Create space' : 'Edit space properties'}
+      aria-label={isMountEmpty(mountDialogMount) ? 'Create hub' : 'Edit hub properties'}
       tabindex="-1"
       onclick={(event) => {
         if (event.target === event.currentTarget) {
@@ -6963,202 +7665,232 @@
       <div class="mount-dialog panel-surface" role="document" tabindex="-1" data-mount-id={mountDialogMount.id}>
         <div class="mount-dialog-header">
           <div class="mount-dialog-head-meta">
-            <p class="mount-dialog-eyebrow">Space properties</p>
-            <p class="mount-dialog-title">{isMountEmpty(mountDialogMount) ? 'Create or open a space' : 'Edit this space'}</p>
-            <p class="mount-dialog-subtitle">Set the secret or attach one secret file.</p>
+            <p class="mount-dialog-eyebrow">Hub properties</p>
+            {#if !isMountEmpty(mountDialogMount)}
+              <p class="mount-dialog-title">{mountLabel(mountDialogMount) || 'Unnamed hub'}</p>
+              {#if mountDialogResolvedVolumeId || mountDialogResolvedLastRefresh || mountDialogStorageLabel || (mountDialogMount.id === activeMountId && isHistoryMode) || mountDialogResolvedOffline}
+                <div class="mount-dialog-info-row" aria-label="Hub details">
+                  {#if mountDialogResolvedVolumeId}
+                    <div class="mount-dialog-info-item">
+                      <span class="mount-dialog-info-label">Hub ID</span>
+                      <button
+                        class="volume-id-btn"
+                        onclick={() => void copyVolumeId(mountDialogResolvedVolumeId)}
+                        title="Copy hub ID"
+                      >
+                        {mountDialogResolvedVolumeId.slice(0, 16)}...
+                        {#if copiedVolumeId}
+                          <span class="copied-indicator">Copied</span>
+                        {/if}
+                      </button>
+                    </div>
+                  {/if}
+                  <div class="mount-dialog-info-item mount-dialog-info-item-storage">
+                    <span class="mount-dialog-info-label">Storage</span>
+                    <span class="mount-dialog-info-value mount-dialog-info-value-storage">{mountDialogStorageLabel}</span>
+                    <button
+                      type="button"
+                      class="mount-dialog-inline-action"
+                      onclick={() => openMountStorageDialog(mountDialogMount.id)}
+                      disabled={!mountDialogResolvedVolumeId}
+                    >
+                      <span>Change</span>
+                    </button>
+                  </div>
+                  {#if mountDialogResolvedLastRefresh}
+                    <div class="mount-dialog-info-item mount-dialog-info-item-refresh">
+                      <span class="mount-dialog-info-label">Updated</span>
+                      <span class="mount-dialog-info-value mount-dialog-info-value-refresh">{formatDate(mountDialogResolvedLastRefresh)}</span>
+                    </div>
+                  {/if}
+                  {#if mountDialogMount.id === activeMountId && isHistoryMode}
+                    <span class="mount-dialog-info-pill">History mode</span>
+                  {/if}
+                  {#if mountDialogResolvedOffline}
+                    <span class="mount-dialog-info-pill">Offline</span>
+                  {/if}
+                </div>
+              {/if}
+              {#if mountDialogResolvedError}
+                <StatusNotice tone="error" role="alert" compact={true} message={mountDialogResolvedError} />
+              {/if}
+            {/if}
+            {#if isMountEmpty(mountDialogMount)}
+              <div class="mount-dialog-mode-switch" role="tablist" aria-label="Create hub mode">
+                <button
+                  type="button"
+                  class="mount-dialog-mode-btn"
+                  class:active={mountDialogMode === 'secret'}
+                  aria-pressed={mountDialogMode === 'secret'}
+                  onclick={() => setMountDialogMode('secret')}
+                >
+                  <Plus size={14} strokeWidth={2.2} />
+                  <span>Secret</span>
+                </button>
+                <button
+                  type="button"
+                  class="mount-dialog-mode-btn"
+                  class:active={mountDialogMode === 'join-link'}
+                  aria-pressed={mountDialogMode === 'join-link'}
+                  onclick={() => setMountDialogMode('join-link')}
+                >
+                  <ClipboardPaste size={14} strokeWidth={2} />
+                  <span>Paste link</span>
+                </button>
+              </div>
+            {/if}
           </div>
-          <button type="button" class="tm-details-close" aria-label="Close space properties" onclick={() => collapseMount(mountDialogMount.id)}>
+          <button type="button" class="tm-details-close" aria-label="Close hub properties" onclick={() => collapseMount(mountDialogMount.id)}>
             <X size={18} strokeWidth={2} />
           </button>
         </div>
 
         <div class="mount-dialog-body">
-          {#if mountDialogMount.id === activeMountId && (volumeId || errorMessage || isOffline)}
-            <section class="mount-dialog-section mount-dialog-status-section">
-              <div class="mount-dialog-status-grid">
-                {#if volumeId}
-                  <div class="status-item mount-dialog-status-item">
-                    <span class="status-label">Space ID</span>
-                    <button class="volume-id-btn" onclick={copyVolumeId} title="Copy space ID">
-                      {volumeId.slice(0, 16)}...
-                      {#if copiedVolumeId}
-                        <span class="copied-indicator">✓ Copied</span>
-                      {/if}
-                    </button>
-                  </div>
-                {/if}
-                {#if lastRefresh}
-                  <div class="status-item mount-dialog-status-item">
-                    <span class="status-label">Last refresh</span>
-                    <span class="status-value">{formatDate(lastRefresh)}</span>
-                  </div>
-                {/if}
-                {#if volumeId}
-                  <div class="status-item mount-dialog-status-item">
-                    <span class="status-label">Sync</span>
-                    <span class="status-value">
-                      {#if autoSyncStatus === 'connecting'}
-                        Connecting…
-                      {:else if autoSyncEnabled}
-                        Auto
-                      {:else if autoSyncStatus === 'unsupported'}
-                        Manual
-                      {:else if autoSyncStatus === 'error'}
-                        Manual (watch offline)
-                      {:else}
-                        Manual
-                      {/if}
-                    </span>
-                  </div>
-                {/if}
-                {#if isHistoryMode}
-                  <div class="status-item mount-dialog-status-item history-indicator">
-                    <span>History mode (read-only)</span>
-                  </div>
-                {/if}
-                {#if isOffline}
-                  <div class="status-item mount-dialog-status-item offline-indicator">
-                    <span>Offline (cached)</span>
-                  </div>
-                {/if}
-                {#if errorMessage}
-                  <div class="status-item mount-dialog-status-item error-indicator mount-dialog-status-error">
-                    <span>{errorMessage}</span>
-                  </div>
-                {/if}
-              </div>
-              {#if volumeId && !isLoading && !autoSyncEnabled}
-                <div class="mount-dialog-status-actions">
-                  <button class="refresh-btn" onclick={refreshFiles} title="Refresh file list">
-                    <RefreshCw class="button-icon" size={15} strokeWidth={2} />
-                    <span>Refresh</span>
-                  </button>
+          {#if mountDialogMode === 'join-link' && isMountEmpty(mountDialogMount)}
+            <section class="mount-dialog-section join-dialog-input-shell">
+              <div class="join-dialog-input-head">
+                <div>
+                  <p class="join-dialog-section-title">Join link</p>
+                  <p class="join-dialog-note">Copy the share link, then paste it here or press Paste from clipboard.</p>
                 </div>
+                <button
+                  type="button"
+                  class="status-link-btn secondary"
+                  onclick={() => void readJoinDialogClipboard()}
+                  disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
+                >
+                  <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+                  <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
+                </button>
+              </div>
+
+              <textarea
+                class="join-dialog-textarea"
+                bind:value={joinDialogSerialized}
+                spellcheck="false"
+                placeholder="nearbytes://join?data=..."
+              ></textarea>
+
+              <div class="join-dialog-actions">
+                <button
+                  type="button"
+                  class="status-link-btn"
+                  onclick={() => void openJoinDialogLink()}
+                  disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
+                >
+                  <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
+                </button>
+              </div>
+
+              {#if joinDialogError}
+                <StatusNotice tone="error" role="alert" compact={true} message={joinDialogError} />
               {/if}
             </section>
-          {/if}
 
+            {#if joinDialogPreview}
+              <section class="mount-dialog-section">
+                <div class="join-dialog-preview-head">
+                  <span class="join-dialog-chip strong">{joinDialogSpaceSummary(joinDialogPreview.space)}</span>
+                  <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} storage route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
+                </div>
+
+                {#if joinDialogPreview.plan.attachments.length === 0}
+                  <p class="join-dialog-note">This link tells Nearbytes which hub to join, but it does not include any extra shared storage routes.</p>
+                {:else}
+                  <div class="join-dialog-route-list">
+                    {#each joinDialogPreview.plan.attachments as attachment}
+                      <article class="join-dialog-route-card">
+                        <div class="join-dialog-route-head">
+                          <div>
+                            <p class="join-dialog-route-title">{joinDialogAttachmentTitle(attachment)}</p>
+                            <p class="join-dialog-route-detail">
+                              {attachment.selectedEndpoint?.reason ?? 'No supported route is available for this storage yet.'}
+                            </p>
+                          </div>
+                          {#if attachment.selectedEndpoint}
+                            <span class="join-dialog-chip strong">{joinDialogEndpointLabel(attachment.selectedEndpoint)}</span>
+                          {:else}
+                            <span class="join-dialog-chip warning">Unavailable</span>
+                          {/if}
+                        </div>
+                      </article>
+                    {/each}
+                  </div>
+                {/if}
+              </section>
+            {/if}
+
+            <section class="mount-dialog-section">
+              <div class="mount-dialog-actions">
+                <button
+                  type="button"
+                  class="workspace-toggle"
+                  onclick={() => setMountDialogMode('secret')}
+                >
+                  <span>Use secret instead</span>
+                </button>
+                <button
+                  type="button"
+                  class="workspace-toggle"
+                  onclick={() => collapseMount(mountDialogMount.id)}
+                >
+                  <span>Cancel</span>
+                </button>
+              </div>
+            </section>
+          {:else}
+          {@const secretHash = hasFileSecret(mountDialogMount) ? secretFileHashForMount(mountDialogMount) : null}
           <section class="mount-dialog-section">
             <div class="secret-input-wrapper mount-dialog-inputs">
-              <SecretSeedFields
+              <SharedSecretEditor
                 dense={true}
                 value={mountDialogMount.address}
                 password={mountDialogMount.password}
-                valueLabel="Space secret"
-                valueAriaLabel="Space address"
+                valueLabel="Hub secret"
+                valueAriaLabel="Hub address"
                 valuePlaceholder="address or secret seed"
                 passwordLabel="Password (optional)"
-                passwordAriaLabel="Optional space password"
+                passwordAriaLabel="Optional hub password"
                 passwordPlaceholder="optional"
+                hint="Drop an image/file here, or press Cmd/Ctrl + V."
+                showPasteButton={clipboardImageAvailable || clipboardImageLoading}
+                pasteButtonLabel="Paste image"
+                pasteButtonBusy={clipboardImageLoading}
+                fileName={mountDialogMount.secretFileName}
+                fileMimeType={mountDialogMount.secretFileMimeType}
+                filePreviewUrl={secretFilePayloadDataUrl(mountDialogMount)}
+                fileIsImage={hasImageSecretPreview(mountDialogMount)}
+                fileInfo={secretFileBytes(mountDialogMount) ? formatSize(secretFileBytes(mountDialogMount)?.byteLength ?? 0) : ''}
+                fileHashLabel={hasFileSecret(mountDialogMount) ? 'SHA-256' : ''}
+                fileHashValue={secretHash?.hash ?? ''}
+                fileHashPending={secretHash?.pending ?? false}
+                showDownloadButton={hasFileSecret(mountDialogMount)}
                 onValueInput={(value) => updateMountAddress(mountDialogMount.id, value)}
                 onPasswordInput={(value) => updateMountPassword(mountDialogMount.id, value)}
+                onFileSelected={handleMountDialogSecretSelected}
+                onPasteButton={() => handlePasteImageButton(mountDialogMount.id)}
+                onDownloadFile={() => downloadSecretFile(mountDialogMount)}
               />
               {#if isLoading && mountDialogMount.id === activeMountId}
                 <span class="loading-spinner"></span>
               {/if}
             </div>
-
-            <div class="secret-input-hint-row mount-dialog-hint-row">
-              <p class="secret-input-hint">
-                Drop an image/file here, or press <kbd>Cmd/Ctrl</kbd> + <kbd>V</kbd>.
-              </p>
-              <div class="secret-input-actions">
-                {#if clipboardImageAvailable || clipboardImageLoading}
-                  <button
-                    type="button"
-                    class="workspace-toggle secret-clipboard-btn"
-                    onclick={() => handlePasteImageButton(mountDialogMount.id)}
-                    disabled={clipboardImageLoading}
-                  >
-                    <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                    <span>{clipboardImageLoading ? 'Reading…' : 'Paste image'}</span>
-                  </button>
-                {/if}
-              </div>
-            </div>
           </section>
 
-          {#if hasFileSecret(mountDialogMount)}
-            {@const secretHash = secretFileHashForMount(mountDialogMount)}
-            <section class="mount-dialog-section">
-              <div class="secret-file-card mount-dialog-secret-card">
-                <div class="secret-file-card-preview" class:image={hasImageSecretPreview(mountDialogMount)}>
-                  {#if hasImageSecretPreview(mountDialogMount) && secretFilePayloadDataUrl(mountDialogMount)}
-                    <img
-                      class="secret-file-card-image"
-                      src={secretFilePayloadDataUrl(mountDialogMount) ?? ''}
-                      alt={"Preview of " + (mountDialogMount.secretFileName || 'secret file')}
-                    />
-                  {:else}
-                    <span class="secret-file-card-icon" aria-hidden="true">
-                      {#if trimSecretPart(mountDialogMount.secretFileMimeType).startsWith('image/')}
-                        <ImageIcon size={18} strokeWidth={2} />
-                      {:else}
-                        <FileText size={18} strokeWidth={2} />
-                      {/if}
-                    </span>
-                  {/if}
-                </div>
-                <div class="secret-file-card-meta">
-                  <p class="secret-file-card-name" title={mountDialogMount.secretFileName || 'secret-file'}>
-                    {mountDialogMount.secretFileName || 'secret-file'}
-                  </p>
-                  <p class="secret-file-card-info">
-                    {trimSecretPart(mountDialogMount.secretFileMimeType) || 'application/octet-stream'}
-                    {#if secretFileBytes(mountDialogMount)}
-                      {' • '}
-                      {formatSize(secretFileBytes(mountDialogMount)?.byteLength ?? 0)}
-                    {/if}
-                  </p>
-                  <p class="secret-file-card-hash-label">SHA-256</p>
-                  <p class="secret-file-card-hash" title={secretHash?.hash || 'Computing hash…'}>
-                    {#if secretHash?.pending}
-                      Computing…
-                    {:else if secretHash?.hash}
-                      {secretHash.hash}
-                    {:else}
-                      Unavailable
-                    {/if}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  class="workspace-toggle secret-file-download"
-                  onclick={() => downloadSecretFile(mountDialogMount)}
-                >
-                  <Download class="button-icon" size={15} strokeWidth={2} />
-                  <span>Download</span>
-                </button>
-              </div>
-            </section>
-          {/if}
-
-          <section class="mount-dialog-section">
-            <div class="mount-dialog-actions">
-              <ArmedActionButton
-                class="panel-action-btn danger"
-                text="Remove"
-                icon={Trash2}
-                armed={true}
-                armDelayMs={0}
-                autoDisarmMs={3000}
-                resetKey={mountDialogMount.id}
-                onPress={() => removeMount(mountDialogMount.id)}
-                title="Remove space"
-                ariaLabel="Remove space"
-              />
-              <button
-                type="button"
-                class="workspace-toggle"
-                class:active={showVolumeStoragePanel}
-                onclick={() => {
-                  toggleVolumeStoragePanel();
-                  collapseMount(mountDialogMount.id);
-                }}
-              >
-                <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                <span>Rules</span>
-              </button>
+          <div class="mount-dialog-footer">
+            <ArmedActionButton
+              class="panel-action-btn danger"
+              text="Detach"
+              icon={Trash2}
+              armed={true}
+              armDelayMs={0}
+              autoDisarmMs={3000}
+              resetKey={mountDialogMount.id}
+              onPress={() => removeMount(mountDialogMount.id)}
+              title="Detach hub"
+              ariaLabel="Detach hub"
+            />
+            <div class="mount-dialog-footer-actions">
               <button
                 type="button"
                 class="workspace-toggle"
@@ -7167,7 +7899,306 @@
                 <span>Done</span>
               </button>
             </div>
-          </section>
+          </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showCreateChooser}
+    <div
+      class="mount-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Create"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeCreateChooser();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeCreateChooser();
+        }
+      }}
+    >
+      <div class="create-chooser-modal panel-surface" role="document" tabindex="-1">
+        <div class="create-chooser-head">
+          <div>
+            <p class="mount-dialog-eyebrow">Create</p>
+            <p class="mount-dialog-title">What do you want to make?</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close create chooser" onclick={closeCreateChooser}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+        <div class="create-chooser-grid">
+          <button type="button" class="create-chooser-card" onclick={startCreateHub}>
+            <Plus size={18} strokeWidth={2.2} />
+            <span class="create-chooser-card-title">Hub</span>
+          </button>
+          <button type="button" class="create-chooser-card" onclick={startCreateIdentity}>
+            <UserRound size={18} strokeWidth={2} />
+            <span class="create-chooser-card-title">Identity</span>
+          </button>
+          <button type="button" class="create-chooser-card" onclick={() => void openJoinVolumeDialogFromClipboard()}>
+            <ClipboardPaste size={18} strokeWidth={2} />
+            <span class="create-chooser-card-title">Paste link</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showIdentityManager}
+    <div
+      class="mount-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Manage identities"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeIdentityManager();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeIdentityManager();
+        }
+      }}
+    >
+      <div class="identity-manager-modal panel-surface" role="document" tabindex="-1">
+        <div class="identity-row identity-manager-panel">
+          <div class="identity-row-head">
+            <div class="identity-row-title">
+              <UserRound class="button-icon" size={15} strokeWidth={2} />
+              <span>Identities</span>
+            </div>
+            <div class="identity-row-actions">
+              <button
+                type="button"
+                class="workspace-toggle"
+                onclick={() => void joinCurrentVolumeChat()}
+                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
+                title={
+                  !auth
+                    ? 'Open a hub before joining'
+                    : isHistoryMode
+                      ? 'Jump to Latest before joining'
+                      : ''
+                }
+              >
+                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                <span>
+                  {identityManagerLoading
+                    ? 'Joining…'
+                    : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
+                      ? 'Joined'
+                      : 'Join this hub'}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="workspace-toggle"
+                onclick={() => void publishSelectedChatIdentity()}
+                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
+                title={
+                  !auth
+                    ? 'Open a hub before publishing'
+                    : isHistoryMode
+                      ? 'Jump to Latest before publishing'
+                      : ''
+                }
+              >
+                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                <span>
+                  {identityManagerLoading
+                    ? 'Publishing…'
+                    : selectedChatIdentityNeedsPublish
+                      ? 'Publish identity'
+                      : 'Published'}
+                </span>
+              </button>
+              <button type="button" class="tm-details-close" aria-label="Close identities" onclick={closeIdentityManager}>
+                <X size={18} strokeWidth={2} />
+              </button>
+            </div>
+          </div>
+
+          <div class="identity-chip-row">
+            {#if configuredIdentities.length === 0}
+              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
+                <Plus size={14} strokeWidth={2} />
+                <span>Add identity</span>
+              </button>
+            {:else}
+              {#each configuredIdentities as identity (identity.id)}
+                <button
+                  type="button"
+                  class="identity-pill"
+                  class:active={identity.id === activeChatIdentityId}
+                  onclick={() => {
+                    activeChatIdentityId = identity.id;
+                    identityManagerError = '';
+                    identityManagerMessage = '';
+                  }}
+                >
+                  <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
+                  <span class="identity-pill-state">
+                    {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
+                      Joined · update pending
+                    {:else if identity.id === currentVolumeChatIdentityId}
+                      Joined
+                    {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
+                      Needs publish
+                    {:else if identity.publicKey}
+                      Published
+                    {:else}
+                      Local
+                    {/if}
+                  </span>
+                </button>
+              {/each}
+              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
+                <Plus size={14} strokeWidth={2} />
+                <span>New</span>
+              </button>
+            {/if}
+          </div>
+
+          <p class="identity-row-note">
+            {#if activeMount}
+              This hub will chat as <strong>{joinedChatIdentity?.displayName || 'no identity yet'}</strong>. Joining is an explicit per-hub local choice.
+            {:else}
+              Identities are global to this app. Joining remains an explicit local choice per hub.
+            {/if}
+          </p>
+          <p class="identity-row-note">
+            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into the current hub.
+          </p>
+
+          {#if identityManagerError}
+            <StatusNotice tone="error" role="alert" compact={true} message={identityManagerError} />
+          {:else if identityManagerMessage}
+            <StatusNotice tone="success" compact={true} message={identityManagerMessage} />
+          {/if}
+
+          {#if selectedChatIdentity}
+            <div class="identity-editor-panel">
+              <div class="identity-editor-panel-wide">
+                <SharedSecretEditor
+                  value={selectedChatIdentity.address}
+                  password={selectedChatIdentity.password}
+                  valueLabel="Identity secret"
+                  valueAriaLabel="Identity secret"
+                  valuePlaceholder="address or secret seed"
+                  passwordLabel="Password (optional)"
+                  passwordAriaLabel="Optional identity password"
+                  passwordPlaceholder="optional"
+                  hint="Use text, or attach a file to act as this identity secret."
+                  fileName={selectedChatIdentity.secretFileName}
+                  fileMimeType={selectedChatIdentity.secretFileMimeType}
+                  filePreviewUrl={configuredIdentitySecretDataUrl(selectedChatIdentity)}
+                  fileIsImage={configuredIdentityHasImageSecret(selectedChatIdentity)}
+                  onValueInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'address', value)}
+                  onPasswordInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'password', value)}
+                  onFileSelected={handleSelectedIdentitySecretSelected}
+                  onClearFile={() => clearConfiguredChatIdentitySecretFile(selectedChatIdentity.id)}
+                />
+              </div>
+              <label class="identity-editor-panel-wide">
+                <span>Picture</span>
+                <div class="identity-avatar-row">
+                  <div class="identity-avatar-preview">
+                    {#if selectedChatIdentity.avatarDataUrl}
+                      <img
+                        class="identity-avatar-image"
+                        src={selectedChatIdentity.avatarDataUrl}
+                        alt={selectedChatIdentity.displayName || 'Identity avatar'}
+                      />
+                    {:else}
+                      <span>{configuredIdentityAvatarLabel(selectedChatIdentity)}</span>
+                    {/if}
+                  </div>
+                  <div class="identity-avatar-actions">
+                    <input
+                      bind:this={identityAvatarFileInput}
+                      hidden
+                      type="file"
+                      accept="image/*"
+                      aria-label="Choose identity picture"
+                      onchange={(event) => void handleIdentityAvatarFileChange(event, selectedChatIdentity.id)}
+                    />
+                    <button type="button" class="workspace-toggle" onclick={() => identityAvatarFileInput?.click()}>
+                      <span>{selectedChatIdentity.avatarDataUrl ? 'Change picture' : 'Choose picture'}</span>
+                    </button>
+                    {#if selectedChatIdentity.avatarDataUrl}
+                      <button
+                        type="button"
+                        class="workspace-toggle remove"
+                        onclick={() => clearConfiguredChatIdentityAvatar(selectedChatIdentity.id)}
+                      >
+                        <span>Remove picture</span>
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              </label>
+              <label>
+                <span>Display name</span>
+                <input
+                  type="text"
+                  value={selectedChatIdentity.displayName}
+                  oninput={(event) =>
+                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
+                      displayName: (event.currentTarget as HTMLInputElement).value,
+                    })}
+                  placeholder="Ada"
+                />
+              </label>
+              <label class="identity-editor-panel-wide">
+                <span>Bio</span>
+                <textarea
+                  rows="2"
+                  oninput={(event) =>
+                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
+                      bio: (event.currentTarget as HTMLTextAreaElement).value,
+                    })}
+                  placeholder="Who is speaking from this key?"
+                >{selectedChatIdentity.bio}</textarea>
+              </label>
+              <div class="identity-editor-panel-actions">
+                <button
+                  type="button"
+                  class="workspace-toggle remove"
+                  onclick={() => removeConfiguredChatIdentity(selectedChatIdentity.id)}
+                >
+                  <Trash2 class="button-icon" size={15} strokeWidth={2} />
+                  <span>Remove</span>
+                </button>
+                <button
+                  type="button"
+                  class="workspace-toggle"
+                  onclick={() => void publishSelectedChatIdentity()}
+                  disabled={!auth || isHistoryMode || identityManagerLoading}
+                >
+                  <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                  <span>
+                    {identityManagerLoading
+                      ? 'Publishing…'
+                      : selectedChatIdentityNeedsPublish
+                        ? 'Publish to hub'
+                        : 'Published'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          {/if}
         </div>
       </div>
     </div>
@@ -7178,7 +8209,7 @@
       class="share-dialog-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Share this volume"
+      aria-label="Share this hub"
       tabindex="-1"
       onclick={(event) => {
         if (event.target === event.currentTarget) {
@@ -7195,9 +8226,8 @@
       <div class="share-dialog panel-surface" role="document" tabindex="-1">
         <div class="share-dialog-header">
           <div class="share-dialog-head-meta">
-            <p class="share-dialog-eyebrow">Shared space</p>
-            <p class="share-dialog-title">Share this space</p>
-            <p class="share-dialog-subtitle">Share the space link. Add a shared storage space if you also want to share a direct route for data.</p>
+            <p class="share-dialog-eyebrow">Shared hub</p>
+            <p class="share-dialog-title">Share this hub</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close share dialog" onclick={closeVolumeShareDialog}>
             <X size={18} strokeWidth={2} />
@@ -7206,112 +8236,14 @@
 
         <div class="share-dialog-body">
           <section class="share-dialog-section">
-            <div class="status-share-head">
-              <span class="share-dialog-section-title">Space link</span>
-              <div class="status-link-actions">
-                <button
-                  type="button"
-                  class="status-link-btn"
-                  onclick={() => void copyCurrentJoinLink(false)}
-                  disabled={joinLinkCopyBusy}
-                  title="Copy a nearbytes:// link for this space"
-                >
-                  <Link2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>{joinLinkCopyBusy ? 'Preparing…' : 'Share this space'}</span>
-                </button>
-              </div>
-            </div>
-            {#if volumeSharingFeedback}
-              <span class:warning={volumeSharingFeedback.tone === 'warning'} class="status-link-feedback">
-                {volumeSharingFeedback.message}
-              </span>
-            {/if}
-          </section>
-
-          <section class="share-dialog-section">
-            <div class="status-share-head">
-              <span class="share-dialog-section-title">Shared storage</span>
-              <button
-                type="button"
-                class="status-link-btn secondary"
-                onclick={openVolumeShareStoragePanel}
-              >
-                <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                <span>Manage storage</span>
-              </button>
-            </div>
-            <p class="status-share-note">A shared storage space gives friends a direct route to data. MEGA is the default.</p>
-
-            {#if currentVolumeSharingLoading && currentVolumeManagedShares.length === 0}
-              <p class="status-share-note">Loading attached live storage…</p>
-            {:else if currentVolumeManagedShares.length === 0}
-              <div class="share-dialog-empty">
-                <p class="share-dialog-empty-title">No live storage attached yet</p>
-                <p class="status-share-note">You can share the space now, or add a shared storage space too.</p>
-              </div>
-            {:else}
-              <div class="status-storage-list share-dialog-storage-list">
-                {#each currentVolumeManagedShares as summary (summary.share.id)}
-                  <div class="status-storage-card">
-                    <div class="status-storage-head">
-                      <div>
-                        <p class="status-storage-provider">{summary.share.provider === 'gdrive' ? 'Google Drive' : summary.share.provider === 'mega' ? 'MEGA' : summary.share.provider}</p>
-                        <p class="status-storage-title">{summary.share.label}</p>
-                      </div>
-                      <span class="status-storage-state">{summary.state.status === 'ready' ? 'Connected' : summary.state.detail}</span>
-                    </div>
-                    {#if canInviteCurrentVolumeStorage(summary)}
-                      <form class="status-storage-invite-row" onsubmit={(event) => {
-                        event.preventDefault();
-                        void inviteCurrentVolumeStorage(summary);
-                      }}>
-                        <input
-                          class="status-storage-input"
-                          type="text"
-                          value={currentVolumeShareInviteDraft(summary.share.id)}
-                          placeholder="name@example.com"
-                          oninput={(event) =>
-                            setCurrentVolumeShareInviteDraft(summary.share.id, (event.currentTarget as HTMLInputElement).value)}
-                        />
-                        <button
-                          type="submit"
-                          class="status-link-btn secondary"
-                          disabled={currentVolumeShareInviteBusyKey === summary.share.id}
-                        >
-                          <span>{currentVolumeShareInviteBusyKey === summary.share.id ? 'Sending…' : 'Invite to storage'}</span>
-                        </button>
-                      </form>
-                    {:else}
-                      <p class="status-share-note">This storage route is attached, but this provider does not support sending invites from Nearbytes.</p>
-                    {/if}
-                    <div class="status-storage-members">
-                      <p class="share-dialog-section-title members-label">Participants</p>
-                      {#if currentVolumeStorageParticipants(summary).length > 0}
-                        <div class="status-storage-members-list">
-                          {#each currentVolumeStorageParticipants(summary) as collaborator (collaborator.label)}
-                            <span class="status-storage-chip">{collaborator.label}</span>
-                          {/each}
-                        </div>
-                      {:else}
-                        <p class="status-share-note">No participants yet.</p>
-                      {/if}
-                    </div>
-                    <div class="status-storage-members">
-                      <p class="share-dialog-section-title members-label">Invited</p>
-                      {#if currentVolumeStorageInvited(summary).length > 0}
-                        <div class="status-storage-members-list">
-                          {#each currentVolumeStorageInvited(summary) as collaborator (collaborator.label)}
-                            <span class="status-storage-chip">{collaborator.label}</span>
-                          {/each}
-                        </div>
-                      {:else}
-                        <p class="status-share-note">No pending invitations.</p>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {/if}
+            <ShareSpaceLinkSection
+              canCopySecretLink={hasCopyableCurrentSecret()}
+              shareLinkBusy={joinLinkCopyBusy}
+              shareLinkFeedback={volumeSharingFeedback}
+              onCopyShareLink={copyCurrentJoinLink}
+              onManageStorage={openVolumeShareStoragePanel}
+              showManageStorage={true}
+            />
           </section>
         </div>
       </div>
@@ -7340,9 +8272,8 @@
       <div class="join-dialog panel-surface" role="document" tabindex="-1">
         <div class="join-dialog-header">
           <div class="join-dialog-head-meta">
-            <p class="join-dialog-eyebrow">Join shared volume</p>
+            <p class="join-dialog-eyebrow">Join shared hub</p>
             <p class="join-dialog-title">Open from clipboard</p>
-            <p class="join-dialog-subtitle">Paste a nearbytes://join link or canonical join JSON. Nearbytes will preview the volume route first, then stage any attached live storage when you join.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close join dialog" onclick={closeJoinVolumeDialog}>
             <X size={18} strokeWidth={2} />
@@ -7354,7 +8285,6 @@
             <div class="join-dialog-input-head">
               <div>
                 <p class="join-dialog-section-title">Join link</p>
-                <p class="join-dialog-note">Copy the share link, then paste it here or press Paste from clipboard.</p>
               </div>
               <button
                 type="button"
@@ -7381,12 +8311,12 @@
                 onclick={() => void openJoinDialogLink()}
                 disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
               >
-                <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared space'}</span>
+                <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
               </button>
             </div>
 
             {#if joinDialogError}
-              <p class="join-dialog-message error">{joinDialogError}</p>
+              <StatusNotice tone="error" role="alert" compact={true} message={joinDialogError} />
             {/if}
           </section>
 
@@ -7394,18 +8324,18 @@
             <section class="join-dialog-section">
               <div class="join-dialog-preview-head">
                 <span class="join-dialog-chip strong">{joinDialogSpaceSummary(joinDialogPreview.space)}</span>
-                <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
+                <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} storage route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
               </div>
 
               {#if joinDialogPreview.plan.attachments.length === 0}
-                <p class="join-dialog-note">This link only identifies the volume. No live storage routes were bundled with it.</p>
+                <p class="join-dialog-note">This link tells Nearbytes which hub to join, but it does not include any extra shared storage routes.</p>
               {:else}
                 <div class="join-dialog-route-list">
                   {#each joinDialogPreview.plan.attachments as attachment (attachment.attachment.id)}
                     <article class="join-dialog-route-card">
                       <div class="join-dialog-route-head">
                         <div>
-                          <p class="join-dialog-route-title">{attachment.attachment.label}</p>
+                          <p class="join-dialog-route-title">{joinDialogAttachmentTitle(attachment)}</p>
                           <p class="join-dialog-route-detail">
                             {attachment.selectedEndpoint?.reason || 'No supported route is available in this build.'}
                           </p>
@@ -7416,13 +8346,6 @@
                           <span class="join-dialog-chip warning">Unavailable</span>
                         {/if}
                       </div>
-                      {#if attachment.selectedEndpoint?.badges?.length}
-                        <div class="join-dialog-badge-row">
-                          {#each attachment.selectedEndpoint.badges as badge (badge)}
-                            <span class="join-dialog-badge">{badge}</span>
-                          {/each}
-                        </div>
-                      {/if}
                     </article>
                   {/each}
                 </div>
@@ -7439,7 +8362,7 @@
                 {/if}
               </div>
               {#if joinDialogOpened.secret === null}
-                <p class="join-dialog-note">The link staged storage routes only. You still need the volume secret separately to open its contents.</p>
+                <p class="join-dialog-note">Nearbytes staged the shared storage, but this link does not contain the hub secret. You still need the secret to open the hub contents.</p>
               {/if}
               <div class="join-dialog-result-list">
                 {#each joinDialogOpened.actions as action (`${action.attachmentId}-${action.provider || action.endpointTransport || 'route'}`)}
@@ -7447,13 +8370,8 @@
                     <div>
                       <p class="join-dialog-route-title">{joinDialogActionTitle(action)}</p>
                       <p class="join-dialog-route-detail">{action.detail}</p>
-                      <div class="join-dialog-badge-row action-badges">
-                        {#each joinDialogActionBadges(action) as badge (`${action.attachmentId}-${badge}`)}
-                          <span class="join-dialog-badge">{badge}</span>
-                        {/each}
-                      </div>
                       {#if action.suggestedLocalPath}
-                        <p class="join-dialog-path">Suggested folder: {action.suggestedLocalPath}</p>
+                        <p class="join-dialog-path">Nearbytes will mirror it in: {action.suggestedLocalPath}</p>
                       {/if}
                     </div>
                     <span class="join-dialog-chip strong">{joinDialogActionStatusLabel(action)}</span>
@@ -7462,6 +8380,65 @@
               </div>
             </section>
           {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showResetDialog}
+    <div
+      class="theme-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Reset Nearbytes data"
+      tabindex="-1"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeResetDialog();
+        }
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeResetDialog();
+        }
+      }}
+    >
+      <div class="theme-dialog panel-surface reset-dialog" role="document" tabindex="-1">
+        <div class="theme-dialog-header">
+          <div class="theme-dialog-head-meta">
+            <p class="theme-dialog-eyebrow danger">Reset</p>
+            <p class="theme-dialog-title">Clear stored configuration</p>
+          </div>
+          <button type="button" class="tm-details-close" aria-label="Close reset dialog" onclick={closeResetDialog} disabled={resetDialogBusy}>
+            <X size={18} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div class="theme-dialog-body">
+          <section class="theme-dialog-section reset-dialog-section">
+            <div class="reset-warning-card">
+              <p class="reset-warning-title">Safe start-from-scratch helper</p>
+            </div>
+
+            <label class="reset-checkbox-row">
+              <input type="checkbox" bind:checked={resetDialogDeleteLocalData} disabled={resetDialogBusy} />
+              <span>
+                <strong>Also delete local blocks and channels</strong>
+              </span>
+            </label>
+
+            {#if resetDialogError}
+              <StatusNotice tone="error" role="alert" compact={true} message={resetDialogError} />
+            {/if}
+
+            <div class="theme-dialog-actions">
+              <button type="button" class="status-link-btn secondary" onclick={closeResetDialog} disabled={resetDialogBusy}>Cancel</button>
+              <button type="button" class="status-link-btn danger" onclick={confirmStoredConfigReset} disabled={resetDialogBusy}>
+                {resetDialogBusy ? 'Resetting...' : 'Reset and restart'}
+              </button>
+            </div>
+          </section>
         </div>
       </div>
     </div>
@@ -7491,7 +8468,6 @@
           <div class="theme-dialog-head-meta">
             <p class="theme-dialog-eyebrow">Appearance</p>
             <p class="theme-dialog-title">Brand system</p>
-            <p class="theme-dialog-subtitle">The animated logo, shell palette, and accent treatment stay in sync. Changes apply live and persist across launches.</p>
           </div>
           <button type="button" class="tm-details-close" aria-label="Close appearance dialog" onclick={() => (showThemeDialog = false)}>
             <X size={18} strokeWidth={2} />
@@ -7607,10 +8583,14 @@
             {/if}
 
             {#if themeDialogFeedback}
-              <p class={`theme-dialog-status ${themeDialogFeedback.tone}`}>{themeDialogFeedback.message}</p>
+              <StatusNotice
+                tone={themeDialogFeedback.tone === 'warning' ? 'warning' : 'success'}
+                compact={true}
+                message={themeDialogFeedback.message}
+              />
             {/if}
             {#if themeDialogError}
-              <p class="theme-dialog-status error">{themeDialogError}</p>
+              <StatusNotice tone="error" role="alert" compact={true} message={themeDialogError} />
             {/if}
 
             <div class="theme-dialog-actions">
@@ -7627,7 +8607,6 @@
   {/if}
 
 </div>
-
 <style>
   :global(html, body, #app) {
     height: 100%;
@@ -7640,16 +8619,21 @@
   }
 
   :global(:root) {
-    --nb-font-display: 'Avenir Next', 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
-    --nb-font-body: 'Avenir Next', 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+    --nb-font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+    --nb-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    --nb-font-mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
   }
 
   :global(body) {
     margin: 0;
     padding: 0;
-    background: var(--nb-app-bg, #0a0a0f);
-    color: var(--nb-text-main, #e0e0e0);
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    background: var(--nb-app-bg, #ffffff);
+    color: var(--nb-text-main, rgba(0, 0, 0, 0.88));
+    font-family: var(--nb-font-body);
+    font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
     overscroll-behavior: none;
   }
 
@@ -7674,15 +8658,15 @@
   .header {
     background: var(--nb-header-bg, color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.98)) 98%, var(--nb-shell-top, white)));
     backdrop-filter: blur(18px);
-    border-bottom: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
-    padding: 0.75rem 2rem 0.9rem;
+    border-bottom: 1px solid var(--nb-border, rgba(0, 0, 0, 0.10));
+    padding: 1rem 2.5rem 1.1rem;
     position: sticky;
     top: 0;
     z-index: 120;
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    gap: 0.85rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   }
 
   .brand-rail {
@@ -7690,9 +8674,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.9rem;
-    padding: 0.7rem 0.82rem;
-    border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.14));
+    gap: 1.1rem;
+    padding: 0.9rem 1.1rem;
+    border: 1px solid var(--nb-border, rgba(0, 0, 0, 0.10));
     border-radius: 18px;
     background: var(--nb-brand-rail-bg, color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.98)) 98%, var(--nb-shell-bottom, rgba(244, 244, 247, 0.99))));
   }
@@ -7787,26 +8771,37 @@
   }
 
   .brand-title {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 1.66rem;
-    font-weight: 650;
-    line-height: 1.02;
-    letter-spacing: 0.01em;
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
+    font-family: var(--nb-font-display);
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    color: var(--nb-text-main, rgba(0, 0, 0, 0.88));
   }
 
   .brand-note {
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
-    font-size: 0.82rem;
-    font-weight: 450;
-    letter-spacing: 0.02em;
-    line-height: 1.25;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
+    font-family: var(--nb-font-body);
+    font-size: 0.84rem;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 1.35;
+    color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
   }
 
   .brand-actions {
     flex: 0 0 auto;
     flex-wrap: wrap;
+  }
+
+  .mount-quick-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.16rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.18)) 88%, transparent);
+    background: color-mix(in srgb, var(--nb-btn-bg, rgba(10, 19, 34, 0.52)) 92%, transparent);
+    box-shadow: 0 8px 20px rgba(6, 23, 43, 0.08);
   }
 
   .identity-row-title,
@@ -7820,7 +8815,7 @@
   .tm-details-spec-title,
   .tm-spec-title,
   .preview-title {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
   }
 
   .status-label,
@@ -7828,7 +8823,7 @@
   .tm-details-eyebrow,
   .tm-details-label,
   .empty-eyebrow {
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
   }
 
   .brand-rail {
@@ -7884,10 +8879,10 @@
     flex-direction: column;
     gap: 0.7rem;
     padding: 0.78rem 0.9rem;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    border-radius: 18px;
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(248, 243, 239, 0.9));
-    box-shadow: 0 10px 28px rgba(82, 53, 33, 0.06);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, var(--nb-shell-bottom, #f4f4f7));
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
   }
 
   .identity-row-head,
@@ -7920,7 +8915,7 @@
 
   .identity-pill {
     appearance: none;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(250, 244, 239, 0.9));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     border-radius: 14px;
@@ -7942,14 +8937,14 @@
   }
 
   .identity-pill:hover {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 10%, var(--nb-border, rgba(60, 60, 67, 0.12)));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 10%, var(--nb-border, rgba(60, 60, 67, 0.12)));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, white 8%);
   }
 
   .identity-pill.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.12));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, rgba(60, 60, 67, 0.12));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(248, 243, 239, 0.92));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(210, 122, 84, 0.08));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 72%, rgba(0, 0, 0, 0.03));
   }
 
   .identity-pill.add {
@@ -8017,7 +9012,7 @@
   .identity-editor-panel textarea {
     width: 100%;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.9));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font: inherit;
@@ -8027,7 +9022,7 @@
   .identity-editor-panel input:focus,
   .identity-editor-panel textarea:focus {
     outline: none;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 18%, rgba(60, 60, 67, 0.14));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, rgba(60, 60, 67, 0.14));
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-panel-bg, #ffffff) 72%, rgba(240, 232, 226, 0.8));
   }
 
@@ -8037,6 +9032,109 @@
 
   .identity-editor-panel-actions {
     grid-column: 1 / -1;
+  }
+
+  .identity-avatar-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.85rem;
+  }
+
+  .identity-avatar-preview {
+    width: 58px;
+    height: 58px;
+    border-radius: 18px;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 8%, #f8f7f5);
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+    font-size: 1.2rem;
+    font-weight: 700;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.16)) 88%, transparent);
+    flex: 0 0 auto;
+  }
+
+  .identity-avatar-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .identity-avatar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+  }
+
+  .create-chooser-modal,
+  .identity-manager-modal {
+    width: min(760px, calc(100vw - 2rem));
+    max-height: min(86vh, 920px);
+    overflow: auto;
+    border-radius: 20px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
+    background: var(--nb-panel-bg, #ffffff);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  }
+
+  .create-chooser-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1rem 0;
+  }
+
+  .create-chooser-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.85rem;
+    padding: 1rem;
+  }
+
+  .create-chooser-card {
+    appearance: none;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+    border-radius: 16px;
+    padding: 0.9rem;
+    display: grid;
+    gap: 0.45rem;
+    justify-items: start;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      transform 0.18s ease,
+      background-color 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+
+  .create-chooser-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+  }
+
+  .create-chooser-card-title {
+    font-size: 0.94rem;
+    font-weight: 700;
+  }
+
+  .create-chooser-card-copy {
+    font-size: 0.79rem;
+    line-height: 1.45;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
+  }
+
+  .identity-manager-panel {
+    width: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
   }
 
   .workspace-toggle.remove {
@@ -8229,34 +9327,6 @@
     z-index: 40;
   }
 
-  .volume-chip.drag-armed {
-    min-width: 46px;
-    max-width: 46px;
-    transition: none;
-  }
-
-  .volume-chip.drag-armed .header-dock {
-    padding: 0.32rem;
-  }
-
-  .volume-chip.drag-armed .header-dock-badge,
-  .volume-chip.drag-armed .header-dock-badge-top {
-    gap: 0;
-  }
-
-  .volume-chip.drag-armed :global(.volume-identity-copy) {
-    max-width: 0;
-    opacity: 0;
-    transform: translateX(-5px);
-  }
-
-  .volume-chip.drag-armed .header-dock-badge::before {
-    width: 0;
-    height: 0;
-    opacity: 0;
-    box-shadow: none;
-  }
-
   .volume-chip.dragging .header-dock {
     padding: 0.32rem;
   }
@@ -8322,15 +9392,12 @@
     box-shadow: var(--nb-btn-focus-ring, inset 0 0 0 1px rgba(125, 211, 252, 0.18));
   }
 
-  .volume-chip.drag-armed .volume-chip-select:hover .header-dock,
-  .volume-chip.drag-armed .volume-chip-select:focus-visible .header-dock,
   .volume-chip.dragging .volume-chip-select:hover .header-dock,
   .volume-chip.dragging .volume-chip-select:focus-visible .header-dock {
     background: transparent;
     box-shadow: none;
   }
 
-  .volume-chip.drag-armed .volume-chip-config-btn,
   .volume-chip.dragging .volume-chip-config-btn {
     width: 0;
     min-width: 0;
@@ -8339,8 +9406,6 @@
     border-left-color: transparent;
   }
 
-  .volume-chip.drag-armed:hover .volume-chip-config-btn,
-  .volume-chip.drag-armed:focus-within .volume-chip-config-btn,
   .volume-chip.dragging:hover .volume-chip-config-btn,
   .volume-chip.dragging:focus-within .volume-chip-config-btn {
     width: 0;
@@ -8379,10 +9444,6 @@
       transform 0.2s ease;
   }
 
-  .volume-chip-drag-btn {
-    touch-action: none;
-  }
-
   .volume-chip.collapsed-shell:hover .volume-chip-action-btn,
   .volume-chip.collapsed-shell:focus-within .volume-chip-action-btn {
     width: 32px;
@@ -8391,8 +9452,6 @@
     pointer-events: auto;
   }
 
-  .volume-chip.drag-armed:hover .volume-chip-action-btn,
-  .volume-chip.drag-armed:focus-within .volume-chip-action-btn,
   .volume-chip.dragging:hover .volume-chip-action-btn,
   .volume-chip.dragging:focus-within .volume-chip-action-btn {
     width: 0;
@@ -8543,7 +9602,7 @@
   }
 
   .secret-file-card-hash {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.72rem;
     line-height: 1.35;
     color: var(--nb-text-main, rgba(226, 232, 240, 0.9));
@@ -8576,7 +9635,7 @@
     align-items: center;
     justify-content: center;
     gap: 0.46rem;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.74rem;
     font-weight: 600;
     letter-spacing: 0.01em;
@@ -8653,21 +9712,6 @@
     letter-spacing: 0.01em;
   }
 
-  .secret-input-hint kbd {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 1.25rem;
-    padding: 0 0.34rem;
-    border-radius: 6px;
-    border: 1px solid var(--nb-border, rgba(96, 165, 250, 0.18));
-    background: var(--nb-btn-bg, rgba(10, 18, 33, 0.7));
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.86));
-    font-size: 0.68rem;
-    font-weight: 600;
-    font-family: inherit;
-    vertical-align: middle;
-  }
 
   .secret-clipboard-btn {
     min-width: 108px;
@@ -8800,7 +9844,7 @@
     align-items: center;
     justify-content: center;
     gap: 0.46rem;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.74rem;
     font-weight: 600;
     letter-spacing: 0.01em;
@@ -8888,6 +9932,12 @@
     color: var(--nb-btn-hover-color, rgba(224, 242, 254, 0.96));
   }
 
+  .header-tool-btn.danger:hover {
+    background: color-mix(in srgb, var(--nb-danger, #dc2626) 16%, var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.88)) 84%);
+    border-color: color-mix(in srgb, var(--nb-danger, #dc2626) 44%, var(--nb-btn-hover-border, rgba(96, 165, 250, 0.28)) 56%);
+    color: color-mix(in srgb, var(--nb-danger, #dc2626) 82%, var(--nb-btn-hover-color, rgba(224, 242, 254, 0.96)) 18%);
+  }
+
   .mount-add-btn:focus-visible,
   .header-tool-btn:focus-visible {
     outline: none;
@@ -8899,6 +9949,11 @@
     background: var(--nb-btn-active-bg, linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94)));
     color: var(--nb-btn-active-color, rgba(236, 254, 255, 0.98));
     box-shadow: var(--nb-btn-active-shadow, 0 10px 24px rgba(6, 182, 212, 0.16));
+  }
+
+  .header-tool-btn.danger {
+    border-color: color-mix(in srgb, var(--nb-danger, #dc2626) 28%, var(--nb-btn-border, rgba(56, 189, 248, 0.14)) 72%);
+    color: color-mix(in srgb, var(--nb-danger, #dc2626) 72%, var(--nb-btn-color, rgba(191, 219, 254, 0.78)) 28%);
   }
 
   :global(.button-icon) {
@@ -8918,26 +9973,29 @@
   }
 
   .status-value {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.8125rem;
   }
 
   .volume-id-btn {
-    background: var(--nb-btn-bg, rgba(12, 24, 43, 0.82));
-    border: 1px solid var(--nb-btn-border, rgba(56, 189, 248, 0.24));
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.05));
     border-radius: 999px;
-    padding: 0.32rem 0.82rem;
-    font-family: 'Monaco', 'Menlo', monospace;
-    font-size: 0.8125rem;
-    color: var(--nb-accent, rgba(125, 211, 252, 0.96));
+    padding: 0.22rem 0.62rem;
+    font-family: var(--nb-font-mono);
+    font-size: 0.75rem;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.8));
     cursor: pointer;
-    transition: background-color 0.18s ease, border-color 0.18s ease;
-    position: relative;
+    transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
   }
 
   .volume-id-btn:hover {
-    background: var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.96));
-    border-color: var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(252, 244, 238, 0.92));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%);
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.92));
   }
 
   .mount-dialog-status-section {
@@ -8971,9 +10029,102 @@
   }
 
   .copied-indicator {
-    margin-left: 0.5rem;
+    margin-left: 0.2rem;
     color: var(--nb-success, #4ade80);
-    font-size: 0.75rem;
+    font-size: 0.7rem;
+  }
+
+  .mount-dialog-info-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem 0.82rem;
+  }
+
+  .mount-dialog-info-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .mount-dialog-info-item-refresh {
+    gap: 0.26rem;
+    opacity: 0.82;
+  }
+
+  .mount-dialog-info-item-storage {
+    gap: 0.38rem;
+  }
+
+  .mount-dialog-info-label {
+    font-size: 0.67rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.68));
+  }
+
+  .mount-dialog-info-value {
+    font-size: 0.78rem;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.8));
+  }
+
+  .mount-dialog-info-value-storage {
+    font-size: 0.74rem;
+    font-weight: 600;
+    text-transform: lowercase;
+  }
+
+  .mount-dialog-info-value-refresh {
+    font-size: 0.6rem;
+    line-height: 1.2;
+    color: var(--nb-text-faint, rgba(110, 110, 115, 0.72));
+  }
+
+  .mount-dialog-inline-action {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 68%, var(--nb-text-soft, rgba(70, 70, 73, 0.8)) 32%);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.14em;
+  }
+
+  .mount-dialog-inline-action:hover:not(:disabled) {
+    color: var(--nb-accent-strong, #5d524a);
+  }
+
+  .mount-dialog-inline-action:disabled {
+    cursor: default;
+    opacity: 0.45;
+    text-decoration: none;
+  }
+
+  .mount-dialog-info-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 26px;
+    padding: 0 0.62rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(245, 243, 240, 0.88));
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  .mount-dialog-inline-message {
+    margin: 0;
+    font-size: 0.79rem;
+    line-height: 1.5;
+    color: color-mix(in srgb, var(--nb-danger, #dc2626) 54%, var(--nb-text-soft, rgba(70, 70, 73, 0.82)) 46%);
   }
 
   .status-link-actions {
@@ -9006,9 +10157,20 @@
     background: var(--nb-btn-bg, rgba(8, 17, 31, 0.8));
   }
 
+  .status-link-btn.danger {
+    border-color: color-mix(in srgb, var(--nb-danger, #dc2626) 36%, transparent);
+    background: color-mix(in srgb, var(--nb-danger, #dc2626) 76%, rgba(127, 29, 29, 0.92) 24%);
+    color: #fff7f7;
+  }
+
   .status-link-btn:hover:not(:disabled) {
     background: var(--nb-btn-hover-bg, rgba(16, 32, 56, 0.96));
     border-color: var(--nb-btn-hover-border, rgba(96, 165, 250, 0.34));
+  }
+
+  .status-link-btn.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--nb-danger, #dc2626) 84%, rgba(127, 29, 29, 0.94) 16%);
+    border-color: color-mix(in srgb, var(--nb-danger, #dc2626) 48%, transparent);
   }
 
   .status-link-btn:disabled {
@@ -9160,13 +10322,13 @@
     flex: 1 1 auto;
     min-height: 0;
     height: 100%;
-    padding: 2rem;
+    padding: 2.5rem;
     overflow: hidden;
     transition: background-color 0.3s ease;
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 1.5rem;
   }
 
   .file-area.volume-workspace-active {
@@ -9197,10 +10359,10 @@
     display: grid;
     gap: 0.9rem;
     padding: 0.95rem 1rem 1rem;
-    border: 1px solid rgba(56, 189, 248, 0.22);
+    border: 1px solid color-mix(in srgb, rgba(56, 189, 248, 0.22) 70%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
     box-shadow:
-      0 22px 44px rgba(2, 6, 23, 0.42),
+      0 16px 40px rgba(2, 6, 23, 0.36),
       inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
@@ -9321,9 +10483,9 @@
     gap: 0.75rem;
     align-self: stretch;
     margin: 0;
-    padding: 0.32rem;
-    border-radius: 14px;
-    border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
+    padding: 0.28rem 0.38rem;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 70%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
     backdrop-filter: blur(12px);
     flex: 0 0 auto;
@@ -9337,13 +10499,21 @@
     gap: 0.5rem;
     min-width: 0;
     flex-wrap: wrap;
-    font-family: var(--nb-font-body, 'Avenir Next', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
   }
 
   .workspace-mode-secondary {
     margin-left: auto;
     justify-content: flex-end;
     flex: 1 1 420px;
+  }
+
+  .workspace-utility-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-left: auto;
+    flex: 0 0 auto;
   }
 
   .workspace-selection-summary {
@@ -9368,6 +10538,13 @@
 
   .workspace-toolbar-btn {
     flex: 0 0 auto;
+  }
+
+  .workspace-toolbar-utility.active {
+    border-color: var(--nb-btn-active-border, rgba(34, 211, 238, 0.42));
+    background: var(--nb-btn-active-bg, linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94)));
+    color: var(--nb-btn-active-color, rgba(236, 254, 255, 0.98));
+    box-shadow: var(--nb-btn-active-shadow, 0 10px 24px rgba(6, 182, 212, 0.16));
   }
 
   .workspace-mode-btn {
@@ -9406,6 +10583,7 @@
   }
 
   .volume-workspace {
+    position: relative;
     max-width: none;
     margin: 0;
     width: 100%;
@@ -9426,6 +10604,53 @@
     display: grid;
     gap: 0;
     align-items: stretch;
+  }
+
+  .flow-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    background: rgba(0, 0, 0, 0.38);
+    backdrop-filter: blur(4px);
+    animation: panel-fade-in 200ms ease;
+  }
+
+  .flow-overlay-panel {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: 18px;
+    overflow: hidden;
+    margin: 0.75rem;
+  }
+
+  .flow-overlay-close {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    z-index: 10;
+    appearance: none;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.22)) 88%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 24, 48, 0.95)) 90%, transparent);
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.82));
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .flow-overlay-close:hover {
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(12, 24, 48, 0.98)) 95%, transparent);
+    color: var(--nb-text-main, rgba(226, 232, 240, 0.96));
   }
 
   .workspace-pane {
@@ -9715,6 +10940,7 @@
     display: -webkit-box;
     overflow: hidden;
     text-overflow: ellipsis;
+    line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     line-height: 1.25;
@@ -9733,75 +10959,37 @@
     color: var(--nb-text-soft, rgba(186, 230, 253, 0.7));
   }
 
-  .tm-details-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.72);
-    backdrop-filter: blur(8px);
-    z-index: 200;
-  }
-
-  .share-dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.76);
-    backdrop-filter: blur(10px);
-    z-index: 220;
-  }
-
-  .join-dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.8);
-    backdrop-filter: blur(12px);
-    z-index: 225;
-  }
-
-  .theme-dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    background: rgba(2, 6, 23, 0.82);
-    backdrop-filter: blur(14px);
-    z-index: 230;
-  }
-
+  .tm-details-backdrop,
+  .share-dialog-backdrop,
+  .join-dialog-backdrop,
+  .theme-dialog-backdrop,
   .mount-dialog-backdrop {
     position: fixed;
     inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 1.5rem;
-    background: rgba(246, 238, 232, 0.72);
-    backdrop-filter: blur(18px);
-    z-index: 235;
+    padding: 1.25rem;
+    background: rgba(2, 6, 23, 0.56);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
   }
+
+  .tm-details-backdrop { z-index: 200; }
+  .share-dialog-backdrop { z-index: 220; }
+  .join-dialog-backdrop { z-index: 225; }
+  .theme-dialog-backdrop { z-index: 230; }
+  .mount-dialog-backdrop { z-index: 235; }
 
   .mount-dialog {
     width: min(720px, 94vw);
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(255, 246, 240, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 92%, rgba(255, 250, 247, 0.88)));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.16)) 80%, rgba(210, 122, 84, 0.18));
-    border-radius: 24px;
-    box-shadow: 0 26px 90px rgba(93, 56, 34, 0.16);
+    background: var(--nb-panel-bg, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.16)) 60%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
   }
 
   .share-dialog {
@@ -9809,10 +10997,10 @@
     max-height: 86vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, rgba(255, 248, 244, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 96%, rgba(250, 242, 236, 0.92)));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.12));
-    border-radius: 22px;
-    box-shadow: 0 24px 72px rgba(82, 53, 33, 0.12);
+    background: var(--nb-panel-bg, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 60%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.16);
   }
 
   .join-dialog {
@@ -9820,10 +11008,10 @@
     max-height: 86vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, rgba(255, 247, 241, 0.9)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 95%, rgba(251, 243, 236, 0.92)));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.16));
-    border-radius: 22px;
-    box-shadow: 0 24px 72px rgba(82, 53, 33, 0.12);
+    background: var(--nb-panel-bg, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 60%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.16);
   }
 
   .theme-dialog {
@@ -9831,10 +11019,10 @@
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(255, 247, 241, 0.94)), color-mix(in srgb, var(--nb-shell-bottom, #f4f4f7) 96%, rgba(248, 239, 232, 0.92)));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.14));
-    border-radius: 24px;
-    box-shadow: 0 24px 80px rgba(82, 53, 33, 0.12);
+    background: var(--nb-panel-bg, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 60%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.16);
   }
 
   .mount-dialog-header,
@@ -9848,23 +11036,23 @@
   }
 
   .mount-dialog-header {
-    padding: 1.35rem 1.45rem 1rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 86%, rgba(210, 122, 84, 0.12));
+    padding: 1.1rem 1.25rem 0.85rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
   .share-dialog-header {
-    padding: 1.2rem 1.3rem 0.95rem;
-    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+    padding: 1rem 1.2rem 0.8rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
   .join-dialog-header {
-    padding: 1.2rem 1.3rem 0.95rem;
-    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+    padding: 1rem 1.2rem 0.8rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
   .theme-dialog-header {
-    padding: 1.3rem 1.4rem 1rem;
-    border-bottom: 1px solid var(--nb-border, rgba(148, 163, 184, 0.14));
+    padding: 1.05rem 1.2rem 0.85rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
   .mount-dialog-head-meta,
@@ -9896,11 +11084,15 @@
   .share-dialog-eyebrow,
   .join-dialog-eyebrow {
     margin: 0;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.68rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 72%, rgba(110, 110, 115, 0.8));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 72%, rgba(110, 110, 115, 0.8));
+  }
+
+  .theme-dialog-eyebrow.danger {
+    color: color-mix(in srgb, var(--nb-danger, #dc2626) 76%, rgba(110, 110, 115, 0.24));
   }
 
   .mount-dialog-title,
@@ -9908,7 +11100,7 @@
   .share-dialog-title,
   .join-dialog-title {
     margin: 0;
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 1.16rem;
     font-weight: 650;
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
@@ -9926,6 +11118,51 @@
 
   .mount-dialog-subtitle {
     max-width: 58ch;
+  }
+
+  .mount-dialog-mode-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    padding: 0.2rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 84%, rgba(0, 0, 0, 0.04));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(249, 244, 240, 0.82));
+  }
+
+  .mount-dialog-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 32px;
+    padding: 0.4rem 0.72rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.82));
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    transition:
+      background-color 160ms ease,
+      color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .mount-dialog-mode-btn:hover,
+  .mount-dialog-mode-btn:focus-visible {
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+  }
+
+  .mount-dialog-mode-btn.active {
+    background: color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, rgba(255, 255, 255, 0.92));
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nb-accent, #7c6f64) 16%, transparent);
+  }
+
+  .mount-dialog-mode-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 34%, transparent);
+    outline-offset: 2px;
   }
 
   .theme-dialog-subtitle {
@@ -9946,23 +11183,27 @@
   }
 
   .mount-dialog-body {
-    gap: 0.95rem;
-    padding: 1.1rem 1.45rem 1.35rem;
+    gap: 0.85rem;
+    padding: 0.95rem 1.25rem 1.15rem;
   }
 
   .share-dialog-body {
-    gap: 0.95rem;
-    padding: 1rem 1.3rem 1.3rem;
+    gap: 0.85rem;
+    padding: 0.85rem 1.2rem 1.1rem;
   }
 
   .join-dialog-body {
-    gap: 0.95rem;
-    padding: 1rem 1.3rem 1.3rem;
+    gap: 0.85rem;
+    padding: 0.85rem 1.2rem 1.1rem;
   }
 
   .theme-dialog-body {
-    gap: 1rem;
-    padding: 1rem 1.3rem 1.3rem;
+    gap: 0.9rem;
+    padding: 0.9rem 1.2rem 1.1rem;
+  }
+
+  .reset-dialog {
+    width: min(560px, 94vw);
   }
 
   .mount-dialog-section,
@@ -9972,11 +11213,57 @@
     display: grid;
   }
 
+  .reset-dialog-section {
+    gap: 1rem;
+  }
+
+  .reset-warning-card {
+    display: grid;
+    gap: 0.45rem;
+    padding: 1rem 1.05rem;
+    border-radius: 18px;
+    border: 1px solid color-mix(in srgb, var(--nb-danger, #dc2626) 20%, var(--nb-border, rgba(60, 60, 67, 0.12)) 80%);
+    background: color-mix(in srgb, var(--nb-danger, #dc2626) 6%, var(--nb-panel-bg, #ffffff) 94%);
+  }
+
+  .reset-warning-title {
+    margin: 0;
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+  }
+
+  .reset-checkbox-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.85rem;
+    align-items: flex-start;
+    padding: 0.95rem 1rem;
+    border-radius: 18px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.04));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(255, 248, 244, 0.9));
+  }
+
+  .reset-checkbox-row input {
+    margin-top: 0.18rem;
+  }
+
+  .reset-checkbox-row span {
+    display: grid;
+    gap: 0.32rem;
+  }
+
+  .reset-checkbox-row strong {
+    font-size: 0.94rem;
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+  }
+
+
   .mount-dialog-section {
     gap: 0.8rem;
     padding: 1rem 1.05rem;
     border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.1));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.04));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(255, 245, 239, 0.9));
   }
 
@@ -9984,7 +11271,7 @@
     gap: 0.7rem;
     padding: 1rem;
     border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.86));
   }
 
@@ -9992,16 +11279,16 @@
     gap: 0.78rem;
     padding: 1rem;
     border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.04));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(245, 243, 240, 0.88));
   }
 
   .theme-dialog-section {
     gap: 0.9rem;
     padding: 1rem;
     border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.1));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.04));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(245, 243, 240, 0.88));
   }
 
   .theme-dialog-hero {
@@ -10014,7 +11301,7 @@
     padding: 0.8rem;
     border-radius: 24px;
     background: color-mix(in srgb, var(--nb-logo-bg, #f7efe9) 70%, rgba(255, 247, 241, 0.95));
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%, rgba(210, 122, 84, 0.12));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 82%, rgba(0, 0, 0, 0.05));
   }
 
   .theme-dialog-preview-copy {
@@ -10045,8 +11332,8 @@
     margin: 0;
     padding: 0.85rem 1rem;
     border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 78%, rgba(210, 122, 84, 0.16));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 72%, rgba(255, 250, 247, 0.98));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 78%, rgba(0, 0, 0, 0.06));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 72%, rgba(245, 243, 240, 0.98));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     font-size: 0.88rem;
   }
@@ -10072,38 +11359,38 @@
     gap: 0.35rem;
     padding: 0.38rem 0.72rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(252, 244, 238, 0.92));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.76rem;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
 
   .theme-studio-chip.strong {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 28%, rgba(60, 60, 67, 0.16));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 85%, rgba(255, 247, 241, 0.98));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 70%, rgba(28, 28, 30, 0.96));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 28%, rgba(60, 60, 67, 0.16));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 85%, rgba(245, 243, 240, 0.98));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 70%, rgba(28, 28, 30, 0.96));
   }
 
   .theme-dialog-tab {
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.1));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.04));
     background: var(--nb-btn-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7)));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.88));
     border-radius: 999px;
     min-height: 34px;
     padding: 0 0.95rem;
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.82rem;
     font-weight: 600;
     cursor: pointer;
   }
 
   .theme-dialog-tab.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 26%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 86%, var(--nb-panel-bg, white));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 78%, rgba(28, 28, 30, 0.96));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 26%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 86%, var(--nb-panel-bg, white));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 78%, rgba(28, 28, 30, 0.96));
   }
 
   .theme-preset-grid,
@@ -10117,7 +11404,7 @@
   }
 
   .theme-preset-card {
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.86));
     border-radius: 18px;
     padding: 0.95rem;
@@ -10129,8 +11416,8 @@
   }
 
   .theme-preset-card.active {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 24%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 82%, var(--nb-panel-bg, white));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 24%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 82%, var(--nb-panel-bg, white));
   }
 
   .theme-preset-swatches {
@@ -10151,7 +11438,7 @@
   }
 
   .theme-preset-copy strong {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 0.92rem;
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
@@ -10174,7 +11461,7 @@
     display: grid;
     gap: 0.45rem;
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
-    font-family: var(--nb-font-body, 'SF Pro Text', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
     font-size: 0.8rem;
   }
 
@@ -10188,8 +11475,8 @@
   .theme-form-grid select {
     min-height: 40px;
     border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(245, 243, 240, 0.88));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     padding: 0.45rem 0.6rem;
   }
@@ -10224,26 +11511,49 @@
   }
 
   .mount-dialog-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+    align-items: stretch;
+    gap: 0.7rem;
+  }
+
+  .mount-dialog-actions > .workspace-toggle,
+  .mount-dialog-actions :global(.panel-action-btn) {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .mount-dialog-footer {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 0.7rem;
+    gap: 0.8rem;
+  }
+
+  .mount-dialog-footer-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.65rem;
+    margin-left: auto;
   }
 
   .share-dialog-section-title {
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 0.88rem;
     font-weight: 600;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .join-dialog-section-title {
     margin: 0;
-    font-family: var(--nb-font-display, 'Avenir Next', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-display);
     font-size: 0.88rem;
     font-weight: 600;
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
   }
 
   .join-dialog-input-shell {
@@ -10274,8 +11584,8 @@
 
   .join-dialog-textarea:focus {
     outline: none;
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 44%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 90%, transparent);
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 44%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 90%, transparent);
   }
 
   .join-dialog-toggle {
@@ -10308,17 +11618,17 @@
     gap: 0.3rem;
     padding: 0.34rem 0.65rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(245, 243, 240, 0.88));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.9));
     font-size: 0.75rem;
     font-weight: 600;
   }
 
   .join-dialog-chip.strong {
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 26%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-accent-soft, rgba(210, 122, 84, 0.08)) 82%, rgba(255, 247, 241, 0.98));
-    color: color-mix(in srgb, var(--nb-accent-strong, #b85f39) 74%, rgba(28, 28, 30, 0.96));
+    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 26%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(0, 0, 0, 0.03)) 82%, rgba(245, 243, 240, 0.98));
+    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 74%, rgba(28, 28, 30, 0.96));
   }
 
   .join-dialog-chip.warning {
@@ -10339,8 +11649,8 @@
     gap: 0.55rem;
     padding: 0.9rem 0.95rem;
     border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(210, 122, 84, 0.08));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(252, 244, 238, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(245, 243, 240, 0.88));
   }
 
   .join-dialog-result-row {
@@ -10380,8 +11690,8 @@
     align-items: center;
     padding: 0.26rem 0.5rem;
     border-radius: 999px;
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
-    border: 1px solid color-mix(in srgb, var(--nb-accent, #d27a54) 14%, rgba(60, 60, 67, 0.12));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
+    border: 1px solid color-mix(in srgb, var(--nb-accent, #7c6f64) 14%, rgba(60, 60, 67, 0.12));
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.86));
     font-size: 0.72rem;
   }
@@ -10395,8 +11705,8 @@
     gap: 0.3rem;
     padding: 0.9rem 0.95rem;
     border-radius: 14px;
-    border: 1px dashed color-mix(in srgb, var(--nb-accent, #d27a54) 22%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(252, 244, 238, 0.88));
+    border: 1px dashed color-mix(in srgb, var(--nb-accent, #7c6f64) 22%, rgba(60, 60, 67, 0.14));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
   }
 
   .share-dialog-empty-title {
@@ -10493,7 +11803,7 @@
 
   .tm-details-hash {
     margin: 0;
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.7rem;
     color: var(--nb-text-main, rgba(226, 232, 240, 0.85));
     word-break: break-all;
@@ -10531,7 +11841,7 @@
     border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.18));
     border-radius: 14px;
     padding: 0.85rem 0.95rem;
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.78rem;
     line-height: 1.5;
     color: var(--nb-text-main, rgba(226, 232, 240, 0.95));
@@ -10545,6 +11855,77 @@
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
+  }
+
+  .tm-details-debug-section {
+    padding: 0.75rem 0.8rem;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--nb-accent, rgba(125, 211, 252, 0.75)) 22%, var(--nb-border, rgba(148, 163, 184, 0.2)));
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 14, 28, 0.7)) 96%, rgba(14, 116, 144, 0.18));
+  }
+
+  .tm-details-path-shell {
+    display: grid;
+    gap: 0.36rem;
+    padding: 0.6rem 0.66rem;
+    border-radius: 12px;
+    border: 1px solid var(--nb-border, rgba(148, 163, 184, 0.18));
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(9, 16, 30, 0.7)) 94%, rgba(56, 189, 248, 0.08));
+  }
+
+  .tm-details-path-row {
+    display: grid;
+    grid-template-columns: minmax(96px, 120px) minmax(0, 1fr);
+    gap: 0.55rem;
+    align-items: start;
+  }
+
+  .tm-details-hit-list {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .tm-details-hit-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.65rem;
+    align-items: start;
+    padding: 0.62rem 0.68rem;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    background: rgba(9, 16, 30, 0.68);
+  }
+
+  .tm-details-hit-copy {
+    display: grid;
+    gap: 0.24rem;
+    min-width: 0;
+  }
+
+  .tm-details-hit-title {
+    margin: 0;
+    font-size: 0.76rem;
+    font-weight: 620;
+    color: rgba(226, 232, 240, 0.95);
+  }
+
+  .tm-details-hit-meta {
+    margin: 0;
+    font-size: 0.67rem;
+    color: rgba(148, 163, 184, 0.86);
+  }
+
+  .tm-details-hit-path {
+    margin: 0;
+    font-size: 0.68rem;
+    color: rgba(191, 219, 254, 0.9);
+    word-break: break-all;
+  }
+
+  .tm-details-hit-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
   }
 
   .tm-details-section-title {
@@ -10593,7 +11974,7 @@
   }
 
   .tm-details-value.mono {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.72rem;
   }
 
@@ -10777,7 +12158,7 @@
   }
 
   .mono {
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
   }
 
   .tm-details-media {
@@ -10853,7 +12234,7 @@
     display: grid;
     gap: 0;
     align-items: stretch;
-    font-family: var(--nb-font-body, 'Avenir Next', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif);
+    font-family: var(--nb-font-body);
   }
 
   .file-list-pane,
@@ -10987,10 +12368,10 @@
 
   .file-list-scroll.icons {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     align-content: start;
-    gap: 0.7rem;
-    padding: 0.9rem;
+    gap: 0.6rem;
+    padding: 0.8rem;
   }
 
   .file-list-clear-hitbox {
@@ -11014,10 +12395,10 @@
     grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 0.75rem;
     align-items: center;
-    padding: 0.65rem 0.75rem;
+    padding: 0.52rem 0.75rem;
     cursor: grab;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    transition: background 0.15s ease, border-color 0.15s ease;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.12)) 50%, transparent);
+    transition: background 0.12s ease, border-color 0.12s ease;
   }
 
   .file-row:hover {
@@ -11114,57 +12495,68 @@
   }
 
   .file-card {
-    min-height: 118px;
-    border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.12)) 84%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
-    padding: 0.9rem;
-    display: grid;
-    grid-template-rows: auto 1fr;
-    justify-items: start;
-    align-content: start;
-    gap: 0.7rem;
+    border-radius: 12px;
+    border: none;
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 99%, var(--nb-shell-bottom, #f4f4f7));
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     cursor: grab;
-    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-  }
-
-  .file-card:hover {
-    border-color: color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.28)) 62%, transparent);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  }
-
-  .file-card.selected {
-    border-color: color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.44)) 74%, transparent);
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--nb-accent-strong, rgba(103, 232, 249, 0.12)) 28%, transparent),
-      0 4px 12px rgba(0, 0, 0, 0.1);
-  }
-
-  .file-card-art {
-    width: 58px;
-    height: 58px;
-    border-radius: 14px;
-    display: grid;
-    place-items: center;
-    position: relative;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(255, 255, 255, 0.08)) 40%, transparent);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.07), 0 1px 2px rgba(0, 0, 0, 0.04);
     overflow: hidden;
   }
 
-  .file-card-copy {
+  .file-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.11);
+  }
+
+  .file-card.selected {
+    box-shadow:
+      0 0 0 2px var(--nb-accent, rgba(255, 59, 48, 0.85)),
+      0 4px 14px rgba(0, 0, 0, 0.11);
+  }
+
+  .file-card-art {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 0;
     display: grid;
-    gap: 0.18rem;
+    place-items: center;
+    position: relative;
+    border: none;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .file-card-thumb {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .file-card-copy {
+    padding: 0.48rem 0.58rem 0.52rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
     min-width: 0;
     width: 100%;
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 100%, transparent);
   }
 
   .file-card-name {
-    font-size: 0.88rem;
-    font-weight: 570;
-    color: var(--nb-text-main, rgba(248, 250, 252, 0.98));
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
     line-height: 1.3;
     display: -webkit-box;
+    line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
@@ -11212,8 +12604,8 @@
   }
 
   .preview-header {
-    padding: 1rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.18)) 84%, transparent);
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(102, 126, 234, 0.18)) 60%, transparent);
     display: flex;
     justify-content: space-between;
     gap: 1rem;
@@ -11367,7 +12759,7 @@
     margin: 0;
     white-space: pre-wrap;
     word-break: break-word;
-    font-family: 'Monaco', 'Menlo', monospace;
+    font-family: var(--nb-font-mono);
     font-size: 0.8125rem;
     line-height: 1.5;
     color: #d9d9d9;
@@ -11512,6 +12904,10 @@
     .brand-actions {
       width: 100%;
       justify-content: flex-start;
+    }
+
+    .mount-quick-actions {
+      max-width: 100%;
     }
 
     .workspace-toggle {

@@ -1,4 +1,4 @@
-import { promises as fs } from 'fs';
+import { promises as fs, type Dirent } from 'fs';
 import path from 'path';
 import { isProviderEnabled } from '../config/appConfig.js';
 import {
@@ -9,12 +9,22 @@ import {
   type SourceConfigEntry,
   type VolumeDestinationConfig,
 } from '../config/roots.js';
-import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
+import { ensureNearbytesMarkers, inspectNearbytesRoot, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
+import { normalizeVolumeId } from '../storage/integrity.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
 import { getDefaultStorageDir, getDefaultStorageHomeDir, getProviderStorageFolderName, resolveStorageHomeDir } from '../storagePath.js';
-import { createDefaultTransportAdapters, createProviderCatalog, type TransportAdapter } from './adapters.js';
+import type { StorageWriteEvent } from '../types/storage.js';
+import {
+  createDefaultTransportAdapters,
+  createProviderCatalog,
+  type ManagedShareMirrorEntry,
+  type ManagedShareReceiveProbe,
+  type ManagedShareRemoteEntryProbe,
+  type ManagedShareUploadProbe,
+  type TransportAdapter,
+} from './adapters.js';
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
 import { JsonFileSecretStore } from './secretStore.js';
 import { createIntegrationRuntime, type IntegrationRuntime, type IntegrationRuntimeOptions } from './runtime.js';
@@ -22,6 +32,7 @@ import {
   loadIntegrationState,
   resolveIntegrationStatePath,
   saveIntegrationState,
+  type IntegrationMaintenanceSnapshot,
   type IntegrationStateSnapshot,
 } from './store.js';
 import type {
@@ -31,6 +42,8 @@ import type {
   ConnectProviderAccountResult,
   ConfigureProviderInput,
   CreateManagedShareInput,
+  IncomingManagedShareOffer,
+  IncomingProviderContactInvite,
   JoinLink,
   JoinLinkPlan,
   JoinLinkSpace,
@@ -55,6 +68,21 @@ const DEFAULT_DESTINATION: VolumeDestinationConfig = {
   fullPolicy: 'block-writes',
 };
 
+const MEGA_BASE_SHARE_FOLDER_NAME = 'nearbytes';
+const BACKGROUND_MAINTENANCE_SCHEMA_VERSION = 1;
+const BACKGROUND_MAINTENANCE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 750;
+const FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 6_000;
+const FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS = 5_000;
+const FULL_MEGA_MANAGED_SHARE_COLLABORATORS_TIMEOUT_MS = 5_000;
+const FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS = 10_000;
+const MEGA_COLLABORATOR_LOOKUP_COOLDOWN_MS = 30_000;
+/** Avoid re-entrant `ensureSync` on every `getManagedShareState` poll (e.g. E2E / UI); that was resetting MEGA owner shares to `syncing` forever. */
+const GET_MANAGED_SHARE_STATE_ENSURE_SYNC_MIN_INTERVAL_MS = 120_000;
+const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
+const EXTERNAL_INVENTORY_REFRESH_MIN_INTERVAL_MS = 30_000;
+const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
+
 export class ManagedShareServiceError extends Error {
   constructor(
     readonly status: number,
@@ -73,6 +101,11 @@ export interface ManagedShareServiceOptions {
   readonly mirrorRoot?: string;
   readonly adapters?: readonly TransportAdapter[];
   readonly runtime?: Partial<IntegrationRuntimeOptions>;
+  readonly readMaintenanceMode?: 'background' | 'inline';
+}
+
+interface IntegrationReadOptions {
+  readonly fast?: boolean;
 }
 
 export class ManagedShareService {
@@ -80,7 +113,18 @@ export class ManagedShareService {
   private readonly integrationStatePath: string;
   private readonly mirrorRoot: string;
   private readonly runtime: IntegrationRuntime;
+  private readonly readMaintenanceMode: 'background' | 'inline';
   private readonly syncBootstrapTasks = new Map<string, Promise<void>>();
+  private readonly incomingReconciliationTasks = new Map<string, Promise<void>>();
+  private readonly autoRepairCooldowns = new Map<string, number>();
+  private readonly collaboratorLookupCooldowns = new Map<string, number>();
+  private readonly pendingMarkerRefreshes = new Set<string>();
+  private readonly lastGetManagedShareScheduledSyncAt = new Map<string, number>();
+  private readonly recentlyOpenedVolumeIds = new Map<string, number>();
+  private readonly stopStorageWriteSubscription: (() => void) | null;
+  private maintenanceRequested = false;
+  private maintenanceTask: Promise<void> | null = null;
+  private disposed = false;
 
   constructor(private readonly options: ManagedShareServiceOptions) {
     this.runtime = createIntegrationRuntime({
@@ -98,23 +142,133 @@ export class ManagedShareService {
       options.integrationStatePath ?? path.join(path.dirname(options.rootsConfigPath), 'integrations.json')
     );
     this.mirrorRoot = path.resolve(options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig()));
+    this.readMaintenanceMode = options.readMaintenanceMode ?? 'inline';
+    this.stopStorageWriteSubscription = options.storage.onWrite((event) => {
+      void this.handleStorageWrite(event).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share local write handling failed for ${event.path}: ${message}`);
+      });
+    });
   }
 
-  async listAccounts(): Promise<{
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    this.maintenanceRequested = false;
+    this.pendingMarkerRefreshes.clear();
+    this.lastGetManagedShareScheduledSyncAt.clear();
+    this.recentlyOpenedVolumeIds.clear();
+    this.autoRepairCooldowns.clear();
+    this.collaboratorLookupCooldowns.clear();
+    this.stopStorageWriteSubscription?.();
+    const maintenanceTask = this.maintenanceTask;
+    if (maintenanceTask) {
+      await Promise.race([
+        maintenanceTask.catch(() => undefined),
+        delay(100),
+      ]);
+    }
+    await Promise.all(
+      Array.from(this.adapters.values(), async (adapter) => {
+        await adapter.dispose?.();
+      })
+    );
+  }
+
+  rememberOpenedVolume(volumeId: string): void {
+    const normalized = normalizeVolumeId(volumeId);
+    if (!normalized) {
+      return;
+    }
+    const now = this.runtime.now();
+    this.recentlyOpenedVolumeIds.delete(normalized);
+    this.recentlyOpenedVolumeIds.set(normalized, now);
+    this.pruneRememberedOpenedVolumes(now);
+  }
+
+  async warmupBackgroundActivity(reason = 'startup'): Promise<void> {
+    const state = await this.loadState();
+    this.runtime.logger.log('Managed share provider warmup started.', {
+      reason,
+      accounts: state.accounts.map((account) => ({
+        id: account.id,
+        provider: normalizeProvider(account.provider),
+        state: account.state,
+      })),
+      managedShareCount: state.managedShares.length,
+    });
+    this.scheduleManagedShareSyncs(state);
+    if (this.readMaintenanceMode === 'background') {
+      this.requestBackgroundMaintenance(reason, state);
+    }
+  }
+
+  private isOperationalAccount(account: ProviderAccount): boolean {
+    return account.state === 'connected';
+  }
+
+  private isMegaHelperOperationalAccount(account: ProviderAccount): boolean {
+    const provider = normalizeProvider(account.provider);
+    return provider === 'mega' && (account.state === 'connected' || account.state === 'attention');
+  }
+
+  private canSyncManagedShare(share: ManagedShare, account: ProviderAccount): boolean {
+    if (normalizeProvider(share.provider) === 'mega' && share.role === 'owner') {
+      return this.isMegaHelperOperationalAccount(account);
+    }
+    return this.isOperationalAccount(account);
+  }
+
+  private presentationAccount(account: ProviderAccount): ProviderAccount {
+    return account;
+  }
+
+  async listAccounts(options: IntegrationReadOptions = {}): Promise<{
     accounts: ProviderAccount[];
     providers: ProviderCatalogEntry[];
     preferredProviders: string[];
   }> {
     const state = await this.loadState();
-    await this.ensureDefaultManagedShares(state);
-    this.scheduleManagedShareSyncs(state);
-    const setupStates = await this.getProviderSetupStates();
-    const refreshedState = await this.loadState();
-    const accounts = refreshedState.accounts.filter((account) => isProviderEnabled(account.provider));
+    if (this.readMaintenanceMode === 'inline') {
+      const preparedState = await this.withSoftTimeout(
+        (async () => {
+          const repairedState = await this.repairManagedShareState(state);
+          await this.ensureDefaultManagedShares(repairedState, { createMissing: true });
+          return this.loadState();
+        })(),
+        state,
+        2_500,
+        'Provider account refresh timed out; using the last known provider state.'
+      );
+      this.scheduleManagedShareSyncs(preparedState);
+      const setupStates = await this.getProviderSetupStates();
+      const accounts = preparedState.accounts
+        .filter((account) => isProviderEnabled(account.provider))
+        .map((account) => this.presentationAccount(account));
+      return {
+        accounts,
+        providers: createProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
+        preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+      };
+    }
+    if (options.fast !== true) {
+      this.requestBackgroundMaintenance('listAccounts', state);
+      this.scheduleManagedShareSyncs(state);
+    }
+    const setupStates = options.fast
+      ? this.fallbackProviderSetupStates()
+      : await this.withSoftTimeout(
+          this.getProviderSetupStates(),
+          this.fallbackProviderSetupStates(),
+          500,
+          'Provider setup discovery timed out; using the last known provider setup state.'
+        );
+    const accounts = state.accounts
+      .filter((account) => isProviderEnabled(account.provider))
+      .map((account) => this.presentationAccount(account));
     return {
       accounts,
-      providers: createProviderCatalog(Array.from(this.adapters.values()), refreshedState.accounts, setupStates),
-      preferredProviders: refreshedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+      providers: createProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
+      preferredProviders: state.preferredProviders.filter((provider) => isProviderEnabled(provider)),
     };
   }
 
@@ -211,59 +365,377 @@ export class ManagedShareService {
       preferredProviders,
     });
 
-    await this.ensureDefaultManagedShare(provider, merged.account);
+    const connectedState: IntegrationStateSnapshot = {
+      ...state,
+      accounts: merged.accounts,
+      preferredProviders,
+    };
+    if (provider === 'mega') {
+      await this.ensureDefaultManagedShare(provider, merged.account, {
+        stateSnapshot: connectedState,
+        createMissing: true,
+      });
+      const refreshedState = await this.loadState();
+      this.scheduleManagedShareSyncs(refreshedState);
+      this.scheduleIncomingManagedShareReconciliation(provider, merged.account);
+      if (this.readMaintenanceMode !== 'background') {
+        this.requestBackgroundMaintenance(`connectAccount:${provider}`, refreshedState);
+      }
+      return {
+        status: 'connected',
+        account: merged.account,
+      };
+    }
+    const reconciledMirrors = await this.reconcileProviderManagedShares(provider, merged.account, connectedState);
+    const incomingDiscoveryTimeoutMs = this.providerIncomingShareDiscoveryTimeoutMs(provider);
+    const reconciledIncoming = await this.withSoftTimeout(
+      this.reconcileIncomingManagedShares(provider, merged.account, reconciledMirrors.state),
+      {
+        state: reconciledMirrors.state,
+        adoptedShares: 0,
+      },
+      incomingDiscoveryTimeoutMs,
+      `Incoming managed share discovery timed out during connect for ${provider}:${merged.account.id}`
+    );
+    await this.ensureDefaultManagedShare(provider, merged.account, {
+      stateSnapshot: reconciledIncoming.state,
+      createMissing: true,
+    });
     return {
       status: 'connected',
       account: merged.account,
     };
   }
 
-  async disconnectAccount(accountId: string): Promise<void> {
+  async disconnectAccount(accountId: string, options: { skipManagedShareMigration?: boolean } = {}): Promise<void> {
     const state = await this.loadState();
     const account = state.accounts.find((entry) => entry.id === accountId);
     if (!account) {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${accountId}`);
     }
 
-    const shareIds = new Set(state.managedShares.filter((share) => share.accountId === accountId).map((share) => share.id));
-    const ownedShares = state.managedShares.filter((share) => share.accountId === accountId);
-    let config = cloneConfig(this.options.storage.getRootsConfig());
-    for (const shareId of shareIds) {
-      config = removeManagedShareFromConfig(config, shareId);
-    }
-    await this.persistRootsConfig(config);
+    let workingState = state;
+    const ownedShares = workingState.managedShares.filter((share) => share.accountId === accountId);
     for (const share of ownedShares) {
-      const adapter = this.adapters.get(normalizeProvider(share.provider));
-      await adapter?.detachManagedShare?.(share, account).catch(() => {
-        // Ignore cleanup failures when removing account state.
+      const retired = await this.retireManagedShareEntry(share, workingState, account, {
+        skipMigration: options.skipManagedShareMigration === true,
       });
+      workingState = retired.state;
     }
     await this.adapters.get(normalizeProvider(account.provider))?.disconnect?.(account).catch(() => {
       // Ignore provider-specific disconnect failures after config cleanup.
     });
 
-    const remainingAccounts = state.accounts.filter((entry) => entry.id !== accountId);
-    const remainingShares = state.managedShares.filter((share) => share.accountId !== accountId);
-    const preferredProviders = state.preferredProviders.filter(
+    const remainingAccounts = workingState.accounts.filter((entry) => entry.id !== accountId);
+    const remainingShares = workingState.managedShares.filter((share) => share.accountId !== accountId);
+    const preferredProviders = workingState.preferredProviders.filter(
       (provider) => provider !== normalizeProvider(account.provider)
     );
     await this.saveState({
-      ...state,
+      ...workingState,
       accounts: remainingAccounts,
       managedShares: remainingShares,
       preferredProviders,
     });
   }
 
-  async listManagedShares(): Promise<{ shares: ManagedShareSummary[] }> {
+  async listManagedShares(options: IntegrationReadOptions = {}): Promise<{ shares: ManagedShareSummary[] }> {
     const state = await this.loadState();
-    await this.ensureDefaultManagedShares(state);
-    this.scheduleManagedShareSyncs(state);
-    const refreshedState = await this.loadState();
-    const visibleShares = refreshedState.managedShares.filter((share) => isProviderEnabled(share.provider));
-    return {
-      shares: await Promise.all(visibleShares.map((share) => this.buildManagedShareSummary(share))),
+    const preferFastRemoteDetails = options.fast === true;
+    const skipAncillaryRemoteDetails = this.readMaintenanceMode === 'background' || options.fast === true;
+    let preparedState =
+      this.readMaintenanceMode === 'inline'
+        ? await this.withSoftTimeout(
+            (async () => {
+              const repairedState = await this.repairManagedShareState(state);
+              const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
+              await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
+              return this.loadState();
+            })(),
+            state,
+            1_500,
+            'Managed share inventory refresh timed out; using the last known share state.'
+          )
+        : state;
+    if (this.readMaintenanceMode === 'background') {
+      this.requestBackgroundMaintenance('listManagedShares', preparedState, {
+        forceExternalInventory: options.fast !== true,
+      });
+    }
+    if (this.readMaintenanceMode === 'inline' && options.fast !== true) {
+      this.scheduleManagedShareSyncs(preparedState);
+    }
+    const config = this.options.storage.getRootsConfig();
+    const runtime = await this.withSoftTimeout(
+      this.options.storage.getRuntimeSnapshot({ includeUsage: false }),
+      {
+        sources: [],
+        writeFailures: [],
+      },
+      2_500,
+      'Managed share runtime snapshot timed out; using fallback runtime state.'
+    );
+    const summaryTimeoutMs = preferFastRemoteDetails
+      ? FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS
+      : FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS;
+    const buildSummaries = async (stateSnapshot: IntegrationStateSnapshot): Promise<ManagedShareSummary[]> => {
+      const shares = stateSnapshot.managedShares.filter((share) => isProviderEnabled(share.provider));
+      return Promise.all(
+        shares.map((share) =>
+          this.withSoftTimeout(
+            this.buildManagedShareSummary(share, {
+              config,
+              runtime,
+              state: stateSnapshot,
+              preferFastRemoteDetails,
+              skipAncillaryRemoteDetails,
+              skipRemoteChecks: options.fast === true,
+            }),
+            this.fallbackManagedShareSummary(share, config, runtime, stateSnapshot),
+            summaryTimeoutMs,
+            `Managed share summary timed out for ${share.id}`
+          )
+        )
+      );
     };
+
+    let summaries = await buildSummaries(preparedState);
+    const repairableShares = summaries.filter((summary) => this.shouldAutoRepairManagedShare(summary));
+
+    if (repairableShares.length > 0) {
+      if (this.readMaintenanceMode === 'inline' && options.fast !== true) {
+        await Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary)));
+        preparedState = await this.loadState();
+        summaries = await buildSummaries(preparedState);
+      } else {
+        void Promise.all(repairableShares.map((summary) => this.autoRepairManagedShare(summary)));
+      }
+    }
+
+    const markerRefreshableShares = summaries.filter((summary) => this.shouldRefreshManagedShareMarker(summary));
+    if (markerRefreshableShares.length > 0) {
+      if (this.readMaintenanceMode === 'inline' && options.fast !== true) {
+        await Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
+        preparedState = await this.loadState();
+        summaries = await buildSummaries(preparedState);
+      } else {
+        void Promise.all(markerRefreshableShares.map((summary) => this.refreshManagedShareMarker(summary.share.id)));
+      }
+    }
+    if (this.readMaintenanceMode === 'inline' && options.fast !== true && repairableShares.length > 0) {
+      await Promise.all(repairableShares.map((summary) => this.hydrateManagedShareRootFromPeers(summary.share)));
+      preparedState = await this.loadState();
+      summaries = await buildSummaries(preparedState);
+    }
+    if (this.readMaintenanceMode === 'background') {
+      this.scheduleManagedShareSyncs(preparedState);
+    }
+
+    return {
+      shares: summaries,
+    };
+  }
+
+  async repairManagedShare(shareId: string): Promise<ManagedShareSummary> {
+    const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
+    if (shouldAutoAttachTrackedVolumesToManagedShare(nextShare)) {
+      await this.attachTrackedLocalVolumesToManagedShare(nextShare);
+    }
+    if (account && this.canSyncManagedShare(nextShare, account)) {
+      await adapter?.ensureSync?.(nextShare, account);
+    }
+
+    return this.buildManagedShareSummary(nextShare);
+  }
+
+  async listIncomingManagedShares(options: IntegrationReadOptions = {}): Promise<{ shares: IncomingManagedShareOffer[] }> {
+    const state = await this.loadState();
+    const preparedState =
+      this.readMaintenanceMode === 'inline'
+        ? await this.withSoftTimeout(
+            this.repairManagedShareState(state),
+            state,
+            1_500,
+            'Incoming managed share refresh timed out; using the last known state.'
+          )
+        : state;
+    if (options.fast === true) {
+      return {
+        shares: [],
+      };
+    }
+    if (this.readMaintenanceMode === 'background') {
+      this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState, {
+        forceExternalInventory: true,
+      });
+    }
+    const attachedKeys = buildAttachedShareKeys(this.options.storage.getRootsConfig(), preparedState.managedShares);
+    const existingManagedShareKeys = buildManagedShareKeys(preparedState.managedShares);
+    const offers = await Promise.all(
+      preparedState.accounts
+        .filter((account) => this.canReadIncomingProviderState(account) && isProviderEnabled(account.provider))
+        .map(async (account) => {
+          const adapter = this.adapters.get(normalizeProvider(account.provider));
+          if (!adapter?.listIncomingShares) {
+            return {
+              account,
+              offers: [] satisfies IncomingManagedShareOffer[],
+              errorDetail: null,
+            };
+          }
+          try {
+            const discoveryTimeoutMs = this.providerIncomingShareDiscoveryTimeoutMs(account.provider);
+            const discovered = await this.withSoftTimeout(
+              adapter.listIncomingShares(account),
+              [] satisfies IncomingManagedShareOffer[],
+              discoveryTimeoutMs,
+              `Incoming managed share discovery timed out for ${account.provider}:${account.id}`
+            );
+            return {
+              account,
+              offers: discovered,
+              errorDetail: null,
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.runtime.logger.warn(`Incoming managed share discovery failed for ${account.provider}:${account.id}: ${message}`);
+            return {
+              account,
+              offers: [] satisfies IncomingManagedShareOffer[],
+              errorDetail: normalizeProvider(account.provider) === 'mega'
+                ? describeMegaAccountRecovery(message)
+                : null,
+            };
+          }
+        })
+    );
+
+    let nextState = preparedState;
+    for (const result of offers) {
+      if (normalizeProvider(result.account.provider) !== 'mega') {
+        continue;
+      }
+      if (result.errorDetail) {
+        nextState = this.withAccountPresentationState(nextState, result.account.id, 'attention', result.errorDetail);
+        continue;
+      }
+      nextState = this.withAccountPresentationState(nextState, result.account.id, 'connected');
+    }
+    if (nextState !== preparedState) {
+      await this.saveState(nextState);
+    }
+
+    const rawOffers = offers.flatMap((entry) => entry.offers);
+    const filteredOffers = rawOffers.filter(
+      (offer) => !buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key) || existingManagedShareKeys.has(key))
+    );
+    const hiddenAsAttached = rawOffers.length - filteredOffers.length;
+    if (hiddenAsAttached > 0) {
+      const sample = rawOffers
+        .filter((offer) => buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key)))
+        .slice(0, 6)
+        .map((offer) => {
+          const keys = buildIncomingManagedShareOfferKeys(offer).filter((key) => attachedKeys.has(key));
+          return { id: offer.id, label: offer.label, matchedKeys: keys };
+        });
+      this.runtime.logger.log('Incoming managed shares hidden (already saved as locations).', {
+        hiddenCount: hiddenAsAttached,
+        sample,
+      });
+    }
+    this.runtime.logger.log('Incoming managed shares listing (API).', {
+      perAccount: offers.map((entry) => ({
+        accountId: entry.account.id,
+        provider: entry.account.provider,
+        offerCount: entry.offers.length,
+      })),
+      totalRaw: rawOffers.length,
+      totalListed: filteredOffers.length,
+    });
+
+    return {
+      shares: filteredOffers.sort((left, right) => {
+        const providerOrder = left.provider.localeCompare(right.provider);
+        if (providerOrder !== 0) {
+          return providerOrder;
+        }
+        return left.label.localeCompare(right.label);
+      }),
+    };
+  }
+
+  async listIncomingProviderContactInvites(
+    options: IntegrationReadOptions = {}
+  ): Promise<{ invites: IncomingProviderContactInvite[] }> {
+    const state = await this.loadState();
+    if (options.fast === true) {
+      return {
+        invites: [],
+      };
+    }
+    const invites = await Promise.all(
+      state.accounts
+        .filter((account) => this.canReadIncomingProviderState(account) && isProviderEnabled(account.provider))
+        .map(async (account) => {
+          const adapter = this.adapters.get(normalizeProvider(account.provider));
+          if (!adapter?.listIncomingContactInvites) {
+            return [] satisfies IncomingProviderContactInvite[];
+          }
+          try {
+            return await this.withSoftTimeout(
+              adapter.listIncomingContactInvites(account),
+              [] satisfies IncomingProviderContactInvite[],
+              normalizeProvider(account.provider) === 'mega'
+                ? FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS
+                : 1_500,
+              `Incoming contact invite lookup timed out for ${account.provider}:${account.id}`
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.runtime.logger.warn(`Incoming contact invite lookup failed for ${account.provider}:${account.id}: ${message}`);
+            return [] satisfies IncomingProviderContactInvite[];
+          }
+        })
+    );
+    return {
+      invites: invites.flat().sort((left, right) => left.label.localeCompare(right.label)),
+    };
+  }
+
+  private canReadIncomingProviderState(account: ProviderAccount): boolean {
+    return normalizeProvider(account.provider) === 'mega'
+      ? this.isMegaHelperOperationalAccount(account)
+      : this.isOperationalAccount(account);
+  }
+
+  async acceptIncomingProviderContactInvite(providerInput: string, accountId: string, inviteId: string): Promise<void> {
+    const provider = normalizeProvider(providerInput);
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.acceptIncomingContactInvite) {
+      throw new ManagedShareServiceError(501, 'NOT_IMPLEMENTED', `Provider contact invites are not supported for ${provider}`);
+    }
+    const state = await this.loadState();
+    const account = state.accounts.find((entry) => entry.id === accountId);
+    if (!account) {
+      throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${accountId}`);
+    }
+    await adapter.acceptIncomingContactInvite(account, inviteId);
+    await this.waitForBackgroundMaintenance();
+    if (adapter.listIncomingShares && this.isOperationalAccount(account)) {
+      await this.withSoftTimeout(
+        this.reconcileIncomingManagedShares(provider, account, state),
+        {
+          state,
+          adoptedShares: 0,
+        },
+        normalizeProvider(provider) === 'mega'
+          ? FULL_MEGA_CONTACT_INVITES_TIMEOUT_MS
+          : 1_500,
+        `Incoming managed share discovery timed out after accepting contact invite for ${provider}:${account.id}`
+      );
+    }
+    const latestState = await this.loadState();
+    this.requestBackgroundMaintenance(`acceptIncomingProviderContactInvite:${provider}`, latestState);
   }
 
   async createManagedShare(input: CreateManagedShareInput): Promise<ManagedShareSummary> {
@@ -284,7 +756,16 @@ export class ManagedShareService {
     const now = Date.now();
     const shareId = createId('share', provider, state.managedShares.length + 1);
     const requestedLocalPath = path.resolve(
-      input.localPath ?? resolveManagedShareLocalPath(this.mirrorRoot, provider, account, input.label, shareId, input.remoteDescriptor)
+      input.localPath ??
+        resolveManagedShareLocalPath(
+          this.mirrorRoot,
+          provider,
+          account,
+          input.label,
+          shareId,
+          input.remoteDescriptor,
+          input.role ?? 'owner'
+        )
     );
     await ensureMirrorFolder(requestedLocalPath);
 
@@ -292,16 +773,22 @@ export class ManagedShareService {
       managedShareId: shareId,
       ...(input.remoteDescriptor ?? {}),
     };
-    const providerOverlay: Partial<ManagedShare> = (await adapter?.createManagedShare?.(
-      {
-        ...input,
-        localPath: requestedLocalPath,
-        remoteDescriptor: initialDescriptor,
-      },
-      account
-    )) ?? {
-      remoteDescriptor: initialDescriptor,
-    };
+    const providerOverlay: Partial<ManagedShare> =
+      input.role === 'recipient'
+        ? {
+            remoteDescriptor: initialDescriptor,
+            capabilities: input.capabilities,
+          }
+        : (await adapter?.createManagedShare?.(
+            {
+              ...input,
+              localPath: requestedLocalPath,
+              remoteDescriptor: initialDescriptor,
+            },
+            account
+          )) ?? {
+            remoteDescriptor: initialDescriptor,
+          };
     const localPath = path.resolve(
       typeof providerOverlay.localPath === 'string' && providerOverlay.localPath.trim() !== ''
         ? providerOverlay.localPath
@@ -312,12 +799,39 @@ export class ManagedShareService {
       ...initialDescriptor,
       ...(providerOverlay.remoteDescriptor ?? {}),
     };
+    const latestState = await this.loadState();
+    const existing = findManagedShareByRemoteDescriptor(latestState.managedShares, provider, account.id, remoteDescriptor);
+    if (existing) {
+      if (existing.sourceId) {
+        let config = cloneConfig(this.options.storage.getRootsConfig());
+        let changed = false;
+        if (input.volumeId) {
+          const nextConfig = ensureVolumeAttachment(config, input.volumeId, existing.sourceId);
+          changed = nextConfig !== config;
+          config = nextConfig;
+        } else if (shouldAutoAttachTrackedVolumesToManagedShare(existing)) {
+          const autoAttachVolumeIds = await this.collectAutoAttachVolumeIds(existing.sourceId);
+          for (const autoAttachVolumeId of autoAttachVolumeIds) {
+            const nextConfig = ensureVolumeAttachment(config, autoAttachVolumeId, existing.sourceId);
+            changed = changed || nextConfig !== config;
+            config = nextConfig;
+          }
+        }
+        if (changed) {
+          await this.persistRootsConfig(config);
+        }
+      }
+      return this.buildManagedShareSummary(existing);
+    }
 
     const share: ManagedShare = {
       id: shareId,
       provider,
       accountId: input.accountId,
-      label: providerOverlay.label?.trim() || input.label.trim(),
+      label:
+        (typeof providerOverlay.label === 'string' ? providerOverlay.label.trim() : '') ||
+        (typeof input.label === 'string' ? input.label.trim() : '') ||
+        defaultProviderLabel(provider),
       role: input.role ?? 'owner',
       localPath,
       sourceId: undefined,
@@ -335,19 +849,29 @@ export class ManagedShareService {
     const nextShare = { ...share, sourceId };
     if (input.volumeId) {
       config = ensureVolumeAttachment(config, input.volumeId, sourceId);
+    } else if (shouldAutoAttachTrackedVolumesToManagedShare(nextShare)) {
+      const autoAttachVolumeIds = await this.collectAutoAttachVolumeIds(sourceId);
+      for (const autoAttachVolumeId of autoAttachVolumeIds) {
+        config = ensureVolumeAttachment(config, autoAttachVolumeId, sourceId);
+      }
     }
     await this.persistRootsConfig(config);
 
-    await this.saveState({
+    const nextState: IntegrationStateSnapshot = {
       ...state,
       managedShares: [...state.managedShares, nextShare],
-    });
-    await adapter?.ensureSync?.(nextShare, account);
+    };
+    await this.saveState(nextState);
+    this.scheduleManagedShareSync(nextShare, nextState);
 
     return this.buildManagedShareSummary(nextShare);
   }
 
-  async inviteManagedShare(shareId: string, emails: readonly string[]): Promise<ManagedShareSummary> {
+  async inviteManagedShare(
+    shareId: string,
+    emails: readonly string[],
+    accessLevel?: 'read' | 'read/write' | 'full access'
+  ): Promise<ManagedShareSummary> {
     const state = await this.loadState();
     const share = state.managedShares.find((entry) => entry.id === shareId);
     if (!share) {
@@ -361,7 +885,7 @@ export class ManagedShareService {
     if (!account) {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${share.accountId}`);
     }
-    await adapter.invite?.(share, { emails: [...emails] }, account);
+    await adapter.invite?.(share, { emails: [...emails], accessLevel }, account);
     const nextShare: ManagedShare = {
       ...share,
       invitationEmails: uniqueStrings([...share.invitationEmails, ...emails]),
@@ -388,21 +912,59 @@ export class ManagedShareService {
     );
     await this.persistRootsConfig(config);
 
-    return this.buildManagedShareSummary(share);
+    return this.buildManagedShareSummary(share, {
+      preferFastRemoteDetails: this.readMaintenanceMode === 'background',
+      skipAncillaryRemoteDetails: this.readMaintenanceMode === 'background',
+    });
+  }
+
+  async removeManagedShare(shareId: string, options: { skipMigration?: boolean } = {}): Promise<void> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    await this.retireManagedShareEntry(share, state, account, {
+      skipMigration: options.skipMigration === true,
+    });
   }
 
   async acceptManagedShare(input: AcceptManagedShareInput): Promise<ManagedShareSummary> {
     const state = await this.loadState();
+    const repairedState = await this.repairManagedShareState(state);
     const provider = normalizeProvider(input.provider);
     const adapter = this.adapters.get(provider);
     if (!adapter) {
       throw new ManagedShareServiceError(400, 'UNKNOWN_PROVIDER', `Unsupported provider: ${input.provider}`);
     }
-    const account = state.accounts.find((entry) => entry.id === input.accountId);
+    const account = repairedState.accounts.find((entry) => entry.id === input.accountId);
     if (!account) {
       throw new ManagedShareServiceError(404, 'ACCOUNT_NOT_FOUND', `Provider account not found: ${input.accountId}`);
     }
     const accepted = (await adapter?.acceptInvite?.(input, account)) ?? {};
+    const remoteDescriptor = {
+      ...(input.remoteDescriptor ?? {}),
+      ...(accepted.remoteDescriptor ?? {}),
+    };
+    const existing = findManagedShareByRemoteDescriptor(
+      repairedState.managedShares,
+      provider,
+      input.accountId,
+      remoteDescriptor
+    );
+    if (existing) {
+      if (input.volumeId && existing.sourceId) {
+        const config = ensureVolumeAttachment(
+          cloneConfig(this.options.storage.getRootsConfig()),
+          input.volumeId,
+          existing.sourceId
+        );
+        await this.persistRootsConfig(config);
+      }
+      return this.buildManagedShareSummary(existing);
+    }
     return this.createManagedShare({
       provider,
       accountId: input.accountId,
@@ -410,17 +972,18 @@ export class ManagedShareService {
       localPath: input.localPath,
       role: 'recipient',
       volumeId: input.volumeId,
-      remoteDescriptor: {
-        ...(input.remoteDescriptor ?? {}),
-        ...(accepted.remoteDescriptor ?? {}),
-      },
+      remoteDescriptor,
       capabilities: accepted.capabilities ?? ['mirror', 'read', 'write', 'accept'],
     });
   }
 
   async getManagedShareState(shareId: string): Promise<ManagedShareSummary> {
-    const state = await this.loadState();
-    await this.ensureManagedShareSyncs(state);
+    let state = await this.loadState();
+    if (this.readMaintenanceMode === 'inline') {
+      const repairedState = await this.repairManagedShareState(state);
+      state = repairedState;
+      state = await this.loadState();
+    }
     const share = state.managedShares.find((entry) => entry.id === shareId);
     if (!share) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
@@ -428,7 +991,349 @@ export class ManagedShareService {
     if (!isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
+    if (this.readMaintenanceMode === 'inline') {
+      const now = this.runtime.now();
+      const last = this.lastGetManagedShareScheduledSyncAt.get(shareId) ?? 0;
+      if (now - last >= GET_MANAGED_SHARE_STATE_ENSURE_SYNC_MIN_INTERVAL_MS) {
+        this.lastGetManagedShareScheduledSyncAt.set(shareId, now);
+        this.scheduleManagedShareSync(share, state);
+      }
+    }
     return this.buildManagedShareSummary(share);
+  }
+
+  async probeManagedShareRemoteEntry(shareId: string, relativePath: string): Promise<ManagedShareRemoteEntryProbe | null> {
+    const normalizedPath = relativePath.trim().replace(/^\/+/u, '');
+    if (!normalizedPath) {
+      throw new ManagedShareServiceError(400, 'INVALID_REQUEST', 'A relative path is required.');
+    }
+
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.probeManagedShareRemoteEntry) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Remote managed share probing is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    return adapter.probeManagedShareRemoteEntry(share, account, normalizedPath);
+  }
+
+  async forceManagedShareUpload(shareId: string, relativePath: string): Promise<void> {
+    const normalizedPath = relativePath.trim().replace(/^\/+/u, '');
+    if (!normalizedPath) {
+      throw new ManagedShareServiceError(400, 'INVALID_REQUEST', 'A relative path is required.');
+    }
+
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.forceManagedShareUpload) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Forced managed share upload is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    await adapter.forceManagedShareUpload(share, account, normalizedPath);
+  }
+
+  async triggerManagedShareSync(shareId: string): Promise<void> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.triggerManagedShareSync) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Triggering a managed share sync is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId);
+    if (!account || !this.canSyncManagedShare(share, account)) {
+      throw new ManagedShareServiceError(409, 'SYNC_UNAVAILABLE', `Managed share sync is unavailable for ${shareId}`);
+    }
+
+    await adapter.triggerManagedShareSync(share, account);
+  }
+
+  private async handleStorageWrite(event: StorageWriteEvent): Promise<void> {
+    const normalizedPath = event.path.trim().replace(/^\/+/, '');
+    if (!isCanonicalMirrorRelativePath(normalizedPath)) {
+      return;
+    }
+
+    const state = await this.loadState();
+    const matchingShares = state.managedShares.filter(
+      (share) =>
+        share.sourceId === event.sourceId &&
+        share.role === 'owner' &&
+        isProviderEnabled(share.provider)
+    );
+
+    await Promise.all(
+      matchingShares.map(async (share) => {
+        const adapter = this.adapters.get(normalizeProvider(share.provider));
+        if (!adapter?.handleManagedShareLocalWrite) {
+          return;
+        }
+
+        const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+        await adapter.handleManagedShareLocalWrite(share, account, normalizedPath);
+      })
+    );
+  }
+
+  async getManagedShareUploadProbes(
+    shareId: string,
+    options: { relativePath?: string; limit?: number } = {}
+  ): Promise<ManagedShareUploadProbe[]> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.getManagedShareUploadProbes) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Managed share upload probing is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    return adapter.getManagedShareUploadProbes(share, account, options.relativePath, options.limit);
+  }
+
+  async getManagedShareReceiveProbes(
+    shareId: string,
+    options: { relativePath?: string; limit?: number } = {}
+  ): Promise<ManagedShareReceiveProbe[]> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.getManagedShareReceiveProbes) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Managed share receive probing is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    return adapter.getManagedShareReceiveProbes(share, account, options.relativePath, options.limit);
+  }
+
+  async getManagedShareRoundtripProbes(
+    options: { relativePath: string; limit?: number }
+  ): Promise<{
+    path: string;
+    summary: {
+      latestUploadCommittedAt?: number;
+      latestUploadVisibleAt?: number;
+      latestReceivePacketAt?: number;
+      latestReceiveLocalVisibleAt?: number;
+      uploadCommitToReceivePacketMs?: number;
+      uploadVisibleToReceivePacketMs?: number;
+      uploadCommitToReceiveVisibleMs?: number;
+      sendSchedulingPlusReceiveMs?: number;
+    };
+    uploads: Array<{ shareId: string; provider: string; role: ManagedShare['role']; label: string; probe: ManagedShareUploadProbe }>;
+    receives: Array<{ shareId: string; provider: string; role: ManagedShare['role']; label: string; probe: ManagedShareReceiveProbe }>;
+  }> {
+    const relativePath = options.relativePath.trim().replace(/^\/+/, '');
+    if (!relativePath) {
+      throw new ManagedShareServiceError(400, 'INVALID_REQUEST', 'A relative path is required.');
+    }
+
+    const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(Math.trunc(options.limit!), 100)) : 20;
+    const state = await this.loadState();
+    const uploads: Array<{
+      shareId: string;
+      provider: string;
+      role: ManagedShare['role'];
+      label: string;
+      probe: ManagedShareUploadProbe;
+    }> = [];
+    const receives: Array<{
+      shareId: string;
+      provider: string;
+      role: ManagedShare['role'];
+      label: string;
+      probe: ManagedShareReceiveProbe;
+    }> = [];
+
+    for (const share of state.managedShares) {
+      if (!isProviderEnabled(share.provider)) {
+        continue;
+      }
+      const adapter = this.adapters.get(normalizeProvider(share.provider));
+      const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+
+      if (adapter?.getManagedShareUploadProbes) {
+        const shareUploads = await adapter.getManagedShareUploadProbes(share, account, relativePath, limit);
+        for (const probe of shareUploads) {
+          uploads.push({
+            shareId: share.id,
+            provider: share.provider,
+            role: share.role,
+            label: share.label,
+            probe,
+          });
+        }
+      }
+
+      if (adapter?.getManagedShareReceiveProbes) {
+        const shareReceives = await adapter.getManagedShareReceiveProbes(share, account, relativePath, limit);
+        for (const probe of shareReceives) {
+          receives.push({
+            shareId: share.id,
+            provider: share.provider,
+            role: share.role,
+            label: share.label,
+            probe,
+          });
+        }
+      }
+    }
+
+    uploads.sort((left, right) => right.probe.committedAt - left.probe.committedAt);
+    receives.sort((left, right) => right.probe.packetReceivedAt - left.probe.packetReceivedAt);
+
+    const latestUpload = uploads[0]?.probe;
+    const latestReceive = receives[0]?.probe;
+
+    return {
+      path: relativePath,
+      summary: {
+        latestUploadCommittedAt: latestUpload?.committedAt,
+        latestUploadVisibleAt: latestUpload?.availableAt,
+        latestReceivePacketAt: latestReceive?.packetReceivedAt,
+        latestReceiveLocalVisibleAt: latestReceive?.localVisibleAt,
+        uploadCommitToReceivePacketMs:
+          latestUpload && latestReceive
+            ? Math.max(0, latestReceive.packetReceivedAt - latestUpload.committedAt)
+            : undefined,
+        uploadVisibleToReceivePacketMs:
+          latestUpload?.availableAt !== undefined && latestReceive
+            ? Math.max(0, latestReceive.packetReceivedAt - latestUpload.availableAt)
+            : undefined,
+        uploadCommitToReceiveVisibleMs:
+          latestUpload && latestReceive?.localVisibleAt !== undefined
+            ? Math.max(0, latestReceive.localVisibleAt - latestUpload.committedAt)
+            : undefined,
+        sendSchedulingPlusReceiveMs:
+          latestUpload && latestReceive?.localVisibleAt !== undefined
+            ? Math.max(0, latestReceive.localVisibleAt - latestUpload.startedAt)
+            : undefined,
+      },
+      uploads,
+      receives,
+    };
+  }
+
+  async debugProviderShareInventory(providerInput: string): Promise<{
+    provider: string;
+    accounts: Array<{
+      accountId: string;
+      email?: string;
+      incoming: Array<{
+        shareHandle: string;
+        rootHandle?: string;
+        ownerEmail?: string;
+        label: string;
+      }>;
+      outgoing: Array<{
+        shareHandle: string;
+        rootHandle?: string;
+        ownerEmail?: string;
+        label: string;
+      }>;
+    }>;
+  }> {
+    const provider = normalizeProvider(providerInput);
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.getShareInventoryDebug) {
+      throw new ManagedShareServiceError(501, 'NOT_IMPLEMENTED', `Share inventory debugging is not supported for ${provider}`);
+    }
+    const state = await this.loadState();
+    const accounts = state.accounts.filter((entry) => normalizeProvider(entry.provider) === provider && this.isOperationalAccount(entry));
+    const inventory = await Promise.all(
+      accounts.map(async (account) => ({
+        accountId: account.id,
+        email: account.email,
+        ...(await adapter.getShareInventoryDebug!(account)),
+      }))
+    );
+    return {
+      provider,
+      accounts: inventory,
+    };
+  }
+
+  async reconcileProviderManagedShareInventory(providerInput: string): Promise<{
+    provider: string;
+    adoptedShares: number;
+    retiredShares: number;
+    migratedShares: number;
+  }> {
+    const provider = normalizeProvider(providerInput);
+    const state = await this.loadState();
+    const connectedAccounts = state.accounts.filter(
+      (account) => normalizeProvider(account.provider) === provider && this.isOperationalAccount(account)
+    );
+
+    let workingState = state;
+    let adoptedShares = 0;
+    let retiredShares = 0;
+    let migratedShares = 0;
+
+    if (connectedAccounts.length === 0) {
+      const retired = await this.retireProviderManagedShares(provider, workingState);
+      workingState = retired.state;
+      retiredShares += retired.retiredShares;
+      migratedShares += retired.migratedShares;
+    } else {
+      for (const account of connectedAccounts) {
+        const reconciled = await this.reconcileProviderManagedShares(provider, account, workingState);
+        workingState = reconciled.state;
+        adoptedShares += reconciled.adoptedShares;
+        retiredShares += reconciled.retiredShares;
+        migratedShares += reconciled.migratedShares;
+      }
+    }
+
+    return {
+      provider,
+      adoptedShares,
+      retiredShares,
+      migratedShares,
+    };
   }
 
   async handleProviderCallback(provider: string, query: URLSearchParams): Promise<string> {
@@ -439,41 +1344,755 @@ export class ManagedShareService {
     return adapter.handleOAuthCallback(query);
   }
 
-  private async ensureManagedShareSyncs(state: IntegrationStateSnapshot): Promise<void> {
-    await Promise.all(
-      state.managedShares.map(async (share) => {
-        const account = state.accounts.find((entry) => entry.id === share.accountId);
-        if (!account || account.state !== 'connected') {
-          return;
-        }
-        await this.adapters.get(normalizeProvider(share.provider))?.ensureSync?.(share, account).catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
+  private async reconcileConnectedManagedShareInventories(
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    let state = stateSnapshot;
+    for (const account of state.accounts.filter((entry) => this.isOperationalAccount(entry) || this.isMegaHelperOperationalAccount(entry))) {
+      const provider = normalizeProvider(account.provider);
+      const adapter = this.adapters.get(provider);
+      this.runtime.logger.log('Managed share provider reconciliation started.', {
+        provider,
+        accountId: account.id,
+        accountState: account.state,
+      });
+      if (adapter?.listManagedShareMirrors) {
+        const reconciled = await this.reconcileProviderManagedShares(provider, account, state);
+        state = reconciled.state;
+        this.runtime.logger.log('Managed share mirror inventory reconciled.', {
+          provider,
+          accountId: account.id,
+          adoptedShares: reconciled.adoptedShares,
+          retiredShares: reconciled.retiredShares,
+          migratedShares: reconciled.migratedShares,
         });
-      })
+      }
+      if (adapter?.listIncomingShares && this.isOperationalAccount(account)) {
+        const reconciledIncoming = await this.reconcileIncomingManagedShares(provider, account, state);
+        state = reconciledIncoming.state;
+        this.runtime.logger.log('Managed share incoming inventory reconciled.', {
+          provider,
+          accountId: account.id,
+          adoptedShares: reconciledIncoming.adoptedShares,
+        });
+      }
+    }
+    return state;
+  }
+
+  private async reconcileIncomingManagedShares(
+    provider: string,
+    account: ProviderAccount,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    adoptedShares: number;
+  }> {
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.listIncomingShares) {
+      return {
+        state: stateSnapshot,
+        adoptedShares: 0,
+      };
+    }
+
+    let offers: IncomingManagedShareOffer[] = [];
+    try {
+      offers = await adapter.listIncomingShares(account);
+      this.runtime.logger.log('Managed share incoming inventory discovered.', {
+        provider,
+        accountId: account.id,
+        offerCount: offers.length,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Incoming managed share reconciliation failed for ${provider}:${account.id}: ${message}`);
+      return {
+        state: stateSnapshot,
+        adoptedShares: 0,
+      };
+    }
+
+    let state = stateSnapshot;
+    let adoptedShares = 0;
+    for (const offer of offers) {
+      const existing = findManagedShareByRemoteDescriptor(state.managedShares, provider, account.id, offer.remoteDescriptor);
+      if (existing) {
+        if (shouldAutoAttachTrackedVolumesToManagedShare(existing)) {
+          await this.attachTrackedLocalVolumesToManagedShare(existing);
+        }
+        try {
+          await this.prepareManagedShareForSync(existing.id);
+        } catch (error) {
+          if (!(error instanceof ManagedShareServiceError) || error.code !== 'SHARE_NOT_FOUND') {
+            throw error;
+          }
+        }
+        state = await this.loadState();
+        continue;
+      }
+      const canonicalExisting = findCanonicalIncomingManagedShareCandidate(
+        state.managedShares,
+        provider,
+        account.id,
+        offer
+      );
+      if (canonicalExisting) {
+        try {
+          const accepted = (await adapter.acceptInvite?.(
+            {
+              provider,
+              accountId: account.id,
+              label: offer.label,
+              remoteDescriptor: offer.remoteDescriptor,
+            },
+            account
+          )) ?? {};
+          const nextShare: ManagedShare = {
+            ...canonicalExisting,
+            remoteDescriptor: {
+              ...(offer.remoteDescriptor ?? {}),
+              ...(accepted.remoteDescriptor ?? {}),
+            },
+            capabilities: accepted.capabilities ?? canonicalExisting.capabilities,
+            updatedAt: this.runtime.now(),
+          };
+          const nextState: IntegrationStateSnapshot = {
+            ...state,
+            managedShares: state.managedShares.map((entry) => (entry.id === canonicalExisting.id ? nextShare : entry)),
+          };
+          await this.saveState(nextState);
+          state = nextState;
+          this.runtime.logger.log('Managed share incoming offer rebound an existing recipient share.', {
+            provider,
+            accountId: account.id,
+            offerId: offer.id,
+            shareId: canonicalExisting.id,
+            ownerEmail: typeof offer.remoteDescriptor.ownerEmail === 'string' ? offer.remoteDescriptor.ownerEmail.trim() : '',
+          });
+          try {
+            await this.prepareManagedShareForSync(canonicalExisting.id);
+          } catch (error) {
+            if (!(error instanceof ManagedShareServiceError) || error.code !== 'SHARE_NOT_FOUND') {
+              throw error;
+            }
+          }
+          state = await this.loadState();
+          continue;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.runtime.logger.warn(
+            `Incoming managed share rebinding failed for ${provider}:${account.id}:${offer.id}: ${message}`
+          );
+        }
+      }
+      if (!shouldAutoAdoptIncomingManagedShareOffer(provider, offer)) {
+        continue;
+      }
+      try {
+        await this.acceptManagedShare({
+          provider,
+          accountId: account.id,
+          label: offer.label,
+          localPath: offer.suggestedLocalPath,
+          remoteDescriptor: offer.remoteDescriptor,
+        });
+        adoptedShares += 1;
+        state = await this.loadState();
+        this.runtime.logger.log('Managed share incoming offer auto-adopted.', {
+          provider,
+          accountId: account.id,
+          offerId: offer.id,
+          label: offer.label,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(
+          `Incoming managed share auto-adoption failed for ${provider}:${account.id}:${offer.id}: ${message}`
+        );
+      }
+    }
+
+    return {
+      state,
+      adoptedShares,
+    };
+  }
+
+  private async reconcileProviderManagedShares(
+    provider: string,
+    account: ProviderAccount,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    adoptedShares: number;
+    retiredShares: number;
+    migratedShares: number;
+  }> {
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.listManagedShareMirrors) {
+      return {
+        state: stateSnapshot,
+        adoptedShares: 0,
+        retiredShares: 0,
+        migratedShares: 0,
+      };
+    }
+
+    let state = stateSnapshot;
+    let adoptedShares = 0;
+    let retiredShares = 0;
+    let migratedShares = 0;
+    let mirrors: ManagedShareMirrorEntry[] = [];
+    try {
+      mirrors = dedupeManagedShareMirrors(await adapter.listManagedShareMirrors(account), provider);
+      this.runtime.logger.log('Managed share mirror inventory discovered.', {
+        provider,
+        accountId: account.id,
+        mirrorCount: mirrors.length,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share inventory discovery failed for ${provider}:${account.id}: ${message}`);
+      return {
+        state,
+        adoptedShares,
+        retiredShares,
+        migratedShares,
+      };
+    }
+    const retainedShareIds = new Set<string>();
+
+    for (const mirror of mirrors) {
+      const adopted = await this.adoptManagedShareMirror(provider, account, mirror, state);
+      state = adopted.state;
+      retainedShareIds.add(adopted.shareId);
+      if (adopted.adopted) {
+        adoptedShares += 1;
+      }
+      if (adopted.migrated) {
+        migratedShares += 1;
+      }
+    }
+
+    const trackedShares = state.managedShares.filter((share) =>
+      normalizeProvider(share.provider) === provider &&
+      share.accountId === account.id &&
+      this.shouldManageShareThroughMirrorInventory(provider, share) &&
+      !retainedShareIds.has(share.id)
+    );
+    for (const share of trackedShares) {
+      const retired = await this.retireManagedShareEntry(share, state, account);
+      state = retired.state;
+      retiredShares += 1;
+      if (retired.migrated) {
+        migratedShares += 1;
+      }
+    }
+
+    return {
+      state,
+      adoptedShares,
+      retiredShares,
+      migratedShares,
+    };
+  }
+
+  private async retireProviderManagedShares(
+    provider: string,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    retiredShares: number;
+    migratedShares: number;
+  }> {
+    let state = stateSnapshot;
+    let retiredShares = 0;
+    let migratedShares = 0;
+    const shares = state.managedShares.filter((share) => normalizeProvider(share.provider) === provider);
+    for (const share of shares) {
+      const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+      const retired = await this.retireManagedShareEntry(share, state, account);
+      state = retired.state;
+      retiredShares += 1;
+      if (retired.migrated) {
+        migratedShares += 1;
+      }
+    }
+    return {
+      state,
+      retiredShares,
+      migratedShares,
+    };
+  }
+
+  private async adoptManagedShareMirror(
+    provider: string,
+    account: ProviderAccount,
+    mirror: ManagedShareMirrorEntry,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    shareId: string;
+    adopted: boolean;
+    migrated: boolean;
+  }> {
+    let state = stateSnapshot;
+    let migrated = false;
+    const existing = this.findMatchingManagedShareMirror(provider, account.id, mirror, state.managedShares);
+    if (existing && normalizeComparablePath(existing.localPath) !== normalizeComparablePath(mirror.localPath)) {
+      const moved = await this.moveManagedShareSourceIntoPrimaryLocalRoot(existing);
+      state = moved.state;
+      migrated = moved.migrated;
+    }
+
+    const shareId = existing?.id ?? createId('share', provider, state.managedShares.length + 1);
+    const nextShare: ManagedShare = {
+      id: shareId,
+      provider,
+      accountId: account.id,
+      label:
+        existing?.label?.trim() ||
+        (typeof mirror.label === 'string' ? mirror.label.trim() : '') ||
+        defaultProviderMirrorLabel(provider, mirror.remotePath),
+      role: existing?.role ?? 'owner',
+      localPath: path.resolve(mirror.localPath),
+      sourceId: existing?.sourceId,
+      syncMode: 'mirror',
+      remoteDescriptor: mergeManagedShareMirrorDescriptor(provider, existing?.remoteDescriptor, mirror, shareId),
+      capabilities: existing?.capabilities ?? ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: existing?.invitationEmails ?? [],
+      createdAt: existing?.createdAt ?? this.runtime.now(),
+      updatedAt: this.runtime.now(),
+    };
+
+    const config = cloneConfig(this.options.storage.getRootsConfig());
+    const { config: nextConfig, sourceId } = ensureManagedShareSource(config, nextShare, nextShare.localPath);
+    const adoptedShare = {
+      ...nextShare,
+      sourceId,
+    };
+    await this.persistRootsConfig(nextConfig);
+
+    const nextState: IntegrationStateSnapshot = {
+      ...state,
+      managedShares: existing
+        ? state.managedShares.map((entry) => (entry.id === existing.id ? adoptedShare : entry))
+        : [...state.managedShares, adoptedShare],
+    };
+    await this.saveState(nextState);
+
+    return {
+      state: nextState,
+      shareId: adoptedShare.id,
+      adopted: !existing,
+      migrated,
+    };
+  }
+
+  private async retireManagedShareEntry(
+    share: ManagedShare,
+    stateSnapshot: IntegrationStateSnapshot,
+    account: ProviderAccount | null,
+    options: {
+      readonly skipMigration?: boolean;
+    } = {}
+  ): Promise<{
+    state: IntegrationStateSnapshot;
+    migrated: boolean;
+  }> {
+    const moved = options.skipMigration
+      ? { migrated: false }
+      : await this.moveManagedShareSourceIntoPrimaryLocalRoot(share);
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    await adapter?.detachManagedShare?.(share, account).catch(() => {
+      // Ignore cleanup failures when removing local managed-share state.
+    });
+
+    const nextConfig = removeManagedShareFromConfig(cloneConfig(this.options.storage.getRootsConfig()), share.id);
+    await this.persistRootsConfig(nextConfig);
+
+    const nextState: IntegrationStateSnapshot = {
+      ...stateSnapshot,
+      managedShares: stateSnapshot.managedShares.filter((entry) => entry.id !== share.id),
+    };
+    await this.saveState(nextState);
+    return {
+      state: nextState,
+      migrated: moved.migrated,
+    };
+  }
+
+  private async moveManagedShareSourceIntoPrimaryLocalRoot(share: ManagedShare): Promise<{
+    state: IntegrationStateSnapshot;
+    migrated: boolean;
+  }> {
+    const config = cloneConfig(this.options.storage.getRootsConfig());
+    const source =
+      (share.sourceId ? config.sources.find((entry) => entry.id === share.sourceId) : null) ??
+      config.sources.find((entry) => entry.integration?.managedShareId === share.id) ??
+      null;
+    if (!source) {
+      return {
+        state: await this.loadState(),
+        migrated: false,
+      };
+    }
+    const retired = await this.retireSourceUsingStandardProcedure(source.id);
+    return {
+      state: await this.loadState(),
+      migrated: retired.migrated,
+    };
+  }
+
+  private async retireSourceUsingStandardProcedure(sourceId: string): Promise<{
+    removed: boolean;
+    migrated: boolean;
+  }> {
+    const config = cloneConfig(this.options.storage.getRootsConfig());
+    const source = config.sources.find((entry) => entry.id === sourceId) ?? null;
+    if (!source) {
+      return {
+        removed: false,
+        migrated: false,
+      };
+    }
+
+    const target = await this.ensurePrimaryLocalMigrationSource(source.id);
+    if (
+      target &&
+      target.id !== source.id &&
+      normalizeComparablePath(target.path) !== normalizeComparablePath(source.path)
+    ) {
+      const consolidated = await this.options.storage.consolidateRoot(source.id, target.id);
+      await this.persistRootsConfig(consolidated.config);
+      return {
+        removed: true,
+        migrated:
+          consolidated.result.movedFiles > 0 ||
+          consolidated.result.removedSourceFiles > 0 ||
+          consolidated.result.skippedExisting > 0,
+      };
+    }
+
+    const nextConfig = removeSourceFromConfig(config, source.id);
+    await this.persistRootsConfig(nextConfig);
+    return {
+      removed: true,
+      migrated: false,
+    };
+  }
+
+  private async ensurePrimaryLocalMigrationSource(excludingSourceId?: string): Promise<SourceConfigEntry | null> {
+    const config = cloneConfig(this.options.storage.getRootsConfig());
+    const existing = findPrimaryLocalSource(config, excludingSourceId);
+    if (existing) {
+      return existing;
+    }
+
+    const fallbackPath = path.resolve(getDefaultStorageDir());
+    const candidate =
+      config.sources.find((source) => normalizeComparablePath(source.path) === normalizeComparablePath(fallbackPath)) ??
+      null;
+    const nextSource: SourceConfigEntry = candidate
+      ? {
+          ...candidate,
+          provider: 'local',
+          path: fallbackPath,
+          enabled: true,
+          writable: true,
+        }
+      : {
+          id: nextLocalSourceId(config),
+          provider: 'local',
+          path: fallbackPath,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        };
+    const nextConfig: RootsConfig = candidate
+      ? {
+          ...config,
+          sources: config.sources.map((source) => (source.id === candidate.id ? nextSource : source)),
+        }
+      : {
+          ...config,
+          sources: [...config.sources, nextSource],
+        };
+    await this.persistRootsConfig(nextConfig);
+    return nextSource;
+  }
+
+  private findMatchingManagedShareMirror(
+    provider: string,
+    accountId: string,
+    mirror: ManagedShareMirrorEntry,
+    shares: readonly ManagedShare[]
+  ): ManagedShare | undefined {
+    const remotePath = normalizeManagedShareRemotePath(provider, mirror.remotePath);
+    return shares.find((share) =>
+      normalizeProvider(share.provider) === provider &&
+      share.accountId === accountId &&
+      getManagedShareRemotePath(provider, share.remoteDescriptor) === remotePath
+    ) ?? shares.find((share) =>
+      normalizeProvider(share.provider) === provider &&
+      share.accountId === accountId &&
+      normalizeComparablePath(share.localPath) === normalizeComparablePath(mirror.localPath) &&
+      this.shouldManageShareThroughMirrorInventory(provider, share)
     );
   }
 
-  private scheduleManagedShareSyncs(state: IntegrationStateSnapshot): void {
-    for (const share of state.managedShares) {
-      const account = state.accounts.find((entry) => entry.id === share.accountId);
-      if (!account || account.state !== 'connected' || this.syncBootstrapTasks.has(share.id)) {
-        continue;
-      }
-      const task = this.adapters
-        .get(normalizeProvider(share.provider))
-        ?.ensureSync?.(share, account)
-        .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
-        })
-        .finally(() => {
-          this.syncBootstrapTasks.delete(share.id);
-        });
-      if (task) {
-        this.syncBootstrapTasks.set(share.id, task);
-      }
+  private shouldManageShareThroughMirrorInventory(provider: string, share: ManagedShare): boolean {
+    if (provider === 'mega' && isMegaOwnerBaseShare(share)) {
+      return false;
     }
+    const remotePath = getManagedShareRemotePath(provider, share.remoteDescriptor);
+    if (!remotePath) {
+      return false;
+    }
+    if (provider === 'mega') {
+      return isManagedMirrorRemotePath(remotePath, this.runtime.mega.remoteBasePath);
+    }
+    return false;
+  }
+
+  private shouldAutoRepairManagedShare(summary: ManagedShareSummary): boolean {
+    if (summary.state.status !== 'attention' && summary.state.status !== 'needs-auth') {
+      return false;
+    }
+    if (!summary.state.badges.some((badge) => badge === 'Repair' || badge === 'Reconnect')) {
+      return false;
+    }
+    const lastAttemptAt = this.autoRepairCooldowns.get(summary.share.id) ?? 0;
+    return Date.now() - lastAttemptAt >= 30_000;
+  }
+
+  private async autoRepairManagedShare(summary: ManagedShareSummary): Promise<void> {
+    this.autoRepairCooldowns.set(summary.share.id, Date.now());
+    try {
+      if (this.isSourceConflictState(summary.state)) {
+        await this.resolveManagedShareSourceConflict(summary.share.id);
+        return;
+      }
+      await this.repairManagedShare(summary.share.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share auto-repair failed for ${summary.share.id}: ${message}`);
+    }
+  }
+
+  private isSourceConflictState(state: TransportState): boolean {
+    const code = state.diagnostic?.code?.trim().toLowerCase() ?? '';
+    if (code.includes('conflict')) {
+      return true;
+    }
+
+    const detail = [state.detail, state.diagnostic?.summary, state.diagnostic?.detail]
+      .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+      .join(' ')
+      .toLowerCase();
+    return /conflict|conflicting cop(?:y|ies)/i.test(detail);
+  }
+
+  private async resolveManagedShareSourceConflict(shareId: string): Promise<void> {
+    const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
+    await this.options.storage.resolveSourceConflicts({
+      sourceIds: nextShare.sourceId ? [nextShare.sourceId] : undefined,
+      resetTargets: true,
+      ensureMarker: false,
+      rewriteMarker: false,
+    });
+    await this.options.storage.reconcileConfiguredVolumes();
+    await this.hydrateManagedShareRootFromPeers(nextShare);
+    this.pendingMarkerRefreshes.add(shareId);
+    if (account && this.isOperationalAccount(account)) {
+      await adapter?.ensureSync?.(nextShare, account);
+    }
+  }
+
+  private async hydrateManagedShareRootFromPeers(share: ManagedShare): Promise<void> {
+    if (!share.sourceId) {
+      return;
+    }
+    const localPath = path.resolve(share.localPath);
+    const config = this.options.storage.getRootsConfig();
+    const peerSources = config.sources.filter(
+      (source) => source.enabled && source.id !== share.sourceId && normalizeComparablePath(source.path) !== normalizeComparablePath(localPath)
+    );
+    for (const source of peerSources) {
+      await copyIfPresent(path.join(source.path, 'blocks'), path.join(localPath, 'blocks'));
+      await copyIfPresent(path.join(source.path, 'channels'), path.join(localPath, 'channels'));
+    }
+    await normalizeNearbytesRoot(localPath, { rewriteMarker: true });
+  }
+
+  private shouldRefreshManagedShareMarker(summary: ManagedShareSummary): boolean {
+    return this.pendingMarkerRefreshes.has(summary.share.id) && summary.state.status === 'ready';
+  }
+
+  private async refreshManagedShareMarker(shareId: string): Promise<void> {
+    try {
+      const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
+      await this.hydrateManagedShareRootFromPeers(nextShare);
+      await normalizeNearbytesRoot(nextShare.localPath, {
+        rewriteMarker: true,
+      });
+      if (account && this.canSyncManagedShare(nextShare, account)) {
+        await adapter?.ensureSync?.(nextShare, account);
+      }
+      this.pendingMarkerRefreshes.delete(shareId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share marker refresh failed for ${shareId}: ${message}`);
+    }
+  }
+
+  private scheduleManagedShareSyncs(state: IntegrationStateSnapshot): void {
+    if (this.disposed) {
+      return;
+    }
+    for (const share of state.managedShares) {
+      this.scheduleManagedShareSync(share, state);
+    }
+  }
+
+  private scheduleManagedShareSync(share: ManagedShare, state: IntegrationStateSnapshot): void {
+    if (this.disposed) {
+      return;
+    }
+    const account = state.accounts.find((entry) => entry.id === share.accountId);
+    if (!account || !this.canSyncManagedShare(share, account) || this.syncBootstrapTasks.has(share.id)) {
+      return;
+    }
+    this.runtime.logger.log('Managed share sync bootstrap scheduled.', {
+      provider: normalizeProvider(share.provider),
+      shareId: share.id,
+      accountId: account.id,
+      role: share.role,
+      localPath: share.localPath,
+      remoteDescriptor: share.remoteDescriptor,
+    });
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    const task = Promise.all([
+      Promise.resolve(adapter?.ensureSync?.(share, account)),
+      Promise.resolve().then(async () => {
+        if (this.disposed) {
+          return;
+        }
+        await this.replayMissingManagedShareInvites(share, account);
+      }),
+    ])
+      .then(() => {
+        if (this.disposed) {
+          return;
+        }
+        this.runtime.logger.log('Managed share sync bootstrap completed.', {
+          provider: normalizeProvider(share.provider),
+          shareId: share.id,
+          accountId: account.id,
+        });
+        this.scheduleIncomingManagedShareReconciliation(share.provider, account);
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share sync bootstrap failed for ${share.id}: ${message}`);
+      })
+      .finally(() => {
+        this.syncBootstrapTasks.delete(share.id);
+      });
+    if (task) {
+      this.syncBootstrapTasks.set(share.id, task);
+    }
+  }
+
+  private scheduleIncomingManagedShareReconciliation(providerInput: string, account: ProviderAccount): void {
+    if (this.disposed) {
+      return;
+    }
+
+    const provider = normalizeProvider(providerInput);
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.listIncomingShares || !this.isOperationalAccount(account)) {
+      return;
+    }
+
+    const taskKey = `${provider}:${account.id}`;
+    if (this.incomingReconciliationTasks.has(taskKey)) {
+      return;
+    }
+
+    const task = Promise.resolve()
+      .then(async () => {
+        const state = await this.loadState();
+        const currentAccount = state.accounts.find((entry) => entry.id === account.id);
+        if (!currentAccount || !this.isOperationalAccount(currentAccount)) {
+          return;
+        }
+        const reconciled = await this.reconcileIncomingManagedShares(provider, currentAccount, state);
+        this.runtime.logger.log('Managed share incoming reconciliation background pass completed.', {
+          provider,
+          accountId: currentAccount.id,
+          adoptedShares: reconciled.adoptedShares,
+        });
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share incoming reconciliation background pass failed for ${provider}:${account.id}: ${message}`);
+      })
+      .finally(() => {
+        this.incomingReconciliationTasks.delete(taskKey);
+      });
+
+    this.incomingReconciliationTasks.set(taskKey, task);
+  }
+
+  private async replayMissingManagedShareInvites(share: ManagedShare, account: ProviderAccount): Promise<void> {
+    if (share.role !== 'owner' || share.invitationEmails.length === 0) {
+      return;
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.invite || !adapter.getCollaborators) {
+      return;
+    }
+
+    let collaborators: ManagedShareCollaborator[];
+    try {
+      collaborators = await adapter.getCollaborators(share, account);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share collaborator check failed before invite replay for ${share.id}: ${message}`);
+      return;
+    }
+
+    const knownCollaborators = new Set(
+      collaborators
+        .map((collaborator) => collaborator.email?.trim().toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    );
+    const missingEmails = uniqueStrings(share.invitationEmails)
+      .map((email) => email.trim())
+      .filter((email) => email.length > 0 && !knownCollaborators.has(email.toLowerCase()));
+    if (missingEmails.length === 0) {
+      return;
+    }
+
+    await adapter.invite(
+      share,
+      {
+        emails: missingEmails,
+        accessLevel: defaultManagedShareInviteReplayAccessLevel(share),
+      },
+      account
+    );
+    this.runtime.logger.log('Managed share invite self-heal replayed missing collaborators.', {
+      provider: normalizeProvider(share.provider),
+      shareId: share.id,
+      accountId: account.id,
+      replayedInviteeCount: missingEmails.length,
+      emails: missingEmails,
+    });
   }
 
   private fallbackTransportState(
@@ -510,6 +2129,37 @@ export class ManagedShareService {
     };
   }
 
+  private buildSyncBootstrapState(share: ManagedShare): TransportState {
+    const providerLabel = defaultProviderLabel(normalizeProvider(share.provider));
+    const detail = `Nearbytes is preparing this ${providerLabel} shared location locally. This is a transient startup state while the local mirror is being checked and started.`;
+    return {
+      status: 'syncing',
+      detail,
+      badges: ['Preparing'],
+      diagnostic: {
+        code: 'MIRROR_PREPARING',
+        title: `${providerLabel} mirror is preparing`,
+        summary: 'Preparing local mirror',
+        detail,
+        facts:
+          normalizeProvider(share.provider) === 'mega'
+            ? [{ label: 'Inspect', value: 'Open the MEGA runtime logs from the provider card to watch startup progress.' }]
+            : [{ label: 'Inspect', value: 'Refresh this panel to check whether the mirror finished starting.' }],
+      },
+    };
+  }
+
+  private buildTimedOutTransportState(share: ManagedShare, fallbackState: TransportState): TransportState {
+    if (normalizeProvider(share.provider) !== 'mega') {
+      return fallbackState;
+    }
+    return {
+      status: 'attention',
+      detail: 'Nearbytes could not reach the local MEGA helper in time. Local MEGA sync is currently unavailable.',
+      badges: ['Repair'],
+    };
+  }
+
   private fallbackCollaborators(share: ManagedShare): ManagedShareCollaborator[] {
     return uniqueStrings(share.invitationEmails).map((email) => ({
       label: email,
@@ -519,16 +2169,34 @@ export class ManagedShareService {
     }));
   }
 
+  private fallbackManagedShareSummary(
+    share: ManagedShare,
+    config: RootsConfig,
+    runtime: MultiRootRuntimeSnapshot,
+    stateSnapshot: IntegrationStateSnapshot
+  ): ManagedShareSummary {
+    const account = stateSnapshot.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    return {
+      share,
+      attachments: computeManagedShareAttachments(config, share),
+      state: this.fallbackTransportState(share, runtime, account),
+      collaborators: this.fallbackCollaborators(share),
+      storage: summarizeManagedShareStorage(config, runtime, share, undefined),
+    };
+  }
+
   private async withSoftTimeout<T>(
     promise: Promise<T>,
     fallback: T,
     timeoutMs: number,
-    warning: string
+    warning: string,
+    onTimeout?: () => void
   ): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<T>((resolve) => {
       timer = setTimeout(() => {
         this.runtime.logger.warn(warning);
+        onTimeout?.();
         resolve(fallback);
       }, timeoutMs);
       timer.unref?.();
@@ -542,12 +2210,234 @@ export class ManagedShareService {
     }
   }
 
-  private async ensureDefaultManagedShares(state: IntegrationStateSnapshot): Promise<void> {
+  private providerIncomingShareDiscoveryTimeoutMs(provider: string): number {
+    // MEGA fetch-nodes + key manager can exceed a few seconds under load; racing with a short
+    // timeout makes `/integrations/shares/incoming` return [] while maintenance logs show offers.
+    return normalizeProvider(provider) === 'mega' ? 55_000 : 1_500;
+  }
+
+  private requestBackgroundMaintenance(
+    reason: string,
+    stateSnapshot: IntegrationStateSnapshot,
+    options: {
+      readonly forceExternalInventory?: boolean;
+    } = {}
+  ): void {
+    if (this.disposed) {
+      return;
+    }
+    if (!this.shouldRunBackgroundMaintenance(stateSnapshot, options)) {
+      return;
+    }
+    this.maintenanceRequested = true;
+    if (this.maintenanceTask) {
+      return;
+    }
+    this.maintenanceTask = this.runBackgroundMaintenanceLoop(reason)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share maintenance failed after ${reason}: ${message}`);
+      })
+      .finally(() => {
+        this.maintenanceTask = null;
+        if (this.maintenanceRequested && !this.disposed) {
+          void this.loadState()
+            .then((latestState) => {
+              this.requestBackgroundMaintenance('follow-up', latestState);
+            })
+            .catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              this.runtime.logger.warn(`Managed share maintenance follow-up scheduling failed: ${message}`);
+            });
+        }
+      });
+  }
+
+  private async runBackgroundMaintenanceLoop(initialReason: string): Promise<void> {
+    let reason = initialReason;
+    while (this.maintenanceRequested && !this.disposed) {
+      this.maintenanceRequested = false;
+      this.runtime.logger.log('Managed share background maintenance started.', { reason });
+      try {
+        const state = await this.loadState();
+        if (this.disposed) {
+          break;
+        }
+        const repairedState = await this.repairManagedShareState(state);
+        if (this.disposed) {
+          break;
+        }
+        const reconciledState = await this.reconcileConnectedManagedShareInventories(repairedState);
+        if (this.disposed) {
+          break;
+        }
+        await this.ensureDefaultManagedShares(reconciledState, { createMissing: true });
+        if (this.disposed) {
+          break;
+        }
+        const refreshedState = await this.loadState();
+        const stampedState = await this.persistBackgroundMaintenanceSnapshot(refreshedState);
+        if (this.disposed) {
+          break;
+        }
+        this.scheduleManagedShareSyncs(stampedState);
+        this.runtime.logger.log('Managed share background maintenance completed.', {
+          reason,
+          accountCount: stampedState.accounts.length,
+          managedShareCount: stampedState.managedShares.length,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share maintenance pass failed after ${reason}: ${message}`);
+      }
+      reason = 'queued maintenance';
+    }
+  }
+
+  async waitForBackgroundMaintenance(): Promise<void> {
+    while (this.maintenanceTask) {
+      await this.maintenanceTask;
+    }
+  }
+
+  private shouldRunBackgroundMaintenance(
+    stateSnapshot: IntegrationStateSnapshot,
+    options: {
+      readonly forceExternalInventory?: boolean;
+    } = {}
+  ): boolean {
+    if (this.hasMissingDefaultManagedShares(stateSnapshot)) {
+      return true;
+    }
+    if (options.forceExternalInventory === true && !this.hasFreshExternalInventoryMaintenance(stateSnapshot)) {
+      return true;
+    }
+    const signature = this.computeBackgroundMaintenanceSignature(stateSnapshot);
+    return !this.hasFreshBackgroundMaintenance(stateSnapshot, signature);
+  }
+
+  private hasFreshExternalInventoryMaintenance(stateSnapshot: IntegrationStateSnapshot): boolean {
+    const maintenance = stateSnapshot.maintenance;
+    if (!maintenance) {
+      return false;
+    }
+    if (maintenance.mode !== 'background' || maintenance.schemaVersion !== BACKGROUND_MAINTENANCE_SCHEMA_VERSION) {
+      return false;
+    }
+    return this.runtime.now() - maintenance.completedAt < EXTERNAL_INVENTORY_REFRESH_MIN_INTERVAL_MS;
+  }
+
+  private hasMissingDefaultManagedShares(stateSnapshot: IntegrationStateSnapshot): boolean {
+    const currentConfig = this.options.storage.getRootsConfig();
+    return stateSnapshot.accounts.some((account) => {
+      const provider = normalizeProvider(account.provider);
+      if (provider !== 'mega' || !this.isMegaHelperOperationalAccount(account)) {
+        return false;
+      }
+      const existing = stateSnapshot.managedShares.find((share) =>
+        normalizeProvider(share.provider) === 'mega' &&
+        share.accountId === account.id &&
+        isMegaOwnerBaseShare(share)
+      );
+      if (!existing) {
+        return true;
+      }
+      if (!shouldUseManagedShareAsDefaultDestination(existing)) {
+        return false;
+      }
+      const sourceId =
+        existing.sourceId ??
+        currentConfig.sources.find((source) => source.integration?.managedShareId === existing.id)?.id;
+      return !sourceId || !currentConfig.defaultVolume.destinations.some((destination) => destination.sourceId === sourceId);
+    });
+  }
+
+  private hasFreshBackgroundMaintenance(stateSnapshot: IntegrationStateSnapshot, signature: string): boolean {
+    const maintenance = stateSnapshot.maintenance;
+    if (!maintenance) {
+      return false;
+    }
+    if (maintenance.mode !== 'background' || maintenance.schemaVersion !== BACKGROUND_MAINTENANCE_SCHEMA_VERSION) {
+      return false;
+    }
+    if (maintenance.signature !== signature) {
+      return false;
+    }
+    return this.runtime.now() - maintenance.completedAt < BACKGROUND_MAINTENANCE_MAX_AGE_MS;
+  }
+
+  private computeBackgroundMaintenanceSignature(stateSnapshot: IntegrationStateSnapshot): string {
+    return JSON.stringify({
+      schemaVersion: BACKGROUND_MAINTENANCE_SCHEMA_VERSION,
+      roots: this.options.storage.getRootsConfig().sources.map((source) => ({
+        id: source.id,
+        provider: source.provider,
+        path: path.resolve(source.path),
+        enabled: source.enabled,
+        writable: source.writable,
+        integration: source.integration
+          ? {
+              kind: source.integration.kind,
+              provider: source.integration.provider,
+              managedShareId: source.integration.managedShareId,
+            }
+          : null,
+      })),
+      accounts: stateSnapshot.accounts.map((account) => ({
+        id: account.id,
+        provider: normalizeProvider(account.provider),
+        email: account.email ?? null,
+        state: account.state,
+      })),
+      managedShares: stateSnapshot.managedShares.map((share) => ({
+        id: share.id,
+        provider: normalizeProvider(share.provider),
+        accountId: share.accountId,
+        role: share.role,
+        localPath: path.resolve(share.localPath),
+        sourceId: share.sourceId ?? null,
+        remoteDescriptor: share.remoteDescriptor,
+        capabilities: [...share.capabilities],
+        invitationEmails: [...share.invitationEmails],
+      })),
+    });
+  }
+
+  private async persistBackgroundMaintenanceSnapshot(
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    const signature = this.computeBackgroundMaintenanceSignature(stateSnapshot);
+    if (this.hasFreshBackgroundMaintenance(stateSnapshot, signature)) {
+      return stateSnapshot;
+    }
+    const maintenance: IntegrationMaintenanceSnapshot = {
+      mode: 'background',
+      schemaVersion: BACKGROUND_MAINTENANCE_SCHEMA_VERSION,
+      signature,
+      completedAt: this.runtime.now(),
+    };
+    const nextState: IntegrationStateSnapshot = {
+      ...stateSnapshot,
+      maintenance,
+    };
+    await this.saveState(nextState);
+    return nextState;
+  }
+
+  private async ensureDefaultManagedShares(
+    state: IntegrationStateSnapshot,
+    options: {
+      readonly createMissing?: boolean;
+    } = {}
+  ): Promise<void> {
     for (const account of state.accounts) {
-      if (account.state !== 'connected') {
+      if (!this.isMegaHelperOperationalAccount(account)) {
         continue;
       }
-      await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account);
+      await this.ensureDefaultManagedShare(normalizeProvider(account.provider), account, {
+        stateSnapshot: state,
+        createMissing: options.createMissing,
+      });
     }
   }
 
@@ -564,6 +2454,18 @@ export class ManagedShareService {
     return new Map(entries);
   }
 
+  private fallbackProviderSetupStates(): Map<string, ProviderSetupState> {
+    return new Map(
+      Array.from(this.adapters.values()).map((adapter) => [
+        adapter.provider,
+        {
+          status: 'ready',
+          detail: adapter.description,
+        } satisfies ProviderSetupState,
+      ])
+    );
+  }
+
   async parseJoinLink(input: {
     serialized?: string;
     link?: unknown;
@@ -571,10 +2473,11 @@ export class ManagedShareService {
   }): Promise<{ plan: JoinLinkPlan; space: JoinLinkSpace }> {
     const link = this.parseJoinLinkInput(input.serialized, input.link);
     const state = await this.loadState();
+    const config = this.options.storage.getRootsConfig();
     const context = createPlannerContext({
-      attachedShareKeys: buildAttachedShareKeys(state.managedShares),
+      attachedShareKeys: buildAttachedShareKeys(config, state.managedShares),
       connectedProviders: state.accounts
-        .filter((account) => account.state === 'connected')
+        .filter((account) => this.isOperationalAccount(account))
         .map((account) => account.provider),
       preferredProviders: input.preferredProviders ?? state.preferredProviders,
       supportedProviders: Array.from(this.adapters.keys()),
@@ -652,7 +2555,7 @@ export class ManagedShareService {
       const provider = normalizeProvider(endpoint.provider ?? '');
       const suggestedLocalPath = resolveJoinLinkSuggestedLocalPath(endpoint);
       let account = workingAccounts.find(
-        (entry) => normalizeProvider(entry.provider) === provider && entry.state === 'connected'
+        (entry) => normalizeProvider(entry.provider) === provider && this.isOperationalAccount(entry)
       );
       let usedCredentialBootstrap = false;
 
@@ -756,8 +2659,8 @@ export class ManagedShareService {
         detail: share
           ? input.volumeId
             ? usedCredentialBootstrap
-              ? 'Connected the provider from this link and attached the managed share to this space.'
-              : 'Attached the managed share to this space.'
+              ? 'Connected the provider from this link and attached the managed share to this hub.'
+              : 'Attached the managed share to this hub.'
             : 'Matched an existing managed share.'
           : 'A connected provider is available for this route.',
       });
@@ -794,32 +2697,72 @@ export class ManagedShareService {
     throw new ManagedShareServiceError(400, 'INVALID_JOIN_LINK', 'Join link payload is required');
   }
 
-  private async buildManagedShareSummary(share: ManagedShare): Promise<ManagedShareSummary> {
-    const config = this.options.storage.getRootsConfig();
-    const runtime = await this.options.storage.getRuntimeSnapshot();
-    const state = await this.loadState();
+  private async buildManagedShareSummary(
+    share: ManagedShare,
+    options: {
+      readonly config?: RootsConfig;
+      readonly runtime?: MultiRootRuntimeSnapshot;
+      readonly state?: IntegrationStateSnapshot;
+      readonly preferFastRemoteDetails?: boolean;
+      readonly skipAncillaryRemoteDetails?: boolean;
+      readonly skipRemoteChecks?: boolean;
+    } = {}
+  ): Promise<ManagedShareSummary> {
+    const config = options.config ?? this.options.storage.getRootsConfig();
+    const runtime = options.runtime ?? (await this.options.storage.getRuntimeSnapshot({ includeUsage: false }));
+    const state = options.state ?? (await this.loadState());
     const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
     const fallbackState = this.fallbackTransportState(share, runtime, account);
     const fallbackCollaborators = this.fallbackCollaborators(share);
+    const preferFastRemoteDetails = options.preferFastRemoteDetails === true;
+    const skipAncillaryRemoteDetails = options.skipAncillaryRemoteDetails === true;
+    const skipRemoteChecks = options.skipRemoteChecks === true;
+    const transportStateTimeoutMs = preferFastRemoteDetails
+      ? FAST_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS
+      : normalizeProvider(share.provider) === 'mega'
+        ? FULL_MEGA_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS
+        : FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS;
+    if (skipRemoteChecks) {
+      return {
+        share,
+        attachments: computeManagedShareAttachments(config, share),
+        state: fallbackState,
+        collaborators: fallbackCollaborators,
+        storage: summarizeManagedShareStorage(config, runtime, share, undefined),
+      };
+    }
     const [remoteMetrics, transportState, collaborators] = await Promise.all([
-      this.withSoftTimeout(
-        this.resolveShareStorageMetrics(share),
-        undefined,
-        1_500,
-        `Managed share metrics timed out for ${share.id}`
-      ),
+      skipAncillaryRemoteDetails
+        ? Promise.resolve(undefined)
+        : this.withSoftTimeout(
+            this.resolveShareStorageMetrics(share),
+            undefined,
+            1_500,
+            `Managed share metrics timed out for ${share.id}`
+          ),
       this.withSoftTimeout(
         this.resolveTransportState(share, runtime, state),
-        fallbackState,
-        1_500,
+        this.buildTimedOutTransportState(share, fallbackState),
+        transportStateTimeoutMs,
         `Managed share state timed out for ${share.id}`
       ),
-      this.withSoftTimeout(
-        this.resolveShareCollaborators(share, state),
-        fallbackCollaborators,
-        1_500,
-        `Managed share collaborators timed out for ${share.id}`
-      ),
+      skipAncillaryRemoteDetails
+        ? Promise.resolve(fallbackCollaborators)
+        : this.isCollaboratorLookupCoolingDown(share)
+          ? Promise.resolve(fallbackCollaborators)
+        : this.withSoftTimeout(
+            this.resolveShareCollaborators(share, state),
+            fallbackCollaborators,
+            normalizeProvider(share.provider) === 'mega'
+              ? FULL_MEGA_MANAGED_SHARE_COLLABORATORS_TIMEOUT_MS
+              : 1_500,
+            `Managed share collaborators timed out for ${share.id}`,
+            () => {
+              if (normalizeProvider(share.provider) === 'mega') {
+                this.markCollaboratorLookupCooldown(share);
+              }
+            }
+          ),
     ]);
     return {
       share,
@@ -835,7 +2778,7 @@ export class ManagedShareService {
     runtime?: MultiRootRuntimeSnapshot,
     stateSnapshot?: IntegrationStateSnapshot
   ): Promise<TransportState> {
-    const snapshot = runtime ?? (await this.options.storage.getRuntimeSnapshot());
+    const snapshot = runtime ?? (await this.options.storage.getRuntimeSnapshot({ includeUsage: false }));
     const status = share.sourceId ? snapshot.sources.find((entry) => entry.id === share.sourceId) : undefined;
     const adapter = this.adapters.get(normalizeProvider(share.provider));
     const state = stateSnapshot ?? (await this.loadState());
@@ -855,6 +2798,17 @@ export class ManagedShareService {
       };
     }
     if (adapter?.getState) {
+      if (this.syncBootstrapTasks.has(share.id)) {
+        try {
+          const stateDuringBootstrap = await adapter.getState(share, account);
+          if (stateDuringBootstrap.status !== 'idle') {
+            return stateDuringBootstrap;
+          }
+        } catch {
+          return this.buildSyncBootstrapState(share);
+        }
+        return this.buildSyncBootstrapState(share);
+      }
       try {
         return await adapter.getState(share, account);
       } catch (error) {
@@ -901,14 +2855,23 @@ export class ManagedShareService {
     if (adapter?.getCollaborators) {
       try {
         for (const collaborator of await adapter.getCollaborators(share, account)) {
-          const key = collaborator.email?.trim().toLowerCase() || collaborator.label.trim().toLowerCase();
+          const key =
+            collaborator.email?.trim().toLowerCase() ||
+            (typeof collaborator.label === 'string' ? collaborator.label.trim().toLowerCase() : '');
           if (key) {
             byKey.set(key, collaborator);
           }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.runtime.logger.warn(`Managed share collaborator lookup failed for ${share.id}: ${message}`);
+        if (normalizeProvider(share.provider) === 'mega' && isMegaTransientCollaboratorError(error)) {
+          this.markCollaboratorLookupCooldown(share);
+          this.runtime.logger.log(
+            `Managed share collaborator lookup deferred for ${share.id}: transient MEGA error (${message})`
+          );
+        } else {
+          this.runtime.logger.warn(`Managed share collaborator lookup failed for ${share.id}: ${message}`);
+        }
       }
     }
 
@@ -937,6 +2900,171 @@ export class ManagedShareService {
     return loadIntegrationState(this.integrationStatePath);
   }
 
+  private markCollaboratorLookupCooldown(share: ManagedShare): void {
+    this.collaboratorLookupCooldowns.set(share.id, Date.now() + MEGA_COLLABORATOR_LOOKUP_COOLDOWN_MS);
+  }
+
+  private isCollaboratorLookupCoolingDown(share: ManagedShare): boolean {
+    const until = this.collaboratorLookupCooldowns.get(share.id);
+    if (!until) {
+      return false;
+    }
+    if (Date.now() >= until) {
+      this.collaboratorLookupCooldowns.delete(share.id);
+      return false;
+    }
+    return true;
+  }
+
+  private async repairManagedShareState(stateSnapshot: IntegrationStateSnapshot): Promise<IntegrationStateSnapshot> {
+    let state = stateSnapshot;
+    const activeSourceManagedShareIds = new Set(
+      this.options.storage
+        .getRootsConfig()
+        .sources
+        .map((source) => source.integration?.managedShareId?.trim())
+        .filter((value): value is string => Boolean(value))
+    );
+    const dedupedShares = dedupeManagedShares(state.managedShares, activeSourceManagedShareIds);
+    if (!sameManagedShareIds(state.managedShares, dedupedShares)) {
+      state = {
+        ...state,
+        managedShares: dedupedShares,
+      };
+      await this.saveState(state);
+    }
+
+    for (const account of state.accounts) {
+      if (normalizeProvider(account.provider) !== 'mega') {
+        continue;
+      }
+      let relocatedRecipient = false;
+      const shares = state.managedShares.filter((share) => share.accountId === account.id);
+      for (const share of shares) {
+        let currentShare = state.managedShares.find((entry) => entry.id === share.id) ?? share;
+        const repairedOwner = await this.repairMegaOwnerBaseShareIfNeeded(currentShare, account, state);
+        if (repairedOwner !== state) {
+          state = repairedOwner;
+          currentShare = state.managedShares.find((entry) => entry.id === share.id) ?? currentShare;
+        }
+        const normalized = await this.repairMegaIncomingRecipientShareIfNeeded(currentShare, state);
+        if (normalized !== state) {
+          state = normalized;
+          currentShare = state.managedShares.find((entry) => entry.id === share.id) ?? currentShare;
+        }
+        const repaired = await this.relocateMegaRecipientShareIfNeeded(currentShare, account, state);
+        if (repaired !== state) {
+          relocatedRecipient = true;
+          state = repaired;
+        }
+      }
+      if (relocatedRecipient) {
+        await this.ensureDefaultManagedShare('mega', account, {
+          stateSnapshot: state,
+          createMissing: true,
+        });
+        state = await this.loadState();
+      }
+    }
+
+    state = await this.retireOrphanManagedShareSources(state);
+    return state;
+  }
+
+  private async retireOrphanManagedShareSources(
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    const managedShareIds = new Set(
+      stateSnapshot.managedShares
+        .map((share) => share.id.trim().toLowerCase())
+        .filter((value) => value.length > 0)
+    );
+    const orphanSourceIds = this.options.storage
+      .getRootsConfig()
+      .sources
+      .filter((source) => {
+        if (source.integration?.kind !== 'provider-managed') {
+          return false;
+        }
+        const managedShareId = source.integration.managedShareId?.trim();
+        return Boolean(managedShareId) && !managedShareIds.has(managedShareId.toLowerCase());
+      })
+      .map((source) => source.id);
+    if (orphanSourceIds.length === 0) {
+      return stateSnapshot;
+    }
+
+    let removedSources = 0;
+    let migratedSources = 0;
+    for (const sourceId of orphanSourceIds) {
+      const retired = await this.retireSourceUsingStandardProcedure(sourceId);
+      if (retired.removed) {
+        removedSources += 1;
+      }
+      if (retired.migrated) {
+        migratedSources += 1;
+      }
+    }
+
+    if (removedSources > 0) {
+      this.runtime.logger.log('Retired orphan managed-share sources.', {
+        sourceCount: removedSources,
+        migratedSources,
+      });
+    }
+    return await this.loadState();
+  }
+
+  private async prepareManagedShareForSync(shareId: string): Promise<{
+    state: IntegrationStateSnapshot;
+    share: ManagedShare;
+    nextShare: ManagedShare;
+    account: ProviderAccount | null;
+    adapter: TransportAdapter | undefined;
+  }> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
+    const localPath = path.resolve(share.localPath);
+    await ensureMirrorFolder(localPath);
+
+    const currentConfig = cloneConfig(this.options.storage.getRootsConfig());
+    const currentConfigSignature = JSON.stringify(currentConfig);
+    const { config: nextConfig, sourceId } = ensureManagedShareSource(currentConfig, share, localPath);
+    const nextConfigSignature = JSON.stringify(nextConfig);
+    const nextShare =
+      share.sourceId === sourceId
+        ? share
+        : {
+            ...share,
+            sourceId,
+            updatedAt: this.runtime.now(),
+          };
+
+    if (nextConfigSignature !== currentConfigSignature) {
+      await this.persistRootsConfig(nextConfig);
+    }
+    if (nextShare !== share) {
+      await this.saveState({
+        ...state,
+        managedShares: state.managedShares.map((entry) => (entry.id === shareId ? nextShare : entry)),
+      });
+    }
+
+    return {
+      state,
+      share,
+      nextShare,
+      account,
+      adapter,
+    };
+  }
+
   private async saveState(snapshot: IntegrationStateSnapshot): Promise<void> {
     await saveIntegrationState(snapshot, this.integrationStatePath);
   }
@@ -944,77 +3072,383 @@ export class ManagedShareService {
   private async persistRootsConfig(config: RootsConfig): Promise<void> {
     await saveRootsConfig(this.options.rootsConfigPath, config);
     this.options.storage.updateRootsConfig(config);
-    await this.options.storage.reconcileConfiguredVolumes();
+    this.options.storage.scheduleReconcileConfiguredVolumes();
     await ensureNearbytesMarkers(config.sources);
   }
 
-  private async ensureDefaultManagedShare(provider: string, account: ProviderAccount): Promise<void> {
+  private async ensureDefaultManagedShare(
+    provider: string,
+    account: ProviderAccount,
+    options: {
+      readonly stateSnapshot?: IntegrationStateSnapshot;
+      readonly createMissing?: boolean;
+    } = {}
+  ): Promise<void> {
     if (provider !== 'mega') {
       return;
     }
 
-    const state = await this.loadState();
-    if (state.managedShares.some((share) => normalizeProvider(share.provider) === provider && share.accountId === account.id)) {
+    const state = options.stateSnapshot ?? (await this.loadState());
+    const existing = state.managedShares.find((share) =>
+      normalizeProvider(share.provider) === 'mega' &&
+      share.accountId === account.id &&
+      isMegaOwnerBaseShare(share)
+    );
+    if (existing) {
+      const currentConfig = this.options.storage.getRootsConfig();
+      const existingSource =
+        currentConfig.sources.find((source) => source.integration?.managedShareId === existing.id) ??
+        currentConfig.sources.find((source) => path.resolve(source.path) === path.resolve(existing.localPath));
+      const needsSourceRepair =
+        !existingSource ||
+        existing.sourceId !== existingSource.id ||
+        path.resolve(existingSource.path) !== path.resolve(existing.localPath) ||
+        existingSource.writable !== managedShareAllowsWrites(existing);
+      const needsDefaultDestination =
+        shouldUseManagedShareAsDefaultDestination(existing) &&
+        (!existingSource || !currentConfig.defaultVolume.destinations.some((destination) => destination.sourceId === existingSource.id));
+      if (!needsSourceRepair && !needsDefaultDestination) {
+        return;
+      }
+
+      const { config, sourceId } = ensureManagedShareSource(cloneConfig(currentConfig), existing, existing.localPath);
+      await this.persistRootsConfig(config);
+      if (existing.sourceId !== sourceId) {
+        await this.saveState({
+          ...state,
+          managedShares: state.managedShares.map((share) =>
+            share.id === existing.id
+              ? {
+                  ...share,
+                  sourceId,
+                  updatedAt: this.runtime.now(),
+                }
+              : share
+          ),
+        });
+      }
+      return;
+    }
+    if (options.createMissing !== true) {
       return;
     }
 
-    const localPath = this.findDefaultProviderSharePath(provider, account);
-    if (localPath) {
-      const config = cloneConfig(this.options.storage.getRootsConfig());
-      const existingSource = config.sources.find((source) => path.resolve(source.path) === path.resolve(localPath));
-      if (existingSource) {
-        const shareId = createId('share', provider, state.managedShares.length + 1);
-        const adoptedShare: ManagedShare = {
-          id: shareId,
-          provider,
-          accountId: account.id,
-          label: 'nearbytes',
-          role: 'owner',
-          localPath: path.resolve(localPath),
-          sourceId: existingSource.id,
-          syncMode: 'mirror',
-          remoteDescriptor: {
-            remotePath: this.runtime.mega.remoteBasePath,
-            shareName: 'nearbytes',
-            managedShareId: shareId,
-          },
-          capabilities: ['mirror', 'read', 'write', 'invite'],
-          invitationEmails: [],
-          createdAt: this.runtime.now(),
-          updatedAt: this.runtime.now(),
-        };
-        const { config: nextConfig } = ensureManagedShareSource(config, adoptedShare, adoptedShare.localPath);
-        await this.persistRootsConfig(nextConfig);
-        await this.saveState({
-          ...state,
-          managedShares: [...state.managedShares, adoptedShare],
-        });
-        return;
-      }
-    }
+    const baseRemotePath = normalizeManagedShareRemotePath('mega', this.runtime.mega.remoteBasePath);
+    const baseShareName = path.posix.basename(baseRemotePath) || MEGA_BASE_SHARE_FOLDER_NAME;
+    const localPath = path.resolve(
+      resolveManagedShareLocalPath(
+        this.mirrorRoot,
+        'mega',
+        account,
+        baseShareName,
+        'share-mega-legacy-placeholder',
+        {
+          remotePath: baseRemotePath,
+          shareName: baseShareName,
+          legacyLocalMirror: true,
+        },
+        'owner'
+      )
+    );
+    const inspection = await inspectNearbytesRoot(localPath);
+    await ensureMirrorFolder(localPath);
+    await normalizeNearbytesRoot(localPath);
 
-    await this.createManagedShare({
-      provider,
+    const shareId = createId('share', 'mega', state.managedShares.length + 1);
+    const recoveredShare: ManagedShare = {
+      id: shareId,
+      provider: 'mega',
       accountId: account.id,
-      label: 'nearbytes',
+      label: baseShareName,
+      role: 'owner',
       localPath,
+      sourceId: undefined,
+      syncMode: 'mirror',
       remoteDescriptor: {
-        remotePath: this.runtime.mega.remoteBasePath,
-        shareName: 'nearbytes',
+        remotePath: baseRemotePath,
+        shareName: baseShareName,
+        ...(inspection ? { legacyLocalMirror: true } : {}),
       },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: this.runtime.now(),
+      updatedAt: this.runtime.now(),
+    };
+
+    const { config, sourceId } = ensureManagedShareSource(
+      cloneConfig(this.options.storage.getRootsConfig()),
+      recoveredShare,
+      localPath
+    );
+    await this.persistRootsConfig(config);
+    await this.saveState({
+      ...state,
+      managedShares: [...state.managedShares, { ...recoveredShare, sourceId }],
     });
   }
 
-  private findDefaultProviderSharePath(provider: string, account: ProviderAccount): string | undefined {
-    const config = this.options.storage.getRootsConfig();
-    const providerSources = config.sources.filter(
-      (source) => normalizeProvider(source.provider) === provider && !source.integration && !isUnsafeManagedSharePath(source.path)
+  private async repairMegaOwnerBaseShareIfNeeded(
+    share: ManagedShare,
+    account: ProviderAccount,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    if (!isMegaOwnerBaseShare(share)) {
+      return stateSnapshot;
+    }
+
+    const expectedLocalPath = path.resolve(
+      resolveManagedShareLocalPath(
+        this.mirrorRoot,
+        'mega',
+        account,
+        share.label,
+        share.id,
+        share.remoteDescriptor,
+        share.role
+      )
     );
-    const preferredFolderNames = getPreferredManagedShareFolderNames(provider, account);
-    const preferred =
-      providerSources.find((source) => preferredFolderNames.has(path.basename(source.path).trim().toLowerCase())) ??
-      (provider === 'mega' ? undefined : providerSources[0]);
-    return preferred ? path.resolve(preferred.path) : undefined;
+    const providerRoot = path.resolve(resolveProviderManagedShareRoot(this.mirrorRoot, 'mega', account));
+    const currentLocalPath = path.resolve(share.localPath);
+
+    if (normalizeComparablePath(currentLocalPath) !== normalizeComparablePath(expectedLocalPath)) {
+      await relocateMegaOwnerBaseShareRoot(currentLocalPath, expectedLocalPath, providerRoot);
+      const { config: nextConfig, sourceId } = ensureManagedShareSource(
+        cloneConfig(this.options.storage.getRootsConfig()),
+        {
+          ...share,
+          localPath: expectedLocalPath,
+        },
+        expectedLocalPath
+      );
+      const nextShare: ManagedShare = {
+        ...share,
+        localPath: expectedLocalPath,
+        sourceId,
+        updatedAt: this.runtime.now(),
+      };
+      const nextState: IntegrationStateSnapshot = {
+        ...stateSnapshot,
+        managedShares: stateSnapshot.managedShares.map((entry) => (entry.id === share.id ? nextShare : entry)),
+      };
+      await this.persistRootsConfig(nextConfig);
+      await this.saveState(nextState);
+      stateSnapshot = nextState;
+    }
+
+    const currentShare = stateSnapshot.managedShares.find((entry) => entry.id === share.id) ?? share;
+    const attached = computeManagedShareAttachments(this.options.storage.getRootsConfig(), currentShare);
+    if (attached.length === 0 && currentShare.remoteDescriptor.legacyLocalMirror === true) {
+      const nextConfig = await this.attachTrackedLocalVolumesToMegaOwnerBaseShare(currentShare);
+      if (nextConfig) {
+        stateSnapshot = await this.loadState();
+      }
+    }
+
+    await normalizeMegaOwnerBaseShareRoot(expectedLocalPath, providerRoot);
+    return stateSnapshot;
+  }
+
+  private async attachTrackedLocalVolumesToMegaOwnerBaseShare(
+    share: ManagedShare
+  ): Promise<RootsConfig | null> {
+    return this.attachTrackedLocalVolumesToManagedShare(share);
+  }
+
+  private async attachTrackedLocalVolumesToManagedShare(
+    share: ManagedShare
+  ): Promise<RootsConfig | null> {
+    const sourceId =
+      share.sourceId ??
+      this.options.storage.getRootsConfig().sources.find((source) => source.integration?.managedShareId === share.id)?.id;
+    if (!sourceId) {
+      return null;
+    }
+
+    const autoAttachVolumeIds = await this.collectAutoAttachVolumeIds(sourceId);
+    if (autoAttachVolumeIds.length === 0) {
+      return null;
+    }
+
+    let nextConfig = cloneConfig(this.options.storage.getRootsConfig());
+    let changed = false;
+    for (const volumeId of autoAttachVolumeIds) {
+      const updated = ensureVolumeAttachment(nextConfig, volumeId, sourceId);
+      if (updated !== nextConfig) {
+        nextConfig = updated;
+        changed = true;
+      }
+    }
+    if (!changed) {
+      return null;
+    }
+
+    await this.persistRootsConfig(nextConfig);
+    return nextConfig;
+  }
+
+  private async collectAutoAttachVolumeIds(sourceId: string): Promise<string[]> {
+    const config = this.options.storage.getRootsConfig();
+    const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(config.sources, sourceId);
+    if (trackedVolumeIds.length > 0) {
+      return trackedVolumeIds;
+    }
+    return this.listRememberedOpenedVolumes();
+  }
+
+  private listRememberedOpenedVolumes(): string[] {
+    const now = this.runtime.now();
+    this.pruneRememberedOpenedVolumes(now);
+    return Array.from(this.recentlyOpenedVolumeIds.entries())
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 1)
+      .map(([volumeId]) => volumeId);
+  }
+
+  private pruneRememberedOpenedVolumes(now: number): void {
+    for (const [volumeId, openedAt] of Array.from(this.recentlyOpenedVolumeIds.entries())) {
+      if (now - openedAt > 60 * 60 * 1000) {
+        this.recentlyOpenedVolumeIds.delete(volumeId);
+      }
+    }
+    const overflow = this.recentlyOpenedVolumeIds.size - 8;
+    if (overflow <= 0) {
+      return;
+    }
+    const oldest = Array.from(this.recentlyOpenedVolumeIds.entries())
+      .sort((left, right) => left[1] - right[1])
+      .slice(0, overflow);
+    for (const [volumeId] of oldest) {
+      this.recentlyOpenedVolumeIds.delete(volumeId);
+    }
+  }
+
+  private async relocateMegaRecipientShareIfNeeded(
+    share: ManagedShare,
+    account: ProviderAccount,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    if (normalizeProvider(share.provider) !== 'mega' || share.role !== 'recipient') {
+      return stateSnapshot;
+    }
+
+    const providerRoot = path.resolve(resolveProviderManagedShareRoot(this.mirrorRoot, 'mega', account));
+    if (normalizeComparablePath(share.localPath) !== normalizeComparablePath(providerRoot)) {
+      return stateSnapshot;
+    }
+
+    const expectedLocalPath = path.resolve(
+      resolveManagedShareLocalPath(
+        this.mirrorRoot,
+        'mega',
+        account,
+        share.label,
+        share.id,
+        share.remoteDescriptor,
+        share.role
+      )
+    );
+    if (normalizeComparablePath(share.localPath) === normalizeComparablePath(expectedLocalPath)) {
+      return stateSnapshot;
+    }
+
+    const nextShare: ManagedShare = {
+      ...share,
+      localPath: expectedLocalPath,
+      updatedAt: this.runtime.now(),
+    };
+    const { config: nextConfig, sourceId } = ensureManagedShareSource(
+      cloneConfig(this.options.storage.getRootsConfig()),
+      nextShare,
+      expectedLocalPath
+    );
+    const relocatedShare = {
+      ...nextShare,
+      sourceId,
+    };
+    const nextState: IntegrationStateSnapshot = {
+      ...stateSnapshot,
+      managedShares: stateSnapshot.managedShares.map((entry) => (entry.id === share.id ? relocatedShare : entry)),
+    };
+
+    await ensureMirrorFolder(expectedLocalPath);
+    await this.persistRootsConfig(nextConfig);
+    await this.saveState(nextState);
+
+    if (this.isOperationalAccount(account)) {
+      await this.adapters.get(normalizeProvider(share.provider))?.ensureSync?.(relocatedShare, account).catch(() => {
+        // Ignore sync relocation failures here; the repaired local path is still persisted.
+      });
+    }
+
+    return nextState;
+  }
+
+  private async repairMegaIncomingRecipientShareIfNeeded(
+    share: ManagedShare,
+    stateSnapshot: IntegrationStateSnapshot
+  ): Promise<IntegrationStateSnapshot> {
+    if (
+      normalizeProvider(share.provider) !== 'mega' ||
+      share.role !== 'recipient' ||
+      !isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor))
+    ) {
+      return stateSnapshot;
+    }
+
+    const nextCapabilities = uniqueStrings(
+      share.capabilities.filter((capability) => capability !== 'invite' && capability !== 'write')
+    );
+    const normalizedCapabilities = uniqueStrings(['mirror', 'read', 'accept', ...nextCapabilities]);
+    const capabilitiesChanged =
+      normalizedCapabilities.length !== share.capabilities.length ||
+      normalizedCapabilities.some((capability, index) => capability !== share.capabilities[index]);
+
+    const nextShare = capabilitiesChanged
+      ? {
+          ...share,
+          capabilities: normalizedCapabilities,
+          updatedAt: this.runtime.now(),
+        }
+      : share;
+
+    const currentConfig = cloneConfig(this.options.storage.getRootsConfig());
+    const currentConfigSignature = JSON.stringify(currentConfig);
+    const { config: nextConfig, sourceId } = ensureManagedShareSource(
+      currentConfig,
+      nextShare,
+      path.resolve(nextShare.localPath)
+    );
+    let finalConfig = nextConfig;
+    if (shouldAutoAttachTrackedVolumesToManagedShare(nextShare)) {
+      const trackedVolumeIds = await collectTrackedVolumeIdsFromNonManagedRoots(finalConfig.sources, sourceId);
+      for (const volumeId of trackedVolumeIds) {
+        finalConfig = ensureVolumeAttachment(finalConfig, volumeId, sourceId);
+      }
+    }
+    const nextConfigSignature = JSON.stringify(finalConfig);
+    const repairedShare =
+      nextShare.sourceId === sourceId
+        ? nextShare
+        : {
+            ...nextShare,
+            sourceId,
+            updatedAt: this.runtime.now(),
+          };
+
+    if (!capabilitiesChanged && nextConfigSignature === currentConfigSignature && repairedShare === share) {
+      return stateSnapshot;
+    }
+
+    if (nextConfigSignature !== currentConfigSignature) {
+      await this.persistRootsConfig(finalConfig);
+    }
+
+    const nextState: IntegrationStateSnapshot = {
+      ...stateSnapshot,
+      managedShares: stateSnapshot.managedShares.map((entry) => (entry.id === share.id ? repairedShare : entry)),
+    };
+    await this.saveState(nextState);
+    return nextState;
   }
 
   private upsertConnectedAccount(
@@ -1042,10 +3476,131 @@ export class ManagedShareService {
         : [...state.accounts, nextAccount],
     };
   }
+
+  private withAccountPresentationState(
+    state: IntegrationStateSnapshot,
+    accountId: string,
+    nextPresentationState: ProviderAccount['state'],
+    detail?: string
+  ): IntegrationStateSnapshot {
+    let changed = false;
+    const accounts = state.accounts.map((account) => {
+      if (account.id !== accountId) {
+        return account;
+      }
+      const nextDetail =
+        nextPresentationState === 'attention'
+          ? detail?.trim() || account.detail
+          : detail?.trim() || (account.state === 'attention' ? `${defaultProviderLabel(account.provider)} is connected.` : account.detail);
+      if (account.state === nextPresentationState && (account.detail ?? '') === (nextDetail ?? '')) {
+        return account;
+      }
+      changed = true;
+      return {
+        ...account,
+        state: nextPresentationState,
+        detail: nextDetail,
+        updatedAt: this.runtime.now(),
+      };
+    });
+    if (!changed) {
+      return state;
+    }
+    return {
+      ...state,
+      accounts,
+    };
+  }
 }
 
 function normalizeProvider(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function isCanonicalMirrorRelativePath(relativePath: string): boolean {
+  return /^blocks\/[^/]+$/u.test(relativePath) || /^channels\/[^/]+\/[^/]+$/u.test(relativePath);
+}
+
+function isMegaTransientCollaboratorError(error: unknown): boolean {
+  const code = typeof (error as { code?: unknown } | undefined)?.code === 'number'
+    ? Number((error as { code: number }).code)
+    : null;
+  if (code === -3 || code === -4) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /MEGA API error -3|MEGA API error -4|rate\s*limit|timeout|timed?\s*out|temporar/i.test(message);
+}
+
+function describeMegaAccountRecovery(message: string): string {
+  const normalized = message.trim();
+  if (/MEGA API error -16|blocked|account locked|credential stuffing/i.test(normalized)) {
+    return `MEGA says this account is locked. Unlock it on mega.io, complete the password-change flow, then reconnect it in Nearbytes. ${normalized}`.trim();
+  }
+  if (/MEGA API error -15|bad session|session id/i.test(normalized)) {
+    return `MEGA revoked the saved session. If the account was security-locked, finish the unlock and password-change flow on mega.io, then reconnect it in Nearbytes. ${normalized}`.trim();
+  }
+  return `Reconnect this MEGA account to resume incoming-share discovery. ${normalized}`.trim();
+}
+
+function dedupeManagedShareMirrors(
+  mirrors: readonly ManagedShareMirrorEntry[],
+  provider: string
+): ManagedShareMirrorEntry[] {
+  const unique = new Map<string, ManagedShareMirrorEntry>();
+  for (const mirror of mirrors) {
+    const remotePath = normalizeManagedShareRemotePath(provider, mirror.remotePath);
+    if (!remotePath || unique.has(remotePath)) {
+      continue;
+    }
+    unique.set(remotePath, {
+      label: typeof mirror.label === 'string' ? mirror.label.trim() : '',
+      localPath: path.resolve(mirror.localPath),
+      remotePath,
+    });
+  }
+  return Array.from(unique.values());
+}
+
+function getManagedShareRemotePath(provider: string, descriptor: Record<string, unknown>): string | null {
+  const remotePath = typeof descriptor.remotePath === 'string' ? descriptor.remotePath.trim() : '';
+  if (!remotePath) {
+    return null;
+  }
+  return normalizeManagedShareRemotePath(provider, remotePath);
+}
+
+function normalizeManagedShareRemotePath(provider: string, remotePath: string): string {
+  if (normalizeProvider(provider) === 'mega') {
+    const normalized = path.posix.normalize(remotePath.trim().replace(/\\/g, '/')).replace(/\/+$/u, '');
+    return (normalized || '/').toLowerCase();
+  }
+  return remotePath.trim().toLowerCase();
+}
+
+function isManagedMirrorRemotePath(remotePath: string, remoteBasePath: string): boolean {
+  const normalizedRemote = normalizeManagedShareRemotePath('mega', remotePath);
+  const normalizedBase = normalizeManagedShareRemotePath('mega', remoteBasePath);
+  return normalizedRemote === normalizedBase || normalizedRemote.startsWith(`${normalizedBase}/`);
+}
+
+function mergeManagedShareMirrorDescriptor(
+  provider: string,
+  current: Record<string, unknown> | undefined,
+  mirror: ManagedShareMirrorEntry,
+  shareId: string
+): Record<string, unknown> {
+  const descriptor: Record<string, unknown> = {
+    ...(current ?? {}),
+    remotePath: normalizeManagedShareRemotePath(provider, mirror.remotePath),
+    managedShareId: shareId,
+  };
+  if (provider === 'mega') {
+    descriptor.shareName =
+      (typeof mirror.label === 'string' ? mirror.label.trim() : '') ||
+      defaultProviderMirrorLabel(provider, mirror.remotePath);
+  }
+  return descriptor;
 }
 
 function defaultProviderLabel(provider: string): string {
@@ -1055,8 +3610,33 @@ function defaultProviderLabel(provider: string): string {
   return provider;
 }
 
+function defaultProviderMirrorLabel(provider: string, remotePath: string): string {
+  if (provider === 'mega') {
+    const normalized = normalizeManagedShareRemotePath(provider, remotePath);
+    const base = normalized === '/' ? '' : path.posix.basename(normalized);
+    return base || 'nearbytes';
+  }
+  return defaultProviderLabel(provider);
+}
+
+function defaultManagedShareInviteReplayAccessLevel(
+  share: ManagedShare
+): 'read' | 'read/write' | 'full access' | undefined {
+  return normalizeProvider(share.provider) === 'mega' ? 'read/write' : undefined;
+}
+
 function createId(prefix: string, provider: string, serial: number): string {
   return `${prefix}-${provider}-${serial}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function nextLocalSourceId(config: RootsConfig): string {
+  const existing = new Set(config.sources.map((source) => source.id));
+  const prefix = 'src-local';
+  let counter = config.sources.length + 1;
+  while (existing.has(`${prefix}-${counter}`)) {
+    counter += 1;
+  }
+  return `${prefix}-${counter}`;
 }
 
 function createMirrorFolderName(provider: string, label: string, shareId: string): string {
@@ -1070,28 +3650,34 @@ function resolveManagedShareLocalPath(
   account: ProviderAccount,
   label: string,
   shareId: string,
-  remoteDescriptor?: Record<string, unknown>
+  remoteDescriptor?: Record<string, unknown>,
+  role: ManagedShare['role'] = 'owner'
 ): string {
-  const providerRoot = resolveProviderManagedShareRoot(managedShareBaseRoot, provider, account);
-  if (isProviderBaseShare(label, remoteDescriptor)) {
-    return providerRoot;
+  const providerRoot = resolveProviderManagedShareRoot(managedShareBaseRoot, provider, account, remoteDescriptor, role);
+  if (isProviderBaseShare(label, remoteDescriptor, role)) {
+    return path.join(providerRoot, MEGA_BASE_SHARE_FOLDER_NAME);
   }
   return path.join(providerRoot, createMirrorFolderName(provider, label, shareId));
 }
 
-function resolveProviderManagedShareRoot(managedShareBaseRoot: string, provider: string, account: ProviderAccount): string {
+function resolveProviderManagedShareRoot(
+  managedShareBaseRoot: string,
+  provider: string,
+  account: ProviderAccount,
+  remoteDescriptor?: Record<string, unknown>,
+  role: ManagedShare['role'] = 'owner'
+): string {
   const providerRoot = path.join(managedShareBaseRoot, getProviderStorageFolderName(provider));
   if (provider === 'mega') {
+    if (role === 'recipient') {
+      const ownerEmail = typeof remoteDescriptor?.ownerEmail === 'string' ? remoteDescriptor.ownerEmail.trim() : '';
+      if (ownerEmail) {
+        return path.join(providerRoot, createManagedShareIdentityFolderName(ownerEmail));
+      }
+    }
     return path.join(providerRoot, createManagedShareAccountFolderName(account));
   }
   return providerRoot;
-}
-
-function getPreferredManagedShareFolderNames(provider: string, account: ProviderAccount): ReadonlySet<string> {
-  if (provider === 'mega') {
-    return new Set([createManagedShareAccountFolderName(account)]);
-  }
-  return new Set([getProviderStorageFolderName(provider), 'nearbytes']);
 }
 
 function createManagedShareAccountFolderName(account: ProviderAccount): string {
@@ -1099,14 +3685,66 @@ function createManagedShareAccountFolderName(account: ProviderAccount): string {
   return candidate.replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '') || account.id.trim().toLowerCase();
 }
 
-function isProviderBaseShare(label: string, remoteDescriptor?: Record<string, unknown>): boolean {
+function createManagedShareIdentityFolderName(value: string): string {
+  const candidate = sanitizeManagedFolderLabel(value.trim()).toLowerCase();
+  return candidate.replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '') || 'mega-account';
+}
+
+function isProviderBaseShare(
+  label: string,
+  remoteDescriptor?: Record<string, unknown>,
+  role: ManagedShare['role'] = 'owner'
+): boolean {
+  if (role !== 'owner') {
+    return false;
+  }
   const normalizedLabel = sanitizeManagedFolderLabel(label).toLowerCase();
   const shareName = typeof remoteDescriptor?.shareName === 'string' ? remoteDescriptor.shareName.trim().toLowerCase() : '';
   const remotePath =
     typeof remoteDescriptor?.remotePath === 'string'
       ? remoteDescriptor.remotePath.trim().replace(/\\/g, '/').replace(/\/+$/u, '').toLowerCase()
       : '';
-  return normalizedLabel === 'nearbytes' || shareName === 'nearbytes' || remotePath === '/nearbytes';
+  const ownerEmail =
+    typeof remoteDescriptor?.ownerEmail === 'string' ? remoteDescriptor.ownerEmail.trim().toLowerCase() : '';
+  const remoteBaseName = remotePath.startsWith('/') ? path.posix.basename(remotePath) : '';
+  const remoteDepth = remotePath.split('/').filter((segment) => segment.length > 0).length;
+  if (
+    !ownerEmail &&
+    remotePath.startsWith('/') &&
+    remoteDepth === 1 &&
+    (normalizedLabel === shareName || shareName === remoteBaseName)
+  ) {
+    return true;
+  }
+  if (ownerEmail) {
+    return false;
+  }
+  return normalizedLabel === 'nearbytes' || shareName === 'nearbytes';
+}
+
+function isMegaOwnerBaseShare(share: ManagedShare): boolean {
+  const remotePath = getManagedShareRemotePath('mega', share.remoteDescriptor) ?? '';
+  const shareName =
+    typeof share.remoteDescriptor?.shareName === 'string' ? share.remoteDescriptor.shareName.trim().toLowerCase() : '';
+  const remoteBaseName = remotePath.startsWith('/') ? path.posix.basename(remotePath).toLowerCase() : '';
+  const remoteDepth = remotePath.split('/').filter((segment) => segment.length > 0).length;
+  return normalizeProvider(share.provider) === 'mega' &&
+    share.role === 'owner' &&
+    typeof share.remoteDescriptor?.ownerEmail !== 'string' &&
+    remotePath.startsWith('/') &&
+    remoteDepth === 1 &&
+    (shareName === remoteBaseName ||
+      sanitizeManagedFolderLabel(share.label).toLowerCase() === shareName);
+}
+
+function shouldAutoAttachTrackedVolumesToManagedShare(share: ManagedShare): boolean {
+  if (isMegaOwnerBaseShare(share)) {
+    return true;
+  }
+  if (normalizeProvider(share.provider) !== 'mega' || share.role !== 'recipient') {
+    return false;
+  }
+  return isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor));
 }
 
 function sanitizeManagedFolderLabel(value: string): string {
@@ -1123,6 +3761,185 @@ async function ensureMirrorFolder(localPath: string): Promise<void> {
   await fs.mkdir(path.join(localPath, 'channels'), { recursive: true });
 }
 
+async function relocateMegaOwnerBaseShareRoot(
+  sourceRoot: string,
+  canonicalRoot: string,
+  providerRoot: string
+): Promise<void> {
+  await ensureMirrorFolder(canonicalRoot);
+  await normalizeNearbytesRoot(canonicalRoot);
+  const entries = await readDirectoryEntries(sourceRoot);
+  for (const entry of entries) {
+    if (entry.name === path.basename(canonicalRoot)) {
+      continue;
+    }
+    const sourcePath = path.join(sourceRoot, entry.name);
+    if (isMegaCanonicalEntryName(entry.name)) {
+      await mergePathIntoCanonicalMegaRoot(sourcePath, path.join(canonicalRoot, entry.name));
+      continue;
+    }
+    await moveEntryToMegaDebris(sourcePath, providerRoot, entry.name);
+  }
+}
+
+async function normalizeMegaOwnerBaseShareRoot(canonicalRoot: string, providerRoot: string): Promise<void> {
+  await ensureMirrorFolder(canonicalRoot);
+  await normalizeNearbytesRoot(canonicalRoot);
+  const entries = await readDirectoryEntries(canonicalRoot);
+  for (const entry of entries) {
+    if (isMegaAllowedCanonicalEntry(entry.name, entry.isDirectory())) {
+      continue;
+    }
+    const entryPath = path.join(canonicalRoot, entry.name);
+    if (entry.isDirectory() && isNestedMegaShareRootName(entry.name)) {
+      await drainNestedMegaShareRoot(entryPath, canonicalRoot, providerRoot);
+      continue;
+    }
+    await moveEntryToMegaDebris(entryPath, providerRoot, `${path.basename(canonicalRoot)} ${entry.name}`);
+  }
+}
+
+async function drainNestedMegaShareRoot(nestedRoot: string, canonicalRoot: string, providerRoot: string): Promise<void> {
+  const nestedBlocks = path.join(nestedRoot, 'blocks');
+  const nestedChannels = path.join(nestedRoot, 'channels');
+  if (await isDirectoryPath(nestedBlocks)) {
+    await mergePathIntoCanonicalMegaRoot(nestedBlocks, path.join(canonicalRoot, 'blocks'));
+  }
+  if (await isDirectoryPath(nestedChannels)) {
+    await mergePathIntoCanonicalMegaRoot(nestedChannels, path.join(canonicalRoot, 'channels'));
+  }
+  try {
+    await moveEntryToMegaDebris(nestedRoot, providerRoot, path.basename(nestedRoot));
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+    if (code !== 'EPERM') {
+      throw error;
+    }
+    await fs.rm(nestedRoot, { recursive: true, force: true });
+  }
+}
+
+async function mergePathIntoCanonicalMegaRoot(sourcePath: string, targetPath: string): Promise<void> {
+  const stats = await safeStatPath(sourcePath);
+  if (!stats) {
+    return;
+  }
+  if (stats.isDirectory()) {
+    await fs.mkdir(targetPath, { recursive: true });
+    const entries = await readDirectoryEntries(sourcePath);
+    for (const entry of entries) {
+      await mergePathIntoCanonicalMegaRoot(path.join(sourcePath, entry.name), path.join(targetPath, entry.name));
+    }
+    await fs.rm(sourcePath, { recursive: true, force: true });
+    return;
+  }
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  try {
+    await fs.rename(sourcePath, targetPath);
+  } catch {
+    await fs.copyFile(sourcePath, targetPath);
+    await fs.rm(sourcePath, { force: true });
+  }
+}
+
+async function copyIfPresent(sourcePath: string, targetPath: string): Promise<void> {
+  if (!(await safeStatPath(sourcePath))) {
+    return;
+  }
+  await copyPathIntoTarget(sourcePath, targetPath);
+}
+
+async function copyPathIntoTarget(sourcePath: string, targetPath: string): Promise<void> {
+  const stats = await safeStatPath(sourcePath);
+  if (!stats) {
+    return;
+  }
+  if (stats.isDirectory()) {
+    await fs.mkdir(targetPath, { recursive: true });
+    const entries = await readDirectoryEntries(sourcePath);
+    for (const entry of entries) {
+      await copyPathIntoTarget(path.join(sourcePath, entry.name), path.join(targetPath, entry.name));
+    }
+    return;
+  }
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.copyFile(sourcePath, targetPath);
+}
+
+async function moveEntryToMegaDebris(sourcePath: string, providerRoot: string, label: string): Promise<void> {
+  const debrisRoot = path.join(providerRoot, '.debris');
+  await fs.mkdir(debrisRoot, { recursive: true });
+  const baseLabel = sanitizeMegaDebrisLabel(label);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const suffix = `${Date.now().toString(36)}${attempt === 0 ? '' : `-${attempt}`}`;
+    const destination = path.join(debrisRoot, `${baseLabel} ${suffix}`.trim());
+    try {
+      await fs.rename(sourcePath, destination);
+      return;
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+      if (code === 'ENOENT') {
+        return;
+      }
+      if (code === 'EEXIST') {
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+function sanitizeMegaDebrisLabel(value: string): string {
+  return value.replace(/[\\/]+/gu, ' ').replace(/\s+/gu, ' ').trim() || 'debris';
+}
+
+function isMegaCanonicalEntryName(name: string): boolean {
+  return name === 'blocks' || name === 'channels' || name === 'Nearbytes.html' || name === '.nearbytes';
+}
+
+function isMegaAllowedCanonicalEntry(name: string, isDirectory: boolean): boolean {
+  if (name === 'Nearbytes.html') {
+    return !isDirectory;
+  }
+  if (name === 'blocks' || name === 'channels') {
+    return isDirectory;
+  }
+  return false;
+}
+
+function isNestedMegaShareRootName(name: string): boolean {
+  return /^nearbytes(?:\s|$)/iu.test(name);
+}
+
+async function readDirectoryEntries(dirPath: string): Promise<import('fs').Dirent[]> {
+  try {
+    return await fs.readdir(dirPath, { withFileTypes: true });
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+    if (code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function safeStatPath(targetPath: string): Promise<import('fs').Stats | null> {
+  try {
+    return await fs.stat(targetPath);
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+    if (code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function isDirectoryPath(targetPath: string): Promise<boolean> {
+  const stats = await safeStatPath(targetPath);
+  return Boolean(stats?.isDirectory());
+}
+
 function resolveManagedShareBaseRoot(config: RootsConfig): string {
   const preferredLocalSource =
     config.sources.find(
@@ -1136,6 +3953,21 @@ function resolveManagedShareBaseRoot(config: RootsConfig): string {
     ? getDefaultStorageHomeDir()
     : resolveStorageHomeDir(configuredStorageRoot);
   return preferredLocalSource ? resolveStorageHomeDir(preferredLocalSource.path) : fallbackBaseRoot;
+}
+
+function findPrimaryLocalSource(config: RootsConfig, excludingSourceId?: string): SourceConfigEntry | null {
+  const eligible = config.sources.filter(
+    (source) =>
+      source.id !== excludingSourceId &&
+      normalizeProvider(source.provider) === 'local' &&
+      !isUnsafeManagedSharePath(source.path)
+  );
+  return (
+    eligible.find((source) => source.enabled && source.writable) ??
+    eligible.find((source) => source.enabled) ??
+    eligible[0] ??
+    null
+  );
 }
 
 function isUnsafeManagedSharePath(targetPath: string): boolean {
@@ -1176,10 +4008,10 @@ function ensureManagedShareSource(
     id: sourceId,
     provider: mapProviderToSourceProvider(share.provider),
     path: localPath,
-    enabled: true,
-    writable: true,
-    reservePercent: 5,
-    opportunisticPolicy: 'drop-older-blocks',
+    enabled: existing?.enabled ?? true,
+    writable: managedShareAllowsWrites(share),
+    reservePercent: existing?.reservePercent ?? 5,
+    opportunisticPolicy: existing?.opportunisticPolicy ?? 'drop-older-blocks',
     integration: {
       kind: 'provider-managed',
       provider: share.provider,
@@ -1188,20 +4020,26 @@ function ensureManagedShareSource(
   };
 
   if (existing) {
+    const nextConfig: RootsConfig = {
+      ...config,
+      sources: config.sources.map((source) => (source.id === existing.id ? nextSource : source)),
+    };
     return {
-      config: {
-        ...config,
-        sources: config.sources.map((source) => (source.id === existing.id ? nextSource : source)),
-      },
+      config: shouldUseManagedShareAsDefaultDestination(share)
+        ? ensureDefaultVolumeDestination(nextConfig, existing.id)
+        : nextConfig,
       sourceId: existing.id,
     };
   }
 
+  const nextConfig: RootsConfig = {
+    ...config,
+    sources: [...config.sources, nextSource],
+  };
   return {
-    config: {
-      ...config,
-      sources: [...config.sources, nextSource],
-    },
+    config: shouldUseManagedShareAsDefaultDestination(share)
+      ? ensureDefaultVolumeDestination(nextConfig, sourceId)
+      : nextConfig,
     sourceId,
   };
 }
@@ -1303,6 +4141,28 @@ function ensureVolumeAttachment(config: RootsConfig, volumeId: string, sourceId:
   };
 }
 
+function ensureDefaultVolumeDestination(config: RootsConfig, sourceId: string): RootsConfig {
+  if (config.defaultVolume.destinations.some((destination) => destination.sourceId === sourceId)) {
+    return config;
+  }
+  return {
+    ...config,
+    defaultVolume: {
+      destinations: [
+        ...config.defaultVolume.destinations,
+        {
+          ...DEFAULT_DESTINATION,
+          sourceId,
+        },
+      ],
+    },
+  };
+}
+
+function shouldUseManagedShareAsDefaultDestination(share: ManagedShare): boolean {
+  return isMegaOwnerBaseShare(share) && managedShareAllowsWrites(share);
+}
+
 function cloneConfig(config: RootsConfig): RootsConfig {
   return {
     version: config.version,
@@ -1339,6 +4199,22 @@ function removeManagedShareFromConfig(config: RootsConfig, shareId: string): Roo
   };
 }
 
+function removeSourceFromConfig(config: RootsConfig, sourceId: string): RootsConfig {
+  return {
+    version: config.version,
+    sources: config.sources.filter((source) => source.id !== sourceId),
+    defaultVolume: {
+      destinations: config.defaultVolume.destinations.filter((destination) => destination.sourceId !== sourceId),
+    },
+    volumes: config.volumes
+      .map((volume) => ({
+        volumeId: volume.volumeId,
+        destinations: volume.destinations.filter((destination) => destination.sourceId !== sourceId),
+      }))
+      .filter((volume) => volume.destinations.length > 0),
+  };
+}
+
 function computeManagedShareAttachments(config: RootsConfig, share: ManagedShare): ManagedShareAttachment[] {
   const sourceId =
     share.sourceId ??
@@ -1363,7 +4239,52 @@ function computeManagedShareAttachments(config: RootsConfig, share: ManagedShare
   return attachments;
 }
 
-function buildAttachedShareKeys(shares: readonly ManagedShare[]): Set<string> {
+async function collectTrackedVolumeIdsFromNonManagedRoots(
+  sources: readonly SourceConfigEntry[],
+  excludedSourceId: string
+): Promise<string[]> {
+  const volumeIds = new Set<string>();
+  for (const source of sources) {
+    if (source.id === excludedSourceId || source.enabled !== true) {
+      continue;
+    }
+    if (source.integration?.kind === 'provider-managed') {
+      continue;
+    }
+    const channelsPath = path.join(source.path, 'channels');
+    let entries: Dirent[] = [];
+    try {
+      entries = await fs.readdir(channelsPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const volumeId = normalizeVolumeId(entry.name);
+      if (volumeId) {
+        volumeIds.add(volumeId);
+      }
+    }
+  }
+  return [...volumeIds].sort((left, right) => left.localeCompare(right));
+}
+
+function buildAttachedShareKeys(config: RootsConfig, shares: readonly ManagedShare[]): Set<string> {
+  const keys = new Set<string>();
+  for (const share of shares) {
+    if (computeManagedShareAttachments(config, share).length === 0) {
+      continue;
+    }
+    for (const key of buildManagedShareMatchKeys(share)) {
+      keys.add(key);
+    }
+  }
+  return keys;
+}
+
+function buildManagedShareKeys(shares: readonly ManagedShare[]): Set<string> {
   const keys = new Set<string>();
   for (const share of shares) {
     for (const key of buildManagedShareMatchKeys(share)) {
@@ -1378,6 +4299,16 @@ function buildManagedShareMatchKeys(share: ManagedShare): Set<string> {
   keys.add(`managed:${share.id.toLowerCase()}`);
   if (typeof share.remoteDescriptor.managedShareId === 'string' && share.remoteDescriptor.managedShareId.trim() !== '') {
     keys.add(`managed:${share.remoteDescriptor.managedShareId.trim().toLowerCase()}`);
+  }
+  if (typeof share.remoteDescriptor.shareHandle === 'string' && share.remoteDescriptor.shareHandle.trim() !== '') {
+    const handle = share.remoteDescriptor.shareHandle.trim().toLowerCase();
+    keys.add(`${share.provider}:share:${handle}`);
+    keys.add(`${share.provider}:remote:${handle}`);
+  }
+  if (typeof share.remoteDescriptor.rootHandle === 'string' && share.remoteDescriptor.rootHandle.trim() !== '') {
+    const handle = share.remoteDescriptor.rootHandle.trim().toLowerCase();
+    keys.add(`${share.provider}:remote:${handle}`);
+    keys.add(`${share.provider}:share:${handle}`);
   }
   if (typeof share.remoteDescriptor.shareId === 'string' && share.remoteDescriptor.shareId.trim() !== '') {
     keys.add(`${share.provider}:share:${share.remoteDescriptor.shareId.trim().toLowerCase()}`);
@@ -1404,6 +4335,152 @@ function buildManagedShareMatchKeys(share: ManagedShare): Set<string> {
   return keys;
 }
 
+function managedShareAllowsWrites(share: ManagedShare): boolean {
+  if (!share.capabilities.includes('write')) {
+    return false;
+  }
+  if (
+    normalizeProvider(share.provider) === 'mega' &&
+    share.role === 'recipient' &&
+    isMegaIncomingRemotePath(getManagedShareRemotePath('mega', share.remoteDescriptor))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function buildRemoteDescriptorMatchKeys(provider: string, descriptor: Record<string, unknown>): string[] {
+  const keys = new Set<string>();
+  if (typeof descriptor.shareHandle === 'string' && descriptor.shareHandle.trim() !== '') {
+    const handle = descriptor.shareHandle.trim().toLowerCase();
+    keys.add(`${provider}:share:${handle}`);
+    keys.add(`${provider}:remote:${handle}`);
+  }
+  if (typeof descriptor.rootHandle === 'string' && descriptor.rootHandle.trim() !== '') {
+    const handle = descriptor.rootHandle.trim().toLowerCase();
+    keys.add(`${provider}:remote:${handle}`);
+    keys.add(`${provider}:share:${handle}`);
+  }
+  if (typeof descriptor.remotePath === 'string' && descriptor.remotePath.trim() !== '') {
+    keys.add(`${provider}:path:${descriptor.remotePath.trim().toLowerCase()}`);
+  }
+  if (typeof descriptor.remoteId === 'string' && descriptor.remoteId.trim() !== '') {
+    keys.add(`${provider}:remote:${descriptor.remoteId.trim().toLowerCase()}`);
+  }
+  if (typeof descriptor.folderId === 'string' && descriptor.folderId.trim() !== '') {
+    keys.add(`${provider}:remote:${descriptor.folderId.trim().toLowerCase()}`);
+  }
+  if (typeof descriptor.shareId === 'string' && descriptor.shareId.trim() !== '') {
+    keys.add(`${provider}:share:${descriptor.shareId.trim().toLowerCase()}`);
+  }
+  const repositoryKey = buildRepositoryMatchKey(provider, descriptor);
+  if (repositoryKey) {
+    keys.add(repositoryKey);
+  }
+  return Array.from(keys.values());
+}
+
+function buildIncomingManagedShareOfferKeys(offer: IncomingManagedShareOffer): string[] {
+  return buildRemoteDescriptorMatchKeys(offer.provider, offer.remoteDescriptor);
+}
+
+function findManagedShareByRemoteDescriptor(
+  shares: readonly ManagedShare[],
+  provider: string,
+  accountId: string,
+  remoteDescriptor: Record<string, unknown>
+): ManagedShare | undefined {
+  const matchKeys = buildRemoteDescriptorMatchKeys(provider, remoteDescriptor);
+  if (matchKeys.length === 0) {
+    return undefined;
+  }
+  return shares.find((share) =>
+    normalizeProvider(share.provider) === provider &&
+    share.accountId === accountId &&
+    matchKeys.some((key) => buildManagedShareMatchKeys(share).has(key))
+  );
+}
+
+function findCanonicalIncomingManagedShareCandidate(
+  shares: readonly ManagedShare[],
+  provider: string,
+  accountId: string,
+  offer: IncomingManagedShareOffer
+): ManagedShare | undefined {
+  if (normalizeProvider(provider) !== 'mega') {
+    return undefined;
+  }
+  const ownerEmail = typeof offer.remoteDescriptor.ownerEmail === 'string'
+    ? offer.remoteDescriptor.ownerEmail.trim().toLowerCase()
+    : '';
+  if (!ownerEmail) {
+    return undefined;
+  }
+  return shares.find((share) =>
+    normalizeProvider(share.provider) === 'mega' &&
+    share.accountId === accountId &&
+    share.role === 'recipient' &&
+    shouldAutoAttachTrackedVolumesToManagedShare(share) &&
+    typeof share.remoteDescriptor.ownerEmail === 'string' &&
+    share.remoteDescriptor.ownerEmail.trim().toLowerCase() === ownerEmail
+  );
+}
+
+function dedupeManagedShares(
+  shares: readonly ManagedShare[],
+  activeSourceManagedShareIds: ReadonlySet<string>
+): ManagedShare[] {
+  const unique = new Map<string, ManagedShare>();
+  for (const share of shares) {
+    const identity = primaryManagedShareIdentityKey(share);
+    const existing = unique.get(identity);
+    if (!existing) {
+      unique.set(identity, share);
+      continue;
+    }
+    unique.set(identity, pickPreferredManagedShare(existing, share, activeSourceManagedShareIds));
+  }
+  return Array.from(unique.values());
+}
+
+function sameManagedShareIds(left: readonly ManagedShare[], right: readonly ManagedShare[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((share, index) => share.id === right[index]?.id);
+}
+
+function primaryManagedShareIdentityKey(share: ManagedShare): string {
+  const provider = normalizeProvider(share.provider);
+  const firstMatchKey = buildRemoteDescriptorMatchKeys(provider, share.remoteDescriptor)[0];
+  return `${provider}:${share.accountId}:${firstMatchKey ?? `managed:${share.id.toLowerCase()}`}`;
+}
+
+function pickPreferredManagedShare(
+  left: ManagedShare,
+  right: ManagedShare,
+  activeSourceManagedShareIds: ReadonlySet<string>
+): ManagedShare {
+  const score = (share: ManagedShare): number =>
+    (activeSourceManagedShareIds.has(share.id) ? 8 : 0) +
+    (share.role === 'owner' ? 4 : 0) +
+    (share.sourceId ? 2 : 0) +
+    (share.capabilities.length > 0 ? 1 : 0);
+
+  const leftScore = score(left);
+  const rightScore = score(right);
+  if (rightScore !== leftScore) {
+    return rightScore > leftScore ? right : left;
+  }
+  if (right.updatedAt !== left.updatedAt) {
+    return right.updatedAt > left.updatedAt ? right : left;
+  }
+  if (right.createdAt !== left.createdAt) {
+    return right.createdAt < left.createdAt ? right : left;
+  }
+  return right.id.localeCompare(left.id) > 0 ? right : left;
+}
+
 function resolveJoinLinkSuggestedLocalPath(endpoint: import('./types.js').TransportEndpoint): string | undefined {
   const explicit = endpoint.bootstrap?.storage?.localPath?.trim();
   if (explicit) {
@@ -1426,6 +4503,26 @@ function buildRepositoryMatchKey(provider: string, descriptor: Record<string, un
   return `${provider}:repo:${repository}:${branch}:${basePath}`;
 }
 
+function isMegaIncomingRemotePath(value: string | null | undefined): boolean {
+  const normalized = value?.trim() ?? '';
+  return normalized !== '' && !normalized.startsWith('/') && normalized.includes(':');
+}
+
+function shouldAutoAdoptIncomingManagedShareOffer(provider: string, offer: IncomingManagedShareOffer): boolean {
+  if (normalizeProvider(provider) !== 'mega') {
+    return false;
+  }
+  const remotePath = getManagedShareRemotePath(provider, offer.remoteDescriptor);
+  if (!isMegaIncomingRemotePath(remotePath)) {
+    return false;
+  }
+  const shareNameCandidate =
+    typeof offer.remoteDescriptor.shareName === 'string' && offer.remoteDescriptor.shareName.trim() !== ''
+      ? offer.remoteDescriptor.shareName
+      : offer.label;
+  return sanitizeManagedFolderLabel(shareNameCandidate).toLowerCase() === MEGA_BASE_SHARE_FOLDER_NAME;
+}
+
 function mergePreferredProviders(existing: readonly string[], provider: string, preferred: boolean): string[] {
   if (!preferred) {
     return uniqueStrings(existing);
@@ -1445,4 +4542,8 @@ function uniqueStrings(values: readonly string[]): string[] {
     result.push(normalized);
   }
   return result;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

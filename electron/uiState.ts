@@ -1,7 +1,8 @@
-import { randomUUID } from 'crypto';
 import { app } from 'electron';
-import { mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { promises as fs } from 'fs';
+import { readFile } from 'fs/promises';
 import path from 'path';
+import { writeFileAtomicallyWithRenameFallback } from '../src/utils/atomicWrite.js';
 
 export interface DesktopUiState {
   readonly volumeMounts?: unknown;
@@ -12,13 +13,13 @@ export interface DesktopUiState {
 
 const UI_STATE_FILENAME = 'ui-state.json';
 
-function uiStatePath(): string {
+export function resolveDesktopUiStatePath(): string {
   return path.join(app.getPath('userData'), UI_STATE_FILENAME);
 }
 
 export async function readDesktopUiState(): Promise<DesktopUiState> {
   try {
-    const raw = await readFile(uiStatePath(), 'utf8');
+    const raw = await readFile(resolveDesktopUiStatePath(), 'utf8');
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return {};
@@ -44,9 +45,16 @@ export async function writeDesktopUiState(nextState: DesktopUiState): Promise<vo
     ...currentState,
     ...nextState,
   };
-  const filePath = uiStatePath();
-  const tempPath = `${filePath}.${randomUUID()}.tmp`;
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(tempPath, JSON.stringify(mergedState, null, 2), 'utf8');
-  await rename(tempPath, filePath);
+  const filePath = resolveDesktopUiStatePath();
+  await writeFileAtomicallyWithRenameFallback(filePath, JSON.stringify(mergedState, null, 2));
+}
+
+export async function clearDesktopUiState(): Promise<void> {
+  try {
+    await fs.rm(resolveDesktopUiStatePath(), { force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
 }

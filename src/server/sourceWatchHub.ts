@@ -2,9 +2,12 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'path';
 import {
   discoverNearbytesSources,
+  isNearbytesWatchIgnoredPath,
+  NEARBYTES_MARKER_FILES,
   type DiscoveredNearbytesSource,
 } from '../config/sourceDiscovery.js';
 import type { RootProvider } from '../config/roots.js';
+import { debugServerLog } from './debug.js';
 
 export interface SourceWatchReady {
   readonly autoUpdate: boolean;
@@ -40,6 +43,9 @@ interface WatchEntry {
 }
 
 let nextSourceWatchEntryId = 1;
+const DEFAULT_SOURCE_WATCH_DEPTH = 2;
+const SOURCE_PAYLOAD_TREE_SEGMENT_SET = new Set(['blocks', 'channels']);
+const SOURCE_MARKER_FILE_SET = new Set(NEARBYTES_MARKER_FILES.map((value) => value.toLowerCase()));
 
 export class SourceWatchHub {
   private readonly sourcesResolver: () => Promise<DiscoveredNearbytesSource[]>;
@@ -55,7 +61,7 @@ export class SourceWatchHub {
   }) {
     this.sourcesResolver = options?.sourcesResolver ?? (() => discoverNearbytesSources());
     this.debounceMs = options?.debounceMs ?? 300;
-    this.watchDepth = options?.watchDepth ?? 3;
+    this.watchDepth = options?.watchDepth ?? DEFAULT_SOURCE_WATCH_DEPTH;
     this.quietWindowMs = Math.max(this.debounceMs, 200);
   }
 
@@ -74,7 +80,8 @@ export class SourceWatchHub {
     }
 
     if (this.entry) {
-      console.log(
+      debugServerLog(
+        'watchers',
         `[source-watch] reusing watcher #${this.entry.id} for subscriber; subscribers=${this.entry.subscribers.size + 1}`
       );
       this.entry.subscribers.add(onUpdate);
@@ -88,6 +95,7 @@ export class SourceWatchHub {
     const watcher = chokidar.watch(plan.targets, {
       persistent: true,
       ignoreInitial: true,
+      ignored: (candidatePath) => isSourceWatchIgnoredPath(String(candidatePath), plan.targets),
       depth: this.watchDepth,
       awaitWriteFinish: {
         stabilityThreshold: 150,
@@ -105,7 +113,8 @@ export class SourceWatchHub {
       debounceTimer: null,
     };
 
-    console.log(
+    debugServerLog(
+      'watchers',
       `[source-watch] created watcher #${entry.id}; targets=${JSON.stringify(plan.targets)} depth=${this.watchDepth}`
     );
 
@@ -144,7 +153,7 @@ export class SourceWatchHub {
     });
 
     watcher.on('ready', () => {
-      console.log(`[source-watch] watcher #${entry.id} ready`);
+      debugServerLog('watchers', `[source-watch] watcher #${entry.id} ready`);
     });
 
     this.entry = entry;
@@ -165,7 +174,8 @@ export class SourceWatchHub {
 
     entry.subscribers.delete(onUpdate);
     entry.errorSubscribers.delete(onError);
-    console.log(
+    debugServerLog(
+      'watchers',
       `[source-watch] unsubscribe watcher #${entry.id}; remaining-subscribers=${entry.subscribers.size}`
     );
     if (entry.subscribers.size > 0) {
@@ -178,9 +188,10 @@ export class SourceWatchHub {
     }
     this.entry = null;
     const closeStartedAt = Date.now();
-    console.log(`[source-watch] closing watcher #${entry.id}`);
+    debugServerLog('watchers', `[source-watch] closing watcher #${entry.id}`);
     void entry.watcher.close().then(() => {
-      console.log(
+      debugServerLog(
+        'watchers',
         `[source-watch] closed watcher #${entry.id} in ${Date.now() - closeStartedAt}ms`
       );
     });
@@ -219,4 +230,33 @@ function uniquePaths(values: string[]): string[] {
 
 function uniqueProviders(values: RootProvider[]): RootProvider[] {
   return Array.from(new Set(values)).sort((left, right) => left.localeCompare(right));
+}
+
+function isSourceWatchIgnoredPath(targetPath: string, watchRoots: readonly string[]): boolean {
+  if (isNearbytesWatchIgnoredPath(targetPath, watchRoots)) {
+    return true;
+  }
+
+  const normalizedTarget = normalizePath(targetPath);
+  for (const watchRoot of watchRoots) {
+    const normalizedRoot = normalizePath(watchRoot);
+    if (normalizedTarget === normalizedRoot || !normalizedTarget.startsWith(`${normalizedRoot}/`)) {
+      continue;
+    }
+
+    const relativeSegments = normalizedTarget.slice(normalizedRoot.length + 1).split('/');
+    const payloadTreeIndex = relativeSegments.findIndex((segment) =>
+      SOURCE_PAYLOAD_TREE_SEGMENT_SET.has(segment.trim().toLowerCase())
+    );
+    if (payloadTreeIndex >= 0 && payloadTreeIndex < relativeSegments.length - 1) {
+      return true;
+    }
+
+    const leafName = relativeSegments.at(-1)?.trim().toLowerCase() ?? '';
+    if (leafName.includes('.') && !SOURCE_MARKER_FILE_SET.has(leafName)) {
+      return true;
+    }
+  }
+
+  return false;
 }

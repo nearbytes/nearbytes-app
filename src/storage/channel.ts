@@ -3,9 +3,11 @@ import type { Hash as HashType, SignedEvent, EncryptedData } from '../types/even
 import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
 import { createHash } from '../types/events.js';
 import { StorageError } from '../types/errors.js';
-import { serializeEvent, deserializeEvent, serializeEventPayload } from './serialization.js';
+import { serializeEvent, deserializeEvent, serializeEventEnvelope } from './serialization.js';
 import { computeHash } from '../crypto/hash.js';
 import { isMultiRootStorageBackend } from './multiRoot.js';
+import { verifyPU } from '../crypto/asymmetric.js';
+import { validateBlockBytes, validateEventBytes } from './integrity.js';
 
 /**
  * Channel storage operations
@@ -48,9 +50,8 @@ export class ChannelStorage {
    */
   async storeEvent(publicKey: PublicKey, event: SignedEvent): Promise<HashType> {
     try {
-      // Compute event hash from serialized payload
-      const payloadBytes = serializeEventPayload(event.payload);
-      const eventHash = await computeHash(payloadBytes);
+      const envelopeBytes = serializeEventEnvelope(event.envelope);
+      const eventHash = await computeHash(envelopeBytes);
 
       // Serialize the full event
       const serialized = serializeEvent(event);
@@ -85,11 +86,31 @@ export class ChannelStorage {
       const eventPath = this.getEventPath(publicKey, eventHash);
       const channelHex = publicKeyToHex(publicKey);
       const eventBytes = isMultiRootStorageBackend(this.storage)
-        ? await this.storage.readFileForChannel(eventPath, channelHex)
+        ? await this.storage.readValidatedFileForChannel(eventPath, channelHex, (data) =>
+            validateEventBytes(channelHex, eventHash, data)
+          )
         : await this.storage.readFile(eventPath);
+      if (!isMultiRootStorageBackend(this.storage)) {
+        const validation = await validateEventBytes(channelHex, eventHash, eventBytes);
+        if (!validation.ok) {
+          await this.storage.deleteFile(eventPath).catch(() => undefined);
+          throw new StorageError(`Failed to retrieve event: ${validation.detail ?? 'event validation failed'}`);
+        }
+      }
       const serialized = JSON.parse(new TextDecoder().decode(eventBytes)) as import('../types/events.js').SerializedEvent;
-
-      return deserializeEvent(serialized);
+      const event = deserializeEvent(serialized);
+      const envelopeBytes = serializeEventEnvelope(event.envelope);
+      const payloadHash = await computeHash(envelopeBytes);
+      if (payloadHash !== eventHash) {
+        await this.storage.deleteFile(eventPath).catch(() => undefined);
+        throw new StorageError(`Failed to retrieve event: event hash mismatch for ${eventHash}`);
+      }
+      const valid = await verifyPU(envelopeBytes, event.signature, publicKey).catch(() => false);
+      if (!valid) {
+        await this.storage.deleteFile(eventPath).catch(() => undefined);
+        throw new StorageError(`Failed to retrieve event: signature verification failed for ${eventHash}`);
+      }
+      return event;
     } catch (error) {
       if (error instanceof StorageError) {
         throw error;
@@ -112,12 +133,12 @@ export class ChannelStorage {
       const files = isMultiRootStorageBackend(this.storage)
         ? await this.storage.listFilesAcrossRoots(channelPath)
         : await this.storage.listFiles(channelPath);
-      
-      // Filter for .bin files and extract hashes
+
+      // Only treat canonical 64-hex `.bin` names as event files.
+      // Garbage files can exist in mirrored provider folders and must not break volume reads.
       const eventHashes = files
-        .filter((file) => file.endsWith('.bin'))
-        .map((file) => file.slice(0, -4)) // Remove .bin extension
-        .map((hash) => createHash(hash));
+        .map((file) => normalizeEventHashFromFileName(file))
+        .filter((hash): hash is HashType => hash !== null);
 
       return eventHashes;
     } catch (error) {
@@ -180,8 +201,17 @@ export class ChannelStorage {
       const dataPath = this.getDataPath(dataHash);
       const channelHex = publicKey ? publicKeyToHex(publicKey) : undefined;
       const data = isMultiRootStorageBackend(this.storage) && channelHex
-        ? await this.storage.readFileForChannel(dataPath, channelHex)
-        : await this.storage.readFile(dataPath);
+        ? await this.storage.readValidatedFileForChannel(dataPath, channelHex, (bytes) => validateBlockBytes(dataHash, bytes))
+        : isMultiRootStorageBackend(this.storage)
+          ? await this.storage.readValidatedFile(dataPath, (bytes) => validateBlockBytes(dataHash, bytes))
+          : await this.storage.readFile(dataPath);
+      if (!isMultiRootStorageBackend(this.storage)) {
+        const validation = await validateBlockBytes(dataHash, data);
+        if (!validation.ok) {
+          await this.storage.deleteFile(dataPath).catch(() => undefined);
+          throw new StorageError(`Failed to retrieve encrypted data: ${validation.detail ?? 'block hash mismatch'}`);
+        }
+      }
       return data as EncryptedData;
     } catch (error) {
       if (error instanceof StorageError) {
@@ -207,6 +237,15 @@ export class ChannelStorage {
     }
     return await this.storage.exists(dataPath);
   }
+}
+
+function normalizeEventHashFromFileName(fileName: string): HashType | null {
+  const normalized = fileName.trim();
+  const match = normalized.match(/^([a-f0-9]{64})\.bin$/i);
+  if (!match || !match[1]) {
+    return null;
+  }
+  return createHash(match[1]);
 }
 
 function publicKeyToHex(publicKey: PublicKey): string {

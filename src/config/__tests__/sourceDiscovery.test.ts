@@ -9,11 +9,16 @@ import {
   ensureNearbytesMarker,
   getProviderScanLimits,
   inspectNearbytesRoot,
+  isNearbytesIgnoredTopLevelEntryName,
+  isNearbytesWatchIgnoredPath,
+  NEARBYTES_LEGACY_METADATA_FILE,
   NEARBYTES_LEGACY_MARKER_FILE,
   NEARBYTES_MARKER_FILE,
+  normalizeNearbytesRoot,
 } from '../sourceDiscovery.js';
 
 describe('source discovery', () => {
+  const validVolumeId = 'a'.repeat(130);
   const previousScanDirs = process.env.NEARBYTES_SOURCE_SCAN_DIRS;
 
   afterEach(() => {
@@ -46,18 +51,18 @@ describe('source discovery', () => {
     const root = path.join(tempDir, 'root');
 
     const created = await ensureNearbytesMarker(root);
-    expect(created).toBe(true);
+    expect(created.created).toBe(true);
 
     const markerPath = path.join(root, NEARBYTES_MARKER_FILE);
     const markerPayload = await readFile(markerPath, 'utf8');
     expect(markerPayload).toContain('Nearbytes storage location');
 
     const second = await ensureNearbytesMarker(root);
-    expect(second).toBe(false);
+    expect(second.created).toBe(false);
 
     await rm(markerPath, { force: true });
     const recreated = await ensureNearbytesMarker(root);
-    expect(recreated).toBe(true);
+    expect(recreated.created).toBe(true);
 
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -65,7 +70,7 @@ describe('source discovery', () => {
   it('discovers existing storage layout even without a marker file', async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), 'nearbytes-source-layout-'));
     const root = path.join(tempDir, 'shared-root');
-    await mkdir(path.join(root, 'channels', 'a'.repeat(64)), { recursive: true });
+    await mkdir(path.join(root, 'channels', validVolumeId), { recursive: true });
     await mkdir(path.join(root, 'blocks'), { recursive: true });
 
     process.env.NEARBYTES_SOURCE_SCAN_DIRS = root;
@@ -82,7 +87,7 @@ describe('source discovery', () => {
     expect(sources[0]?.sourceType).toBe('layout');
     expect(sources[0]?.hasChannels).toBe(true);
     expect(sources[0]?.hasBlocks).toBe(true);
-    expect(sources[0]?.volumeIds).toEqual(['a'.repeat(64)]);
+    expect(sources[0]?.volumeIds).toEqual([validVolumeId]);
 
     const manualSources = await discoverNearbytesSources({
       maxDepth: 1,
@@ -124,6 +129,26 @@ describe('source discovery', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+  it('removes obsolete Nearbytes.json and rewrites the marker when normalizing a root', async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), 'nearbytes-source-normalize-'));
+    const root = path.join(tempDir, 'normalized-root');
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, NEARBYTES_MARKER_FILE), 'old-marker\n', 'utf8');
+    await writeFile(path.join(root, NEARBYTES_LEGACY_METADATA_FILE), '{"legacy":true}\n', 'utf8');
+
+    const normalized = await normalizeNearbytesRoot(root, {
+      rewriteMarker: true,
+    });
+
+    expect(normalized.createdMarker).toBe(false);
+    expect(normalized.rewroteMarker).toBe(true);
+    expect(normalized.removedLegacyMetadata).toBe(true);
+    expect(await readFile(path.join(root, NEARBYTES_MARKER_FILE), 'utf8')).toContain('Nearbytes storage location');
+    await expect(readFile(path.join(root, NEARBYTES_LEGACY_METADATA_FILE), 'utf8')).rejects.toThrow();
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   it('classifies additional synced providers', () => {
     expect(classifyNearbytesProviderName('OneDrive - Research')).toBe('onedrive');
     expect(classifyNearbytesProviderName('iCloud Drive')).toBe('icloud');
@@ -140,6 +165,21 @@ describe('source discovery', () => {
       maxDepth: 2,
       maxDirectories: 600,
     });
+  });
+
+  it('treats provider housekeeping paths as ignored top-level entries', () => {
+    expect(isNearbytesIgnoredTopLevelEntryName('Rubbish')).toBe(true);
+    expect(isNearbytesIgnoredTopLevelEntryName('.debris')).toBe(true);
+    expect(isNearbytesIgnoredTopLevelEntryName('local-network')).toBe(true);
+    expect(isNearbytesIgnoredTopLevelEntryName('blocks')).toBe(false);
+  });
+
+  it('ignores watcher paths under housekeeping roots only at the top level', () => {
+    const root = path.join(tmpdir(), 'nearbytes-watch-root');
+    expect(isNearbytesWatchIgnoredPath(path.join(root, 'Rubbish'), [root])).toBe(true);
+    expect(isNearbytesWatchIgnoredPath(path.join(root, 'Rubbish', '2026-03-19'), [root])).toBe(true);
+    expect(isNearbytesWatchIgnoredPath(path.join(root, '.debris', 'entry-1'), [root])).toBe(true);
+    expect(isNearbytesWatchIgnoredPath(path.join(root, 'channels', 'abc', 'Rubbish'), [root])).toBe(false);
   });
 });
 

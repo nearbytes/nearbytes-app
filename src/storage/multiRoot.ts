@@ -7,15 +7,32 @@ import {
   type SourceConfigEntry,
   type VolumeDestinationConfig,
 } from '../config/roots.js';
-import { ensureNearbytesMarker, NEARBYTES_MARKER_FILES } from '../config/sourceDiscovery.js';
+import {
+  ensureNearbytesMarker,
+  inspectNearbytesRoot,
+  isNearbytesIgnoredTopLevelEntryName,
+  normalizeNearbytesRoot,
+  NEARBYTES_IGNORED_ROOT_FILES,
+} from '../config/sourceDiscovery.js';
+import { type SerializedEvent } from '../types/events.js';
 import { StorageError } from '../types/errors.js';
-import type { StorageBackend } from '../types/storage.js';
+import type { StorageBackend, StorageWriteEvent, StorageWriteListener } from '../types/storage.js';
 import { FilesystemStorageBackend } from './filesystem.js';
+import {
+  normalizeVolumeId,
+  parseCanonicalEventRelativePath,
+  validateBlockBytes,
+  validateEventBytes,
+  type IntegrityValidationResult,
+} from './integrity.js';
+import { deserializeEvent } from './serialization.js';
 
-const CHANNEL_PATH_REGEX = /^channels\/([a-f0-9]{64,200})(?:\/|$)/i;
+const CHANNEL_PATH_REGEX = /^channels\/([a-f0-9]{130})(?:\/|$)/i;
 const BLOCK_PATH_REGEX = /^blocks\/([a-f0-9]{64})(?:\.bin)?$/i;
 const RESOURCE_EXHAUSTED_CODES = new Set(['ENOSPC', 'EDQUOT']);
 const UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOTDIR', 'EIO']);
+const RUNTIME_USAGE_CACHE_TTL_MS = 15_000;
+const RUNTIME_USAGE_WARM_WAIT_MS = 250;
 
 export interface RootWriteFailure {
   readonly rootId: string;
@@ -66,6 +83,23 @@ export interface MultiRootRuntimeSnapshot {
   readonly writeFailures: RootWriteFailure[];
 }
 
+export interface VolumeSyncInventory {
+  readonly volumeId: string;
+  readonly generatedAt: number;
+  readonly eventHashes: string[];
+  readonly blockHashes: string[];
+}
+
+interface RuntimeSnapshotOptions {
+  readonly includeUsage?: boolean;
+}
+
+interface RepairMonitorOptions {
+  readonly repairableDelayMs: number;
+  readonly blockedDelayMs: number;
+  readonly healthyDelayMs: number;
+}
+
 export interface RootConsolidationSource {
   readonly id: string;
   readonly kind: 'source';
@@ -107,6 +141,55 @@ export interface RootConsolidationResult {
   readonly sameDevice: boolean;
 }
 
+export interface StorageLocationIssue {
+  readonly code:
+    | 'unexpected-top-level-entry'
+    | 'invalid-block-file-name'
+    | 'invalid-channel-directory'
+    | 'invalid-event-file-name'
+    | 'block-hash-mismatch'
+    | 'event-deserialize-failed'
+    | 'event-hash-mismatch'
+    | 'event-signature-invalid'
+    | 'event-format-invalid'
+    | 'nested-signature-invalid';
+  readonly severity: 'warn' | 'error';
+  readonly relativePath: string;
+  readonly absolutePath: string;
+  readonly detail: string;
+}
+
+export interface StorageLocationRepairReport {
+  readonly sourceId: string;
+  readonly path: string;
+  readonly issueCount: number;
+  readonly cleanupCandidateCount: number;
+  readonly issues: StorageLocationIssue[];
+}
+
+export interface StorageLocationRepairResult {
+  readonly sourceId: string;
+  readonly removedCount: number;
+  readonly issueCount: number;
+  readonly cleanupCandidateCount: number;
+  readonly action: 'delete' | 'trash';
+}
+
+interface StorageLocationInspectOptions {
+  readonly validateContents?: boolean;
+}
+
+interface StorageLocationRepairOptions {
+  readonly structuralOnly?: boolean;
+}
+
+export interface SourceConflictResolutionResult {
+  readonly sourceIds: string[];
+  readonly rewrittenMarkers: number;
+  readonly removedLegacyMetadata: number;
+  readonly clearedSources: number;
+}
+
 interface RootState {
   readonly config: SourceConfigEntry;
   readonly backend: FilesystemStorageBackend;
@@ -117,6 +200,11 @@ interface VolumeDestinationTarget {
   readonly policy: VolumeDestinationConfig;
 }
 
+interface CapacityProbe {
+  getAvailableBytes(path: string): Promise<number | undefined>;
+  getTotalBytes(path: string): Promise<number | undefined>;
+}
+
 /**
  * Meta-level storage router for multi-root block/event storage.
  * Routes writes by channel key and merges reads across roots.
@@ -124,9 +212,29 @@ interface VolumeDestinationTarget {
 export class MultiRootStorageBackend implements StorageBackend {
   private config: RootsConfig;
   private rootStates: RootState[];
+  private readonly writeListeners = new Set<StorageWriteListener>();
   private readonly lastWriteFailures = new Map<string, RootWriteFailure>();
+  private reconcileInFlight: Promise<void> | null = null;
+  private runtimeSnapshotInFlight: Promise<MultiRootRuntimeSnapshot> | null = null;
+  private runtimeUsageSnapshotCache:
+    | { readonly value: MultiRootRuntimeSnapshot; readonly cachedAt: number }
+    | null = null;
+  private reconcileQueued = false;
+  private repairMonitorTimer: ReturnType<typeof setTimeout> | null = null;
+  private repairMonitorRunning = false;
+  private repairAuditInFlight = false;
+  private repairMonitorOptions: RepairMonitorOptions = {
+    repairableDelayMs: 5_000,
+    blockedDelayMs: 30_000,
+    healthyDelayMs: 120_000,
+  };
+  private readonly capacityProbe: CapacityProbe;
 
   constructor(initialConfig: RootsConfig) {
+    this.capacityProbe = {
+      getAvailableBytes,
+      getTotalBytes,
+    };
     this.config = initialConfig;
     this.rootStates = this.buildRootStates(initialConfig);
   }
@@ -135,9 +243,38 @@ export class MultiRootStorageBackend implements StorageBackend {
     return this.config;
   }
 
+  async listKnownVolumeIds(): Promise<string[]> {
+    return Array.from(await this.listTrackedVolumeIds()).sort((left, right) => left.localeCompare(right));
+  }
+
+  async getVolumeSyncInventory(volumeId: string): Promise<VolumeSyncInventory> {
+    const normalizedVolumeId = normalizeVolumeId(volumeId);
+    if (!normalizedVolumeId) {
+      throw new StorageError(`Invalid volume id: ${volumeId}`);
+    }
+
+    const directory = `channels/${normalizedVolumeId}`;
+    const eventHashes = (await this.listFilesAcrossRoots(directory))
+      .map((entry) => normalizeEventHashFile(entry))
+      .filter((value): value is string => value !== null)
+      .sort((left, right) => left.localeCompare(right));
+    const blockHashes = Array.from(await this.collectReferencedBlockHashes(normalizedVolumeId)).sort((left, right) =>
+      left.localeCompare(right)
+    );
+
+    return {
+      volumeId: normalizedVolumeId,
+      generatedAt: Date.now(),
+      eventHashes,
+      blockHashes,
+    };
+  }
+
   updateRootsConfig(nextConfig: RootsConfig): void {
     this.config = nextConfig;
     this.rootStates = this.buildRootStates(nextConfig);
+    this.runtimeSnapshotInFlight = null;
+    this.runtimeUsageSnapshotCache = null;
 
     // Drop failures for roots that no longer exist.
     const rootIds = new Set(this.rootStates.map((state) => state.config.id));
@@ -148,6 +285,13 @@ export class MultiRootStorageBackend implements StorageBackend {
     }
   }
 
+  onWrite(listener: StorageWriteListener): () => void {
+    this.writeListeners.add(listener);
+    return () => {
+      this.writeListeners.delete(listener);
+    };
+  }
+
   async reconcileConfiguredVolumes(): Promise<void> {
     const trackedVolumeIds = await this.listTrackedVolumeIds();
     for (const volumeId of Array.from(trackedVolumeIds).sort()) {
@@ -156,16 +300,201 @@ export class MultiRootStorageBackend implements StorageBackend {
     await this.collectUnknownProvenanceBlocksToLocalRoot();
   }
 
-  async getRuntimeSnapshot(): Promise<MultiRootRuntimeSnapshot> {
-    const referencedByVolume = await this.getReferencedBlockHashIndex();
-    const statuses = await Promise.all(
-      this.rootStates.map((state) => this.getRootRuntimeStatus(state, referencedByVolume))
-    );
-    const writeFailures = Array.from(this.lastWriteFailures.values()).sort((left, right) => right.at - left.at);
-    return {
-      sources: statuses,
-      writeFailures,
+  scheduleReconcileConfiguredVolumes(): void {
+    this.reconcileQueued = true;
+    if (this.repairMonitorRunning) {
+      this.scheduleRepairAudit(this.repairMonitorOptions.repairableDelayMs);
+    }
+    if (this.reconcileInFlight) {
+      return;
+    }
+    this.reconcileInFlight = this.runScheduledReconcileLoop().finally(() => {
+      this.reconcileInFlight = null;
+      if (this.reconcileQueued) {
+        this.scheduleReconcileConfiguredVolumes();
+      }
+    });
+  }
+
+  isReconcileScheduled(): boolean {
+    return this.reconcileQueued || this.reconcileInFlight !== null;
+  }
+
+  startRepairMonitor(options: Partial<RepairMonitorOptions> = {}): void {
+    this.repairMonitorOptions = {
+      ...this.repairMonitorOptions,
+      ...options,
     };
+    if (this.repairMonitorRunning) {
+      this.scheduleRepairAudit(this.repairMonitorOptions.repairableDelayMs);
+      return;
+    }
+    this.repairMonitorRunning = true;
+    this.scheduleRepairAudit(0);
+  }
+
+  stopRepairMonitor(): void {
+    this.repairMonitorRunning = false;
+    if (this.repairMonitorTimer) {
+      clearTimeout(this.repairMonitorTimer);
+      this.repairMonitorTimer = null;
+    }
+  }
+
+  private async runScheduledReconcileLoop(): Promise<void> {
+    while (this.reconcileQueued) {
+      this.reconcileQueued = false;
+      await this.reconcileConfiguredVolumes();
+    }
+  }
+
+  private scheduleRepairAudit(delayMs: number): void {
+    if (!this.repairMonitorRunning) {
+      return;
+    }
+    if (this.repairMonitorTimer) {
+      clearTimeout(this.repairMonitorTimer);
+    }
+    this.repairMonitorTimer = setTimeout(() => {
+      this.repairMonitorTimer = null;
+      void this.runRepairAudit();
+    }, Math.max(0, delayMs));
+    if (typeof this.repairMonitorTimer === 'object' && this.repairMonitorTimer && 'unref' in this.repairMonitorTimer) {
+      this.repairMonitorTimer.unref();
+    }
+  }
+
+  private async runRepairAudit(): Promise<void> {
+    if (!this.repairMonitorRunning || this.repairAuditInFlight) {
+      return;
+    }
+    this.repairAuditInFlight = true;
+    try {
+      const snapshot = await this.getRuntimeSnapshot();
+      const repairState = this.inspectRepairState(snapshot);
+      if (repairState === 'repairable') {
+        this.scheduleReconcileConfiguredVolumes();
+      }
+      if (!this.repairMonitorRunning) {
+        return;
+      }
+      if (repairState === 'repairable') {
+        this.scheduleRepairAudit(this.repairMonitorOptions.repairableDelayMs);
+        return;
+      }
+      if (repairState === 'blocked') {
+        this.scheduleRepairAudit(this.repairMonitorOptions.blockedDelayMs);
+        return;
+      }
+      this.scheduleRepairAudit(this.repairMonitorOptions.healthyDelayMs);
+    } finally {
+      this.repairAuditInFlight = false;
+    }
+  }
+
+  private inspectRepairState(snapshot: MultiRootRuntimeSnapshot): 'repairable' | 'blocked' | 'healthy' {
+    const volumeIds = new Set<string>();
+    for (const source of snapshot.sources) {
+      for (const usage of source.usage.volumeUsages) {
+        volumeIds.add(usage.volumeId);
+      }
+    }
+
+    for (const volumeId of Array.from(volumeIds.values()).sort()) {
+      let expectedHistoryBytes = 0;
+      let expectedFileBytes = 0;
+      for (const source of snapshot.sources) {
+        const usage = source.usage.volumeUsages.find((entry) => entry.volumeId === volumeId);
+        if (!usage) {
+          continue;
+        }
+        expectedHistoryBytes = Math.max(expectedHistoryBytes, usage.historyBytes);
+        expectedFileBytes = Math.max(expectedFileBytes, usage.fileBytes);
+      }
+
+      const expectedBytes = expectedHistoryBytes + expectedFileBytes;
+      if (expectedBytes === 0) {
+        continue;
+      }
+
+      for (const destination of resolveVolumeDestinations(this.config, volumeId)) {
+        if (!isDurableDestination(destination) || !destination.enabled) {
+          continue;
+        }
+        const source = snapshot.sources.find((entry) => entry.id === destination.sourceId);
+        if (!source || !source.enabled || !source.writable) {
+          return 'blocked';
+        }
+        const usage = source.usage.volumeUsages.find((entry) => entry.volumeId === volumeId);
+        const presentBytes = (usage?.historyBytes ?? 0) + (usage?.fileBytes ?? 0);
+        if (presentBytes >= expectedBytes) {
+          continue;
+        }
+        if (!source.exists || !source.isDirectory || !source.canWrite) {
+          return 'blocked';
+        }
+        return 'repairable';
+      }
+    }
+
+    return 'healthy';
+  }
+
+  async getRuntimeSnapshot(options: RuntimeSnapshotOptions = {}): Promise<MultiRootRuntimeSnapshot> {
+    const includeUsage = options.includeUsage !== false;
+    const buildSnapshot = async (includeUsageValue: boolean): Promise<MultiRootRuntimeSnapshot> => {
+      const referencedByVolume = includeUsageValue ? await this.getReferencedBlockHashIndex() : new Map<string, Set<string>>();
+      const statuses = await Promise.all(
+        this.rootStates.map((state) => this.getRootRuntimeStatus(state, referencedByVolume, { includeUsage: includeUsageValue }))
+      );
+      const writeFailures = Array.from(this.lastWriteFailures.values()).sort((left, right) => right.at - left.at);
+      return {
+        sources: statuses,
+        writeFailures,
+      };
+    };
+
+    if (!includeUsage) {
+      return buildSnapshot(false);
+    }
+
+    const cachedSnapshot = this.runtimeUsageSnapshotCache;
+    const cacheIsFresh =
+      cachedSnapshot !== null && Date.now() - cachedSnapshot.cachedAt <= RUNTIME_USAGE_CACHE_TTL_MS;
+    if (cacheIsFresh) {
+      return cachedSnapshot.value;
+    }
+
+    if (!this.runtimeSnapshotInFlight) {
+      const snapshotTask = buildSnapshot(true);
+      this.runtimeSnapshotInFlight = snapshotTask;
+      void snapshotTask
+        .then((snapshot) => {
+          this.runtimeUsageSnapshotCache = {
+            value: snapshot,
+            cachedAt: Date.now(),
+          };
+        })
+        .finally(() => {
+          if (this.runtimeSnapshotInFlight === snapshotTask) {
+            this.runtimeSnapshotInFlight = null;
+          }
+        });
+    }
+
+    if (cachedSnapshot) {
+      return cachedSnapshot.value;
+    }
+
+    const warmed = await Promise.race([
+      this.runtimeSnapshotInFlight,
+      waitForRuntimeUsageWarmBudget(RUNTIME_USAGE_WARM_WAIT_MS),
+    ]);
+    if (warmed) {
+      return warmed;
+    }
+
+    return buildSnapshot(false);
   }
 
   async getConsolidationPlan(sourceId: string): Promise<RootConsolidationPlan> {
@@ -317,7 +646,11 @@ export class MultiRootStorageBackend implements StorageBackend {
             ? { ...entry, moveFromSourceId: undefined }
             : entry
         ),
-      defaultVolume: this.config.defaultVolume,
+      defaultVolume: {
+        destinations: this.config.defaultVolume.destinations.filter(
+          (destination) => destination.sourceId !== source.config.id
+        ),
+      },
       volumes: this.config.volumes.map((volume) => ({
         volumeId: volume.volumeId,
         destinations: volume.destinations.filter((destination) => destination.sourceId !== source.config.id),
@@ -339,6 +672,56 @@ export class MultiRootStorageBackend implements StorageBackend {
         bytesTransferred: transferResult.bytesTransferred,
         sameDevice: transferResult.sameDevice,
       },
+    };
+  }
+
+  async resolveSourceConflicts(options: {
+    readonly sourceIds?: readonly string[];
+    readonly resetTargets?: boolean;
+    readonly rewriteMarker?: boolean;
+    readonly ensureMarker?: boolean;
+  } = {}): Promise<SourceConflictResolutionResult> {
+    const targetedStates =
+      options.sourceIds && options.sourceIds.length > 0
+        ? options.sourceIds
+            .map((sourceId) => this.getRootStateById(sourceId))
+            .filter((state): state is RootState => Boolean(state))
+        : this.rootStates;
+    const uniqueStates = Array.from(
+      new Map(targetedStates.map((state) => [state.config.id, state])).values()
+    );
+    await this.reconcileConfiguredVolumes();
+
+    let clearedSources = 0;
+    if (options.resetTargets) {
+      for (const state of uniqueStates) {
+        if (await clearNearbytesSourceData(state.config.path)) {
+          clearedSources += 1;
+        }
+      }
+    }
+
+    let rewrittenMarkers = 0;
+    let removedLegacyMetadata = 0;
+
+    for (const state of uniqueStates) {
+      const normalized = await normalizeNearbytesRoot(state.config.path, {
+        rewriteMarker: options.rewriteMarker ?? true,
+        ensureMarker: options.ensureMarker,
+      });
+      if (normalized.createdMarker || normalized.rewroteMarker) {
+        rewrittenMarkers += 1;
+      }
+      if (normalized.removedLegacyMetadata) {
+        removedLegacyMetadata += 1;
+      }
+    }
+
+    return {
+      sourceIds: uniqueStates.map((state) => state.config.id),
+      rewrittenMarkers,
+      removedLegacyMetadata,
+      clearedSources,
     };
   }
 
@@ -366,6 +749,16 @@ export class MultiRootStorageBackend implements StorageBackend {
     const normalizedChannel = channelKeyHex.toLowerCase();
     const prioritized = this.prioritizeRootsForChannel(normalizedChannel);
     return this.readFileFromRoots(relativePath, prioritized);
+  }
+
+  async readValidatedFileForChannel(
+    relativePath: string,
+    channelKeyHex: string,
+    validate: (data: Uint8Array) => Promise<IntegrityValidationResult>
+  ): Promise<Uint8Array> {
+    const normalizedChannel = channelKeyHex.toLowerCase();
+    const prioritized = this.prioritizeRootsForChannel(normalizedChannel);
+    return this.readValidatedFileFromRoots(relativePath, prioritized, validate);
   }
 
   async existsForChannel(relativePath: string, channelKeyHex: string): Promise<boolean> {
@@ -397,6 +790,13 @@ export class MultiRootStorageBackend implements StorageBackend {
     return this.readFileFromRoots(relativePath, this.getEnabledRootStates());
   }
 
+  async readValidatedFile(
+    relativePath: string,
+    validate: (data: Uint8Array) => Promise<IntegrityValidationResult>
+  ): Promise<Uint8Array> {
+    return this.readValidatedFileFromRoots(relativePath, this.getEnabledRootStates(), validate);
+  }
+
   async listFiles(directory: string): Promise<string[]> {
     return this.listFilesAcrossRoots(directory);
   }
@@ -404,7 +804,7 @@ export class MultiRootStorageBackend implements StorageBackend {
   async createDirectory(relativePath: string): Promise<void> {
     const parsedChannel = this.parseChannelKeyFromPath(relativePath);
     if (parsedChannel) {
-      const targets = this.getWritableVolumeDestinationTargets(parsedChannel, { requireBlocks: false });
+      const targets = this.getWritableVolumeDestinationTargets(parsedChannel);
       if (targets.length === 0) {
         throw new StorageError(`No writable destinations configured for volume ${parsedChannel}`);
       }
@@ -445,6 +845,72 @@ export class MultiRootStorageBackend implements StorageBackend {
     );
   }
 
+  async inspectStorageLocation(
+    sourceId: string,
+    options: StorageLocationInspectOptions = {}
+  ): Promise<StorageLocationRepairReport> {
+    const state = this.getRootStateById(sourceId);
+    if (!state) {
+      throw new StorageError(`Source not found: ${sourceId}`);
+    }
+    const issues = await this.inspectStorageLocationIssues(state, options);
+    return {
+      sourceId,
+      path: state.config.path,
+      issueCount: issues.length,
+      cleanupCandidateCount: issues.length,
+      issues: issues.sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
+    };
+  }
+
+  async repairStorageLocation(
+    sourceId: string,
+    action: 'delete' | 'trash',
+    options: StorageLocationRepairOptions = {}
+  ): Promise<StorageLocationRepairResult> {
+    await this.assertSafeStorageLocationCleanup(sourceId);
+    const report = await this.inspectStorageLocation(sourceId, {
+      validateContents: options.structuralOnly !== true,
+    });
+    const uniquePaths = Array.from(new Set(report.issues.map((issue) => issue.absolutePath))).sort();
+    for (const targetPath of uniquePaths) {
+      await removeIssuePath(targetPath, action);
+    }
+    return {
+      sourceId,
+      removedCount: uniquePaths.length,
+      issueCount: report.issueCount,
+      cleanupCandidateCount: report.cleanupCandidateCount,
+      action,
+    };
+  }
+
+  private async assertSafeStorageLocationCleanup(sourceId: string): Promise<void> {
+    const state = this.getRootStateById(sourceId);
+    if (!state) {
+      throw new StorageError(`Source not found: ${sourceId}`);
+    }
+    const inspection = await inspectNearbytesRoot(state.config.path);
+    if (inspection?.hasMarker) {
+      return;
+    }
+    throw new StorageError(
+      'Cleanup is only allowed for storage locations that contain Nearbytes.html. Add a Nearbytes marker first, then try again.'
+    );
+  }
+
+  private async inspectStorageLocationIssues(
+    state: RootState,
+    options: StorageLocationInspectOptions = {}
+  ): Promise<StorageLocationIssue[]> {
+    const issues: StorageLocationIssue[] = [];
+    const validateContents = options.validateContents !== false;
+    await this.auditTopLevelEntries(state, issues);
+    await this.auditBlocks(state, issues, validateContents);
+    await this.auditChannels(state, issues, validateContents);
+    return issues;
+  }
+
   private async readFileFromRoots(relativePath: string, states: RootState[]): Promise<Uint8Array> {
     let lastError: Error | undefined;
     for (const state of states) {
@@ -462,6 +928,200 @@ export class MultiRootStorageBackend implements StorageBackend {
       throw new StorageError(`Failed to read ${relativePath}: ${lastError.message}`, lastError);
     }
     throw new StorageError(`File not found in any root: ${relativePath}`);
+  }
+
+  private async readValidatedFileFromRoots(
+    relativePath: string,
+    states: RootState[],
+    validate: (data: Uint8Array) => Promise<IntegrityValidationResult>
+  ): Promise<Uint8Array> {
+    let lastError: Error | undefined;
+    for (const state of states) {
+      try {
+        const data = await state.backend.readFile(relativePath);
+        const result = await validate(data);
+        if (result.ok) {
+          return data;
+        }
+        await state.backend.deleteFile(relativePath).catch(() => undefined);
+        lastError = new StorageError(
+          `Rejected invalid copy of ${relativePath} from ${state.config.id}${result.detail ? `: ${result.detail}` : ''}`
+        );
+      } catch (error) {
+        if (isFileNotFoundError(error)) {
+          continue;
+        }
+        lastError = asError(error);
+      }
+    }
+
+    if (lastError) {
+      throw new StorageError(`Failed to read ${relativePath}: ${lastError.message}`, lastError);
+    }
+    throw new StorageError(`File not found in any root: ${relativePath}`);
+  }
+
+  private async auditTopLevelEntries(state: RootState, issues: StorageLocationIssue[]): Promise<void> {
+    const entries = await safeReadDir(state.config.path);
+    for (const entry of entries) {
+      if (entry.name === 'blocks' || entry.name === 'channels' || isNearbytesIgnoredTopLevelEntryName(entry.name)) {
+        continue;
+      }
+      issues.push({
+        code: 'unexpected-top-level-entry',
+        severity: 'warn',
+        relativePath: entry.name,
+        absolutePath: join(state.config.path, entry.name),
+        detail: `Unexpected top-level entry: ${entry.name}`,
+      });
+    }
+  }
+
+  private async auditBlocks(
+    state: RootState,
+    issues: StorageLocationIssue[],
+    validateContents: boolean
+  ): Promise<void> {
+    const blocksPath = join(state.config.path, 'blocks');
+    const entries = await safeReadDir(blocksPath);
+    for (const entry of entries) {
+      const relativePath = normalizeRelativePath(join('blocks', entry.name));
+      const absolutePath = join(blocksPath, entry.name);
+      if (entry.isDirectory()) {
+        issues.push({
+          code: 'invalid-block-file-name',
+          severity: 'error',
+          relativePath,
+          absolutePath,
+          detail: `Unexpected directory inside blocks: ${entry.name}`,
+        });
+        continue;
+      }
+      if (!entry.isFile()) {
+        issues.push({
+          code: 'invalid-block-file-name',
+          severity: 'error',
+          relativePath,
+          absolutePath,
+          detail: `Unexpected entry inside blocks: ${entry.name}`,
+        });
+        continue;
+      }
+      const blockMatch = entry.name.match(/^([a-f0-9]{64})\.bin$/i);
+      if (!blockMatch) {
+        issues.push({
+          code: 'invalid-block-file-name',
+          severity: 'error',
+          relativePath,
+          absolutePath,
+          detail: `Invalid block filename: ${entry.name}`,
+        });
+        continue;
+      }
+      if (!validateContents) {
+        continue;
+      }
+      const bytes = await fs.readFile(absolutePath).then((buffer) => new Uint8Array(buffer)).catch(() => null);
+      if (!bytes) {
+        continue;
+      }
+      const result = await validateBlockBytes(blockMatch[1] ?? '', bytes);
+      if (!result.ok) {
+        issues.push({
+          code: 'block-hash-mismatch',
+          severity: 'error',
+          relativePath,
+          absolutePath,
+          detail: result.detail ?? `Hash mismatch for ${entry.name}`,
+        });
+      }
+    }
+  }
+
+  private async auditChannels(
+    state: RootState,
+    issues: StorageLocationIssue[],
+    validateContents: boolean
+  ): Promise<void> {
+    const channelsPath = join(state.config.path, 'channels');
+    const channelEntries = await safeReadDir(channelsPath);
+    for (const channelEntry of channelEntries) {
+      const channelRelativePath = normalizeRelativePath(join('channels', channelEntry.name));
+      const channelAbsolute = join(channelsPath, channelEntry.name);
+      if (!channelEntry.isDirectory()) {
+        issues.push({
+          code: 'invalid-channel-directory',
+          severity: 'error',
+          relativePath: channelRelativePath,
+          absolutePath: channelAbsolute,
+          detail: `Unexpected entry inside channels: ${channelEntry.name}`,
+        });
+        continue;
+      }
+      if (!/^[a-f0-9]{130}$/i.test(channelEntry.name)) {
+        issues.push({
+          code: 'invalid-channel-directory',
+          severity: 'error',
+          relativePath: channelRelativePath,
+          absolutePath: channelAbsolute,
+          detail: `Invalid channel directory: ${channelEntry.name}`,
+        });
+        continue;
+      }
+      const eventEntries = await safeReadDir(channelAbsolute);
+      for (const eventEntry of eventEntries) {
+        const relativePath = normalizeRelativePath(join('channels', channelEntry.name, eventEntry.name));
+        const absolutePath = join(channelAbsolute, eventEntry.name);
+        if (eventEntry.isDirectory()) {
+          issues.push({
+            code: 'invalid-event-file-name',
+            severity: 'error',
+            relativePath,
+            absolutePath,
+            detail: `Unexpected directory inside channel: ${eventEntry.name}`,
+          });
+          continue;
+        }
+        if (!eventEntry.isFile()) {
+          issues.push({
+            code: 'invalid-event-file-name',
+            severity: 'error',
+            relativePath,
+            absolutePath,
+            detail: `Unexpected entry inside channel: ${eventEntry.name}`,
+          });
+          continue;
+        }
+        const eventMatch = eventEntry.name.match(/^([a-f0-9]{64})\.bin$/i);
+        if (!eventMatch) {
+          issues.push({
+            code: 'invalid-event-file-name',
+            severity: 'error',
+            relativePath,
+            absolutePath,
+            detail: `Invalid event filename: ${eventEntry.name}`,
+          });
+          continue;
+        }
+        if (!validateContents) {
+          continue;
+        }
+        const bytes = await fs.readFile(absolutePath).then((buffer) => new Uint8Array(buffer)).catch(() => null);
+        if (!bytes) {
+          continue;
+        }
+        const result = await validateEventBytes(channelEntry.name, eventMatch[1] ?? '', bytes);
+        if (!result.ok) {
+          issues.push({
+            code: (result.code as StorageLocationIssue['code']) ?? 'event-deserialize-failed',
+            severity: 'error',
+            relativePath,
+            absolutePath,
+            detail: result.detail ?? `Invalid event file: ${eventEntry.name}`,
+          });
+        }
+      }
+    }
   }
 
   private async createDirectoryInTargets(relativePath: string, targets: RootState[]): Promise<void> {
@@ -490,9 +1150,7 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   private async writeToChannelTargets(relativePath: string, data: Uint8Array, channelKeyHex: string): Promise<void> {
     const isBlockWrite = BLOCK_PATH_REGEX.test(normalizeRelativePath(relativePath));
-    const targets = this.getWritableVolumeDestinationTargets(channelKeyHex, {
-      requireBlocks: isBlockWrite,
-    });
+    const targets = this.getWritableVolumeDestinationTargets(channelKeyHex);
     if (targets.length === 0) {
       throw new StorageError(
         `No writable ${isBlockWrite ? 'block' : 'event'} destinations configured for volume ${channelKeyHex}`
@@ -501,7 +1159,7 @@ export class MultiRootStorageBackend implements StorageBackend {
 
     const successCount = await this.writeToDestinations(targets, relativePath, data, channelKeyHex);
     const durableTargets = targets.filter((target) =>
-      isBlockWrite ? isDurableDestination(target.policy) : target.policy.enabled && target.policy.storeEvents
+      isBlockWrite ? isDurableDestination(target.policy) : target.policy.enabled
     );
     const durableSuccessCount = durableTargets.filter(
       (target) => !this.lastWriteFailures.has(target.state.config.id)
@@ -557,6 +1215,12 @@ export class MultiRootStorageBackend implements StorageBackend {
           await ensureNearbytesMarker(state.config.path);
           await state.backend.writeFile(relativePath, data);
           this.lastWriteFailures.delete(state.config.id);
+          this.emitWriteEvent({
+            sourceId: state.config.id,
+            path: relativePath,
+            size: data.byteLength,
+            channelKeyHex,
+          });
           successCount += 1;
         } catch (error) {
           const failure = this.toWriteFailure(state.config.id, relativePath, error, channelKeyHex);
@@ -583,6 +1247,12 @@ export class MultiRootStorageBackend implements StorageBackend {
           await ensureNearbytesMarker(target.state.config.path);
           await target.state.backend.writeFile(relativePath, data);
           this.lastWriteFailures.delete(target.state.config.id);
+          this.emitWriteEvent({
+            sourceId: target.state.config.id,
+            path: relativePath,
+            size: data.byteLength,
+            channelKeyHex,
+          });
           successCount += 1;
         } catch (error) {
           const failure = this.toWriteFailure(target.state.config.id, relativePath, error, channelKeyHex);
@@ -598,7 +1268,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     const prioritized: RootState[] = [];
     const fallback: RootState[] = [];
     const prioritizedSourceIds = new Set(
-      this.getVolumeDestinationTargets(channelKeyHex, { requireBlocks: false }).map((target) => target.state.config.id)
+      this.getVolumeDestinationTargets(channelKeyHex).map((target) => target.state.config.id)
     );
 
     for (const state of this.getEnabledRootStates()) {
@@ -620,10 +1290,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     return this.rootStates.filter((state) => state.config.enabled && state.config.writable);
   }
 
-  private getVolumeDestinationTargets(
-    channelKeyHex: string,
-    options: { requireBlocks: boolean }
-  ): VolumeDestinationTarget[] {
+  private getVolumeDestinationTargets(channelKeyHex: string): VolumeDestinationTarget[] {
     const destinations = resolveVolumeDestinations(this.config, channelKeyHex);
     const targets: VolumeDestinationTarget[] = [];
     for (const destination of destinations) {
@@ -634,22 +1301,23 @@ export class MultiRootStorageBackend implements StorageBackend {
       if (!state.config.enabled || !state.config.writable || !destination.enabled) {
         continue;
       }
-      if (!destination.storeEvents) {
-        continue;
-      }
-      if (options.requireBlocks && (!destination.storeBlocks || !destination.copySourceBlocks)) {
-        continue;
-      }
       targets.push({ state, policy: destination });
     }
     return targets;
   }
 
-  private getWritableVolumeDestinationTargets(
-    channelKeyHex: string,
-    options: { requireBlocks: boolean }
-  ): VolumeDestinationTarget[] {
-    return this.getVolumeDestinationTargets(channelKeyHex, options);
+  private getWritableVolumeDestinationTargets(channelKeyHex: string): VolumeDestinationTarget[] {
+    return this.getVolumeDestinationTargets(channelKeyHex);
+  }
+
+  private emitWriteEvent(event: StorageWriteEvent): void {
+    for (const listener of this.writeListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Keep observer failures from affecting durable storage writes.
+      }
+    }
   }
 
   private async prepareDestinationWrite(
@@ -657,34 +1325,38 @@ export class MultiRootStorageBackend implements StorageBackend {
     bytesToWrite: number,
     channelKeyHex: string
   ): Promise<void> {
-    const availableBytes = await getAvailableBytes(target.state.config.path);
-    const totalBytes = await getTotalBytes(target.state.config.path);
+    const availableBytes = await this.capacityProbe.getAvailableBytes(target.state.config.path);
+    const totalBytes = await this.capacityProbe.getTotalBytes(target.state.config.path);
     if (availableBytes === undefined || totalBytes === undefined) {
       return;
     }
 
     const reservePercent = Math.max(target.state.config.reservePercent, target.policy.reservePercent);
     const reservedBytes = Math.floor((totalBytes * reservePercent) / 100);
-    if (availableBytes - bytesToWrite >= reservedBytes) {
+    const spareBytesAfterWrite = availableBytes - bytesToWrite;
+    if (spareBytesAfterWrite >= reservedBytes) {
+      return;
+    }
+
+    // Once a destination is already below its reserve watermark, keep allowing writes
+    // that still fit in the actual free space rather than deadlocking the volume.
+    if (availableBytes < reservedBytes && spareBytesAfterWrite >= 0) {
       return;
     }
 
     await this.pruneSourceBlocks(target.state.config.id, reservedBytes + bytesToWrite, channelKeyHex, {
       preserveReplicaBlocks: true,
     });
-    const afterSpareCleanupBytes = await getAvailableBytes(target.state.config.path);
+    const afterSpareCleanupBytes = await this.capacityProbe.getAvailableBytes(target.state.config.path);
     if (afterSpareCleanupBytes !== undefined && afterSpareCleanupBytes - bytesToWrite >= reservedBytes) {
       return;
     }
-
-    if (target.policy.fullPolicy === 'drop-older-blocks') {
-      await this.pruneSourceBlocks(target.state.config.id, reservedBytes + bytesToWrite, channelKeyHex, {
-        preserveReplicaBlocks: false,
-      });
-      const nextAvailableBytes = await getAvailableBytes(target.state.config.path);
-      if (nextAvailableBytes !== undefined && nextAvailableBytes - bytesToWrite >= reservedBytes) {
-        return;
-      }
+    if (
+      afterSpareCleanupBytes !== undefined &&
+      availableBytes < reservedBytes &&
+      afterSpareCleanupBytes >= bytesToWrite
+    ) {
+      return;
     }
 
     throw new StorageError(
@@ -698,7 +1370,7 @@ export class MultiRootStorageBackend implements StorageBackend {
   }
 
   private async reconcileVolumeEvents(volumeId: string): Promise<void> {
-    const eventTargets = this.getWritableVolumeDestinationTargets(volumeId, { requireBlocks: false });
+    const eventTargets = this.getWritableVolumeDestinationTargets(volumeId);
     if (eventTargets.length === 0) {
       return;
     }
@@ -711,11 +1383,11 @@ export class MultiRootStorageBackend implements StorageBackend {
 
     for (const target of eventTargets) {
       for (const eventFile of eventFiles) {
-        if (!eventFile.endsWith('.bin')) {
+        const relativePath = `${directory}/${eventFile}`;
+        const parsedEventPath = parseCanonicalEventRelativePath(relativePath);
+        if (!parsedEventPath) {
           continue;
         }
-
-        const relativePath = `${directory}/${eventFile}`;
         try {
           if (await target.state.backend.exists(relativePath)) {
             continue;
@@ -726,7 +1398,11 @@ export class MultiRootStorageBackend implements StorageBackend {
 
         let data: Uint8Array;
         try {
-          data = await this.readFileFromRoots(relativePath, this.prioritizeRootsForChannel(volumeId));
+          data = await this.readValidatedFileFromRoots(
+            relativePath,
+            this.prioritizeRootsForChannel(volumeId),
+            (bytes) => validateEventBytes(parsedEventPath.volumeId, parsedEventPath.eventHash, bytes)
+          );
         } catch {
           continue;
         }
@@ -752,7 +1428,7 @@ export class MultiRootStorageBackend implements StorageBackend {
       return;
     }
 
-    const blockTargets = this.getWritableVolumeDestinationTargets(volumeId, { requireBlocks: true });
+    const blockTargets = this.getWritableVolumeDestinationTargets(volumeId);
     for (const target of blockTargets) {
       for (const hash of referencedHashes) {
         const relativePath = `blocks/${hash}.bin`;
@@ -766,7 +1442,11 @@ export class MultiRootStorageBackend implements StorageBackend {
 
         let data: Uint8Array;
         try {
-          data = await this.readFileFromRoots(relativePath, this.prioritizeRootsForChannel(volumeId));
+          data = await this.readValidatedFileFromRoots(
+            relativePath,
+            this.prioritizeRootsForChannel(volumeId),
+            (bytes) => validateBlockBytes(hash, bytes)
+          );
         } catch {
           continue;
         }
@@ -794,8 +1474,16 @@ export class MultiRootStorageBackend implements StorageBackend {
 
     const referencedHashes = await this.collectReferencedBlockHashesAcrossStates(this.rootStates);
     const targetBlocksDir = join(target.config.path, 'blocks');
-    await fs.mkdir(targetBlocksDir, { recursive: true });
-    await ensureNearbytesMarker(target.config.path);
+    try {
+      await fs.mkdir(targetBlocksDir, { recursive: true });
+      await ensureNearbytesMarker(target.config.path);
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
+      if (code === 'ENOENT') {
+        return;
+      }
+      throw error;
+    }
 
     for (const source of this.rootStates) {
       if (source.config.id === target.config.id) {
@@ -818,6 +1506,14 @@ export class MultiRootStorageBackend implements StorageBackend {
         const destinationAbsolute = join(targetBlocksDir, entry.name);
         const stats = await safeStat(sourceAbsolute);
         if (!stats || !stats.isFile()) {
+          continue;
+        }
+        const bytes = await fs.readFile(sourceAbsolute).then((buffer) => new Uint8Array(buffer)).catch(() => null);
+        if (!bytes) {
+          continue;
+        }
+        const validation = await validateBlockBytes(hash, bytes);
+        if (!validation.ok) {
           continue;
         }
 
@@ -914,9 +1610,7 @@ export class MultiRootStorageBackend implements StorageBackend {
       const destinations = resolveVolumeDestinations(this.config, volumeId).filter(
         (destination) =>
           destination.sourceId === sourceId &&
-          destination.enabled &&
-          destination.storeEvents &&
-          destination.storeBlocks
+          destination.enabled
       );
       if (destinations.length === 0) {
         continue;
@@ -947,8 +1641,8 @@ export class MultiRootStorageBackend implements StorageBackend {
         if (!entry.isDirectory()) {
           continue;
         }
-        const volumeId = entry.name.trim().toLowerCase();
-        if (/^[a-f0-9]{64,200}$/i.test(volumeId)) {
+        const volumeId = normalizeVolumeId(entry.name);
+        if (volumeId) {
           volumeIds.add(volumeId);
         }
       }
@@ -966,24 +1660,26 @@ export class MultiRootStorageBackend implements StorageBackend {
     const eventFiles = await this.listFilesAcrossStates(directory, states);
 
     for (const eventFile of eventFiles) {
-      if (!eventFile.endsWith('.bin')) {
+      const relativePath = `${directory}/${eventFile}`;
+      const parsedEventPath = parseCanonicalEventRelativePath(relativePath);
+      if (!parsedEventPath) {
         continue;
       }
-      const relativePath = `${directory}/${eventFile}`;
       let bytes: Uint8Array;
       try {
-        bytes = await this.readFileFromRoots(relativePath, Array.from(states));
+        bytes = await this.readValidatedFileFromRoots(
+          relativePath,
+          Array.from(states),
+          (data) => validateEventBytes(parsedEventPath.volumeId, parsedEventPath.eventHash, data)
+        );
       } catch {
         continue;
       }
 
       try {
-        const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
-          payload?: { type?: string; hash?: string };
-        };
-        const hash = parsed.payload?.hash?.trim().toLowerCase();
-        if (parsed.payload?.type === 'CREATE_FILE' && hash && /^[a-f0-9]{64}$/i.test(hash)) {
-          hashes.add(hash);
+        const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(bytes)) as SerializedEvent);
+        for (const blockHash of parsed.envelope.blockRefs) {
+          hashes.add(blockHash);
         }
       } catch {
         // Ignore unreadable event payloads at the meta layer.
@@ -1028,7 +1724,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     const historyByVolume = new Map<string, { bytes: number; files: number }>();
 
     for (const file of files) {
-      if (NEARBYTES_MARKER_FILES.includes(file.relativePath as (typeof NEARBYTES_MARKER_FILES)[number])) {
+      if (NEARBYTES_IGNORED_ROOT_FILES.includes(file.relativePath as (typeof NEARBYTES_IGNORED_ROOT_FILES)[number])) {
         continue;
       }
       totalBytes += file.size;
@@ -1046,8 +1742,8 @@ export class MultiRootStorageBackend implements StorageBackend {
       if (normalized.startsWith('channels/')) {
         channelBytes += file.size;
         const parts = normalized.split('/');
-        const volumeId = parts[1]?.trim().toLowerCase();
-        if (volumeId && /^[a-f0-9]{64,200}$/i.test(volumeId)) {
+        const volumeId = parts[1] ? normalizeVolumeId(parts[1]) : null;
+        if (volumeId) {
           const current = historyByVolume.get(volumeId) ?? { bytes: 0, files: 0 };
           current.bytes += file.size;
           current.files += 1;
@@ -1151,8 +1847,10 @@ export class MultiRootStorageBackend implements StorageBackend {
 
   private async getRootRuntimeStatus(
     state: RootState,
-    referencedByVolume: ReadonlyMap<string, Set<string>>
+    referencedByVolume: ReadonlyMap<string, Set<string>>,
+    options: RuntimeSnapshotOptions = {}
   ): Promise<RootRuntimeStatus> {
+    const includeUsage = options.includeUsage !== false;
     const lastWriteFailure = this.lastWriteFailures.get(state.config.id);
 
     let exists = false;
@@ -1194,7 +1892,9 @@ export class MultiRootStorageBackend implements StorageBackend {
         // Leave undefined when statfs is unavailable.
       }
 
-      usage = await this.collectSourceUsageSummary(state, referencedByVolume);
+      if (includeUsage) {
+        usage = await this.collectSourceUsageSummary(state, referencedByVolume);
+      }
     }
 
     return {
@@ -1246,6 +1946,13 @@ export class MultiRootStorageBackend implements StorageBackend {
   }
 }
 
+async function waitForRuntimeUsageWarmBudget(timeoutMs: number): Promise<MultiRootRuntimeSnapshot | null> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, timeoutMs);
+  });
+  return null;
+}
+
 interface RootFileEntry {
   readonly relativePath: string;
   readonly absolutePath: string;
@@ -1291,7 +1998,7 @@ async function listRootFiles(rootPath: string): Promise<RootFileEntry[]> {
     }
 
     for (const entry of entries) {
-      if (NEARBYTES_MARKER_FILES.includes(entry.name as (typeof NEARBYTES_MARKER_FILES)[number])) {
+      if (NEARBYTES_IGNORED_ROOT_FILES.includes(entry.name as (typeof NEARBYTES_IGNORED_ROOT_FILES)[number])) {
         continue;
       }
 
@@ -1405,6 +2112,20 @@ async function executeTransfer(options: {
   };
 }
 
+async function clearNearbytesSourceData(rootPath: string): Promise<boolean> {
+  const blocksPath = join(rootPath, 'blocks');
+  const channelsPath = join(rootPath, 'channels');
+  const hadBlocks = Boolean(await safeStat(blocksPath));
+  const hadChannels = Boolean(await safeStat(channelsPath));
+  const markerPaths = NEARBYTES_IGNORED_ROOT_FILES.map((name) => join(rootPath, name));
+
+  await fs.rm(blocksPath, { recursive: true, force: true });
+  await fs.rm(channelsPath, { recursive: true, force: true });
+  await Promise.all(markerPaths.map((targetPath) => fs.rm(targetPath, { force: true })));
+
+  return hadBlocks || hadChannels;
+}
+
 async function removeEmptyDirectories(rootPath: string): Promise<void> {
   const queue: string[] = [rootPath];
   const directories: string[] = [];
@@ -1508,6 +2229,76 @@ async function safeUnlink(path: string): Promise<void> {
   }
 }
 
+async function safeReadDir(directory: string): Promise<import('fs').Dirent[]> {
+  try {
+    return await fs.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    const code = extractFsErrorCode(error);
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function removeIssuePath(targetPath: string, action: 'delete' | 'trash'): Promise<void> {
+  if (action === 'trash') {
+    await movePathToTrash(targetPath).catch(() => fs.rm(targetPath, { recursive: true, force: true }));
+    return;
+  }
+  await fs.rm(targetPath, { recursive: true, force: true });
+}
+
+async function movePathToTrash(targetPath: string): Promise<void> {
+  const launcher =
+    process.platform === 'darwin'
+      ? {
+          command: 'osascript',
+          args: ['-e', `tell application "Finder" to delete POSIX file ${appleScriptString(targetPath)}`],
+        }
+      : process.platform === 'win32'
+        ? {
+            command: 'powershell',
+            args: [
+              '-NoProfile',
+              '-Command',
+              `Add-Type -AssemblyName Microsoft.VisualBasic; $path = ${powerShellString(targetPath)}; if (Test-Path -LiteralPath $path -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($path,'OnlyErrorDialogs','SendToRecycleBin') } else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($path,'OnlyErrorDialogs','SendToRecycleBin') }`,
+            ],
+          }
+        : {
+            command: 'gio',
+            args: ['trash', targetPath],
+          };
+
+  await new Promise<void>((resolve, reject) => {
+    const child = require('child_process').spawn(launcher.command, launcher.args, {
+      stdio: 'ignore',
+    });
+    child.once('error', reject);
+    child.once('exit', (code: number | null) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`Trash command exited with code ${code ?? -1}`));
+    });
+  });
+}
+
+function appleScriptString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function powerShellString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function extractFsErrorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+    ? (error as { code: string }).code
+    : undefined;
+}
+
 async function safeStat(path: string): Promise<Awaited<ReturnType<typeof fs.stat>> | null> {
   try {
     return await fs.stat(path);
@@ -1563,4 +2354,10 @@ function asError(error: unknown): Error {
     return error;
   }
   return new Error(String(error));
+}
+
+function normalizeEventHashFile(fileName: string): string | null {
+  const normalized = fileName.trim().toLowerCase();
+  const match = /^([a-f0-9]{64})\.bin$/u.exec(normalized);
+  return match?.[1] ?? null;
 }

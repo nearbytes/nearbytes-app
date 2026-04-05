@@ -1,5 +1,5 @@
 import type { Secret, PublicKey } from '../types/keys.js';
-import type { Hash, SignedEvent, EventPayload } from '../types/events.js';
+import type { Hash, EventPayload } from '../types/events.js';
 import { EventType } from '../types/events.js';
 import type { CryptoOperations } from '../crypto/index.js';
 import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
@@ -8,7 +8,8 @@ import { defaultPathMapper } from '../types/storage.js';
 import { createEncryptedData } from '../types/events.js';
 import { createSymmetricKey } from '../types/keys.js';
 import { computeHash } from '../crypto/hash.js';
-import { serializeEventPayload } from '../storage/serialization.js';
+import { serializeEventEnvelope } from '../storage/serialization.js';
+import { createSignedEvent, hydrateSignedEvent } from './eventEnvelope.js';
 
 /**
  * Sets up a new channel from a secret
@@ -82,21 +83,8 @@ export async function storeData(
     encryptedKey: createEncryptedData(encryptedKey),
   };
 
-  // 9. Serialize payload and compute event hash
-  const payloadBytes = serializeEventPayload(payload);
-  const eventHash = await computeHash(payloadBytes);
-
-  // 10. Sign the payload
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
-
-  // 11. Create signed event
-  const signedEvent: SignedEvent = {
-    payload,
-    signature,
-  };
-
-  // 12. Store signed event
-  await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
+  const signedEvent = await createSignedEvent(crypto, keyPair, payload, [dataHash]);
+  const eventHash = await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
 
   return { eventHash, dataHash };
 }
@@ -121,24 +109,25 @@ export async function retrieveData(
   // 2. Retrieve signed event
   const signedEvent = await channelStorage.retrieveEvent(keyPair.publicKey, eventHash);
 
-  // 3. Serialize payload and verify signature
-  const payloadBytes = serializeEventPayload(signedEvent.payload);
+  const payloadBytes = serializeEventEnvelope(signedEvent.envelope);
   const isValid = await crypto.verifyPU(payloadBytes, signedEvent.signature, keyPair.publicKey);
 
   if (!isValid) {
     throw new Error('Event signature verification failed');
   }
 
+  const decryptedEvent = await hydrateSignedEvent(crypto, keyPair.privateKey, signedEvent);
+
   // 4. Derive symmetric key for decrypting the data encryption key
   const keyEncryptionKey = await crypto.deriveSymKey(keyPair.privateKey);
 
   // 5. Decrypt the symmetric key
-  const symmetricKeyBytes = await crypto.decryptSym(signedEvent.payload.encryptedKey, keyEncryptionKey);
+  const symmetricKeyBytes = await crypto.decryptSym(decryptedEvent.payload.encryptedKey, keyEncryptionKey);
   const symmetricKey = createSymmetricKey(symmetricKeyBytes);
 
   // 6. Retrieve encrypted data
   const encryptedData = await channelStorage.retrieveEncryptedData(
-    signedEvent.payload.hash,
+    decryptedEvent.payload.hash,
     keyPair.publicKey
   );
 
@@ -197,21 +186,8 @@ export async function storeDataDeduplicated(
     encryptedKey: createEncryptedData(encryptedKey),
   };
 
-  // 10. Serialize payload and compute event hash
-  const payloadBytes = serializeEventPayload(payload);
-  const eventHash = await computeHash(payloadBytes);
-
-  // 11. Sign the payload
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
-
-  // 12. Create signed event
-  const signedEvent: SignedEvent = {
-    payload,
-    signature,
-  };
-
-  // 13. Store signed event
-  await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
+  const signedEvent = await createSignedEvent(crypto, keyPair, payload, [dataHash]);
+  const eventHash = await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
 
   return { eventHash, dataHash, wasDeduplicated: dataExists };
 }
@@ -245,21 +221,8 @@ export async function deleteFile(
     encryptedKey: emptyEncryptedKey,
   };
 
-  // 4. Serialize payload and compute event hash
-  const payloadBytes = serializeEventPayload(payload);
-  const eventHash = await computeHash(payloadBytes);
-
-  // 5. Sign the payload
-  const signature = await crypto.signPR(payloadBytes, keyPair.privateKey);
-
-  // 6. Create signed event
-  const signedEvent: SignedEvent = {
-    payload,
-    signature,
-  };
-
-  // 7. Store signed event
-  await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
+  const signedEvent = await createSignedEvent(crypto, keyPair, payload, []);
+  const eventHash = await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
 
   return { eventHash };
 }

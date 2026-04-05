@@ -1,8 +1,9 @@
-import chokidar, { type FSWatcher } from 'chokidar';
+import { statSync } from 'fs';
 import path from 'path';
 import type { RootProvider } from '../config/roots.js';
 import { isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { StorageBackend } from '../types/storage.js';
+import { debugServerLog } from './debug.js';
 
 export type VolumeChangeType = 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
 
@@ -25,25 +26,36 @@ export interface VolumeWatchSubscription {
   unsubscribe(): void;
 }
 
+interface WatchTargetPlan {
+  readonly rootPath: string;
+  readonly channelRoot: string;
+  readonly volumeRoot: string;
+}
+
 interface WatchPlan {
   readonly ready: VolumeWatchReady;
-  readonly targets: string[];
-  readonly includePrefixes: string[];
+  readonly targets: WatchTargetPlan[];
+}
+
+interface TargetState {
+  channelRootExists: boolean;
+  volumeRootExists: boolean;
+  volumeRootMtimeMs: number | null;
 }
 
 interface WatchEntry {
   readonly id: number;
-  readonly watcher: FSWatcher;
-  readonly includePrefixes: string[];
+  readonly targets: WatchTargetPlan[];
   readonly subscribers: Set<(update: VolumeWatchUpdate) => void>;
   readonly errorSubscribers: Set<(error: Error) => void>;
+  readonly targetStates: Map<string, TargetState>;
+  pollTimer: ReturnType<typeof setInterval> | null;
+  pollInFlight: boolean;
 }
 
 let nextVolumeWatchEntryId = 1;
+const VOLUME_WATCH_POLL_MS = 450;
 
-/**
- * Shared hub that broadcasts per-volume filesystem updates to active subscribers.
- */
 export class VolumeWatchHub {
   private readonly entries = new Map<string, WatchEntry>();
 
@@ -69,7 +81,8 @@ export class VolumeWatchHub {
 
     const existing = this.entries.get(volumeId);
     if (existing) {
-      console.log(
+      debugServerLog(
+        'watchers',
         `[volume-watch] reusing watcher #${existing.id} for volume=${volumeId}; subscribers=${existing.subscribers.size + 1}`
       );
       existing.subscribers.add(onUpdate);
@@ -80,64 +93,108 @@ export class VolumeWatchHub {
       };
     }
 
-    const watcher = chokidar.watch(plan.targets, {
-      persistent: true,
-      ignoreInitial: true,
-      awaitWriteFinish: {
-        stabilityThreshold: 120,
-        pollInterval: 40,
-      },
-    });
-
     const entry: WatchEntry = {
       id: nextVolumeWatchEntryId++,
-      watcher,
-      includePrefixes: plan.includePrefixes,
+      targets: plan.targets,
       subscribers: new Set([onUpdate]),
       errorSubscribers: new Set([onError]),
+      targetStates: new Map(),
+      pollTimer: null,
+      pollInFlight: false,
     };
 
-    console.log(
-      `[volume-watch] created watcher #${entry.id} for volume=${volumeId}; targets=${JSON.stringify(plan.targets)} includePrefixes=${JSON.stringify(plan.includePrefixes)}`
+    for (const target of plan.targets) {
+      entry.targetStates.set(target.volumeRoot, captureTargetState(target));
+    }
+
+    debugServerLog(
+      'watchers',
+      `[volume-watch] created watcher #${entry.id} for volume=${volumeId}; targets=${JSON.stringify(plan.targets)}`
     );
 
-    watcher.on('all', (change, changedPath) => {
-      if (!isSupportedChange(change)) {
-        return;
-      }
-      const normalized = normalizePath(changedPath);
-      if (!entry.includePrefixes.some((prefix) => normalized.startsWith(prefix))) {
-        return;
-      }
-      const update: VolumeWatchUpdate = {
-        volumeId,
-        change,
-        path: changedPath,
-        timestamp: Date.now(),
-      };
-      for (const subscriber of entry.subscribers) {
-        subscriber(update);
-      }
-    });
-
-    watcher.on('error', (error) => {
-      const asError = error instanceof Error ? error : new Error(String(error));
-      console.warn(`[volume-watch] watcher #${entry.id} error for volume=${volumeId}: ${asError.message}`);
-      for (const subscriber of entry.errorSubscribers) {
-        subscriber(asError);
-      }
-    });
-
-    watcher.on('ready', () => {
-      console.log(`[volume-watch] watcher #${entry.id} ready for volume=${volumeId}`);
-    });
+    entry.pollTimer = setInterval(() => {
+      void this.pollEntry(volumeId, entry);
+    }, VOLUME_WATCH_POLL_MS);
 
     this.entries.set(volumeId, entry);
+    debugServerLog('watchers', `[volume-watch] watcher #${entry.id} ready for volume=${volumeId}`);
 
     return {
       ready: plan.ready,
       unsubscribe: () => this.unsubscribe(volumeId, onUpdate, onError),
     };
+  }
+
+  private async pollEntry(volumeId: string, entry: WatchEntry): Promise<void> {
+    if (entry.pollInFlight) {
+      return;
+    }
+    entry.pollInFlight = true;
+    try {
+      for (const target of entry.targets) {
+        const previous = entry.targetStates.get(target.volumeRoot) ?? captureTargetState(target);
+        const next = captureTargetState(target);
+        entry.targetStates.set(target.volumeRoot, next);
+        this.publishTargetDiff(entry, volumeId, target, previous, next);
+      }
+    } catch (error) {
+      const asError = error instanceof Error ? error : new Error(String(error));
+      console.warn(`[volume-watch] watcher #${entry.id} error for volume=${volumeId}: ${asError.message}`);
+      for (const subscriber of entry.errorSubscribers) {
+        subscriber(asError);
+      }
+    } finally {
+      entry.pollInFlight = false;
+    }
+  }
+
+  private publishTargetDiff(
+    entry: WatchEntry,
+    volumeId: string,
+    target: WatchTargetPlan,
+    previous: TargetState,
+    next: TargetState
+  ): void {
+    if (!previous.volumeRootExists && next.volumeRootExists) {
+      this.publishUpdate(entry, volumeId, 'addDir', target.volumeRoot);
+      return;
+    }
+
+    if (previous.volumeRootExists && !next.volumeRootExists) {
+      this.publishUpdate(entry, volumeId, 'unlinkDir', target.volumeRoot);
+      return;
+    }
+
+    if (
+      next.volumeRootExists &&
+      previous.volumeRootMtimeMs !== null &&
+      next.volumeRootMtimeMs !== null &&
+      previous.volumeRootMtimeMs !== next.volumeRootMtimeMs
+    ) {
+      this.publishUpdate(entry, volumeId, 'change', target.volumeRoot);
+      return;
+    }
+
+    if (!previous.channelRootExists && next.channelRootExists && next.volumeRootExists) {
+      this.publishUpdate(entry, volumeId, 'addDir', target.volumeRoot);
+    }
+  }
+
+  private publishUpdate(
+    entry: WatchEntry,
+    volumeId: string,
+    change: VolumeChangeType,
+    changedPath: string
+  ): void {
+    const update: VolumeWatchUpdate = {
+      volumeId,
+      change,
+      path: changedPath,
+      timestamp: Date.now(),
+    };
+    for (const subscriber of entry.subscribers) {
+      subscriber(update);
+    }
   }
 
   private unsubscribe(
@@ -152,7 +209,8 @@ export class VolumeWatchHub {
 
     entry.subscribers.delete(onUpdate);
     entry.errorSubscribers.delete(onError);
-    console.log(
+    debugServerLog(
+      'watchers',
       `[volume-watch] unsubscribe watcher #${entry.id} for volume=${volumeId}; remaining-subscribers=${entry.subscribers.size}`
     );
     if (entry.subscribers.size > 0) {
@@ -160,13 +218,11 @@ export class VolumeWatchHub {
     }
 
     this.entries.delete(volumeId);
-    const closeStartedAt = Date.now();
-    console.log(`[volume-watch] closing watcher #${entry.id} for volume=${volumeId}`);
-    void entry.watcher.close().then(() => {
-      console.log(
-        `[volume-watch] closed watcher #${entry.id} for volume=${volumeId} in ${Date.now() - closeStartedAt}ms`
-      );
-    });
+    if (entry.pollTimer) {
+      clearInterval(entry.pollTimer);
+      entry.pollTimer = null;
+    }
+    debugServerLog('watchers', `[volume-watch] closed watcher #${entry.id} for volume=${volumeId}`);
   }
 
   private buildWatchPlan(volumeId: string): WatchPlan {
@@ -180,7 +236,6 @@ export class VolumeWatchHub {
           providers: [],
         },
         targets: [],
-        includePrefixes: [],
       };
     }
 
@@ -189,9 +244,12 @@ export class VolumeWatchHub {
         .getRootsConfig()
         .sources.filter((source) => source.enabled);
       const providers = uniqueProviders(activeSources.map((source) => source.provider));
-      const targets = uniquePaths(activeSources.map((source) => source.path));
-      const includePrefixes = activeSources.map((source) =>
-        normalizePath(path.join(source.path, 'channels', normalizedVolumeId)) + '/'
+      const targets = uniqueTargetPlans(
+        activeSources.map((source) => ({
+          rootPath: source.path,
+          channelRoot: path.join(source.path, 'channels'),
+          volumeRoot: path.join(source.path, 'channels', normalizedVolumeId),
+        }))
       );
 
       return {
@@ -202,7 +260,6 @@ export class VolumeWatchHub {
           providers,
         },
         targets,
-        includePrefixes,
       };
     }
 
@@ -215,7 +272,6 @@ export class VolumeWatchHub {
           providers: [],
         },
         targets: [],
-        includePrefixes: [],
       };
     }
 
@@ -226,16 +282,37 @@ export class VolumeWatchHub {
         mode: 'filesystem',
         providers: ['local'],
       },
-      targets: [this.fallbackStorageDir],
-      includePrefixes: [
-        normalizePath(path.join(this.fallbackStorageDir, 'channels', normalizedVolumeId)) + '/',
-      ],
+      targets: uniqueTargetPlans([
+        {
+          rootPath: this.fallbackStorageDir,
+          channelRoot: path.join(this.fallbackStorageDir, 'channels'),
+          volumeRoot: path.join(this.fallbackStorageDir, 'channels', normalizedVolumeId),
+        },
+      ]),
     };
   }
 }
 
-function isSupportedChange(value: string): value is VolumeChangeType {
-  return value === 'add' || value === 'change' || value === 'unlink' || value === 'addDir' || value === 'unlinkDir';
+function captureTargetState(target: WatchTargetPlan): TargetState {
+  const channelRootStat = safeDirectoryStat(target.channelRoot);
+  const volumeRootStat = safeDirectoryStat(target.volumeRoot);
+  return {
+    channelRootExists: channelRootStat !== null,
+    volumeRootExists: volumeRootStat !== null,
+    volumeRootMtimeMs: volumeRootStat?.mtimeMs ?? null,
+  };
+}
+
+function safeDirectoryStat(targetPath: string): { mtimeMs: number } | null {
+  try {
+    const stats = statSync(targetPath);
+    if (!stats.isDirectory()) {
+      return null;
+    }
+    return { mtimeMs: stats.mtimeMs };
+  } catch {
+    return null;
+  }
 }
 
 function normalizePath(value: string): string {
@@ -246,8 +323,17 @@ function normalizePath(value: string): string {
   return normalized;
 }
 
-function uniquePaths(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => path.resolve(value))));
+function uniqueTargetPlans(values: WatchTargetPlan[]): WatchTargetPlan[] {
+  const plans = new Map<string, WatchTargetPlan>();
+  for (const value of values) {
+    const normalizedValue = {
+      rootPath: normalizePath(value.rootPath),
+      channelRoot: normalizePath(value.channelRoot),
+      volumeRoot: normalizePath(value.volumeRoot),
+    };
+    plans.set(normalizedValue.volumeRoot, normalizedValue);
+  }
+  return Array.from(plans.values());
 }
 
 function uniqueProviders(values: RootProvider[]): RootProvider[] {
