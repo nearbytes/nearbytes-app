@@ -940,21 +940,15 @@ export interface ApiError {
   };
 }
 
-interface DesktopRuntimeConfig {
-  apiBaseUrl: string;
-  desktopToken: string;
-  isDesktop: boolean;
-}
-
-interface NearbytesDesktopBridge {
-  getRuntimeConfig?: () => Promise<DesktopRuntimeConfig>;
-  getApiBaseUrl?: () => Promise<string>;
-  getDesktopToken?: () => Promise<string>;
-  chooseDirectory?: (initialPath?: string) => Promise<string | null>;
-  revealPathInFileManager?: (targetPath: string) => Promise<unknown>;
-  readRuntimeLogs?: () => Promise<DesktopRuntimeLogsResponse>;
-  isDesktop?: (() => boolean) | boolean;
-}
+import {
+  getDesktopBridge,
+  type DesktopRuntimeLogsResponse,
+} from './host/desktopBridge.js';
+import {
+  openHostStream,
+  requestHostBlob,
+  requestHostJson,
+} from './host/runtimeTransport.js';
 
 export interface UiDebugCapabilities {
   available: boolean;
@@ -1011,30 +1005,6 @@ export interface UiDebugRunResponse {
     error?: string;
   }>;
 }
-
-export interface DesktopRuntimeLogEntry {
-  id: string;
-  label: string;
-  path: string;
-  exists: boolean;
-  size: number;
-  updatedAt: number | null;
-  content: string;
-}
-
-export interface DesktopRuntimeLogsResponse {
-  generatedAt: number;
-  entries: DesktopRuntimeLogEntry[];
-}
-
-const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
-  apiBaseUrl: '',
-  desktopToken: '',
-  isDesktop: false,
-};
-
-let runtimeConfigPromise: Promise<DesktopRuntimeConfig> | null = null;
-
 /**
  * Creates auth headers for API requests.
  */
@@ -1047,17 +1017,6 @@ function createAuthHeaders(auth: Auth): HeadersInit {
   return {
     'x-nearbytes-secret': auth.secret,
   };
-}
-
-function getDesktopBridge(): NearbytesDesktopBridge | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  const globalWindow = window as unknown as { nearbytesDesktop?: NearbytesDesktopBridge };
-  if (!globalWindow.nearbytesDesktop) {
-    return null;
-  }
-  return globalWindow.nearbytesDesktop;
 }
 
 export function hasDesktopDirectoryPicker(): boolean {
@@ -1087,86 +1046,6 @@ export function hasDesktopRuntimeLogsBridge(): boolean {
   return Boolean(bridge && typeof bridge.readRuntimeLogs === 'function');
 }
 
-function useSameOriginDesktopProxy(runtimeConfig: DesktopRuntimeConfig): boolean {
-  if (!runtimeConfig.isDesktop || typeof window === 'undefined') {
-    return false;
-  }
-  const { protocol, hostname, port } = window.location;
-  return (
-    (protocol === 'http:' || protocol === 'https:') &&
-    (hostname === '127.0.0.1' || hostname === 'localhost') &&
-    port === getConfiguredDesktopDevPort()
-  );
-}
-
-function getRequestBaseUrl(runtimeConfig: DesktopRuntimeConfig): string {
-  if (useSameOriginDesktopProxy(runtimeConfig)) {
-    return '';
-  }
-  return runtimeConfig.apiBaseUrl;
-}
-
-function getConfiguredDesktopDevPort(): string {
-  const configured = import.meta.env?.VITE_NEARBYTES_WEB_DEV_PORT;
-  return typeof configured === 'string' && configured.trim().length > 0 ? configured.trim() : '5177';
-}
-
-async function getRuntimeConfig(): Promise<DesktopRuntimeConfig> {
-  if (runtimeConfigPromise) {
-    return runtimeConfigPromise;
-  }
-
-  const nextPromise = (async () => {
-    const bridge = getDesktopBridge();
-    if (!bridge) {
-      return WEB_RUNTIME_CONFIG;
-    }
-
-    if (typeof bridge.getRuntimeConfig !== 'function') {
-      throw new Error('Nearbytes desktop bridge is missing getRuntimeConfig().');
-    }
-    const config = await bridge.getRuntimeConfig();
-    if (!config || config.apiBaseUrl.trim().length === 0 || config.desktopToken.trim().length === 0) {
-      throw new Error('Nearbytes desktop bridge returned invalid runtime config.');
-    }
-    return {
-      apiBaseUrl: config.apiBaseUrl,
-      desktopToken: config.desktopToken,
-      isDesktop: config.isDesktop === true,
-    };
-  })();
-
-  runtimeConfigPromise = nextPromise;
-  try {
-    return await nextPromise;
-  } catch (error) {
-    if (runtimeConfigPromise === nextPromise) {
-      runtimeConfigPromise = null;
-    }
-    throw error;
-  }
-}
-
-/**
- * Parses API error responses.
- */
-async function parseError(response: Response): Promise<ApiError> {
-  try {
-    const data = await response.json();
-    if (data.error && typeof data.error === 'object') {
-      return data as ApiError;
-    }
-  } catch {
-    // Fallback if response isn't JSON
-  }
-  return {
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: response.statusText || 'Unknown error',
-    },
-  };
-}
-
 /**
  * Makes an API request with error handling.
  */
@@ -1175,7 +1054,6 @@ async function apiRequest<T>(
   options: RequestInit & { auth?: Auth } = {}
 ): Promise<T> {
   const { auth, ...fetchOptions } = options;
-  const runtimeConfig = await getRuntimeConfig();
   const headers = new Headers(fetchOptions.headers);
 
   if (auth) {
@@ -1185,34 +1063,10 @@ async function apiRequest<T>(
     });
   }
 
-  if (!headers.has('Content-Type') && fetchOptions.body instanceof FormData === false) {
-    headers.set('Content-Type', 'application/json');
-  }
-  if (runtimeConfig.desktopToken.trim().length > 0) {
-    headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
-  }
-
-  const response = await fetch(`${getRequestBaseUrl(runtimeConfig)}${endpoint}`, {
+  return requestHostJson<T>(endpoint, {
     ...fetchOptions,
     headers,
   });
-
-  if (!response.ok) {
-    const error = await parseError(response);
-    throw new Error(error.error.message || `Request failed: ${response.statusText}`);
-  }
-
-  // Handle empty responses
-  const text = await response.text();
-  if (!text) {
-    return {} as T;
-  }
-
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new Error('Invalid JSON response from server');
-  }
 }
 
 /**
@@ -1849,22 +1703,10 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
   void (async () => {
     try {
       uiDebugLog('watchers', `[watch-sources:${connectionId}] opening`);
-      const runtimeConfig = await getRuntimeConfig();
-      const headers = new Headers();
-      if (runtimeConfig.desktopToken.trim().length > 0) {
-        headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
-      }
-
-      const response = await fetch(`${getRequestBaseUrl(runtimeConfig)}/watch/sources`, {
+      const response = await openHostStream('/watch/sources', {
         method: 'GET',
-        headers,
         signal: abortController.signal,
       });
-
-      if (!response.ok) {
-        const apiError = await parseError(response);
-        throw new Error(apiError.error.message || 'Failed to open source watch stream');
-      }
 
       if (!response.body) {
         throw new Error('Source watch stream is not available');
@@ -1926,22 +1768,12 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
   void (async () => {
     try {
       uiDebugLog('watchers', `[watch-volume:${connectionId}] opening`);
-      const runtimeConfig = await getRuntimeConfig();
       const headers = new Headers(createAuthHeaders(auth));
-      if (runtimeConfig.desktopToken.trim().length > 0) {
-        headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
-      }
-
-      const response = await fetch(`${getRequestBaseUrl(runtimeConfig)}/watch/volume`, {
+      const response = await openHostStream('/watch/volume', {
         method: 'GET',
         headers,
         signal: abortController.signal,
       });
-
-      if (!response.ok) {
-        const apiError = await parseError(response);
-        throw new Error(apiError.error.message || 'Failed to open watch stream');
-      }
 
       if (!response.body) {
         throw new Error('Watch stream is not available');
@@ -1998,23 +1830,11 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
  * Returns the file as a Blob.
  */
 export async function downloadFile(auth: Auth, blobHash: string): Promise<Blob> {
-  const runtimeConfig = await getRuntimeConfig();
   const headers = new Headers(createAuthHeaders(auth));
-  if (runtimeConfig.desktopToken.trim().length > 0) {
-    headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
-  }
-
-  const response = await fetch(`${getRequestBaseUrl(runtimeConfig)}/file/${blobHash}`, {
+  return requestHostBlob(`/file/${blobHash}`, {
     method: 'GET',
     headers,
   });
-
-  if (!response.ok) {
-    const error = await parseError(response);
-    throw new Error(error.error.message || `Download failed: ${response.statusText}`);
-  }
-
-  return response.blob();
 }
 
 function parseWatchMessage(rawMessage: string, handlers: VolumeWatchHandlers): void {

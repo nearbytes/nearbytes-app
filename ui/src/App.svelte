@@ -58,6 +58,13 @@
     parseSourceReferenceBundleText,
   } from './lib/nearbytesReferenceTransfer.js';
   import { writeNearbytesClipboardPayload } from './lib/referenceClipboard.js';
+  import {
+    getDesktopBridge,
+    type DesktopRemoteFile,
+    type DesktopUpdaterState,
+    type NearbytesDesktopBridge,
+    type PersistedUiState,
+  } from './lib/host/desktopBridge.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AppDialog from './components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
@@ -228,18 +235,6 @@
     eventTypes?: string[];
     always?: boolean;
   };
-  type DesktopRemoteFile = {
-    filename: string;
-    mimeType: string;
-    bytesBase64: string;
-  };
-
-  type PersistedUiState = {
-    volumeMounts?: unknown;
-    sourceDiscovery?: unknown;
-    theme?: unknown;
-    savedAt?: unknown;
-  };
 
   type PersistedSourceDiscoveryUiState = {
     lastAcknowledgedRunKey: string;
@@ -249,42 +244,6 @@
 
   type PersistedDiscoveryResult = Pick<ReconcileSourcesResponse, 'runKey' | 'changed' | 'summary' | 'items'>;
 
-  type DesktopUpdaterState = {
-    phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error';
-    version: string;
-    message: string;
-    detail: string;
-    progressPercent: number | null;
-    transferredBytes: number;
-    totalBytes: number;
-    bytesPerSecond: number;
-    canInstall: boolean;
-    releaseUrl: string;
-    assetName: string;
-  };
-
-  type NearbytesDesktopBridge = {
-    connectDeepLinks?: () => Promise<string[]>;
-    exportLogoPng?: (dataUrl: string) => Promise<{
-      path?: string;
-      pngPath?: string;
-      icnsPath?: string;
-      icoPath?: string;
-    } | null>;
-    fetchRemoteFile?: (url: string) => Promise<DesktopRemoteFile>;
-    getClipboardImageStatus?: () => Promise<{ hasImage: boolean }>;
-    readClipboardImage?: () => Promise<DesktopRemoteFile | null>;
-    loadUiState?: () => Promise<PersistedUiState>;
-    wipeStoredConfig?: (options?: { deleteLocalData?: boolean }) => Promise<{ relaunching: true }>;
-    getUpdaterState?: () => Promise<DesktopUpdaterState | null>;
-    installDownloadedUpdate?: () => Promise<boolean>;
-    openUpdateReleasePage?: () => Promise<boolean>;
-    onDeepLink?: (listener: (url: string) => void) => (() => void) | void;
-    onUpdaterState?: (listener: (state: DesktopUpdaterState) => void) => (() => void) | void;
-    saveUiState?: (state: PersistedUiState) => Promise<unknown>;
-    saveThemeRegistry?: (registry: NearbytesThemeRegistry) => Promise<{ path?: string } | null>;
-    revealPathInFileManager?: (targetPath: string) => Promise<unknown>;
-  };
 
   type ThemeDialogSection = 'preset' | 'material' | 'accent' | 'logo';
 
@@ -1313,14 +1272,6 @@
     return null;
   }
 
-  function getDesktopBridge(): NearbytesDesktopBridge | null {
-    if (typeof window === 'undefined') {
-      return null;
-    }
-    const globalWindow = window as Window & { nearbytesDesktop?: NearbytesDesktopBridge };
-    return globalWindow.nearbytesDesktop ?? null;
-  }
-
   function shouldShowDesktopUpdaterToast(state: DesktopUpdaterState | null): boolean {
     return state !== null && state.phase !== 'idle' && state.message.trim().length > 0;
   }
@@ -1910,9 +1861,11 @@
       };
     }
 
+    const loadUiState = bridge.loadUiState;
+
     void (async () => {
       try {
-        const nextState = choosePreferredPersistedUiState(await bridge.loadUiState(), loadPersistedUiStateLocally());
+        const nextState = choosePreferredPersistedUiState(await loadUiState(), loadPersistedUiStateLocally());
         const hasPersistedMounts = Object.prototype.hasOwnProperty.call(nextState ?? {}, 'volumeMounts');
         const nextMounts = normalizeMounts(nextState.volumeMounts);
         if (hasPersistedMounts) {
