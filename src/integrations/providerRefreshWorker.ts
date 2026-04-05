@@ -48,7 +48,7 @@ export class ProviderRefreshWorker {
         ...entry,
         path: normalizeRelativePath(entry.path),
       }))
-      .filter((entry) => isMirrorRelativePath(entry.path))
+      .filter((entry) => isTrackedMirrorPath(entry.path))
       .sort((left, right) => left.path.localeCompare(right.path));
 
     const downloaded: string[] = [];
@@ -148,6 +148,10 @@ async function removeObsoleteEntries(
 
 function isMirrorRelativePath(value: string): boolean {
   return value.startsWith('blocks/') || value.startsWith('channels/');
+}
+
+function isTrackedMirrorPath(value: string): boolean {
+  return value === 'blocks' || value === 'channels' || isMirrorRelativePath(value);
 }
 
 function normalizeRelativePath(value: string): string {

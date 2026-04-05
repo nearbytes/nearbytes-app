@@ -140,6 +140,10 @@ describe('ProviderRefreshWorker', () => {
       fingerprint: 'replace-v2',
       size: 11,
     });
+    expect(result.manifest.entries.blocks).toEqual({
+      kind: 'folder',
+      fingerprint: 'folder-blocks',
+    });
   });
 
   it('skips invalid remote canonical-storage files', async () => {
