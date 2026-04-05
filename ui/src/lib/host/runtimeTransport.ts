@@ -4,6 +4,10 @@ import {
   type NearbytesDesktopBridge,
 } from './desktopBridge.js';
 
+interface NearbytesRuntimeWindow extends Window {
+  nearbytesRuntimeConfig?: Partial<DesktopRuntimeConfig>;
+}
+
 const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
   apiBaseUrl: '',
   desktopToken: '',
@@ -11,6 +15,21 @@ const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
 };
 
 let runtimeConfigPromise: Promise<DesktopRuntimeConfig> | null = null;
+
+function readInjectedRuntimeConfig(): DesktopRuntimeConfig | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const injected = (window as NearbytesRuntimeWindow).nearbytesRuntimeConfig;
+  if (!injected || typeof injected.apiBaseUrl !== 'string' || injected.apiBaseUrl.trim().length === 0) {
+    return null;
+  }
+  return normalizeRuntimeConfig({
+    apiBaseUrl: injected.apiBaseUrl,
+    desktopToken: typeof injected.desktopToken === 'string' ? injected.desktopToken : '',
+    isDesktop: injected.isDesktop === true,
+  });
+}
 
 export function getConfiguredDesktopDevPort(): string {
   const configured = import.meta.env?.VITE_NEARBYTES_WEB_DEV_PORT;
@@ -59,14 +78,28 @@ function normalizeRuntimeConfig(config: DesktopRuntimeConfig): DesktopRuntimeCon
 
 export async function getRuntimeConfig(options: {
   bridge?: NearbytesDesktopBridge | null;
+  injectedConfig?: Partial<DesktopRuntimeConfig> | null;
 } = {}): Promise<DesktopRuntimeConfig> {
   if (runtimeConfigPromise) {
     return runtimeConfigPromise;
   }
 
   const nextPromise = (async () => {
+    const injectedConfig = options.injectedConfig;
+    if (injectedConfig && typeof injectedConfig.apiBaseUrl === 'string' && injectedConfig.apiBaseUrl.trim().length > 0) {
+      return normalizeRuntimeConfig({
+        apiBaseUrl: injectedConfig.apiBaseUrl,
+        desktopToken: typeof injectedConfig.desktopToken === 'string' ? injectedConfig.desktopToken : '',
+        isDesktop: injectedConfig.isDesktop === true,
+      });
+    }
+
     const bridge = options.bridge ?? getDesktopBridge();
     if (!bridge) {
+      const injectedWindowConfig = readInjectedRuntimeConfig();
+      if (injectedWindowConfig) {
+        return injectedWindowConfig;
+      }
       return WEB_RUNTIME_CONFIG;
     }
     if (typeof bridge.getRuntimeConfig !== 'function') {

@@ -88,6 +88,20 @@ describe('runtimeTransport', () => {
     });
   });
 
+  it('accepts an injected runtime config for non-desktop hosts', async () => {
+    await expect(
+      getRuntimeConfig({
+        injectedConfig: {
+          apiBaseUrl: 'https://nearbytes.test',
+        },
+      })
+    ).resolves.toEqual({
+      apiBaseUrl: 'https://nearbytes.test',
+      desktopToken: '',
+      isDesktop: false,
+    });
+  });
+
   it('rejects an invalid bridge runtime config', async () => {
     await expect(
       getRuntimeConfig({
