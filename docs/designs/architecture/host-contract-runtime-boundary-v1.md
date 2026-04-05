@@ -67,6 +67,7 @@ The contract may expose:
 The contract may return:
 
 - opaque encrypted objects and hashes
+- durable write acknowledgements, commit status, and restart-safe pending-write status
 - typed metadata needed to locate, watch, or batch objects
 - capability and runtime status records
 - shell outcomes and structured errors
@@ -97,6 +98,24 @@ Required browser-side responsibilities at that boundary:
 - deciding which decrypted bytes are exported for a shared-surface user action
 
 Temporary helper routes for upload or download are allowed only below compatibility adapters. Phase 1 is incomplete while host-side upload or download helpers remain the semantic source of truth for shared file actions.
+
+## Browser-Authored Object Commit Flow
+
+For shared surfaces, browser-authored writes follow this lifecycle:
+
+1. shared browser app-core decides the semantic mutation, derives hashes or chunks, and performs encryption and signing;
+2. shared browser app-core submits only opaque objects, head-update intent, and lightweight persistence metadata through the object family;
+3. host runtime durably persists those opaque objects and related head or index records before reporting success;
+4. host contract returns only durable acknowledgement, commit status, and lightweight head or index hints. It does not return host-authored projections or decrypted meaning;
+5. shared browser app-core may keep optimistic pending state, but it may treat a write as committed only after durable acknowledgement or an equivalent durable-confirmation event;
+6. committed objects re-enter the browser mirror through the same change-batch and invalidation path used for remote or background-arrived objects, with deduplication by object hash or head;
+7. LAN, provider, or other transport runtimes pick outbound sync work only from durable host storage, never from transient WebView memory.
+
+Write primitives must therefore support:
+
+- idempotent resubmission of the same object batch after suspend, resume, or restart
+- explicit distinction between accepted-for-durable-persistence, rejected, and still-pending states
+- restart-safe recovery of pending authored objects without delegating shared-surface semantics back into the host runtime
 
 ### 4. Host Adapters
 

@@ -17,31 +17,33 @@ The canonical shared-surface baseline for any row marked `Shared UI` is defined 
 
 `Full runtime` means the runtime backing required for Phase 1 is usable on that host for the primary actions, reactivity, and persistence expectations defined by the Phase 1 release gate.
 
-`Limited runtime` means the same shared UI exists but capability-gated runtime support is intentionally smaller.
+`Limited runtime` means the same shared UI exists but capability-gated, smaller, or foreground-only runtime support is intentionally smaller.
+
+`Browser-local runtime` means the row may be satisfied inside the browser host with browser-safe persistence or transport helpers. It does not imply native durable background execution, provider parity, or desktop shell parity.
 
 `No runtime` means the same shared UI exists but the host is not required to provide the runtime backing in Phase 1. The surface and its shared settings or integration rows still render and must fail clearly through shared capability states rather than host-specific hiding.
 
-`Browser-owned` means the shared browser app-core owns the shared-surface semantics and crypto on that host.
+`Browser-owned` means the shared browser app-core owns the shared-surface semantics and crypto on that host. It does not imply that the host also provides full background or native runtime support.
 
 ## Phase 1 Matrix
 
 | Capability family | Desktop Phase 1 | Phone Phase 1 | Browser Phase 1 |
 | --- | --- | --- | --- |
-| Shared navigation inventory and surface entry points | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Full runtime |
+| Shared navigation inventory and surface entry points | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, No runtime |
 | Shared portable feature-state and workflow ownership | Shared UI, Browser-owned | Shared UI, Browser-owned | Shared UI, Browser-owned |
 | Application-level crypto and projections for shared surfaces | Shared UI, Browser-owned | Shared UI, Browser-owned | Shared UI, Browser-owned |
-| Storage-location and transport runtime | Shared UI, Full runtime | Shared UI, Full runtime for LAN and local store | Shared UI, Limited or browser-owned |
-| Shared app shell and navigation | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Full runtime |
-| Volume open and file browser | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Full runtime |
-| Timeline and event detail | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Full runtime |
-| Chat and identity | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Full runtime |
-| References and attachments | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Full runtime |
+| Storage-location and transport runtime | Shared UI, Full runtime | Shared UI, Full runtime for LAN and local store | Shared UI, Browser-local or limited runtime |
+| Shared app shell and navigation | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, No runtime |
+| Volume open and file browser | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Browser-owned and browser-local or limited runtime |
+| Timeline and event detail | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Browser-owned and browser-local or limited runtime |
+| Chat and identity | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Browser-owned and browser-local or limited runtime |
+| References and attachments | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Browser-owned and browser-local or limited runtime |
 | LAN peers and sync actions | Shared UI, Full runtime | Shared UI, Full runtime | Shared UI, Limited runtime |
 | Join-link flows | Shared UI, Full runtime | Shared UI, Limited runtime | Shared UI, Limited runtime |
-| Source watch and volume watch reactivity | Shared UI, Full runtime | Shared UI, Full runtime via host events | Shared UI, Limited runtime |
+| Source watch and volume watch reactivity | Shared UI, Full runtime | Shared UI, Full runtime via host events | Shared UI, Browser-local or limited runtime |
 | Settings and integration surfaces | Shared UI, Full runtime | Shared UI, Limited and no runtime by capability | Shared UI, Limited runtime |
-| Provider account setup | Shared UI, Full runtime | Shared UI, No runtime | Shared UI, Limited runtime |
-| Managed shares and incoming share flows | Shared UI, Full runtime | Shared UI, No runtime | Shared UI, Limited runtime |
+| Provider account setup | Shared UI, Full runtime | Shared UI, No runtime | Shared UI, No runtime by default |
+| Managed shares and incoming share flows | Shared UI, Full runtime | Shared UI, No runtime | Shared UI, No runtime by default |
 | MEGA transport | Shared UI, Full runtime | Shared UI, No runtime | Shared UI, No runtime |
 | Roots and storage-location management | Shared UI, Full runtime | Shared UI, No runtime | Shared UI, No runtime |
 | Directory chooser and reveal-in-file-manager | Shared UI, Full runtime | Shared UI, No runtime | Shared UI, No runtime |
@@ -80,6 +82,10 @@ Shared-surface application crypto is browser-owned even when storage-location an
 The browser host exists to keep portable code genuinely portable.
 
 It is not required to match desktop capability for background runtime, providers, or desktop shell helpers.
+
+Browser rows marked `Browser-local runtime` or `Limited runtime` mean the shared browser app-core can still exercise the portable surface with browser-safe persistence or transport helpers.
+
+They do not mean the browser host is expected to provide the same durable background runtime, native object store ownership, or desktop shell integration required on desktop or phone.
 
 ## Release Interpretation
 

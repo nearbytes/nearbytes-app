@@ -134,6 +134,7 @@ Deliverables:
 
 - mirror schema for opaque events, blocks, volume heads, LAN peer snapshots, and projection checkpoints
 - batch import and change-notification APIs
+- browser-authored object submission path that persists opaque objects through the host contract, receives durable acknowledgement, and reconciles through mirror invalidation rather than host projections
 - explicit browser-owned application boundary for files, chat, identity, references, and timeline semantics
 
 Desktop guarantee:
@@ -148,6 +149,7 @@ Exit gate:
 
 - mirror can be seeded and incrementally updated without a full page refresh
 - portable feature state can read from mirror rather than direct backend materialization
+- portable feature state can author opaque objects, persist them durably through the contract, and observe them back through mirror updates without host-owned projections becoming the source of truth
 - the design no longer assumes the backend will remain the long-term owner of shared-surface application crypto
 
 ### Step 1.3: Build The Desktop Host Adapter In Compatibility Mode
@@ -351,6 +353,7 @@ Purpose:
 Deliverables:
 
 - batch import from native store into browser mirror
+- browser-authored object commit path from shared app-core into the native store with durable acknowledgement and retry-safe resume semantics
 - projection invalidation and resume logic
 - startup bootstrap from durable native heads instead of full scan where possible
 
@@ -365,6 +368,7 @@ Phone relevance:
 Exit gate:
 
 - phone renders synced file browser, chat, identity, references, and timeline from shared code
+- phone can author shared-surface objects, durably persist them, survive suspend or resume, and hand them off to LAN sync without transient WebView ownership of the outbound queue
 - phone shared surfaces are driven by browser-owned application crypto and projections over the mirrored opaque objects
 
 ### Step 1.11: Harden Mixed-Mode Desktop

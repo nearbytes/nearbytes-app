@@ -60,6 +60,18 @@ That means:
 
 Temporary host-authored upload or download helpers are allowed only as compatibility shims. They do not satisfy the Phase 1 browser-owned boundary.
 
+## Browser-Authored Shared-Surface Commit Rule
+
+When a shared-surface workflow authors new file, chat, identity, reference, or timeline objects:
+
+- browser app-core decides the semantic mutation and authors the opaque objects
+- host contract accepts only opaque objects, write intent, and lightweight persistence metadata
+- host runtime becomes responsible for durable persistence and later transport pickup, not semantic interpretation
+- browser may show pending optimistic state, but committed shared state must reconcile through durable write acknowledgement and mirror re-entry rather than a host-projected response
+- outbound sync queues must be derived from the durable host object store, so suspend or WebView death does not lose authored objects already accepted for persistence
+
+If the host cannot provide durable acknowledgement, retry-safe resubmission, and mirror re-entry for browser-authored objects, the Phase 1 boundary is not satisfied.
+
 ## What Hosts May Still Own
 
 Hosts and native runtimes may own:
