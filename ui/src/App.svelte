@@ -1675,6 +1675,7 @@
   const mountWarmPromises = new Map<string, Promise<void>>();
   const mountRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const MOUNT_RUNTIME_REFRESH_MS = 15000;
+  const ACTIVE_MOUNT_RUNTIME_STALE_MS = 2500;
 
   async function loadThemeRegistryAsset(): Promise<void> {
     try {
@@ -3466,6 +3467,9 @@
         sessionStorage.removeItem('nearbytes-token');
       }
       applyMountRuntime(cachedRuntime);
+      if (Date.now() - (cachedRuntime.lastRefresh ?? 0) > ACTIVE_MOUNT_RUNTIME_STALE_MS) {
+        scheduleMountRuntimeRefresh(currentMount.id, 0);
+      }
       return;
     }
     isVolumeTransitioning = true;
