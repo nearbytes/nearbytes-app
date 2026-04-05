@@ -4,57 +4,58 @@
 
 Add a Capacitor host without weakening the shipped desktop app and without forking the shared web application.
 
-The entire UI surface is expected to exist on desktop and mobile from the same shared codebase. Host differences are limited to runtime support and capability states.
+The entire UI surface is expected to exist on desktop and phone from the same shared codebase. Host differences are limited to runtime support, capability states, shell integration, and device-appropriate layout density.
 
-## Acceptance Bar
+## Translation Invariants
 
-- Desktop remains fully functional after every phase.
-- Browser and desktop use the same shared app-core for every translated surface.
-- Desktop and mobile use the same shared UI source tree for every feature surface.
-- Shared surfaces end Phase 1 with browser-owned application crypto and semantics.
-- Mobile-only code enters through host adapters, not through UI forks.
-- No phase requires a flag day move of `ui/`, `electron/`, or `src/`.
+- desktop remains fully functional after every phase;
+- browser, desktop, and phone use the same shared browser app-core for every translated shared surface;
+- desktop and phone use the same shared UI source tree and navigation inventory for every product surface;
+- shared surfaces end Phase 1 with browser-owned application crypto and semantics;
+- phone-only code enters through host adapters or native runtime services, not through UI forks or app-core forks;
+- compatibility adapters are explicitly transitional, capped, and shrinking;
+- no phase requires a flag day move of `ui/`, `electron/`, or `src/`.
 
 ## Three From-Scratch Revisions
 
-### Revision 1: Fork `ui/` For Mobile
+### Revision 1: Fork `ui/` For Phone
 
 Rejected.
 
-- It is the fastest path to a demo.
-- It guarantees divergence in state, styling, and bug fixes.
-- It violates the goal that anything ported to mobile should also land in the browser and desktop shared code.
+- it is the fastest path to a demo;
+- it guarantees divergence in state, styling, and bug fixes;
+- it violates the rule that anything ported to phone must land in browser and desktop shared code at the same time.
 
 ### Revision 2: Immediate `apps/*` Plus `packages/*` Split
 
 Rejected.
 
-- It is the cleanest end-state hierarchy.
-- It front-loads path churn before any host abstraction exists.
-- It creates unnecessary desktop regression risk while the old and new seams are still undefined.
+- it is the cleanest end-state hierarchy;
+- it front-loads path churn before any host abstraction exists;
+- it creates unnecessary desktop regression risk while the old and new seams are still undefined.
 
 ### Revision 3: Replace The Runtime First, Then Add Capacitor
 
 Rejected.
 
-- It is attractive if the runtime rewrite is the main objective.
-- It delays the actual mobile host.
-- It forces LAN and provider decisions before the UI and host bridge are stable.
+- it is attractive if the runtime rewrite is the main objective;
+- it delays the actual phone host;
+- it forces LAN and provider decisions before the UI, browser-owned boundary, and host bridge are stable.
 
 ### Selected Design: Bridge-First Progressive Translation
 
 Accepted.
 
-- It keeps the desktop app shippable.
-- It unlocks a Capacitor shell early.
-- It lets runtime work proceed behind a stable app-facing seam.
-- It permits desktop, browser, and mobile to share translated code immediately.
+- it keeps the desktop app shippable;
+- it unlocks a real Capacitor shell before the full runtime rewrite is finished;
+- it lets shared-surface semantics move into browser code behind a stable app-facing seam;
+- it permits desktop, browser, and phone to share translated code immediately.
 
-## Phase Plan
+## High-Level Phase Plan
 
-### Phase 0: Freeze Current Host Behavior
+### Phase 0: Freeze Current Capability And Surface Inventory
 
-Define the typed host contract from the existing Electron preload surface and the current fetch-based API client.
+Define the typed host contract and shared-surface inventory from the existing Electron preload surface, the current fetch-based API client, and the current desktop navigation and surface inventory.
 
 Desktop guarantee:
 
@@ -64,12 +65,14 @@ Desktop guarantee:
 
 Exit criteria:
 
-- every desktop-only capability is named in the contract
-- browser-only absence is represented as a capability gap, not as a missing import
+- every desktop-only capability is named in the contract inventory
+- every current desktop surface is mapped either to the portable core line or the legacy desktop family
+- the canonical shared-surface baseline is captured in `platform/phase-1-surface-inventory-v1.md`
+- phone obligations are expressed as capability gaps, not as missing screens or future forks
 
-### Phase 1: Introduce Host Adapters Without Moving Behavior
+### Phase 1: Introduce Host Contract And Compatibility Adapters
 
-Add `host/contract/`, `host/desktop/`, and `host/browser/`.
+Add `host/contract/`, `host/desktop/`, `host/browser/`, and explicit compatibility adapters below the contract.
 
 Desktop guarantee:
 
@@ -81,14 +84,11 @@ Exit criteria:
 
 - the app can resolve its host through one entry point
 - no product behavior has changed yet
+- the permanent contract shape is capability, object, invalidation, LAN, shell, and legacy-desktop oriented rather than backend-shaped feature APIs
 
-Note:
+### Phase 2: Extract Shared Browser App-Core And Mirror Foundation
 
-- this phase may still sit above backend-owned application services temporarily, but it does not define the final browser-owned boundary
-
-### Phase 2: Extract Shared App-Core From UI Shell Code
-
-Move state orchestration and workflows out of host-coupled helpers and out of the largest UI entry points.
+Move state orchestration and workflows out of host-coupled helpers and establish the browser object mirror needed for browser-owned semantics.
 
 Desktop guarantee:
 
@@ -98,39 +98,41 @@ Desktop guarantee:
 Exit criteria:
 
 - ported logic depends on the host contract, not on direct desktop globals
+- the mirror can be seeded and incrementally updated
 - feature modules can be tested or reasoned about without Electron context
 
-### Phase 3: Add A Minimal Capacitor Shell
+### Phase 3: Establish Browser-Owned Shared Surfaces On Desktop Mixed-Mode
 
-Create a Capacitor host that boots the same shared web app.
+Move shared file, timeline, chat, identity, and reference semantics into browser code while desktop continues to use its current runtime beneath the bridge.
+
+Desktop guarantee:
+
+- desktop remains the primary full-capability host
+- no accepted regression in efficiency, latency, or reactivity
+
+Exit criteria:
+
+- shared surfaces are browser-owned on desktop
+- current backend-shaped services survive only as compatibility adapters or runtime fulfillment
+- shared feature code no longer depends on backend-owned materialization as its source of truth
+
+### Phase 4: Add The Full Shared Capacitor Shell
+
+Create a Capacitor host that boots the same shared web app with the same shared navigation inventory and the same shared feature surfaces.
 
 Desktop guarantee:
 
 - desktop host remains the default fully capable implementation
-- Capacitor starts with a smaller capability set rather than forcing desktop downgrades
+- phone starts with a smaller capability set rather than forcing desktop downgrades
 
 Exit criteria:
 
-- mobile can boot the shared app
-- missing mobile runtime capabilities surface as explicit shared unsupported states, not breakage or missing screens
+- phone boots the full shared UI surface inventory defined in `platform/phase-1-surface-inventory-v1.md`
+- missing phone runtime capabilities surface as explicit shared unavailable states rather than breakage or missing screens
 
-### Phase 4: Port LAN Sync Through The Host Contract
+### Phase 5: Add Native Phase 1 LAN Runtime And Mirror Feed
 
-Make LAN sync the first runtime-heavy feature translated through the bridge.
-
-Desktop guarantee:
-
-- desktop continues to use the current Node LAN runtime until the replacement path proves parity
-- browser uses the same shared presentation logic even if it reports reduced capability
-
-Exit criteria:
-
-- peer lists, transport status, and sync requests are exposed through the host contract
-- LAN-specific UI no longer imports desktop-specific helpers directly
-
-### Phase 5: Introduce Background Runtime Ownership Per Host
-
-Keep the shared app stable while each host chooses its runtime backing.
+Keep the shared app stable while the phone host gains durable LAN, opaque object storage, and resume behavior behind the same contract.
 
 Desktop guarantee:
 
@@ -139,13 +141,13 @@ Desktop guarantee:
 
 Exit criteria:
 
-- runtime ownership is entirely behind the bridge
-- the app shell does not care whether LAN comes from Node, native mobile code, or a future shared daemon
-- shared-surface application semantics are no longer owned by the runtime beneath the bridge
+- phone LAN discovery, sync, and object persistence are behind the same host contract families
+- phone mirror catch-up is incremental where possible
+- the app shell does not care whether LAN comes from Node, native phone code, or a future shared daemon
 
-### Phase 6: Extract Optional Sidecars Only After Bridge Stability
+### Phase 6: Extract Optional Sidecars Only After Boundary Stability
 
-Move MEGA or future transports only when the bridge and shared app surface are already stable.
+Move MEGA or future transports only when the bridge, browser-owned boundary, and shared app surface are already stable.
 
 Desktop guarantee:
 
@@ -156,13 +158,23 @@ Exit criteria:
 
 - provider runtimes can evolve independently of the shared app
 
+## Compatibility Adapter Budget
+
+Compatibility adapters are allowed only if all of the following remain true:
+
+- they sit below the shared browser app-core
+- they do not define the permanent host contract
+- new shared feature work does not depend on their response shapes directly
+- each adapter has an explicit removal condition tied to a migration step
+
 ## What Must Never Happen Mid-Migration
 
-- no mobile-only copy of the UI tree
-- no desktop-only and mobile-only versions of the same feature component
+- no phone-only copy of the UI tree
+- no desktop-only and phone-only versions of the same feature component or shared-surface workflow
 - no removal of desktop-only features before a compatible bridge path exists
 - no direct Capacitor imports from shared feature code
 - no requirement that browser and desktop wait for a runtime rewrite before they can share translated code
+- no expansion of backend-shaped shared-surface APIs as though they were the long-term contract
 
 ## Regression Gates For Every Phase
 
@@ -173,12 +185,13 @@ Each phase is incomplete until the desktop app still supports:
 - clipboard image flows
 - directory chooser and reveal-in-file-manager actions
 - runtime logs
-- current account and transport flows
-- the same UI feature surfaces remain present on desktop and mobile from the shared codebase, even when runtime support differs by host
-- the migration step does not entrench backend-owned application crypto for the shared surfaces
+- current provider, managed-share, and storage-location flows
+- the same UI feature surfaces remaining present on desktop and phone from the shared codebase, even when runtime support differs by host
+- no accepted regression in efficiency, latency, or reactivity for translated shared surfaces
+- no entrenchment of backend-owned application crypto or semantics for the shared surfaces
 
 ## Immediate Next Move
 
-The first code change after this design should be the introduction of a typed host contract and desktop/browser adapters that wrap the existing runtime behavior without changing it.
+The first code change after this design should be the introduction of a typed host contract and desktop and browser adapters that wrap the existing runtime behavior without changing it.
 
 Detailed Phase 1 voyage: `migration/phase-1-voyage-v1.md`.
