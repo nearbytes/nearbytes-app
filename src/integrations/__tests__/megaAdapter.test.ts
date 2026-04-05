@@ -930,7 +930,7 @@ describe('MegaTransportAdapter', () => {
     expect(s2First.r).toBe(0);
   });
 
-  it('does not rebuild cr on invite when fetch-nodes lists an outgoing share on the owner root but no collaborator emails resolve', async () => {
+  it('rebuilds cr on the first invite even when fetch-nodes already lists an outgoing share on the owner root', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-owner-orphan', {
       email: 'owner@example.com',
@@ -1062,7 +1062,7 @@ describe('MegaTransportAdapter', () => {
       .map(([, init]) => JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>)
       .find((p) => p.a === 's2');
     expect(s2Payload).toBeDefined();
-    expect(s2Payload?.cr).toBeUndefined();
+    expect(s2Payload?.cr).toBeDefined();
   });
 
   it('does not fail owner invite when MEGA reflection stays delayed after s2 succeeds', async () => {

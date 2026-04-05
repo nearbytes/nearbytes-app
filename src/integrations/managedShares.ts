@@ -114,6 +114,7 @@ export class ManagedShareService {
   private readonly runtime: IntegrationRuntime;
   private readonly readMaintenanceMode: 'background' | 'inline';
   private readonly syncBootstrapTasks = new Map<string, Promise<void>>();
+  private readonly incomingReconciliationTasks = new Map<string, Promise<void>>();
   private readonly autoRepairCooldowns = new Map<string, number>();
   private readonly collaboratorLookupCooldowns = new Map<string, number>();
   private readonly pendingMarkerRefreshes = new Set<string>();
@@ -375,6 +376,7 @@ export class ManagedShareService {
       });
       const refreshedState = await this.loadState();
       this.scheduleManagedShareSyncs(refreshedState);
+      this.scheduleIncomingManagedShareReconciliation(provider, merged.account);
       if (this.readMaintenanceMode !== 'background') {
         this.requestBackgroundMaintenance(`connectAccount:${provider}`, refreshedState);
       }
@@ -563,6 +565,7 @@ export class ManagedShareService {
       this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState);
     }
     const attachedKeys = buildAttachedShareKeys(this.options.storage.getRootsConfig(), preparedState.managedShares);
+    const existingManagedShareKeys = buildManagedShareKeys(preparedState.managedShares);
     const offers = await Promise.all(
       preparedState.accounts
         .filter((account) => this.canReadIncomingProviderState(account) && isProviderEnabled(account.provider))
@@ -619,7 +622,7 @@ export class ManagedShareService {
 
     const rawOffers = offers.flatMap((entry) => entry.offers);
     const filteredOffers = rawOffers.filter(
-      (offer) => !buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key))
+      (offer) => !buildIncomingManagedShareOfferKeys(offer).some((key) => attachedKeys.has(key) || existingManagedShareKeys.has(key))
     );
     const hiddenAsAttached = rawOffers.length - filteredOffers.length;
     if (hiddenAsAttached > 0) {
@@ -1044,6 +1047,30 @@ export class ManagedShareService {
     await adapter.forceManagedShareUpload(share, account, normalizedPath);
   }
 
+  async triggerManagedShareSync(shareId: string): Promise<void> {
+    const state = await this.loadState();
+    const share = state.managedShares.find((entry) => entry.id === shareId);
+    if (!share || !isProviderEnabled(share.provider)) {
+      throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.triggerManagedShareSync) {
+      throw new ManagedShareServiceError(
+        501,
+        'NOT_IMPLEMENTED',
+        `Triggering a managed share sync is not supported for ${share.provider}`
+      );
+    }
+
+    const account = state.accounts.find((entry) => entry.id === share.accountId);
+    if (!account || !this.canSyncManagedShare(share, account)) {
+      throw new ManagedShareServiceError(409, 'SYNC_UNAVAILABLE', `Managed share sync is unavailable for ${shareId}`);
+    }
+
+    await adapter.triggerManagedShareSync(share, account);
+  }
+
   private async handleStorageWrite(event: StorageWriteEvent): Promise<void> {
     const normalizedPath = event.path.trim().replace(/^\/+/, '');
     if (!isCanonicalMirrorRelativePath(normalizedPath)) {
@@ -1398,6 +1425,61 @@ export class ManagedShareService {
         }
         state = await this.loadState();
         continue;
+      }
+      const canonicalExisting = findCanonicalIncomingManagedShareCandidate(
+        state.managedShares,
+        provider,
+        account.id,
+        offer
+      );
+      if (canonicalExisting) {
+        try {
+          const accepted = (await adapter.acceptInvite?.(
+            {
+              provider,
+              accountId: account.id,
+              label: offer.label,
+              remoteDescriptor: offer.remoteDescriptor,
+            },
+            account
+          )) ?? {};
+          const nextShare: ManagedShare = {
+            ...canonicalExisting,
+            remoteDescriptor: {
+              ...(offer.remoteDescriptor ?? {}),
+              ...(accepted.remoteDescriptor ?? {}),
+            },
+            capabilities: accepted.capabilities ?? canonicalExisting.capabilities,
+            updatedAt: this.runtime.now(),
+          };
+          const nextState: IntegrationStateSnapshot = {
+            ...state,
+            managedShares: state.managedShares.map((entry) => (entry.id === canonicalExisting.id ? nextShare : entry)),
+          };
+          await this.saveState(nextState);
+          state = nextState;
+          this.runtime.logger.log('Managed share incoming offer rebound an existing recipient share.', {
+            provider,
+            accountId: account.id,
+            offerId: offer.id,
+            shareId: canonicalExisting.id,
+            ownerEmail: typeof offer.remoteDescriptor.ownerEmail === 'string' ? offer.remoteDescriptor.ownerEmail.trim() : '',
+          });
+          try {
+            await this.prepareManagedShareForSync(canonicalExisting.id);
+          } catch (error) {
+            if (!(error instanceof ManagedShareServiceError) || error.code !== 'SHARE_NOT_FOUND') {
+              throw error;
+            }
+          }
+          state = await this.loadState();
+          continue;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.runtime.logger.warn(
+            `Incoming managed share rebinding failed for ${provider}:${account.id}:${offer.id}: ${message}`
+          );
+        }
       }
       if (!shouldAutoAdoptIncomingManagedShareOffer(provider, offer)) {
         continue;
@@ -1886,9 +1968,16 @@ export class ManagedShareService {
       localPath: share.localPath,
       remoteDescriptor: share.remoteDescriptor,
     });
-    const task = this.adapters
-      .get(normalizeProvider(share.provider))
-      ?.ensureSync?.(share, account)
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    const task = Promise.all([
+      Promise.resolve(adapter?.ensureSync?.(share, account)),
+      Promise.resolve().then(async () => {
+        if (this.disposed) {
+          return;
+        }
+        await this.replayMissingManagedShareInvites(share, account);
+      }),
+    ])
       .then(() => {
         if (this.disposed) {
           return;
@@ -1898,6 +1987,7 @@ export class ManagedShareService {
           shareId: share.id,
           accountId: account.id,
         });
+        this.scheduleIncomingManagedShareReconciliation(share.provider, account);
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -1909,6 +1999,95 @@ export class ManagedShareService {
     if (task) {
       this.syncBootstrapTasks.set(share.id, task);
     }
+  }
+
+  private scheduleIncomingManagedShareReconciliation(providerInput: string, account: ProviderAccount): void {
+    if (this.disposed) {
+      return;
+    }
+
+    const provider = normalizeProvider(providerInput);
+    const adapter = this.adapters.get(provider);
+    if (!adapter?.listIncomingShares || !this.isOperationalAccount(account)) {
+      return;
+    }
+
+    const taskKey = `${provider}:${account.id}`;
+    if (this.incomingReconciliationTasks.has(taskKey)) {
+      return;
+    }
+
+    const task = Promise.resolve()
+      .then(async () => {
+        const state = await this.loadState();
+        const currentAccount = state.accounts.find((entry) => entry.id === account.id);
+        if (!currentAccount || !this.isOperationalAccount(currentAccount)) {
+          return;
+        }
+        const reconciled = await this.reconcileIncomingManagedShares(provider, currentAccount, state);
+        this.runtime.logger.log('Managed share incoming reconciliation background pass completed.', {
+          provider,
+          accountId: currentAccount.id,
+          adoptedShares: reconciled.adoptedShares,
+        });
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runtime.logger.warn(`Managed share incoming reconciliation background pass failed for ${provider}:${account.id}: ${message}`);
+      })
+      .finally(() => {
+        this.incomingReconciliationTasks.delete(taskKey);
+      });
+
+    this.incomingReconciliationTasks.set(taskKey, task);
+  }
+
+  private async replayMissingManagedShareInvites(share: ManagedShare, account: ProviderAccount): Promise<void> {
+    if (share.role !== 'owner' || share.invitationEmails.length === 0) {
+      return;
+    }
+
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.invite || !adapter.getCollaborators) {
+      return;
+    }
+
+    let collaborators: ManagedShareCollaborator[];
+    try {
+      collaborators = await adapter.getCollaborators(share, account);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share collaborator check failed before invite replay for ${share.id}: ${message}`);
+      return;
+    }
+
+    const knownCollaborators = new Set(
+      collaborators
+        .map((collaborator) => collaborator.email?.trim().toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    );
+    const missingEmails = uniqueStrings(share.invitationEmails)
+      .map((email) => email.trim())
+      .filter((email) => email.length > 0 && !knownCollaborators.has(email.toLowerCase()));
+    if (missingEmails.length === 0) {
+      return;
+    }
+
+    await adapter.invite(
+      share,
+      {
+        emails: missingEmails,
+        accessLevel: defaultManagedShareInviteReplayAccessLevel(share),
+      },
+      account
+    );
+    this.runtime.logger.log('Managed share invite self-heal replayed missing collaborators.', {
+      provider: normalizeProvider(share.provider),
+      shareId: share.id,
+      accountId: account.id,
+      replayedInviteeCount: missingEmails.length,
+      emails: missingEmails,
+    });
   }
 
   private fallbackTransportState(
@@ -3410,6 +3589,12 @@ function defaultProviderMirrorLabel(provider: string, remotePath: string): strin
   return defaultProviderLabel(provider);
 }
 
+function defaultManagedShareInviteReplayAccessLevel(
+  share: ManagedShare
+): 'read' | 'read/write' | 'full access' | undefined {
+  return normalizeProvider(share.provider) === 'mega' ? 'read/write' : undefined;
+}
+
 function createId(prefix: string, provider: string, serial: number): string {
   return `${prefix}-${provider}-${serial}-${Math.random().toString(16).slice(2, 8)}`;
 }
@@ -4069,6 +4254,16 @@ function buildAttachedShareKeys(config: RootsConfig, shares: readonly ManagedSha
   return keys;
 }
 
+function buildManagedShareKeys(shares: readonly ManagedShare[]): Set<string> {
+  const keys = new Set<string>();
+  for (const share of shares) {
+    for (const key of buildManagedShareMatchKeys(share)) {
+      keys.add(key);
+    }
+  }
+  return keys;
+}
+
 function buildManagedShareMatchKeys(share: ManagedShare): Set<string> {
   const keys = new Set<string>();
   keys.add(`managed:${share.id.toLowerCase()}`);
@@ -4173,6 +4368,31 @@ function findManagedShareByRemoteDescriptor(
     normalizeProvider(share.provider) === provider &&
     share.accountId === accountId &&
     matchKeys.some((key) => buildManagedShareMatchKeys(share).has(key))
+  );
+}
+
+function findCanonicalIncomingManagedShareCandidate(
+  shares: readonly ManagedShare[],
+  provider: string,
+  accountId: string,
+  offer: IncomingManagedShareOffer
+): ManagedShare | undefined {
+  if (normalizeProvider(provider) !== 'mega') {
+    return undefined;
+  }
+  const ownerEmail = typeof offer.remoteDescriptor.ownerEmail === 'string'
+    ? offer.remoteDescriptor.ownerEmail.trim().toLowerCase()
+    : '';
+  if (!ownerEmail) {
+    return undefined;
+  }
+  return shares.find((share) =>
+    normalizeProvider(share.provider) === 'mega' &&
+    share.accountId === accountId &&
+    share.role === 'recipient' &&
+    shouldAutoAttachTrackedVolumesToManagedShare(share) &&
+    typeof share.remoteDescriptor.ownerEmail === 'string' &&
+    share.remoteDescriptor.ownerEmail.trim().toLowerCase() === ownerEmail
   );
 }
 

@@ -299,6 +299,34 @@ class BlockingEnsureSyncAdapter extends FakeTransportAdapter {
   }
 }
 
+class InviteReplayBootstrapAdapter extends FakeTransportAdapter {
+  ensureSyncCalls = 0;
+  inviteCalls: Array<{ shareId: string; emails: string[]; accessLevel?: 'read' | 'read/write' | 'full access' }> = [];
+
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  override async ensureSync(): Promise<void> {
+    this.ensureSyncCalls += 1;
+  }
+
+  override async getCollaborators(): Promise<ManagedShareCollaborator[]> {
+    return [];
+  }
+
+  async invite(
+    share: ManagedShare,
+    input: { emails: readonly string[]; accessLevel?: 'read' | 'read/write' | 'full access' }
+  ): Promise<void> {
+    this.inviteCalls.push({
+      shareId: share.id,
+      emails: [...input.emails],
+      accessLevel: input.accessLevel,
+    });
+  }
+}
+
 class ReconnectRequiredBootstrapAdapter extends FakeTransportAdapter {
   constructor() {
     super('mega', 'MEGA', 'Managed folders backed by MEGA.');
@@ -979,6 +1007,135 @@ describe('ManagedShareService', () => {
       expect(result.shares.shares[0]?.state.status).toBe('idle');
     }
     expect(adapter.ensureSyncCalls).toBe(1);
+  });
+
+  it('replays missing MEGA owner invites during sync bootstrap after share recreation', async () => {
+    const adapter = new InviteReplayBootstrapAdapter();
+    const { integrationStatePath, service, localRoot } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'owner',
+            localPath: localRoot,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes', shareName: 'nearbytes' },
+            capabilities: ['mirror', 'read', 'write', 'invite'],
+            invitationEmails: ['friend@example.com'],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const result = await Promise.race([
+      service.listManagedShares({ fast: true }).then((shares) => ({ kind: 'shares' as const, shares })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'timeout' }), 50);
+      }),
+    ]);
+
+    expect(result.kind).toBe('shares');
+    expect(adapter.ensureSyncCalls).toBe(1);
+    expect(adapter.inviteCalls).toEqual([
+      {
+        shareId: 'share-mega-1',
+        emails: ['friend@example.com'],
+        accessLevel: 'read/write',
+      },
+    ]);
+  });
+
+  it('auto-adopts a canonical incoming MEGA share during background owner bootstrap', async () => {
+    const adapter = new IncomingShareAdapter([
+      {
+        label: 'nearbytes',
+        remoteDescriptor: {
+          remotePath: 'friend@example.com:nearbytes',
+          shareName: 'nearbytes',
+          ownerEmail: 'friend@example.com',
+          rootHandle: 'root-1',
+          shareHandle: 'share-1',
+          accessLevel: 'read/write',
+        },
+      },
+    ]);
+    const { integrationStatePath, service, localRoot } = await createHarness({
+      adapters: [adapter],
+      readMaintenanceMode: 'background',
+    });
+    const ownerRoot = path.join(localRoot, 'mega', 'owner-example-com', 'nearbytes');
+    await fs.mkdir(ownerRoot, { recursive: true });
+
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-1',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'owner',
+            localPath: ownerRoot,
+            sourceId: 'src-local',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes', shareName: 'nearbytes' },
+            capabilities: ['mirror', 'read', 'write', 'invite'],
+            invitationEmails: ['friend@example.com'],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    await service.listManagedShares({ fast: true });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+
+    const shares = await service.listManagedShares();
+    expect(shares.shares).toHaveLength(2);
+    expect(shares.shares.filter((entry) => entry.share.role === 'recipient')).toHaveLength(1);
+
+    const incoming = await service.listIncomingManagedShares();
+    expect(incoming.shares).toHaveLength(0);
   });
 
   it('does not start immediate MEGA background maintenance on connect in background mode', async () => {

@@ -826,6 +826,17 @@ export function createRoutes(deps: RouteDependencies): Router {
     });
   }));
 
+  router.post('/__debug/integrations/shares/:shareId/trigger-sync', asyncHandler(async (req, res) => {
+    assertLocalConfigRequest(req);
+    const service = getManagedShareServiceOrThrow(managedShareService);
+    const { shareId } = parseWithSchema(managedShareIdParamSchema, req.params);
+    await service.triggerManagedShareSync(shareId);
+    res.json({
+      ok: true,
+      shareId,
+    });
+  }));
+
   router.get('/__debug/integrations/providers/:provider/share-inventory', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const service = getManagedShareServiceOrThrow(managedShareService);

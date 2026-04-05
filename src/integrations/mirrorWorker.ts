@@ -27,9 +27,18 @@ export class MirrorWorker {
     for (const entry of localEntries) {
       const remoteEntry = remoteMap.get(entry.path);
       if (remoteEntry && (!sizeAwarePush || remoteEntry.size === entry.size)) {
+        const confirmed = remote.confirmEntry ? await remote.confirmEntry(entry.path, entry.size) : true;
+        if (!confirmed) {
+          debugMirrorWarn('[MirrorWorker] remote entry could not be confirmed; forcing upload.', {
+            path: entry.path,
+            expectedSize: entry.size,
+          });
+          remoteMap.delete(entry.path);
+        } else {
         debugMirrorLog('[MirrorWorker] skip (already on remote).', { path: entry.path, size: entry.size, sizeAwarePush });
         skipped.push(entry.path);
         continue;
+        }
       }
       const localBytes = new Uint8Array(await fs.readFile(path.join(localRoot, entry.path)));
       const localValidation = await validateCanonicalStorageFile(entry.path, localBytes);
@@ -133,9 +142,21 @@ function debugMirrorWarn(...args: unknown[]): void {
 
 async function listMirrorFiles(localRoot: string): Promise<Array<{ path: string; size: number }>> {
   const result: Array<{ path: string; size: number }> = [];
-  await walk(path.join(localRoot, 'blocks'), localRoot, result);
   await walk(path.join(localRoot, 'channels'), localRoot, result);
-  return result.sort((left, right) => left.path.localeCompare(right.path));
+  await walk(path.join(localRoot, 'blocks'), localRoot, result);
+  return result.sort(compareMirrorUploadPriority);
+}
+
+function compareMirrorUploadPriority(
+  left: { path: string; size: number },
+  right: { path: string; size: number }
+): number {
+  const leftChannel = Number(left.path.startsWith('channels/'));
+  const rightChannel = Number(right.path.startsWith('channels/'));
+  if (leftChannel !== rightChannel) {
+    return rightChannel - leftChannel;
+  }
+  return left.path.localeCompare(right.path);
 }
 
 async function walk(

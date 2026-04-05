@@ -98,6 +98,7 @@ export interface MirrorRemoteAdapter {
   list(): Promise<readonly MirrorRemoteEntry[]>;
   download(path: string): Promise<Uint8Array>;
   upload(path: string, data: Uint8Array): Promise<void>;
+  confirmEntry?(path: string, expectedSize: number): Promise<boolean>;
   /**
    * When true, replaces remote files when a path exists remotely but the stored size differs from local
    * (MEGA owner writable mirror). Other mirrors keep the legacy behavior (skip if path exists).
@@ -132,6 +133,7 @@ export interface TransportAdapter {
   getCollaborators?(share: ManagedShare, account: ProviderAccount | null): Promise<ManagedShareCollaborator[]>;
   getShareStorageMetrics?(share: ManagedShare, account: ProviderAccount | null): Promise<ShareStorageMetrics | undefined>;
   ensureSync?(share: ManagedShare, account: ProviderAccount): Promise<void>;
+  triggerManagedShareSync?(share: ManagedShare, account: ProviderAccount): Promise<void>;
   detachManagedShare?(share: ManagedShare, account: ProviderAccount | null): Promise<void>;
   probeManagedShareRemoteEntry?(
     share: ManagedShare,

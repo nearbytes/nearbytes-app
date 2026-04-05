@@ -13,6 +13,7 @@ import { createSignedEvent } from '../../domain/eventEnvelope.js';
 
 class FakeRemote implements MirrorRemoteAdapter {
   readonly entries = new Map<string, Uint8Array>();
+  readonly unconfirmedPaths = new Set<string>();
 
   constructor(initial: Record<string, string> = {}) {
     for (const [relativePath, value] of Object.entries(initial)) {
@@ -37,6 +38,15 @@ class FakeRemote implements MirrorRemoteAdapter {
 
   async upload(relativePath: string, data: Uint8Array): Promise<void> {
     this.entries.set(relativePath, new Uint8Array(data));
+  }
+
+  async confirmEntry(relativePath: string, expectedSize: number): Promise<boolean> {
+    const normalizedPath = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (this.unconfirmedPaths.has(normalizedPath)) {
+      return false;
+    }
+    const bytes = this.entries.get(normalizedPath);
+    return Boolean(bytes && bytes.byteLength === expectedSize);
   }
 
   reconcileUploadsByRemoteSize(): boolean {
@@ -158,5 +168,17 @@ describe('MirrorWorker', () => {
     } finally {
       await fs.rm(localRoot, { recursive: true, force: true });
     }
+  });
+
+  it('uploads when a reported remote file cannot be confirmed', async () => {
+    const remote = new FakeRemote({
+      [`blocks/${localBlock.hash}.bin`]: 'stale-remote',
+    });
+    remote.unconfirmedPaths.add(`blocks/${localBlock.hash}.bin`);
+
+    const result = await worker.sync(tempDir, remote);
+
+    expect(result.uploaded).toContain(`blocks/${localBlock.hash}.bin`);
+    expect(new TextDecoder().decode(remote.entries.get(`blocks/${localBlock.hash}.bin`)!)).toBe('local-only');
   });
 });
