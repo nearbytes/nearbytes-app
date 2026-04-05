@@ -80,6 +80,7 @@ const MEGA_COLLABORATOR_LOOKUP_COOLDOWN_MS = 30_000;
 /** Avoid re-entrant `ensureSync` on every `getManagedShareState` poll (e.g. E2E / UI); that was resetting MEGA owner shares to `syncing` forever. */
 const GET_MANAGED_SHARE_STATE_ENSURE_SYNC_MIN_INTERVAL_MS = 120_000;
 const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
+const EXTERNAL_INVENTORY_REFRESH_MIN_INTERVAL_MS = 30_000;
 const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
 
 export class ManagedShareServiceError extends Error {
@@ -457,7 +458,9 @@ export class ManagedShareService {
           )
         : state;
     if (this.readMaintenanceMode === 'background') {
-      this.requestBackgroundMaintenance('listManagedShares', preparedState);
+      this.requestBackgroundMaintenance('listManagedShares', preparedState, {
+        forceExternalInventory: options.fast !== true,
+      });
     }
     if (this.readMaintenanceMode === 'inline' && options.fast !== true) {
       this.scheduleManagedShareSyncs(preparedState);
@@ -562,7 +565,9 @@ export class ManagedShareService {
       };
     }
     if (this.readMaintenanceMode === 'background') {
-      this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState);
+      this.requestBackgroundMaintenance('listIncomingManagedShares', preparedState, {
+        forceExternalInventory: true,
+      });
     }
     const attachedKeys = buildAttachedShareKeys(this.options.storage.getRootsConfig(), preparedState.managedShares);
     const existingManagedShareKeys = buildManagedShareKeys(preparedState.managedShares);
@@ -2211,11 +2216,17 @@ export class ManagedShareService {
     return normalizeProvider(provider) === 'mega' ? 55_000 : 1_500;
   }
 
-  private requestBackgroundMaintenance(reason: string, stateSnapshot: IntegrationStateSnapshot): void {
+  private requestBackgroundMaintenance(
+    reason: string,
+    stateSnapshot: IntegrationStateSnapshot,
+    options: {
+      readonly forceExternalInventory?: boolean;
+    } = {}
+  ): void {
     if (this.disposed) {
       return;
     }
-    if (!this.shouldRunBackgroundMaintenance(stateSnapshot)) {
+    if (!this.shouldRunBackgroundMaintenance(stateSnapshot, options)) {
       return;
     }
     this.maintenanceRequested = true;
@@ -2289,12 +2300,31 @@ export class ManagedShareService {
     }
   }
 
-  private shouldRunBackgroundMaintenance(stateSnapshot: IntegrationStateSnapshot): boolean {
+  private shouldRunBackgroundMaintenance(
+    stateSnapshot: IntegrationStateSnapshot,
+    options: {
+      readonly forceExternalInventory?: boolean;
+    } = {}
+  ): boolean {
     if (this.hasMissingDefaultManagedShares(stateSnapshot)) {
+      return true;
+    }
+    if (options.forceExternalInventory === true && !this.hasFreshExternalInventoryMaintenance(stateSnapshot)) {
       return true;
     }
     const signature = this.computeBackgroundMaintenanceSignature(stateSnapshot);
     return !this.hasFreshBackgroundMaintenance(stateSnapshot, signature);
+  }
+
+  private hasFreshExternalInventoryMaintenance(stateSnapshot: IntegrationStateSnapshot): boolean {
+    const maintenance = stateSnapshot.maintenance;
+    if (!maintenance) {
+      return false;
+    }
+    if (maintenance.mode !== 'background' || maintenance.schemaVersion !== BACKGROUND_MAINTENANCE_SCHEMA_VERSION) {
+      return false;
+    }
+    return this.runtime.now() - maintenance.completedAt < EXTERNAL_INVENTORY_REFRESH_MIN_INTERVAL_MS;
   }
 
   private hasMissingDefaultManagedShares(stateSnapshot: IntegrationStateSnapshot): boolean {
