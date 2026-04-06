@@ -3,6 +3,8 @@ import { openDB, type IDBPDatabase } from 'idb';
 import type {
   EventDetailResponse,
   ListFilesResponse,
+  LocalNetworkPeer,
+  LocalNetworkPeersResponse,
   OpenVolumeResponse,
   TimelineResponse,
 } from '../api.js';
@@ -144,6 +146,32 @@ async function getRecord<T>(storeName: MirrorStoreName, key: string): Promise<T 
   }
 }
 
+async function getAllRecords<T>(storeName: MirrorStoreName): Promise<T[]> {
+  try {
+    const db = await getIndexedDb();
+    if (db) {
+      return (await db.getAll(storeName)) as T[];
+    }
+    return Array.from(getInMemoryStore()[storeName].values()) as T[];
+  } catch (error) {
+    console.warn(`Failed to read browser mirror records for ${storeName}`, error);
+    return [];
+  }
+}
+
+async function clearStore(storeName: MirrorStoreName): Promise<void> {
+  try {
+    const db = await getIndexedDb();
+    if (db) {
+      await db.clear(storeName);
+    } else {
+      getInMemoryStore()[storeName].clear();
+    }
+  } catch (error) {
+    console.warn(`Failed to clear browser mirror store ${storeName}`, error);
+  }
+}
+
 export function subscribeBrowserMirror(listener: (storeName: MirrorStoreName, key: string) => void): () => void {
   mirrorListeners.add(listener);
   return () => {
@@ -166,16 +194,7 @@ export async function readMirrorVolumeSnapshot(volumeId: string): Promise<Mirror
 }
 
 export async function clearMirrorVolumeSnapshots(): Promise<void> {
-  try {
-    const db = await getIndexedDb();
-    if (db) {
-      await db.clear('volumes');
-    } else {
-      getInMemoryStore().volumes.clear();
-    }
-  } catch (error) {
-    console.warn('Failed to clear browser mirror volume snapshots', error);
-  }
+  await clearStore('volumes');
 }
 
 export async function readMirrorVolumeTimestamp(volumeId: string): Promise<number | null> {
@@ -215,6 +234,30 @@ export async function writeLanPeerSnapshot(key: string, snapshot: Record<string,
     snapshot,
     updatedAt: Date.now(),
   } satisfies MirrorLanPeerRecord);
+}
+
+export async function importLocalNetworkPeersSnapshot(response: LocalNetworkPeersResponse): Promise<void> {
+  await clearStore('lanPeers');
+  await writeMirrorCheckpoint('lan:service', response.service as Record<string, unknown>);
+  await Promise.all(
+    response.peers.map((peer) => writeLanPeerSnapshot(peer.peerId, peer as unknown as Record<string, unknown>))
+  );
+}
+
+export async function readMirrorLocalNetworkPeers(): Promise<LocalNetworkPeersResponse | null> {
+  const serviceRecord = await getRecord<MirrorCheckpointRecord>('checkpoints', 'lan:service');
+  const peers = await getAllRecords<MirrorLanPeerRecord>('lanPeers');
+
+  if (!serviceRecord) {
+    return null;
+  }
+
+  return {
+    service: serviceRecord.value as unknown as LocalNetworkPeersResponse['service'],
+    peers: peers
+      .map((entry) => entry.snapshot as unknown as LocalNetworkPeer)
+      .sort((left, right) => left.label.localeCompare(right.label)),
+  };
 }
 
 export async function writeMirrorCheckpoint(key: string, value: Record<string, unknown>): Promise<void> {

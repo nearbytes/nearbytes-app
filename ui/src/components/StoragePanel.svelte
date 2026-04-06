@@ -32,7 +32,6 @@
     removeManagedShare,
     watchSources,
     type DiscoveredNearbytesSource,
-    type DesktopRuntimeLogEntry,
     type AppConfig,
     type IncomingManagedShareOffer,
     type IncomingProviderContactInvite,
@@ -52,6 +51,8 @@
     type VolumePolicyEntry,
     updateRootsConfig,
   } from '../lib/api.js';
+  import type { DesktopRuntimeLogEntry } from '../lib/host/desktopBridge.js';
+  import { readMirrorLocalNetworkPeers } from '../lib/mirror/browserMirror.js';
   import {
     formatAccessLevelLabel,
     getCollaboratorDedupeKey,
@@ -3155,6 +3156,14 @@
         localNetworkLoadError = '';
       }
     } catch (error) {
+      const mirrored = await readMirrorLocalNetworkPeers();
+      if (mirrored) {
+        applyLocalNetworkResponse(mirrored);
+        if (!options?.background) {
+          localNetworkLoadError = 'Using mirrored local network state. Live discovery is unavailable.';
+        }
+        return;
+      }
       if (!options?.background) {
         localNetworkLoadError = error instanceof Error ? error.message : String(error);
       }
@@ -4262,8 +4271,14 @@
         .then((response) => {
           applyLocalNetworkResponse(response);
         })
-        .catch((error) => {
+        .catch(async (error) => {
           const detail = error instanceof Error ? error.message : String(error);
+          const mirrored = await readMirrorLocalNetworkPeers();
+          if (mirrored) {
+            applyLocalNetworkResponse(mirrored);
+            localNetworkLoadError = 'Using mirrored local network state. Live discovery is delayed.';
+            return;
+          }
           if (keepVisible && localNetworkPeers.length > 0) {
             return;
           }

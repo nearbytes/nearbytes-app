@@ -956,6 +956,7 @@ import {
   importCompatibilityEventDetail,
   importCompatibilityTimelineSnapshot,
   importCompatibilityVolumeSnapshot,
+  importLocalNetworkPeersSnapshot,
   writeMirrorCheckpoint,
 } from './mirror/browserMirror.js';
 import {
@@ -1497,10 +1498,12 @@ export async function listIncomingProviderContactInvites(
 export async function listLocalNetworkPeers(
   options: { signal?: AbortSignal } = {}
 ): Promise<LocalNetworkPeersResponse> {
-  return apiRequest<LocalNetworkPeersResponse>('/integrations/local-network/peers', {
+  const response = await apiRequest<LocalNetworkPeersResponse>('/integrations/local-network/peers', {
     method: 'GET',
     signal: options.signal,
   });
+  await importLocalNetworkPeersSnapshot(response);
+  return response;
 }
 
 export async function syncLocalNetworkPeer(
