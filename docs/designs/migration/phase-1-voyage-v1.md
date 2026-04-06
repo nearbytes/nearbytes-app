@@ -479,3 +479,37 @@ Desktop adopts the seam before phone so the migration can prove parity against t
 Capacitor arrives before a full runtime rewrite so the phone host becomes real early.
 
 LAN runtime work lands before provider work because LAN is the actual phone Phase 1 product.
+
+## Implementation Status Tracker
+
+This section records concrete implementation progress against the active design line.
+
+Implemented branch history before the current hardening loop:
+
+- `69a44d7` `chore(mobile): add ios build helpers`
+- `1544cbd` `chore(mobile): ignore xcode swiftpm metadata`
+- `f46f7af` `feat(mobile): add capacitor ios shell`
+- `a86e695` `refactor(ui): extract host bridge transport`
+- `e269aa0` `refactor(ui): extract desktop shell host actions`
+- `672a9de` `refactor(ui): extract host ui state persistence`
+- `fd6859d` `feat(ui): make identity chat flow phone-usable`
+- `71f502c` `docs(ui): require iphone-size shared layouts`
+
+Status from that history:
+
+- shared Capacitor shell exists
+- host bridge extraction for the shared UI is in progress
+- iPhone-size layout requirements are explicit in code and docs
+- the design is still not fully implemented because shared surfaces still depend on backend-shaped app APIs and the mobile shell still needs release hardening
+
+Checklist for the current hardening loop started on 2026-04-06:
+
+- [ ] keep generated iOS derived-data output out of normal source control status
+- [ ] narrow iOS development networking to explicit local exceptions instead of `NSAllowsArbitraryLoads`
+- [ ] remove duplicate standalone join-dialog workflow markup in favor of shared dialog structure
+- [ ] add focused regression coverage for extracted join-link presentation behavior
+- [ ] update active implementation notes after the hardening commits land
+
+Completion rule for this checklist:
+
+- do not mark this hardening loop finished until the items above are implemented and this tracker is updated with the resulting commit ids

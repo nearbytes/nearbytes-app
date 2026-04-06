@@ -130,6 +130,33 @@ Exit criteria:
 - phone boots the full shared UI surface inventory defined in `platform/phase-1-surface-inventory-v1.md`
 - missing phone runtime capabilities surface as explicit shared unavailable states rather than breakage or missing screens
 
+### Phase 4.1: Harden The Mobile Shared Shell
+
+Purpose:
+
+- make the shared shell releasable on phone without weakening the shared-codebase rule
+
+Deliverables:
+
+- generated iOS build output stays outside source control and does not pollute working trees
+- iOS development traffic is explicitly scoped to local development endpoints rather than blanket arbitrary network loads
+- modal-heavy shared surfaces use the shared dialog primitives or a shared dialog body, not phone-specific duplicate overlays
+- focused regression coverage lands when mobile layout fixes are made to join, identity, or other modal-heavy shared flows
+
+Desktop guarantee:
+
+- desktop behavior and desktop runtime paths remain unchanged
+
+Phone relevance:
+
+- prevents the phone shell from shipping as a fragile dev-only wrapper around otherwise shared UI
+
+Exit criteria:
+
+- shared modal flows remain usable at iPhone sizes without duplicated host-specific workflow markup
+- the mobile host allows only the minimum development network exceptions needed to boot the shared shell locally
+- generated iOS build trees do not appear in normal git status output
+
 ### Phase 5: Add Native Phase 1 LAN Runtime And Mirror Feed
 
 Keep the shared app stable while the phone host gains durable LAN, opaque object storage, and resume behavior behind the same contract.
@@ -189,6 +216,12 @@ Each phase is incomplete until the desktop app still supports:
 - the same UI feature surfaces remaining present on desktop and phone from the shared codebase, even when runtime support differs by host
 - no accepted regression in efficiency, latency, or reactivity for translated shared surfaces
 - no entrenchment of backend-owned application crypto or semantics for the shared surfaces
+
+Phone hardening is incomplete until the shared shell also supports:
+
+- iPhone-size join, identity, and other dialog-heavy flows without overflow, trapped completion states, or duplicate workflow markup
+- local-development networking through explicit ATS exceptions instead of blanket arbitrary-load allowances
+- clean source control state after iOS simulator and Xcode build runs
 
 ## Immediate Next Move
 
