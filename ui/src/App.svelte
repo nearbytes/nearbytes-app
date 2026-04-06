@@ -64,18 +64,21 @@
     type PersistedUiState,
   } from './lib/host/desktopBridge.js';
   import {
+    loadHostPersistedUiState,
+    normalizePersistedUiState,
+    saveHostPersistedUiState,
+  } from './lib/host/persistedUiState.js';
+  import {
     canWipeStoredConfig,
     connectDesktopDeepLinks,
     exportDesktopLogoPng,
     fetchDesktopRemoteFile,
     getDesktopClipboardImageStatus,
-    loadDesktopUiState,
     readDesktopClipboardImage,
     readDesktopUpdaterState,
     requestDesktopUpdateInstall,
     requestDesktopUpdateReleasePage,
     saveDesktopThemeRegistry,
-    saveDesktopUiState,
     subscribeDesktopDeepLinks,
     subscribeDesktopUpdaterState,
     wipeStoredConfig,
@@ -812,19 +815,6 @@
     }
   }
 
-  function normalizePersistedUiState(input: unknown): PersistedUiState {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      return {};
-    }
-    const candidate = input as PersistedUiState;
-    return {
-      volumeMounts: candidate.volumeMounts,
-      sourceDiscovery: candidate.sourceDiscovery,
-      theme: candidate.theme,
-      savedAt: typeof candidate.savedAt === 'number' && Number.isFinite(candidate.savedAt) ? candidate.savedAt : 0,
-    };
-  }
-
   function loadPersistedUiStateLocally(): PersistedUiState {
     try {
       const raw = localStorage.getItem(UI_STATE_SHADOW_KEY);
@@ -835,22 +825,6 @@
     } catch {
       return {};
     }
-  }
-
-  function persistedUiStateTimestamp(input: PersistedUiState | null | undefined): number {
-    return typeof input?.savedAt === 'number' && Number.isFinite(input.savedAt) ? input.savedAt : 0;
-  }
-
-  function choosePreferredPersistedUiState(
-    desktopState: PersistedUiState | null | undefined,
-    localState: PersistedUiState | null | undefined
-  ): PersistedUiState {
-    const normalizedDesktop = normalizePersistedUiState(desktopState);
-    const normalizedLocal = normalizePersistedUiState(localState);
-    if (persistedUiStateTimestamp(normalizedLocal) > persistedUiStateTimestamp(normalizedDesktop)) {
-      return normalizedLocal;
-    }
-    return normalizedDesktop;
   }
 
   function persistUiStateLocally(state: PersistedUiState): void {
@@ -869,10 +843,6 @@
     if (mergedState.sourceDiscovery !== undefined) {
       persistSourceDiscoveryLocally(normalizePersistedSourceDiscovery(mergedState.sourceDiscovery));
     }
-  }
-
-  function clonePersistedUiStateForBridge(state: PersistedUiState): PersistedUiState {
-    return JSON.parse(JSON.stringify(state)) as PersistedUiState;
   }
 
   function trimSecretPart(value: string): string {
@@ -1827,11 +1797,7 @@
 
     void (async () => {
       try {
-        const persistedState = await loadDesktopUiState();
-        if (!persistedState) {
-          return;
-        }
-        const nextState = choosePreferredPersistedUiState(persistedState, loadPersistedUiStateLocally());
+        const nextState = await loadHostPersistedUiState(loadPersistedUiStateLocally());
         const hasPersistedMounts = Object.prototype.hasOwnProperty.call(nextState ?? {}, 'volumeMounts');
         const nextMounts = normalizeMounts(nextState.volumeMounts);
         if (hasPersistedMounts) {
@@ -2029,15 +1995,14 @@
       volumeMounts: snapshotVolumeMounts(mounts),
       savedAt: Date.now(),
     };
-    const desktopPayload = clonePersistedUiStateForBridge(payload);
     persistUiStateLocally(payload);
     const persistTimer = setTimeout(() => {
-      void saveDesktopUiState(desktopPayload).then((saved) => {
+      void saveHostPersistedUiState(payload).then((saved) => {
         if (!saved) {
           persistUiStateLocally(payload);
         }
       }).catch((error) => {
-          console.warn('Failed to persist desktop volume mounts:', error);
+          console.warn('Failed to persist host volume mounts:', error);
       });
     }, 120);
 
@@ -2064,15 +2029,14 @@
       },
       savedAt: Date.now(),
     };
-    const desktopPayload = clonePersistedUiStateForBridge(payload);
     persistUiStateLocally(payload);
     const persistTimer = setTimeout(() => {
-      void saveDesktopUiState(desktopPayload).then((saved) => {
+      void saveHostPersistedUiState(payload).then((saved) => {
         if (!saved) {
           persistUiStateLocally(payload);
         }
       }).catch((error) => {
-          console.warn('Failed to persist desktop source discovery state:', error);
+          console.warn('Failed to persist host source discovery state:', error);
       });
     }, 120);
 
@@ -2090,15 +2054,14 @@
       theme: cloneThemeSettings(themeSettings),
       savedAt: Date.now(),
     };
-    const desktopPayload = clonePersistedUiStateForBridge(payload);
     persistUiStateLocally(payload);
     const persistTimer = setTimeout(() => {
-      void saveDesktopUiState(desktopPayload).then((saved) => {
+      void saveHostPersistedUiState(payload).then((saved) => {
         if (!saved) {
           persistUiStateLocally(payload);
         }
       }).catch((error) => {
-          console.warn('Failed to persist desktop theme state:', error);
+          console.warn('Failed to persist host theme state:', error);
       });
     }, 120);
 
@@ -2122,10 +2085,9 @@
         theme: cloneThemeSettings(themeSettings),
         savedAt: Date.now(),
       };
-      const desktopPayload = clonePersistedUiStateForBridge(payload);
       persistUiStateLocally(payload);
-      void saveDesktopUiState(desktopPayload).catch((error) => {
-          console.warn('Failed to flush desktop UI state:', error);
+      void saveHostPersistedUiState(payload).catch((error) => {
+          console.warn('Failed to flush host UI state:', error);
       });
     };
 
