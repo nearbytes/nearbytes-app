@@ -486,6 +486,7 @@ This section records concrete implementation progress against the active design 
 
 Implemented branch history before the current hardening loop:
 
+- `9133a83` `docs(design): track mobile hardening loop`
 - `69a44d7` `chore(mobile): add ios build helpers`
 - `1544cbd` `chore(mobile): ignore xcode swiftpm metadata`
 - `f46f7af` `feat(mobile): add capacitor ios shell`
@@ -504,11 +505,22 @@ Status from that history:
 
 Checklist for the current hardening loop started on 2026-04-06:
 
-- [ ] keep generated iOS derived-data output out of normal source control status
-- [ ] narrow iOS development networking to explicit local exceptions instead of `NSAllowsArbitraryLoads`
-- [ ] remove duplicate standalone join-dialog workflow markup in favor of shared dialog structure
-- [ ] add focused regression coverage for extracted join-link presentation behavior
-- [ ] update active implementation notes after the hardening commits land
+- [x] keep generated iOS derived-data output out of normal source control status via `4936549` `feat(mobile): harden shared join dialog flow`
+- [x] narrow iOS development networking to explicit local exceptions instead of `NSAllowsArbitraryLoads` via `4936549` `feat(mobile): harden shared join dialog flow`
+- [x] remove duplicate standalone join-dialog workflow markup in favor of shared dialog structure via `4936549` `feat(mobile): harden shared join dialog flow`
+- [x] add focused regression coverage for extracted join-link presentation behavior via `4936549` `feat(mobile): harden shared join dialog flow`
+- [x] update active implementation notes after the hardening commits land via `7ec3376` `docs(wip): record mobile hardening progress`
+
+Hardening loop result:
+
+- `4936549` landed the concrete shell hardening work: ignored derived iOS build output, scoped ATS development exceptions to localhost, extracted a shared join-link dialog body, and added a focused regression test for the extracted presentation rules
+- `7ec3376` synchronized the active implementation notes with that hardening work
+
+Still open after this loop:
+
+- Phase 1 remains incomplete while shared surfaces still depend on backend-shaped app APIs instead of the final browser-owned host contract line
+- other modal-heavy phone flows may still need the same shared-shell hardening treatment applied here to the join flow
+- real two-machine LAN verification after the WebRTC switch remains a separate checklist item in the active implementation notes
 
 Completion rule for this checklist:
 
