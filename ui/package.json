@@ -11,7 +11,9 @@
     "mobile:copy": "cap copy",
     "mobile:ios:add": "cap add ios",
     "mobile:ios:sync": "yarn build && cap sync ios",
-    "mobile:ios:open": "cap open ios"
+    "mobile:ios:open": "cap open ios",
+    "mobile:ios:build": "xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build",
+    "mobile:ios:build:device": "xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build"
   },
   "dependencies": {
     "@capacitor/core": "^8.3.0",
