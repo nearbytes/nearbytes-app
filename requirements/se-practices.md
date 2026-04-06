@@ -27,6 +27,13 @@ This document captures non-negotiable software engineering principles for the Ne
 - Every dialog or panel that can be opened must have an unambiguous close/dismiss action.
 - Opening a secondary panel from within a dialog must not forcibly close the originating dialog.
 
+### [REQ-UI-004] Shared UI Must Work At iPhone Size
+
+- The shared UI is not desktop-only. It must remain usable on iPhone-width screens because the same app surface is reused by the mobile shell.
+- All primary flows must remain operable at widths around `390px` without horizontal overflow, clipped action rows, or unreachable controls.
+- Dialogs, workspace toolbars, file/chat panes, and identity flows must collapse into a phone-usable layout rather than assuming pointer-precision or wide-screen space.
+- A UI change that works on desktop but makes the shared shell unusable on iPhone-sized screens is a regression.
+
 ---
 
 ## Code Quality Requirements
@@ -48,6 +55,7 @@ This document captures non-negotiable software engineering principles for the Ne
 - [ ] No explanation paragraphs inside dialogs or side panels (REQ-UI-002)
 - [ ] No duplicate badges/labels that repeat toggle state (REQ-UI-002)
 - [ ] Every opened panel/dialog can be closed (REQ-UI-003)
+- [ ] Primary flows remain usable at iPhone width with no horizontal overflow (REQ-UI-004)
 - [ ] No unused `{@const}` declarations in templates (REQ-CODE-001)
 - [ ] No orphaned CSS selectors (REQ-CODE-002)
 - [ ] Build produces zero errors and zero unused-CSS warnings

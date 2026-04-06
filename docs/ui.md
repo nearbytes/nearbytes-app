@@ -194,6 +194,14 @@ This allows the UI to run on port 5173 while the backend runs on port 3000.
 
 The header includes a simple SVG icon and "Nearbytes" title with gradient text.
 
+## Shared UI Responsiveness
+
+The shared Svelte UI is used by both the desktop shell and the mobile shell, so responsive behavior is a core requirement rather than a later mobile pass.
+
+- Desktop-first layout decisions must still degrade cleanly to iPhone-sized widths.
+- Core flows like opening a hub, joining chat with an identity, publishing an identity, and switching between files/chat must remain usable on phone-sized screens.
+- For normative UI requirements, use [requirements/se-practices.md](/Users/vincenzo/data/local/repos/nearbytes-app/requirements/se-practices.md), especially the UI/UX requirements section.
+
 ## Development Workflow
 
 1. Start backend: `npm run server` (from root)
