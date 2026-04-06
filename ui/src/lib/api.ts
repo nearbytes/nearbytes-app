@@ -953,6 +953,11 @@ import {
 } from './host/desktopShell.js';
 import { getActiveHost } from './host/resolveHost.js';
 import {
+  importCompatibilityEventDetail,
+  importCompatibilityTimelineSnapshot,
+  importCompatibilityVolumeSnapshot,
+} from './mirror/browserMirror.js';
+import {
   openHostStream,
   requestHostBlob,
   requestHostJson,
@@ -1077,7 +1082,9 @@ async function apiRequest<T>(
  */
 export async function openVolume(secret: string): Promise<OpenVolumeResponse> {
   const host = await getActiveHost();
-  return host.legacyDesktop.openVolume(secret) as Promise<OpenVolumeResponse>;
+  const response = await host.legacyDesktop.openVolume(secret) as OpenVolumeResponse;
+  await importCompatibilityVolumeSnapshot(response);
+  return response;
 }
 
 /**
@@ -1085,7 +1092,9 @@ export async function openVolume(secret: string): Promise<OpenVolumeResponse> {
  */
 export async function listFiles(auth: Auth): Promise<ListFilesResponse> {
   const host = await getActiveHost();
-  return host.legacyDesktop.listFiles(auth) as Promise<ListFilesResponse>;
+  const response = await host.legacyDesktop.listFiles(auth) as ListFilesResponse;
+  await importCompatibilityVolumeSnapshot(response);
+  return response;
 }
 
 /**
@@ -1093,7 +1102,9 @@ export async function listFiles(auth: Auth): Promise<ListFilesResponse> {
  */
 export async function getTimeline(auth: Auth): Promise<TimelineResponse> {
   const host = await getActiveHost();
-  return host.legacyDesktop.getTimeline(auth) as Promise<TimelineResponse>;
+  const response = await host.legacyDesktop.getTimeline(auth) as TimelineResponse;
+  await importCompatibilityTimelineSnapshot(response);
+  return response;
 }
 
 /**
@@ -1101,7 +1112,9 @@ export async function getTimeline(auth: Auth): Promise<TimelineResponse> {
  */
 export async function getEventDetail(auth: Auth, eventHash: string): Promise<EventDetailResponse> {
   const host = await getActiveHost();
-  return host.legacyDesktop.getEventDetail(auth, eventHash) as Promise<EventDetailResponse>;
+  const response = await host.legacyDesktop.getEventDetail(auth, eventHash) as EventDetailResponse;
+  await importCompatibilityEventDetail(response);
+  return response;
 }
 
 /**
