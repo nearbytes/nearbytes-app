@@ -11,24 +11,20 @@ const iosDerivedDataPath = path.join(uiDir, 'ios', '.derived-dev-iphone');
 const simulatorAppPath = path.join(iosDerivedDataPath, 'Build', 'Products', 'Debug-iphonesimulator', 'App.app');
 const bundleId = 'org.nearbytes.mobile';
 const defaultUiUrl = `http://127.0.0.1:${parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177)}`;
-const mobileServerUrl = process.env.NEARBYTES_MOBILE_SERVER_URL?.trim() || defaultUiUrl;
+const explicitMobileServerUrl = process.env.NEARBYTES_MOBILE_SERVER_URL?.trim() || '';
+const mobileServerUrl = explicitMobileServerUrl || defaultUiUrl;
 
 await main();
 
 async function main() {
-  const webDev = spawn('yarn', ['--cwd', 'ui', 'dev:raw'], {
-    cwd: repoRoot,
-    env: process.env,
-    stdio: 'inherit',
-    shell: false,
-  });
+  const webDev = await prepareUiDevServer();
   const signalHandlers = installSignalHandlers(() => {
-    if (webDev.exitCode === null) {
+    if (webDev?.exitCode === null) {
       webDev.kill('SIGTERM');
     }
   });
 
-  webDev.once('error', (error) => {
+  webDev?.once('error', (error) => {
     console.error(`[iphone-dev] failed to start UI dev server: ${formatError(error)}`);
   });
 
@@ -77,14 +73,35 @@ async function main() {
     runCommand('xcrun', ['simctl', 'install', simulator.udid, simulatorAppPath]);
     runCommand('xcrun', ['simctl', 'launch', '--console', simulator.udid, bundleId]);
     console.log(`[iphone-dev] App launched in Simulator on ${simulator.name} using ${mobileServerUrl}. The backend is not started by this command.`);
-    await waitForExitOrSignal(webDev, signalHandlers.stopPromise);
+    if (webDev) {
+      await waitForExitOrSignal(webDev, signalHandlers.stopPromise);
+    }
   } finally {
     signalHandlers.release();
-    if (webDev.exitCode === null) {
+    if (webDev?.exitCode === null) {
       webDev.kill('SIGTERM');
       await waitForExitIgnoringFailure(webDev);
     }
   }
+}
+
+async function prepareUiDevServer() {
+  if (explicitMobileServerUrl) {
+    console.log(`[iphone-dev] Using NEARBYTES_MOBILE_SERVER_URL=${mobileServerUrl}; local UI dev server will not be started.`);
+    return null;
+  }
+
+  if (await isHttpEndpointReady(mobileServerUrl, 1_000)) {
+    console.log(`[iphone-dev] Reusing existing UI dev server at ${mobileServerUrl}.`);
+    return null;
+  }
+
+  return spawn('yarn', ['--cwd', 'ui', 'dev:raw'], {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: 'inherit',
+    shell: false,
+  });
 }
 
 function runYarnInRepo(args, env = process.env) {
@@ -115,7 +132,7 @@ function runCommand(command, args, options = {}) {
 async function waitForHttpEndpoint(url, timeoutMs, child, label) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    if (child.exitCode !== null) {
+    if (child && child.exitCode !== null) {
       throw new Error(`${label} exited before becoming ready (exit code ${child.exitCode}).`);
     }
     if (await isHttpEndpointReady(url, 1_000)) {
