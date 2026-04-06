@@ -995,7 +995,7 @@
   async function computeSecretFileHash(mountId: string, payload: string): Promise<void> {
     const bytes = secretFileBytesFromPayload(payload);
     if (!bytes) return;
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const digest = await crypto.subtle.digest('SHA-256', bytesToArrayBuffer(bytes));
     const hash = Array.from(new Uint8Array(digest))
       .map((value) => value.toString(16).padStart(2, '0'))
       .join('');
@@ -1018,7 +1018,7 @@
   function downloadSecretFile(mount: VolumeMount) {
     const bytes = secretFileBytes(mount);
     if (!bytes) return;
-    const blob = new Blob([bytes], {
+    const blob = new Blob([bytesToArrayBuffer(bytes)], {
       type: trimSecretPart(mount.secretFileMimeType) || 'application/octet-stream',
     });
     const url = URL.createObjectURL(blob);
@@ -1311,6 +1311,10 @@
     return bytes;
   }
 
+  function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  }
+
   async function fileFromDesktopRemoteDrop(descriptor: RemoteDropDescriptor): Promise<File | null> {
     const fetched = await fetchDesktopRemoteFile(descriptor.url);
     if (!fetched) {
@@ -1326,7 +1330,7 @@
       filename = `${filename}${extensionFromMimeType(mimeType)}`;
     }
 
-    return new File([bytes], sanitizeDroppedFilename(filename), {
+    return new File([bytesToArrayBuffer(bytes)], sanitizeDroppedFilename(filename), {
       type: mimeType,
       lastModified: Date.now(),
     });
@@ -1345,7 +1349,7 @@
       filename = `${filename}${extensionFromMimeType(mimeType)}`;
     }
 
-    return new File([bytes], sanitizeDroppedFilename(filename, 'clipboard-image'), {
+    return new File([bytesToArrayBuffer(bytes)], sanitizeDroppedFilename(filename, 'clipboard-image'), {
       type: mimeType,
       lastModified: Date.now(),
     });
@@ -2711,10 +2715,13 @@
     if (!left || !right || left.type !== right.type) {
       return false;
     }
-    if (left.type === 'token') {
+    if (left.type === 'token' && right.type === 'token') {
       return left.token === right.token;
     }
-    return left.secret === right.secret;
+    if (left.type === 'secret' && right.type === 'secret') {
+      return left.secret === right.secret;
+    }
+    return false;
   }
 
   function clearMountRuntimeRefresh(mountId: string): void {
@@ -6910,7 +6917,7 @@
             >
               <X size={18} strokeWidth={2} />
             </button>
-            <EventFlowPanel auth={auth} volumeId={shareableVolumeId} />
+            <EventFlowPanel auth={auth ?? undefined} volumeId={shareableVolumeId ?? undefined} />
           </div>
         </div>
       {/if}
