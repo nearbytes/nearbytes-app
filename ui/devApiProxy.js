@@ -83,7 +83,10 @@ function proxyApiRequest(req, res, session, allowRetry) {
       invalidateDesktopSession(session);
     }
 
-    const canRetry = allowRetry && (req.method === 'GET' || req.method === 'HEAD');
+    const canRetry =
+      allowRetry &&
+      session &&
+      (req.method === 'GET' || req.method === 'HEAD');
     if (canRetry) {
       void retryProxyRequest(req, res, session);
       return;
@@ -137,6 +140,17 @@ async function retryProxyRequest(req, res, previousSession) {
 }
 
 export async function waitForRecoverableProxyTarget(_previousSession) {
+  const initialSession = readDesktopSession();
+  if (!initialSession) {
+    const targetUrl = getProxyTargetUrl(null);
+    return {
+      available: false,
+      session: null,
+      targetUrl,
+      error: new Error(`no desktop runtime session is available for ${targetUrl.origin}`),
+    };
+  }
+
   const startedAt = Date.now();
   let lastError = new Error('desktop runtime unavailable after auto-repair attempt');
 
