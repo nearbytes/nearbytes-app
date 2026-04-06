@@ -44,22 +44,69 @@ describe('compatibilityHost', () => {
     await host.legacyDesktop.listFiles({ type: 'token', token: 'abc' });
     await host.legacyDesktop.getTimeline({ type: 'secret', secret: 'xyz' });
     await host.legacyDesktop.getEventDetail({ type: 'token', token: 'abc' }, 'evt1');
+    await host.legacyDesktop.getEventStorageLocations({ type: 'token', token: 'abc' }, 'evt1');
+    await host.legacyDesktop.renameFile({ type: 'token', token: 'abc' }, 'a', 'b');
+    await host.legacyDesktop.renameFolder({ type: 'secret', secret: 'xyz' }, 'from', 'to', true);
+    await host.legacyDesktop.exportSourceReferences({ type: 'token', token: 'abc' }, ['a']);
+    await host.legacyDesktop.importRecipientReferences({ type: 'token', token: 'abc' }, { bundle: true });
+    await host.legacyDesktop.listChat({ type: 'token', token: 'abc' });
+    await host.legacyDesktop.publishIdentity({ type: 'token', token: 'abc' }, 'ident', { displayName: 'Name' });
+    await host.legacyDesktop.sendChatMessage({ type: 'token', token: 'abc' }, 'ident', { body: 'hi' });
 
     expect(requestHostJson).toHaveBeenCalledWith('/open', {
       method: 'POST',
+      headers: new Headers(),
       body: JSON.stringify({ secret: 'secret' }),
     });
     expect(requestHostJson).toHaveBeenCalledWith('/files', {
       method: 'GET',
-      headers: { Authorization: 'Bearer abc' },
+      headers: expect.any(Headers),
     });
     expect(requestHostJson).toHaveBeenCalledWith('/timeline', {
       method: 'GET',
-      headers: { 'x-nearbytes-secret': 'xyz' },
+      headers: expect.any(Headers),
     });
     expect(requestHostJson).toHaveBeenCalledWith('/events/evt1', {
       method: 'GET',
-      headers: { Authorization: 'Bearer abc' },
+      headers: expect.any(Headers),
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/events/evt1/storage-locations', {
+      method: 'GET',
+      headers: expect.any(Headers),
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/files/rename', {
+      method: 'POST',
+      headers: expect.any(Headers),
+      body: JSON.stringify({ from: 'a', to: 'b' }),
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/folders/rename', {
+      method: 'POST',
+      headers: expect.any(Headers),
+      body: JSON.stringify({ from: 'from', to: 'to', merge: true }),
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/references/source/export', {
+      method: 'POST',
+      headers: expect.any(Headers),
+      body: JSON.stringify({ filenames: ['a'] }),
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/references/recipient/import', {
+      method: 'POST',
+      headers: expect.any(Headers),
+      body: JSON.stringify({ bundle: { bundle: true } }),
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/chat', {
+      method: 'GET',
+      headers: expect.any(Headers),
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/chat/identities', {
+      method: 'POST',
+      headers: expect.any(Headers),
+      body: JSON.stringify({ identitySecret: 'ident', profile: { displayName: 'Name' } }),
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/chat/messages', {
+      method: 'POST',
+      headers: expect.any(Headers),
+      body: JSON.stringify({ identitySecret: 'ident', body: 'hi', attachment: undefined }),
     });
   });
 

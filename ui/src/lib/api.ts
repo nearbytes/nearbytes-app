@@ -1111,10 +1111,8 @@ export async function getEventStorageLocations(
   auth: Auth,
   eventHash: string
 ): Promise<EventStorageLocationsResponse> {
-  return apiRequest<EventStorageLocationsResponse>(`/events/${eventHash}/storage-locations`, {
-    method: 'GET',
-    auth,
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.getEventStorageLocations(auth, eventHash) as Promise<EventStorageLocationsResponse>;
 }
 
 /**
@@ -1126,19 +1124,11 @@ export async function uploadFiles(
   files: FileList | File[]
 ): Promise<UploadResponse[]> {
   const fileArray = Array.from(files);
+  const host = await getCompatibilityHost();
   const results: UploadResponse[] = [];
 
   for (const file of fileArray) {
-    const formData = new FormData();
-    formData.append('file', file);
-    // Explicitly send filename to ensure it's preserved
-    formData.append('filename', file.name);
-
-    const result = await apiRequest<UploadResponse>('/upload', {
-      method: 'POST',
-      auth,
-      body: formData,
-    });
+    const result = await host.legacyDesktop.uploadFile(auth, file) as UploadResponse;
     results.push(result);
   }
 
@@ -1149,11 +1139,8 @@ export async function uploadFiles(
  * Deletes a file by filename.
  */
 export async function deleteFile(auth: Auth, filename: string): Promise<void> {
-  const encodedName = encodeURIComponent(filename);
-  await apiRequest(`/files/${encodedName}`, {
-    method: 'DELETE',
-    auth,
-  });
+  const host = await getCompatibilityHost();
+  await host.legacyDesktop.deleteFile(auth, filename);
 }
 
 /**
@@ -1164,11 +1151,8 @@ export async function renameFile(
   from: string,
   to: string
 ): Promise<RenameFileResponse> {
-  return apiRequest<RenameFileResponse>('/files/rename', {
-    method: 'POST',
-    auth,
-    body: JSON.stringify({ from, to }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.renameFile(auth, from, to) as Promise<RenameFileResponse>;
 }
 
 /**
@@ -1180,22 +1164,16 @@ export async function renameFolder(
   to: string,
   merge = false
 ): Promise<RenameFolderResponse> {
-  return apiRequest<RenameFolderResponse>('/folders/rename', {
-    method: 'POST',
-    auth,
-    body: JSON.stringify({ from, to, merge }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.renameFolder(auth, from, to, merge) as Promise<RenameFolderResponse>;
 }
 
 export async function exportSourceReferences(
   auth: Auth,
   filenames: string[]
 ): Promise<ReferenceExportResponse<SourceReferenceBundle>> {
-  return apiRequest<ReferenceExportResponse<SourceReferenceBundle>>('/references/source/export', {
-    method: 'POST',
-    auth,
-    body: JSON.stringify({ filenames }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.exportSourceReferences(auth, filenames) as Promise<ReferenceExportResponse<SourceReferenceBundle>>;
 }
 
 export async function importSourceReferences(
@@ -1203,11 +1181,8 @@ export async function importSourceReferences(
   bundle: SourceReferenceBundle,
   sourceSecret: string
 ): Promise<ReferenceImportResponse> {
-  return apiRequest<ReferenceImportResponse>('/references/source/import', {
-    method: 'POST',
-    auth,
-    body: JSON.stringify({ bundle, sourceSecret }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.importSourceReferences(auth, bundle, sourceSecret) as Promise<ReferenceImportResponse>;
 }
 
 export async function exportRecipientReferences(
@@ -1215,29 +1190,21 @@ export async function exportRecipientReferences(
   filenames: string[],
   recipientVolumeId: string
 ): Promise<ReferenceExportResponse<RecipientReferenceBundle>> {
-  return apiRequest<ReferenceExportResponse<RecipientReferenceBundle>>('/references/recipient/export', {
-    method: 'POST',
-    auth,
-    body: JSON.stringify({ filenames, recipientVolumeId }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.exportRecipientReferences(auth, filenames, recipientVolumeId) as Promise<ReferenceExportResponse<RecipientReferenceBundle>>;
 }
 
 export async function importRecipientReferences(
   auth: Auth,
   bundle: RecipientReferenceBundle
 ): Promise<ReferenceImportResponse> {
-  return apiRequest<ReferenceImportResponse>('/references/recipient/import', {
-    method: 'POST',
-    auth,
-    body: JSON.stringify({ bundle }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.importRecipientReferences(auth, bundle) as Promise<ReferenceImportResponse>;
 }
 
 export async function listChat(auth: Auth): Promise<VolumeChatState> {
-  return apiRequest<VolumeChatState>('/chat', {
-    method: 'GET',
-    auth,
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.listChat(auth) as Promise<VolumeChatState>;
 }
 
 export async function publishIdentity(
@@ -1245,11 +1212,8 @@ export async function publishIdentity(
   identitySecret: string,
   profile: IdentityProfile
 ): Promise<PublishIdentityResponse> {
-  return apiRequest<PublishIdentityResponse>('/chat/identities', {
-    method: 'POST',
-    auth,
-    body: JSON.stringify({ identitySecret, profile }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.publishIdentity(auth, identitySecret, profile) as Promise<PublishIdentityResponse>;
 }
 
 export async function sendChatMessage(
@@ -1257,15 +1221,8 @@ export async function sendChatMessage(
   identitySecret: string,
   input: { body?: string; attachment?: ChatAttachment }
 ): Promise<SendChatMessageResponse> {
-  return apiRequest<SendChatMessageResponse>('/chat/messages', {
-    method: 'POST',
-    auth,
-    body: JSON.stringify({
-      identitySecret,
-      body: input.body,
-      attachment: input.attachment,
-    }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.sendChatMessage(auth, identitySecret, input) as Promise<SendChatMessageResponse>;
 }
 
 /**
@@ -1776,8 +1733,9 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
  * Returns the file as a Blob.
  */
 export async function downloadFile(auth: Auth, blobHash: string): Promise<Blob> {
+  const host = await getCompatibilityHost();
   const headers = new Headers(createAuthHeaders(auth));
-  return requestHostBlob(`/file/${blobHash}`, {
+  return host.objects.requestBlob(`/file/${blobHash}`, {
     method: 'GET',
     headers,
   });

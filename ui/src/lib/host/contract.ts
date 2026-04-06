@@ -28,6 +28,18 @@ export interface NearbytesLegacyDesktopFamily {
   listFiles(auth: NearbytesAuth): Promise<unknown>;
   getTimeline(auth: NearbytesAuth): Promise<unknown>;
   getEventDetail(auth: NearbytesAuth, eventHash: string): Promise<unknown>;
+  getEventStorageLocations(auth: NearbytesAuth, eventHash: string): Promise<unknown>;
+  uploadFile(auth: NearbytesAuth, file: File): Promise<unknown>;
+  deleteFile(auth: NearbytesAuth, filename: string): Promise<void>;
+  renameFile(auth: NearbytesAuth, from: string, to: string): Promise<unknown>;
+  renameFolder(auth: NearbytesAuth, from: string, to: string, merge: boolean): Promise<unknown>;
+  exportSourceReferences(auth: NearbytesAuth, filenames: string[]): Promise<unknown>;
+  importSourceReferences(auth: NearbytesAuth, bundle: unknown, sourceSecret: string): Promise<unknown>;
+  exportRecipientReferences(auth: NearbytesAuth, filenames: string[], recipientVolumeId: string): Promise<unknown>;
+  importRecipientReferences(auth: NearbytesAuth, bundle: unknown): Promise<unknown>;
+  listChat(auth: NearbytesAuth): Promise<unknown>;
+  publishIdentity(auth: NearbytesAuth, identitySecret: string, profile: unknown): Promise<unknown>;
+  sendChatMessage(auth: NearbytesAuth, identitySecret: string, input: { body?: string; attachment?: unknown }): Promise<unknown>;
   watchSources(handlers: NearbytesSourceWatchHandlers): NearbytesWatchConnection;
   watchVolume(auth: NearbytesAuth, handlers: NearbytesVolumeWatchHandlers): NearbytesWatchConnection;
 }
