@@ -951,7 +951,7 @@ import {
   readDesktopRuntimeLogs as shellReadDesktopRuntimeLogs,
   tryRevealPathInFileManager,
 } from './host/desktopShell.js';
-import { getCompatibilityHost } from './host/compatibilityHost.js';
+import { getActiveHost } from './host/resolveHost.js';
 import {
   openHostStream,
   requestHostBlob,
@@ -1076,7 +1076,7 @@ async function apiRequest<T>(
  * If token is returned, it should be used for subsequent requests.
  */
 export async function openVolume(secret: string): Promise<OpenVolumeResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.openVolume(secret) as Promise<OpenVolumeResponse>;
 }
 
@@ -1084,7 +1084,7 @@ export async function openVolume(secret: string): Promise<OpenVolumeResponse> {
  * Lists files for an authenticated volume.
  */
 export async function listFiles(auth: Auth): Promise<ListFilesResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.listFiles(auth) as Promise<ListFilesResponse>;
 }
 
@@ -1092,7 +1092,7 @@ export async function listFiles(auth: Auth): Promise<ListFilesResponse> {
  * Returns a deterministic timeline of all events for the current volume.
  */
 export async function getTimeline(auth: Auth): Promise<TimelineResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.getTimeline(auth) as Promise<TimelineResponse>;
 }
 
@@ -1100,7 +1100,7 @@ export async function getTimeline(auth: Auth): Promise<TimelineResponse> {
  * Returns the encoded on-disk event payload + signature for a specific event hash.
  */
 export async function getEventDetail(auth: Auth, eventHash: string): Promise<EventDetailResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.getEventDetail(auth, eventHash) as Promise<EventDetailResponse>;
 }
 
@@ -1111,7 +1111,7 @@ export async function getEventStorageLocations(
   auth: Auth,
   eventHash: string
 ): Promise<EventStorageLocationsResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.getEventStorageLocations(auth, eventHash) as Promise<EventStorageLocationsResponse>;
 }
 
@@ -1124,7 +1124,7 @@ export async function uploadFiles(
   files: FileList | File[]
 ): Promise<UploadResponse[]> {
   const fileArray = Array.from(files);
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   const results: UploadResponse[] = [];
 
   for (const file of fileArray) {
@@ -1139,7 +1139,7 @@ export async function uploadFiles(
  * Deletes a file by filename.
  */
 export async function deleteFile(auth: Auth, filename: string): Promise<void> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   await host.legacyDesktop.deleteFile(auth, filename);
 }
 
@@ -1151,7 +1151,7 @@ export async function renameFile(
   from: string,
   to: string
 ): Promise<RenameFileResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.renameFile(auth, from, to) as Promise<RenameFileResponse>;
 }
 
@@ -1164,7 +1164,7 @@ export async function renameFolder(
   to: string,
   merge = false
 ): Promise<RenameFolderResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.renameFolder(auth, from, to, merge) as Promise<RenameFolderResponse>;
 }
 
@@ -1172,7 +1172,7 @@ export async function exportSourceReferences(
   auth: Auth,
   filenames: string[]
 ): Promise<ReferenceExportResponse<SourceReferenceBundle>> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.exportSourceReferences(auth, filenames) as Promise<ReferenceExportResponse<SourceReferenceBundle>>;
 }
 
@@ -1181,7 +1181,7 @@ export async function importSourceReferences(
   bundle: SourceReferenceBundle,
   sourceSecret: string
 ): Promise<ReferenceImportResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.importSourceReferences(auth, bundle, sourceSecret) as Promise<ReferenceImportResponse>;
 }
 
@@ -1190,7 +1190,7 @@ export async function exportRecipientReferences(
   filenames: string[],
   recipientVolumeId: string
 ): Promise<ReferenceExportResponse<RecipientReferenceBundle>> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.exportRecipientReferences(auth, filenames, recipientVolumeId) as Promise<ReferenceExportResponse<RecipientReferenceBundle>>;
 }
 
@@ -1198,12 +1198,12 @@ export async function importRecipientReferences(
   auth: Auth,
   bundle: RecipientReferenceBundle
 ): Promise<ReferenceImportResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.importRecipientReferences(auth, bundle) as Promise<ReferenceImportResponse>;
 }
 
 export async function listChat(auth: Auth): Promise<VolumeChatState> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.listChat(auth) as Promise<VolumeChatState>;
 }
 
@@ -1212,7 +1212,7 @@ export async function publishIdentity(
   identitySecret: string,
   profile: IdentityProfile
 ): Promise<PublishIdentityResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.publishIdentity(auth, identitySecret, profile) as Promise<PublishIdentityResponse>;
 }
 
@@ -1221,7 +1221,7 @@ export async function sendChatMessage(
   identitySecret: string,
   input: { body?: string; attachment?: ChatAttachment }
 ): Promise<SendChatMessageResponse> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   return host.legacyDesktop.sendChatMessage(auth, identitySecret, input) as Promise<SendChatMessageResponse>;
 }
 
@@ -1652,7 +1652,7 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
   void (async () => {
     try {
       uiDebugLog('watchers', `[watch-sources:${connectionId}] opening`);
-      const host = await getCompatibilityHost();
+      const host = await getActiveHost();
       currentConnection = host.legacyDesktop.watchSources({
         onMessage(event) {
           parseSourceWatchMessage(decodeWatchMessageData(event), handlers);
@@ -1695,7 +1695,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
   void (async () => {
     try {
       uiDebugLog('watchers', `[watch-volume:${connectionId}] opening`);
-      const host = await getCompatibilityHost();
+      const host = await getActiveHost();
       currentConnection = host.legacyDesktop.watchVolume(auth, {
         onMessage(event) {
           parseWatchMessage(decodeWatchMessageData(event), handlers);
@@ -1733,7 +1733,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
  * Returns the file as a Blob.
  */
 export async function downloadFile(auth: Auth, blobHash: string): Promise<Blob> {
-  const host = await getCompatibilityHost();
+  const host = await getActiveHost();
   const headers = new Headers(createAuthHeaders(auth));
   return host.objects.requestBlob(`/file/${blobHash}`, {
     method: 'GET',
