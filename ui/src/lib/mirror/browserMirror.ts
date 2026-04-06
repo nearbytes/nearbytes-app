@@ -165,6 +165,24 @@ export async function readMirrorVolumeSnapshot(volumeId: string): Promise<Mirror
   return getRecord<MirrorVolumeSnapshot>('volumes', volumeId);
 }
 
+export async function clearMirrorVolumeSnapshots(): Promise<void> {
+  try {
+    const db = await getIndexedDb();
+    if (db) {
+      await db.clear('volumes');
+    } else {
+      getInMemoryStore().volumes.clear();
+    }
+  } catch (error) {
+    console.warn('Failed to clear browser mirror volume snapshots', error);
+  }
+}
+
+export async function readMirrorVolumeTimestamp(volumeId: string): Promise<number | null> {
+  const snapshot = await readMirrorVolumeSnapshot(volumeId);
+  return snapshot?.updatedAt ?? null;
+}
+
 export async function importCompatibilityTimelineSnapshot(snapshot: TimelineResponse): Promise<void> {
   await putRecord('timelines', snapshot.volumeId, {
     volumeId: snapshot.volumeId,
