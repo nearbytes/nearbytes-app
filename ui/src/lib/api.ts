@@ -951,6 +951,7 @@ import {
   readDesktopRuntimeLogs as shellReadDesktopRuntimeLogs,
   tryRevealPathInFileManager,
 } from './host/desktopShell.js';
+import { getCompatibilityHost } from './host/compatibilityHost.js';
 import {
   openHostStream,
   requestHostBlob,
@@ -1026,6 +1027,10 @@ function createAuthHeaders(auth: Auth): HeadersInit {
   };
 }
 
+function decodeWatchMessageData(event: MessageEvent): string {
+  return typeof event.data === 'string' ? event.data : String(event.data ?? '');
+}
+
 export function hasDesktopDirectoryPicker(): boolean {
   return shellHasDesktopDirectoryPicker();
 }
@@ -1071,40 +1076,32 @@ async function apiRequest<T>(
  * If token is returned, it should be used for subsequent requests.
  */
 export async function openVolume(secret: string): Promise<OpenVolumeResponse> {
-  return apiRequest<OpenVolumeResponse>('/open', {
-    method: 'POST',
-    body: JSON.stringify({ secret }),
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.openVolume(secret) as Promise<OpenVolumeResponse>;
 }
 
 /**
  * Lists files for an authenticated volume.
  */
 export async function listFiles(auth: Auth): Promise<ListFilesResponse> {
-  return apiRequest<ListFilesResponse>('/files', {
-    method: 'GET',
-    auth,
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.listFiles(auth) as Promise<ListFilesResponse>;
 }
 
 /**
  * Returns a deterministic timeline of all events for the current volume.
  */
 export async function getTimeline(auth: Auth): Promise<TimelineResponse> {
-  return apiRequest<TimelineResponse>('/timeline', {
-    method: 'GET',
-    auth,
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.getTimeline(auth) as Promise<TimelineResponse>;
 }
 
 /**
  * Returns the encoded on-disk event payload + signature for a specific event hash.
  */
 export async function getEventDetail(auth: Auth, eventHash: string): Promise<EventDetailResponse> {
-  return apiRequest<EventDetailResponse>(`/events/${eventHash}`, {
-    method: 'GET',
-    auth,
-  });
+  const host = await getCompatibilityHost();
+  return host.legacyDesktop.getEventDetail(auth, eventHash) as Promise<EventDetailResponse>;
 }
 
 /**
@@ -1692,50 +1689,28 @@ export async function openJoinLink(input: {
 import { uiDebugLog } from './debug.js';
 
 export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnection {
-  const abortController = new AbortController();
   const connectionId = Math.random().toString(36).slice(2, 8);
+  let currentConnection: VolumeWatchConnection | null = null;
 
   void (async () => {
     try {
       uiDebugLog('watchers', `[watch-sources:${connectionId}] opening`);
-      const response = await openHostStream('/watch/sources', {
-        method: 'GET',
-        signal: abortController.signal,
+      const host = await getCompatibilityHost();
+      currentConnection = host.legacyDesktop.watchSources({
+        onMessage(event) {
+          parseSourceWatchMessage(decodeWatchMessageData(event), handlers);
+        },
+        onClose() {
+          uiDebugLog('watchers', `[watch-sources:${connectionId}] stream ended`);
+          handlers.onClose?.();
+        },
+        onError(error) {
+          console.warn(`[watch-sources:${connectionId}] error`, error.message);
+          handlers.onError?.(error);
+        },
       });
-
-      if (!response.body) {
-        throw new Error('Source watch stream is not available');
-      }
-
       uiDebugLog('watchers', `[watch-sources:${connectionId}] opened`);
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        buffer += decoder.decode(value, { stream: true });
-        let boundaryIndex = buffer.indexOf('\n\n');
-        while (boundaryIndex >= 0) {
-          const message = buffer.slice(0, boundaryIndex);
-          buffer = buffer.slice(boundaryIndex + 2);
-          parseSourceWatchMessage(message, handlers);
-          boundaryIndex = buffer.indexOf('\n\n');
-        }
-      }
-
-      uiDebugLog('watchers', `[watch-sources:${connectionId}] stream ended`);
-      handlers.onClose?.();
     } catch (error) {
-      if (abortController.signal.aborted) {
-        uiDebugLog('watchers', `[watch-sources:${connectionId}] aborted`);
-        handlers.onClose?.();
-        return;
-      }
       console.warn(
         `[watch-sources:${connectionId}] error`,
         error instanceof Error ? error.message : String(error)
@@ -1748,7 +1723,7 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
   return {
     close() {
       uiDebugLog('watchers', `[watch-sources:${connectionId}] close requested`);
-      abortController.abort();
+      currentConnection?.close();
     },
   };
 }
@@ -1757,52 +1732,28 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
  * Opens a streaming connection that emits volume updates pushed by the backend.
  */
 export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWatchConnection {
-  const abortController = new AbortController();
   const connectionId = Math.random().toString(36).slice(2, 8);
+  let currentConnection: VolumeWatchConnection | null = null;
 
   void (async () => {
     try {
       uiDebugLog('watchers', `[watch-volume:${connectionId}] opening`);
-      const headers = new Headers(createAuthHeaders(auth));
-      const response = await openHostStream('/watch/volume', {
-        method: 'GET',
-        headers,
-        signal: abortController.signal,
+      const host = await getCompatibilityHost();
+      currentConnection = host.legacyDesktop.watchVolume(auth, {
+        onMessage(event) {
+          parseWatchMessage(decodeWatchMessageData(event), handlers);
+        },
+        onClose() {
+          uiDebugLog('watchers', `[watch-volume:${connectionId}] stream ended`);
+          handlers.onClose?.();
+        },
+        onError(error) {
+          console.warn(`[watch-volume:${connectionId}] error`, error.message);
+          handlers.onError?.(error);
+        },
       });
-
-      if (!response.body) {
-        throw new Error('Watch stream is not available');
-      }
-
       uiDebugLog('watchers', `[watch-volume:${connectionId}] opened`);
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        buffer += decoder.decode(value, { stream: true });
-        let boundaryIndex = buffer.indexOf('\n\n');
-        while (boundaryIndex >= 0) {
-          const message = buffer.slice(0, boundaryIndex);
-          buffer = buffer.slice(boundaryIndex + 2);
-          parseWatchMessage(message, handlers);
-          boundaryIndex = buffer.indexOf('\n\n');
-        }
-      }
-
-      uiDebugLog('watchers', `[watch-volume:${connectionId}] stream ended`);
-      handlers.onClose?.();
     } catch (error) {
-      if (abortController.signal.aborted) {
-        uiDebugLog('watchers', `[watch-volume:${connectionId}] aborted`);
-        handlers.onClose?.();
-        return;
-      }
       console.warn(
         `[watch-volume:${connectionId}] error`,
         error instanceof Error ? error.message : String(error)
@@ -1815,7 +1766,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
   return {
     close() {
       uiDebugLog('watchers', `[watch-volume:${connectionId}] close requested`);
-      abortController.abort();
+      currentConnection?.close();
     },
   };
 }
