@@ -39,6 +39,7 @@
     "dev:server": "yarn build && yarn server",
     "dev:ui": "yarn --cwd ui dev:raw",
     "dev": "node scripts/run-web-dev.mjs",
+    "dev-iphone": "node scripts/run-iphone-dev.mjs",
     "dev-2": "node scripts/dev-2.mjs",
     "mega": "bash scripts/run-mega-dev.sh",
     "desktop": "electron dist-electron/electron/main.js",

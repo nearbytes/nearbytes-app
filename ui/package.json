@@ -5,6 +5,7 @@
   "packageManager": "yarn@4.10.3",
   "scripts": {
     "dev": "node ../scripts/run-web-dev.mjs",
+    "dev:iphone": "node ../scripts/run-iphone-dev.mjs",
     "dev:raw": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
