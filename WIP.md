@@ -85,9 +85,14 @@ Not visible:
 - 2026-04-03: added a regression test proving receiver-driven transfer: already-present events and blocks are not re-requested
 - 2026-04-03: updated the active LAN spec to WebRTC and wrote the receiver-driven transfer rule explicitly
 - 2026-04-03: made unreachable peers expire immediately on signal-path `404` or network failure, and excluded stale peers from the live peer count
+- 2026-04-06: added a binding mobile hardening tracker to the design docs so iPhone release work is checkpointed with commit ids instead of loose notes
+- 2026-04-06: ignored the local `.derived-dev-iphone` Xcode build tree so simulator and Xcode runs no longer pollute normal git status
+- 2026-04-06: narrowed the iOS shell to explicit localhost development exceptions instead of blanket arbitrary loads
+- 2026-04-06: extracted the join-link dialog into shared presentation helpers and a shared join sections component, then verified the extracted rules with a focused Vitest regression file
 
 ## TODO
 
+- [ ] keep the shared UI responsive and iPhone-ready across all active flows before adding more feature surface; the shared join dialog path is now hardened, but other modal-heavy flows still need the same pass
 - [x] keep opaque event semantics in code and tests
 - [x] keep typed provider-queue observations in persistent runtime state
 - [x] keep LAN sync hash-addressed and receiver-driven
@@ -113,3 +118,7 @@ Not visible:
   - the local side requests only missing events and blocks
 - stale or unreachable peers are downgraded immediately and no longer count as live peers in the Local network header
 - `src/integrations/providerQueue.ts` remains the persisted local observation queue and route-state store.
+- `ui/src/components/JoinLinkSections.svelte` is now the shared join-link body used by both the create-hub join mode and the standalone open-from-clipboard dialog.
+- `ui/src/lib/joinLinkPresentation.ts` holds the extracted join-link presentation rules and `ui/src/lib/joinLinkPresentation.test.ts` covers the label and status mapping used by that shared UI.
+- `ui/ios/App/App/Info.plist` now keeps local-network access but restricts insecure development traffic to explicit localhost exceptions.
+- `ui/ios/.gitignore` now excludes `.derived-dev-iphone` so local iOS build output stays out of the tracked tree.
