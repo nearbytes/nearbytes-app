@@ -41,6 +41,11 @@
   } from './lib/api.js';
   import { clearCache, getCachedFiles, setCachedFiles } from './lib/cache.js';
   import {
+    readMirrorEventDetail,
+    readMirrorTimelineSnapshot,
+    readMirrorVolumeSnapshot,
+  } from './lib/mirror/browserMirror.js';
+  import {
     buildIdentitySecret,
     createConfiguredIdentity,
     hasConfiguredIdentitySecret,
@@ -1451,6 +1456,7 @@
   let timelineDetailLoading = $state(false);
   let timelineDetailError = $state('');
   let timelineDetailPayload = $state<SerializedEvent | null>(null);
+  let timelineDetailDecryptedPayload = $state<SerializedEventPayload | null>(null);
   let timelineDetailHash = $state('');
   let timelineDetailEncoded = $state('');
   let timelineDetailRecord = $state('');
@@ -2157,7 +2163,7 @@
 
   const timelineDetailPayloadDecrypted = $derived.by<SerializedEventPayload>(() => {
     return (
-      timelineDetailPayload?.decryptedPayload ?? {
+      timelineDetailDecryptedPayload ?? {
         type: 'ENCRYPTED_OPAQUE',
         fileName: 'Opaque payload',
         hash: '',
@@ -2785,8 +2791,16 @@
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load timeline';
+      const mirrored = await readMirrorTimelineSnapshot(runtime.volumeId);
+      const nextTimelineEvents = mirrored?.events ?? runtime.timelineEvents;
       const nextRuntime: MountRuntimeState = {
         ...runtime,
+        timelineEvents: nextTimelineEvents,
+        timelinePosition: keepPosition
+          ? previousPosition >= previousEvents.length
+            ? nextTimelineEvents.length
+            : Math.min(previousPosition, nextTimelineEvents.length)
+          : nextTimelineEvents.length,
         errorMessage: runtime.errorMessage || message,
       };
       writeMountRuntime(mountId, nextRuntime);
@@ -2832,8 +2846,17 @@
       }
       await setCachedFiles(runtime.volumeId, filesResponse.files);
     } catch (error) {
+      const mirrorFiles = await readMirrorVolumeSnapshot(runtime.volumeId);
+      const mirrorTimeline = await readMirrorTimelineSnapshot(runtime.volumeId);
+      const nextTimelineEvents = mirrorTimeline?.events ?? runtime.timelineEvents;
       const nextRuntime: MountRuntimeState = {
         ...runtime,
+        files: mirrorFiles?.files ?? runtime.files,
+        timelineEvents: nextTimelineEvents,
+        timelinePosition:
+          runtime.timelinePosition >= runtime.timelineEvents.length
+            ? nextTimelineEvents.length
+            : Math.min(runtime.timelinePosition, nextTimelineEvents.length),
         isOffline: true,
         errorMessage: error instanceof Error ? error.message : 'Failed to refresh hub',
       };
@@ -3072,9 +3095,16 @@
         timelinePosition = Math.min(previousPosition, latest);
       }
     } catch (error) {
-      timelineEvents = [];
-      timelinePosition = 0;
-      errorMessage = error instanceof Error ? error.message : 'Failed to load timeline';
+      const mirrored = volumeId ? await readMirrorTimelineSnapshot(volumeId) : null;
+      if (mirrored) {
+        timelineEvents = mirrored.events;
+        timelinePosition = keepPosition ? Math.min(previousPosition, mirrored.events.length) : mirrored.events.length;
+        errorMessage = 'Using mirrored timeline. Runtime unavailable.';
+      } else {
+        timelineEvents = [];
+        timelinePosition = 0;
+        errorMessage = error instanceof Error ? error.message : 'Failed to load timeline';
+      }
     } finally {
       isTimelineLoading = false;
     }
@@ -4482,8 +4512,67 @@
     timelineDetailRevealBusyPath = '';
     timelineDetailError = '';
     timelineDetailLoading = false;
+    timelineDetailDecryptedPayload = null;
     timelineDetailRequestId += 1;
     closeSpecDoc();
+  }
+  function applyTimelineDetailSnapshot(detail: {
+    eventHash: string;
+    event: SerializedEvent;
+    decryptedPayload?: SerializedEventPayload;
+  }): void {
+    timelineDetailPayload = detail.event;
+    timelineDetailDecryptedPayload = detail.decryptedPayload ?? null;
+    timelineDetailHash = detail.eventHash;
+    timelineDetailEncoded = JSON.stringify(detail.event, null, 2);
+
+    const decryptedPayload = timelineDetailDecryptedPayload;
+    const recordParse = tryParseJson(decryptedPayload?.record);
+    if (recordParse.value !== undefined) {
+      timelineDetailRecord = JSON.stringify(recordParse.value, null, 2);
+    } else if (decryptedPayload?.record) {
+      timelineDetailRecord = decryptedPayload.record;
+    }
+    if (recordParse.error) {
+      timelineDetailRecordError = recordParse.error;
+    }
+
+    const messageParse = tryParseJson(decryptedPayload?.message);
+    if (messageParse.value !== undefined) {
+      timelineDetailMessage = JSON.stringify(messageParse.value, null, 2);
+    } else if (decryptedPayload?.message) {
+      timelineDetailMessage = decryptedPayload.message;
+    }
+    if (messageParse.error) {
+      timelineDetailMessageError = messageParse.error;
+    }
+
+    const recordSig = hasSignatureField(recordParse.value);
+    const messageSig = hasSignatureField(messageParse.value);
+    if (recordSig || messageSig) {
+      timelineDetailAppSignature = 'yes';
+      timelineDetailAppSignatureSource = recordSig ? 'record.sig' : 'message.sig';
+    } else if (recordParse.value !== undefined || messageParse.value !== undefined) {
+      timelineDetailAppSignature = 'no';
+      timelineDetailAppSignatureSource = '';
+    } else {
+      timelineDetailAppSignature = 'unknown';
+      timelineDetailAppSignatureSource = '';
+    }
+
+    timelineDetailReferences = [
+      ...extractReferences(recordParse.value),
+      ...extractReferences(messageParse.value),
+    ];
+
+    const eventRefs = new Set<string>();
+    for (const hash of extractEventHashes(recordParse.value)) {
+      if (hash !== detail.eventHash) eventRefs.add(hash);
+    }
+    for (const hash of extractEventHashes(messageParse.value)) {
+      if (hash !== detail.eventHash) eventRefs.add(hash);
+    }
+    timelineDetailEventRefs = Array.from(eventRefs);
   }
 
   async function openTimelineDetailsByHash(eventHash: string, seedEvent?: TimelineEvent) {
@@ -4518,13 +4607,17 @@
       ]);
 
       if (detailResult.status !== 'fulfilled') {
-        throw detailResult.reason;
+        const mirroredDetail = await readMirrorEventDetail(eventHash);
+        if (!mirroredDetail) {
+          throw detailResult.reason;
+        }
+        if (requestId !== timelineDetailRequestId) return;
+        applyTimelineDetailSnapshot(mirroredDetail);
+      } else {
+        const detail = detailResult.value;
+        if (requestId !== timelineDetailRequestId) return;
+        applyTimelineDetailSnapshot(detail);
       }
-      const detail = detailResult.value;
-      if (requestId !== timelineDetailRequestId) return;
-      timelineDetailPayload = detail.event;
-      timelineDetailHash = detail.eventHash;
-      timelineDetailEncoded = JSON.stringify(detail.event, null, 2);
 
       if (storageResult.status === 'fulfilled') {
         timelineDetailStorage = storageResult.value;
@@ -4541,54 +4634,6 @@
         }
       }
 
-      const decryptedPayload = detail.decryptedPayload ?? null;
-      const recordParse = tryParseJson(decryptedPayload?.record);
-      if (recordParse.value !== undefined) {
-        timelineDetailRecord = JSON.stringify(recordParse.value, null, 2);
-      } else if (decryptedPayload?.record) {
-        timelineDetailRecord = decryptedPayload.record;
-      }
-      if (recordParse.error) {
-        timelineDetailRecordError = recordParse.error;
-      }
-
-      const messageParse = tryParseJson(decryptedPayload?.message);
-      if (messageParse.value !== undefined) {
-        timelineDetailMessage = JSON.stringify(messageParse.value, null, 2);
-      } else if (decryptedPayload?.message) {
-        timelineDetailMessage = decryptedPayload.message;
-      }
-      if (messageParse.error) {
-        timelineDetailMessageError = messageParse.error;
-      }
-
-      const recordSig = hasSignatureField(recordParse.value);
-      const messageSig = hasSignatureField(messageParse.value);
-      if (recordSig || messageSig) {
-        timelineDetailAppSignature = 'yes';
-        timelineDetailAppSignatureSource = recordSig ? 'record.sig' : 'message.sig';
-      } else if (recordParse.value !== undefined || messageParse.value !== undefined) {
-        timelineDetailAppSignature = 'no';
-        timelineDetailAppSignatureSource = '';
-      } else {
-        timelineDetailAppSignature = 'unknown';
-        timelineDetailAppSignatureSource = '';
-      }
-
-      const references = [
-        ...extractReferences(recordParse.value),
-        ...extractReferences(messageParse.value),
-      ];
-      timelineDetailReferences = references;
-
-      const eventRefs = new Set<string>();
-      for (const hash of extractEventHashes(recordParse.value)) {
-        if (hash !== eventHash) eventRefs.add(hash);
-      }
-      for (const hash of extractEventHashes(messageParse.value)) {
-        if (hash !== eventHash) eventRefs.add(hash);
-      }
-      timelineDetailEventRefs = Array.from(eventRefs);
     } catch (error) {
       if (requestId !== timelineDetailRequestId) return;
       timelineDetailError = error instanceof Error ? error.message : 'Unable to load event';
@@ -4624,7 +4669,7 @@
     if (typeof fromStorage === 'string' && fromStorage.trim() !== '') {
       return fromStorage;
     }
-    const hash = timelineDetailPayload?.decryptedPayload?.hash?.trim() ?? '';
+    const hash = timelineDetailDecryptedPayload?.hash?.trim() ?? '';
     if (!/^[a-f0-9]{64}$/i.test(hash) || /^0+$/i.test(hash)) {
       return null;
     }
@@ -5487,14 +5532,20 @@
       }
       chatRefreshVersion += 1;
     } catch (error) {
-      // Try cached data
-      const cached = await getCachedFiles(volumeId);
-      if (cached) {
-        fileList = cached;
+      const mirrored = await readMirrorVolumeSnapshot(volumeId);
+      if (mirrored) {
+        fileList = mirrored.files;
         isOffline = true;
-        errorMessage = 'Using cached data. Backend unavailable.';
+        errorMessage = 'Using mirrored data. Runtime unavailable.';
       } else {
-        errorMessage = error instanceof Error ? error.message : 'Failed to refresh';
+        const cached = await getCachedFiles(volumeId);
+        if (cached) {
+          fileList = cached;
+          isOffline = true;
+          errorMessage = 'Using cached data. Runtime unavailable.';
+        } else {
+          errorMessage = error instanceof Error ? error.message : 'Failed to refresh';
+        }
       }
     } finally {
       isRefreshing = false;
@@ -7079,7 +7130,7 @@
                   <span class="tm-details-label">visibility</span>
                   <div class="tm-details-value-group">
                     <span class="tm-details-value">
-                      {timelineDetailPayload?.decryptedPayload
+                      {timelineDetailDecryptedPayload
                         ? 'visible envelope + decrypted inner payload'
                         : 'visible envelope + opaque inner payload'}
                     </span>
@@ -7162,7 +7213,7 @@
               <pre class="tm-details-pre">{timelineDetailEncoded}</pre>
             </div>
 
-            {#if timelineDetailPayload?.decryptedPayload}
+            {#if timelineDetailDecryptedPayload}
             <div class="tm-details-section">
               <p class="tm-details-section-title">Decrypted inner payload</p>
               <p class="tm-details-section-note">

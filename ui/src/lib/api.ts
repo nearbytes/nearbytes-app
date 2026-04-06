@@ -956,6 +956,7 @@ import {
   importCompatibilityEventDetail,
   importCompatibilityTimelineSnapshot,
   importCompatibilityVolumeSnapshot,
+  writeMirrorCheckpoint,
 } from './mirror/browserMirror.js';
 import {
   openHostStream,
@@ -1782,15 +1783,36 @@ function parseWatchMessage(rawMessage: string, handlers: VolumeWatchHandlers): v
   }
 
   if (eventName === 'watch-ready') {
-    handlers.onReady?.(payload as VolumeWatchReady);
+    const ready = payload as VolumeWatchReady;
+    void writeMirrorCheckpoint(`watch:volume:${ready.volumeId}`, {
+      kind: 'ready',
+      autoUpdate: ready.autoUpdate,
+      mode: ready.mode,
+      providers: ready.providers,
+      updatedAt: Date.now(),
+    });
+    handlers.onReady?.(ready);
     return;
   }
   if (eventName === 'volume-update') {
-    handlers.onUpdate?.(payload as VolumeWatchUpdate);
+    const update = payload as VolumeWatchUpdate;
+    void writeMirrorCheckpoint(`watch:volume:${update.volumeId}`, {
+      kind: 'update',
+      change: update.change,
+      path: update.path,
+      timestamp: update.timestamp,
+    });
+    handlers.onUpdate?.(update);
     return;
   }
   if (eventName === 'watch-error') {
-    handlers.onError?.(payload as VolumeWatchError);
+    const errorPayload = payload as VolumeWatchError;
+    void writeMirrorCheckpoint(`watch:volume:${errorPayload.volumeId}`, {
+      kind: 'error',
+      message: errorPayload.message,
+      timestamp: errorPayload.timestamp,
+    });
+    handlers.onError?.(errorPayload);
   }
 }
 
@@ -1822,14 +1844,36 @@ function parseSourceWatchMessage(rawMessage: string, handlers: SourceWatchHandle
   }
 
   if (eventName === 'source-watch-ready') {
-    handlers.onReady?.(payload as SourceWatchReady);
+    const ready = payload as SourceWatchReady;
+    void writeMirrorCheckpoint('watch:sources', {
+      kind: 'ready',
+      autoUpdate: ready.autoUpdate,
+      mode: ready.mode,
+      providers: ready.providers,
+      updatedAt: Date.now(),
+    });
+    handlers.onReady?.(ready);
     return;
   }
   if (eventName === 'source-watch-update') {
-    handlers.onUpdate?.(payload as SourceWatchUpdate);
+    const update = payload as SourceWatchUpdate;
+    void writeMirrorCheckpoint('watch:sources', {
+      kind: 'update',
+      reason: update.reason,
+      timestamp: update.timestamp,
+      changedPaths: update.changedPaths,
+      providers: update.providers,
+    });
+    handlers.onUpdate?.(update);
     return;
   }
   if (eventName === 'watch-error') {
-    handlers.onError?.(payload as SourceWatchError);
+    const errorPayload = payload as SourceWatchError;
+    void writeMirrorCheckpoint('watch:sources', {
+      kind: 'error',
+      message: errorPayload.message,
+      timestamp: errorPayload.timestamp,
+    });
+    handlers.onError?.(errorPayload);
   }
 }
