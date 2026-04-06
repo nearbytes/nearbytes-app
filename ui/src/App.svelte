@@ -409,6 +409,8 @@
     message: string;
   };
 
+  type IdentityManagerAction = 'idle' | 'publish' | 'join';
+
   function normalizeDesktopUpdaterState(input: unknown): DesktopUpdaterState | null {
     if (!input || typeof input !== 'object') {
       return null;
@@ -1529,6 +1531,7 @@
   let showIdentityManager = $state(false);
   let showCreateChooser = $state(false);
   let identityManagerLoading = $state(false);
+  let identityManagerAction = $state<IdentityManagerAction>('idle');
   let identityManagerMessage = $state('');
   let identityManagerError = $state('');
   let identityAvatarFileInput = $state<HTMLInputElement | null>(null);
@@ -2385,6 +2388,64 @@
       return false;
     }
     return configuredIdentityNeedsPublish(joinedChatIdentity);
+  });
+
+  const selectedChatIdentityStatus = $derived.by(() => {
+    if (!selectedChatIdentity) {
+      return null;
+    }
+    if (!auth || !volumeId) {
+      return {
+        tone: 'warning',
+        title: 'Open a hub to use chat',
+        detail: 'Joining is local to the current hub.',
+      };
+    }
+    if (isHistoryMode) {
+      return {
+        tone: 'warning',
+        title: 'History mode is read-only',
+        detail: 'Jump to Latest before publishing or joining.',
+      };
+    }
+    if (!hasConfiguredIdentitySecret(selectedChatIdentity)) {
+      return {
+        tone: 'warning',
+        title: 'Add an identity secret',
+        detail: 'This identity needs a secret before it can join chat.',
+      };
+    }
+    if (selectedChatIdentity.displayName.trim() === '') {
+      return {
+        tone: 'warning',
+        title: 'Add a display name',
+        detail: 'Nearbytes publishes chat identities with a visible name.',
+      };
+    }
+    if (selectedChatIdentity.id === currentVolumeChatIdentityId) {
+      return selectedChatIdentityNeedsPublish
+        ? {
+            tone: 'warning',
+            title: 'Joined with a pending profile update',
+            detail: 'Publish once to refresh the public profile for this hub.',
+          }
+        : {
+            tone: 'success',
+            title: `Joined as ${selectedChatIdentity.displayName.trim()}`,
+            detail: 'New messages in this hub will use this identity.',
+          };
+    }
+    return selectedChatIdentityNeedsPublish
+      ? {
+          tone: 'neutral',
+          title: 'Ready to publish and join',
+          detail: 'Publish this profile, then join the hub chat.',
+        }
+      : {
+          tone: 'success',
+          title: 'Ready to join this hub',
+          detail: 'Use this identity for new chat messages here.',
+        };
   });
 
   const viewFiles = $derived.by(() => {
@@ -5157,7 +5218,7 @@
 
   async function ensureChatIdentityPublished(
     identity: ConfiguredIdentity,
-    options: { announceSuccess?: boolean; openManagerOnError?: boolean } = {}
+    options: { announceSuccess?: boolean; openManagerOnError?: boolean; action?: IdentityManagerAction } = {}
   ): Promise<ConfiguredIdentity | null> {
     if (!auth) {
       identityManagerError = 'Open a hub before publishing an identity.';
@@ -5190,6 +5251,7 @@
     }
 
     identityManagerLoading = true;
+    identityManagerAction = options.action ?? 'publish';
     identityManagerError = '';
     if (options.announceSuccess) {
       identityManagerMessage = '';
@@ -5222,6 +5284,7 @@
       return null;
     } finally {
       identityManagerLoading = false;
+      identityManagerAction = 'idle';
     }
   }
 
@@ -5234,6 +5297,7 @@
     return ensureChatIdentityPublished(selectedChatIdentity, {
       announceSuccess: true,
       openManagerOnError: true,
+      action: 'publish',
     });
   }
 
@@ -5255,7 +5319,11 @@
       return null;
     }
 
-    const publishedIdentity = await publishSelectedChatIdentity();
+    const publishedIdentity = await ensureChatIdentityPublished(selectedChatIdentity, {
+      announceSuccess: false,
+      openManagerOnError: true,
+      action: 'join',
+    });
     if (!publishedIdentity) {
       return null;
     }
@@ -5266,6 +5334,7 @@
     };
     identityManagerError = '';
     identityManagerMessage = `Joined this hub as ${publishedIdentity.displayName.trim()}.`;
+    showIdentityManager = false;
     return publishedIdentity;
   }
 
@@ -7848,55 +7917,9 @@
               <UserRound class="button-icon" size={15} strokeWidth={2} />
               <span>Identities</span>
             </div>
-            <div class="identity-row-actions">
-              <button
-                type="button"
-                class="workspace-toggle"
-                onclick={() => void joinCurrentVolumeChat()}
-                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
-                title={
-                  !auth
-                    ? 'Open a hub before joining'
-                    : isHistoryMode
-                      ? 'Jump to Latest before joining'
-                      : ''
-                }
-              >
-                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                <span>
-                  {identityManagerLoading
-                    ? 'Joining…'
-                    : selectedChatIdentity && selectedChatIdentity.id === currentVolumeChatIdentityId
-                      ? 'Joined'
-                      : 'Join this hub'}
-                </span>
-              </button>
-              <button
-                type="button"
-                class="workspace-toggle"
-                onclick={() => void publishSelectedChatIdentity()}
-                disabled={!auth || isHistoryMode || identityManagerLoading || !selectedChatIdentity}
-                title={
-                  !auth
-                    ? 'Open a hub before publishing'
-                    : isHistoryMode
-                      ? 'Jump to Latest before publishing'
-                      : ''
-                }
-              >
-                <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                <span>
-                  {identityManagerLoading
-                    ? 'Publishing…'
-                    : selectedChatIdentityNeedsPublish
-                      ? 'Publish identity'
-                      : 'Published'}
-                </span>
-              </button>
-              <button type="button" class="tm-details-close" aria-label="Close identities" onclick={closeIdentityManager}>
-                <X size={18} strokeWidth={2} />
-              </button>
-            </div>
+            <button type="button" class="tm-details-close identity-row-close" aria-label="Close identities" onclick={closeIdentityManager}>
+              <X size={18} strokeWidth={2} />
+            </button>
           </div>
 
           <div class="identity-chip-row">
@@ -7940,16 +7963,12 @@
             {/if}
           </div>
 
-          <p class="identity-row-note">
-            {#if activeMount}
-              This hub will chat as <strong>{joinedChatIdentity?.displayName || 'no identity yet'}</strong>. Joining is an explicit per-hub local choice.
-            {:else}
-              Identities are global to this app. Joining remains an explicit local choice per hub.
-            {/if}
-          </p>
-          <p class="identity-row-note">
-            Publish writes the signed public profile into the identity channel and syncs the latest snapshot into the current hub.
-          </p>
+          {#if selectedChatIdentityStatus}
+            <div class={`identity-status-card ${selectedChatIdentityStatus.tone}`}>
+              <p class="identity-status-title">{selectedChatIdentityStatus.title}</p>
+              <p class="identity-status-detail">{selectedChatIdentityStatus.detail}</p>
+            </div>
+          {/if}
 
           {#if identityManagerError}
             <StatusNotice tone="error" role="alert" compact={true} message={identityManagerError} />
@@ -8058,11 +8077,28 @@
                 >
                   <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
                   <span>
-                    {identityManagerLoading
+                    {identityManagerLoading && identityManagerAction === 'publish'
                       ? 'Publishing…'
                       : selectedChatIdentityNeedsPublish
                         ? 'Publish to hub'
                         : 'Published'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="workspace-toggle"
+                  onclick={() => void joinCurrentVolumeChat()}
+                  disabled={!auth || isHistoryMode || identityManagerLoading}
+                >
+                  <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                  <span>
+                    {identityManagerLoading && identityManagerAction === 'join'
+                      ? 'Joining…'
+                      : selectedChatIdentity.id === currentVolumeChatIdentityId
+                        ? 'Joined to hub'
+                        : selectedChatIdentityNeedsPublish
+                          ? 'Publish and join'
+                          : 'Join this hub'}
                   </span>
                 </button>
               </div>
@@ -8764,6 +8800,15 @@
     flex-wrap: wrap;
   }
 
+  .identity-row-head {
+    align-items: flex-start;
+  }
+
+  .identity-row-close {
+    margin-left: auto;
+    flex: 0 0 auto;
+  }
+
   .identity-row-title {
     display: inline-flex;
     align-items: center;
@@ -8841,6 +8886,42 @@
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
   }
 
+  .identity-status-card {
+    display: grid;
+    gap: 0.24rem;
+    padding: 0.8rem 0.9rem;
+    border-radius: 16px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.9));
+  }
+
+  .identity-status-card.success {
+    border-color: color-mix(in srgb, var(--nb-success, #6aa975) 24%, transparent);
+    background: color-mix(in srgb, var(--nb-success-surface, rgba(134, 239, 172, 0.12)) 84%, rgba(247, 252, 248, 0.96));
+  }
+
+  .identity-status-card.warning {
+    border-color: color-mix(in srgb, var(--nb-warning, #d4945f) 26%, transparent);
+    background: color-mix(in srgb, rgba(247, 236, 225, 0.94) 88%, rgba(255, 249, 244, 0.96));
+  }
+
+  .identity-status-title,
+  .identity-status-detail {
+    margin: 0;
+  }
+
+  .identity-status-title {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
+  }
+
+  .identity-status-detail {
+    font-size: 0.76rem;
+    color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
+    line-height: 1.45;
+  }
+
   .identity-row-banner {
     margin: 0;
     align-self: flex-start;
@@ -8901,6 +8982,11 @@
 
   .identity-editor-panel-actions {
     grid-column: 1 / -1;
+  }
+
+  .identity-editor-panel-actions > .workspace-toggle {
+    flex: 1 1 180px;
+    justify-content: center;
   }
 
   .identity-avatar-row {
@@ -12695,6 +12781,10 @@
       grid-template-columns: 1fr;
     }
 
+    .identity-row-actions {
+      align-items: stretch;
+    }
+
     .time-machine {
       padding: 0.75rem;
     }
@@ -12759,6 +12849,16 @@
   }
 
   @media (max-width: 640px) {
+    .mount-dialog,
+    .share-dialog,
+    .join-dialog,
+    .create-chooser-modal,
+    .identity-manager-modal {
+      width: min(calc(100vw - 0.75rem), 100%);
+      max-height: calc(100dvh - 0.75rem);
+      border-radius: 22px;
+    }
+
     .brand-meta-row {
       flex-direction: column;
       align-items: flex-start;
@@ -12825,7 +12925,30 @@
 
     .identity-row-head,
     .identity-row-actions {
+      flex-direction: column;
       align-items: stretch;
+    }
+
+    .identity-row-close {
+      margin-left: 0;
+      align-self: flex-end;
+    }
+
+    .identity-chip-row {
+      gap: 0.45rem;
+    }
+
+    .identity-pill {
+      min-width: min(12rem, calc(100vw - 4rem));
+    }
+
+    .identity-editor-panel-actions {
+      flex-direction: column-reverse;
+      align-items: stretch;
+    }
+
+    .identity-editor-panel-actions > .workspace-toggle {
+      width: 100%;
     }
 
     .time-machine-head {
@@ -12864,6 +12987,48 @@
     .workspace-mode-secondary .manager-sort,
     .workspace-toolbar-btn {
       width: 100%;
+    }
+
+    .create-chooser-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .mount-dialog-header,
+    .share-dialog-header,
+    .join-dialog-header,
+    .create-chooser-head,
+    .join-dialog-input-head,
+    .join-dialog-preview-head,
+    .join-dialog-result-head,
+    .join-dialog-route-head,
+    .mount-dialog-footer,
+    .mount-dialog-footer-actions {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .mount-dialog-footer-actions {
+      margin-left: 0;
+      width: 100%;
+    }
+
+    .mount-dialog-info-row,
+    .join-dialog-result-row {
+      grid-template-columns: 1fr;
+    }
+
+    .mount-dialog-mode-switch,
+    .join-dialog-actions,
+    .join-dialog-route-head > :first-child,
+    .join-dialog-input-head > :first-child {
+      width: 100%;
+    }
+
+    .join-dialog-actions > :global(button),
+    .mount-dialog-footer-actions > .workspace-toggle,
+    .mount-dialog-inline-action {
+      width: 100%;
+      justify-content: center;
     }
 
     .file-list-head {
