@@ -86,6 +86,7 @@
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AppDialog from './components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
+  import JoinLinkSections from './components/JoinLinkSections.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
@@ -95,6 +96,9 @@
   import EventFlowPanel from './components/EventFlowPanel.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
+  import {
+    joinDialogAttachmentTitle,
+  } from './lib/joinLinkPresentation.js';
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
   import {
     cloneThemeSettings,
@@ -174,61 +178,45 @@
       eventTypes: ['APP_RECORD'],
     },
     {
-      id: 'file-events-v0.3',
-      title: 'File protocol v0.3',
-      filename: 'file-events-v0.3.md',
-      summary: 'CREATE/DELETE/RENAME file replay semantics.',
-      eventTypes: ['CREATE_FILE', 'DELETE_FILE', 'RENAME_FILE'],
-    },
-    {
       id: 'chat-events-v0.2',
-      title: 'Chat protocol v0.2',
+      title: 'Chat events v0.2',
       filename: 'chat-events-v0.2.md',
-      summary: 'Hub chat payload and replay rules.',
-      protocols: ['nb.chat.message.v1'],
-      eventTypes: ['CHAT_MESSAGE', 'DECLARE_IDENTITY'],
+      summary: 'Chat message payloads, identities, and attachment references.',
+      eventTypes: ['CHAT'],
     },
     {
-      id: 'identity-management-v1',
-      title: 'Identity management v1',
-      filename: 'identity-management-v1.md',
-      summary: 'Identity lifecycle from local creation to hub materialization.',
+      id: 'identity-management-v0.2',
+      title: 'Identity management v0.2',
+      filename: 'identity-management-v0.2.md',
+      summary: 'Publishing and rotating chat identity material.',
+      eventTypes: ['IDENTITY'],
+    },
+    {
+      id: 'file-events-v0.3',
+      title: 'File events v0.3',
+      filename: 'file-events-v0.3.md',
+      summary: 'Opaque file event envelope and projection semantics.',
+      eventTypes: ['CREATE_FILE', 'DELETE_FILE'],
+    },
+    {
+      id: 'file-commands-v0.2',
+      title: 'File commands v0.2',
+      filename: 'file-commands-v0.2.md',
+      summary: 'Command payload formats before file-event projection.',
+      eventTypes: ['CREATE_FILE', 'DELETE_FILE'],
+    },
+    {
+      id: 'lan-sync-v0.3',
+      title: 'LAN sync v0.3',
+      filename: 'lan-sync-v0.3.md',
+      summary: 'Receiver-driven LAN inventory sync over WebRTC.',
       always: true,
     },
     {
-      id: 'identity-record-v1',
-      title: 'Identity record v1',
-      filename: 'identity-record-v1.md',
-      summary: 'Schema + signature for nb.identity.record.v1.',
-      protocols: ['nb.identity.record.v1'],
-      eventTypes: ['DECLARE_IDENTITY'],
-    },
-    {
-      id: 'identity-snapshot-v1',
-      title: 'Identity snapshot v1',
-      filename: 'identity-snapshot-v1.md',
-      summary: 'Identity snapshot schema + channel reference.',
-      protocols: ['nb.identity.snapshot.v1'],
-    },
-    {
-      id: 'identity-channel-v1',
-      title: 'Identity publication v1',
-      filename: 'identity-channel-v1.md',
-      summary: 'Canonical publication rules for identity records.',
-      protocols: ['nb.identity.record.v1'],
-    },
-    {
-      id: 'log-command-map-v0.2',
-      title: 'Log command map v0.2',
-      filename: 'log-command-map-v0.2.md',
-      summary: 'Lookup from event/protocol to governing spec.',
-      always: true,
-    },
-    {
-      id: 'protocol-registry',
-      title: 'Protocol registry',
-      filename: 'protocol-registry.md',
-      summary: 'Known protocol IDs + versioning rules.',
+      id: 'data-correctness-v0.2',
+      title: 'Data correctness v0.2',
+      filename: 'data-correctness-v0.2.md',
+      summary: 'Storage durability, integrity, and replay expectations.',
       always: true,
     },
   ];
@@ -2336,10 +2324,10 @@
   );
 
   const currentVolumeChatIdentityId = $derived.by(() => {
-    if (!volumeId) {
+    if (!activeHubVolumeId) {
       return '';
     }
-    return volumeChatIdentityAssignments[volumeId] ?? '';
+    return volumeChatIdentityAssignments[activeHubVolumeId] ?? '';
   });
 
   const joinedChatIdentity = $derived.by(
@@ -2394,7 +2382,7 @@
     if (!selectedChatIdentity) {
       return null;
     }
-    if (!auth || !volumeId) {
+    if (!activeHubAuth || !activeHubVolumeId) {
       return {
         tone: 'warning',
         title: 'Open a hub to use chat',
@@ -2602,8 +2590,13 @@
     () => visibleFiles.find((file) => file.filename === selectedFileName) ?? null
   );
   const currentPreviewFile = $derived.by(() => previewFileOverride ?? selectedFile);
+  const activeMountRuntime = $derived.by(() => matchingMountRuntime(activeMount));
+  const activeHubAuth = $derived.by(() => activeMountRuntime?.auth ?? auth);
+  const activeHubVolumeId = $derived.by(
+    () => activeMountRuntime?.volumeId ?? volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null
+  );
   const currentMountedVolumePresentation = $derived.by<MountedVolumePresentation | null>(() => {
-    const currentVolumeId = volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null;
+    const currentVolumeId = activeHubVolumeId;
     if (!activeMount || !currentVolumeId) {
       return null;
     }
@@ -2627,7 +2620,7 @@
       fileName: mountStorageDialogMount.secretFileName,
     };
   });
-  const shareableVolumeId = $derived.by(() => volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null);
+  const shareableVolumeId = $derived.by(() => activeHubVolumeId);
 
   const knownMountedVolumes = $derived.by<Array<{ volumeId: string; label: string }>>(() => {
     const known = new Map<string, string>();
@@ -4016,111 +4009,6 @@
     showVolumeShareDialog = false;
   }
 
-  function joinDialogEndpointLabel(
-    candidate: NonNullable<JoinLinkParseResponse['plan']['attachments'][number]['selectedEndpoint']>
-  ): string {
-    const endpoint = candidate.endpoint;
-    const provider = endpoint.provider?.trim().toLowerCase() || '';
-    const providerLabel =
-      provider === 'mega'
-        ? 'MEGA'
-        : provider === 'gdrive'
-          ? 'Google Drive'
-          : provider === 'github'
-            ? 'GitHub'
-            : endpoint.provider?.trim() || '';
-    if (candidate.badges.includes('Connected') && providerLabel !== '') {
-      return `${providerLabel} ready here`;
-    }
-    if (candidate.badges.includes('Suggested folder') && providerLabel !== '') {
-      return `${providerLabel} suggested`;
-    }
-    if (providerLabel !== '') {
-      return `Via ${providerLabel}`;
-    }
-    if (endpoint.transport === 'provider-share') {
-      return 'Provider route';
-    }
-    return `Via ${endpoint.transport}`;
-  }
-
-  function joinDialogSpaceSummary(space: JoinLinkParseResponse['space']): string {
-    if (space.mode === 'volume-id') {
-      return 'Needs separate secret';
-    }
-    if (space.mode === 'secret-file') {
-      return 'Secret file included';
-    }
-    return space.password ? 'Secret and password included' : 'Secret included';
-  }
-
-  function joinDialogActionTone(
-    status: JoinLinkOpenResponse['actions'][number]['status']
-  ): 'success' | 'warning' | 'neutral' {
-    if (status === 'attached') {
-      return 'success';
-    }
-    if (status === 'needs-account' || status === 'pending-auth' || status === 'unsupported') {
-      return 'warning';
-    }
-    return 'neutral';
-  }
-
-  function joinDialogActionStatusLabel(
-    action: JoinLinkOpenResponse['actions'][number]
-  ): string {
-    if (action.status === 'attached') return 'Added';
-    if (action.status === 'planned') return 'Recognized';
-    if (action.status === 'needs-account') return 'Sign in needed';
-    if (action.status === 'pending-auth') return 'Finish sign-in';
-    return 'Unavailable';
-  }
-
-  function joinDialogActionTitle(
-    action: JoinLinkOpenResponse['actions'][number]
-  ): string {
-    const provider = action.provider === 'mega'
-      ? 'MEGA'
-      : action.provider === 'gdrive'
-        ? 'Google Drive'
-        : action.provider === 'github'
-          ? 'GitHub'
-          : action.provider || action.endpointTransport || 'Route';
-    if (action.status === 'attached') {
-      return `${provider} storage added to this hub`;
-    }
-    if (action.status === 'planned') {
-      return `${provider} storage found`;
-    }
-    if (action.status === 'needs-account') {
-      return `Connect ${provider}`;
-    }
-    if (action.status === 'pending-auth') {
-      return `Finish ${provider} sign-in`;
-    }
-    return `${provider} storage unavailable`;
-  }
-
-  function joinDialogAttachmentTitle(
-    attachment: JoinLinkParseResponse['plan']['attachments'][number]
-  ): string {
-    const rawLabel = attachment.attachment.label.trim();
-    const normalized = rawLabel.toLowerCase();
-    const provider = attachment.selectedEndpoint?.endpoint.provider?.trim().toLowerCase() || '';
-    const providerLabel =
-      provider === 'mega'
-        ? 'MEGA'
-        : provider === 'gdrive'
-          ? 'Google Drive'
-          : provider === 'github'
-            ? 'GitHub'
-            : attachment.selectedEndpoint?.endpoint.provider?.trim() || '';
-    if (normalized === '' || normalized === 'nearbytes' || normalized === 'shared storage' || normalized === 'share') {
-      return providerLabel !== '' ? `${providerLabel} shared storage` : 'Shared storage';
-    }
-    return rawLabel;
-  }
-
   async function previewJoinDialogLink(): Promise<void> {
     joinDialogPreviewBusy = true;
     joinDialogError = '';
@@ -5220,7 +5108,7 @@
     identity: ConfiguredIdentity,
     options: { announceSuccess?: boolean; openManagerOnError?: boolean; action?: IdentityManagerAction } = {}
   ): Promise<ConfiguredIdentity | null> {
-    if (!auth) {
+    if (!activeHubAuth) {
       identityManagerError = 'Open a hub before publishing an identity.';
       identityManagerMessage = '';
       return null;
@@ -5257,7 +5145,7 @@
       identityManagerMessage = '';
     }
     try {
-      const published = await publishIdentity(auth, buildIdentitySecret(identity), {
+      const published = await publishIdentity(activeHubAuth, buildIdentitySecret(identity), {
         displayName: identity.displayName.trim(),
         bio: identity.bio.trim() || undefined,
       });
@@ -5302,7 +5190,7 @@
   }
 
   async function joinCurrentVolumeChat(): Promise<ConfiguredIdentity | null> {
-    if (!auth || !volumeId) {
+    if (!activeHubAuth || !activeHubVolumeId) {
       identityManagerError = 'Open a hub before joining chat.';
       identityManagerMessage = '';
       return null;
@@ -5330,7 +5218,7 @@
 
     volumeChatIdentityAssignments = {
       ...volumeChatIdentityAssignments,
-      [volumeId]: publishedIdentity.id,
+      [activeHubVolumeId]: publishedIdentity.id,
     };
     identityManagerError = '';
     identityManagerMessage = `Joined this hub as ${publishedIdentity.displayName.trim()}.`;
@@ -6901,8 +6789,8 @@
         {#if showChatWorkspace}
           <div class="workspace-pane">
             <VolumeChat
-              {auth}
-              {volumeId}
+              auth={activeHubAuth}
+              volumeId={activeHubVolumeId}
               readonlyMode={isHistoryMode}
               historyState={isHistoryMode ? historicalChatState : null}
               activeIdentity={joinedChatIdentity}
@@ -7685,78 +7573,19 @@
 
         <div class="mount-dialog-body">
           {#if mountDialogMode === 'join-link' && isMountEmpty(mountDialogMount)}
-            <section class="mount-dialog-section join-dialog-input-shell">
-              <div class="join-dialog-input-head">
-                <div>
-                  <p class="join-dialog-section-title">Join link</p>
-                  <p class="join-dialog-note">Copy the share link, then paste it here or press Paste from clipboard.</p>
-                </div>
-                <button
-                  type="button"
-                  class="status-link-btn secondary"
-                  onclick={() => void readJoinDialogClipboard()}
-                  disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
-                >
-                  <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                  <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
-                </button>
-              </div>
-
-              <textarea
-                class="join-dialog-textarea"
-                bind:value={joinDialogSerialized}
-                spellcheck="false"
-                placeholder="nearbytes://join?data=..."
-              ></textarea>
-
-              <div class="join-dialog-actions">
-                <button
-                  type="button"
-                  class="status-link-btn"
-                  onclick={() => void openJoinDialogLink()}
-                  disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
-                >
-                  <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
-                </button>
-              </div>
-
-              {#if joinDialogError}
-                <StatusNotice tone="error" role="alert" compact={true} message={joinDialogError} />
-              {/if}
-            </section>
-
-            {#if joinDialogPreview}
-              <section class="mount-dialog-section">
-                <div class="join-dialog-preview-head">
-                  <span class="join-dialog-chip strong">{joinDialogSpaceSummary(joinDialogPreview.space)}</span>
-                  <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} storage route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
-                </div>
-
-                {#if joinDialogPreview.plan.attachments.length === 0}
-                  <p class="join-dialog-note">This link tells Nearbytes which hub to join, but it does not include any extra shared storage routes.</p>
-                {:else}
-                  <div class="join-dialog-route-list">
-                    {#each joinDialogPreview.plan.attachments as attachment}
-                      <article class="join-dialog-route-card">
-                        <div class="join-dialog-route-head">
-                          <div>
-                            <p class="join-dialog-route-title">{joinDialogAttachmentTitle(attachment)}</p>
-                            <p class="join-dialog-route-detail">
-                              {attachment.selectedEndpoint?.reason ?? 'No supported route is available for this storage yet.'}
-                            </p>
-                          </div>
-                          {#if attachment.selectedEndpoint}
-                            <span class="join-dialog-chip strong">{joinDialogEndpointLabel(attachment.selectedEndpoint)}</span>
-                          {:else}
-                            <span class="join-dialog-chip warning">Unavailable</span>
-                          {/if}
-                        </div>
-                      </article>
-                    {/each}
-                  </div>
-                {/if}
-              </section>
-            {/if}
+            <JoinLinkSections
+              serialized={joinDialogSerialized}
+              error={joinDialogError}
+              preview={joinDialogPreview}
+              clipboardBusy={joinDialogClipboardBusy}
+              previewBusy={joinDialogPreviewBusy}
+              openBusy={joinDialogOpenBusy}
+              onSerializedInput={(value) => {
+                joinDialogSerialized = value;
+              }}
+              onReadClipboard={readJoinDialogClipboard}
+              onOpenLink={openJoinDialogLink}
+            />
 
             <section class="mount-dialog-section">
               <div class="mount-dialog-actions">
@@ -7922,188 +7751,197 @@
             </button>
           </div>
 
-          <div class="identity-chip-row">
-            {#if configuredIdentities.length === 0}
-              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
-                <Plus size={14} strokeWidth={2} />
-                <span>Add identity</span>
-              </button>
-            {:else}
-              {#each configuredIdentities as identity (identity.id)}
-                <button
-                  type="button"
-                  class="identity-pill"
-                  class:active={identity.id === activeChatIdentityId}
-                  onclick={() => {
-                    activeChatIdentityId = identity.id;
-                    identityManagerError = '';
-                    identityManagerMessage = '';
-                  }}
-                >
-                  <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
-                  <span class="identity-pill-state">
-                    {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
-                      Joined · update pending
-                    {:else if identity.id === currentVolumeChatIdentityId}
-                      Joined
-                    {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
-                      Needs publish
-                    {:else if identity.publicKey}
-                      Published
-                    {:else}
-                      Local
-                    {/if}
-                  </span>
+          <div class="identity-manager-content">
+            <div class="identity-chip-row">
+              {#if configuredIdentities.length === 0}
+                <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
+                  <Plus size={14} strokeWidth={2} />
+                  <span>Add identity</span>
                 </button>
-              {/each}
-              <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
-                <Plus size={14} strokeWidth={2} />
-                <span>New</span>
-              </button>
+              {:else}
+                {#each configuredIdentities as identity (identity.id)}
+                  <button
+                    type="button"
+                    class="identity-pill"
+                    class:active={identity.id === activeChatIdentityId}
+                    onclick={() => {
+                      activeChatIdentityId = identity.id;
+                      identityManagerError = '';
+                      identityManagerMessage = '';
+                    }}
+                  >
+                    <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
+                    <span class="identity-pill-state">
+                      {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
+                        Joined · update pending
+                      {:else if identity.id === currentVolumeChatIdentityId}
+                        Joined
+                      {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
+                        Needs publish
+                      {:else if identity.publicKey}
+                        Published
+                      {:else}
+                        Local
+                      {/if}
+                    </span>
+                  </button>
+                {/each}
+                <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
+                  <Plus size={14} strokeWidth={2} />
+                  <span>New</span>
+                </button>
+              {/if}
+            </div>
+
+            {#if selectedChatIdentityStatus}
+              <div class={`identity-status-card ${selectedChatIdentityStatus.tone}`}>
+                <p class="identity-status-title">{selectedChatIdentityStatus.title}</p>
+                <p class="identity-status-detail">{selectedChatIdentityStatus.detail}</p>
+              </div>
+            {/if}
+
+            {#if identityManagerError}
+              <StatusNotice tone="error" role="alert" compact={true} message={identityManagerError} />
+            {:else if identityManagerMessage}
+              <StatusNotice tone="success" compact={true} message={identityManagerMessage} />
+            {/if}
+
+            {#if selectedChatIdentity}
+              <div class="identity-editor-panel">
+                <div class="identity-editor-panel-wide">
+                  <SharedSecretEditor
+                    value={selectedChatIdentity.address}
+                    password={selectedChatIdentity.password}
+                    valueLabel="Identity secret"
+                    valueAriaLabel="Identity secret"
+                    valuePlaceholder="address or secret seed"
+                    passwordLabel="Password (optional)"
+                    passwordAriaLabel="Optional identity password"
+                    passwordPlaceholder="optional"
+                    hint="Use text, or attach a file to act as this identity secret."
+                    fileName={selectedChatIdentity.secretFileName}
+                    fileMimeType={selectedChatIdentity.secretFileMimeType}
+                    filePreviewUrl={configuredIdentitySecretDataUrl(selectedChatIdentity)}
+                    fileIsImage={configuredIdentityHasImageSecret(selectedChatIdentity)}
+                    onValueInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'address', value)}
+                    onPasswordInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'password', value)}
+                    onFileSelected={handleSelectedIdentitySecretSelected}
+                    onClearFile={() => clearConfiguredChatIdentitySecretFile(selectedChatIdentity.id)}
+                  />
+                </div>
+                <label class="identity-editor-panel-wide">
+                  <span>Picture</span>
+                  <div class="identity-avatar-row">
+                    <div class="identity-avatar-preview">
+                      {#if selectedChatIdentity.avatarDataUrl}
+                        <img
+                          class="identity-avatar-image"
+                          src={selectedChatIdentity.avatarDataUrl}
+                          alt={selectedChatIdentity.displayName || 'Identity avatar'}
+                        />
+                      {:else}
+                        <span>{configuredIdentityAvatarLabel(selectedChatIdentity)}</span>
+                      {/if}
+                    </div>
+                    <div class="identity-avatar-actions">
+                      <input
+                        bind:this={identityAvatarFileInput}
+                        hidden
+                        type="file"
+                        accept="image/*"
+                        aria-label="Choose identity picture"
+                        onchange={(event) => void handleIdentityAvatarFileChange(event, selectedChatIdentity.id)}
+                      />
+                      <button type="button" class="workspace-toggle" onclick={() => identityAvatarFileInput?.click()}>
+                        <span>{selectedChatIdentity.avatarDataUrl ? 'Change picture' : 'Choose picture'}</span>
+                      </button>
+                      {#if selectedChatIdentity.avatarDataUrl}
+                        <button
+                          type="button"
+                          class="workspace-toggle remove"
+                          onclick={() => clearConfiguredChatIdentityAvatar(selectedChatIdentity.id)}
+                        >
+                          <span>Remove picture</span>
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
+                </label>
+                <label>
+                  <span>Display name</span>
+                  <input
+                    type="text"
+                    value={selectedChatIdentity.displayName}
+                    oninput={(event) =>
+                      updateConfiguredChatIdentity(selectedChatIdentity.id, {
+                        displayName: (event.currentTarget as HTMLInputElement).value,
+                      })}
+                    placeholder="Ada"
+                  />
+                </label>
+                <label class="identity-editor-panel-wide">
+                  <span>Bio</span>
+                  <textarea
+                    rows="2"
+                    oninput={(event) =>
+                      updateConfiguredChatIdentity(selectedChatIdentity.id, {
+                        bio: (event.currentTarget as HTMLTextAreaElement).value,
+                      })}
+                    placeholder="Who is speaking from this key?"
+                  >{selectedChatIdentity.bio}</textarea>
+                </label>
+                <div class="identity-editor-panel-actions">
+                  <button
+                    type="button"
+                    class="workspace-toggle remove"
+                    onclick={() => removeConfiguredChatIdentity(selectedChatIdentity.id)}
+                  >
+                    <Trash2 class="button-icon" size={15} strokeWidth={2} />
+                    <span>Remove</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="workspace-toggle"
+                    onclick={closeIdentityManager}
+                  >
+                    <span>Done</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="workspace-toggle"
+                    onclick={() => void publishSelectedChatIdentity()}
+                    disabled={!activeHubAuth || isHistoryMode || identityManagerLoading}
+                  >
+                    <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                    <span>
+                      {identityManagerLoading && identityManagerAction === 'publish'
+                        ? 'Publishing…'
+                        : selectedChatIdentityNeedsPublish
+                          ? 'Publish to hub'
+                          : 'Published'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="workspace-toggle"
+                    onclick={() => void joinCurrentVolumeChat()}
+                    disabled={!activeHubAuth || isHistoryMode || identityManagerLoading}
+                  >
+                    <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
+                    <span>
+                      {identityManagerLoading && identityManagerAction === 'join'
+                        ? 'Joining…'
+                        : selectedChatIdentity.id === currentVolumeChatIdentityId
+                          ? 'Joined to hub'
+                          : selectedChatIdentityNeedsPublish
+                            ? 'Publish and join'
+                            : 'Join this hub'}
+                    </span>
+                  </button>
+                </div>
+              </div>
             {/if}
           </div>
-
-          {#if selectedChatIdentityStatus}
-            <div class={`identity-status-card ${selectedChatIdentityStatus.tone}`}>
-              <p class="identity-status-title">{selectedChatIdentityStatus.title}</p>
-              <p class="identity-status-detail">{selectedChatIdentityStatus.detail}</p>
-            </div>
-          {/if}
-
-          {#if identityManagerError}
-            <StatusNotice tone="error" role="alert" compact={true} message={identityManagerError} />
-          {:else if identityManagerMessage}
-            <StatusNotice tone="success" compact={true} message={identityManagerMessage} />
-          {/if}
-
-          {#if selectedChatIdentity}
-            <div class="identity-editor-panel">
-              <div class="identity-editor-panel-wide">
-                <SharedSecretEditor
-                  value={selectedChatIdentity.address}
-                  password={selectedChatIdentity.password}
-                  valueLabel="Identity secret"
-                  valueAriaLabel="Identity secret"
-                  valuePlaceholder="address or secret seed"
-                  passwordLabel="Password (optional)"
-                  passwordAriaLabel="Optional identity password"
-                  passwordPlaceholder="optional"
-                  hint="Use text, or attach a file to act as this identity secret."
-                  fileName={selectedChatIdentity.secretFileName}
-                  fileMimeType={selectedChatIdentity.secretFileMimeType}
-                  filePreviewUrl={configuredIdentitySecretDataUrl(selectedChatIdentity)}
-                  fileIsImage={configuredIdentityHasImageSecret(selectedChatIdentity)}
-                  onValueInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'address', value)}
-                  onPasswordInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'password', value)}
-                  onFileSelected={handleSelectedIdentitySecretSelected}
-                  onClearFile={() => clearConfiguredChatIdentitySecretFile(selectedChatIdentity.id)}
-                />
-              </div>
-              <label class="identity-editor-panel-wide">
-                <span>Picture</span>
-                <div class="identity-avatar-row">
-                  <div class="identity-avatar-preview">
-                    {#if selectedChatIdentity.avatarDataUrl}
-                      <img
-                        class="identity-avatar-image"
-                        src={selectedChatIdentity.avatarDataUrl}
-                        alt={selectedChatIdentity.displayName || 'Identity avatar'}
-                      />
-                    {:else}
-                      <span>{configuredIdentityAvatarLabel(selectedChatIdentity)}</span>
-                    {/if}
-                  </div>
-                  <div class="identity-avatar-actions">
-                    <input
-                      bind:this={identityAvatarFileInput}
-                      hidden
-                      type="file"
-                      accept="image/*"
-                      aria-label="Choose identity picture"
-                      onchange={(event) => void handleIdentityAvatarFileChange(event, selectedChatIdentity.id)}
-                    />
-                    <button type="button" class="workspace-toggle" onclick={() => identityAvatarFileInput?.click()}>
-                      <span>{selectedChatIdentity.avatarDataUrl ? 'Change picture' : 'Choose picture'}</span>
-                    </button>
-                    {#if selectedChatIdentity.avatarDataUrl}
-                      <button
-                        type="button"
-                        class="workspace-toggle remove"
-                        onclick={() => clearConfiguredChatIdentityAvatar(selectedChatIdentity.id)}
-                      >
-                        <span>Remove picture</span>
-                      </button>
-                    {/if}
-                  </div>
-                </div>
-              </label>
-              <label>
-                <span>Display name</span>
-                <input
-                  type="text"
-                  value={selectedChatIdentity.displayName}
-                  oninput={(event) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      displayName: (event.currentTarget as HTMLInputElement).value,
-                    })}
-                  placeholder="Ada"
-                />
-              </label>
-              <label class="identity-editor-panel-wide">
-                <span>Bio</span>
-                <textarea
-                  rows="2"
-                  oninput={(event) =>
-                    updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                      bio: (event.currentTarget as HTMLTextAreaElement).value,
-                    })}
-                  placeholder="Who is speaking from this key?"
-                >{selectedChatIdentity.bio}</textarea>
-              </label>
-              <div class="identity-editor-panel-actions">
-                <button
-                  type="button"
-                  class="workspace-toggle remove"
-                  onclick={() => removeConfiguredChatIdentity(selectedChatIdentity.id)}
-                >
-                  <Trash2 class="button-icon" size={15} strokeWidth={2} />
-                  <span>Remove</span>
-                </button>
-                <button
-                  type="button"
-                  class="workspace-toggle"
-                  onclick={() => void publishSelectedChatIdentity()}
-                  disabled={!auth || isHistoryMode || identityManagerLoading}
-                >
-                  <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                  <span>
-                    {identityManagerLoading && identityManagerAction === 'publish'
-                      ? 'Publishing…'
-                      : selectedChatIdentityNeedsPublish
-                        ? 'Publish to hub'
-                        : 'Published'}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  class="workspace-toggle"
-                  onclick={() => void joinCurrentVolumeChat()}
-                  disabled={!auth || isHistoryMode || identityManagerLoading}
-                >
-                  <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                  <span>
-                    {identityManagerLoading && identityManagerAction === 'join'
-                      ? 'Joining…'
-                      : selectedChatIdentity.id === currentVolumeChatIdentityId
-                        ? 'Joined to hub'
-                        : selectedChatIdentityNeedsPublish
-                          ? 'Publish and join'
-                          : 'Join this hub'}
-                  </span>
-                </button>
-              </div>
-            </div>
-          {/if}
         </div>
       </div>
     </div>
@@ -8156,138 +7994,33 @@
   {/if}
 
   {#if showJoinVolumeDialog}
-    <div
-      class="join-dialog-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Join a shared volume"
-      tabindex="-1"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) {
-          closeJoinVolumeDialog();
-        }
-      }}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeJoinVolumeDialog();
-        }
-      }}
+    <AppDialog
+      ariaLabel="Join a shared hub"
+      eyebrow="Join shared hub"
+      title="Open from clipboard"
+      subtitle="Paste a Nearbytes link or raw share data copied from Nearbytes."
+      width="wide"
+      closeLabel="Close join dialog"
+      onClose={closeJoinVolumeDialog}
     >
-      <div class="join-dialog panel-surface" role="document" tabindex="-1">
-        <div class="join-dialog-header">
-          <div class="join-dialog-head-meta">
-            <p class="join-dialog-eyebrow">Join shared hub</p>
-            <p class="join-dialog-title">Open from clipboard</p>
-          </div>
-          <button type="button" class="tm-details-close" aria-label="Close join dialog" onclick={closeJoinVolumeDialog}>
-            <X size={18} strokeWidth={2} />
-          </button>
-        </div>
-
-        <div class="join-dialog-body">
-          <section class="join-dialog-section join-dialog-input-shell">
-            <div class="join-dialog-input-head">
-              <div>
-                <p class="join-dialog-section-title">Join link</p>
-              </div>
-              <button
-                type="button"
-                class="status-link-btn secondary"
-                onclick={() => void readJoinDialogClipboard()}
-                disabled={joinDialogClipboardBusy || joinDialogPreviewBusy || joinDialogOpenBusy}
-              >
-                <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                <span>{joinDialogClipboardBusy ? 'Reading…' : 'Paste from clipboard'}</span>
-              </button>
-            </div>
-
-            <textarea
-              class="join-dialog-textarea"
-              bind:value={joinDialogSerialized}
-              spellcheck="false"
-              placeholder="nearbytes://join?data=..."
-            ></textarea>
-
-            <div class="join-dialog-actions">
-              <button
-                type="button"
-                class="status-link-btn"
-                onclick={() => void openJoinDialogLink()}
-                disabled={joinDialogOpenBusy || joinDialogPreviewBusy || joinDialogClipboardBusy}
-              >
-                <span>{joinDialogOpenBusy ? 'Opening…' : 'Open shared hub'}</span>
-              </button>
-            </div>
-
-            {#if joinDialogError}
-              <StatusNotice tone="error" role="alert" compact={true} message={joinDialogError} />
-            {/if}
-          </section>
-
-          {#if joinDialogPreview}
-            <section class="join-dialog-section">
-              <div class="join-dialog-preview-head">
-                <span class="join-dialog-chip strong">{joinDialogSpaceSummary(joinDialogPreview.space)}</span>
-                <span class="join-dialog-chip">{joinDialogPreview.plan.attachments.length} storage route{joinDialogPreview.plan.attachments.length === 1 ? '' : 's'}</span>
-              </div>
-
-              {#if joinDialogPreview.plan.attachments.length === 0}
-                <p class="join-dialog-note">This link tells Nearbytes which hub to join, but it does not include any extra shared storage routes.</p>
-              {:else}
-                <div class="join-dialog-route-list">
-                  {#each joinDialogPreview.plan.attachments as attachment (attachment.attachment.id)}
-                    <article class="join-dialog-route-card">
-                      <div class="join-dialog-route-head">
-                        <div>
-                          <p class="join-dialog-route-title">{joinDialogAttachmentTitle(attachment)}</p>
-                          <p class="join-dialog-route-detail">
-                            {attachment.selectedEndpoint?.reason || 'No supported route is available in this build.'}
-                          </p>
-                        </div>
-                        {#if attachment.selectedEndpoint}
-                          <span class="join-dialog-chip strong">{joinDialogEndpointLabel(attachment.selectedEndpoint)}</span>
-                        {:else}
-                          <span class="join-dialog-chip warning">Unavailable</span>
-                        {/if}
-                      </div>
-                    </article>
-                  {/each}
-                </div>
-              {/if}
-            </section>
-          {/if}
-
-          {#if joinDialogOpened}
-            <section class="join-dialog-section">
-              <div class="join-dialog-result-head">
-                <p class="join-dialog-section-title">Join result</p>
-                {#if joinDialogOpened.secret === null}
-                  <span class="join-dialog-chip warning">No secret included</span>
-                {/if}
-              </div>
-              {#if joinDialogOpened.secret === null}
-                <p class="join-dialog-note">Nearbytes staged the shared storage, but this link does not contain the hub secret. You still need the secret to open the hub contents.</p>
-              {/if}
-              <div class="join-dialog-result-list">
-                {#each joinDialogOpened.actions as action (`${action.attachmentId}-${action.provider || action.endpointTransport || 'route'}`)}
-                  <div class={`join-dialog-result-row ${joinDialogActionTone(action.status)}`}>
-                    <div>
-                      <p class="join-dialog-route-title">{joinDialogActionTitle(action)}</p>
-                      <p class="join-dialog-route-detail">{action.detail}</p>
-                      {#if action.suggestedLocalPath}
-                        <p class="join-dialog-path">Nearbytes will mirror it in: {action.suggestedLocalPath}</p>
-                      {/if}
-                    </div>
-                    <span class="join-dialog-chip strong">{joinDialogActionStatusLabel(action)}</span>
-                  </div>
-                {/each}
-              </div>
-            </section>
-          {/if}
-        </div>
-      </div>
-    </div>
+      {#snippet body()}
+        <JoinLinkSections
+          serialized={joinDialogSerialized}
+          error={joinDialogError}
+          preview={joinDialogPreview}
+          opened={joinDialogOpened}
+          clipboardBusy={joinDialogClipboardBusy}
+          previewBusy={joinDialogPreviewBusy}
+          openBusy={joinDialogOpenBusy}
+          description="Paste the link copied from Nearbytes, or read it from the clipboard."
+          onSerializedInput={(value) => {
+            joinDialogSerialized = value;
+          }}
+          onReadClipboard={readJoinDialogClipboard}
+          onOpenLink={openJoinDialogLink}
+        />
+      {/snippet}
+    </AppDialog>
   {/if}
 
   {#if showResetDialog}
@@ -8871,13 +8604,15 @@
   .identity-pill-name {
     font-size: 0.84rem;
     font-weight: 600;
-    white-space: nowrap;
+    white-space: normal;
+    word-break: break-word;
   }
 
   .identity-pill-state {
     font-size: 0.72rem;
     color: var(--nb-text-faint, rgba(110, 110, 115, 0.68));
-    white-space: nowrap;
+    white-space: normal;
+    word-break: break-word;
   }
 
   .identity-row-note {
@@ -8944,6 +8679,12 @@
   }
 
   .identity-editor-panel {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .identity-editor-panel {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.75rem;
@@ -8956,6 +8697,23 @@
     gap: 0.35rem;
     color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
     font-size: 0.82rem;
+  }
+
+  .identity-manager-panel {
+    min-height: 0;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .identity-manager-content {
+    flex: 1 1 auto;
+    display: grid;
+    gap: 0.7rem;
+    min-height: 0;
+    overflow: auto;
+    padding-right: 0.1rem;
   }
 
   .identity-editor-panel input,
@@ -8995,7 +8753,6 @@
     align-items: center;
     gap: 0.85rem;
   }
-
   .identity-avatar-preview {
     width: 58px;
     height: 58px;
@@ -9028,11 +8785,16 @@
   .identity-manager-modal {
     width: min(760px, calc(100vw - 2rem));
     max-height: min(86vh, 920px);
-    overflow: auto;
     border-radius: 20px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
     background: var(--nb-panel-bg, #ffffff);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  }
+
+  .identity-manager-modal {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   .create-chooser-head {
@@ -11515,6 +11277,14 @@
     gap: 0.9rem;
   }
 
+  .join-dialog-input-head > :first-child,
+  .join-dialog-preview-head > :first-child,
+  .join-dialog-result-head > :first-child,
+  .join-dialog-route-head > :first-child {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
   .join-dialog-input-head,
   .join-dialog-preview-head,
   .join-dialog-result-head,
@@ -11567,6 +11337,12 @@
     gap: 0.65rem;
   }
 
+  .join-dialog-actions > :global(button),
+  .join-dialog-input-head > :global(button) {
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .join-dialog-chip {
     display: inline-flex;
     align-items: center;
@@ -11578,6 +11354,9 @@
     color: var(--nb-text-main, rgba(28, 28, 30, 0.9));
     font-size: 0.75rem;
     font-weight: 600;
+    max-width: 100%;
+    white-space: normal;
+    word-break: break-word;
   }
 
   .join-dialog-chip.strong {
@@ -13031,6 +12810,46 @@
       justify-content: center;
     }
 
+    .join-dialog-header,
+    .join-dialog-body {
+      padding-left: 0.9rem;
+      padding-right: 0.9rem;
+    }
+
+    .join-dialog-section {
+      padding: 0.88rem;
+      border-radius: 14px;
+    }
+
+    .join-dialog-title {
+      font-size: 1.02rem;
+    }
+
+    .join-dialog-textarea {
+      min-height: 6.75rem;
+      padding: 0.82rem 0.88rem;
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .join-dialog-preview-head,
+    .join-dialog-result-head,
+    .join-dialog-route-head {
+      gap: 0.55rem;
+    }
+
+    .join-dialog-chip {
+      width: 100%;
+      justify-content: center;
+      text-align: center;
+    }
+
+    .join-dialog-route-card,
+    .join-dialog-result-row {
+      padding: 0.82rem 0.84rem;
+    }
+
+
     .file-list-head {
       grid-template-columns: minmax(0, 1fr) auto;
     }
@@ -13057,6 +12876,110 @@
     .discovery-toast-btn {
       width: 100%;
       justify-content: center;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .join-dialog,
+    .mount-dialog,
+    .share-dialog,
+    .create-chooser-modal,
+    .identity-manager-modal {
+      width: min(calc(100vw - 0.35rem), 100%);
+      max-height: calc(100dvh - 0.35rem);
+      border-radius: 18px;
+    }
+
+    .join-dialog-backdrop,
+    .mount-dialog-backdrop,
+    .share-dialog-backdrop,
+    .theme-dialog-backdrop {
+      padding: 0.175rem;
+      align-items: stretch;
+    }
+
+    .identity-manager-modal {
+      max-height: calc(100dvh - 0.35rem);
+      padding-top: max(0.2rem, env(safe-area-inset-top));
+      padding-bottom: max(0.2rem, env(safe-area-inset-bottom));
+    }
+
+    .identity-manager-panel {
+      padding: 0.72rem;
+      gap: 0.62rem;
+    }
+
+    .identity-chip-row {
+      flex-direction: column;
+      align-items: stretch;
+      overflow-x: visible;
+    }
+
+    .identity-pill {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .identity-status-card {
+      padding: 0.72rem 0.78rem;
+      border-radius: 14px;
+    }
+
+    .identity-editor-panel {
+      gap: 0.62rem;
+    }
+
+    .identity-editor-panel input,
+    .identity-editor-panel textarea {
+      font-size: 16px;
+      padding: 0.68rem 0.78rem;
+    }
+
+    .identity-avatar-row,
+    .identity-avatar-actions {
+      align-items: stretch;
+    }
+
+    .identity-avatar-actions {
+      width: 100%;
+    }
+
+    .identity-avatar-actions > .workspace-toggle {
+      width: 100%;
+      justify-content: center;
+    }
+
+    .join-dialog-header,
+    .join-dialog-body {
+      padding-left: 0.72rem;
+      padding-right: 0.72rem;
+    }
+
+    .join-dialog-header {
+      padding-top: 0.78rem;
+      padding-bottom: 0.66rem;
+    }
+
+    .join-dialog-body {
+      padding-top: 0.72rem;
+      padding-bottom: 0.82rem;
+      gap: 0.72rem;
+    }
+
+    .join-dialog-section {
+      gap: 0.68rem;
+      padding: 0.74rem;
+    }
+
+    .join-dialog-title {
+      font-size: 0.96rem;
+    }
+
+    .join-dialog-note,
+    .join-dialog-route-detail,
+    .join-dialog-path,
+    .join-dialog-message {
+      font-size: 0.78rem;
     }
   }
 </style>
