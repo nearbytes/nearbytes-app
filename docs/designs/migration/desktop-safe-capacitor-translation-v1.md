@@ -129,6 +129,7 @@ Exit criteria:
 
 - phone boots the full shared UI surface inventory defined in `platform/phase-1-surface-inventory-v1.md`
 - missing phone runtime capabilities surface as explicit shared unavailable states rather than breakage or missing screens
+- this phase is explicitly a shell milestone, not a release-complete phone host milestone
 
 ### Phase 4.1: Harden The Mobile Shared Shell
 
@@ -150,14 +151,16 @@ Desktop guarantee:
 Phone relevance:
 
 - prevents the phone shell from shipping as a fragile dev-only wrapper around otherwise shared UI
+- keeps local developer iteration viable while preserving the rule that the phone cannot ship as a desktop-backed proxy client
 
 Exit criteria:
 
 - shared modal flows remain usable at iPhone sizes without duplicated host-specific workflow markup
 - the mobile host allows only the minimum development network exceptions needed to boot the shared shell locally
 - generated iOS build trees do not appear in normal git status output
+- the design explicitly distinguishes local dev-server bootstrapping from the later independent phone runtime requirement
 
-### Phase 5: Add Native Phase 1 LAN Runtime And Mirror Feed
+### Phase 5: Add Native Phase 1 LAN Runtime
 
 Keep the shared app stable while the phone host gains durable LAN, opaque object storage, and resume behavior behind the same contract.
 
@@ -171,6 +174,23 @@ Exit criteria:
 - phone LAN discovery, sync, and object persistence are behind the same host contract families
 - phone mirror catch-up is incremental where possible
 - the app shell does not care whether LAN comes from Node, native phone code, or a future shared daemon
+- the phone host owns its peer identity, LAN advertisement, sync queue, and durable object store rather than delegating those responsibilities to a desktop-backed HTTP bridge
+- simulator-on-same-machine testing only counts when the phone host presents as a distinct peer on the same `mDNSResponder` system and can retain synced state across relaunch without desktop runtime help
+
+### Phase 5.1: Feed The Browser Mirror From The Native Phone Runtime
+
+After the native runtime exists, switch the shared browser app to consume the phone-owned mirror feed instead of transient WebView-owned state.
+
+Desktop guarantee:
+
+- desktop runtime behavior remains unchanged
+- browser-owned shared semantics stay shared across hosts
+
+Exit criteria:
+
+- phone file browser, timeline, chat, identity, and references render from mirrored opaque objects supplied by the native phone runtime
+- browser-owned crypto and projections remain host-agnostic while runtime ownership stays native on phone
+- a phone that has already synced remains useful after reopen before any fresh desktop-assisted bootstrap
 
 ### Phase 6: Extract Optional Sidecars Only After Boundary Stability
 
@@ -223,8 +243,16 @@ Phone hardening is incomplete until the shared shell also supports:
 - local-development networking through explicit ATS exceptions instead of blanket arbitrary-load allowances
 - clean source control state after iOS simulator and Xcode build runs
 
-## Immediate Next Move
+Phone Phase 1 is incomplete until the product also supports:
 
-The first code change after this design should be the introduction of a typed host contract and desktop and browser adapters that wrap the existing runtime behavior without changing it.
+- independent peer discovery and sync on the local network without a desktop-hosted proxy acting as the phone's practical backend
+- durable local opaque-object retention across suspend, resume, and reopen flows
+- distinct phone peer identity even during same-machine simulator testing
+
+## Immediate Next Moves
+
+1. introduce a typed host contract and desktop and browser adapters that wrap the existing runtime behavior without changing it.
+2. carve the phone runtime seam so the shared shell no longer assumes desktop-owned HTTP fulfillment is the long-term phone path.
+3. add the native phone LAN and object-store runtime behind that seam before calling Phase 1 complete.
 
 Detailed Phase 1 voyage: `migration/phase-1-voyage-v1.md`.
