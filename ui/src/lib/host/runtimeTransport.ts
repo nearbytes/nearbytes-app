@@ -12,9 +12,44 @@ const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
   apiBaseUrl: '',
   desktopToken: '',
   isDesktop: false,
+  runtimeTokenHeader: 'x-nearbytes-runtime-token',
+  runtimeHostKind: 'web',
+  runtimeOwner: 'embedded',
 };
 
 let runtimeConfigPromise: Promise<DesktopRuntimeConfig> | null = null;
+
+function normalizeRuntimeTokenHeader(value: unknown): string {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim().toLowerCase()
+    : 'x-nearbytes-runtime-token';
+}
+
+function normalizeRuntimeHostKind(value: unknown, isDesktop: boolean): NonNullable<DesktopRuntimeConfig['runtimeHostKind']> {
+  if (value === 'desktop' || value === 'phone' || value === 'web') {
+    return value;
+  }
+  return isDesktop ? 'desktop' : 'web';
+}
+
+function normalizeRuntimeOwner(value: unknown, isDesktop: boolean): NonNullable<DesktopRuntimeConfig['runtimeOwner']> {
+  if (value === 'embedded' || value === 'desktop-proxy' || value === 'remote-runtime') {
+    return value;
+  }
+  return isDesktop ? 'embedded' : 'remote-runtime';
+}
+
+function normalizePartialRuntimeConfig(config: Partial<DesktopRuntimeConfig>): DesktopRuntimeConfig {
+  const isDesktop = config.isDesktop === true;
+  return {
+    apiBaseUrl: typeof config.apiBaseUrl === 'string' ? config.apiBaseUrl : '',
+    desktopToken: typeof config.desktopToken === 'string' ? config.desktopToken : '',
+    isDesktop,
+    runtimeTokenHeader: normalizeRuntimeTokenHeader(config.runtimeTokenHeader),
+    runtimeHostKind: normalizeRuntimeHostKind(config.runtimeHostKind, isDesktop),
+    runtimeOwner: normalizeRuntimeOwner(config.runtimeOwner, isDesktop),
+  };
+}
 
 function readInjectedRuntimeConfig(): DesktopRuntimeConfig | null {
   if (typeof window === 'undefined') {
@@ -24,10 +59,13 @@ function readInjectedRuntimeConfig(): DesktopRuntimeConfig | null {
   if (!injected || typeof injected.apiBaseUrl !== 'string' || injected.apiBaseUrl.trim().length === 0) {
     return null;
   }
-  return normalizeRuntimeConfig({
+  return normalizePartialRuntimeConfig({
     apiBaseUrl: injected.apiBaseUrl,
     desktopToken: typeof injected.desktopToken === 'string' ? injected.desktopToken : '',
     isDesktop: injected.isDesktop === true,
+    runtimeTokenHeader: injected.runtimeTokenHeader,
+    runtimeHostKind: injected.runtimeHostKind,
+    runtimeOwner: injected.runtimeOwner,
   });
 }
 
@@ -69,11 +107,7 @@ export function resetRuntimeConfigCacheForTests(): void {
 }
 
 function normalizeRuntimeConfig(config: DesktopRuntimeConfig): DesktopRuntimeConfig {
-  return {
-    apiBaseUrl: config.apiBaseUrl,
-    desktopToken: config.desktopToken,
-    isDesktop: config.isDesktop === true,
-  };
+  return normalizePartialRuntimeConfig(config);
 }
 
 export async function getRuntimeConfig(options: {
@@ -87,10 +121,13 @@ export async function getRuntimeConfig(options: {
   const nextPromise = (async () => {
     const injectedConfig = options.injectedConfig;
     if (injectedConfig && typeof injectedConfig.apiBaseUrl === 'string' && injectedConfig.apiBaseUrl.trim().length > 0) {
-      return normalizeRuntimeConfig({
+      return normalizePartialRuntimeConfig({
         apiBaseUrl: injectedConfig.apiBaseUrl,
         desktopToken: typeof injectedConfig.desktopToken === 'string' ? injectedConfig.desktopToken : '',
         isDesktop: injectedConfig.isDesktop === true,
+        runtimeTokenHeader: injectedConfig.runtimeTokenHeader,
+        runtimeHostKind: injectedConfig.runtimeHostKind,
+        runtimeOwner: injectedConfig.runtimeOwner,
       });
     }
 
@@ -123,6 +160,10 @@ export async function getRuntimeConfig(options: {
   }
 }
 
+export function getRuntimeTokenHeader(runtimeConfig: DesktopRuntimeConfig): string {
+  return normalizeRuntimeTokenHeader(runtimeConfig.runtimeTokenHeader);
+}
+
 async function parseErrorMessage(response: Response): Promise<string> {
   try {
     const data = await response.json() as { error?: { message?: unknown } };
@@ -144,7 +185,7 @@ function applyDefaultHeaders(
     headers.set('Content-Type', 'application/json');
   }
   if (runtimeConfig.desktopToken.trim().length > 0) {
-    headers.set('x-nearbytes-desktop-token', runtimeConfig.desktopToken);
+    headers.set(getRuntimeTokenHeader(runtimeConfig), runtimeConfig.desktopToken);
   }
 }
 

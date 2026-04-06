@@ -96,6 +96,15 @@ describe('Desktop API token enforcement', () => {
     expect(Array.isArray(allowed.body.config?.sources)).toBe(true);
   });
 
+  it('allows the generic runtime token header on API routes', async () => {
+    const allowed = await request(app)
+      .get('/config/roots')
+      .set('x-nearbytes-runtime-token', 'desktop-token-value')
+      .expect(200);
+
+    expect(Array.isArray(allowed.body.config?.sources)).toBe(true);
+  });
+
   it('serves UI routes without desktop token in desktop mode', async () => {
     const res = await request(app).get('/').expect(200);
     expect(res.text).toContain('nearbytes-ui');

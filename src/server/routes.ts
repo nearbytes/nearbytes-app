@@ -239,7 +239,7 @@ export function createRoutes(deps: RouteDependencies): Router {
         next();
         return;
       }
-      const providedToken = req.get('x-nearbytes-desktop-token');
+      const providedToken = req.get('x-nearbytes-runtime-token') ?? req.get('x-nearbytes-desktop-token');
       if (!providedToken || !tokensEqual(providedToken, deps.desktopApiToken!)) {
         next(new ApiError(401, 'UNAUTHORIZED', 'Missing or invalid desktop token'));
         return;

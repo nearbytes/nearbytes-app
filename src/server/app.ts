@@ -63,6 +63,7 @@ export function createApp(deps: AppDependencies): express.Express {
         'Authorization',
         'x-nearbytes-secret',
         'x-nearbytes-desktop-token',
+        'x-nearbytes-runtime-token',
       ],
     })
   );

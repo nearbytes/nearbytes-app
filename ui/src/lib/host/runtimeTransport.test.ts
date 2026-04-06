@@ -1,4 +1,5 @@
 import {
+  getRuntimeTokenHeader,
   getRequestBaseUrl,
   getRuntimeConfig,
   resetRuntimeConfigCacheForTests,
@@ -67,6 +68,9 @@ describe('runtimeTransport', () => {
       apiBaseUrl: '',
       desktopToken: '',
       isDesktop: false,
+      runtimeTokenHeader: 'x-nearbytes-runtime-token',
+      runtimeHostKind: 'web',
+      runtimeOwner: 'embedded',
     });
   });
 
@@ -78,6 +82,8 @@ describe('runtimeTransport', () => {
             apiBaseUrl: 'http://127.0.0.1:3000',
             desktopToken: 'abc123',
             isDesktop: true,
+            runtimeHostKind: 'desktop',
+            runtimeOwner: 'embedded',
           }),
         },
       })
@@ -85,6 +91,9 @@ describe('runtimeTransport', () => {
       apiBaseUrl: 'http://127.0.0.1:3000',
       desktopToken: 'abc123',
       isDesktop: true,
+      runtimeTokenHeader: 'x-nearbytes-runtime-token',
+      runtimeHostKind: 'desktop',
+      runtimeOwner: 'embedded',
     });
   });
 
@@ -93,13 +102,40 @@ describe('runtimeTransport', () => {
       getRuntimeConfig({
         injectedConfig: {
           apiBaseUrl: 'https://nearbytes.test',
+          runtimeHostKind: 'phone',
+          runtimeOwner: 'desktop-proxy',
+          runtimeTokenHeader: 'x-nearbytes-runtime-token',
         },
       })
     ).resolves.toEqual({
       apiBaseUrl: 'https://nearbytes.test',
       desktopToken: '',
       isDesktop: false,
+      runtimeTokenHeader: 'x-nearbytes-runtime-token',
+      runtimeHostKind: 'phone',
+      runtimeOwner: 'desktop-proxy',
     });
+  });
+
+  it('defaults runtimes to the generic runtime token header', () => {
+    expect(
+      getRuntimeTokenHeader({
+        apiBaseUrl: 'http://127.0.0.1:3000',
+        desktopToken: 'token',
+        isDesktop: true,
+      })
+    ).toBe('x-nearbytes-runtime-token');
+  });
+
+  it('respects an explicit runtime token header override', () => {
+    expect(
+      getRuntimeTokenHeader({
+        apiBaseUrl: 'http://127.0.0.1:3000',
+        desktopToken: 'token',
+        isDesktop: true,
+        runtimeTokenHeader: 'x-nearbytes-desktop-token',
+      })
+    ).toBe('x-nearbytes-desktop-token');
   });
 
   it('rejects an invalid bridge runtime config', async () => {

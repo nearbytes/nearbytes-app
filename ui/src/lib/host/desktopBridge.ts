@@ -4,6 +4,9 @@ export interface DesktopRuntimeConfig {
   apiBaseUrl: string;
   desktopToken: string;
   isDesktop: boolean;
+  runtimeTokenHeader?: string;
+  runtimeHostKind?: 'desktop' | 'phone' | 'web';
+  runtimeOwner?: 'embedded' | 'desktop-proxy' | 'remote-runtime';
 }
 
 export interface DesktopRemoteFile {
