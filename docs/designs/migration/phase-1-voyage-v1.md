@@ -38,6 +38,8 @@ Phase 1 is complete only when all of the following are true.
 - chat and identity flows are usable;
 - timeline and event detail are usable;
 - LAN peer discovery, peer status, and sync initiation are usable end to end;
+- the phone host can exchange opaque objects with peers without depending on a desktop-hosted dev proxy or any other external backend acting as its practical runtime owner;
+- the phone host maintains its own durable opaque object state and can reopen shared surfaces from that local state after suspend or relaunch;
 - the same settings and integration surfaces render from the shared UI codebase;
 - synced data remains usable across foreground, suspend, resume, and reopen flows;
 - the app remains useful without MEGA, provider accounts, or desktop-only helpers being runtime-complete;
@@ -318,6 +320,7 @@ Phone relevance:
 Exit gate:
 
 - phone boots the full shared UI with explicit capability fallbacks instead of broken imports, hidden screens, or missing surfaces
+- a remote dev-server shell may be used for developer iteration, but it is explicitly not sufficient for Phase 1 completion because it does not make the phone host a practical LAN peer or durable runtime owner
 
 ### Step 1.9: Add The Native Phase 1 LAN Runtime For Capacitor
 
@@ -331,6 +334,8 @@ Deliverables:
 - LAN discovery and sync runtime
 - bridge events for peer state and object-batch updates
 - runtime lifecycle handling for foreground and resumable background work
+- distinct phone peer identity and advertisement path that does not collapse into the desktop peer on the same machine
+- explicit same-host development behavior: if desktop and simulator share one `mDNSResponder` instance, the phone host must still present a distinct peer identity before the setup may count as LAN validation
 
 Desktop guarantee:
 
@@ -343,6 +348,7 @@ Phone relevance:
 Exit gate:
 
 - phone can discover peers, request sync, receive objects, and persist them without the WebView being the runtime owner
+- phone can do so without delegating those responsibilities to a desktop-hosted HTTP proxy or desktop-owned observation store
 
 ### Step 1.10: Feed The Browser Object Mirror From The Phone Runtime
 
@@ -370,6 +376,7 @@ Exit gate:
 - phone renders synced file browser, chat, identity, references, and timeline from shared code
 - phone can author shared-surface objects, durably persist them, survive suspend or resume, and hand them off to LAN sync without transient WebView ownership of the outbound queue
 - phone shared surfaces are driven by browser-owned application crypto and projections over the mirrored opaque objects
+- a phone that has already synced once remains practically useful after relaunch without first reconnecting to a desktop-hosted backend
 
 ### Step 1.11: Harden Mixed-Mode Desktop
 
@@ -441,6 +448,8 @@ The following are required to avoid shipping a demo-only phone app:
 - LAN sync status and peer actions exposed in the UI
 - synced data survives suspend, resume, and reopen flows without requiring a full destructive bootstrap each time
 - unsupported runtime-backed actions fail clearly and compactly through shared capability gating rather than disappearing into a phone-only UI variant
+- a desktop-hosted dev proxy may accelerate local iteration, but it may not be the mechanism by which the phone practically acquires or retains shared data in the shipped Phase 1 product
+- Phase 1 is blocked until the phone has a practical peer-exchange path on the local network from the same mDNS system, with its own peer identity and local durable state
 
 ## Compatibility Adapter Rules
 
