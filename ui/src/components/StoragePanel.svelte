@@ -247,6 +247,7 @@
   let providerCatalog = $state<ProviderCatalogEntry[]>(defaultProviderCatalogEntries());
   let localNetworkService = $state<LocalNetworkPeersResponse['service'] | null>(null);
   let localNetworkPeers = $state<LocalNetworkPeer[]>([]);
+  let localNetworkSupported = $state(true);
   let managedShares = $state<ManagedShareSummary[]>([]);
   let incomingManagedShareOffers = $state<IncomingManagedShareOffer[]>([]);
   let incomingProviderContactInvites = $state<IncomingProviderContactInvite[]>([]);
@@ -1411,6 +1412,9 @@
         : `${entry.label} is disabled for this Nearbytes configuration.`;
     }
     if (entry.provider === 'local-network') {
+      if (!localNetworkSupported) {
+        return 'Local network discovery is not available in this runtime.';
+      }
       if (localNetworkLoadError) {
         return localNetworkLoadError;
       }
@@ -3149,6 +3153,9 @@
   }
 
   async function refreshLocalNetworkPeers(options?: { background?: boolean }): Promise<void> {
+    if (!localNetworkSupported) {
+      return;
+    }
     try {
       const response = await listLocalNetworkPeers();
       applyLocalNetworkResponse(response);
@@ -3158,6 +3165,10 @@
           : '';
       }
     } catch (error) {
+      if (isLocalNetworkUnsupportedError(error)) {
+        markLocalNetworkUnsupported();
+        return;
+      }
       const mirrored = await readMirrorLocalNetworkPeers();
       if (mirrored) {
         applyLocalNetworkResponse(mirrored);
@@ -4179,8 +4190,25 @@
   }
 
   function applyLocalNetworkResponse(response: LocalNetworkPeersResponse): void {
+    localNetworkSupported = true;
     localNetworkService = response.service;
     localNetworkPeers = [...response.peers].sort((left, right) => left.label.localeCompare(right.label));
+  }
+
+  function isLocalNetworkUnsupportedError(error: unknown): boolean {
+    return Boolean(
+      error &&
+        typeof error === 'object' &&
+        'status' in error &&
+        (error as { status?: number }).status === 501
+    );
+  }
+
+  function markLocalNetworkUnsupported(): void {
+    localNetworkSupported = false;
+    localNetworkService = null;
+    localNetworkPeers = [];
+    localNetworkLoadError = 'Local network sync is not enabled in this runtime.';
   }
 
   async function loadPanel(options?: { background?: boolean }) {
@@ -4201,7 +4229,9 @@
       sharesLoading = true;
       incomingLoading = true;
       providerLoadError = '';
-      localNetworkLoadError = '';
+      if (localNetworkSupported) {
+        localNetworkLoadError = '';
+      }
       shareLoadError = '';
       incomingLoadError = '';
 
@@ -4266,26 +4296,32 @@
           providerLoadError = providerLoadError || `Provider configuration is delayed: ${detail}`;
         });
 
-      const localNetworkPromise = withPanelRequestTimeout(
-        'Local network peer discovery',
-        (signal) => listLocalNetworkPeers({ signal })
-      )
-        .then((response) => {
-          applyLocalNetworkResponse(response);
-        })
-        .catch(async (error) => {
-          const detail = error instanceof Error ? error.message : String(error);
-          const mirrored = await readMirrorLocalNetworkPeers();
-          if (mirrored) {
-            applyLocalNetworkResponse(mirrored);
-            localNetworkLoadError = 'Using mirrored local network state. Live discovery is delayed.';
-            return;
-          }
-          if (keepVisible && localNetworkPeers.length > 0) {
-            return;
-          }
-          localNetworkLoadError = `Local network discovery is delayed: ${detail}`;
-        });
+      const localNetworkPromise = localNetworkSupported
+        ? withPanelRequestTimeout(
+            'Local network peer discovery',
+            (signal) => listLocalNetworkPeers({ signal })
+          )
+            .then((response) => {
+              applyLocalNetworkResponse(response);
+            })
+            .catch(async (error) => {
+              if (isLocalNetworkUnsupportedError(error)) {
+                markLocalNetworkUnsupported();
+                return;
+              }
+              const detail = error instanceof Error ? error.message : String(error);
+              const mirrored = await readMirrorLocalNetworkPeers();
+              if (mirrored) {
+                applyLocalNetworkResponse(mirrored);
+                localNetworkLoadError = 'Using mirrored local network state. Live discovery is delayed.';
+                return;
+              }
+              if (keepVisible && localNetworkPeers.length > 0) {
+                return;
+              }
+              localNetworkLoadError = `Local network discovery is delayed: ${detail}`;
+            })
+        : Promise.resolve();
 
       const sharesPromise = withPanelRequestTimeout(
         'MEGA and provider share status',
