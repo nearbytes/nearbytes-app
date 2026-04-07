@@ -10,6 +10,7 @@ import {
   resetBrowserMirrorForTests,
 } from '../mirror/browserMirror.js';
 import {
+  seedEmbeddedPhonePendingUploadCommitForTests,
   embeddedPhoneUpdateLanServiceState,
   resetEmbeddedPhoneServicesForTests,
 } from './embeddedPhoneServices.js';
@@ -94,11 +95,23 @@ describe('phoneHost', () => {
     expect(host.capabilities.runtimeOwner).toBe('embedded');
     expect(initial.isOffline).toBeUndefined();
     expect(initial.files).toEqual([]);
-    expect(uploaded).toMatchObject({ created: { filename: 'alpha.txt' } });
+    expect(uploaded).toMatchObject({
+      created: { filename: 'alpha.txt' },
+      commit: { status: 'acknowledged', resumed: false },
+    });
     await expect(downloaded.text()).resolves.toBe('hello phone');
-    expect(renamed).toMatchObject({ renamed: { fromName: 'alpha.txt', toName: 'beta.txt' } });
-    expect(published).toMatchObject({ published: { record: { profile: { displayName: 'Alice' } } } });
-    expect(sent).toMatchObject({ sent: { message: { body: 'hello room' } } });
+    expect(renamed).toMatchObject({
+      renamed: { fromName: 'alpha.txt', toName: 'beta.txt' },
+      commit: { status: 'acknowledged', resumed: false },
+    });
+    expect(published).toMatchObject({
+      published: { record: { profile: { displayName: 'Alice' } } },
+      commit: { status: 'acknowledged', resumed: false },
+    });
+    expect(sent).toMatchObject({
+      sent: { message: { body: 'hello room' } },
+      commit: { status: 'acknowledged', resumed: false },
+    });
     expect(chat.isOffline).toBeUndefined();
     expect(chat.identities.length).toBe(1);
     expect(chat.messages).toMatchObject([{ message: { body: 'hello room' } }]);
@@ -509,6 +522,35 @@ describe('phoneHost', () => {
     await expect(readMirrorCheckpoint(`watch:volume:${opened.volumeId}`)).resolves.toMatchObject({
       value: {
         kind: 'update',
+        source: 'embedded-phone-runtime',
+      },
+    });
+  });
+
+  it('replays pending embedded phone authored uploads across reset and resumes with an acknowledged receipt', async () => {
+    const secret = 'phone-resume-secret';
+    const commitId = await seedEmbeddedPhonePendingUploadCommitForTests(
+      secret,
+      new File(['resume me'], 'resume.txt', { type: 'text/plain' })
+    );
+
+    resetPhoneHostForTests();
+
+    const host = await getPhoneHost();
+    const opened = await host.legacyDesktop.openVolume(secret) as {
+      volumeId: string;
+      files: Array<{ filename: string }>;
+    };
+    const files = await host.legacyDesktop.listFiles({ type: 'secret', secret }) as {
+      files: Array<{ filename: string }>;
+    };
+
+    expect(opened.files).toMatchObject([{ filename: 'resume.txt' }]);
+    expect(files.files).toMatchObject([{ filename: 'resume.txt' }]);
+    await expect(readMirrorCheckpoint(`commit:${commitId}`)).resolves.toMatchObject({
+      value: {
+        status: 'acknowledged',
+        resumed: true,
         source: 'embedded-phone-runtime',
       },
     });

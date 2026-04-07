@@ -128,14 +128,24 @@ export interface ReferenceExportResponse<TBundle> {
 export interface ReferenceImportResponse {
   imported: FileMetadata[];
   importedCount: number;
+  commit?: DurableCommitAck;
+}
+
+export interface DurableCommitAck {
+  commitId: string;
+  status: 'acknowledged';
+  durableAt: number;
+  resumed: boolean;
 }
 
 export interface PublishIdentityResponse {
   published: PublishedIdentity;
+  commit?: DurableCommitAck;
 }
 
 export interface SendChatMessageResponse {
   sent: PublishedChatMessage;
+  commit?: DurableCommitAck;
 }
 
 export interface OpenVolumeResponse {
@@ -156,6 +166,7 @@ export interface ListFilesResponse {
 
 export interface UploadResponse {
   created: FileMetadata;
+  commit?: DurableCommitAck;
 }
 
 export interface SnapshotSummary {
@@ -262,6 +273,7 @@ export interface RenameFolderSummary {
 
 export interface RenameFolderResponse {
   renamed: RenameFolderSummary;
+  commit?: DurableCommitAck;
 }
 
 export interface RenameFileSummary {
@@ -271,6 +283,7 @@ export interface RenameFileSummary {
 
 export interface RenameFileResponse {
   renamed: RenameFileSummary;
+  commit?: DurableCommitAck;
 }
 
 export type SourceProvider = 'local' | 'dropbox' | 'mega' | 'gdrive' | 'icloud' | 'onedrive';

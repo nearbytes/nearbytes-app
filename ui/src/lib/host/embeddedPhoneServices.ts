@@ -7,6 +7,7 @@ import { createSecret, type Secret } from '../../../../src/types/keys.js';
 import { defaultPathMapper, type StorageBackend } from '../../../../src/types/storage.js';
 import type {
   ChatAttachment,
+  DurableCommitAck,
   EventDetailResponse,
   FileMetadata,
   IdentityProfile,
@@ -62,6 +63,8 @@ const PHONE_LAN_PEER_ID_KEY = 'phoneLanPeerId';
 const PHONE_LAN_LABEL_KEY = 'phoneLanLabel';
 const PHONE_LAN_SERVICE_STATE_KEY = 'phoneLanServiceState';
 const PHONE_LAN_PEER_OVERLAYS_KEY = 'phoneLanPeerOverlays';
+const PHONE_PENDING_COMMITS_KEY = 'phonePendingCommits';
+const PHONE_COMMIT_RECEIPTS_KEY = 'phoneCommitReceipts';
 
 interface EmbeddedPhoneLanPeerOverlay {
   lastSyncAt?: number | null;
@@ -77,10 +80,38 @@ interface EmbeddedPhoneVolumeWatchSubscription {
   unsubscribe(): void;
 }
 
+type EmbeddedPhoneCommitKind =
+  | 'upload-file'
+  | 'delete-file'
+  | 'rename-file'
+  | 'rename-folder'
+  | 'import-source-references'
+  | 'import-recipient-references'
+  | 'publish-identity'
+  | 'send-chat-message';
+
+interface EmbeddedPhonePendingCommit {
+  id: string;
+  kind: EmbeddedPhoneCommitKind;
+  secret: string;
+  payload: Record<string, unknown>;
+  enqueuedAt: number;
+}
+
+interface EmbeddedPhoneCommitReceipt {
+  commitId: string;
+  kind: EmbeddedPhoneCommitKind;
+  durableAt: number;
+  resumed: boolean;
+  result: unknown;
+}
+
 let dbPromise: Promise<IDBPDatabase | null> | null = null;
 let inMemoryStore: InMemoryPathStore | null = null;
 let servicesPromise: Promise<EmbeddedPhoneRuntimeServices> | null = null;
 let embeddedPhoneVolumeWatcherId = 1;
+let embeddedPhoneCommitSequence = 1;
+let embeddedPhoneCommitDrainPromise: Promise<void> | null = null;
 
 const embeddedPhoneVolumeWatchers = new Map<string, Map<number, (update: VolumeWatchUpdate) => void>>();
 
@@ -205,6 +236,110 @@ async function getSetting(key: string): Promise<string | null> {
     return record?.value ?? null;
   }
   return getInMemoryStore().settings.get(key)?.value ?? null;
+}
+
+function createEmbeddedPhoneCommitId(kind: EmbeddedPhoneCommitKind): string {
+  const sequence = embeddedPhoneCommitSequence;
+  embeddedPhoneCommitSequence += 1;
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return `${kind}-${globalThis.crypto.randomUUID().toLowerCase()}-${sequence}`;
+  }
+  return `${kind}-${Date.now()}-${sequence}`;
+}
+
+async function readEmbeddedPhonePendingCommits(): Promise<EmbeddedPhonePendingCommit[]> {
+  const stored = await getSetting(PHONE_PENDING_COMMITS_KEY);
+  if (!stored) {
+    return [];
+  }
+  try {
+    return JSON.parse(stored) as EmbeddedPhonePendingCommit[];
+  } catch {
+    return [];
+  }
+}
+
+async function writeEmbeddedPhonePendingCommits(commits: EmbeddedPhonePendingCommit[]): Promise<void> {
+  await putSetting(PHONE_PENDING_COMMITS_KEY, JSON.stringify(commits));
+}
+
+async function readEmbeddedPhoneCommitReceipts(): Promise<Record<string, EmbeddedPhoneCommitReceipt>> {
+  const stored = await getSetting(PHONE_COMMIT_RECEIPTS_KEY);
+  if (!stored) {
+    return {};
+  }
+  try {
+    return JSON.parse(stored) as Record<string, EmbeddedPhoneCommitReceipt>;
+  } catch {
+    return {};
+  }
+}
+
+async function writeEmbeddedPhoneCommitReceipts(
+  receipts: Record<string, EmbeddedPhoneCommitReceipt>
+): Promise<void> {
+  await putSetting(PHONE_COMMIT_RECEIPTS_KEY, JSON.stringify(receipts));
+}
+
+function buildEmbeddedPhoneCommitAck(receipt: EmbeddedPhoneCommitReceipt): DurableCommitAck {
+  return {
+    commitId: receipt.commitId,
+    status: 'acknowledged',
+    durableAt: receipt.durableAt,
+    resumed: receipt.resumed,
+  };
+}
+
+async function writeEmbeddedPhoneCommitCheckpoint(receipt: EmbeddedPhoneCommitReceipt): Promise<void> {
+  await writeMirrorCheckpoint(`commit:${receipt.commitId}`, {
+    kind: receipt.kind,
+    status: 'acknowledged',
+    durableAt: receipt.durableAt,
+    resumed: receipt.resumed,
+    source: 'embedded-phone-runtime',
+  });
+}
+
+function attachEmbeddedPhoneCommitAck<T extends object>(
+  result: T,
+  receipt: EmbeddedPhoneCommitReceipt
+): T & { commit: DurableCommitAck } {
+  return {
+    ...result,
+    commit: buildEmbeddedPhoneCommitAck(receipt),
+  };
+}
+
+function serializeEmbeddedPhoneFile(file: File): Promise<{ name: string; type: string; bytes: number[] }> {
+  return file.arrayBuffer().then((buffer) => ({
+    name: file.name,
+    type: file.type || '',
+    bytes: Array.from(new Uint8Array(buffer)),
+  }));
+}
+
+async function enqueueEmbeddedPhoneCommit(
+  kind: EmbeddedPhoneCommitKind,
+  secret: string,
+  payload: Record<string, unknown>
+): Promise<EmbeddedPhonePendingCommit> {
+  const commit: EmbeddedPhonePendingCommit = {
+    id: createEmbeddedPhoneCommitId(kind),
+    kind,
+    secret,
+    payload,
+    enqueuedAt: Date.now(),
+  };
+  const pending = await readEmbeddedPhonePendingCommits();
+  pending.push(commit);
+  await writeEmbeddedPhonePendingCommits(pending);
+  await writeMirrorCheckpoint(`commit:${commit.id}`, {
+    kind,
+    status: 'pending',
+    enqueuedAt: commit.enqueuedAt,
+    source: 'embedded-phone-runtime',
+  });
+  return commit;
 }
 
 function createEmbeddedPhonePeerId(): string {
@@ -490,7 +625,204 @@ async function refreshMirrors(secret: string, eventHash?: string): Promise<{
   };
 }
 
+async function performEmbeddedPhoneUploadFile(secret: string, payload: { name: string; type: string; bytes: number[] }): Promise<UploadResponse> {
+  const { fileService } = await getEmbeddedPhoneRuntimeServices();
+  const created = await fileService.addFile(
+    secret,
+    payload.name,
+    new Uint8Array(payload.bytes) as unknown as Buffer,
+    payload.type || undefined
+  );
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'add', `blocks/${created.blobHash}`);
+  return { created };
+}
+
+async function performEmbeddedPhoneDeleteFile(secret: string, payload: { filename: string }): Promise<void> {
+  const { fileService } = await getEmbeddedPhoneRuntimeServices();
+  await fileService.deleteFile(secret, payload.filename);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'unlink', `channels/delete-file:${payload.filename}.json`);
+}
+
+async function performEmbeddedPhoneRenameFile(
+  secret: string,
+  payload: { from: string; to: string }
+): Promise<RenameFileResponse> {
+  const { fileService } = await getEmbeddedPhoneRuntimeServices();
+  const renamed = await fileService.renameFile(secret, payload.from, payload.to);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/rename-file:${payload.from}->${payload.to}.json`);
+  return { renamed };
+}
+
+async function performEmbeddedPhoneRenameFolder(
+  secret: string,
+  payload: { from: string; to: string; merge: boolean }
+): Promise<RenameFolderResponse> {
+  const { fileService } = await getEmbeddedPhoneRuntimeServices();
+  const renamed = await fileService.renameFolder(secret, payload.from, payload.to, { merge: payload.merge });
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/rename-folder:${payload.from}->${payload.to}.json`);
+  return { renamed };
+}
+
+async function performEmbeddedPhoneImportSourceReferences(
+  secret: string,
+  payload: { bundle: SourceReferenceBundle; sourceSecret: string }
+): Promise<ReferenceImportResponse> {
+  const { fileService } = await getEmbeddedPhoneRuntimeServices();
+  const result = await fileService.importSourceReferences(secret, payload.bundle, payload.sourceSecret);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', 'channels/import-source-references.json');
+  return {
+    imported: result.imported,
+    importedCount: result.imported.length,
+  };
+}
+
+async function performEmbeddedPhoneImportRecipientReferences(
+  secret: string,
+  payload: { bundle: RecipientReferenceBundle }
+): Promise<ReferenceImportResponse> {
+  const { fileService } = await getEmbeddedPhoneRuntimeServices();
+  const result = await fileService.importRecipientReferences(secret, payload.bundle);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', 'channels/import-recipient-references.json');
+  return {
+    imported: result.imported,
+    importedCount: result.imported.length,
+  };
+}
+
+async function performEmbeddedPhonePublishIdentity(
+  secret: string,
+  payload: { identitySecret: string; profile: IdentityProfile }
+): Promise<PublishIdentityResponse> {
+  const { chatService } = await getEmbeddedPhoneRuntimeServices();
+  const published = await chatService.publishIdentity(secret, payload.identitySecret, payload.profile);
+  const snapshot = await refreshMirrors(secret, published.eventHash);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/${published.eventHash}.json`);
+  return { published };
+}
+
+async function performEmbeddedPhoneSendChatMessage(
+  secret: string,
+  payload: { identitySecret: string; input: { body?: string; attachment?: ChatAttachment } }
+): Promise<SendChatMessageResponse> {
+  const { chatService } = await getEmbeddedPhoneRuntimeServices();
+  const sent = await chatService.sendMessage(secret, payload.identitySecret, payload.input);
+  const snapshot = await refreshMirrors(secret, sent.eventHash);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/${sent.eventHash}.json`);
+  return { sent };
+}
+
+async function executeEmbeddedPhoneCommit(
+  commit: EmbeddedPhonePendingCommit,
+  resumed: boolean
+): Promise<EmbeddedPhoneCommitReceipt> {
+  let result: unknown;
+  switch (commit.kind) {
+    case 'upload-file':
+      result = await performEmbeddedPhoneUploadFile(commit.secret, commit.payload as { name: string; type: string; bytes: number[] });
+      break;
+    case 'delete-file':
+      result = await performEmbeddedPhoneDeleteFile(commit.secret, commit.payload as { filename: string });
+      break;
+    case 'rename-file':
+      result = await performEmbeddedPhoneRenameFile(commit.secret, commit.payload as { from: string; to: string });
+      break;
+    case 'rename-folder':
+      result = await performEmbeddedPhoneRenameFolder(commit.secret, commit.payload as { from: string; to: string; merge: boolean });
+      break;
+    case 'import-source-references':
+      result = await performEmbeddedPhoneImportSourceReferences(
+        commit.secret,
+        commit.payload as { bundle: SourceReferenceBundle; sourceSecret: string }
+      );
+      break;
+    case 'import-recipient-references':
+      result = await performEmbeddedPhoneImportRecipientReferences(
+        commit.secret,
+        commit.payload as { bundle: RecipientReferenceBundle }
+      );
+      break;
+    case 'publish-identity':
+      result = await performEmbeddedPhonePublishIdentity(
+        commit.secret,
+        commit.payload as { identitySecret: string; profile: IdentityProfile }
+      );
+      break;
+    case 'send-chat-message':
+      result = await performEmbeddedPhoneSendChatMessage(
+        commit.secret,
+        commit.payload as { identitySecret: string; input: { body?: string; attachment?: ChatAttachment } }
+      );
+      break;
+    default:
+      throw new Error(`Unsupported embedded phone commit kind: ${String((commit as { kind?: unknown }).kind)}`);
+  }
+  return {
+    commitId: commit.id,
+    kind: commit.kind,
+    durableAt: Date.now(),
+    resumed,
+    result,
+  };
+}
+
+async function ensureEmbeddedPhonePendingCommitsDrained(): Promise<void> {
+  if (embeddedPhoneCommitDrainPromise) {
+    return embeddedPhoneCommitDrainPromise;
+  }
+  embeddedPhoneCommitDrainPromise = (async () => {
+    let pending = await readEmbeddedPhonePendingCommits();
+    if (pending.length === 0) {
+      return;
+    }
+    const receipts = await readEmbeddedPhoneCommitReceipts();
+    while (pending.length > 0) {
+      const [commit, ...rest] = pending;
+      pending = rest;
+      const receipt = await executeEmbeddedPhoneCommit(commit, true);
+      receipts[commit.id] = receipt;
+      await writeEmbeddedPhoneCommitReceipts(receipts);
+      await writeEmbeddedPhonePendingCommits(pending);
+      await writeEmbeddedPhoneCommitCheckpoint(receipt);
+    }
+  })();
+  try {
+    await embeddedPhoneCommitDrainPromise;
+  } finally {
+    embeddedPhoneCommitDrainPromise = null;
+  }
+}
+
+async function commitEmbeddedPhoneMutation<T extends object>(
+  kind: EmbeddedPhoneCommitKind,
+  secret: string,
+  payload: Record<string, unknown>
+): Promise<T & { commit: DurableCommitAck }> {
+  const commit = await enqueueEmbeddedPhoneCommit(kind, secret, payload);
+  const receipts = await readEmbeddedPhoneCommitReceipts();
+  if (!receipts[commit.id]) {
+    const receipt = await executeEmbeddedPhoneCommit(commit, false);
+    receipts[commit.id] = receipt;
+    const pending = await readEmbeddedPhonePendingCommits();
+    await writeEmbeddedPhoneCommitReceipts(receipts);
+    await writeEmbeddedPhonePendingCommits(pending.filter((entry) => entry.id !== commit.id));
+    await writeEmbeddedPhoneCommitCheckpoint(receipt);
+  }
+  const storedReceipts = await readEmbeddedPhoneCommitReceipts();
+  const storedReceipt = storedReceipts[commit.id];
+  if (!storedReceipt) {
+    throw new Error(`Embedded phone commit acknowledgement missing for ${commit.id}`);
+  }
+  return attachEmbeddedPhoneCommitAck(storedReceipt.result as T, storedReceipt);
+}
+
 export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolumeResponse> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   await fileService.listFiles(secret);
   const snapshot = await refreshMirrors(secret);
@@ -502,6 +834,7 @@ export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolum
 }
 
 export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesResponse> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
   const snapshot = await refreshMirrors(secret);
   return {
     volumeId: snapshot.volumeId,
@@ -510,6 +843,7 @@ export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesR
 }
 
 export async function embeddedPhoneGetTimeline(secret: string): Promise<TimelineResponse> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
   const snapshot = await refreshMirrors(secret);
   return {
     volumeId: snapshot.volumeId,
@@ -519,6 +853,7 @@ export async function embeddedPhoneGetTimeline(secret: string): Promise<Timeline
 }
 
 export async function embeddedPhoneGetEventDetail(secret: string, eventHash: string): Promise<EventDetailResponse> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const detail = await fileService.getEvent(secret, eventHash);
   const response: EventDetailResponse = {
@@ -531,41 +866,26 @@ export async function embeddedPhoneGetEventDetail(secret: string, eventHash: str
 }
 
 export async function embeddedPhoneDownloadBlob(secret: string, blobHash: string): Promise<Blob> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const bytes = await fileService.getFile(secret, blobHash);
   return new Blob([bytes]);
 }
 
 export async function embeddedPhoneUploadFile(secret: string, file: File): Promise<UploadResponse> {
-  const { fileService } = await getEmbeddedPhoneRuntimeServices();
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const created = await fileService.addFile(secret, file.name, bytes as unknown as Buffer, file.type || undefined);
-  const snapshot = await refreshMirrors(secret);
-  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'add', `blocks/${created.blobHash}`);
-  return { created };
+  return commitEmbeddedPhoneMutation<UploadResponse>('upload-file', secret, await serializeEmbeddedPhoneFile(file));
 }
 
 export async function embeddedPhoneDeleteFile(secret: string, filename: string): Promise<void> {
-  const { fileService } = await getEmbeddedPhoneRuntimeServices();
-  await fileService.deleteFile(secret, filename);
-  const snapshot = await refreshMirrors(secret);
-  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'unlink', `channels/delete-file:${filename}.json`);
+  await commitEmbeddedPhoneMutation<Record<string, never>>('delete-file', secret, { filename });
 }
 
 export async function embeddedPhoneRenameFile(secret: string, from: string, to: string): Promise<RenameFileResponse> {
-  const { fileService } = await getEmbeddedPhoneRuntimeServices();
-  const renamed = await fileService.renameFile(secret, from, to);
-  const snapshot = await refreshMirrors(secret);
-  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/rename-file:${from}->${to}.json`);
-  return { renamed };
+  return commitEmbeddedPhoneMutation<RenameFileResponse>('rename-file', secret, { from, to });
 }
 
 export async function embeddedPhoneRenameFolder(secret: string, from: string, to: string, merge: boolean): Promise<RenameFolderResponse> {
-  const { fileService } = await getEmbeddedPhoneRuntimeServices();
-  const renamed = await fileService.renameFolder(secret, from, to, { merge });
-  const snapshot = await refreshMirrors(secret);
-  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/rename-folder:${from}->${to}.json`);
-  return { renamed };
+  return commitEmbeddedPhoneMutation<RenameFolderResponse>('rename-folder', secret, { from, to, merge });
 }
 
 export async function embeddedPhoneExportSourceReferences(
@@ -581,14 +901,10 @@ export async function embeddedPhoneImportSourceReferences(
   bundle: SourceReferenceBundle,
   sourceSecret: string
 ): Promise<ReferenceImportResponse> {
-  const { fileService } = await getEmbeddedPhoneRuntimeServices();
-  const result = await fileService.importSourceReferences(secret, bundle, sourceSecret);
-  const snapshot = await refreshMirrors(secret);
-  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', 'channels/import-source-references.json');
-  return {
-    imported: result.imported,
-    importedCount: result.imported.length,
-  };
+  return commitEmbeddedPhoneMutation<ReferenceImportResponse>('import-source-references', secret, {
+    bundle,
+    sourceSecret,
+  });
 }
 
 export async function embeddedPhoneExportRecipientReferences(
@@ -604,17 +920,13 @@ export async function embeddedPhoneImportRecipientReferences(
   secret: string,
   bundle: RecipientReferenceBundle
 ): Promise<ReferenceImportResponse> {
-  const { fileService } = await getEmbeddedPhoneRuntimeServices();
-  const result = await fileService.importRecipientReferences(secret, bundle);
-  const snapshot = await refreshMirrors(secret);
-  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', 'channels/import-recipient-references.json');
-  return {
-    imported: result.imported,
-    importedCount: result.imported.length,
-  };
+  return commitEmbeddedPhoneMutation<ReferenceImportResponse>('import-recipient-references', secret, {
+    bundle,
+  });
 }
 
 export async function embeddedPhoneListChat(secret: string): Promise<VolumeChatState> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
   const { chatService } = await getEmbeddedPhoneRuntimeServices();
   const state = await chatService.listChat(secret);
   await refreshMirrors(secret);
@@ -626,11 +938,10 @@ export async function embeddedPhonePublishIdentity(
   identitySecret: string,
   profile: IdentityProfile
 ): Promise<PublishIdentityResponse> {
-  const { chatService } = await getEmbeddedPhoneRuntimeServices();
-  const published = await chatService.publishIdentity(secret, identitySecret, profile);
-  const snapshot = await refreshMirrors(secret, published.eventHash);
-  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/${published.eventHash}.json`);
-  return { published };
+  return commitEmbeddedPhoneMutation<PublishIdentityResponse>('publish-identity', secret, {
+    identitySecret,
+    profile,
+  });
 }
 
 export async function embeddedPhoneSendChatMessage(
@@ -638,11 +949,10 @@ export async function embeddedPhoneSendChatMessage(
   identitySecret: string,
   input: { body?: string; attachment?: ChatAttachment }
 ): Promise<SendChatMessageResponse> {
-  const { chatService } = await getEmbeddedPhoneRuntimeServices();
-  const sent = await chatService.sendMessage(secret, identitySecret, input);
-  const snapshot = await refreshMirrors(secret, sent.eventHash);
-  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/${sent.eventHash}.json`);
-  return { sent };
+  return commitEmbeddedPhoneMutation<SendChatMessageResponse>('send-chat-message', secret, {
+    identitySecret,
+    input,
+  });
 }
 
 export async function embeddedPhoneSubscribeVolumeWatch(
@@ -680,6 +990,8 @@ export function resetEmbeddedPhoneServicesForTests(): void {
   dbPromise = null;
   embeddedPhoneVolumeWatchers.clear();
   embeddedPhoneVolumeWatcherId = 1;
+  embeddedPhoneCommitSequence = 1;
+  embeddedPhoneCommitDrainPromise = null;
   inMemoryStore = {
     files: new Map(),
     directories: new Set(),
@@ -688,8 +1000,14 @@ export function resetEmbeddedPhoneServicesForTests(): void {
 }
 
 export async function embeddedPhoneHasLocalVolume(secret: string): Promise<boolean> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
   const { storage } = await getEmbeddedPhoneRuntimeServices();
   return storage.exists(await getVolumeDirectory(secret));
+}
+
+export async function seedEmbeddedPhonePendingUploadCommitForTests(secret: string, file: File): Promise<string> {
+  const pending = await enqueueEmbeddedPhoneCommit('upload-file', secret, await serializeEmbeddedPhoneFile(file));
+  return pending.id;
 }
 
 export async function embeddedPhoneLanServiceState(peerCount: number): Promise<LocalNetworkServiceState> {
