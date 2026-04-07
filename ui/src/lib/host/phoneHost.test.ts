@@ -8,7 +8,10 @@ import {
   importLocalNetworkPeersSnapshot,
   resetBrowserMirrorForTests,
 } from '../mirror/browserMirror.js';
-import { resetEmbeddedPhoneServicesForTests } from './embeddedPhoneServices.js';
+import {
+  embeddedPhoneUpdateLanServiceState,
+  resetEmbeddedPhoneServicesForTests,
+} from './embeddedPhoneServices.js';
 
 vi.mock('./runtimeTransport.js', () => ({
   getRuntimeConfig: vi.fn(async () => ({
@@ -298,6 +301,89 @@ describe('phoneHost', () => {
     });
     expect(firstResponse.service.peerId).toMatch(/^phone-/);
     expect(secondResponse.service.peerId).toBe(firstResponse.service.peerId);
+  });
+
+  it('uses a locally owned embedded phone LAN service snapshot instead of mirrored desktop service state', async () => {
+    await importLocalNetworkPeersSnapshot({
+      service: {
+        protocol: 'nearbytes-lan-v1',
+        peerId: 'desktop-self',
+        label: 'Desktop mirror',
+        listening: true,
+        port: 9444,
+        discovery: 'dns-sd+multicast-fallback',
+        transport: 'webrtc',
+        serviceType: '_nearbytes._tcp',
+        announceIntervalMs: 9999,
+        peerCount: 1,
+      },
+      peers: [
+        {
+          peerId: 'peer-1',
+          label: 'Alpha phone',
+          address: '192.168.1.20',
+          port: 9444,
+          endpointUrl: 'http://192.168.1.20:9444',
+          capabilities: ['sync'],
+          volumeIds: [],
+          firstSeenAt: 1,
+          lastSeenAt: 2,
+          lastHelloAt: 2,
+          lastSyncAt: null,
+          lastSyncStartedAt: null,
+          lastSyncError: null,
+          lastSyncNotice: null,
+          lastImportedEvents: 0,
+          lastImportedBlocks: 0,
+          remoteCursorObservationId: null,
+          lastRemoteHeadObservationId: null,
+          status: 'ready',
+          detail: 'Ready',
+        },
+      ],
+    });
+    const firstHost = await getPhoneHost();
+    const firstResponse = await firstHost.lan.listPeers() as {
+      service: { peerId: string; label: string; listening: boolean; port: number | null; announceIntervalMs: number; peerCount: number };
+      peers: Array<{ peerId: string }>;
+      isOffline?: boolean;
+    };
+
+    await embeddedPhoneUpdateLanServiceState({ listening: true, port: 9555, announceIntervalMs: 7000 });
+    resetPhoneHostForTests();
+
+    const secondHost = await getPhoneHost();
+    const secondResponse = await secondHost.lan.listPeers() as {
+      service: { peerId: string; label: string; listening: boolean; port: number | null; announceIntervalMs: number; peerCount: number };
+      peers: Array<{ peerId: string }>;
+      isOffline?: boolean;
+    };
+
+    expect(firstResponse).toMatchObject({
+      service: {
+        label: 'This phone',
+        listening: false,
+        port: null,
+        announceIntervalMs: 5000,
+        peerCount: 1,
+      },
+      peers: [{ peerId: 'peer-1' }],
+      isOffline: true,
+    });
+    expect(firstResponse.service.peerId).toMatch(/^phone-/);
+    expect(firstResponse.service.peerId).not.toBe('desktop-self');
+    expect(secondResponse).toMatchObject({
+      service: {
+        peerId: firstResponse.service.peerId,
+        label: 'This phone',
+        listening: true,
+        port: 9555,
+        announceIntervalMs: 7000,
+        peerCount: 1,
+      },
+      peers: [{ peerId: 'peer-1' }],
+      isOffline: true,
+    });
   });
 
   it('uses the shared transport for desktop-backed phone runtime compatibility', async () => {

@@ -55,6 +55,7 @@ const DB_NAME = 'nearbytes-embedded-phone-runtime';
 const DB_VERSION = 3;
 const PHONE_LAN_PEER_ID_KEY = 'phoneLanPeerId';
 const PHONE_LAN_LABEL_KEY = 'phoneLanLabel';
+const PHONE_LAN_SERVICE_STATE_KEY = 'phoneLanServiceState';
 
 let dbPromise: Promise<IDBPDatabase | null> | null = null;
 let inMemoryStore: InMemoryPathStore | null = null;
@@ -213,6 +214,52 @@ async function getOrCreateEmbeddedPhonePeerLabel(): Promise<string> {
   const created = 'This phone';
   await putSetting(PHONE_LAN_LABEL_KEY, created);
   return created;
+}
+
+function defaultEmbeddedPhoneLanServiceState(peerId: string, label: string): LocalNetworkServiceState {
+  return {
+    protocol: 'nearbytes-lan-v1',
+    peerId,
+    label,
+    listening: false,
+    port: null,
+    discovery: 'dns-sd+multicast-fallback',
+    transport: 'webrtc',
+    serviceType: '_nearbytes._tcp',
+    announceIntervalMs: 5000,
+    peerCount: 0,
+  };
+}
+
+async function readEmbeddedPhoneLanServiceState(): Promise<LocalNetworkServiceState> {
+  const [peerId, label, stored] = await Promise.all([
+    getOrCreateEmbeddedPhonePeerId(),
+    getOrCreateEmbeddedPhonePeerLabel(),
+    getSetting(PHONE_LAN_SERVICE_STATE_KEY),
+  ]);
+  const defaults = defaultEmbeddedPhoneLanServiceState(peerId, label);
+  if (!stored) {
+    return defaults;
+  }
+  try {
+    const parsed = JSON.parse(stored) as Partial<LocalNetworkServiceState>;
+    return {
+      ...defaults,
+      ...parsed,
+      peerId,
+      label,
+      protocol: 'nearbytes-lan-v1',
+      discovery: 'dns-sd+multicast-fallback',
+      transport: 'webrtc',
+      serviceType: '_nearbytes._tcp',
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+async function writeEmbeddedPhoneLanServiceState(state: LocalNetworkServiceState): Promise<void> {
+  await putSetting(PHONE_LAN_SERVICE_STATE_KEY, JSON.stringify(state));
 }
 
 class EmbeddedPhoneStorageBackend implements StorageBackend {
@@ -502,23 +549,13 @@ export async function embeddedPhoneHasLocalVolume(secret: string): Promise<boole
 }
 
 export async function embeddedPhoneLanServiceState(peerCount: number): Promise<LocalNetworkServiceState> {
-  const [peerId, label] = await Promise.all([
-    getOrCreateEmbeddedPhonePeerId(),
-    getOrCreateEmbeddedPhonePeerLabel(),
-  ]);
-
-  return {
-    protocol: 'nearbytes-lan-v1',
-    peerId,
-    label,
-    listening: false,
-    port: null,
-    discovery: 'dns-sd+multicast-fallback',
-    transport: 'webrtc',
-    serviceType: '_nearbytes._tcp',
-    announceIntervalMs: 5000,
+  const current = await readEmbeddedPhoneLanServiceState();
+  const next = {
+    ...current,
     peerCount,
-  };
+  } satisfies LocalNetworkServiceState;
+  await writeEmbeddedPhoneLanServiceState(next);
+  return next;
 }
 
 export async function embeddedPhoneLanPeersResponse(
@@ -529,4 +566,16 @@ export async function embeddedPhoneLanPeersResponse(
     peers,
     isOffline: true,
   };
+}
+
+export async function embeddedPhoneUpdateLanServiceState(
+  input: Partial<Pick<LocalNetworkServiceState, 'listening' | 'port' | 'announceIntervalMs' | 'peerCount'>>
+): Promise<LocalNetworkServiceState> {
+  const current = await readEmbeddedPhoneLanServiceState();
+  const next = {
+    ...current,
+    ...input,
+  } satisfies LocalNetworkServiceState;
+  await writeEmbeddedPhoneLanServiceState(next);
+  return next;
 }
