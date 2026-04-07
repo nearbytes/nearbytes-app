@@ -17,7 +17,9 @@
     "mobile:ios:build:device": "xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build"
   },
   "dependencies": {
+    "@capacitor/app": "^8.1.0",
     "@capacitor/core": "^8.3.0",
+    "@capacitor/preferences": "^8.0.1",
     "idb": "^8.0.0",
     "lucide-svelte": "^0.577.0",
     "svelte": "^5.0.0"

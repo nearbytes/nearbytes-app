@@ -5,9 +5,27 @@ import { createHash } from '../types/events.js';
 import { StorageError } from '../types/errors.js';
 import { serializeEvent, deserializeEvent, serializeEventEnvelope } from './serialization.js';
 import { computeHash } from '../crypto/hash.js';
-import { isMultiRootStorageBackend } from './multiRoot.js';
 import { verifyPU } from '../crypto/asymmetric.js';
 import { validateBlockBytes, validateEventBytes } from './integrity.js';
+
+interface MultiRootStorageLike extends StorageBackend {
+  writeFileForChannel(path: string, data: Uint8Array, channelKeyHex: string): Promise<void>;
+  readValidatedFileForChannel(
+    path: string,
+    channelKeyHex: string,
+    validator: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }> | { ok: boolean; detail?: string }
+  ): Promise<Uint8Array>;
+  readValidatedFile(
+    path: string,
+    validator: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }> | { ok: boolean; detail?: string }
+  ): Promise<Uint8Array>;
+  listFilesAcrossRoots(directory: string): Promise<string[]>;
+  existsForChannel(path: string, channelKeyHex: string): Promise<boolean>;
+}
+
+function isMultiRootStorageBackend(storage: StorageBackend): storage is MultiRootStorageLike {
+  return typeof (storage as Partial<MultiRootStorageLike>).writeFileForChannel === 'function';
+}
 
 /**
  * Channel storage operations

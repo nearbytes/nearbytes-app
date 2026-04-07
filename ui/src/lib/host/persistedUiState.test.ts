@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   loadHostPersistedUiState,
   normalizePersistedUiState,
   saveHostPersistedUiState,
 } from './persistedUiState.js';
+
+vi.mock('./phonePersistence.js', () => ({
+  getPhonePersistenceBridge: () => null,
+}));
 
 describe('persistedUiState', () => {
   it('normalizes persisted ui state payloads', () => {

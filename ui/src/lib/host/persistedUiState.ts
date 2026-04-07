@@ -3,9 +3,12 @@ import {
   type NearbytesDesktopBridge,
   type PersistedUiState,
 } from './desktopBridge.js';
+import { getPhonePersistenceBridge } from './phonePersistence.js';
 
-function resolveBridge(bridge?: NearbytesDesktopBridge | null): NearbytesDesktopBridge | null {
-  return bridge ?? getDesktopBridge();
+type HostUiStateBridge = Pick<NearbytesDesktopBridge, 'loadUiState' | 'saveUiState'>;
+
+function resolveBridge(bridge?: HostUiStateBridge | null): HostUiStateBridge | null {
+  return bridge ?? getDesktopBridge() ?? getPhonePersistenceBridge();
 }
 
 export function normalizePersistedUiState(input: unknown): PersistedUiState {
@@ -43,7 +46,7 @@ function clonePersistedUiState(state: PersistedUiState): PersistedUiState {
 
 export async function loadHostPersistedUiState(
   shadowState: PersistedUiState | null | undefined,
-  bridge?: NearbytesDesktopBridge | null
+  bridge?: HostUiStateBridge | null
 ): Promise<PersistedUiState> {
   const resolved = resolveBridge(bridge);
   if (!resolved || typeof resolved.loadUiState !== 'function') {
@@ -55,7 +58,7 @@ export async function loadHostPersistedUiState(
 
 export async function saveHostPersistedUiState(
   state: PersistedUiState,
-  bridge?: NearbytesDesktopBridge | null
+  bridge?: HostUiStateBridge | null
 ): Promise<boolean> {
   const resolved = resolveBridge(bridge);
   if (!resolved || typeof resolved.saveUiState !== 'function') {

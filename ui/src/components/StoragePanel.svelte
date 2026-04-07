@@ -3153,7 +3153,9 @@
       const response = await listLocalNetworkPeers();
       applyLocalNetworkResponse(response);
       if (!options?.background) {
-        localNetworkLoadError = '';
+        localNetworkLoadError = response.isOffline === true
+          ? 'Using mirrored local network state. Live discovery is unavailable.'
+          : '';
       }
     } catch (error) {
       const mirrored = await readMirrorLocalNetworkPeers();

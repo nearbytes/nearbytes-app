@@ -73,6 +73,7 @@
     normalizePersistedUiState,
     saveHostPersistedUiState,
   } from './lib/host/persistedUiState.js';
+  import { subscribePhoneAppState } from './lib/host/phonePersistence.js';
   import {
     canWipeStoredConfig,
     connectDesktopDeepLinks,
@@ -2092,9 +2093,26 @@
       });
     };
 
+    let cancelPhoneAppState: (() => void) | null = null;
+
+    void subscribePhoneAppState((isActive) => {
+      if (isActive) {
+        scheduleSourceDiscovery(0);
+        return;
+      }
+      flushPersistedUiState();
+    })
+      .then((unsubscribe) => {
+        cancelPhoneAppState = unsubscribe;
+      })
+      .catch((error) => {
+        console.warn('Failed to subscribe to phone app state:', error);
+      });
+
     window.addEventListener('beforeunload', flushPersistedUiState);
     window.addEventListener('pagehide', flushPersistedUiState);
     return () => {
+      cancelPhoneAppState?.();
       window.removeEventListener('beforeunload', flushPersistedUiState);
       window.removeEventListener('pagehide', flushPersistedUiState);
     };
@@ -2789,7 +2807,7 @@
             ? timeline.events.length
             : Math.min(previousPosition, timeline.events.length)
           : timeline.events.length,
-        isOffline: false,
+        isOffline: timeline.isOffline === true,
       };
       writeMountRuntime(mountId, nextRuntime);
       if (isCurrentMount) {
@@ -2831,9 +2849,10 @@
 
     try {
       const filesResponse = await listFiles(runtime.auth);
-      const nextTimelineEvents = shouldKeepMountTimelineWarm(mount, runtime)
-        ? await getTimeline(runtime.auth).then((response) => response.events)
-        : runtime.timelineEvents;
+      const timelineResponse = shouldKeepMountTimelineWarm(mount, runtime)
+        ? await getTimeline(runtime.auth)
+        : null;
+      const nextTimelineEvents = timelineResponse?.events ?? runtime.timelineEvents;
       const nextRuntime: MountRuntimeState = {
         ...runtime,
         files: filesResponse.files,
@@ -2843,7 +2862,7 @@
             ? nextTimelineEvents.length
             : Math.min(runtime.timelinePosition, nextTimelineEvents.length),
         lastRefresh: Date.now(),
-        isOffline: false,
+        isOffline: filesResponse.isOffline === true || timelineResponse?.isOffline === true,
         errorMessage: '',
       };
       writeMountRuntime(mountId, nextRuntime);
@@ -3101,6 +3120,8 @@
       } else {
         timelinePosition = Math.min(previousPosition, latest);
       }
+      isOffline = response.isOffline === true;
+      errorMessage = response.isOffline === true ? 'Using mirrored timeline. Runtime unavailable.' : '';
     } catch (error) {
       const mirrored = volumeId ? await readMirrorTimelineSnapshot(volumeId) : null;
       if (mirrored) {
@@ -3147,55 +3168,85 @@
     }
 
     const run = (async () => {
-      const response = await withTimeout(
-        openVolume(secret),
-        12000,
-        'Opening this hub timed out. Check the storage locations and try again.'
-      );
-      const shouldLoadTimeline = options.preloadTimeline ?? shouldKeepMountTimelineWarm(mount);
-      const nextAuth =
-        response.token
-          ? ({ type: 'token', token: response.token } as const)
-          : ({ type: 'secret', secret } as const);
-      let nextErrorMessage = response.storageHint ?? '';
+      try {
+        const response = await withTimeout(
+          openVolume(secret),
+          12000,
+          'Opening this hub timed out. Check the storage locations and try again.'
+        );
+        const shouldLoadTimeline = options.preloadTimeline ?? shouldKeepMountTimelineWarm(mount);
+        const nextAuth =
+          response.token
+            ? ({ type: 'token', token: response.token } as const)
+            : ({ type: 'secret', secret } as const);
+        const nextErrorMessage = response.storageHint ?? '';
 
-      mounts = mounts.map((entry) =>
-        entry.id === mount.id ? { ...entry, volumeId: response.volumeId } : entry
-      );
-      writeMountRuntime(mount.id, {
-        mountId: mount.id,
-        secret,
-        label,
-        auth: nextAuth,
-        volumeId: response.volumeId,
-        files: response.files,
-        timelineEvents: [],
-        timelinePosition: 0,
-        lastRefresh: Date.now(),
-        isOffline: false,
-        errorMessage: nextErrorMessage,
-      });
-
-      const warmed = matchingMountRuntime(mounts.find((entry) => entry.id === mount.id) ?? mount);
-      if (warmed && options.activateIfCurrent && activeMountId === mount.id) {
-        if (nextAuth.type === 'token') {
-          sessionStorage.setItem('nearbytes-token', nextAuth.token);
-        } else {
-          sessionStorage.removeItem('nearbytes-token');
-        }
-        applyMountRuntime(warmed);
-      }
-
-      void setCachedFiles(response.volumeId, response.files).catch((error) => {
-        console.warn('Failed to cache volume file list:', error);
-      });
-      if (shouldLoadTimeline) {
-        void refreshMountTimeline(mount.id, nextAuth, {
-          applyIfCurrent: options.activateIfCurrent === true,
-          keepPosition: false,
+        mounts = mounts.map((entry) =>
+          entry.id === mount.id ? { ...entry, volumeId: response.volumeId } : entry
+        );
+        writeMountRuntime(mount.id, {
+          mountId: mount.id,
+          secret,
+          label,
+          auth: nextAuth,
+          volumeId: response.volumeId,
+          files: response.files,
+          timelineEvents: [],
+          timelinePosition: 0,
+          lastRefresh: Date.now(),
+          isOffline: response.isOffline === true,
+          errorMessage: nextErrorMessage,
         });
+
+        const warmed = matchingMountRuntime(mounts.find((entry) => entry.id === mount.id) ?? mount);
+        if (warmed && options.activateIfCurrent && activeMountId === mount.id) {
+          if (nextAuth.type === 'token') {
+            sessionStorage.setItem('nearbytes-token', nextAuth.token);
+          } else {
+            sessionStorage.removeItem('nearbytes-token');
+          }
+          applyMountRuntime(warmed);
+        }
+
+        void setCachedFiles(response.volumeId, response.files).catch((error) => {
+          console.warn('Failed to cache volume file list:', error);
+        });
+        if (shouldLoadTimeline) {
+          void refreshMountTimeline(mount.id, nextAuth, {
+            applyIfCurrent: options.activateIfCurrent === true,
+            keepPosition: false,
+          });
+        }
+        scheduleMountRuntimeRefresh(mount.id);
+      } catch (error) {
+        const persistedVolumeId = normalizeVolumeKey(mount.volumeId);
+        const mirrorFiles = persistedVolumeId ? await readMirrorVolumeSnapshot(persistedVolumeId) : null;
+        const mirrorTimeline = persistedVolumeId ? await readMirrorTimelineSnapshot(persistedVolumeId) : null;
+        const cachedFiles = persistedVolumeId ? await getCachedFiles(persistedVolumeId) : null;
+        if (!persistedVolumeId || (!mirrorFiles && !mirrorTimeline && !cachedFiles)) {
+          throw error;
+        }
+
+        const nextRuntime: MountRuntimeState = {
+          mountId: mount.id,
+          secret,
+          label,
+          auth: { type: 'secret', secret },
+          volumeId: persistedVolumeId,
+          files: mirrorFiles?.files ?? cachedFiles ?? [],
+          timelineEvents: mirrorTimeline?.events ?? [],
+          timelinePosition: mirrorTimeline?.events.length ?? 0,
+          lastRefresh: Date.now(),
+          isOffline: true,
+          errorMessage: 'Using persisted mirrored data. Runtime unavailable.',
+        };
+
+        writeMountRuntime(mount.id, nextRuntime);
+        if (options.activateIfCurrent && activeMountId === mount.id) {
+          sessionStorage.removeItem('nearbytes-token');
+          applyMountRuntime(nextRuntime);
+        }
       }
-      scheduleMountRuntimeRefresh(mount.id);
     })().finally(() => {
       mountWarmPromises.delete(mount.id);
     });
@@ -5529,8 +5580,8 @@
       const response = await listFiles(auth);
       fileList = response.files;
       lastRefresh = Date.now();
-      isOffline = false;
-      errorMessage = '';
+      isOffline = response.isOffline === true;
+      errorMessage = response.isOffline === true ? 'Using mirrored data. Runtime unavailable.' : '';
 
       // Update cache
       await setCachedFiles(volumeId, response.files);

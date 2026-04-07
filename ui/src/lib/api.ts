@@ -1,4 +1,5 @@
 import { previewJoinLink } from './joinLinkPreview.js';
+import { openJoinLinkWithRuntime } from './joinLinkOpen.js';
 
 /**
  * API client for Nearbytes Phase 2 backend.
@@ -115,6 +116,7 @@ export interface PublishedChatMessage {
 export interface VolumeChatState {
   identities: PublishedIdentity[];
   messages: PublishedChatMessage[];
+  isOffline?: boolean;
 }
 
 export interface ReferenceExportResponse<TBundle> {
@@ -140,6 +142,7 @@ export interface OpenVolumeResponse {
   volumeId: string;
   fileCount: number;
   files: FileMetadata[];
+  isOffline?: boolean;
   token?: string;
   /** Shown when storage appears empty (e.g. wrong NEARBYTES_STORAGE_DIR). */
   storageHint?: string;
@@ -148,6 +151,7 @@ export interface OpenVolumeResponse {
 export interface ListFilesResponse {
   volumeId: string;
   files: FileMetadata[];
+  isOffline?: boolean;
 }
 
 export interface UploadResponse {
@@ -193,6 +197,7 @@ export interface TimelineResponse {
   volumeId: string;
   eventCount: number;
   events: TimelineEvent[];
+  isOffline?: boolean;
 }
 
 export interface SerializedEventPayload {
@@ -625,6 +630,7 @@ export interface LocalNetworkServiceState {
 export interface LocalNetworkPeersResponse {
   service: LocalNetworkServiceState;
   peers: LocalNetworkPeer[];
+  isOffline?: boolean;
 }
 
 export interface LocalNetworkPeerMutationResponse {
@@ -1648,9 +1654,13 @@ export async function openJoinLink(input: {
   allowCredentialBootstrap?: boolean;
   preferredProviders?: string[];
 }): Promise<JoinLinkOpenResponse> {
-  return apiRequest<JoinLinkOpenResponse>('/links/join/open', {
-    method: 'POST',
-    body: JSON.stringify(input),
+  return openJoinLinkWithRuntime(input, {
+    listProviderAccounts,
+    listManagedShares,
+    connectProviderAccount,
+    acceptManagedShare,
+    attachManagedShare,
+    previewJoinLink,
   });
 }
 

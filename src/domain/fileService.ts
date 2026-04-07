@@ -4,12 +4,9 @@ import type { CryptoOperations } from '../crypto/index.js';
 import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
 import type { EventPayload, Hash, EncryptedData, SerializedEvent } from '../types/events.js';
 import { createEncryptedData, EMPTY_HASH, EventType, createHash } from '../types/events.js';
-import { createCryptoOperations } from '../crypto/index.js';
 import { DecryptionError } from '../crypto/errors.js';
-import { FilesystemStorageBackend } from '../storage/filesystem.js';
 import { ChannelStorage } from '../storage/channel.js';
 import { validateBlockBytes } from '../storage/integrity.js';
-import { getDefaultStorageDir } from '../storagePath.js';
 import { defaultPathMapper } from '../types/storage.js';
 import { serializeEvent, serializeEventEnvelope, serializeInnerEventPayloadJson } from '../storage/serialization.js';
 import { openVolume, loadEventLog, verifyEventLog } from './volume.js';
@@ -330,147 +327,6 @@ export function createFileService(dependencies: FileServiceDependencies): FileSe
       ),
   };
 }
-
-/**
- * Adds a file to the secret-derived channel.
- * @param secret - Channel secret used for deterministic key derivation
- * @param filename - Logical filename within the channel
- * @param data - Plaintext file contents
- * @param mimeType - Optional MIME type
- * @returns File metadata for the created file
- */
-export async function addFile(
-  secret: string,
-  filename: string,
-  data: Buffer,
-  mimeType?: string
-): Promise<FileMetadata> {
-  const service = getDefaultFileService();
-  return service.addFile(secret, filename, data, mimeType);
-}
-
-/**
- * Appends a delete event for a file in the secret-derived channel.
- * @param secret - Channel secret used for deterministic key derivation
- * @param filename - Logical filename to delete
- */
-export async function deleteFile(secret: string, filename: string): Promise<void> {
-  const service = getDefaultFileService();
-  return service.deleteFile(secret, filename);
-}
-
-/**
- * Lists the current file set by replaying the channel event log.
- * @param secret - Channel secret used for deterministic key derivation
- * @returns Array of file metadata sorted by creation time
- */
-export async function listFiles(secret: string): Promise<FileMetadata[]> {
-  const service = getDefaultFileService();
-  return service.listFiles(secret);
-}
-
-/**
- * Retrieves and decrypts a file blob by its encrypted blob hash.
- * @param secret - Channel secret used for deterministic key derivation
- * @param blobHash - Hash of the encrypted blob to retrieve
- * @returns Decrypted file contents
- */
-export async function getFile(secret: string, blobHash: string): Promise<Buffer> {
-  const service = getDefaultFileService();
-  return service.getFile(secret, blobHash);
-}
-
-export async function renameFile(
-  secret: string,
-  fromName: string,
-  toName: string
-): Promise<RenameFileSummary> {
-  const service = getDefaultFileService();
-  return service.renameFile(secret, fromName, toName);
-}
-
-/**
- * Renames a virtual folder by replaying metadata events for every file under it.
- */
-export async function renameFolder(
-  secret: string,
-  fromFolder: string,
-  toFolder: string,
-  options?: { merge?: boolean }
-): Promise<RenameFolderSummary> {
-  const service = getDefaultFileService();
-  return service.renameFolder(secret, fromFolder, toFolder, options);
-}
-
-/**
- * Computes and persists a point-in-time snapshot of the current volume state.
- * Snapshot generation is explicit (on-demand) and never automatic.
- */
-export async function computeSnapshot(secret: string): Promise<SnapshotSummary> {
-  const service = getDefaultFileService();
-  return service.computeSnapshot(secret);
-}
-
-/**
- * Returns a deterministic, chronological timeline of all volume events.
- */
-export async function getTimeline(secret: string): Promise<TimelineEvent[]> {
-  const service = getDefaultFileService();
-  return service.getTimeline(secret);
-}
-
-export async function getEvent(secret: string, eventHash: string): Promise<EventDetail> {
-  const service = getDefaultFileService();
-  return service.getEvent(secret, eventHash);
-}
-
-export async function exportSourceReferences(
-  secret: string,
-  filenames: string[]
-): Promise<ReferenceExportResult<SourceReferenceBundle>> {
-  const service = getDefaultFileService();
-  return service.exportSourceReferences(secret, filenames);
-}
-
-export async function importSourceReferences(
-  destinationSecret: string,
-  bundle: unknown,
-  sourceSecret: string
-): Promise<SourceImportResult> {
-  const service = getDefaultFileService();
-  return service.importSourceReferences(destinationSecret, bundle, sourceSecret);
-}
-
-export async function exportRecipientReferences(
-  secret: string,
-  filenames: string[],
-  recipientVolumeId: string
-): Promise<ReferenceExportResult<RecipientReferenceBundle>> {
-  const service = getDefaultFileService();
-  return service.exportRecipientReferences(secret, filenames, recipientVolumeId);
-}
-
-export async function importRecipientReferences(
-  secret: string,
-  bundle: unknown
-): Promise<RecipientImportResult> {
-  const service = getDefaultFileService();
-  return service.importRecipientReferences(secret, bundle);
-}
-
-function getDefaultFileService(): FileService {
-  if (!defaultFileService) {
-    const storageDir = getDefaultStorageDir();
-    defaultFileService = createFileService({
-      crypto: createCryptoOperations(),
-      storage: new FilesystemStorageBackend(storageDir),
-      pathMapper: defaultPathMapper,
-    });
-  }
-  return defaultFileService;
-}
-
-let defaultFileService: FileService | null = null;
 
 async function addFileWithDeps(
   secret: string,

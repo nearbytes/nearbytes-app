@@ -1,4 +1,3 @@
-import { createECDH } from 'crypto';
 import type { Secret, KeyPair, PrivateKey, PublicKey, SymmetricKey } from '../types/keys.js';
 import type { Signature } from '../types/events.js';
 import { createPrivateKey, createPublicKey, createSymmetricKey } from '../types/keys.js';
@@ -54,13 +53,7 @@ export async function deriveKeys(secret: Secret): Promise<KeyPair> {
 }
 
 async function derivePublicKeyBytes(privateKeyScalar: Uint8Array, crypto: SubtleCrypto): Promise<Uint8Array> {
-  try {
-    const ecdh = createECDH('prime256v1');
-    ecdh.setPrivateKey(Buffer.from(privateKeyScalar));
-    return new Uint8Array(ecdh.getPublicKey(undefined, 'uncompressed'));
-  } catch {
-    return await derivePublicKeyBytesWithWebCrypto(privateKeyScalar, crypto);
-  }
+  return derivePublicKeyBytesWithWebCrypto(privateKeyScalar, crypto);
 }
 
 async function derivePublicKeyBytesWithWebCrypto(privateKeyScalar: Uint8Array, crypto: SubtleCrypto): Promise<Uint8Array> {

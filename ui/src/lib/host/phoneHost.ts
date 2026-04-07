@@ -4,6 +4,54 @@ import {
   requestHostJson,
   getRuntimeConfig,
 } from './runtimeTransport.js';
+import { createSecret } from '../../../../src/types/keys.js';
+import { deriveKeys } from '../../../../src/crypto/asymmetric.js';
+import { bytesToHex } from '../../../../src/utils/encoding.js';
+import {
+  readMirrorEventDetail,
+  readMirrorLocalNetworkPeers,
+  readMirrorTimelineSnapshot,
+  readMirrorVolumeSnapshot,
+} from '../mirror/browserMirror.js';
+import {
+  embeddedPhoneHasLocalVolume,
+  embeddedPhoneDeleteFile,
+  embeddedPhoneDownloadBlob,
+  embeddedPhoneExportRecipientReferences,
+  embeddedPhoneExportSourceReferences,
+  embeddedPhoneGetEventDetail,
+  embeddedPhoneGetTimeline,
+  embeddedPhoneImportRecipientReferences,
+  embeddedPhoneImportSourceReferences,
+  embeddedPhoneListChat,
+  embeddedPhoneListFiles,
+  embeddedPhoneOpenVolume,
+  embeddedPhonePublishIdentity,
+  embeddedPhoneRenameFile,
+  embeddedPhoneRenameFolder,
+  embeddedPhoneSendChatMessage,
+  embeddedPhoneUploadFile,
+} from './embeddedPhoneServices.js';
+import type {
+  ChatAttachment,
+  EventDetailResponse,
+  IdentityProfile,
+  ListFilesResponse,
+  LocalNetworkPeersResponse,
+  OpenVolumeResponse,
+  PublishIdentityResponse,
+  RecipientReferenceBundle,
+  ReferenceExportResponse,
+  ReferenceImportResponse,
+  RenameFileResponse,
+  RenameFolderResponse,
+  SendChatMessageResponse,
+  SourceReferenceBundle,
+  UploadResponse,
+  TimelineEvent,
+  TimelineResponse,
+  VolumeChatState,
+} from '../api.js';
 import type {
   NearbytesHostContract,
   NearbytesAuth,
@@ -17,6 +65,7 @@ let hostPromise: Promise<NearbytesHostContract> | null = null;
 
 const MISSING_PHONE_RUNTIME_MESSAGE =
   'Phone runtime is missing. Start the desktop-backed phone dev runtime or implement the native phone host runtime.';
+const EMBEDDED_PHONE_MIRROR_MESSAGE = 'Using persisted mirrored data. Runtime unavailable.';
 
 function createMissingPhoneRuntimeError(): Error {
   return new Error(MISSING_PHONE_RUNTIME_MESSAGE);
@@ -24,6 +73,89 @@ function createMissingPhoneRuntimeError(): Error {
 
 function createMissingPhoneRuntimeRequest<T>(): Promise<T> {
   return Promise.reject(createMissingPhoneRuntimeError());
+}
+
+async function deriveVolumeIdFromSecret(secret: string): Promise<string> {
+  const keyPair = await deriveKeys(createSecret(secret));
+  return bytesToHex(keyPair.publicKey);
+}
+
+function readSecretAuth(auth: NearbytesAuth): string | null {
+  return auth.type === 'secret' && auth.secret.trim().length > 0 ? auth.secret : null;
+}
+
+async function readEmbeddedMirrorState(secret: string): Promise<{
+  volumeId: string;
+  volumeSnapshot: Awaited<ReturnType<typeof readMirrorVolumeSnapshot>>;
+  timelineSnapshot: Awaited<ReturnType<typeof readMirrorTimelineSnapshot>>;
+}> {
+  const volumeId = await deriveVolumeIdFromSecret(secret);
+  const [volumeSnapshot, timelineSnapshot] = await Promise.all([
+    readMirrorVolumeSnapshot(volumeId),
+    readMirrorTimelineSnapshot(volumeId),
+  ]);
+  return {
+    volumeId,
+    volumeSnapshot,
+    timelineSnapshot,
+  };
+}
+
+function ensureEmbeddedMirrorState<T>(
+  state: { volumeSnapshot: unknown; timelineSnapshot: unknown },
+  value: T
+): T {
+  if (!state.volumeSnapshot && !state.timelineSnapshot) {
+    throw createMissingPhoneRuntimeError();
+  }
+  return value;
+}
+
+function isTimelineIdentityEvent(event: TimelineEvent): boolean {
+  return (
+    event.type === 'DECLARE_IDENTITY' ||
+    (event.type === 'APP_RECORD' &&
+      (event.protocol === 'nb.identity.record.v1' || event.protocol === 'nb.identity.snapshot.v1'))
+  );
+}
+
+function isTimelineChatEvent(event: TimelineEvent): boolean {
+  return (
+    event.type === 'CHAT_MESSAGE' ||
+    (event.type === 'APP_RECORD' && event.protocol === 'nb.chat.message.v1')
+  );
+}
+
+function buildChatStateFromTimeline(events: TimelineEvent[]): VolumeChatState {
+  const identitiesByPublicKey = new Map<string, VolumeChatState['identities'][number]>();
+  const messages: VolumeChatState['messages'] = [];
+
+  for (const event of events) {
+    if (isTimelineIdentityEvent(event) && event.authorPublicKey && event.record) {
+      identitiesByPublicKey.set(event.authorPublicKey, {
+        eventHash: event.eventHash,
+        authorPublicKey: event.authorPublicKey,
+        publishedAt: event.publishedAt ?? event.timestamp,
+        record: event.record,
+      });
+      continue;
+    }
+
+    if (isTimelineChatEvent(event) && event.authorPublicKey && event.message) {
+      messages.push({
+        eventHash: event.eventHash,
+        authorPublicKey: event.authorPublicKey,
+        publishedAt: event.publishedAt ?? event.timestamp,
+        message: event.message,
+      });
+    }
+  }
+
+  return {
+    identities: Array.from(identitiesByPublicKey.values()),
+    messages,
+    isOffline: true,
+  };
 }
 
 function hasCompatibilityTransport(runtimeOwner: NearbytesHostContract['capabilities']['runtimeOwner']): boolean {
@@ -40,53 +172,171 @@ function createUnsupportedWatchConnection(): { close(): void } {
 
 function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDesktop'] {
   return {
-    openVolume(_secret: string): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async openVolume(secret: string): Promise<OpenVolumeResponse> {
+      if (await embeddedPhoneHasLocalVolume(secret)) {
+        return await embeddedPhoneOpenVolume(secret);
+      }
+      const state = await readEmbeddedMirrorState(secret);
+      if (!state.volumeSnapshot && !state.timelineSnapshot) {
+        return embeddedPhoneOpenVolume(secret);
+      }
+      return ensureEmbeddedMirrorState(state, {
+        volumeId: state.volumeId,
+        fileCount: state.volumeSnapshot?.files.length ?? 0,
+        files: state.volumeSnapshot?.files ?? [],
+        isOffline: true,
+        storageHint: EMBEDDED_PHONE_MIRROR_MESSAGE,
+      });
     },
-    listFiles(_auth: NearbytesAuth): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async listFiles(auth: NearbytesAuth): Promise<ListFilesResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      if (await embeddedPhoneHasLocalVolume(secret)) {
+        return await embeddedPhoneListFiles(secret);
+      }
+      const state = await readEmbeddedMirrorState(secret);
+      if (!state.volumeSnapshot && !state.timelineSnapshot) {
+        return embeddedPhoneListFiles(secret);
+      }
+      return ensureEmbeddedMirrorState(state, {
+        volumeId: state.volumeId,
+        files: state.volumeSnapshot?.files ?? [],
+        isOffline: true,
+      });
     },
-    getTimeline(_auth: NearbytesAuth): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async getTimeline(auth: NearbytesAuth): Promise<TimelineResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      if (await embeddedPhoneHasLocalVolume(secret)) {
+        return await embeddedPhoneGetTimeline(secret);
+      }
+      const state = await readEmbeddedMirrorState(secret);
+      if (!state.volumeSnapshot && !state.timelineSnapshot) {
+        return embeddedPhoneGetTimeline(secret);
+      }
+      return ensureEmbeddedMirrorState(state, {
+        volumeId: state.volumeId,
+        eventCount: state.timelineSnapshot?.eventCount ?? state.timelineSnapshot?.events.length ?? 0,
+        events: state.timelineSnapshot?.events ?? [],
+        isOffline: true,
+      });
     },
-    getEventDetail(_auth: NearbytesAuth, _eventHash: string): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async getEventDetail(auth: NearbytesAuth, eventHash: string): Promise<EventDetailResponse> {
+      const secret = readSecretAuth(auth);
+      if (secret && await embeddedPhoneHasLocalVolume(secret)) {
+          return await embeddedPhoneGetEventDetail(secret, eventHash);
+      }
+      const mirrored = await readMirrorEventDetail(eventHash);
+      if (!mirrored) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return {
+        eventHash: mirrored.eventHash,
+        event: mirrored.event,
+        decryptedPayload: mirrored.decryptedPayload,
+      };
     },
     getEventStorageLocations(_auth: NearbytesAuth, _eventHash: string): Promise<unknown> {
       return createMissingPhoneRuntimeRequest();
     },
-    uploadFile(_auth: NearbytesAuth, _file: File): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async uploadFile(auth: NearbytesAuth, file: File): Promise<UploadResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneUploadFile(secret, file);
     },
-    deleteFile(_auth: NearbytesAuth, _filename: string): Promise<void> {
-      return createMissingPhoneRuntimeRequest();
+    async deleteFile(auth: NearbytesAuth, filename: string): Promise<void> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneDeleteFile(secret, filename);
     },
-    renameFile(_auth: NearbytesAuth, _from: string, _to: string): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async renameFile(auth: NearbytesAuth, from: string, to: string): Promise<RenameFileResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneRenameFile(secret, from, to);
     },
-    renameFolder(_auth: NearbytesAuth, _from: string, _to: string, _merge: boolean): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async renameFolder(auth: NearbytesAuth, from: string, to: string, merge: boolean): Promise<RenameFolderResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneRenameFolder(secret, from, to, merge);
     },
-    exportSourceReferences(_auth: NearbytesAuth, _filenames: string[]): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async exportSourceReferences(auth: NearbytesAuth, filenames: string[]): Promise<ReferenceExportResponse<SourceReferenceBundle>> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneExportSourceReferences(secret, filenames);
     },
-    importSourceReferences(_auth: NearbytesAuth, _bundle: unknown, _sourceSecret: string): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async importSourceReferences(auth: NearbytesAuth, bundle: unknown, sourceSecret: string): Promise<ReferenceImportResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneImportSourceReferences(secret, bundle as SourceReferenceBundle, sourceSecret);
     },
-    exportRecipientReferences(_auth: NearbytesAuth, _filenames: string[], _recipientVolumeId: string): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async exportRecipientReferences(
+      auth: NearbytesAuth,
+      filenames: string[],
+      recipientVolumeId: string
+    ): Promise<ReferenceExportResponse<RecipientReferenceBundle>> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneExportRecipientReferences(secret, filenames, recipientVolumeId);
     },
-    importRecipientReferences(_auth: NearbytesAuth, _bundle: unknown): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async importRecipientReferences(auth: NearbytesAuth, bundle: unknown): Promise<ReferenceImportResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneImportRecipientReferences(secret, bundle as RecipientReferenceBundle);
     },
-    listChat(_auth: NearbytesAuth): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async listChat(auth: NearbytesAuth): Promise<VolumeChatState> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      if (await embeddedPhoneHasLocalVolume(secret)) {
+        return await embeddedPhoneListChat(secret);
+      }
+      const state = await readEmbeddedMirrorState(secret);
+      if (!state.volumeSnapshot && !state.timelineSnapshot) {
+        return embeddedPhoneListChat(secret);
+      }
+      return ensureEmbeddedMirrorState(
+        state,
+        buildChatStateFromTimeline(state.timelineSnapshot?.events ?? [])
+      );
     },
-    publishIdentity(_auth: NearbytesAuth, _identitySecret: string, _profile: unknown): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async publishIdentity(auth: NearbytesAuth, identitySecret: string, profile: unknown): Promise<PublishIdentityResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhonePublishIdentity(secret, identitySecret, profile as IdentityProfile);
     },
-    sendChatMessage(_auth: NearbytesAuth, _identitySecret: string, _input: { body?: string; attachment?: unknown }): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+    async sendChatMessage(
+      auth: NearbytesAuth,
+      identitySecret: string,
+      input: { body?: string; attachment?: unknown }
+    ): Promise<SendChatMessageResponse> {
+      const secret = readSecretAuth(auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneSendChatMessage(secret, identitySecret, input as { body?: string; attachment?: ChatAttachment });
     },
   };
 }
@@ -240,7 +490,15 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
           }
         : {
             requestJson: () => createMissingPhoneRuntimeRequest(),
-            requestBlob: () => createMissingPhoneRuntimeRequest(),
+            async requestBlob(endpoint, options) {
+              const headers = new Headers(options?.headers);
+              const secret = headers.get('x-nearbytes-secret');
+              if (!secret || !endpoint.startsWith('/file/')) {
+                return createMissingPhoneRuntimeRequest();
+              }
+              const blobHash = endpoint.slice('/file/'.length);
+              return embeddedPhoneDownloadBlob(secret, blobHash);
+            },
             openStream: () => createMissingPhoneRuntimeRequest(),
           },
       invalidation: compatibilityTransport
@@ -284,8 +542,15 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
             },
           }
         : {
-            listPeers() {
-              return createMissingPhoneRuntimeRequest();
+            async listPeers(): Promise<LocalNetworkPeersResponse> {
+              const mirrored = await readMirrorLocalNetworkPeers();
+              if (!mirrored) {
+                return createMissingPhoneRuntimeRequest();
+              }
+              return {
+                ...mirrored,
+                isOffline: true,
+              };
             },
             syncPeer() {
               return createMissingPhoneRuntimeRequest();

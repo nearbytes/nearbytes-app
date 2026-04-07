@@ -88,14 +88,14 @@ export function buildAttachedShareKeysFromSummaries(shares: readonly ManagedShar
     if (summary.attachments.length === 0) {
       continue;
     }
-    for (const key of buildManagedShareMatchKeys(summary)) {
+    for (const key of buildManagedShareMatchKeysFromSummary(summary)) {
       keys.add(key);
     }
   }
   return Array.from(keys.values());
 }
 
-function buildManagedShareMatchKeys(summary: ManagedShareSummary): string[] {
+export function buildManagedShareMatchKeysFromSummary(summary: ManagedShareSummary): string[] {
   const share = summary.share;
   const provider = normalizeKey(share.provider);
   const descriptor = share.remoteDescriptor;

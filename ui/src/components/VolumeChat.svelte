@@ -154,8 +154,11 @@
       loading = true;
     }
     try {
-      errorMessage = '';
-      chatState = await listChat(auth);
+      const response = await listChat(auth);
+      chatState = response;
+      errorMessage = response.isOffline === true
+        ? 'Using mirrored chat history. Live runtime unavailable.'
+        : '';
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to load chat';
     } finally {
