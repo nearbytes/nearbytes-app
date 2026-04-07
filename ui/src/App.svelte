@@ -276,6 +276,7 @@
     collapsed: boolean;
     showFilesPane: boolean;
     showChatPane: boolean;
+    showSearchPane: boolean;
     workspaceSplit: number;
     createdAt: number;
   };
@@ -473,6 +474,7 @@
       collapsed: overrides.collapsed ?? false,
       showFilesPane: overrides.showFilesPane ?? true,
       showChatPane: overrides.showChatPane ?? false,
+      showSearchPane: overrides.showSearchPane ?? false,
       workspaceSplit: normalizeWorkspaceSplit(overrides.workspaceSplit),
       createdAt: overrides.createdAt ?? Date.now(),
     };
@@ -495,6 +497,7 @@
           typeof value.collapsed === 'boolean' &&
           (value.showFilesPane === undefined || typeof value.showFilesPane === 'boolean') &&
           (value.showChatPane === undefined || typeof value.showChatPane === 'boolean') &&
+          (value.showSearchPane === undefined || typeof value.showSearchPane === 'boolean') &&
           (value.workspaceSplit === undefined || typeof value.workspaceSplit === 'number')
       )
       .map((value) =>
@@ -509,6 +512,7 @@
           collapsed: value.collapsed,
           showFilesPane: value.showFilesPane,
           showChatPane: value.showChatPane,
+          showSearchPane: value.showSearchPane,
           workspaceSplit: value.workspaceSplit,
           createdAt: value.createdAt,
         })
@@ -553,6 +557,7 @@
       collapsed: mount.collapsed,
       showFilesPane: mount.showFilesPane,
       showChatPane: mount.showChatPane,
+      showSearchPane: mount.showSearchPane,
       workspaceSplit: mount.workspaceSplit,
       createdAt: mount.createdAt,
     }));
@@ -2599,6 +2604,7 @@
   });
   const showFilesWorkspace = $derived.by(() => activeMount?.showFilesPane ?? true);
   const showChatWorkspace = $derived.by(() => activeMount?.showChatPane ?? false);
+  const showSearchWorkspace = $derived.by(() => activeMount?.showSearchPane ?? false);
   const workspaceSplit = $derived.by(() => activeMount?.workspaceSplit ?? 56);
   const showSplitWorkspace = $derived.by(() => showFilesWorkspace && showChatWorkspace);
   const workspacePanelsTemplate = $derived.by(() =>
@@ -4988,7 +4994,7 @@
   }
 
   function updateActiveMountWorkspace(
-    patch: Partial<Pick<VolumeMount, 'showFilesPane' | 'showChatPane' | 'workspaceSplit'>>
+    patch: Partial<Pick<VolumeMount, 'showFilesPane' | 'showChatPane' | 'showSearchPane' | 'workspaceSplit'>>
   ) {
     if (!activeMountId) {
       return;
@@ -5017,6 +5023,7 @@
     updateActiveMountWorkspace({
       showFilesPane: nextShowFiles,
       showChatPane: nextShowChat,
+      showSearchPane: nextShowFiles ? currentMount.showSearchPane : false,
     });
 
     if (!nextShowFiles) {
@@ -5024,8 +5031,23 @@
       renamingFileName = null;
       renameDraft = '';
       fileManagerActive = false;
+      searchQuery = '';
     }
     if (!nextShowChat) {
+    }
+  }
+
+  function toggleWorkspaceSearch() {
+    const currentMount = mounts.find((mount) => mount.id === activeMountId);
+    if (!currentMount || !currentMount.showFilesPane) {
+      return;
+    }
+    const nextShowSearch = !currentMount.showSearchPane;
+    updateActiveMountWorkspace({
+      showSearchPane: nextShowSearch,
+    });
+    if (!nextShowSearch) {
+      searchQuery = '';
     }
   }
 
@@ -6525,35 +6547,20 @@
                     ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
                     : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
               </span>
-              <input
-                type="text"
-                class="manager-search workspace-compact-control"
-                placeholder="Search files"
-                bind:value={searchQuery}
-                aria-label="Search files"
-              />
-              <select class="manager-sort workspace-compact-control" bind:value={sortBy} aria-label="Sort files">
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="name">Name</option>
-                <option value="name-desc">Name (Z-A)</option>
-                <option value="size">Size</option>
-                <option value="size-asc">Size (Smallest)</option>
-              </select>
-              {#if appReferenceClipboard}
-                <button
-                  type="button"
-                  class="manager-btn workspace-toolbar-btn"
-                  onclick={() => void pasteCopiedFiles()}
-                  disabled={!auth || isHistoryMode}
-                  title={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
-                >
-                  <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-                  Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
-                </button>
-              {/if}
             {/if}
             <div class="workspace-utility-actions">
+              {#if showFilesWorkspace}
+                <button
+                  type="button"
+                  class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
+                  class:active={showSearchWorkspace}
+                  onclick={toggleWorkspaceSearch}
+                  title={showSearchWorkspace ? 'Hide file search' : 'Show file search'}
+                >
+                  <Search class="button-icon" size={15} strokeWidth={2} />
+                  <span>Search</span>
+                </button>
+              {/if}
               <button
                 type="button"
                 class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
@@ -6628,6 +6635,38 @@
           </div>
         {/if}
       </div>
+
+      {#if showFilesWorkspace && showSearchWorkspace}
+        <div class="workspace-search-strip panel-surface" role="group" aria-label="File search and sorting">
+          <input
+            type="text"
+            class="manager-search workspace-search-input"
+            placeholder="Search files"
+            bind:value={searchQuery}
+            aria-label="Search files"
+          />
+          <select class="manager-sort workspace-search-sort" bind:value={sortBy} aria-label="Sort files">
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="name">Name</option>
+            <option value="name-desc">Name (Z-A)</option>
+            <option value="size">Size</option>
+            <option value="size-asc">Size (Smallest)</option>
+          </select>
+          {#if appReferenceClipboard}
+            <button
+              type="button"
+              class="manager-btn workspace-toolbar-btn workspace-search-paste"
+              onclick={() => void pasteCopiedFiles()}
+              disabled={!auth || isHistoryMode}
+              title={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
+            >
+              <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
+              Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
+            </button>
+          {/if}
+        </div>
+      {/if}
 
       <div
         class="workspace-panels"
@@ -10331,7 +10370,7 @@
   .workspace-mode-secondary {
     margin-left: auto;
     justify-content: flex-end;
-    flex: 1 1 420px;
+    flex: 1 1 320px;
   }
 
   .workspace-utility-actions {
@@ -10348,18 +10387,35 @@
     letter-spacing: 0.02em;
     color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
     white-space: nowrap;
-  }
-
-  .workspace-compact-control {
+    flex: 1 1 220px;
     min-width: 0;
   }
 
-  .workspace-mode-secondary .manager-search {
-    width: min(28vw, 240px);
+  .workspace-search-strip {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.42rem 0.5rem;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 65%, transparent);
+    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
+    flex-wrap: wrap;
   }
 
-  .workspace-mode-secondary .manager-sort {
-    width: min(24vw, 180px);
+  .workspace-search-input {
+    flex: 1 1 240px;
+    min-width: min(100%, 240px);
+  }
+
+  .workspace-search-sort {
+    flex: 0 0 180px;
+    width: 180px;
+    min-width: 0;
+  }
+
+  .workspace-search-paste {
+    flex: 0 0 auto;
   }
 
   .workspace-toolbar-btn {
@@ -12871,10 +12927,15 @@
       white-space: normal;
     }
 
-    .workspace-mode-secondary .manager-search,
-    .workspace-mode-secondary .manager-sort,
-    .workspace-toolbar-btn {
+    .workspace-toolbar-btn,
+    .workspace-search-input,
+    .workspace-search-sort,
+    .workspace-search-paste {
       width: 100%;
+    }
+
+    .workspace-search-strip {
+      align-items: stretch;
     }
 
     .create-chooser-grid {

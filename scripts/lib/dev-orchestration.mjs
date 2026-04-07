@@ -232,16 +232,37 @@ export function waitForExit(child) {
 
 export function createManualTestPaths(home) {
   const nearbytesDir = path.join(home, '.nearbytes');
+  const integrationStatePath = path.join(nearbytesDir, 'integrations.json');
+  const serverSecretStorePath = path.join(nearbytesDir, 'integration-secrets.json');
+  const desktopUserDataDir = resolveElectronUserDataDir(home);
   return {
     home,
     nearbytesDir,
     rootsConfigPath: path.join(nearbytesDir, 'roots.json'),
     appConfigPath: path.join(nearbytesDir, 'app-config.json'),
+    integrationStatePath,
+    serverSecretStorePath,
+    desktopUserDataDir,
+    desktopSecretStorePath: path.join(desktopUserDataDir, 'integration-secrets.json'),
     desktopSessionPath: path.join(nearbytesDir, 'desktop-session.json'),
     devRunSessionPath: path.join(home, '.nearbytes-dev-run.json'),
     webSessionPath: path.join(home, '.nearbytes-web-dev.json'),
     localRootPath: path.join(home, 'nearbytes', 'local'),
   };
+}
+
+export function resolveElectronUserDataDir(home, appName = 'Nearbytes') {
+  return path.join(resolveElectronAppDataDir(home), appName);
+}
+
+function resolveElectronAppDataDir(home) {
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support');
+  }
+  if (process.platform === 'win32') {
+    return path.join(home, 'AppData', 'Roaming');
+  }
+  return path.join(home, '.config');
 }
 
 export function seedManualTestConfig({ home, rootsConfigPath, appConfigPath, localRootPath, providers }) {

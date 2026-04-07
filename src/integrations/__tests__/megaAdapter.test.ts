@@ -712,7 +712,7 @@ describe('MegaTransportAdapter', () => {
     await adapter.dispose();
   });
 
-  it('rejects malformed stored account secrets with a reconnect error instead of crashing', async () => {
+  it('rejects malformed stored account secrets with an automatic retry error instead of crashing', async () => {
     const secretStore = createMemorySecretStore();
     await secretStore.set('provider-account:mega:acct-mega-bad', {
       masterKey: 'broken-master-key',
@@ -742,7 +742,7 @@ describe('MegaTransportAdapter', () => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       })
-    ).rejects.toThrow('Reconnect MEGA to resume syncing.');
+    ).rejects.toThrow('Nearbytes could not refresh the saved MEGA sign-in.');
 
     await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toMatchObject({
       masterKey: 'broken-master-key',
@@ -2861,7 +2861,7 @@ describe('MegaTransportAdapter', () => {
     expect(fetchNodesCount).toBe(1);
   });
 
-  it('requires reconnect when refreshing the MEGA session with saved credentials also fails', async () => {
+  it('reports automatic retry when refreshing the MEGA session with saved credentials also fails', async () => {
     const email = 'reader@example.com';
     const password = 'correct horse battery staple';
     const salt = encodeMegaBase64Url(Buffer.from('0123456789abcdeffedcba9876543210', 'hex'));
@@ -2917,7 +2917,7 @@ describe('MegaTransportAdapter', () => {
     });
 
     await expect(adapter.listIncomingShares(connected.account as ProviderAccount)).rejects.toThrow(
-      'Reconnect MEGA to resume syncing.'
+      'Nearbytes could not refresh the saved MEGA sign-in.'
     );
     expect(preloginCount).toBe(2);
     expect(loginCount).toBe(2);

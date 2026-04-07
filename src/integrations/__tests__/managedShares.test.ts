@@ -333,13 +333,13 @@ class ReconnectRequiredBootstrapAdapter extends FakeTransportAdapter {
   }
 
   override async ensureSync(): Promise<void> {
-    throw new Error('Reconnect MEGA to resume syncing.');
+    throw new Error('Nearbytes could not refresh the saved MEGA sign-in. It will keep retrying automatically.');
   }
 
   override async getState(): Promise<TransportState> {
     return {
       status: 'needs-auth',
-      detail: 'Reconnect MEGA to resume syncing.',
+      detail: 'Nearbytes could not refresh the saved MEGA sign-in. It will keep retrying automatically.',
       badges: ['Reconnect'],
     };
   }
@@ -1438,7 +1438,7 @@ describe('ManagedShareService', () => {
     expect(adapter.ensureSyncCalls).toBe(1);
   });
 
-  it('surfaces reconnect-required transport state instead of leaving a MEGA share stuck in preparing', async () => {
+  it('surfaces automatic sign-in retry transport state instead of leaving a MEGA share stuck in preparing', async () => {
     const { service } = await createHarness({
       adapters: [new ReconnectRequiredBootstrapAdapter()],
     });
@@ -1459,7 +1459,7 @@ describe('ManagedShareService', () => {
     expect(shares.shares[0]?.share.role).toBe('owner');
     expect(shares.shares[0]?.state).toMatchObject({
       status: 'needs-auth',
-      detail: 'Reconnect MEGA to resume syncing.',
+      detail: 'Nearbytes could not refresh the saved MEGA sign-in. It will keep retrying automatically.',
       badges: ['Reconnect'],
     });
   });

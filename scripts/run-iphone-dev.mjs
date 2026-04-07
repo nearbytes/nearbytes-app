@@ -68,7 +68,11 @@ async function main() {
     });
     const simulator = selectSimulator();
     runCommand('open', ['-a', 'Simulator']);
-    runCommand('xcrun', ['simctl', 'boot', simulator.udid], { allowNonZero: true });
+    if (simulator.state !== 'Booted') {
+      runCommand('xcrun', ['simctl', 'boot', simulator.udid], { allowNonZero: true });
+    } else {
+      console.log(`[iphone-dev] Simulator ${simulator.name} is already booted.`);
+    }
     runCommand('xcrun', ['simctl', 'bootstatus', simulator.udid, '-b']);
     runCommand('xcrun', ['simctl', 'install', simulator.udid, simulatorAppPath]);
     runCommand('xcrun', ['simctl', 'launch', '--console', simulator.udid, bundleId]);

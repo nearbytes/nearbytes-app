@@ -1041,7 +1041,7 @@
     if (summary.state.status === 'ready') return 'Connected';
     if (summary.state.status === 'idle') return 'Available';
     if (summary.state.status === 'syncing') return compactShareStatusDetail(summary.state.detail) ?? 'Syncing';
-    if (summary.state.status === 'needs-auth') return 'Reconnect';
+    if (summary.state.status === 'needs-auth') return summary.share.provider === 'mega' ? 'Sign-in retry' : 'Reconnect';
     if (summary.state.status === 'attention') return compactShareStatusDetail(summary.state.detail) ?? 'Needs attention';
     return summary.state.status === 'unsupported' ? 'Unsupported' : 'Available';
   }
@@ -1428,7 +1428,7 @@
     if (entry.provider === 'mega') {
       const reconnectIssue = megaProviderReconnectIssue();
       if (reconnectIssue) {
-        return 'MEGA rejected the saved session. Nearbytes will reuse the saved MEGA sign-in when it can; if recovery changed the credentials, reconnect this account to resume incoming-share mirroring.';
+        return 'MEGA rejected the saved session. Nearbytes will keep retrying with the saved MEGA sign-in; only update this account if the stored credentials changed.';
       }
     }
     const pending = pendingSessionForProvider(entry.provider);
@@ -1541,7 +1541,7 @@
         title: reconnectIssue.diagnostic.title,
         detail: reconnectIssue.diagnostic.summary,
         action: {
-          label: 'Open recovery',
+          label: 'Open account status',
           kind: 'focus',
           target: 'account',
         },
@@ -2201,9 +2201,9 @@
       return {
         diagnostic: {
           id: 'mega-provider-reconnect',
-          title: 'MEGA account needs recovery',
-          summary: 'Incoming MEGA shares are unavailable until the MEGA account is recovered.',
-          detail: account.detail?.trim() || 'Recover the MEGA account on mega.io. Nearbytes will retry the saved sign-in automatically, and you only need to reconnect if the credentials changed.',
+          title: 'MEGA account needs attention',
+          summary: 'Incoming MEGA shares are paused while Nearbytes retries the saved sign-in.',
+          detail: account.detail?.trim() || 'If MEGA asked you to unlock the account or change the password on mega.io, finish that there. Nearbytes will retry the saved sign-in automatically; update this account only if the stored credentials changed.',
           facts: [
             account.email?.trim() ? { label: 'Account', value: account.email.trim() } : null,
             { label: 'Last change', value: formatMegaRuntimeLogTimestamp(account.updatedAt) },
@@ -2262,8 +2262,8 @@
     return {
       diagnostic: {
         id: 'mega-provider-reconnect',
-        title: 'MEGA account needs recovery',
-        summary: 'Incoming MEGA shares are unavailable until the MEGA account is recovered and reconnected.',
+        title: 'MEGA account needs attention',
+        summary: 'Incoming MEGA shares are paused while Nearbytes retries the saved sign-in.',
         detail: bestMatch.line,
         facts,
       },
@@ -2676,15 +2676,15 @@
     if (reconnectIssue) {
       return {
         ...base,
-        headline: 'Finish MEGA account recovery',
+        headline: 'Finish any MEGA account recovery on mega.io',
         detail: conciseMegaDetail(reconnectIssue.diagnostic.detail),
         tone: 'warn' as const,
         syncing: false,
         progressPercent: null,
-        progressLabel: 'Recovery required',
+        progressLabel: 'Automatic sign-in retry',
         showProgressBar: false,
         selfRepairCopy:
-          'Nearbytes retried the saved MEGA session. If MEGA locked the account, unlock it and complete the password change on mega.io. Nearbytes will retry the saved sign-in automatically; reconnect this account only if the credentials changed.',
+          'Nearbytes retried the saved MEGA session. If MEGA locked the account, unlock it and complete the password change on mega.io. Nearbytes will keep retrying automatically; update this account only if the stored credentials changed.',
       };
     }
 
@@ -6005,7 +6005,7 @@
                     bind:this={megaAccountSection}
                     onclick={() => openProviderConnectionDialog(provider.provider)}
                   >
-                    <span>{provider.isConnected ? (megaProviderReconnectIssue() ? 'Reconnect' : 'Disconnect') : 'Connect'}</span>
+                    <span>{provider.isConnected ? (megaProviderReconnectIssue() ? 'Open account' : 'Disconnect') : 'Connect'}</span>
                   </button>
                 {:else if provider.isConnected && provider.provider !== 'local-network'}
                   <button
@@ -6139,9 +6139,9 @@
                 <div class="mega-command-deck" bind:this={megaOverviewSection}>
                   {#if megaReconnectIssue || shareLoadError || (megaStatus.tone !== 'good' && (megaStatus.detail || megaStatus.progressLabel))}
                     <ProviderStatusCard
-                      title={megaReconnectIssue ? 'Finish MEGA account recovery' : megaStatus.headline}
+                      title={megaReconnectIssue ? 'Finish any MEGA account recovery on mega.io' : megaStatus.headline}
                       detail={megaReconnectIssue
-                        ? 'Recovery is required before Nearbytes can keep MEGA locations in sync.'
+                        ? 'Nearbytes is retrying the saved MEGA sign-in. If MEGA requires recovery, finish that on mega.io.'
                         : shareLoadError || megaStatus.detail || megaStatus.headline}
                       tone={megaReconnectIssue ? 'warn' : megaStatus.tone}
                       showProgress={megaStatus.showProgressBar}
@@ -6155,7 +6155,7 @@
                             class="panel-btn primary compact"
                             onclick={() => openProviderConnectionDialog(provider.provider)}
                           >
-                            <span>Reconnect account</span>
+                            <span>Open account</span>
                           </button>
                         {/if}
                       {/snippet}
@@ -6900,9 +6900,7 @@
                     ? 'Disconnecting...'
                     : providerDisconnectArmed[dialogProvider.provider]
                       ? 'Confirm disconnect'
-                      : dialogMegaReconnectIssue
-                        ? 'Disconnect to recover'
-                        : 'Disconnect'}
+                      : 'Disconnect'}
                 </button>
               {:else}
                 <button

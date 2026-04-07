@@ -3535,12 +3535,12 @@ function isMegaTransientCollaboratorError(error: unknown): boolean {
 function describeMegaAccountRecovery(message: string): string {
   const normalized = message.trim();
   if (/MEGA API error -16|blocked|account locked|credential stuffing/i.test(normalized)) {
-    return `MEGA says this account is locked. Unlock it on mega.io, complete the password-change flow, then reconnect it in Nearbytes. ${normalized}`.trim();
+    return `MEGA says this account is locked. Unlock it on mega.io and complete the password-change flow. Nearbytes will keep retrying the saved sign-in automatically; update the saved sign-in in Nearbytes only if the password changed. ${normalized}`.trim();
   }
   if (/MEGA API error -15|bad session|session id/i.test(normalized)) {
-    return `MEGA revoked the saved session. If the account was security-locked, finish the unlock and password-change flow on mega.io, then reconnect it in Nearbytes. ${normalized}`.trim();
+    return `MEGA revoked the saved session. If the account was security-locked, finish the unlock and password-change flow on mega.io. Nearbytes will retry the saved sign-in automatically; update it in Nearbytes only if the credentials changed. ${normalized}`.trim();
   }
-  return `Reconnect this MEGA account to resume incoming-share discovery. ${normalized}`.trim();
+  return `Nearbytes could not reuse the saved MEGA sign-in for incoming-share discovery. It will retry automatically. Update the saved sign-in in Nearbytes only if the stored credentials changed. ${normalized}`.trim();
 }
 
 function dedupeManagedShareMirrors(

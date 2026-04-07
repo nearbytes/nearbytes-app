@@ -71,7 +71,7 @@ import type { IntegrationRuntime } from './runtime.js';
 const MEGA_SECRET_PREFIX = 'provider-account:mega:';
 const MEGA_MANIFEST_PREFIX = 'provider-share:mega:manifest:';
 const MEGA_RECONNECT_REQUIRED_MESSAGE =
-  'Reconnect MEGA to resume syncing. If MEGA asked you to unlock the account or change the password first, complete that on mega.io and then reconnect here.';
+  'Nearbytes could not refresh the saved MEGA sign-in. It will keep retrying automatically. If MEGA asked you to unlock the account or change the password first, finish that on mega.io. Update the saved sign-in in Nearbytes only if the stored credentials no longer work.';
 const ZERO_IV = Buffer.alloc(16, 0);
 const READONLY_BADGES = ['Readonly'];
 const MEGA_SYNC_TIMEOUT_CODE = 'MEGA_SYNC_TIMEOUT';
@@ -2244,8 +2244,8 @@ export class MegaTransportAdapter {
         badges: ['Writable', needsAuth ? 'Reconnect' : 'Repair'],
         diagnostic: {
           code: needsAuth ? 'MEGA_OWNER_SYNC_RECONNECT_REQUIRED' : 'MEGA_OWNER_SYNC_FAILED',
-          title: needsAuth ? 'Reconnect MEGA to resume owner sync' : 'MEGA owner sync needs attention',
-          summary: needsAuth ? 'Reconnect required' : 'MEGA owner sync failed',
+          title: needsAuth ? 'MEGA owner sync is retrying the saved sign-in' : 'MEGA owner sync needs attention',
+          summary: needsAuth ? 'Automatic sign-in retry in progress' : 'MEGA owner sync failed',
           detail,
         },
       });
@@ -5555,7 +5555,7 @@ function describeMegaOwnerSyncFailure(error: unknown, remotePath: string): strin
     return `Nearbytes timed out while syncing the MEGA owner folder ${remotePath}. Open the runtime logs and retry.`;
   }
   if (/login|session|auth|credential|password/i.test(message)) {
-    return `Reconnect MEGA to resume the writable owner sync for ${remotePath}. ${message}`.trim();
+    return `Nearbytes could not refresh the saved MEGA sign-in for the writable owner sync at ${remotePath}. It will retry automatically. ${message}`.trim();
   }
   return `Nearbytes could not sync the writable MEGA owner folder ${remotePath}. ${message}`.trim();
 }
