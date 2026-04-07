@@ -35,13 +35,28 @@ If any of this still depends on a desktop companion path, Phase 1 is not complet
 
 ### 3. MEGA adapter failure triage
 
-The workspace still shows a failing `mega-adapter-vitest` task. A human needs to rerun it, capture the failing output, and decide whether the failure is:
+The stale Vitest exclusion for `src/integrations/__tests__/megaAdapter.test.ts` has now been removed and the task was rerun.
+
+Current observed result:
+
+- `yarn vitest run src/integrations/__tests__/megaAdapter.test.ts`
+- 8 tests failed
+- 28 tests passed
+
+The currently observed failures include:
+
+- native incoming-share mirror write path (`ENOENT` on expected block files)
+- session refresh behavior with saved credentials
+- writable invite or outgoing-share key handling
+- incoming-share key replacement or aliasing behavior
+
+A human now needs to triage those real failures and decide whether the failure is:
 
 - a real regression
 - an environment issue
 - a live-provider dependency mismatch
 
-Do not cut a v1.0 release while that status is ambiguous.
+Do not cut a v1.0 release while those failures remain unresolved or their status is ambiguous.
 
 ### 4. Release authority and distribution decisions
 

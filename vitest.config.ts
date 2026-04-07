@@ -11,7 +11,6 @@ export default defineConfig({
       '**/dist-electron/**',
       '**/e2e/**',
       '**/*.live.test.ts',
-      'src/integrations/__tests__/megaAdapter.test.ts',
       'src/server/__tests__/megaManagedShareApi.test.ts',
     ],
     coverage: {
