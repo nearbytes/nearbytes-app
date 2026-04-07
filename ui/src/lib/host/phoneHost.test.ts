@@ -386,6 +386,92 @@ describe('phoneHost', () => {
     });
   });
 
+  it('initiates LAN sync through the embedded phone host and persists the peer sync state', async () => {
+    await importLocalNetworkPeersSnapshot({
+      service: {
+        protocol: 'nearbytes-lan-v1',
+        peerId: 'desktop-self',
+        label: 'Desktop mirror',
+        listening: true,
+        port: 9444,
+        discovery: 'dns-sd+multicast-fallback',
+        transport: 'webrtc',
+        serviceType: '_nearbytes._tcp',
+        announceIntervalMs: 5000,
+        peerCount: 1,
+      },
+      peers: [
+        {
+          peerId: 'peer-1',
+          label: 'Alpha phone',
+          address: '192.168.1.20',
+          port: 9444,
+          endpointUrl: 'http://192.168.1.20:9444',
+          capabilities: ['sync'],
+          volumeIds: ['vol-1'],
+          firstSeenAt: 1,
+          lastSeenAt: 2,
+          lastHelloAt: 2,
+          lastSyncAt: null,
+          lastSyncStartedAt: null,
+          lastSyncError: null,
+          lastSyncNotice: null,
+          lastImportedEvents: 0,
+          lastImportedBlocks: 0,
+          remoteCursorObservationId: null,
+          lastRemoteHeadObservationId: null,
+          status: 'ready',
+          detail: 'Ready',
+        },
+      ],
+    });
+
+    const host = await getPhoneHost();
+    const mutation = await host.lan.syncPeer('peer-1') as {
+      peer: {
+        peerId: string;
+        status: string;
+        detail: string;
+        lastSyncStartedAt: number | null;
+        lastSyncNotice: string | null;
+      };
+    };
+
+    resetPhoneHostForTests();
+
+    const refreshedHost = await getPhoneHost();
+    const refreshed = await refreshedHost.lan.listPeers() as {
+      peers: Array<{
+        peerId: string;
+        status: string;
+        detail: string;
+        lastSyncStartedAt: number | null;
+        lastSyncNotice: string | null;
+      }>;
+      isOffline?: boolean;
+    };
+
+    expect(mutation.peer).toMatchObject({
+      peerId: 'peer-1',
+      status: 'syncing',
+      detail: 'Sync requested on this phone.',
+      lastSyncNotice: 'Sync requested on this phone. Waiting for LAN runtime delivery.',
+    });
+    expect(typeof mutation.peer.lastSyncStartedAt).toBe('number');
+    expect(refreshed).toMatchObject({
+      peers: [
+        {
+          peerId: 'peer-1',
+          status: 'syncing',
+          detail: 'Sync requested on this phone.',
+          lastSyncNotice: 'Sync requested on this phone. Waiting for LAN runtime delivery.',
+        },
+      ],
+      isOffline: true,
+    });
+    expect(typeof refreshed.peers[0]?.lastSyncStartedAt).toBe('number');
+  });
+
   it('uses the shared transport for desktop-backed phone runtime compatibility', async () => {
     vi.mocked(getRuntimeConfig).mockResolvedValueOnce({
       apiBaseUrl: 'https://nearbytes.test',

@@ -10,6 +10,8 @@ import type {
   EventDetailResponse,
   FileMetadata,
   IdentityProfile,
+  LocalNetworkPeer,
+  LocalNetworkPeerMutationResponse,
   ListFilesResponse,
   LocalNetworkPeersResponse,
   LocalNetworkServiceState,
@@ -56,6 +58,16 @@ const DB_VERSION = 3;
 const PHONE_LAN_PEER_ID_KEY = 'phoneLanPeerId';
 const PHONE_LAN_LABEL_KEY = 'phoneLanLabel';
 const PHONE_LAN_SERVICE_STATE_KEY = 'phoneLanServiceState';
+const PHONE_LAN_PEER_OVERLAYS_KEY = 'phoneLanPeerOverlays';
+
+interface EmbeddedPhoneLanPeerOverlay {
+  lastSyncAt?: number | null;
+  lastSyncStartedAt?: number | null;
+  lastSyncError?: string | null;
+  lastSyncNotice?: string | null;
+  status?: LocalNetworkPeer['status'];
+  detail?: string;
+}
 
 let dbPromise: Promise<IDBPDatabase | null> | null = null;
 let inMemoryStore: InMemoryPathStore | null = null;
@@ -260,6 +272,40 @@ async function readEmbeddedPhoneLanServiceState(): Promise<LocalNetworkServiceSt
 
 async function writeEmbeddedPhoneLanServiceState(state: LocalNetworkServiceState): Promise<void> {
   await putSetting(PHONE_LAN_SERVICE_STATE_KEY, JSON.stringify(state));
+}
+
+async function readEmbeddedPhoneLanPeerOverlays(): Promise<Record<string, EmbeddedPhoneLanPeerOverlay>> {
+  const stored = await getSetting(PHONE_LAN_PEER_OVERLAYS_KEY);
+  if (!stored) {
+    return {};
+  }
+  try {
+    return JSON.parse(stored) as Record<string, EmbeddedPhoneLanPeerOverlay>;
+  } catch {
+    return {};
+  }
+}
+
+async function writeEmbeddedPhoneLanPeerOverlays(overlays: Record<string, EmbeddedPhoneLanPeerOverlay>): Promise<void> {
+  await putSetting(PHONE_LAN_PEER_OVERLAYS_KEY, JSON.stringify(overlays));
+}
+
+function applyEmbeddedPhoneLanPeerOverlay(
+  peer: LocalNetworkPeer,
+  overlay: EmbeddedPhoneLanPeerOverlay | undefined
+): LocalNetworkPeer {
+  if (!overlay) {
+    return peer;
+  }
+  return {
+    ...peer,
+    lastSyncAt: overlay.lastSyncAt ?? peer.lastSyncAt,
+    lastSyncStartedAt: overlay.lastSyncStartedAt ?? peer.lastSyncStartedAt,
+    lastSyncError: overlay.lastSyncError ?? peer.lastSyncError,
+    lastSyncNotice: overlay.lastSyncNotice ?? peer.lastSyncNotice,
+    status: overlay.status ?? peer.status,
+    detail: overlay.detail ?? peer.detail,
+  };
 }
 
 class EmbeddedPhoneStorageBackend implements StorageBackend {
@@ -561,9 +607,11 @@ export async function embeddedPhoneLanServiceState(peerCount: number): Promise<L
 export async function embeddedPhoneLanPeersResponse(
   peers: LocalNetworkPeersResponse['peers'] = []
 ): Promise<LocalNetworkPeersResponse> {
+  const overlays = await readEmbeddedPhoneLanPeerOverlays();
+  const mergedPeers = peers.map((peer) => applyEmbeddedPhoneLanPeerOverlay(peer, overlays[peer.peerId]));
   return {
-    service: await embeddedPhoneLanServiceState(peers.length),
-    peers,
+    service: await embeddedPhoneLanServiceState(mergedPeers.length),
+    peers: mergedPeers,
     isOffline: true,
   };
 }
@@ -578,4 +626,31 @@ export async function embeddedPhoneUpdateLanServiceState(
   } satisfies LocalNetworkServiceState;
   await writeEmbeddedPhoneLanServiceState(next);
   return next;
+}
+
+export async function embeddedPhoneSyncPeer(
+  peerId: string,
+  peers: LocalNetworkPeer[]
+): Promise<LocalNetworkPeerMutationResponse> {
+  const current = peers.find((peer) => peer.peerId === peerId);
+  if (!current) {
+    throw new Error(`Local network peer not found: ${peerId}`);
+  }
+
+  const overlays = await readEmbeddedPhoneLanPeerOverlays();
+  const now = Date.now();
+  const nextOverlay: EmbeddedPhoneLanPeerOverlay = {
+    ...overlays[peerId],
+    lastSyncStartedAt: now,
+    lastSyncError: null,
+    lastSyncNotice: 'Sync requested on this phone. Waiting for LAN runtime delivery.',
+    status: 'syncing',
+    detail: 'Sync requested on this phone.',
+  };
+  overlays[peerId] = nextOverlay;
+  await writeEmbeddedPhoneLanPeerOverlays(overlays);
+
+  return {
+    peer: applyEmbeddedPhoneLanPeerOverlay(current, nextOverlay),
+  };
 }

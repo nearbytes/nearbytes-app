@@ -16,6 +16,7 @@ import {
 import {
   embeddedPhoneHasLocalVolume,
   embeddedPhoneLanPeersResponse,
+  embeddedPhoneSyncPeer,
   embeddedPhoneDeleteFile,
   embeddedPhoneDownloadBlob,
   embeddedPhoneExportRecipientReferences,
@@ -547,8 +548,9 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
               const mirrored = await readMirrorLocalNetworkPeers();
               return embeddedPhoneLanPeersResponse(mirrored?.peers ?? []);
             },
-            syncPeer() {
-              return createMissingPhoneRuntimeRequest();
+            async syncPeer(peerId: string) {
+              const mirrored = await readMirrorLocalNetworkPeers();
+              return embeddedPhoneSyncPeer(peerId, mirrored?.peers ?? []);
             },
           },
       shell: {
