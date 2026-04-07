@@ -52,6 +52,108 @@ export async function getCompatibilityHost(): Promise<NearbytesHostContract> {
           return openWatchConnection('/watch/volume', handlers, { auth });
         },
       },
+      integrations: {
+        listProviderAccounts(options) {
+          const endpoint = options?.fast ? '/integrations/accounts?fast=1' : '/integrations/accounts';
+          return createJsonRequest(endpoint, {
+            method: 'GET',
+            signal: options?.signal,
+          });
+        },
+        connectProviderAccount(input, options) {
+          return createJsonRequest('/integrations/accounts/connect', {
+            method: 'POST',
+            body: JSON.stringify(input),
+            signal: options?.signal,
+          });
+        },
+        disconnectProviderAccount(accountId) {
+          return createJsonRequest<void>(`/integrations/accounts/${encodeURIComponent(accountId)}`, {
+            method: 'DELETE',
+          });
+        },
+        configureProviderSetup(provider, input) {
+          return createJsonRequest(`/integrations/providers/${encodeURIComponent(provider)}/config`, {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+        },
+        installProviderHelper(provider, options) {
+          return createJsonRequest(`/integrations/providers/${encodeURIComponent(provider)}/install`, {
+            method: 'POST',
+            signal: options?.signal,
+          });
+        },
+        reconcileProviderManagedShares(provider, options) {
+          return createJsonRequest(`/integrations/providers/${encodeURIComponent(provider)}/reconcile`, {
+            method: 'POST',
+            signal: options?.signal,
+          });
+        },
+        listManagedShares(options) {
+          const endpoint = options?.fast ? '/integrations/shares?fast=1' : '/integrations/shares';
+          return createJsonRequest(endpoint, {
+            method: 'GET',
+            signal: options?.signal,
+          });
+        },
+        listIncomingManagedShares(options) {
+          const endpoint = options?.fast ? '/integrations/shares/incoming?fast=1' : '/integrations/shares/incoming';
+          return createJsonRequest(endpoint, {
+            method: 'GET',
+            signal: options?.signal,
+          });
+        },
+        listIncomingProviderContactInvites(options) {
+          const endpoint = options?.fast
+            ? '/integrations/providers/contact-invites?fast=1'
+            : '/integrations/providers/contact-invites';
+          return createJsonRequest(endpoint, {
+            method: 'GET',
+            signal: options?.signal,
+          });
+        },
+        createManagedShare(input) {
+          return createJsonRequest('/integrations/shares', {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+        },
+        inviteManagedShare(shareId, emails, accessLevel) {
+          return createJsonRequest(`/integrations/shares/${encodeURIComponent(shareId)}/invite`, {
+            method: 'POST',
+            body: JSON.stringify({ emails, accessLevel }),
+          });
+        },
+        attachManagedShare(shareId, volumeId) {
+          return createJsonRequest(`/integrations/shares/${encodeURIComponent(shareId)}/attach`, {
+            method: 'POST',
+            body: JSON.stringify({ volumeId }),
+          });
+        },
+        removeManagedShare(shareId) {
+          return createJsonRequest<void>(`/integrations/shares/${encodeURIComponent(shareId)}`, {
+            method: 'DELETE',
+          });
+        },
+        acceptManagedShare(input) {
+          return createJsonRequest('/integrations/shares/accept', {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+        },
+        acceptIncomingProviderContactInvite(input) {
+          return createJsonRequest<void>('/integrations/providers/contact-invites/accept', {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+        },
+        getManagedShareState(shareId) {
+          return createJsonRequest(`/integrations/shares/${encodeURIComponent(shareId)}/state`, {
+            method: 'GET',
+          });
+        },
+      },
       lan: {
         listPeers(options) {
           return createJsonRequest('/integrations/local-network/peers', {

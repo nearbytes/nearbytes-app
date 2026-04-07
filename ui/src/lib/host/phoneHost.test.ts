@@ -18,6 +18,15 @@ import {
 } from './embeddedPhoneServices.js';
 
 vi.mock('./runtimeTransport.js', () => ({
+  HostRequestError: class HostRequestError extends Error {
+    status: number;
+
+    constructor(status: number, message: string) {
+      super(message);
+      this.name = 'HostRequestError';
+      this.status = status;
+    }
+  },
   getRuntimeConfig: vi.fn(async () => ({
     apiBaseUrl: '',
     desktopToken: '',
@@ -400,6 +409,28 @@ describe('phoneHost', () => {
       peers: [{ peerId: 'peer-1' }],
       isOffline: true,
     });
+  });
+
+  it('routes provider and managed-share surfaces through the embedded phone host without falling back to desktop requests', async () => {
+    const host = await getPhoneHost();
+
+    await expect(host.integrations.listProviderAccounts()).resolves.toEqual({
+      accounts: [],
+      providers: [],
+      preferredProviders: [],
+    });
+    await expect(host.integrations.listManagedShares()).resolves.toEqual({ shares: [] });
+    await expect(host.integrations.listIncomingManagedShares()).resolves.toEqual({ shares: [] });
+    await expect(host.integrations.listIncomingProviderContactInvites()).resolves.toEqual({ invites: [] });
+    await expect(host.integrations.connectProviderAccount({ provider: 'mega' })).rejects.toMatchObject({
+      status: 501,
+      message: expect.stringContaining('Phone runtime capability is not implemented in the embedded phone host yet.'),
+    });
+    await expect(host.integrations.acceptManagedShare({ provider: 'mega' })).rejects.toMatchObject({
+      status: 501,
+      message: expect.stringContaining('Phone runtime capability is not implemented in the embedded phone host yet.'),
+    });
+    expect(requestHostJson).not.toHaveBeenCalled();
   });
 
   it('initiates LAN sync through the embedded phone host and persists the peer sync state', async () => {

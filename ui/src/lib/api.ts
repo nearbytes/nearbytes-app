@@ -1397,11 +1397,8 @@ export async function reconcileDiscoveredSources(
 export async function listProviderAccounts(
   options: { signal?: AbortSignal; fast?: boolean } = {}
 ): Promise<ProviderAccountsResponse> {
-  const endpoint = options.fast ? '/integrations/accounts?fast=1' : '/integrations/accounts';
-  return apiRequest<ProviderAccountsResponse>(endpoint, {
-    method: 'GET',
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  return host.integrations.listProviderAccounts(options) as Promise<ProviderAccountsResponse>;
 }
 
 export async function getAppConfig(options: { signal?: AbortSignal } = {}): Promise<AppConfigResponse> {
@@ -1434,18 +1431,13 @@ export async function connectProviderAccount(input: {
     confirmationLink?: string;
   };
 }, options: { signal?: AbortSignal } = {}): Promise<ConnectProviderAccountResponse> {
-  return apiRequest<ConnectProviderAccountResponse>('/integrations/accounts/connect', {
-    method: 'POST',
-    body: JSON.stringify(input),
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  return host.integrations.connectProviderAccount(input, options) as Promise<ConnectProviderAccountResponse>;
 }
 
 export async function disconnectProviderAccount(accountId: string): Promise<void> {
-  const encoded = encodeURIComponent(accountId);
-  await apiRequest(`/integrations/accounts/${encoded}`, {
-    method: 'DELETE',
-  });
+  const host = await getActiveHost();
+  await host.integrations.disconnectProviderAccount(accountId);
 }
 
 export async function configureProviderSetup(
@@ -1455,65 +1447,45 @@ export async function configureProviderSetup(
     clientSecret?: string;
   }
 ): Promise<ConfigureProviderResponse> {
-  const encoded = encodeURIComponent(provider);
-  return apiRequest<ConfigureProviderResponse>(`/integrations/providers/${encoded}/config`, {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+  const host = await getActiveHost();
+  return host.integrations.configureProviderSetup(provider, input) as Promise<ConfigureProviderResponse>;
 }
 
 export async function installProviderHelper(
   provider: string,
   options: { signal?: AbortSignal } = {}
 ): Promise<ConfigureProviderResponse> {
-  const encoded = encodeURIComponent(provider);
-  return apiRequest<ConfigureProviderResponse>(`/integrations/providers/${encoded}/install`, {
-    method: 'POST',
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  return host.integrations.installProviderHelper(provider, options) as Promise<ConfigureProviderResponse>;
 }
 
 export async function reconcileProviderManagedShares(
   provider: string,
   options: { signal?: AbortSignal } = {}
 ): Promise<ReconcileProviderManagedSharesResponse> {
-  const encoded = encodeURIComponent(provider);
-  return apiRequest<ReconcileProviderManagedSharesResponse>(`/integrations/providers/${encoded}/reconcile`, {
-    method: 'POST',
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  return host.integrations.reconcileProviderManagedShares(provider, options) as Promise<ReconcileProviderManagedSharesResponse>;
 }
 
 export async function listManagedShares(
   options: { signal?: AbortSignal; fast?: boolean } = {}
 ): Promise<ManagedSharesResponse> {
-  const endpoint = options.fast ? '/integrations/shares?fast=1' : '/integrations/shares';
-  return apiRequest<ManagedSharesResponse>(endpoint, {
-    method: 'GET',
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  return host.integrations.listManagedShares(options) as Promise<ManagedSharesResponse>;
 }
 
 export async function listIncomingManagedShares(
   options: { signal?: AbortSignal; fast?: boolean } = {}
 ): Promise<IncomingManagedSharesResponse> {
-  const endpoint = options.fast ? '/integrations/shares/incoming?fast=1' : '/integrations/shares/incoming';
-  return apiRequest<IncomingManagedSharesResponse>(endpoint, {
-    method: 'GET',
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  return host.integrations.listIncomingManagedShares(options) as Promise<IncomingManagedSharesResponse>;
 }
 
 export async function listIncomingProviderContactInvites(
   options: { signal?: AbortSignal; fast?: boolean } = {}
 ): Promise<IncomingProviderContactInvitesResponse> {
-  const endpoint = options.fast
-    ? '/integrations/providers/contact-invites?fast=1'
-    : '/integrations/providers/contact-invites';
-  return apiRequest<IncomingProviderContactInvitesResponse>(endpoint, {
-    method: 'GET',
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  return host.integrations.listIncomingProviderContactInvites(options) as Promise<IncomingProviderContactInvitesResponse>;
 }
 
 export async function listLocalNetworkPeers(
@@ -1543,10 +1515,8 @@ export async function createManagedShare(input: {
   remoteDescriptor?: Record<string, unknown>;
   capabilities?: string[];
 }): Promise<ManagedShareMutationResponse> {
-  return apiRequest<ManagedShareMutationResponse>('/integrations/shares', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+  const host = await getActiveHost();
+  return host.integrations.createManagedShare(input) as Promise<ManagedShareMutationResponse>;
 }
 
 export async function inviteManagedShare(
@@ -1554,29 +1524,21 @@ export async function inviteManagedShare(
   emails: string[],
   accessLevel?: 'read' | 'read/write' | 'full access'
 ): Promise<ManagedShareMutationResponse> {
-  const encoded = encodeURIComponent(shareId);
-  return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/invite`, {
-    method: 'POST',
-    body: JSON.stringify({ emails, accessLevel }),
-  });
+  const host = await getActiveHost();
+  return host.integrations.inviteManagedShare(shareId, emails, accessLevel) as Promise<ManagedShareMutationResponse>;
 }
 
 export async function attachManagedShare(
   shareId: string,
   volumeId: string
 ): Promise<ManagedShareMutationResponse> {
-  const encoded = encodeURIComponent(shareId);
-  return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/attach`, {
-    method: 'POST',
-    body: JSON.stringify({ volumeId }),
-  });
+  const host = await getActiveHost();
+  return host.integrations.attachManagedShare(shareId, volumeId) as Promise<ManagedShareMutationResponse>;
 }
 
 export async function removeManagedShare(shareId: string): Promise<void> {
-  const encoded = encodeURIComponent(shareId);
-  await apiRequest<{ ok: true }>(`/integrations/shares/${encoded}`, {
-    method: 'DELETE',
-  });
+  const host = await getActiveHost();
+  await host.integrations.removeManagedShare(shareId);
 }
 
 export async function acceptManagedShare(input: {
@@ -1588,10 +1550,8 @@ export async function acceptManagedShare(input: {
   remoteDescriptor?: Record<string, unknown>;
   capabilities?: string[];
 }): Promise<ManagedShareMutationResponse> {
-  return apiRequest<ManagedShareMutationResponse>('/integrations/shares/accept', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+  const host = await getActiveHost();
+  return host.integrations.acceptManagedShare(input) as Promise<ManagedShareMutationResponse>;
 }
 
 export async function acceptIncomingProviderContactInvite(input: {
@@ -1599,17 +1559,13 @@ export async function acceptIncomingProviderContactInvite(input: {
   accountId: string;
   inviteId: string;
 }): Promise<void> {
-  await apiRequest<{ ok: true }>('/integrations/providers/contact-invites/accept', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+  const host = await getActiveHost();
+  await host.integrations.acceptIncomingProviderContactInvite(input);
 }
 
 export async function getManagedShareState(shareId: string): Promise<ManagedShareMutationResponse> {
-  const encoded = encodeURIComponent(shareId);
-  return apiRequest<ManagedShareMutationResponse>(`/integrations/shares/${encoded}/state`, {
-    method: 'GET',
-  });
+  const host = await getActiveHost();
+  return host.integrations.getManagedShareState(shareId) as Promise<ManagedShareMutationResponse>;
 }
 
 export async function getUiDebugCapabilities(): Promise<UiDebugCapabilities> {

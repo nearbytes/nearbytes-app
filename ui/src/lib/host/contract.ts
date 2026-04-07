@@ -26,6 +26,25 @@ export interface NearbytesLanFamily {
   syncPeer(peerId: string, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
+export interface NearbytesIntegrationsFamily {
+  listProviderAccounts(options?: { signal?: AbortSignal; fast?: boolean }): Promise<unknown>;
+  connectProviderAccount(input: unknown, options?: { signal?: AbortSignal }): Promise<unknown>;
+  disconnectProviderAccount(accountId: string): Promise<void>;
+  configureProviderSetup(provider: string, input: unknown): Promise<unknown>;
+  installProviderHelper(provider: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  reconcileProviderManagedShares(provider: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  listManagedShares(options?: { signal?: AbortSignal; fast?: boolean }): Promise<unknown>;
+  listIncomingManagedShares(options?: { signal?: AbortSignal; fast?: boolean }): Promise<unknown>;
+  listIncomingProviderContactInvites(options?: { signal?: AbortSignal; fast?: boolean }): Promise<unknown>;
+  createManagedShare(input: unknown): Promise<unknown>;
+  inviteManagedShare(shareId: string, emails: string[], accessLevel?: string): Promise<unknown>;
+  attachManagedShare(shareId: string, volumeId: string): Promise<unknown>;
+  removeManagedShare(shareId: string): Promise<void>;
+  acceptManagedShare(input: unknown): Promise<unknown>;
+  acceptIncomingProviderContactInvite(input: unknown): Promise<void>;
+  getManagedShareState(shareId: string): Promise<unknown>;
+}
+
 export interface NearbytesCapabilityFamily {
   hostKind: 'desktop' | 'phone' | 'web';
   runtimeOwner: 'embedded' | 'desktop-proxy' | 'remote-runtime';
@@ -66,6 +85,7 @@ export interface NearbytesHostContract {
   capabilities: NearbytesCapabilityFamily;
   objects: NearbytesObjectFamily;
   invalidation: NearbytesInvalidationFamily;
+  integrations: NearbytesIntegrationsFamily;
   lan: NearbytesLanFamily;
   shell: NearbytesShellFamily;
   legacyDesktop: NearbytesLegacyDesktopFamily;
