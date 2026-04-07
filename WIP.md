@@ -8,8 +8,19 @@
 
 ## Quality Metrics
 
-- Implemented items: 7 / 8 active items
+- Implemented items: 12 / 16 active items
 - Implemented deferred items ahead of schedule: 0 / 7 deferred items
+
+## Execution Todo For Current Pass
+
+- [ ] Commit the uncommitted MEGA reliability fixes left over from the previous iteration.
+- [ ] Commit the uncommitted shared mobile-shell cleanup left over from the previous iteration.
+- [ ] Commit the native iPhone embedded-runtime ownership cut so phone no longer falls back to desktop-proxy ownership.
+- [ ] Regenerate and commit shipped UI build artifacts so the packaged phone shell matches source behavior.
+- [ ] Implement embedded phone provider-account runtime support.
+- [ ] Implement embedded phone managed-share runtime support.
+- [ ] Implement embedded phone MEGA runtime support.
+- [ ] Replace mirrored-only phone LAN sync with an embedded phone LAN runtime.
 
 ## Section 1: Phase 1 Remaining Items
 
