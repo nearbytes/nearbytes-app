@@ -8,6 +8,42 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    (function bootstrapRuntimeIdentity() {
+      const targetWindow = window;
+      if (targetWindow.nearbytesDesktop) {
+        return;
+      }
+
+      const capacitor = targetWindow.Capacitor;
+      const isNativePhoneHost = !!capacitor && (typeof capacitor.isNativePlatform !== 'function' || capacitor.isNativePlatform());
+      if (!isNativePhoneHost) {
+        return;
+      }
+
+      const hasHttpOrigin = window.location.protocol === 'http:' || window.location.protocol === 'https:';
+      const existingConfig = targetWindow.nearbytesRuntimeConfig || {};
+      targetWindow.nearbytesRuntimeConfig = {
+        ...existingConfig,
+        apiBaseUrl:
+          typeof existingConfig.apiBaseUrl === 'string'
+            ? existingConfig.apiBaseUrl
+            : hasHttpOrigin
+              ? window.location.origin
+              : '',
+        isDesktop: false,
+        runtimeHostKind: 'phone',
+        runtimeOwner:
+          existingConfig.runtimeOwner === 'embedded' ||
+          existingConfig.runtimeOwner === 'desktop-proxy' ||
+          existingConfig.runtimeOwner === 'remote-runtime'
+            ? existingConfig.runtimeOwner
+            : hasHttpOrigin
+              ? 'desktop-proxy'
+              : 'embedded',
+      };
+    })();
+  </script>
 </head>
 <body>
   <div id="app"></div>

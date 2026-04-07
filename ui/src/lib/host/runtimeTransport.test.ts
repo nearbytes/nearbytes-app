@@ -117,6 +117,24 @@ describe('runtimeTransport', () => {
     });
   });
 
+  it('accepts injected phone runtime identity without requiring an api base url', async () => {
+    await expect(
+      getRuntimeConfig({
+        injectedConfig: {
+          runtimeHostKind: 'phone',
+          runtimeOwner: 'embedded',
+        },
+      })
+    ).resolves.toEqual({
+      apiBaseUrl: '',
+      desktopToken: '',
+      isDesktop: false,
+      runtimeTokenHeader: 'x-nearbytes-runtime-token',
+      runtimeHostKind: 'phone',
+      runtimeOwner: 'embedded',
+    });
+  });
+
   it('defaults runtimes to the generic runtime token header', () => {
     expect(
       getRuntimeTokenHeader({

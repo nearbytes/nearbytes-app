@@ -6,6 +6,9 @@ import {
 
 interface NearbytesRuntimeWindow extends Window {
   nearbytesRuntimeConfig?: Partial<DesktopRuntimeConfig>;
+  Capacitor?: {
+    isNativePlatform?: () => boolean;
+  };
 }
 
 const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
@@ -56,7 +59,16 @@ function readInjectedRuntimeConfig(): DesktopRuntimeConfig | null {
     return null;
   }
   const injected = (window as NearbytesRuntimeWindow).nearbytesRuntimeConfig;
-  if (!injected || typeof injected.apiBaseUrl !== 'string' || injected.apiBaseUrl.trim().length === 0) {
+  if (
+    !injected ||
+    !(
+      (typeof injected.apiBaseUrl === 'string' && injected.apiBaseUrl.trim().length > 0) ||
+      typeof injected.desktopToken === 'string' ||
+      injected.isDesktop === true ||
+      typeof injected.runtimeHostKind === 'string' ||
+      typeof injected.runtimeOwner === 'string'
+    )
+  ) {
     return null;
   }
   return normalizePartialRuntimeConfig({
@@ -120,7 +132,16 @@ export async function getRuntimeConfig(options: {
 
   const nextPromise = (async () => {
     const injectedConfig = options.injectedConfig;
-    if (injectedConfig && typeof injectedConfig.apiBaseUrl === 'string' && injectedConfig.apiBaseUrl.trim().length > 0) {
+    if (
+      injectedConfig &&
+      (
+        (typeof injectedConfig.apiBaseUrl === 'string' && injectedConfig.apiBaseUrl.trim().length > 0) ||
+        typeof injectedConfig.desktopToken === 'string' ||
+        injectedConfig.isDesktop === true ||
+        typeof injectedConfig.runtimeHostKind === 'string' ||
+        typeof injectedConfig.runtimeOwner === 'string'
+      )
+    ) {
       return normalizePartialRuntimeConfig({
         apiBaseUrl: injectedConfig.apiBaseUrl,
         desktopToken: typeof injectedConfig.desktopToken === 'string' ? injectedConfig.desktopToken : '',

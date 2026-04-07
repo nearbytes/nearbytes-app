@@ -50,6 +50,9 @@ interface DesktopRuntimeConfig {
   readonly apiBaseUrl: string;
   readonly desktopToken: string;
   readonly isDesktop: true;
+  readonly runtimeTokenHeader: 'x-nearbytes-runtime-token';
+  readonly runtimeHostKind: 'desktop';
+  readonly runtimeOwner: 'embedded';
 }
 
 interface DesktopApiJsonOptions extends RequestInit {
@@ -324,6 +327,9 @@ async function startDesktop(): Promise<void> {
     apiBaseUrl,
     desktopToken,
     isDesktop: true,
+    runtimeTokenHeader: 'x-nearbytes-runtime-token',
+    runtimeHostKind: 'desktop',
+    runtimeOwner: 'embedded',
   };
 
   await publishDesktopSession({
@@ -1135,6 +1141,9 @@ function registerIpc(): void {
         apiBaseUrl: '',
         desktopToken: '',
         isDesktop: true,
+        runtimeTokenHeader: 'x-nearbytes-runtime-token',
+        runtimeHostKind: 'desktop',
+        runtimeOwner: 'embedded',
       };
     }
     return state.config;
