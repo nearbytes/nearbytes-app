@@ -33,30 +33,16 @@ Verify on physical iPhone hardware, not just simulator or desktop-proxy developm
 
 If any of this still depends on a desktop companion path, Phase 1 is not complete.
 
-### 3. MEGA adapter failure triage
+### 3. Repo-side MEGA validation is now green
 
-The stale Vitest exclusion for `src/integrations/__tests__/megaAdapter.test.ts` has now been removed and the task was rerun.
+The stale Vitest exclusion for `src/integrations/__tests__/megaAdapter.test.ts` was removed, the real failures were repaired in-repo, and the suite was rerun to green.
 
 Current observed result:
 
 - `yarn vitest run src/integrations/__tests__/megaAdapter.test.ts`
-- 8 tests failed
-- 28 tests passed
+- 36 tests passed
 
-The currently observed failures include:
-
-- native incoming-share mirror write path (`ENOENT` on expected block files)
-- session refresh behavior with saved credentials
-- writable invite or outgoing-share key handling
-- incoming-share key replacement or aliasing behavior
-
-A human now needs to triage those real failures and decide whether the failure is:
-
-- a real regression
-- an environment issue
-- a live-provider dependency mismatch
-
-Do not cut a v1.0 release while those failures remain unresolved or their status is ambiguous.
+This no longer blocks release gating on the repo side. The remaining blockers are human validation and release-authority decisions below.
 
 ### 4. Release authority and distribution decisions
 

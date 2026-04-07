@@ -22,6 +22,17 @@
 - [x] Produce explicit mixed-mode desktop no-regression proof artifacts for the shared surfaces versus legacy desktop surfaces.
 - [ ] Close the full Phase 1 release gate with end-to-end phone LAN validation and desktop parity validation.
 
+### Actionable Next Items For The Final Release Gate
+
+- [x] Unexclude `src/integrations/__tests__/megaAdapter.test.ts` and rerun it so the release gate reflects real MEGA parity status.
+- [x] Capture and group the current `megaAdapter.test.ts` failures into concrete repair buckets with code-path references.
+- [x] Repair the MEGA incoming-share mirror write regressions and rerun `megaAdapter.test.ts`.
+- [x] Repair the MEGA session refresh regressions and rerun `megaAdapter.test.ts`.
+- [x] Repair the MEGA writable invite and share-key regressions and rerun `megaAdapter.test.ts`.
+- [ ] Record real multi-host LAN validation results in `WIP.md`.
+- [ ] Record real physical iPhone validation results in `WIP.md`.
+- [ ] Record release authority and platform decisions in `USER.md` or release notes.
+
 ## Section 2: Explicitly Deferred Runtime Items
 
 - [ ] Phone MEGA runtime support.
