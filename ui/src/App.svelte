@@ -6204,12 +6204,12 @@
               title="Open theme studio"
             >
               <span class="brand-logo-frame interactive">
-                <NearbytesLogo size={64} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+                <NearbytesLogo size={24} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
               </span>
             </button>
           {:else}
             <span class="brand-logo-frame">
-              <NearbytesLogo size={64} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
+              <NearbytesLogo size={24} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
             </span>
           {/if}
           <div class="brand-stack">
@@ -8445,13 +8445,13 @@
     background: var(--nb-header-bg, color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.98)) 98%, var(--nb-shell-top, white)));
     backdrop-filter: blur(18px);
     border-bottom: 1px solid var(--nb-border, rgba(0, 0, 0, 0.10));
-    padding: 1rem 2.5rem 1.1rem;
+    padding: 0.5rem 0.75rem;
     position: sticky;
     top: 0;
     z-index: 120;
     display: flex;
     flex-direction: column;
-    gap: 0.85rem;
+    gap: 0;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   }
 
@@ -8460,11 +8460,11 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1.1rem;
-    padding: 0.9rem 1.1rem;
-    border: 1px solid var(--nb-border, rgba(0, 0, 0, 0.10));
-    border-radius: 18px;
-    background: var(--nb-brand-rail-bg, color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.98)) 98%, var(--nb-shell-bottom, rgba(244, 244, 247, 0.99))));
+    gap: 0.5rem;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
   }
 
   .brand-badge {
@@ -8472,7 +8472,7 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 0.95rem;
+    gap: 0.5rem;
     padding: 0;
     border: 0;
     background: transparent;
@@ -8502,15 +8502,13 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 78px;
-    height: 78px;
+    width: 32px;
+    height: 32px;
     padding: 0;
-    border-radius: 18px;
+    border-radius: 8px;
     background: color-mix(in srgb, var(--nb-logo-bg, #ffffff) 96%, var(--nb-panel-bg, #ffffff));
     border: 1px solid var(--nb-border, rgba(56, 189, 248, 0.16));
-    box-shadow:
-      0 8px 24px rgba(28, 28, 30, 0.08),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    box-shadow: 0 1px 3px rgba(28, 28, 30, 0.06);
   }
 
   .brand-logo-frame.interactive {
@@ -8521,17 +8519,14 @@
   .brand-logo-trigger:focus-visible .brand-logo-frame.interactive {
     border-color: var(--nb-border-strong, rgba(56, 189, 248, 0.32));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, var(--nb-accent-soft, rgba(255, 59, 48, 0.08)));
-    box-shadow:
-      0 10px 28px rgba(28, 28, 30, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.78);
+    box-shadow: 0 2px 6px rgba(28, 28, 30, 0.08);
   }
 
   .brand-copy {
     flex: 0 0 auto;
-    display: grid;
-    gap: 0.08rem;
-    align-content: center;
-    justify-content: center;
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
     white-space: nowrap;
   }
 
@@ -8539,14 +8534,14 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    min-height: 78px;
+    min-height: 0;
     flex: 1 1 auto;
   }
 
   .brand-meta-row {
     display: flex;
     align-items: center;
-    gap: 0.65rem;
+    gap: 0.5rem;
     min-width: 0;
     width: 100%;
   }
@@ -8558,20 +8553,21 @@
 
   .brand-title {
     font-family: var(--nb-font-display);
-    font-size: 1.5rem;
+    font-size: 0.92rem;
     font-weight: 700;
     line-height: 1.1;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
     color: var(--nb-text-main, rgba(0, 0, 0, 0.88));
   }
 
   .brand-note {
     font-family: var(--nb-font-body);
-    font-size: 0.84rem;
+    font-size: 0.72rem;
     font-weight: 400;
     letter-spacing: 0;
     line-height: 1.35;
     color: var(--nb-text-soft, rgba(60, 60, 67, 0.6));
+    display: none;
   }
 
   .brand-actions {
@@ -8613,18 +8609,18 @@
   }
 
   .brand-rail {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .brand-badge {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .header-shell {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
-    align-items: flex-start;
+    gap: 0;
+    align-items: stretch;
     position: relative;
     transition: transform 0.24s ease, filter 0.24s ease;
   }
@@ -9025,10 +9021,10 @@
   .volume-chip {
     appearance: none;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.22)) 90%, transparent);
-    border-radius: 14px;
+    border-radius: 10px;
     background: var(--nb-volume-chip-bg, linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top, rgba(12, 25, 45, 0.9)) 94%, transparent), color-mix(in srgb, var(--nb-panel-bg, rgba(9, 18, 34, 0.88)) 94%, transparent)));
     width: fit-content;
-    min-width: 132px;
+    min-width: 108px;
     max-width: min(72vw, 420px);
     padding: 0.1rem;
     transition: min-width 0.28s ease, max-width 0.28s ease, border-radius 0.28s ease, background-color 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease, transform 0.28s ease;
@@ -9221,12 +9217,12 @@
   .header-dock {
     border: 0;
     background: transparent;
-    padding: 0.26rem 0.36rem 0.26rem 0.62rem;
+    padding: 0.2rem 0.3rem 0.2rem 0.5rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
-    min-height: 36px;
+    gap: 0.4rem;
+    min-height: 30px;
     transition: padding 0.24s ease;
   }
 
@@ -9758,8 +9754,8 @@
     background: var(--nb-btn-bg, rgba(10, 19, 34, 0.52));
     color: var(--nb-btn-color, rgba(191, 219, 254, 0.78));
     border-radius: 999px;
-    width: 36px;
-    height: 36px;
+    width: 30px;
+    height: 30px;
     line-height: 1;
     display: inline-flex;
     align-items: center;
@@ -10187,7 +10183,7 @@
     flex: 1 1 auto;
     min-height: 0;
     height: 100%;
-    padding: 2.5rem;
+    padding: 1rem;
     overflow: hidden;
     transition: background-color 0.3s ease;
     position: relative;
@@ -10345,11 +10341,11 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 0.5rem;
     align-self: stretch;
     margin: 0;
-    padding: 0.28rem 0.38rem;
-    border-radius: 12px;
+    padding: 0.2rem 0.32rem;
+    border-radius: 10px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 70%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
     backdrop-filter: blur(12px);
@@ -10435,8 +10431,8 @@
     background: transparent;
     color: var(--nb-text-soft, rgba(191, 219, 254, 0.72));
     border-radius: 999px;
-    min-height: 34px;
-    padding: 0 0.86rem;
+    min-height: 30px;
+    padding: 0 0.72rem;
     display: inline-flex;
     align-items: center;
     gap: 0.42rem;
@@ -10469,11 +10465,11 @@
     max-width: none;
     margin: 0;
     width: 100%;
-    padding: 0.85rem 1rem 1rem;
+    padding: 0.5rem 0.65rem 0.65rem;
     height: 100%;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.5rem;
     min-height: 0;
     flex: 1 1 auto;
     overflow: hidden;
@@ -12683,14 +12679,6 @@
   }
 
   @media (max-width: 900px) {
-    .header {
-      padding: 0.7rem 1rem 0.9rem;
-    }
-
-    .header-dock {
-      padding: 0.3rem 0.32rem 0.3rem 0.55rem;
-    }
-
     .header-dock-actions {
       width: 100%;
       justify-content: flex-start;
@@ -12700,10 +12688,6 @@
       grid-template-columns: 1fr auto;
     }
 
-    .file-area {
-      padding: 1rem;
-    }
-
     .file-area.volume-workspace-active {
       padding: 0;
     }
@@ -12711,8 +12695,8 @@
     .volume-workspace {
       margin: 0;
       width: 100%;
-      padding: 0.75rem 0.8rem 0.85rem;
-      gap: 0.75rem;
+      padding: 0.5rem 0.65rem 0.65rem;
+      gap: 0.5rem;
     }
 
     .workspace-panels {
@@ -12804,18 +12788,11 @@
     }
 
     .brand-meta-row {
-      flex-direction: column;
-      align-items: flex-start;
+      gap: 0.4rem;
     }
 
     .brand-meta-row :global(.mount-rail),
     .brand-meta-row :global(.mount-rail-track) {
-      width: 100%;
-      justify-content: flex-start;
-    }
-
-    .brand-actions {
-      width: 100%;
       justify-content: flex-start;
     }
 
@@ -12906,14 +12883,6 @@
 
     .workspace-mode-bar {
       align-items: stretch;
-    }
-
-    .brand-badge {
-      flex-direction: column;
-    }
-
-    .brand-stack {
-      width: 100%;
     }
 
     .workspace-mode-secondary {
@@ -13150,6 +13119,29 @@
     .join-dialog-path,
     .join-dialog-message {
       font-size: 0.78rem;
+    }
+  }
+
+  @media (min-width: 901px) {
+    .header {
+      padding: 0.55rem 1.25rem;
+    }
+
+    .brand-note {
+      display: inline;
+    }
+
+    .brand-title {
+      font-size: 1rem;
+    }
+
+    .file-area {
+      padding: 2rem;
+    }
+
+    .volume-workspace {
+      padding: 0.75rem 1rem 1rem;
+      gap: 0.75rem;
     }
   }
 </style>

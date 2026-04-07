@@ -14,7 +14,7 @@
 ## Execution Todo For Current Pass
 
 - [x] Commit the uncommitted MEGA reliability fixes left over from the previous iteration.
-- [ ] Commit the uncommitted shared mobile-shell cleanup left over from the previous iteration.
+- [x] Commit the uncommitted shared mobile-shell cleanup left over from the previous iteration.
 - [ ] Commit the native iPhone embedded-runtime ownership cut so phone no longer falls back to desktop-proxy ownership.
 - [ ] Regenerate and commit shipped UI build artifacts so the packaged phone shell matches source behavior.
 - [ ] Implement embedded phone provider-account runtime support.
