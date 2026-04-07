@@ -97,7 +97,7 @@ describe('runtimeTransport', () => {
     });
   });
 
-  it('accepts an injected runtime config for non-desktop hosts', async () => {
+  it('forces injected phone runtime ownership to embedded', async () => {
     await expect(
       getRuntimeConfig({
         injectedConfig: {
@@ -113,7 +113,7 @@ describe('runtimeTransport', () => {
       isDesktop: false,
       runtimeTokenHeader: 'x-nearbytes-runtime-token',
       runtimeHostKind: 'phone',
-      runtimeOwner: 'desktop-proxy',
+      runtimeOwner: 'embedded',
     });
   });
 

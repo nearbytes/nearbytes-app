@@ -1,9 +1,4 @@
-import {
-  openHostStream,
-  requestHostBlob,
-  requestHostJson,
-  getRuntimeConfig,
-} from './runtimeTransport.js';
+import { getRuntimeConfig } from './runtimeTransport.js';
 import { createSecret } from '../../../../src/types/keys.js';
 import { deriveKeys } from '../../../../src/crypto/asymmetric.js';
 import { bytesToHex } from '../../../../src/utils/encoding.js';
@@ -59,15 +54,11 @@ import type {
   NearbytesHostContract,
   NearbytesAuth,
 } from './contract.js';
-import {
-  createJsonRequest,
-  openWatchConnection,
-} from './transportHostHelpers.js';
 
 let hostPromise: Promise<NearbytesHostContract> | null = null;
 
 const MISSING_PHONE_RUNTIME_MESSAGE =
-  'Phone runtime is missing. Start the desktop-backed phone dev runtime or implement the native phone host runtime.';
+  'Phone runtime capability is not implemented in the embedded phone host yet.';
 const EMBEDDED_PHONE_MIRROR_MESSAGE = 'Using persisted mirrored data. Runtime unavailable.';
 
 function createMissingPhoneRuntimeError(): Error {
@@ -159,10 +150,6 @@ function buildChatStateFromTimeline(events: TimelineEvent[]): VolumeChatState {
     messages,
     isOffline: true,
   };
-}
-
-function hasCompatibilityTransport(runtimeOwner: NearbytesHostContract['capabilities']['runtimeOwner']): boolean {
-  return runtimeOwner === 'desktop-proxy' || runtimeOwner === 'remote-runtime';
 }
 
 function createUnsupportedWatchConnection(): { close(): void } {
@@ -352,123 +339,6 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
   };
 }
 
-function createCompatibilityLegacyDesktopFamily(): NearbytesHostContract['legacyDesktop'] {
-  return {
-    openVolume(secret) {
-      return createJsonRequest('/open', {
-        method: 'POST',
-        body: JSON.stringify({ secret }),
-      });
-    },
-    listFiles(auth) {
-      return createJsonRequest('/files', {
-        method: 'GET',
-        auth,
-      });
-    },
-    getTimeline(auth) {
-      return createJsonRequest('/timeline', {
-        method: 'GET',
-        auth,
-      });
-    },
-    getEventDetail(auth, eventHash) {
-      return createJsonRequest(`/events/${eventHash}`, {
-        method: 'GET',
-        auth,
-      });
-    },
-    getEventStorageLocations(auth, eventHash) {
-      return createJsonRequest(`/events/${eventHash}/storage-locations`, {
-        method: 'GET',
-        auth,
-      });
-    },
-    uploadFile(auth, file) {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('filename', file.name);
-      return createJsonRequest('/upload', {
-        method: 'POST',
-        auth,
-        body: formData,
-      });
-    },
-    deleteFile(auth, filename) {
-      return createJsonRequest<void>(`/files/${encodeURIComponent(filename)}`, {
-        method: 'DELETE',
-        auth,
-      });
-    },
-    renameFile(auth, from, to) {
-      return createJsonRequest('/files/rename', {
-        method: 'POST',
-        auth,
-        body: JSON.stringify({ from, to }),
-      });
-    },
-    renameFolder(auth, from, to, merge) {
-      return createJsonRequest('/folders/rename', {
-        method: 'POST',
-        auth,
-        body: JSON.stringify({ from, to, merge }),
-      });
-    },
-    exportSourceReferences(auth, filenames) {
-      return createJsonRequest('/references/source/export', {
-        method: 'POST',
-        auth,
-        body: JSON.stringify({ filenames }),
-      });
-    },
-    importSourceReferences(auth, bundle, sourceSecret) {
-      return createJsonRequest('/references/source/import', {
-        method: 'POST',
-        auth,
-        body: JSON.stringify({ bundle, sourceSecret }),
-      });
-    },
-    exportRecipientReferences(auth, filenames, recipientVolumeId) {
-      return createJsonRequest('/references/recipient/export', {
-        method: 'POST',
-        auth,
-        body: JSON.stringify({ filenames, recipientVolumeId }),
-      });
-    },
-    importRecipientReferences(auth, bundle) {
-      return createJsonRequest('/references/recipient/import', {
-        method: 'POST',
-        auth,
-        body: JSON.stringify({ bundle }),
-      });
-    },
-    listChat(auth) {
-      return createJsonRequest('/chat', {
-        method: 'GET',
-        auth,
-      });
-    },
-    publishIdentity(auth, identitySecret, profile) {
-      return createJsonRequest('/chat/identities', {
-        method: 'POST',
-        auth,
-        body: JSON.stringify({ identitySecret, profile }),
-      });
-    },
-    sendChatMessage(auth, identitySecret, input) {
-      return createJsonRequest('/chat/messages', {
-        method: 'POST',
-        auth,
-        body: JSON.stringify({
-          identitySecret,
-          body: input.body,
-          attachment: input.attachment,
-        }),
-      });
-    },
-  };
-}
-
 export function resetPhoneHostForTests(): void {
   hostPromise = null;
 }
@@ -479,12 +349,9 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
   }
 
   hostPromise = (async () => {
-    const runtimeConfig = await getRuntimeConfig();
-    const runtimeOwner = runtimeConfig.runtimeOwner ?? 'embedded';
-    const compatibilityTransport = hasCompatibilityTransport(runtimeOwner);
-    const legacyDesktop = compatibilityTransport
-      ? createCompatibilityLegacyDesktopFamily()
-      : createUnsupportedLegacyDesktopFamily();
+    await getRuntimeConfig();
+    const runtimeOwner: NearbytesHostContract['capabilities']['runtimeOwner'] = 'embedded';
+    const legacyDesktop = createUnsupportedLegacyDesktopFamily();
 
     return {
       capabilities: {
@@ -493,114 +360,84 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
         supportsDirectoryPicker: false,
         supportsRuntimeLogs: false,
       },
-      objects: compatibilityTransport
-        ? {
-            requestJson: requestHostJson,
-            requestBlob: requestHostBlob,
-            openStream: openHostStream,
+      objects: {
+        requestJson: () => createMissingPhoneRuntimeRequest(),
+        async requestBlob(endpoint, options) {
+          const headers = new Headers(options?.headers);
+          const secret = headers.get('x-nearbytes-secret');
+          if (!secret || !endpoint.startsWith('/file/')) {
+            return createMissingPhoneRuntimeRequest();
           }
-        : {
-            requestJson: () => createMissingPhoneRuntimeRequest(),
-            async requestBlob(endpoint, options) {
-              const headers = new Headers(options?.headers);
-              const secret = headers.get('x-nearbytes-secret');
-              if (!secret || !endpoint.startsWith('/file/')) {
-                return createMissingPhoneRuntimeRequest();
-              }
-              const blobHash = endpoint.slice('/file/'.length);
-              return embeddedPhoneDownloadBlob(secret, blobHash);
-            },
-            openStream: () => createMissingPhoneRuntimeRequest(),
-          },
-      invalidation: compatibilityTransport
-        ? {
-            watchSources(handlers) {
-              return openWatchConnection('/watch/sources', handlers);
-            },
-            watchVolume(auth, handlers) {
-              return openWatchConnection('/watch/volume', handlers, { auth });
-            },
+          const blobHash = endpoint.slice('/file/'.length);
+          return embeddedPhoneDownloadBlob(secret, blobHash);
+        },
+        openStream: () => createMissingPhoneRuntimeRequest(),
+      },
+      invalidation: {
+        watchSources(handlers) {
+          queueMicrotask(() => {
+            handlers.onError?.(createMissingPhoneRuntimeError());
+            handlers.onClose?.();
+          });
+          return createUnsupportedWatchConnection();
+        },
+        watchVolume(auth, handlers) {
+          const secret = readSecretAuth(auth);
+          if (!secret) {
+            queueMicrotask(() => {
+              handlers.onError?.(createMissingPhoneRuntimeError());
+              handlers.onClose?.();
+            });
+            return createUnsupportedWatchConnection();
           }
-        : {
-            watchSources(handlers) {
-              queueMicrotask(() => {
-                handlers.onError?.(createMissingPhoneRuntimeError());
-                handlers.onClose?.();
-              });
-              return createUnsupportedWatchConnection();
-            },
-            watchVolume(auth, handlers) {
-              const secret = readSecretAuth(auth);
-              if (!secret) {
-                queueMicrotask(() => {
-                  handlers.onError?.(createMissingPhoneRuntimeError());
-                  handlers.onClose?.();
-                });
-                return createUnsupportedWatchConnection();
-              }
 
-              let unsubscribe: (() => void) | null = null;
-              let closed = false;
+          let unsubscribe: (() => void) | null = null;
+          let closed = false;
 
-              void (async () => {
-                try {
-                  const subscription = await embeddedPhoneSubscribeVolumeWatch(secret, (update) => {
-                    if (closed) {
-                      return;
-                    }
-                    handlers.onMessage?.(createEmbeddedWatchMessage('volume-update', update));
-                  });
-                  if (closed) {
-                    subscription.unsubscribe();
-                    return;
-                  }
-                  unsubscribe = () => {
-                    subscription.unsubscribe();
-                  };
-                  handlers.onMessage?.(createEmbeddedWatchMessage('watch-ready', subscription.ready));
-                } catch (error) {
-                  if (closed) {
-                    return;
-                  }
-                  handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
-                  handlers.onClose?.();
+          void (async () => {
+            try {
+              const subscription = await embeddedPhoneSubscribeVolumeWatch(secret, (update) => {
+                if (closed) {
+                  return;
                 }
-              })();
-
-              return {
-                close() {
-                  closed = true;
-                  unsubscribe?.();
-                  unsubscribe = null;
-                },
+                handlers.onMessage?.(createEmbeddedWatchMessage('volume-update', update));
+              });
+              if (closed) {
+                subscription.unsubscribe();
+                return;
+              }
+              unsubscribe = () => {
+                subscription.unsubscribe();
               };
+              handlers.onMessage?.(createEmbeddedWatchMessage('watch-ready', subscription.ready));
+            } catch (error) {
+              if (closed) {
+                return;
+              }
+              handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+              handlers.onClose?.();
+            }
+          })();
+
+          return {
+            close() {
+              closed = true;
+              unsubscribe?.();
+              unsubscribe = null;
             },
-          },
-      lan: compatibilityTransport
-        ? {
-            listPeers(options) {
-              return createJsonRequest('/integrations/local-network/peers', {
-                method: 'GET',
-                signal: options?.signal,
-              });
-            },
-            syncPeer(peerId, options) {
-              return createJsonRequest(`/integrations/local-network/peers/${encodeURIComponent(peerId)}/sync`, {
-                method: 'POST',
-                signal: options?.signal,
-              });
-            },
-          }
-        : {
-            async listPeers(): Promise<LocalNetworkPeersResponse> {
-              const mirrored = await readMirrorLocalNetworkPeers();
-              return embeddedPhoneLanPeersResponse(mirrored?.peers ?? []);
-            },
-            async syncPeer(peerId: string) {
-              const mirrored = await readMirrorLocalNetworkPeers();
-              return embeddedPhoneSyncPeer(peerId, mirrored?.peers ?? []);
-            },
-          },
+          };
+        },
+      },
+      lan: {
+        async listPeers(): Promise<LocalNetworkPeersResponse> {
+          const mirrored = await readMirrorLocalNetworkPeers();
+          return embeddedPhoneLanPeersResponse(mirrored?.peers ?? []);
+        },
+        async syncPeer(peerId: string) {
+          const mirrored = await readMirrorLocalNetworkPeers();
+          return embeddedPhoneSyncPeer(peerId, mirrored?.peers ?? []);
+        },
+      },
       shell: {
         chooseDirectory: async () => null,
       },

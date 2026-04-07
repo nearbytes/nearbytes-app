@@ -33,14 +33,7 @@
               : '',
         isDesktop: false,
         runtimeHostKind: 'phone',
-        runtimeOwner:
-          existingConfig.runtimeOwner === 'embedded' ||
-          existingConfig.runtimeOwner === 'desktop-proxy' ||
-          existingConfig.runtimeOwner === 'remote-runtime'
-            ? existingConfig.runtimeOwner
-            : hasHttpOrigin
-              ? 'desktop-proxy'
-              : 'embedded',
+        runtimeOwner: 'embedded',
       };
     })();
   </script>

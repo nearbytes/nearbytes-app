@@ -20,6 +20,16 @@ const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
   runtimeOwner: 'embedded',
 };
 
+export class HostRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'HostRequestError';
+    this.status = status;
+  }
+}
+
 let runtimeConfigPromise: Promise<DesktopRuntimeConfig> | null = null;
 
 function normalizeRuntimeTokenHeader(value: unknown): string {
@@ -35,7 +45,14 @@ function normalizeRuntimeHostKind(value: unknown, isDesktop: boolean): NonNullab
   return isDesktop ? 'desktop' : 'web';
 }
 
-function normalizeRuntimeOwner(value: unknown, isDesktop: boolean): NonNullable<DesktopRuntimeConfig['runtimeOwner']> {
+function normalizeRuntimeOwner(
+  value: unknown,
+  isDesktop: boolean,
+  runtimeHostKind: NonNullable<DesktopRuntimeConfig['runtimeHostKind']>
+): NonNullable<DesktopRuntimeConfig['runtimeOwner']> {
+  if (runtimeHostKind === 'phone') {
+    return 'embedded';
+  }
   if (value === 'embedded' || value === 'desktop-proxy' || value === 'remote-runtime') {
     return value;
   }
@@ -44,13 +61,14 @@ function normalizeRuntimeOwner(value: unknown, isDesktop: boolean): NonNullable<
 
 function normalizePartialRuntimeConfig(config: Partial<DesktopRuntimeConfig>): DesktopRuntimeConfig {
   const isDesktop = config.isDesktop === true;
+  const runtimeHostKind = normalizeRuntimeHostKind(config.runtimeHostKind, isDesktop);
   return {
     apiBaseUrl: typeof config.apiBaseUrl === 'string' ? config.apiBaseUrl : '',
     desktopToken: typeof config.desktopToken === 'string' ? config.desktopToken : '',
     isDesktop,
     runtimeTokenHeader: normalizeRuntimeTokenHeader(config.runtimeTokenHeader),
-    runtimeHostKind: normalizeRuntimeHostKind(config.runtimeHostKind, isDesktop),
-    runtimeOwner: normalizeRuntimeOwner(config.runtimeOwner, isDesktop),
+    runtimeHostKind,
+    runtimeOwner: normalizeRuntimeOwner(config.runtimeOwner, isDesktop, runtimeHostKind),
   };
 }
 
@@ -221,7 +239,7 @@ export async function requestHostJson<T>(endpoint: string, options: RequestInit 
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response));
+    throw new HostRequestError(response.status, await parseErrorMessage(response));
   }
 
   const text = await response.text();
@@ -247,7 +265,7 @@ export async function openHostStream(endpoint: string, options: RequestInit = {}
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response));
+    throw new HostRequestError(response.status, await parseErrorMessage(response));
   }
 
   return response;

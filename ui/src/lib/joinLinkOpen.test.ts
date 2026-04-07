@@ -182,7 +182,7 @@ describe('joinLinkOpen', () => {
         listManagedShares: async () => ({ shares: [] }),
         connectProviderAccount: vi.fn(),
         acceptManagedShare: vi.fn(async () => {
-          throw new Error('Phone runtime is missing. Start the desktop-backed phone dev runtime or implement the native phone host runtime.');
+          throw new Error('Phone runtime capability is not implemented in the embedded phone host yet.');
         }),
         attachManagedShare: vi.fn(),
         previewJoinLink: async () => ({

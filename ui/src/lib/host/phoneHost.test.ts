@@ -122,7 +122,7 @@ describe('phoneHost', () => {
     expect(finalFiles).toMatchObject({ files: [] });
     expect(finalFiles.isOffline).toBeUndefined();
     await expect(host.legacyDesktop.listFiles({ type: 'token', token: 'abc' })).rejects.toThrow(
-      'Phone runtime is missing. Start the desktop-backed phone dev runtime or implement the native phone host runtime.'
+      'Phone runtime capability is not implemented in the embedded phone host yet.'
     );
     expect(requestHostJson).not.toHaveBeenCalled();
     expect(openHostStream).not.toHaveBeenCalled();
@@ -283,7 +283,7 @@ describe('phoneHost', () => {
       isOffline: true,
     });
     await expect(host.legacyDesktop.uploadFile({ type: 'token', token: 'abc' }, new File(['x'], 'x.txt'))).rejects.toThrow(
-      'Phone runtime is missing. Start the desktop-backed phone dev runtime or implement the native phone host runtime.'
+      'Phone runtime capability is not implemented in the embedded phone host yet.'
     );
     expect(requestHostJson).not.toHaveBeenCalled();
     expect(openHostStream).not.toHaveBeenCalled();
@@ -583,7 +583,7 @@ describe('phoneHost', () => {
     });
   });
 
-  it('uses the shared transport for desktop-backed phone runtime compatibility', async () => {
+  it('forces embedded ownership even when legacy proxy runtime metadata is injected', async () => {
     vi.mocked(getRuntimeConfig).mockResolvedValueOnce({
       apiBaseUrl: 'https://nearbytes.test',
       desktopToken: '',
@@ -595,19 +595,14 @@ describe('phoneHost', () => {
 
     const host = await getPhoneHost();
 
-    await host.legacyDesktop.openVolume('secret');
-    await host.lan.listPeers();
+    const peers = await host.lan.listPeers() as {
+      peers: Array<unknown>;
+      isOffline?: boolean;
+    };
 
-    expect(host.capabilities.runtimeOwner).toBe('desktop-proxy');
-    expect(requestHostJson).toHaveBeenCalledWith('/open', {
-      method: 'POST',
-      headers: new Headers(),
-      body: JSON.stringify({ secret: 'secret' }),
-    });
-    expect(requestHostJson).toHaveBeenCalledWith('/integrations/local-network/peers', {
-      method: 'GET',
-      headers: new Headers(),
-      signal: undefined,
-    });
+    expect(host.capabilities.runtimeOwner).toBe('embedded');
+    expect(peers).toMatchObject({ peers: [], isOffline: true });
+    expect(requestHostJson).not.toHaveBeenCalled();
+    expect(openHostStream).not.toHaveBeenCalled();
   });
 });

@@ -253,7 +253,7 @@ function normalizeProvider(value: string): string {
 }
 
 function isMissingPhoneRuntimeError(error: unknown): boolean {
-  return error instanceof Error && /phone runtime is missing|runtime unavailable/iu.test(error.message);
+  return error instanceof Error && /phone runtime is missing|phone runtime capability is not implemented|runtime unavailable/iu.test(error.message);
 }
 
 function resolveJoinLinkSuggestedLocalPath(descriptor: Record<string, unknown>): string | undefined {
