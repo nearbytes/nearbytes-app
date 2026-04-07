@@ -246,6 +246,7 @@ export function createManualTestPaths(home) {
 
 export function seedManualTestConfig({ home, rootsConfigPath, appConfigPath, localRootPath, providers }) {
   const nearbytesDir = path.join(home, '.nearbytes');
+  const sourceId = 'src-default';
   mkdirSync(nearbytesDir, { recursive: true });
   mkdirSync(localRootPath, { recursive: true });
 
@@ -255,17 +256,27 @@ export function seedManualTestConfig({ home, rootsConfigPath, appConfigPath, loc
       version: 2,
       sources: [
         {
-          id: 'src-default',
+          id: sourceId,
           provider: 'local',
           path: localRootPath,
-          enabled: false,
-          writable: false,
+          enabled: true,
+          writable: true,
           reservePercent: 5,
           opportunisticPolicy: 'block-writes',
         },
       ],
       defaultVolume: {
-        destinations: [],
+        destinations: [
+          {
+            sourceId,
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+        ],
       },
       volumes: [],
     }, null, 2)}\n`,

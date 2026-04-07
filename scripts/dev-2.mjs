@@ -35,7 +35,7 @@ loadDotEnvIfPresent(dotEnvPath);
 
 const localPort = readPositiveIntEnv('NEARBYTES_DEV2_LOCAL_PORT', 3200);
 const remotePort = readPositiveIntEnv('NEARBYTES_DEV2_REMOTE_PORT', 3201);
-const localUiPort = readPositiveIntEnv('NEARBYTES_DEV2_LOCAL_UI_PORT', 5181);
+const localUiPort = readPositiveIntEnv('NEARBYTES_DEV2_LOCAL_UI_PORT', 5177);
 const remoteUiPort = readPositiveIntEnv('NEARBYTES_DEV2_REMOTE_UI_PORT', 5182);
 const startupTimeoutMs = readPositiveIntEnv('NEARBYTES_DEV2_STARTUP_TIMEOUT_MS', 90_000);
 const localHome = trimOrDefault(process.env.NEARBYTES_DEV2_LOCAL_HOME, '/tmp/nearbytes-dev2-local-home');
@@ -92,14 +92,15 @@ try {
   console.error('[dev-2] clearing dedicated ports', { localPort, remotePort });
   await clearPorts([localPort, remotePort]);
 
-  console.error('[dev-2] starting first dev instance', { apiPort: localPort, uiPort: localUiPort, home: localHome });
-  const localChild = startDevInstance({
-    name: 'local',
+  console.error('[dev-2] starting local desktop target', { apiPort: localPort, uiPort: localUiPort, home: localHome });
+  const localChild = startDesktopInstance({
+    name: 'local-desktop',
     home: localHome,
     port: localPort,
     uiPort: localUiPort,
     logPath: localLogPath,
   });
+  console.error('[dev-2] starting remote web target', { apiPort: remotePort, uiPort: remoteUiPort, home: remoteHome });
   const remoteChild = startDevInstance({
     name: 'remote',
     home: remoteHome,
@@ -114,7 +115,7 @@ try {
     waitForHealth(localBaseUrl, startupTimeoutMs, localChild, localLogPath),
     waitForHealth(remoteBaseUrl, startupTimeoutMs, remoteChild, remoteLogPath),
   ]);
-  console.error('[dev-2] both instances are healthy');
+  console.error('[dev-2] desktop and remote targets are healthy');
 
   console.error('[dev-2] connecting local MEGA account', { email: localEmail, baseUrl: localBaseUrl });
   const localAccount = await ensureExpectedMegaAccount(localBaseUrl, localEmail);
@@ -226,12 +227,12 @@ try {
     remoteUiUrl,
   });
 
-  openSystemBrowser(localUiUrl);
   openSystemBrowser(remoteUiUrl);
 
   console.error('[dev-2] ready for manual end-to-end testing');
-  console.error(`[dev-2] local UI: ${localUiUrl}`);
+  console.error(`[dev-2] local desktop UI: ${localUiUrl}`);
   console.error(`[dev-2] remote UI: ${remoteUiUrl}`);
+  console.error('[dev-2] local target is the desktop app; remote target opens in the browser');
   console.error('[dev-2] press Ctrl-C to stop both instances');
 
   await Promise.all(children.map((child) => waitForExit(child)));
@@ -259,6 +260,39 @@ function startDevInstance({ name, home, port, uiPort, logPath }) {
       NEARBYTES_WEB_DEV_SESSION_FILE: path.join(home, '.nearbytes-web-dev.json'),
       NEARBYTES_DEV_RUN_SESSION_FILE: path.join(home, '.nearbytes-dev-run.json'),
       NEARBYTES_DESKTOP_SESSION_FILE: path.join(home, '.nearbytes', 'desktop-session.json'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => appendLog(logPath, `[${name}:stdout] ${chunk}`));
+  child.stderr.on('data', (chunk) => appendLog(logPath, `[${name}:stderr] ${chunk}`));
+  child.once('exit', (code, signal) => {
+    appendLog(logPath, `[${name}] exited with code=${code} signal=${signal}\n`);
+  });
+
+  return child;
+}
+
+function startDesktopInstance({ name, home, port, uiPort, logPath }) {
+  const logDir = path.dirname(logPath);
+  mkdirSync(logDir, { recursive: true });
+  const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'run-dev.mjs')], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOME: home,
+      NEARBYTES_ROOTS_CONFIG: localRootsConfigPath,
+      NEARBYTES_APP_CONFIG: localAppConfigPath,
+      NEARBYTES_SKIP_BOOTSTRAP_DEFAULT_DESTINATION: '1',
+      NEARBYTES_WEB_DEV_PORT: String(uiPort),
+      VITE_NEARBYTES_WEB_DEV_PORT: String(uiPort),
+      NEARBYTES_DESKTOP_API_PORT: String(port),
+      NEARBYTES_WEB_DEV_SESSION_FILE: path.join(home, '.nearbytes-web-dev.json'),
+      NEARBYTES_DEV_RUN_SESSION_FILE: path.join(home, '.nearbytes-dev-run.json'),
+      NEARBYTES_DESKTOP_SESSION_FILE: path.join(home, '.nearbytes', 'desktop-session.json'),
+      NEARBYTES_ELECTRON_DEV_SERVER_URL: `http://127.0.0.1:${uiPort}`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
