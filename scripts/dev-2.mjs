@@ -1,15 +1,34 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
-import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import {
+  appendLog,
+  clearPorts,
+  confirmDestructiveWipe,
+  createManualTestPaths,
+  ensureRepoBuild,
+  loadDotEnvIfPresent,
+  normalize,
+  openSystemBrowser,
+  parseWipeMode,
+  readPositiveIntEnv,
+  repoRoot,
+  requestJson,
+  resolveLocalCorepack,
+  seedManualTestConfig as seedSharedManualTestConfig,
+  sleep,
+  trimOrDefault,
+  trimOrNull,
+  waitForExit,
+  waitForHealth,
+} from './lib/dev-orchestration.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, '..');
 const dotEnvPath = path.join(repoRoot, '.env.e2e');
 
 loadDotEnvIfPresent(dotEnvPath);
@@ -48,7 +67,7 @@ const localBaseUrl = `http://127.0.0.1:${localPort}`;
 const remoteBaseUrl = `http://127.0.0.1:${remotePort}`;
 const localUiUrl = `http://127.0.0.1:${localUiPort}`;
 const remoteUiUrl = `http://127.0.0.1:${remoteUiPort}`;
-const cliOptions = parseCliOptions(process.argv.slice(2));
+const cliOptions = { wipeMode: parseWipeMode(process.argv.slice(2)) };
 
 const children = [];
 let shuttingDown = false;
@@ -69,7 +88,7 @@ try {
   seedManualTestConfig(remoteHome, remoteRootsConfigPath, remoteAppConfigPath);
 
   console.error('[dev-2] building project');
-  ensureBuild();
+  ensureRepoBuild();
   console.error('[dev-2] clearing dedicated ports', { localPort, remotePort });
   await clearPorts([localPort, remotePort]);
 
@@ -109,9 +128,10 @@ try {
   } = await import('../dist/integrations/mega.js');
 
   const shouldWipe = await confirmDestructiveWipe({
-    localEmail,
-    remoteEmail,
+    firstLabel: localEmail,
+    secondLabel: remoteEmail,
     mode: cliOptions.wipeMode,
+    summary: 'wipe will revoke cross-shares and delete cloud-drive contents on both MEGA accounts',
   });
   if (shouldWipe) {
     process.env.NEARBYTES_ALLOW_DESTRUCTIVE_MEGA_E2E_WIPE = '1';
@@ -221,17 +241,6 @@ try {
   await shutdown(1);
 }
 
-function ensureBuild() {
-  const result = spawnSync(buildYarnCommand()[0], buildYarnCommand(['build'])[1], {
-    cwd: repoRoot,
-    env: process.env,
-    stdio: 'inherit',
-  });
-  if ((result.status ?? 1) !== 0) {
-    throw new Error(`Build failed with exit code ${result.status ?? 1}.`);
-  }
-}
-
 function startDevInstance({ name, home, port, uiPort, logPath }) {
   const logDir = path.dirname(logPath);
   mkdirSync(logDir, { recursive: true });
@@ -265,20 +274,6 @@ function startDevInstance({ name, home, port, uiPort, logPath }) {
   return child;
 }
 
-async function waitForHealth(baseUrl, timeoutMs, child, logPath) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`Dev instance for ${baseUrl} exited before becoming healthy. Check ${logPath}.`);
-    }
-    if (await isHealthy(`${baseUrl}/health`)) {
-      return;
-    }
-    await sleep(500);
-  }
-  throw new Error(`Timed out waiting for ${baseUrl}/health. Check ${logPath}.`);
-}
-
 async function ensureExpectedMegaAccount(baseUrl, expectedEmail) {
   const accountsResponse = await requestJson(baseUrl, 'GET', '/integrations/accounts');
   const megaAccounts = (accountsResponse?.accounts ?? []).filter((entry) => normalize(entry.provider) === 'mega');
@@ -305,28 +300,6 @@ async function ensureExpectedMegaAccount(baseUrl, expectedEmail) {
   return response.account;
 }
 
-async function requestJson(baseUrl, method, pathName, body) {
-  const response = await fetch(`${baseUrl}${pathName}`, {
-    method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`${method} ${baseUrl}${pathName} failed with ${response.status}: ${text}`);
-  }
-  return text.trim() ? JSON.parse(text) : null;
-}
-
-async function isHealthy(url) {
-  try {
-    const response = await fetch(url, { method: 'GET' });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function removeRecipientMegaShares(baseUrl) {
   const sharesResponse = await requestJson(baseUrl, 'GET', '/integrations/shares?fast=1');
   const recipientShares = (sharesResponse?.shares ?? []).filter(
@@ -334,33 +307,6 @@ async function removeRecipientMegaShares(baseUrl) {
   );
   for (const summary of recipientShares) {
     await requestJson(baseUrl, 'DELETE', `/integrations/shares/${encodeURIComponent(summary.share.id)}?mode=reset`);
-  }
-}
-
-function openSystemBrowser(url) {
-  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
-  const args = process.platform === 'darwin'
-    ? [url]
-    : process.platform === 'win32'
-      ? ['/c', 'start', '', url]
-      : [url];
-  const child = spawn(command, args, {
-    stdio: 'ignore',
-    detached: true,
-  });
-  child.unref();
-}
-
-async function clearPorts(ports) {
-  for (const port of ports) {
-    const command = `for pid in $(lsof -ti tcp:${port} -sTCP:LISTEN 2>/dev/null); do kill $pid >/dev/null 2>&1 || true; done`;
-    await new Promise((resolve) => {
-      const child = spawn('zsh', ['-lc', command], {
-        cwd: repoRoot,
-        stdio: 'ignore',
-      });
-      child.once('exit', () => resolve());
-    });
   }
 }
 
@@ -381,178 +327,22 @@ async function shutdown(exitCode) {
   process.exit(exitCode);
 }
 
-function waitForExit(child) {
-  return new Promise((resolve) => {
-    child.once('exit', resolve);
-  });
-}
-
-async function confirmDestructiveWipe({ localEmail, remoteEmail, mode }) {
-  if (mode === 'wipe') {
-    console.error('[dev-2] destructive wipe forced by --wipe');
-    return true;
-  }
-  if (mode === 'skip') {
-    console.error('[dev-2] destructive wipe skipped by --no-wipe');
-    return false;
-  }
-  console.error('[dev-2] destructive action available');
-  console.error(`[dev-2] local account: ${localEmail}`);
-  console.error(`[dev-2] remote account: ${remoteEmail}`);
-  console.error('[dev-2] wipe will revoke cross-shares and delete cloud-drive contents on both MEGA accounts');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stderr,
-  });
-  try {
-    const answer = await rl.question('[dev-2] continue with destructive wipe? type yes to confirm: ');
-    return answer.trim().toLowerCase() === 'yes';
-  } finally {
-    rl.close();
-  }
-}
-
-function parseCliOptions(argv) {
-  let wipeMode = 'prompt';
-  for (const arg of argv) {
-    if (arg === '--wipe') {
-      wipeMode = 'wipe';
-      continue;
-    }
-    if (arg === '--no-wipe') {
-      wipeMode = 'skip';
-    }
-  }
-  return { wipeMode };
-}
-
-function appendLog(filePath, text) {
-  try {
-    const dir = path.dirname(filePath);
-    mkdirSync(dir, { recursive: true });
-    appendFileSync(filePath, text);
-  } catch {
-    // best effort logging only
-  }
-}
-
 function buildYarnCommand(args = []) {
   if (process.platform === 'win32') {
     return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', ['yarn.cmd', ...args].join(' ')]];
   }
   return ['yarn', args];
 }
-
-function resolveLocalCorepack() {
-  const explicit = trimOrNull(process.env.NEARBYTES_DEV2_LOCAL_COREPACK);
-  if (explicit) {
-    return explicit;
-  }
-  const sibling = path.join(path.dirname(process.execPath), 'corepack');
-  return existsSync(sibling) ? sibling : 'corepack';
-}
-
-function loadDotEnvIfPresent(filePath) {
-  if (!existsSync(filePath)) {
-    return;
-  }
-  for (const rawLine of readFileSync(filePath, 'utf8').split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) {
-      continue;
-    }
-    const eq = line.indexOf('=');
-    if (eq <= 0) {
-      continue;
-    }
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-}
-
 function seedManualTestConfig(home, rootsConfigPath, appConfigPath) {
-  const nearbytesDir = path.join(home, '.nearbytes');
-  const localRootPath = path.join(home, 'nearbytes', 'local');
-  mkdirSync(nearbytesDir, { recursive: true });
-  mkdirSync(localRootPath, { recursive: true });
-
-  writeFileSync(
+  const paths = createManualTestPaths(home);
+  seedSharedManualTestConfig({
+    home,
     rootsConfigPath,
-    `${JSON.stringify({
-      version: 2,
-      sources: [
-        {
-          id: 'src-default',
-          provider: 'local',
-          path: localRootPath,
-          enabled: false,
-          writable: false,
-          reservePercent: 5,
-          opportunisticPolicy: 'block-writes',
-        },
-      ],
-      defaultVolume: {
-        destinations: [],
-      },
-      volumes: [],
-    }, null, 2)}\n`,
-    'utf8'
-  );
-
-  writeFileSync(
     appConfigPath,
-    `${JSON.stringify({
-      version: 1,
-      features: {
-        providers: {
-          googleDrive: false,
-          mega: true,
-          github: false,
-          localNetwork: false,
-        },
-        performance: {
-          appMetrics: false,
-        },
-      },
-    }, null, 2)}\n`,
-    'utf8'
-  );
-}
-
-function trimOrNull(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
-function trimOrDefault(value, fallback) {
-  return trimOrNull(value) ?? fallback;
-}
-
-function readPositiveIntEnv(name, fallback) {
-  const raw = trimOrNull(process.env[name]);
-  if (!raw) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer.`);
-  }
-  return parsed;
-}
-
-function normalize(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+    localRootPath: paths.localRootPath,
+    providers: {
+      mega: true,
+      localNetwork: false,
+    },
+  });
 }

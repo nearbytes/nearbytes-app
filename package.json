@@ -41,6 +41,8 @@
     "dev": "node scripts/run-web-dev.mjs",
     "dev-iphone": "node scripts/run-iphone-dev.mjs",
     "dev-2": "node scripts/dev-2.mjs",
+    "dev2-iphone-lan": "node scripts/dev2-iphone-lan.mjs",
+    "dev2-iphone-mega": "node scripts/dev2-iphone-mega.mjs",
     "mega": "bash scripts/run-mega-dev.sh",
     "desktop": "electron dist-electron/electron/main.js",
     "desktop:run": "yarn build && yarn build:electron && cross-env NODE_ENV=development NEARBYTES_ELECTRON_DEV_SERVER_URL=http://127.0.0.1:5177 electron dist-electron/electron/main.js",
