@@ -10,6 +10,8 @@ import {
   resetBrowserMirrorForTests,
 } from '../mirror/browserMirror.js';
 import {
+  readEmbeddedPhoneRuntimeMetricsForTests,
+  resetEmbeddedPhoneRuntimeMetricsForTests,
   seedEmbeddedPhonePendingUploadCommitForTests,
   embeddedPhoneUpdateLanServiceState,
   resetEmbeddedPhoneServicesForTests,
@@ -553,6 +555,31 @@ describe('phoneHost', () => {
         resumed: true,
         source: 'embedded-phone-runtime',
       },
+    });
+  });
+
+  it('bootstraps embedded phone reopen from durable runtime heads instead of forcing a scan-first refresh', async () => {
+    const secret = 'phone-head-bootstrap-secret';
+    const host = await getPhoneHost();
+
+    await host.legacyDesktop.uploadFile(
+      { type: 'secret', secret },
+      new File(['head bootstrap'], 'bootstrap.txt', { type: 'text/plain' })
+    );
+    await host.legacyDesktop.getTimeline({ type: 'secret', secret });
+
+    resetPhoneHostForTests();
+    resetEmbeddedPhoneRuntimeMetricsForTests();
+
+    const reopenedHost = await getPhoneHost();
+    const reopened = await reopenedHost.legacyDesktop.openVolume(secret) as {
+      files: Array<{ filename: string }>;
+    };
+
+    expect(reopened.files).toMatchObject([{ filename: 'bootstrap.txt' }]);
+    expect(readEmbeddedPhoneRuntimeMetricsForTests()).toMatchObject({
+      refreshReads: 0,
+      bootstrappedReads: 1,
     });
   });
 

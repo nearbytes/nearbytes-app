@@ -8,7 +8,7 @@
 
 ## Quality Metrics
 
-- Implemented items: 5 / 8 active items
+- Implemented items: 6 / 8 active items
 - Implemented deferred items ahead of schedule: 0 / 7 deferred items
 
 ## Section 1: Phase 1 Remaining Items
@@ -18,7 +18,7 @@
 - [x] Implement a phone-owned LAN sync initiation path behind the host contract.
 - [x] Bridge phone runtime object-batch updates into browser-mirror invalidation and resume handling.
 - [x] Add a durable browser-authored object commit path with acknowledgement and retry-safe resume into the phone runtime.
-- [ ] Bootstrap the phone mirror from durable runtime heads instead of scan-first reopen behavior where possible.
+- [x] Bootstrap the phone mirror from durable runtime heads instead of scan-first reopen behavior where possible.
 - [ ] Produce explicit mixed-mode desktop no-regression proof artifacts for the shared surfaces versus legacy desktop surfaces.
 - [ ] Close the full Phase 1 release gate with end-to-end phone LAN validation and desktop parity validation.
 

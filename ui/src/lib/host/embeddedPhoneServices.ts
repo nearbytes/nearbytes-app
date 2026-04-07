@@ -36,6 +36,8 @@ import {
   importCompatibilityEventDetail,
   importCompatibilityTimelineSnapshot,
   importCompatibilityVolumeSnapshot,
+  readMirrorTimelineSnapshot,
+  readMirrorVolumeSnapshot,
   writeMirrorCheckpoint,
 } from '../mirror/browserMirror.js';
 
@@ -65,6 +67,7 @@ const PHONE_LAN_SERVICE_STATE_KEY = 'phoneLanServiceState';
 const PHONE_LAN_PEER_OVERLAYS_KEY = 'phoneLanPeerOverlays';
 const PHONE_PENDING_COMMITS_KEY = 'phonePendingCommits';
 const PHONE_COMMIT_RECEIPTS_KEY = 'phoneCommitReceipts';
+const PHONE_RUNTIME_HEADS_KEY = 'phoneRuntimeHeads';
 
 interface EmbeddedPhoneLanPeerOverlay {
   lastSyncAt?: number | null;
@@ -106,12 +109,29 @@ interface EmbeddedPhoneCommitReceipt {
   result: unknown;
 }
 
+interface EmbeddedPhoneRuntimeHead {
+  volumeId: string;
+  fileCount: number;
+  eventCount: number;
+  lastEventHash: string | null;
+  updatedAt: number;
+}
+
+interface EmbeddedPhoneRuntimeMetrics {
+  refreshReads: number;
+  bootstrappedReads: number;
+}
+
 let dbPromise: Promise<IDBPDatabase | null> | null = null;
 let inMemoryStore: InMemoryPathStore | null = null;
 let servicesPromise: Promise<EmbeddedPhoneRuntimeServices> | null = null;
 let embeddedPhoneVolumeWatcherId = 1;
 let embeddedPhoneCommitSequence = 1;
 let embeddedPhoneCommitDrainPromise: Promise<void> | null = null;
+let embeddedPhoneRuntimeMetrics: EmbeddedPhoneRuntimeMetrics = {
+  refreshReads: 0,
+  bootstrappedReads: 0,
+};
 
 const embeddedPhoneVolumeWatchers = new Map<string, Map<number, (update: VolumeWatchUpdate) => void>>();
 
@@ -279,6 +299,33 @@ async function writeEmbeddedPhoneCommitReceipts(
   receipts: Record<string, EmbeddedPhoneCommitReceipt>
 ): Promise<void> {
   await putSetting(PHONE_COMMIT_RECEIPTS_KEY, JSON.stringify(receipts));
+}
+
+async function readEmbeddedPhoneRuntimeHeads(): Promise<Record<string, EmbeddedPhoneRuntimeHead>> {
+  const stored = await getSetting(PHONE_RUNTIME_HEADS_KEY);
+  if (!stored) {
+    return {};
+  }
+  try {
+    return JSON.parse(stored) as Record<string, EmbeddedPhoneRuntimeHead>;
+  } catch {
+    return {};
+  }
+}
+
+async function writeEmbeddedPhoneRuntimeHeads(heads: Record<string, EmbeddedPhoneRuntimeHead>): Promise<void> {
+  await putSetting(PHONE_RUNTIME_HEADS_KEY, JSON.stringify(heads));
+}
+
+async function writeEmbeddedPhoneRuntimeHead(head: EmbeddedPhoneRuntimeHead): Promise<void> {
+  const heads = await readEmbeddedPhoneRuntimeHeads();
+  heads[head.volumeId] = head;
+  await writeEmbeddedPhoneRuntimeHeads(heads);
+}
+
+async function readEmbeddedPhoneRuntimeHead(volumeId: string): Promise<EmbeddedPhoneRuntimeHead | null> {
+  const heads = await readEmbeddedPhoneRuntimeHeads();
+  return heads[volumeId] ?? null;
 }
 
 function buildEmbeddedPhoneCommitAck(receipt: EmbeddedPhoneCommitReceipt): DurableCommitAck {
@@ -594,6 +641,7 @@ async function refreshMirrors(secret: string, eventHash?: string): Promise<{
   files: FileMetadata[];
   timeline: TimelineEvent[];
 }> {
+  embeddedPhoneRuntimeMetrics.refreshReads += 1;
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const [volumeId, files, timeline] = await Promise.all([
     deriveVolumeId(secret),
@@ -618,10 +666,60 @@ async function refreshMirrors(secret: string, eventHash?: string): Promise<{
     await importCompatibilityEventDetail(response);
   }
 
+  await writeEmbeddedPhoneRuntimeHead({
+    volumeId,
+    fileCount: files.length,
+    eventCount: timeline.length,
+    lastEventHash: timeline.at(-1)?.eventHash ?? null,
+    updatedAt: Date.now(),
+  });
+
   return {
     volumeId,
     files,
     timeline,
+  };
+}
+
+async function readBootstrappedEmbeddedPhoneMirror(secret: string): Promise<{
+  volumeId: string;
+  files: FileMetadata[];
+  timeline: TimelineEvent[];
+} | null> {
+  const volumeId = await deriveVolumeId(secret);
+  const [head, volumeSnapshot, timelineSnapshot] = await Promise.all([
+    readEmbeddedPhoneRuntimeHead(volumeId),
+    readMirrorVolumeSnapshot(volumeId),
+    readMirrorTimelineSnapshot(volumeId),
+  ]);
+
+  if (!head || !volumeSnapshot || !timelineSnapshot) {
+    return null;
+  }
+
+  const lastEventHash = timelineSnapshot.events.at(-1)?.eventHash ?? null;
+  if (
+    volumeSnapshot.files.length !== head.fileCount ||
+    timelineSnapshot.eventCount !== head.eventCount ||
+    lastEventHash !== head.lastEventHash
+  ) {
+    return null;
+  }
+
+  embeddedPhoneRuntimeMetrics.bootstrappedReads += 1;
+  await writeMirrorCheckpoint(`bootstrap:volume:${volumeId}`, {
+    kind: 'head-bootstrap',
+    fileCount: head.fileCount,
+    eventCount: head.eventCount,
+    lastEventHash: head.lastEventHash,
+    updatedAt: Date.now(),
+    source: 'embedded-phone-runtime',
+  });
+
+  return {
+    volumeId,
+    files: volumeSnapshot.files,
+    timeline: timelineSnapshot.events,
   };
 }
 
@@ -823,6 +921,14 @@ async function commitEmbeddedPhoneMutation<T extends object>(
 
 export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolumeResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
+  const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
+  if (bootstrapped) {
+    return {
+      volumeId: bootstrapped.volumeId,
+      fileCount: bootstrapped.files.length,
+      files: bootstrapped.files,
+    };
+  }
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   await fileService.listFiles(secret);
   const snapshot = await refreshMirrors(secret);
@@ -835,6 +941,13 @@ export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolum
 
 export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
+  const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
+  if (bootstrapped) {
+    return {
+      volumeId: bootstrapped.volumeId,
+      files: bootstrapped.files,
+    };
+  }
   const snapshot = await refreshMirrors(secret);
   return {
     volumeId: snapshot.volumeId,
@@ -844,6 +957,14 @@ export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesR
 
 export async function embeddedPhoneGetTimeline(secret: string): Promise<TimelineResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
+  const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
+  if (bootstrapped) {
+    return {
+      volumeId: bootstrapped.volumeId,
+      eventCount: bootstrapped.timeline.length,
+      events: bootstrapped.timeline,
+    };
+  }
   const snapshot = await refreshMirrors(secret);
   return {
     volumeId: snapshot.volumeId,
@@ -992,6 +1113,10 @@ export function resetEmbeddedPhoneServicesForTests(): void {
   embeddedPhoneVolumeWatcherId = 1;
   embeddedPhoneCommitSequence = 1;
   embeddedPhoneCommitDrainPromise = null;
+  embeddedPhoneRuntimeMetrics = {
+    refreshReads: 0,
+    bootstrappedReads: 0,
+  };
   inMemoryStore = {
     files: new Map(),
     directories: new Set(),
@@ -1008,6 +1133,19 @@ export async function embeddedPhoneHasLocalVolume(secret: string): Promise<boole
 export async function seedEmbeddedPhonePendingUploadCommitForTests(secret: string, file: File): Promise<string> {
   const pending = await enqueueEmbeddedPhoneCommit('upload-file', secret, await serializeEmbeddedPhoneFile(file));
   return pending.id;
+}
+
+export function resetEmbeddedPhoneRuntimeMetricsForTests(): void {
+  embeddedPhoneRuntimeMetrics = {
+    refreshReads: 0,
+    bootstrappedReads: 0,
+  };
+}
+
+export function readEmbeddedPhoneRuntimeMetricsForTests(): EmbeddedPhoneRuntimeMetrics {
+  return {
+    ...embeddedPhoneRuntimeMetrics,
+  };
 }
 
 export async function embeddedPhoneLanServiceState(peerCount: number): Promise<LocalNetworkServiceState> {
