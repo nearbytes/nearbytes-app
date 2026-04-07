@@ -4015,6 +4015,46 @@ describe('MegaTransportAdapter', () => {
     expect(uploadCommitCount).toBe(1);
   });
 
+  it('waits for an in-flight share sync before running an exclusive share task', async () => {
+    const runtime = createIntegrationRuntime({
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl: vi.fn() as typeof fetch });
+
+    let releaseExistingTask: (() => void) | null = null;
+    const existingTask = new Promise<void>((resolve) => {
+      releaseExistingTask = resolve;
+    });
+    const abort = vi.fn();
+
+    (adapter as unknown as { syncTasks: Map<string, Promise<void>> }).syncTasks.set(
+      'share-mega-exclusive-wait',
+      existingTask
+    );
+    (adapter as unknown as { syncControllers: Map<string, AbortController> }).syncControllers.set(
+      'share-mega-exclusive-wait',
+      { abort } as unknown as AbortController
+    );
+
+    const operation = vi.fn(async () => 'done');
+    const completion = (adapter as unknown as {
+      withExclusiveShareTask: <T>(shareId: string, task: () => Promise<T>) => Promise<T>;
+    }).withExclusiveShareTask('share-mega-exclusive-wait', operation);
+
+    await Promise.resolve();
+    expect(operation).not.toHaveBeenCalled();
+    expect(abort).not.toHaveBeenCalled();
+
+    releaseExistingTask?.();
+
+    await expect(completion).resolves.toBe('done');
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(abort).not.toHaveBeenCalled();
+  });
+
   it('derives the authenticated sid from csid responses using MEGA-compatible encoding', async () => {
     const email = 'reader@example.com';
     const password = 'correct horse battery staple';

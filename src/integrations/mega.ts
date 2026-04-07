@@ -1499,11 +1499,10 @@ export class MegaTransportAdapter {
       hadExistingController: Boolean(existingController),
       hadExistingTask: Boolean(existingTask),
     });
-    existingController?.abort();
     if (existingTask) {
       const waitStartedAt = this.runtime.now();
       await existingTask.catch(() => {
-        // Exclusive operations should still proceed even if the displaced sync failed.
+        // Exclusive operations should still proceed even if the prior task failed.
       });
       this.runtime.logger.log('MEGA exclusive share task wait completed.', {
         shareId,
