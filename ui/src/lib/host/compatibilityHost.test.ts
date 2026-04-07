@@ -113,8 +113,8 @@ describe('compatibilityHost', () => {
   it('opens watch streams through the shared transport', async () => {
     const host = await getCompatibilityHost();
 
-    const sourceConnection = host.legacyDesktop.watchSources({});
-    const volumeConnection = host.legacyDesktop.watchVolume({ type: 'token', token: 'abc' }, {});
+    const sourceConnection = host.invalidation.watchSources({});
+    const volumeConnection = host.invalidation.watchVolume({ type: 'token', token: 'abc' }, {});
 
     expect(openHostStream).toHaveBeenCalledWith('/watch/sources', {
       method: 'GET',
@@ -129,5 +129,23 @@ describe('compatibilityHost', () => {
 
     sourceConnection.close();
     volumeConnection.close();
+  });
+
+  it('routes LAN peer operations through the shared transport', async () => {
+    const host = await getCompatibilityHost();
+
+    await host.lan.listPeers();
+    await host.lan.syncPeer('peer-1');
+
+    expect(requestHostJson).toHaveBeenCalledWith('/integrations/local-network/peers', {
+      method: 'GET',
+      headers: new Headers(),
+      signal: undefined,
+    });
+    expect(requestHostJson).toHaveBeenCalledWith('/integrations/local-network/peers/peer-1/sync', {
+      method: 'POST',
+      headers: new Headers(),
+      signal: undefined,
+    });
   });
 });

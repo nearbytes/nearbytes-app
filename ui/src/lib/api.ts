@@ -1498,10 +1498,8 @@ export async function listIncomingProviderContactInvites(
 export async function listLocalNetworkPeers(
   options: { signal?: AbortSignal } = {}
 ): Promise<LocalNetworkPeersResponse> {
-  const response = await apiRequest<LocalNetworkPeersResponse>('/integrations/local-network/peers', {
-    method: 'GET',
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  const response = await host.lan.listPeers(options) as LocalNetworkPeersResponse;
   await importLocalNetworkPeersSnapshot(response);
   return response;
 }
@@ -1510,11 +1508,8 @@ export async function syncLocalNetworkPeer(
   peerId: string,
   options: { signal?: AbortSignal } = {}
 ): Promise<LocalNetworkPeerMutationResponse> {
-  const encoded = encodeURIComponent(peerId);
-  return apiRequest<LocalNetworkPeerMutationResponse>(`/integrations/local-network/peers/${encoded}/sync`, {
-    method: 'POST',
-    signal: options.signal,
-  });
+  const host = await getActiveHost();
+  return host.lan.syncPeer(peerId, options) as Promise<LocalNetworkPeerMutationResponse>;
 }
 
 export async function createManagedShare(input: {
@@ -1670,7 +1665,7 @@ export function watchSources(handlers: SourceWatchHandlers): VolumeWatchConnecti
     try {
       uiDebugLog('watchers', `[watch-sources:${connectionId}] opening`);
       const host = await getActiveHost();
-      currentConnection = host.legacyDesktop.watchSources({
+      currentConnection = host.invalidation.watchSources({
         onMessage(event) {
           parseSourceWatchMessage(decodeWatchMessageData(event), handlers);
         },
@@ -1713,7 +1708,7 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
     try {
       uiDebugLog('watchers', `[watch-volume:${connectionId}] opening`);
       const host = await getActiveHost();
-      currentConnection = host.legacyDesktop.watchVolume(auth, {
+      currentConnection = host.invalidation.watchVolume(auth, {
         onMessage(event) {
           parseWatchMessage(decodeWatchMessageData(event), handlers);
         },

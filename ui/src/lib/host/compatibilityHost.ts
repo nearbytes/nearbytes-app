@@ -139,6 +139,28 @@ export async function getCompatibilityHost(): Promise<NearbytesHostContract> {
         requestBlob: requestHostBlob,
         openStream: openHostStream,
       },
+      invalidation: {
+        watchSources(handlers) {
+          return openWatchConnection('/watch/sources', handlers);
+        },
+        watchVolume(auth, handlers) {
+          return openWatchConnection('/watch/volume', handlers, { auth });
+        },
+      },
+      lan: {
+        listPeers(options) {
+          return createJsonRequest('/integrations/local-network/peers', {
+            method: 'GET',
+            signal: options?.signal,
+          });
+        },
+        syncPeer(peerId, options) {
+          return createJsonRequest(`/integrations/local-network/peers/${encodeURIComponent(peerId)}/sync`, {
+            method: 'POST',
+            signal: options?.signal,
+          });
+        },
+      },
       shell: {
         chooseDirectory: chooseDesktopDirectoryPath,
       },
@@ -254,12 +276,6 @@ export async function getCompatibilityHost(): Promise<NearbytesHostContract> {
               attachment: input.attachment,
             }),
           });
-        },
-        watchSources(handlers) {
-          return openWatchConnection('/watch/sources', handlers);
-        },
-        watchVolume(auth, handlers) {
-          return openWatchConnection('/watch/volume', handlers, { auth });
         },
       },
     } satisfies NearbytesHostContract;

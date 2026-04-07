@@ -13,6 +13,14 @@ const mockedCompatibilityHost = vi.hoisted(() => ({
       requestBlob: vi.fn(),
       openStream: vi.fn(),
     },
+    invalidation: {
+      watchSources: vi.fn(),
+      watchVolume: vi.fn(),
+    },
+    lan: {
+      listPeers: vi.fn(),
+      syncPeer: vi.fn(),
+    },
     shell: {
       chooseDirectory: vi.fn(async () => null),
     },
@@ -33,8 +41,6 @@ const mockedCompatibilityHost = vi.hoisted(() => ({
       listChat: vi.fn(),
       publishIdentity: vi.fn(),
       sendChatMessage: vi.fn(),
-      watchSources: vi.fn(),
-      watchVolume: vi.fn(),
     },
   })),
   resetCompatibilityHostForTestsMock: vi.fn(),

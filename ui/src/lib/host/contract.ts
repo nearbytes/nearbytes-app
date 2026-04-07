@@ -16,6 +16,16 @@ export interface NearbytesWatchConnection {
   close(): void;
 }
 
+export interface NearbytesInvalidationFamily {
+  watchSources(handlers: NearbytesSourceWatchHandlers): NearbytesWatchConnection;
+  watchVolume(auth: NearbytesAuth, handlers: NearbytesVolumeWatchHandlers): NearbytesWatchConnection;
+}
+
+export interface NearbytesLanFamily {
+  listPeers(options?: { signal?: AbortSignal }): Promise<unknown>;
+  syncPeer(peerId: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+}
+
 export interface NearbytesCapabilityFamily {
   hostKind: 'desktop' | 'phone' | 'web';
   runtimeOwner: 'embedded' | 'desktop-proxy' | 'remote-runtime';
@@ -40,8 +50,6 @@ export interface NearbytesLegacyDesktopFamily {
   listChat(auth: NearbytesAuth): Promise<unknown>;
   publishIdentity(auth: NearbytesAuth, identitySecret: string, profile: unknown): Promise<unknown>;
   sendChatMessage(auth: NearbytesAuth, identitySecret: string, input: { body?: string; attachment?: unknown }): Promise<unknown>;
-  watchSources(handlers: NearbytesSourceWatchHandlers): NearbytesWatchConnection;
-  watchVolume(auth: NearbytesAuth, handlers: NearbytesVolumeWatchHandlers): NearbytesWatchConnection;
 }
 
 export interface NearbytesObjectFamily {
@@ -57,6 +65,8 @@ export interface NearbytesShellFamily {
 export interface NearbytesHostContract {
   capabilities: NearbytesCapabilityFamily;
   objects: NearbytesObjectFamily;
+  invalidation: NearbytesInvalidationFamily;
+  lan: NearbytesLanFamily;
   shell: NearbytesShellFamily;
   legacyDesktop: NearbytesLegacyDesktopFamily;
 }
