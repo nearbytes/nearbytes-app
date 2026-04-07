@@ -16,6 +16,7 @@ import {
 import {
   embeddedPhoneHasLocalVolume,
   embeddedPhoneLanPeersResponse,
+  embeddedPhoneSubscribeVolumeWatch,
   embeddedPhoneSyncPeer,
   embeddedPhoneDeleteFile,
   embeddedPhoneDownloadBlob,
@@ -170,6 +171,14 @@ function createUnsupportedWatchConnection(): { close(): void } {
       // No-op because the phone runtime was unavailable.
     },
   };
+}
+
+function createEmbeddedWatchMessage(eventName: string, payload: unknown): MessageEvent {
+  const data = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+  if (typeof MessageEvent === 'function') {
+    return new MessageEvent('message', { data });
+  }
+  return { data } as MessageEvent;
 }
 
 function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDesktop'] {
@@ -520,12 +529,51 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
               });
               return createUnsupportedWatchConnection();
             },
-            watchVolume(_auth, handlers) {
-              queueMicrotask(() => {
-                handlers.onError?.(createMissingPhoneRuntimeError());
-                handlers.onClose?.();
-              });
-              return createUnsupportedWatchConnection();
+            watchVolume(auth, handlers) {
+              const secret = readSecretAuth(auth);
+              if (!secret) {
+                queueMicrotask(() => {
+                  handlers.onError?.(createMissingPhoneRuntimeError());
+                  handlers.onClose?.();
+                });
+                return createUnsupportedWatchConnection();
+              }
+
+              let unsubscribe: (() => void) | null = null;
+              let closed = false;
+
+              void (async () => {
+                try {
+                  const subscription = await embeddedPhoneSubscribeVolumeWatch(secret, (update) => {
+                    if (closed) {
+                      return;
+                    }
+                    handlers.onMessage?.(createEmbeddedWatchMessage('volume-update', update));
+                  });
+                  if (closed) {
+                    subscription.unsubscribe();
+                    return;
+                  }
+                  unsubscribe = () => {
+                    subscription.unsubscribe();
+                  };
+                  handlers.onMessage?.(createEmbeddedWatchMessage('watch-ready', subscription.ready));
+                } catch (error) {
+                  if (closed) {
+                    return;
+                  }
+                  handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+                  handlers.onClose?.();
+                }
+              })();
+
+              return {
+                close() {
+                  closed = true;
+                  unsubscribe?.();
+                  unsubscribe = null;
+                },
+              };
             },
           },
       lan: compatibilityTransport

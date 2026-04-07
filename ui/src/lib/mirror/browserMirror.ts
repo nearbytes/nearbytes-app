@@ -268,6 +268,10 @@ export async function writeMirrorCheckpoint(key: string, value: Record<string, u
   } satisfies MirrorCheckpointRecord);
 }
 
+export async function readMirrorCheckpoint(key: string): Promise<MirrorCheckpointRecord | null> {
+  return getRecord<MirrorCheckpointRecord>('checkpoints', key);
+}
+
 export function resetBrowserMirrorForTests(): void {
   dbPromise = null;
   inMemoryStore = createInMemoryMirrorStore();

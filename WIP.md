@@ -8,7 +8,7 @@
 
 ## Quality Metrics
 
-- Implemented items: 3 / 8 active items
+- Implemented items: 4 / 8 active items
 - Implemented deferred items ahead of schedule: 0 / 7 deferred items
 
 ## Section 1: Phase 1 Remaining Items
@@ -16,7 +16,7 @@
 - [x] Persist and surface a distinct embedded phone LAN peer identity in the shared phone host state.
 - [x] Implement a phone-owned LAN service state path so phone LAN status does not depend on mirrored-only desktop-fed snapshots.
 - [x] Implement a phone-owned LAN sync initiation path behind the host contract.
-- [ ] Bridge phone runtime object-batch updates into browser-mirror invalidation and resume handling.
+- [x] Bridge phone runtime object-batch updates into browser-mirror invalidation and resume handling.
 - [ ] Add a durable browser-authored object commit path with acknowledgement and retry-safe resume into the phone runtime.
 - [ ] Bootstrap the phone mirror from durable runtime heads instead of scan-first reopen behavior where possible.
 - [ ] Produce explicit mixed-mode desktop no-regression proof artifacts for the shared surfaces versus legacy desktop surfaces.

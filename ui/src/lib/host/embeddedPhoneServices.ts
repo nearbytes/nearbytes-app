@@ -27,12 +27,15 @@ import type {
   TimelineEvent,
   TimelineResponse,
   UploadResponse,
+  VolumeWatchReady,
+  VolumeWatchUpdate,
   VolumeChatState,
 } from '../api.js';
 import {
   importCompatibilityEventDetail,
   importCompatibilityTimelineSnapshot,
   importCompatibilityVolumeSnapshot,
+  writeMirrorCheckpoint,
 } from '../mirror/browserMirror.js';
 
 interface StoredPathRecord {
@@ -69,9 +72,17 @@ interface EmbeddedPhoneLanPeerOverlay {
   detail?: string;
 }
 
+interface EmbeddedPhoneVolumeWatchSubscription {
+  ready: VolumeWatchReady;
+  unsubscribe(): void;
+}
+
 let dbPromise: Promise<IDBPDatabase | null> | null = null;
 let inMemoryStore: InMemoryPathStore | null = null;
 let servicesPromise: Promise<EmbeddedPhoneRuntimeServices> | null = null;
+let embeddedPhoneVolumeWatcherId = 1;
+
+const embeddedPhoneVolumeWatchers = new Map<string, Map<number, (update: VolumeWatchUpdate) => void>>();
 
 function shouldUseIndexedDb(): boolean {
   return typeof indexedDB !== 'undefined';
@@ -308,6 +319,53 @@ function applyEmbeddedPhoneLanPeerOverlay(
   };
 }
 
+function getEmbeddedPhoneVolumeWatchBucket(volumeId: string): Map<number, (update: VolumeWatchUpdate) => void> {
+  let bucket = embeddedPhoneVolumeWatchers.get(volumeId);
+  if (!bucket) {
+    bucket = new Map();
+    embeddedPhoneVolumeWatchers.set(volumeId, bucket);
+  }
+  return bucket;
+}
+
+async function writeEmbeddedPhoneVolumeWatchReady(ready: VolumeWatchReady): Promise<void> {
+  await writeMirrorCheckpoint(`watch:volume:${ready.volumeId}`, {
+    kind: 'ready',
+    autoUpdate: ready.autoUpdate,
+    mode: ready.mode,
+    providers: ready.providers,
+    updatedAt: Date.now(),
+    source: 'embedded-phone-runtime',
+  });
+}
+
+async function emitEmbeddedPhoneVolumeUpdate(
+  volumeId: string,
+  change: VolumeWatchUpdate['change'],
+  path: string
+): Promise<void> {
+  const update: VolumeWatchUpdate = {
+    volumeId,
+    change,
+    path,
+    timestamp: Date.now(),
+  };
+  await writeMirrorCheckpoint(`watch:volume:${volumeId}`, {
+    kind: 'update',
+    change: update.change,
+    path: update.path,
+    timestamp: update.timestamp,
+    source: 'embedded-phone-runtime',
+  });
+  const watchers = embeddedPhoneVolumeWatchers.get(volumeId);
+  if (!watchers) {
+    return;
+  }
+  for (const listener of watchers.values()) {
+    listener(update);
+  }
+}
+
 class EmbeddedPhoneStorageBackend implements StorageBackend {
   async writeFile(path: string, data: Uint8Array): Promise<void> {
     await putRecord(normalizePath(path), new Uint8Array(data));
@@ -482,27 +540,31 @@ export async function embeddedPhoneUploadFile(secret: string, file: File): Promi
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const bytes = new Uint8Array(await file.arrayBuffer());
   const created = await fileService.addFile(secret, file.name, bytes as unknown as Buffer, file.type || undefined);
-  await refreshMirrors(secret);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'add', `blocks/${created.blobHash}`);
   return { created };
 }
 
 export async function embeddedPhoneDeleteFile(secret: string, filename: string): Promise<void> {
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   await fileService.deleteFile(secret, filename);
-  await refreshMirrors(secret);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'unlink', `channels/delete-file:${filename}.json`);
 }
 
 export async function embeddedPhoneRenameFile(secret: string, from: string, to: string): Promise<RenameFileResponse> {
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const renamed = await fileService.renameFile(secret, from, to);
-  await refreshMirrors(secret);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/rename-file:${from}->${to}.json`);
   return { renamed };
 }
 
 export async function embeddedPhoneRenameFolder(secret: string, from: string, to: string, merge: boolean): Promise<RenameFolderResponse> {
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const renamed = await fileService.renameFolder(secret, from, to, { merge });
-  await refreshMirrors(secret);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/rename-folder:${from}->${to}.json`);
   return { renamed };
 }
 
@@ -521,7 +583,8 @@ export async function embeddedPhoneImportSourceReferences(
 ): Promise<ReferenceImportResponse> {
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const result = await fileService.importSourceReferences(secret, bundle, sourceSecret);
-  await refreshMirrors(secret);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', 'channels/import-source-references.json');
   return {
     imported: result.imported,
     importedCount: result.imported.length,
@@ -543,7 +606,8 @@ export async function embeddedPhoneImportRecipientReferences(
 ): Promise<ReferenceImportResponse> {
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const result = await fileService.importRecipientReferences(secret, bundle);
-  await refreshMirrors(secret);
+  const snapshot = await refreshMirrors(secret);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', 'channels/import-recipient-references.json');
   return {
     imported: result.imported,
     importedCount: result.imported.length,
@@ -564,7 +628,8 @@ export async function embeddedPhonePublishIdentity(
 ): Promise<PublishIdentityResponse> {
   const { chatService } = await getEmbeddedPhoneRuntimeServices();
   const published = await chatService.publishIdentity(secret, identitySecret, profile);
-  await refreshMirrors(secret, published.eventHash);
+  const snapshot = await refreshMirrors(secret, published.eventHash);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/${published.eventHash}.json`);
   return { published };
 }
 
@@ -575,13 +640,46 @@ export async function embeddedPhoneSendChatMessage(
 ): Promise<SendChatMessageResponse> {
   const { chatService } = await getEmbeddedPhoneRuntimeServices();
   const sent = await chatService.sendMessage(secret, identitySecret, input);
-  await refreshMirrors(secret, sent.eventHash);
+  const snapshot = await refreshMirrors(secret, sent.eventHash);
+  await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/${sent.eventHash}.json`);
   return { sent };
+}
+
+export async function embeddedPhoneSubscribeVolumeWatch(
+  secret: string,
+  onUpdate: (update: VolumeWatchUpdate) => void
+): Promise<EmbeddedPhoneVolumeWatchSubscription> {
+  const volumeId = await deriveVolumeId(secret);
+  const ready: VolumeWatchReady = {
+    volumeId,
+    autoUpdate: true,
+    mode: 'filesystem',
+    providers: ['local'],
+  };
+  await writeEmbeddedPhoneVolumeWatchReady(ready);
+  const watcherId = embeddedPhoneVolumeWatcherId;
+  embeddedPhoneVolumeWatcherId += 1;
+  getEmbeddedPhoneVolumeWatchBucket(volumeId).set(watcherId, onUpdate);
+  return {
+    ready,
+    unsubscribe() {
+      const bucket = embeddedPhoneVolumeWatchers.get(volumeId);
+      if (!bucket) {
+        return;
+      }
+      bucket.delete(watcherId);
+      if (bucket.size === 0) {
+        embeddedPhoneVolumeWatchers.delete(volumeId);
+      }
+    },
+  };
 }
 
 export function resetEmbeddedPhoneServicesForTests(): void {
   servicesPromise = null;
   dbPromise = null;
+  embeddedPhoneVolumeWatchers.clear();
+  embeddedPhoneVolumeWatcherId = 1;
   inMemoryStore = {
     files: new Map(),
     directories: new Set(),

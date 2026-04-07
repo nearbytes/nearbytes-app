@@ -6,6 +6,7 @@ import {
   importCompatibilityTimelineSnapshot,
   importCompatibilityVolumeSnapshot,
   importLocalNetworkPeersSnapshot,
+  readMirrorCheckpoint,
   resetBrowserMirrorForTests,
 } from '../mirror/browserMirror.js';
 import {
@@ -470,6 +471,47 @@ describe('phoneHost', () => {
       isOffline: true,
     });
     expect(typeof refreshed.peers[0]?.lastSyncStartedAt).toBe('number');
+  });
+
+  it('bridges embedded phone runtime mutations into volume watch updates and mirror checkpoints', async () => {
+    const secret = 'phone-watch-secret';
+    const host = await getPhoneHost();
+    const messages: string[] = [];
+    const connection = host.invalidation.watchVolume(
+      { type: 'secret', secret },
+      {
+        onMessage(event) {
+          messages.push(String(event.data));
+        },
+      }
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const opened = await host.legacyDesktop.openVolume(secret) as { volumeId: string };
+
+    await host.legacyDesktop.uploadFile(
+      { type: 'secret', secret },
+      new File(['watch me'], 'watch.txt', { type: 'text/plain' })
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    connection.close();
+
+    expect(messages[0]).toContain('event: watch-ready');
+    expect(messages[0]).toContain(`"volumeId":"${opened.volumeId}"`);
+    expect(messages.some((message) => message.includes('event: volume-update'))).toBe(true);
+    expect(messages.some((message) => message.includes('blocks/'))).toBe(true);
+
+    await expect(readMirrorCheckpoint(`watch:volume:${opened.volumeId}`)).resolves.toMatchObject({
+      value: {
+        kind: 'update',
+        source: 'embedded-phone-runtime',
+      },
+    });
   });
 
   it('uses the shared transport for desktop-backed phone runtime compatibility', async () => {
