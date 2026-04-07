@@ -321,6 +321,7 @@ export class MegaTransportAdapter {
   private readonly accountShareKeyCache = new Map<string, ReadonlyMap<string, Buffer>>();
   private readonly accountIdByUserHandle = new Map<string, string>();
   private readonly accountCloudDriveHandleCache = new Map<string, string>();
+  private readonly accountSessionRefreshTasks = new Map<string, Promise<MegaSession>>();
   private readonly incomingShareDiscoveryCache = new Map<string, { expiresAt: number; offers: IncomingManagedShareOffer[] }>();
   private readonly incomingShareDiscoveryTasks = new Map<string, Promise<IncomingManagedShareOffer[]>>();
   private readonly ownerShareKeyHealAt = new Map<string, number>();
@@ -369,6 +370,7 @@ export class MegaTransportAdapter {
     this.accountShareKeyCache.clear();
     this.accountIdByUserHandle.clear();
     this.accountCloudDriveHandleCache.clear();
+    this.accountSessionRefreshTasks.clear();
     this.incomingShareDiscoveryCache.clear();
     this.incomingShareDiscoveryTasks.clear();
     this.ownerShareKeyHealAt.clear();
@@ -2168,6 +2170,13 @@ export class MegaTransportAdapter {
       }
       await this.replayMissingOwnerManagedShareInvitesInline(share, account, session, root, signal);
       shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal) ?? shareCrypto;
+      if (!shareCrypto && root.root.shareHandle && share.invitationEmails.length > 0) {
+        this.runtime.logger.warn(
+          'MEGA owner sync: share key is still missing after invite replay — repairing the share.',
+          { shareId: share.id, shareHandle: root.root.shareHandle, email: session.email }
+        );
+        shareCrypto = await this.repairOwnerShareKey(session, root, signal);
+      }
       const ownerShareKeyHealResult = await this.healOwnerOutgoingShareKeys(share, session, root, shareCrypto, signal);
       if (
         ownerShareKeyHealResult &&
@@ -2258,7 +2267,7 @@ export class MegaTransportAdapter {
       throw new Error(MEGA_RECONNECT_REQUIRED_MESSAGE);
     }
     if (!isStoredMegaAccountSecret(secret)) {
-      const recovered = await this.refreshAccountSession(account, secret);
+      const recovered = await this.refreshAccountSessionShared(account, secret);
       await this.fetchCurrentUser(recovered, signal);
       return recovered;
     }
@@ -2276,7 +2285,7 @@ export class MegaTransportAdapter {
       return session;
     } catch (error) {
       if (isMegaSessionInvalid(error)) {
-        return this.refreshAccountSession(account, secret, error);
+        return this.refreshAccountSessionShared(account, secret, error);
       }
       if (isMegaTemporaryLockError(error)) {
         this.runtime.logger.warn('MEGA account session validation was temporarily locked; continuing with the cached session.', {
@@ -2298,11 +2307,30 @@ export class MegaTransportAdapter {
       return await operation(session);
     } catch (error) {
       if (isMegaSessionInvalid(error)) {
-        const refreshed = await this.refreshAccountSession(account, undefined, error);
+        const refreshed = await this.refreshAccountSessionShared(account, undefined, error);
         return operation(refreshed);
       }
       throw error;
     }
+  }
+
+  private async refreshAccountSessionShared(
+    account: ProviderAccount,
+    cachedSecret?: MegaAccountSecret | unknown,
+    cause?: unknown
+  ): Promise<MegaSession> {
+    const existingTask = this.accountSessionRefreshTasks.get(account.id);
+    if (existingTask) {
+      return existingTask;
+    }
+
+    const refreshTask = this.refreshAccountSession(account, cachedSecret, cause).finally(() => {
+      if (this.accountSessionRefreshTasks.get(account.id) === refreshTask) {
+        this.accountSessionRefreshTasks.delete(account.id);
+      }
+    });
+    this.accountSessionRefreshTasks.set(account.id, refreshTask);
+    return refreshTask;
   }
 
   private async refreshAccountSession(
@@ -4423,6 +4451,33 @@ class MegaOwnerRemoteAdapter {
       }
     }
 
+    const duplicateHandles = collectDuplicateSiblingFileHandles(selectedTree);
+    if (duplicateHandles.length > 0) {
+      debugMegaLog('[MEGA:owner-adapter] removing duplicate sibling file nodes from MEGA.', {
+        count: duplicateHandles.length,
+        handles: duplicateHandles,
+      });
+      for (const handle of duplicateHandles) {
+        try {
+          await deleteMegaNode(this.apiClient, this.session, handle, this.signal);
+        } catch (error) {
+          debugMegaLog('[MEGA:owner-adapter] failed to remove duplicate node; will retry next cycle.', {
+            handle,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      const refreshed = await fetchMegaDecryptedTree(
+        this.apiClient,
+        this.session,
+        this.ownerUploadState.root.root.handle,
+        { useCache: false, allowTransientFullFallback: false, extraShareKeys: this.ownerUploadState.extraShareKeys },
+        this.signal
+      );
+      selectedTree = refreshed.tree;
+      selectedEntries = await listEntriesFromTree(refreshed.tree);
+    }
+
     replaceMegaOwnerUploadStateFromTree(this.ownerUploadState, selectedTree);
     const sorted = selectedEntries;
     debugMegaLog('[MEGA:owner-adapter] remote entries listed.', {
@@ -4517,7 +4572,7 @@ class MegaOwnerRemoteAdapter {
       this.ownerUploadState.shareCrypto,
       this.signal,
       this.ownerUploadState.extraShareKeys,
-      { waitForVisibility: false }
+      { waitForVisibility: true }
     );
     this.ownerUploadState.filesByPath.set(normalized, {
       handle: uploaded.handle,
@@ -4833,6 +4888,42 @@ function collectChildNodes(tree: DecryptedMegaTree, parentHandle: string): Decry
     pending.unshift(...(tree.childrenByParent.get(current.handle) ?? []));
   }
   return result;
+}
+
+/**
+ * Detect duplicate file nodes under the same parent (same name) and return
+ * the handles of the extras that should be deleted. Keeps the node with the
+ * largest size (or most recent modifiedAt as tiebreaker).
+ */
+function collectDuplicateSiblingFileHandles(tree: DecryptedMegaTree): string[] {
+  const toDelete: string[] = [];
+  for (const [, children] of tree.childrenByParent) {
+    const filesByName = new Map<string, DecryptedMegaNode[]>();
+    for (const child of children) {
+      if (child.isFolder) continue;
+      const key = child.name;
+      const group = filesByName.get(key);
+      if (group) {
+        group.push(child);
+      } else {
+        filesByName.set(key, [child]);
+      }
+    }
+    for (const [, group] of filesByName) {
+      if (group.length <= 1) continue;
+      group.sort((a, b) => {
+        if (a.size !== b.size) return b.size - a.size;
+        const aTime = a.modifiedAt ?? 0;
+        const bTime = b.modifiedAt ?? 0;
+        if (aTime !== bTime) return bTime - aTime;
+        return a.handle.localeCompare(b.handle);
+      });
+      for (let i = 1; i < group.length; i++) {
+        toDelete.push(group[i].handle);
+      }
+    }
+  }
+  return toDelete;
 }
 
 function compareMegaNodeCandidates(tree: DecryptedMegaTree, left: DecryptedMegaNode, right: DecryptedMegaNode): number {

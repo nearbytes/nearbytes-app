@@ -20,6 +20,7 @@ import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.j
 import { createSecret } from '../../types/keys.js';
 import { createSignedEvent } from '../../domain/eventEnvelope.js';
 import { MegaTransportAdapter, rebuildMegaSecurityAttributeForE2e } from '../mega.js';
+import { MirrorWorker } from '../mirrorWorker.js';
 import { createIntegrationRuntime, type ProviderSecretStore } from '../runtime.js';
 import type { ManagedShare, ProviderAccount } from '../types.js';
 
@@ -3804,6 +3805,189 @@ describe('MegaTransportAdapter', () => {
     expect(shareCrypto?.shareHandle).toBe(shareHandle);
     expect(shareCrypto?.shareKey).toEqual(shareKey);
   });
+  
+  it('deduplicates concurrent automatic MEGA session refresh attempts', async () => {
+    const secretStore = createMemorySecretStore();
+    const email = 'owner@example.com';
+    const userHandle = 'owner001';
+    const refreshedMasterKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const encryptedPrivateKey = encodeMegaBase64Url(Buffer.alloc(16, 0));
+    
+    await secretStore.set('provider-account:mega:acct-mega-refresh', {
+      email,
+      password: 'secret',
+    });
+    
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    
+    const adapter = new MegaTransportAdapter(runtime);
+    const refreshedSession = {
+      sid: 'fresh-session',
+      masterKey: refreshedMasterKey,
+      encryptedPrivateKey,
+      userHandle,
+      accountVersion: 2,
+      accountSalt: undefined,
+      email,
+    };
+    
+    const fetchCurrentUser = vi.fn(async () => {
+      return { u: userHandle, email };
+    });
+    const loginWithPassword = vi.fn(async () => refreshedSession);
+    
+    (adapter as any).fetchCurrentUser = fetchCurrentUser;
+    (adapter as any).loginWithPassword = loginWithPassword;
+    
+    const account: ProviderAccount = {
+      id: 'acct-mega-refresh',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    
+    const [firstSession, secondSession] = await Promise.all([
+      (adapter as any).getAccountSession(account),
+      (adapter as any).getAccountSession(account),
+    ]);
+    
+    expect(loginWithPassword).toHaveBeenCalledTimes(1);
+    expect(firstSession.sid).toBe('fresh-session');
+    expect(secondSession.sid).toBe('fresh-session');
+    
+    const persistedSecret = await secretStore.get<any>('provider-account:mega:acct-mega-refresh');
+    expect(persistedSecret?.sid).toBe('fresh-session');
+  });
+  
+  it('repairs an owner share when its decryptable share key is missing', async () => {
+    const secretStore = createMemorySecretStore();
+    const email = 'owner@example.com';
+    const userHandle = 'owner001';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const repairedShareKey = Buffer.from('4f1e2d3c5b6a79888796a5b4c3d2e1f0', 'hex');
+    const rootNode = {
+      handle: 'share0001',
+      shareHandle: 'share0001',
+      name: 'nearbytes',
+      nodeType: 2,
+      isFolder: true,
+      size: 0,
+      nodeKey: Buffer.from('102132435465768798a9babbdcddf0f1', 'hex'),
+    };
+    const root = {
+      path: '/nearbytes',
+      scsn: 'cursor-1',
+      root: rootNode,
+      tree: {
+        root: rootNode,
+        nodesByHandle: new Map([[rootNode.handle, rootNode]]),
+        childrenByParent: new Map(),
+      },
+    };
+    
+    await secretStore.set('provider-account:mega:acct-mega-owner-repair', {
+      email,
+      password: 'secret',
+      sid: 'owner-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      encryptedPrivateKey: 'encrypted-private-key',
+      userHandle,
+      accountVersion: 2,
+    });
+    
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    
+    const adapter = new MegaTransportAdapter(runtime);
+    const mirrorSync = vi.spyOn(MirrorWorker.prototype, 'sync').mockResolvedValue({
+      uploaded: [],
+      downloaded: [],
+      skipped: [],
+    } as any);
+    const resolveOwnerShareCryptoContext = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+    const repairOwnerShareKey = vi
+      .fn()
+      .mockResolvedValue({ shareHandle: rootNode.handle, shareKey: repairedShareKey });
+    
+    (adapter as any).getAccountSession = vi.fn(async () => ({
+      sid: 'owner-session',
+      masterKey,
+      encryptedPrivateKey: 'encrypted-private-key',
+      userHandle,
+      accountVersion: 2,
+      accountSalt: undefined,
+      email,
+    }));
+    (adapter as any).ensureOwnerRemoteRoot = vi.fn(async () => root);
+    (adapter as any).resolveOwnerShareCryptoContext = resolveOwnerShareCryptoContext;
+    (adapter as any).repairOwnerShareKey = repairOwnerShareKey;
+    (adapter as any).replayMissingOwnerManagedShareInvitesInline = vi.fn(async () => undefined);
+    (adapter as any).healOwnerOutgoingShareKeys = vi.fn(async () => null);
+    (adapter as any).healOwnerShareTreeNodeKeys = vi.fn(async () => undefined);
+    
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-owner-share-repair-'));
+    tempDirs.push(localPath);
+    
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner-repair',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner-repair',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath,
+      sourceId: 'src-mega-owner-repair',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: ['peer@example.com'],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    
+    await expect((adapter as any).syncOwnerShare(share, account)).resolves.toBeUndefined();
+    
+    expect(repairOwnerShareKey).toHaveBeenCalledTimes(1);
+    expect(resolveOwnerShareCryptoContext).toHaveBeenCalledTimes(2);
+    
+    mirrorSync.mockRestore();
+  });
 
   it('caches owner upload state and skips duplicate immutable uploads without extra MEGA discovery', async () => {
     const secretStore = createMemorySecretStore();
@@ -4017,6 +4201,7 @@ describe('MegaTransportAdapter', () => {
 
   it('waits for an in-flight share sync before running an exclusive share task', async () => {
     const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
       logger: {
         log() {},
         warn() {},
@@ -4024,7 +4209,7 @@ describe('MegaTransportAdapter', () => {
     });
     const adapter = new MegaTransportAdapter(runtime, { fetchImpl: vi.fn() as typeof fetch });
 
-    let releaseExistingTask: (() => void) | null = null;
+    let releaseExistingTask!: () => void;
     const existingTask = new Promise<void>((resolve) => {
       releaseExistingTask = resolve;
     });
@@ -4048,7 +4233,7 @@ describe('MegaTransportAdapter', () => {
     expect(operation).not.toHaveBeenCalled();
     expect(abort).not.toHaveBeenCalled();
 
-    releaseExistingTask?.();
+    releaseExistingTask();
 
     await expect(completion).resolves.toBe('done');
     expect(operation).toHaveBeenCalledTimes(1);

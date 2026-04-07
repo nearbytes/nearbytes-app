@@ -3207,7 +3207,9 @@ export class ManagedShareService {
         share.role
       )
     );
-    const providerRoot = path.resolve(resolveProviderManagedShareRoot(this.mirrorRoot, 'mega', account));
+    const providerRoot = path.resolve(
+      resolveProviderManagedShareRoot(this.mirrorRoot, 'mega', account, share.remoteDescriptor, share.role)
+    );
     const currentLocalPath = path.resolve(share.localPath);
 
     if (normalizeComparablePath(currentLocalPath) !== normalizeComparablePath(expectedLocalPath)) {
@@ -3332,10 +3334,6 @@ export class ManagedShareService {
     }
 
     const providerRoot = path.resolve(resolveProviderManagedShareRoot(this.mirrorRoot, 'mega', account));
-    if (normalizeComparablePath(share.localPath) !== normalizeComparablePath(providerRoot)) {
-      return stateSnapshot;
-    }
-
     const expectedLocalPath = path.resolve(
       resolveManagedShareLocalPath(
         this.mirrorRoot,
@@ -3347,9 +3345,17 @@ export class ManagedShareService {
         share.role
       )
     );
-    if (normalizeComparablePath(share.localPath) === normalizeComparablePath(expectedLocalPath)) {
+    const currentLocalPath = path.resolve(share.localPath);
+    if (normalizeComparablePath(currentLocalPath) === normalizeComparablePath(expectedLocalPath)) {
+      await normalizeMegaRecipientShareRoot(expectedLocalPath, providerRoot);
       return stateSnapshot;
     }
+
+    if (!shouldRelocateMegaRecipientShareRoot(currentLocalPath, expectedLocalPath, providerRoot)) {
+      return stateSnapshot;
+    }
+
+    await relocateMegaRecipientShareRoot(currentLocalPath, expectedLocalPath, providerRoot);
 
     const nextShare: ManagedShare = {
       ...share,
@@ -3799,6 +3805,51 @@ async function normalizeMegaOwnerBaseShareRoot(canonicalRoot: string, providerRo
   }
 }
 
+async function relocateMegaRecipientShareRoot(
+  sourceRoot: string,
+  canonicalRoot: string,
+  providerRoot: string
+): Promise<void> {
+  if (normalizeComparablePath(sourceRoot) === normalizeComparablePath(canonicalRoot)) {
+    await normalizeMegaRecipientShareRoot(canonicalRoot, providerRoot);
+    return;
+  }
+  await ensureMirrorFolder(canonicalRoot);
+  await normalizeNearbytesRoot(canonicalRoot);
+  const entries = await readDirectoryEntries(sourceRoot);
+  for (const entry of entries) {
+    const sourcePath = path.join(sourceRoot, entry.name);
+    if (isMegaCanonicalEntryName(entry.name)) {
+      await mergePathIntoCanonicalMegaRoot(sourcePath, path.join(canonicalRoot, entry.name));
+      continue;
+    }
+    if (entry.isDirectory() && isNestedMegaShareRootName(entry.name)) {
+      await drainNestedMegaShareRoot(sourcePath, canonicalRoot, providerRoot);
+      continue;
+    }
+    await moveEntryToMegaDebris(sourcePath, providerRoot, `${path.basename(sourceRoot)} ${entry.name}`);
+  }
+  await fs.rm(sourceRoot, { recursive: true, force: true });
+  await normalizeMegaRecipientShareRoot(canonicalRoot, providerRoot);
+}
+
+async function normalizeMegaRecipientShareRoot(canonicalRoot: string, providerRoot: string): Promise<void> {
+  await ensureMirrorFolder(canonicalRoot);
+  await normalizeNearbytesRoot(canonicalRoot);
+  const entries = await readDirectoryEntries(canonicalRoot);
+  for (const entry of entries) {
+    if (isMegaAllowedCanonicalEntry(entry.name, entry.isDirectory())) {
+      continue;
+    }
+    const entryPath = path.join(canonicalRoot, entry.name);
+    if (entry.isDirectory() && isNestedMegaShareRootName(entry.name)) {
+      await drainNestedMegaShareRoot(entryPath, canonicalRoot, providerRoot);
+      continue;
+    }
+    await moveEntryToMegaDebris(entryPath, providerRoot, `${path.basename(canonicalRoot)} ${entry.name}`);
+  }
+}
+
 async function drainNestedMegaShareRoot(nestedRoot: string, canonicalRoot: string, providerRoot: string): Promise<void> {
   const nestedBlocks = path.join(nestedRoot, 'blocks');
   const nestedChannels = path.join(nestedRoot, 'channels');
@@ -3982,6 +4033,23 @@ function isPathInside(parentPath: string, childPath: string): boolean {
   const normalizedParent = normalizeComparablePath(parentPath);
   const normalizedChild = normalizeComparablePath(childPath);
   return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+}
+
+function shouldRelocateMegaRecipientShareRoot(currentPath: string, expectedPath: string, providerRoot: string): boolean {
+  const normalizedCurrent = normalizeComparablePath(currentPath);
+  const normalizedExpected = normalizeComparablePath(expectedPath);
+  const normalizedProviderRoot = normalizeComparablePath(providerRoot);
+  if (normalizedCurrent === normalizedExpected) {
+    return false;
+  }
+  if (normalizedCurrent.startsWith(`${normalizedProviderRoot}/`) && path.dirname(normalizedCurrent) === normalizedProviderRoot) {
+    return isNestedMegaShareRootName(path.basename(currentPath));
+  }
+  const normalizedMegaRoot = normalizeComparablePath(path.dirname(providerRoot));
+  if (path.dirname(normalizedCurrent) !== normalizedMegaRoot) {
+    return false;
+  }
+  return true;
 }
 
 function normalizeComparablePath(value: string): string {
