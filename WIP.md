@@ -89,6 +89,8 @@ Not visible:
 - 2026-04-06: ignored the local `.derived-dev-iphone` Xcode build tree so simulator and Xcode runs no longer pollute normal git status
 - 2026-04-06: narrowed the iOS shell to explicit localhost development exceptions instead of blanket arbitrary loads
 - 2026-04-06: extracted the join-link dialog into shared presentation helpers and a shared join sections component, then verified the extracted rules with a focused Vitest regression file
+- 2026-04-07: added baseline open-source project files and a `USER.md` handoff checklist for the remaining human-only v1.0 tasks
+- 2026-04-07: moved join-link preview parsing and attachment planning into shared UI code using the canonical join codec and planner, while leaving the actual open action on the runtime side
 
 ## TODO
 
@@ -120,5 +122,7 @@ Not visible:
 - `src/integrations/providerQueue.ts` remains the persisted local observation queue and route-state store.
 - `ui/src/components/JoinLinkSections.svelte` is now the shared join-link body used by both the create-hub join mode and the standalone open-from-clipboard dialog.
 - `ui/src/lib/joinLinkPresentation.ts` holds the extracted join-link presentation rules and `ui/src/lib/joinLinkPresentation.test.ts` covers the label and status mapping used by that shared UI.
+- `ui/src/lib/joinLinkPreview.ts` now parses and plans join-link previews locally from shared code, enriching them with provider-account and attached-share state from the existing runtime routes instead of depending on `/links/join/parse` for preview semantics.
 - `ui/ios/App/App/Info.plist` now keeps local-network access but restricts insecure development traffic to explicit localhost exceptions.
 - `ui/ios/.gitignore` now excludes `.derived-dev-iphone` so local iOS build output stays out of the tracked tree.
+- baseline public-project metadata now lives in `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, and `CODE_OF_CONDUCT.md`, while `USER.md` tracks the remaining human validation and release-signoff work.

@@ -1,3 +1,5 @@
+import { previewJoinLink } from './joinLinkPreview.js';
+
 /**
  * API client for Nearbytes Phase 2 backend.
  * Handles authentication, file operations, and error parsing.
@@ -1636,10 +1638,7 @@ export async function parseJoinLink(input: {
   link?: unknown;
   preferredProviders?: string[];
 }): Promise<JoinLinkParseResponse> {
-  return apiRequest<JoinLinkParseResponse>('/links/join/parse', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+  return previewJoinLink(input);
 }
 
 export async function openJoinLink(input: {

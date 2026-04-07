@@ -1,12 +1,45 @@
 import type { RecipientReferenceBundle, SourceReferenceBundle } from './api.js';
+import {
+  parseRecipientReferenceJson,
+  parseSourceReferenceJson,
+} from '../../../src/domain/fileReferenceCodec.js';
 
 export type NearbytesClipboardPayload =
   | { kind: 'source'; bundle: SourceReferenceBundle }
   | { kind: 'recipient'; bundle: RecipientReferenceBundle };
 
-const SOURCE_BUNDLE_PROTOCOL = 'nb.src.refs.v1';
-const RECIPIENT_BUNDLE_PROTOCOL = 'nb.refs.v1';
 export const SOURCE_BUNDLE_MIME = 'application/x-nearbytes-source-refs+json';
+export const RECIPIENT_BUNDLE_MIME = 'application/x-nearbytes-recipient-refs+json';
+
+function detectNearbytesClipboardPayload(text: string): (NearbytesClipboardPayload & { mimeType: string }) | null {
+  try {
+    const sourceBundle = parseSourceReferenceJson(text);
+    if (sourceBundle) {
+      return {
+        kind: 'source',
+        bundle: sourceBundle,
+        mimeType: SOURCE_BUNDLE_MIME,
+      };
+    }
+  } catch {
+    // Treat malformed source payloads as a non-match so callers can continue probing.
+  }
+
+  try {
+    const recipientBundle = parseRecipientReferenceJson(text);
+    if (recipientBundle) {
+      return {
+        kind: 'recipient',
+        bundle: recipientBundle,
+        mimeType: RECIPIENT_BUNDLE_MIME,
+      };
+    }
+  } catch {
+    // Treat malformed recipient payloads as a non-match.
+  }
+
+  return null;
+}
 
 export function parseNearbytesClipboardPayload(text: string): NearbytesClipboardPayload | null {
   const trimmed = text.trim();
@@ -14,34 +47,20 @@ export function parseNearbytesClipboardPayload(text: string): NearbytesClipboard
     return null;
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
+  const detected = detectNearbytesClipboardPayload(trimmed);
+  if (!detected) {
     return null;
   }
 
-  if (!parsed || typeof parsed !== 'object') {
-    return null;
-  }
-
-  const protocol = (parsed as { p?: unknown }).p;
-  if (protocol === SOURCE_BUNDLE_PROTOCOL) {
-    return {
-      kind: 'source',
-      bundle: parsed as SourceReferenceBundle,
-    };
-  }
-  if (protocol === RECIPIENT_BUNDLE_PROTOCOL) {
-    return {
-      kind: 'recipient',
-      bundle: parsed as RecipientReferenceBundle,
-    };
-  }
-  return null;
+  return {
+    kind: detected.kind,
+    bundle: detected.bundle,
+  };
 }
 
 export async function writeNearbytesClipboardPayload(serialized: string): Promise<void> {
+  const detected = detectNearbytesClipboardPayload(serialized.trim());
+
   if (
     typeof navigator !== 'undefined' &&
     navigator.clipboard &&
@@ -49,10 +68,13 @@ export async function writeNearbytesClipboardPayload(serialized: string): Promis
     typeof ClipboardItem !== 'undefined'
   ) {
     const textBlob = new Blob([serialized], { type: 'text/plain' });
-    const item = new ClipboardItem({
+    const clipboardData: Record<string, Blob> = {
       'text/plain': textBlob,
-      [SOURCE_BUNDLE_MIME]: new Blob([serialized], { type: SOURCE_BUNDLE_MIME }),
-    });
+    };
+    if (detected) {
+      clipboardData[detected.mimeType] = new Blob([serialized], { type: detected.mimeType });
+    }
+    const item = new ClipboardItem(clipboardData);
     await navigator.clipboard.write([item]);
     return;
   }

@@ -4,6 +4,14 @@ Nearbytes is a cryptographic protocol for storing and sharing mutable data colle
 
 Repository note: the first version of this repo was created as [GabeGiancarlo/Nearbytes](https://github.com/GabeGiancarlo/Nearbytes) and copied on March 12, 2026.
 
+## Project Files
+
+- [LICENSE](./LICENSE)
+- [CONTRIBUTING.md](./CONTRIBUTING.md)
+- [SECURITY.md](./SECURITY.md)
+- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+- [USER.md](./USER.md) for the remaining human-only release tasks
+
 ## Overview
 
 Nearbytes is a content-addressed storage system that provides:
