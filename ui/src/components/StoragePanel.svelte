@@ -3154,7 +3154,7 @@
       applyLocalNetworkResponse(response);
       if (!options?.background) {
         localNetworkLoadError = response.isOffline === true
-          ? 'Using mirrored local network state. Live discovery is unavailable.'
+          ? 'Live discovery is unavailable. Showing local phone LAN state and any last-known peer snapshots.'
           : '';
       }
     } catch (error) {

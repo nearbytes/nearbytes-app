@@ -15,6 +15,7 @@ import {
 } from '../mirror/browserMirror.js';
 import {
   embeddedPhoneHasLocalVolume,
+  embeddedPhoneLanPeersResponse,
   embeddedPhoneDeleteFile,
   embeddedPhoneDownloadBlob,
   embeddedPhoneExportRecipientReferences,
@@ -544,13 +545,7 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
         : {
             async listPeers(): Promise<LocalNetworkPeersResponse> {
               const mirrored = await readMirrorLocalNetworkPeers();
-              if (!mirrored) {
-                return createMissingPhoneRuntimeRequest();
-              }
-              return {
-                ...mirrored,
-                isOffline: true,
-              };
+              return embeddedPhoneLanPeersResponse(mirrored?.peers ?? []);
             },
             syncPeer() {
               return createMissingPhoneRuntimeRequest();

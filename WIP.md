@@ -8,12 +8,12 @@
 
 ## Quality Metrics
 
-- Implemented items: 0 / 8 active items
+- Implemented items: 1 / 8 active items
 - Implemented deferred items ahead of schedule: 0 / 7 deferred items
 
 ## Section 1: Phase 1 Remaining Items
 
-- [ ] Persist and surface a distinct embedded phone LAN peer identity in the shared phone host state.
+- [x] Persist and surface a distinct embedded phone LAN peer identity in the shared phone host state.
 - [ ] Implement a phone-owned LAN service state path so phone LAN status does not depend on mirrored-only desktop-fed snapshots.
 - [ ] Implement a phone-owned LAN sync initiation path behind the host contract.
 - [ ] Bridge phone runtime object-batch updates into browser-mirror invalidation and resume handling.

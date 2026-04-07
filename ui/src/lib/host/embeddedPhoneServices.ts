@@ -11,6 +11,8 @@ import type {
   FileMetadata,
   IdentityProfile,
   ListFilesResponse,
+  LocalNetworkPeersResponse,
+  LocalNetworkServiceState,
   OpenVolumeResponse,
   PublishIdentityResponse,
   ReferenceExportResponse,
@@ -46,10 +48,13 @@ interface EmbeddedPhoneRuntimeServices {
 interface InMemoryPathStore {
   files: Map<string, StoredPathRecord>;
   directories: Set<string>;
+  settings: Map<string, { key: string; value: string; updatedAt: number }>;
 }
 
 const DB_NAME = 'nearbytes-embedded-phone-runtime';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
+const PHONE_LAN_PEER_ID_KEY = 'phoneLanPeerId';
+const PHONE_LAN_LABEL_KEY = 'phoneLanLabel';
 
 let dbPromise: Promise<IDBPDatabase | null> | null = null;
 let inMemoryStore: InMemoryPathStore | null = null;
@@ -64,6 +69,7 @@ function getInMemoryStore(): InMemoryPathStore {
     inMemoryStore = {
       files: new Map(),
       directories: new Set(),
+      settings: new Map(),
     };
   }
   return inMemoryStore;
@@ -81,6 +87,9 @@ async function getIndexedDb(): Promise<IDBPDatabase | null> {
         }
         if (!db.objectStoreNames.contains('directories')) {
           db.createObjectStore('directories', { keyPath: 'path' });
+        }
+        if (!db.objectStoreNames.contains('settings')) {
+          db.createObjectStore('settings', { keyPath: 'key' });
         }
       },
     });
@@ -153,6 +162,57 @@ async function listStoredPaths(): Promise<string[]> {
     return (await db.getAllKeys('files')) as string[];
   }
   return Array.from(getInMemoryStore().files.keys());
+}
+
+async function putSetting(key: string, value: string): Promise<void> {
+  const db = await getIndexedDb();
+  const record = { key, value, updatedAt: Date.now() };
+  if (db) {
+    await db.put('settings', record);
+    return;
+  }
+  getInMemoryStore().settings.set(key, record);
+}
+
+async function getSetting(key: string): Promise<string | null> {
+  const db = await getIndexedDb();
+  if (db) {
+    const record = await db.get('settings', key) as { key: string; value: string } | undefined;
+    return record?.value ?? null;
+  }
+  return getInMemoryStore().settings.get(key)?.value ?? null;
+}
+
+function createEmbeddedPhonePeerId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return `phone-${globalThis.crypto.randomUUID().toLowerCase()}`;
+  }
+  const random = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(random);
+  const suffix = Array.from(random)
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+  return `phone-${suffix}`;
+}
+
+async function getOrCreateEmbeddedPhonePeerId(): Promise<string> {
+  const existing = await getSetting(PHONE_LAN_PEER_ID_KEY);
+  if (existing && existing.trim() !== '') {
+    return existing;
+  }
+  const created = createEmbeddedPhonePeerId();
+  await putSetting(PHONE_LAN_PEER_ID_KEY, created);
+  return created;
+}
+
+async function getOrCreateEmbeddedPhonePeerLabel(): Promise<string> {
+  const existing = await getSetting(PHONE_LAN_LABEL_KEY);
+  if (existing && existing.trim() !== '') {
+    return existing;
+  }
+  const created = 'This phone';
+  await putSetting(PHONE_LAN_LABEL_KEY, created);
+  return created;
 }
 
 class EmbeddedPhoneStorageBackend implements StorageBackend {
@@ -432,6 +492,7 @@ export function resetEmbeddedPhoneServicesForTests(): void {
   inMemoryStore = {
     files: new Map(),
     directories: new Set(),
+    settings: new Map(),
   };
 }
 
@@ -440,6 +501,32 @@ export async function embeddedPhoneHasLocalVolume(secret: string): Promise<boole
   return storage.exists(await getVolumeDirectory(secret));
 }
 
-export function embeddedPhoneAuthSecret(auth: { type: 'token'; token: string } | { type: 'secret'; secret: string }): string | null {
-  return auth.type === 'secret' && normalizeSecret(auth.secret) ? auth.secret : null;
+export async function embeddedPhoneLanServiceState(peerCount: number): Promise<LocalNetworkServiceState> {
+  const [peerId, label] = await Promise.all([
+    getOrCreateEmbeddedPhonePeerId(),
+    getOrCreateEmbeddedPhonePeerLabel(),
+  ]);
+
+  return {
+    protocol: 'nearbytes-lan-v1',
+    peerId,
+    label,
+    listening: false,
+    port: null,
+    discovery: 'dns-sd+multicast-fallback',
+    transport: 'webrtc',
+    serviceType: '_nearbytes._tcp',
+    announceIntervalMs: 5000,
+    peerCount,
+  };
+}
+
+export async function embeddedPhoneLanPeersResponse(
+  peers: LocalNetworkPeersResponse['peers'] = []
+): Promise<LocalNetworkPeersResponse> {
+  return {
+    service: await embeddedPhoneLanServiceState(peers.length),
+    peers,
+    isOffline: true,
+  };
 }

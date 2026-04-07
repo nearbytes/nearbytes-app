@@ -270,6 +270,36 @@ describe('phoneHost', () => {
     expect(openHostStream).not.toHaveBeenCalled();
   });
 
+  it('persists and surfaces a distinct embedded phone LAN peer identity', async () => {
+    const firstHost = await getPhoneHost();
+    const firstResponse = await firstHost.lan.listPeers() as {
+      service: { peerId: string; label: string; listening: boolean; peerCount: number };
+      peers: Array<unknown>;
+      isOffline?: boolean;
+    };
+
+    resetPhoneHostForTests();
+
+    const secondHost = await getPhoneHost();
+    const secondResponse = await secondHost.lan.listPeers() as {
+      service: { peerId: string; label: string; listening: boolean; peerCount: number };
+      peers: Array<unknown>;
+      isOffline?: boolean;
+    };
+
+    expect(firstResponse).toMatchObject({
+      service: {
+        label: 'This phone',
+        listening: false,
+        peerCount: 0,
+      },
+      peers: [],
+      isOffline: true,
+    });
+    expect(firstResponse.service.peerId).toMatch(/^phone-/);
+    expect(secondResponse.service.peerId).toBe(firstResponse.service.peerId);
+  });
+
   it('uses the shared transport for desktop-backed phone runtime compatibility', async () => {
     vi.mocked(getRuntimeConfig).mockResolvedValueOnce({
       apiBaseUrl: 'https://nearbytes.test',
