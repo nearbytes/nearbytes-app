@@ -983,7 +983,6 @@ import {
 import {
   openHostStream,
   requestHostBlob,
-  requestHostJson,
 } from './host/runtimeTransport.js';
 
 export interface UiDebugCapabilities {
@@ -1083,6 +1082,7 @@ async function apiRequest<T>(
   endpoint: string,
   options: RequestInit & { auth?: Auth } = {}
 ): Promise<T> {
+  const host = await getActiveHost();
   const { auth, ...fetchOptions } = options;
   const headers = new Headers(fetchOptions.headers);
 
@@ -1093,7 +1093,7 @@ async function apiRequest<T>(
     });
   }
 
-  return requestHostJson<T>(endpoint, {
+  return host.objects.requestJson<T>(endpoint, {
     ...fetchOptions,
     headers,
   });

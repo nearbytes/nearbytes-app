@@ -69,6 +69,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@noble/curves": "^1.9.7",
     "bonjour-service": "^1.3.0",
     "chokidar": "^4.0.3",
     "commander": "^11.1.0",

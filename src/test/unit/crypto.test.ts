@@ -1,4 +1,4 @@
-import { createECDH } from 'crypto';
+import { createECDH, randomBytes } from 'crypto';
 import { describe, it, expect } from 'vitest';
 import { createCryptoOperations } from '../../crypto/index.js';
 import { createSecret } from '../../types/keys.js';
@@ -106,6 +106,38 @@ describe('CryptoOperations', () => {
       ecdh.setPrivateKey(Buffer.from(keyPair.privateKey));
       expect(keyPair.publicKey).toEqual(new Uint8Array(ecdh.getPublicKey(undefined, 'uncompressed')));
     });
+
+    it('should match Node prime256v1 public keys for short and mixed-case secrets', async () => {
+      for (const secretValue of ['Test6', 'test6', 'a', 'abc', 'codex-cross-platform-secret']) {
+        await expectSecretToMatchNode(secretValue);
+      }
+    });
+
+    it('should match Node prime256v1 public keys for unicode secrets', async () => {
+      for (const secretValue of [
+        'cafe\u0301',
+        'caf\u00e9',
+        'こんにちは',
+        '🔐 nearbytes',
+        'hub:пароль',
+        ' leading and trailing ',
+        'line\nbreak',
+        'null\0byte',
+      ]) {
+        await expectSecretToMatchNode(secretValue);
+      }
+    });
+
+    it('should match Node prime256v1 public keys for random file-backed secret bytes', async () => {
+      for (const length of [1, 2, 7, 16, 32, 33, 64, 128]) {
+        const bytes = randomBytes(length);
+        const encoded = Buffer.from(bytes).toString('base64url');
+        const secret = createSecret(`nb-file-secret:v1:${encoded}`);
+        const keyPair = await crypto.deriveKeys(secret);
+
+        expect(keyPair.publicKey).toEqual(nodePublicKeyFromPrivateKey(keyPair.privateKey));
+      }
+    });
   });
 
   describe('signPR and verifyPU', () => {
@@ -133,3 +165,15 @@ describe('CryptoOperations', () => {
     });
   });
 });
+
+async function expectSecretToMatchNode(secretValue: string): Promise<void> {
+  const crypto = createCryptoOperations();
+  const keyPair = await crypto.deriveKeys(createSecret(secretValue));
+  expect(keyPair.publicKey).toEqual(nodePublicKeyFromPrivateKey(keyPair.privateKey));
+}
+
+function nodePublicKeyFromPrivateKey(privateKey: Uint8Array): Uint8Array {
+  const ecdh = createECDH('prime256v1');
+  ecdh.setPrivateKey(Buffer.from(privateKey));
+  return new Uint8Array(ecdh.getPublicKey(undefined, 'uncompressed'));
+}

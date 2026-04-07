@@ -39,6 +39,7 @@
     type VolumeDestinationConfig,
     type VolumeChatState,
   } from './lib/api.js';
+  import { resolveActiveHubAuth } from './lib/activeHub.js';
   import { clearCache, getCachedFiles, setCachedFiles } from './lib/cache.js';
   import {
     readMirrorEventDetail,
@@ -2415,11 +2416,18 @@
     if (!selectedChatIdentity) {
       return null;
     }
-    if (!activeHubAuth || !activeHubVolumeId) {
+    if (!activeHubVolumeId) {
       return {
         tone: 'warning',
         title: 'Open a hub to use chat',
         detail: 'Joining is local to the current hub.',
+      };
+    }
+    if (!activeHubAuth) {
+      return {
+        tone: 'warning',
+        title: 'Add this hub secret to use chat',
+        detail: 'This view only has the hub ID and mirrored history. Add the hub secret to join locally.',
       };
     }
     if (isHistoryMode) {
@@ -2625,9 +2633,16 @@
   );
   const currentPreviewFile = $derived.by(() => previewFileOverride ?? selectedFile);
   const activeMountRuntime = $derived.by(() => matchingMountRuntime(activeMount));
-  const activeHubAuth = $derived.by(() => activeMountRuntime?.auth ?? auth);
   const activeHubVolumeId = $derived.by(
     () => activeMountRuntime?.volumeId ?? volumeId ?? activeMount?.volumeId?.trim().toLowerCase() ?? null
+  );
+  const activeHubAuth = $derived.by(() =>
+    resolveActiveHubAuth({
+      runtimeAuth: activeMountRuntime?.auth ?? null,
+      currentAuth: auth,
+      activeMountSecret: activeMount ? buildMountSecret(activeMount) : null,
+      mountedSecretForVolumeId: activeHubVolumeId ? mountedSecretForVolumeId(activeHubVolumeId) : null,
+    })
   );
   const currentMountedVolumePresentation = $derived.by<MountedVolumePresentation | null>(() => {
     const currentVolumeId = activeHubVolumeId;

@@ -34,6 +34,9 @@
       value={value}
       aria-label={valueAriaLabel}
       placeholder={valuePlaceholder}
+      autocapitalize="none"
+      autocorrect="off"
+      spellcheck="false"
       oninput={(event) => onValueInput?.((event.currentTarget as HTMLInputElement).value)}
     />
   </label>
@@ -45,6 +48,9 @@
       aria-label={passwordAriaLabel}
       placeholder={passwordPlaceholder}
       autocomplete="current-password"
+      autocapitalize="none"
+      autocorrect="off"
+      spellcheck="false"
       oninput={(event) => onPasswordInput?.((event.currentTarget as HTMLInputElement).value)}
     />
   </label>

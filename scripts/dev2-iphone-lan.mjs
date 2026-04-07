@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import {
-  buildCorsOrigin,
   buildYarnInvocation,
   clearPorts,
   createManualTestPaths,
@@ -24,18 +23,15 @@ import {
 } from './lib/dev-orchestration.mjs';
 
 const desktopUiPort = 5177;
-const phoneApiPort = readPort('NEARBYTES_DEV2_IPHONE_LAN_PHONE_PORT', 3300);
 const phoneUiPort = readPort('NEARBYTES_DEV2_IPHONE_LAN_PHONE_UI_PORT', 5181);
 const startupTimeoutMs = readPort('NEARBYTES_DEV2_IPHONE_LAN_STARTUP_TIMEOUT_MS', 90_000);
 const desktopHome = trimOrDefault(process.env.NEARBYTES_DEV2_IPHONE_LAN_DESKTOP_HOME, '/tmp/nearbytes-dev2-iphone-lan-desktop-home');
 const phoneHome = trimOrDefault(process.env.NEARBYTES_DEV2_IPHONE_LAN_PHONE_HOME, '/tmp/nearbytes-dev2-iphone-lan-phone-home');
 const logsDir = path.join(os.homedir(), '.nearbytes', 'logs');
 const desktopLogPath = path.join(logsDir, 'dev2-iphone-lan-desktop.log');
-const phoneBackendLogPath = path.join(logsDir, 'dev2-iphone-lan-phone-backend.log');
 const phoneUiLogPath = path.join(logsDir, 'dev2-iphone-lan-phone-ui.log');
 const desktopPaths = createManualTestPaths(desktopHome);
 const phonePaths = createManualTestPaths(phoneHome);
-const phoneApiUrl = `http://127.0.0.1:${phoneApiPort}`;
 const phoneUiUrl = `http://127.0.0.1:${phoneUiPort}`;
 
 const children = [];
@@ -65,8 +61,8 @@ try {
 
   console.error('[dev2-iphone-lan] building project');
   ensureRepoBuild();
-  console.error('[dev2-iphone-lan] clearing dedicated ports', { desktopUiPort, phoneApiPort, phoneUiPort });
-  await clearPorts([desktopUiPort, phoneApiPort, phoneUiPort]);
+  console.error('[dev2-iphone-lan] clearing dedicated ports', { desktopUiPort, phoneUiPort });
+  await clearPorts([desktopUiPort, phoneUiPort]);
 
   console.error('[dev2-iphone-lan] starting desktop runtime');
   const desktopChild = startLoggedProcess({
@@ -89,30 +85,18 @@ try {
   });
   children.push(desktopChild);
 
-  console.error('[dev2-iphone-lan] starting phone backend');
-  const phoneBackendChild = startLoggedProcess({
-    label: 'phone-backend',
-    command: process.execPath,
-    args: [
-      path.join(repoRoot, 'dist', 'server', 'index.js'),
-      '--roots-config',
-      phonePaths.rootsConfigPath,
-      '--app-config',
-      phonePaths.appConfigPath,
-    ],
-    env: {
-      ...process.env,
-      HOME: phoneHome,
-      PORT: String(phoneApiPort),
-      NEARBYTES_CORS_ORIGIN: buildCorsOrigin(process.env.NEARBYTES_CORS_ORIGIN, phoneUiPort),
-    },
-    logPath: phoneBackendLogPath,
-  });
-  children.push(phoneBackendChild);
-
-  console.error('[dev2-iphone-lan] waiting for desktop runtime and phone backend');
+  console.error('[dev2-iphone-lan] waiting for desktop runtime');
   const desktopSession = await waitForDesktopSession(desktopPaths.desktopSessionPath, startupTimeoutMs, desktopChild);
-  await waitForHealth(phoneApiUrl, startupTimeoutMs, phoneBackendChild, phoneBackendLogPath);
+  const desktopApiUrl = `http://127.0.0.1:${desktopSession.port}`;
+  const desktopHeaders = { 'x-nearbytes-runtime-token': desktopSession.token };
+  await waitForHealth(desktopApiUrl, startupTimeoutMs, desktopChild, desktopLogPath, desktopHeaders);
+  writeDevApiDescriptor(desktopPaths.nearbytesDir, {
+    label: 'desktop',
+    baseUrl: desktopApiUrl,
+    headers: desktopHeaders,
+    lanPeersUrl: `${desktopApiUrl}/integrations/local-network/peers`,
+    lanSyncUrl: `${desktopApiUrl}/integrations/local-network/peers/:peerId/sync`,
+  });
 
   console.error('[dev2-iphone-lan] starting phone UI dev server');
   const [phoneUiCommand, phoneUiArgs] = buildYarnInvocation([
@@ -132,10 +116,8 @@ try {
     env: {
       ...process.env,
       HOME: phoneHome,
-      PORT: String(phoneApiPort),
       NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
       VITE_NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
-      NEARBYTES_DESKTOP_SESSION_FILE: phonePaths.desktopSessionPath,
     },
     logPath: phoneUiLogPath,
   });
@@ -146,7 +128,6 @@ try {
   console.error('[dev2-iphone-lan] launching iPhone simulator app');
   runIphoneLauncher(phoneUiUrl);
 
-  const desktopApiUrl = `http://127.0.0.1:${desktopSession.port}`;
   await requestJson(desktopApiUrl, 'GET', '/health', undefined, {
     'x-nearbytes-runtime-token': desktopSession.token,
   }).catch(async () => {
@@ -157,8 +138,9 @@ try {
   console.error(`[dev2-iphone-lan] desktop UI: http://127.0.0.1:${desktopUiPort}`);
   console.error(`[dev2-iphone-lan] desktop API: ${desktopApiUrl}`);
   console.error(`[dev2-iphone-lan] phone UI: ${phoneUiUrl}`);
-  console.error(`[dev2-iphone-lan] phone API: ${phoneApiUrl}`);
+  console.error(`[dev2-iphone-lan] desktop dev api descriptor: ${path.join(desktopPaths.nearbytesDir, 'dev-api.json')}`);
   console.error('[dev2-iphone-lan] both participants run with LAN enabled and MEGA disabled');
+  console.error('[dev2-iphone-lan] the phone runtime stays embedded; no phone backend process is started');
   console.error('[dev2-iphone-lan] press Ctrl-C to stop all processes');
 
   await Promise.all(children.map((child) => waitForExit(child)));
@@ -212,4 +194,8 @@ function readPort(name, fallback) {
     throw new Error(`${name} must be a positive integer.`);
   }
   return parsed;
+}
+
+function writeDevApiDescriptor(dirPath, descriptor) {
+  writeFileSync(path.join(dirPath, 'dev-api.json'), `${JSON.stringify(descriptor, null, 2)}\n`, 'utf8');
 }

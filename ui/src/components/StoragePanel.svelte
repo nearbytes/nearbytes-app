@@ -4544,14 +4544,15 @@
       successMessage = 'Storage location added.';
       return;
     }
-    configDraft = {
-      ...configDraft,
-      sources: [...configDraft.sources, createSource()],
-    };
+    errorMessage = 'Adding another on-device storage location is not available on this phone yet.';
   }
 
   async function chooseSourceFolder(sourceId: string): Promise<void> {
     if (!configDraft) return;
+    if (!hasDesktopDirectoryPicker()) {
+      errorMessage = 'Choosing folders is not available on this phone yet.';
+      return;
+    }
     const source = configDraft.sources.find((entry) => entry.id === sourceId);
     const selectedPath = await pickFolderPath(source?.path ?? '');
     if (!selectedPath) return;
@@ -4569,6 +4570,10 @@
 
   async function moveSourceFolder(sourceId: string): Promise<void> {
     if (!configDraft) return;
+    if (!hasDesktopDirectoryPicker()) {
+      errorMessage = 'Moving storage locations is not available on this phone yet.';
+      return;
+    }
     const source = configDraft.sources.find((entry) => entry.id === sourceId);
     if (!source) return;
     if (source.moveFromSourceId) {

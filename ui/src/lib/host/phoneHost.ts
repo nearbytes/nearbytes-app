@@ -9,10 +9,18 @@ import {
   readMirrorVolumeSnapshot,
 } from '../mirror/browserMirror.js';
 import {
+  embeddedPhoneDiscoverSources,
+  embeddedPhoneGetAppConfig,
+  embeddedPhoneGetEventStorageLocations,
+  embeddedPhoneGetRootsConfig,
+  embeddedPhoneHasReadableVolume,
   embeddedPhoneHasLocalVolume,
   embeddedPhoneLanPeersResponse,
+  embeddedPhoneReconcileSources,
   embeddedPhoneSubscribeVolumeWatch,
   embeddedPhoneSyncPeer,
+  embeddedPhoneUpdateProviderEnabled,
+  embeddedPhoneUpdateRootsConfig,
   embeddedPhoneDeleteFile,
   embeddedPhoneDownloadBlob,
   embeddedPhoneExportRecipientReferences,
@@ -30,6 +38,12 @@ import {
   embeddedPhoneSendChatMessage,
   embeddedPhoneUploadFile,
 } from './embeddedPhoneServices.js';
+import {
+  listNativeLanPeers,
+  resetNativeLanRuntimeForTests,
+  syncNativeLanPeer,
+} from './nativeLanSync.js';
+import { hasNativeLanPlugin } from './nativeLanPlugin.js';
 import type {
   ChatAttachment,
   EventDetailResponse,
@@ -176,6 +190,26 @@ function ensureEmbeddedMirrorState<T>(
   return value;
 }
 
+async function ensureEmbeddedReadableVolume(secret: string, volumeIdHint?: string): Promise<boolean> {
+  if (await embeddedPhoneHasReadableVolume(secret)) {
+    return true;
+  }
+  if (!hasNativeLanPlugin()) {
+    return false;
+  }
+
+  const targetVolumeId = volumeIdHint ?? await deriveVolumeIdFromSecret(secret);
+  const response = await listNativeLanPeers();
+  const matchingPeers = response.peers.filter((peer) => peer.volumeIds.includes(targetVolumeId));
+  const candidatePeers = matchingPeers.length > 0 ? matchingPeers : response.peers;
+  if (candidatePeers.length === 0) {
+    return false;
+  }
+
+  await Promise.allSettled(candidatePeers.map((peer) => syncNativeLanPeer(peer.peerId)));
+  return embeddedPhoneHasReadableVolume(secret);
+}
+
 function isTimelineIdentityEvent(event: TimelineEvent): boolean {
   return (
     event.type === 'DECLARE_IDENTITY' ||
@@ -216,10 +250,12 @@ function buildChatStateFromTimeline(events: TimelineEvent[]): VolumeChatState {
     }
   }
 
+  const hasMirroredChatHistory = identitiesByPublicKey.size > 0 || messages.length > 0;
+
   return {
     identities: Array.from(identitiesByPublicKey.values()),
     messages,
-    isOffline: true,
+    ...(hasMirroredChatHistory ? { isOffline: true } : {}),
   };
 }
 
@@ -242,7 +278,7 @@ function createEmbeddedWatchMessage(eventName: string, payload: unknown): Messag
 function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDesktop'] {
   return {
     async openVolume(secret: string): Promise<OpenVolumeResponse> {
-      if (await embeddedPhoneHasLocalVolume(secret)) {
+      if (await ensureEmbeddedReadableVolume(secret)) {
         return await embeddedPhoneOpenVolume(secret);
       }
       const state = await readEmbeddedMirrorState(secret);
@@ -262,7 +298,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      if (await embeddedPhoneHasLocalVolume(secret)) {
+      if (await ensureEmbeddedReadableVolume(secret)) {
         return await embeddedPhoneListFiles(secret);
       }
       const state = await readEmbeddedMirrorState(secret);
@@ -280,7 +316,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      if (await embeddedPhoneHasLocalVolume(secret)) {
+      if (await ensureEmbeddedReadableVolume(secret)) {
         return await embeddedPhoneGetTimeline(secret);
       }
       const state = await readEmbeddedMirrorState(secret);
@@ -296,7 +332,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
     },
     async getEventDetail(auth: NearbytesAuth, eventHash: string): Promise<EventDetailResponse> {
       const secret = readSecretAuth(auth);
-      if (secret && await embeddedPhoneHasLocalVolume(secret)) {
+      if (secret && await ensureEmbeddedReadableVolume(secret)) {
           return await embeddedPhoneGetEventDetail(secret, eventHash);
       }
       const mirrored = await readMirrorEventDetail(eventHash);
@@ -310,7 +346,11 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       };
     },
     getEventStorageLocations(_auth: NearbytesAuth, _eventHash: string): Promise<unknown> {
-      return createMissingPhoneRuntimeRequest();
+      const secret = readSecretAuth(_auth);
+      if (!secret) {
+        return createMissingPhoneRuntimeRequest();
+      }
+      return embeddedPhoneGetEventStorageLocations(secret, _eventHash);
     },
     async uploadFile(auth: NearbytesAuth, file: File): Promise<UploadResponse> {
       const secret = readSecretAuth(auth);
@@ -377,7 +417,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      if (await embeddedPhoneHasLocalVolume(secret)) {
+      if (await ensureEmbeddedReadableVolume(secret)) {
         return await embeddedPhoneListChat(secret);
       }
       const state = await readEmbeddedMirrorState(secret);
@@ -410,8 +450,59 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
   };
 }
 
+function parseObjectRequestBody(options?: RequestInit): unknown {
+  if (typeof options?.body !== 'string' || options.body.trim().length === 0) {
+    return null;
+  }
+  try {
+    return JSON.parse(options.body);
+  } catch {
+    throw new HostRequestError(400, 'Invalid JSON body');
+  }
+}
+
+async function handleEmbeddedPhoneJsonRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  const requestUrl = new URL(endpoint, 'http://nearbytes.invalid');
+  const method = (options?.method ?? 'GET').toUpperCase();
+
+  if (method === 'GET' && requestUrl.pathname === '/config/roots') {
+    return embeddedPhoneGetRootsConfig(requestUrl.searchParams.get('includeUsage') === '1') as Promise<T>;
+  }
+  if (method === 'PUT' && requestUrl.pathname === '/config/roots') {
+    const body = parseObjectRequestBody(options) as { config?: unknown } | null;
+    if (!body?.config) {
+      throw new HostRequestError(400, 'Missing roots config payload');
+    }
+    return embeddedPhoneUpdateRootsConfig(body.config as never) as Promise<T>;
+  }
+  if (method === 'GET' && requestUrl.pathname === '/config/app') {
+    return embeddedPhoneGetAppConfig() as Promise<T>;
+  }
+  if (method === 'PUT' && requestUrl.pathname.startsWith('/config/app/providers/')) {
+    const provider = decodeURIComponent(requestUrl.pathname.slice('/config/app/providers/'.length));
+    const body = parseObjectRequestBody(options) as { enabled?: unknown } | null;
+    if (typeof body?.enabled !== 'boolean') {
+      throw new HostRequestError(400, 'Provider enabled must be a boolean.');
+    }
+    return embeddedPhoneUpdateProviderEnabled(provider, body.enabled) as Promise<T>;
+  }
+  if (method === 'GET' && requestUrl.pathname === '/sources/discover') {
+    return embeddedPhoneDiscoverSources() as Promise<T>;
+  }
+  if (method === 'POST' && requestUrl.pathname === '/sources/reconcile') {
+    const body = parseObjectRequestBody(options) as { knownVolumeIds?: unknown } | null;
+    const knownVolumeIds = Array.isArray(body?.knownVolumeIds)
+      ? body.knownVolumeIds.map((value) => String(value))
+      : [];
+    return embeddedPhoneReconcileSources(knownVolumeIds) as Promise<T>;
+  }
+
+  return createMissingPhoneRuntimeRequest();
+}
+
 export function resetPhoneHostForTests(): void {
   hostPromise = null;
+  resetNativeLanRuntimeForTests();
 }
 
 export async function getPhoneHost(): Promise<NearbytesHostContract> {
@@ -433,7 +524,7 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
         supportsRuntimeLogs: false,
       },
       objects: {
-        requestJson: () => createMissingPhoneRuntimeRequest(),
+        requestJson: handleEmbeddedPhoneJsonRequest,
         async requestBlob(endpoint, options) {
           const headers = new Headers(options?.headers);
           const secret = headers.get('x-nearbytes-secret');
@@ -503,10 +594,16 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
       integrations,
       lan: {
         async listPeers(): Promise<LocalNetworkPeersResponse> {
+          if (hasNativeLanPlugin()) {
+            return await listNativeLanPeers();
+          }
           const mirrored = await readMirrorLocalNetworkPeers();
-          return embeddedPhoneLanPeersResponse(mirrored?.peers ?? []);
+          return embeddedPhoneLanPeersResponse(mirrored?.peers ?? [], {}, { isOffline: true });
         },
         async syncPeer(peerId: string) {
+          if (hasNativeLanPlugin()) {
+            return await syncNativeLanPeer(peerId);
+          }
           const mirrored = await readMirrorLocalNetworkPeers();
           return embeddedPhoneSyncPeer(peerId, mirrored?.peers ?? []);
         },

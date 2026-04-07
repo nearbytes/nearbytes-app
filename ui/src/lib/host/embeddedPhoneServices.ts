@@ -6,9 +6,13 @@ import { createFileService, type FileService } from '../../../../src/domain/file
 import { createSecret, type Secret } from '../../../../src/types/keys.js';
 import { defaultPathMapper, type StorageBackend } from '../../../../src/types/storage.js';
 import type {
+  AppConfig,
+  AppConfigResponse,
   ChatAttachment,
+  DiscoverSourcesResponse,
   DurableCommitAck,
   EventDetailResponse,
+  EventStorageLocationsResponse,
   FileMetadata,
   IdentityProfile,
   LocalNetworkPeer,
@@ -18,13 +22,20 @@ import type {
   LocalNetworkServiceState,
   OpenVolumeResponse,
   PublishIdentityResponse,
+  ReconcileSourcesResponse,
   ReferenceExportResponse,
   ReferenceImportResponse,
   RecipientReferenceBundle,
   RenameFileResponse,
   RenameFolderResponse,
+  RootRuntimeStatus,
+  RootsConfig,
+  RootsConfigResponse,
+  RootsRuntimeSnapshot,
   SendChatMessageResponse,
   SourceReferenceBundle,
+  SourceUsageSummary,
+  SourceVolumeUsage,
   TimelineEvent,
   TimelineResponse,
   UploadResponse,
@@ -40,6 +51,19 @@ import {
   readMirrorVolumeSnapshot,
   writeMirrorCheckpoint,
 } from '../mirror/browserMirror.js';
+import {
+  parseCanonicalBlockRelativePath,
+  parseCanonicalEventRelativePath,
+  validateBlockBytes,
+  validateEventBytes,
+} from '../../../../src/storage/integrity.js';
+import type {
+  LanTransportHello,
+  LanTransportObservationPage,
+  LanTransportRpcRequest,
+  LanTransportStorageCommand,
+  LanTransportVolumeInventory,
+} from '../../../../src/integrations/lanPeerTransport.js';
 
 interface StoredPathRecord {
   path: string;
@@ -65,9 +89,20 @@ const PHONE_LAN_PEER_ID_KEY = 'phoneLanPeerId';
 const PHONE_LAN_LABEL_KEY = 'phoneLanLabel';
 const PHONE_LAN_SERVICE_STATE_KEY = 'phoneLanServiceState';
 const PHONE_LAN_PEER_OVERLAYS_KEY = 'phoneLanPeerOverlays';
+const PHONE_LAN_ROUTE_STATES_KEY = 'phoneLanRouteStates';
 const PHONE_PENDING_COMMITS_KEY = 'phonePendingCommits';
 const PHONE_COMMIT_RECEIPTS_KEY = 'phoneCommitReceipts';
 const PHONE_RUNTIME_HEADS_KEY = 'phoneRuntimeHeads';
+const PHONE_ROOTS_CONFIG_KEY = 'phoneRootsConfig';
+const PHONE_APP_CONFIG_KEY = 'phoneAppConfig';
+const EMBEDDED_PHONE_SOURCE_ID = 'src-embedded-phone';
+
+interface EmbeddedPhoneLanRouteState {
+  peerId: string;
+  lastAckedObservationId: string | null;
+  lastAttemptedObservationId: string | null;
+  updatedAt: number;
+}
 
 interface EmbeddedPhoneLanPeerOverlay {
   lastSyncAt?: number | null;
@@ -76,6 +111,11 @@ interface EmbeddedPhoneLanPeerOverlay {
   lastSyncNotice?: string | null;
   status?: LocalNetworkPeer['status'];
   detail?: string;
+  lastImportedEvents?: number;
+  lastImportedBlocks?: number;
+  remoteCursorObservationId?: string | null;
+  lastRemoteHeadObservationId?: string | null;
+  volumeIds?: string[];
 }
 
 interface EmbeddedPhoneVolumeWatchSubscription {
@@ -239,6 +279,18 @@ async function listStoredPaths(): Promise<string[]> {
   return Array.from(getInMemoryStore().files.keys());
 }
 
+async function listStoredFileRecords(): Promise<StoredPathRecord[]> {
+  const db = await getIndexedDb();
+  if (db) {
+    return (await db.getAll('files')) as StoredPathRecord[];
+  }
+  return Array.from(getInMemoryStore().files.values()).map((record) => ({
+    path: record.path,
+    data: new Uint8Array(record.data),
+    updatedAt: record.updatedAt,
+  }));
+}
+
 async function putSetting(key: string, value: string): Promise<void> {
   const db = await getIndexedDb();
   const record = { key, value, updatedAt: Date.now() };
@@ -326,6 +378,249 @@ async function writeEmbeddedPhoneRuntimeHead(head: EmbeddedPhoneRuntimeHead): Pr
 async function readEmbeddedPhoneRuntimeHead(volumeId: string): Promise<EmbeddedPhoneRuntimeHead | null> {
   const heads = await readEmbeddedPhoneRuntimeHeads();
   return heads[volumeId] ?? null;
+}
+
+function createDefaultEmbeddedPhoneRootsConfig(): RootsConfig {
+  return {
+    version: 2,
+    sources: [
+      {
+        id: EMBEDDED_PHONE_SOURCE_ID,
+        provider: 'local',
+        path: '',
+        enabled: true,
+        writable: true,
+        reservePercent: 5,
+        opportunisticPolicy: 'block-writes',
+      },
+    ],
+    defaultVolume: {
+      destinations: [
+        {
+          sourceId: EMBEDDED_PHONE_SOURCE_ID,
+          enabled: true,
+          storeEvents: true,
+          storeBlocks: true,
+          copySourceBlocks: true,
+          reservePercent: 5,
+          fullPolicy: 'block-writes',
+        },
+      ],
+    },
+    volumes: [],
+  };
+}
+
+function createDefaultEmbeddedPhoneAppConfig(): AppConfig {
+  return {
+    version: 1,
+    features: {
+      providers: {
+        googleDrive: false,
+        mega: false,
+        github: false,
+        localNetwork: true,
+      },
+      performance: {
+        appMetrics: false,
+      },
+    },
+  };
+}
+
+function createEmptyEmbeddedPhoneUsageSummary(): SourceUsageSummary {
+  return {
+    totalBytes: 0,
+    channelBytes: 0,
+    blockBytes: 0,
+    otherBytes: 0,
+    blockCount: 0,
+    volumeUsages: [],
+  };
+}
+
+async function readEmbeddedPhoneRootsConfigValue(): Promise<RootsConfig> {
+  const stored = await getSetting(PHONE_ROOTS_CONFIG_KEY);
+  if (!stored) {
+    return createDefaultEmbeddedPhoneRootsConfig();
+  }
+  try {
+    return JSON.parse(stored) as RootsConfig;
+  } catch {
+    return createDefaultEmbeddedPhoneRootsConfig();
+  }
+}
+
+async function writeEmbeddedPhoneRootsConfigValue(config: RootsConfig): Promise<void> {
+  await putSetting(PHONE_ROOTS_CONFIG_KEY, JSON.stringify(config));
+}
+
+async function readEmbeddedPhoneAppConfigValue(): Promise<AppConfig> {
+  const stored = await getSetting(PHONE_APP_CONFIG_KEY);
+  if (!stored) {
+    return createDefaultEmbeddedPhoneAppConfig();
+  }
+  try {
+    return JSON.parse(stored) as AppConfig;
+  } catch {
+    return createDefaultEmbeddedPhoneAppConfig();
+  }
+}
+
+async function writeEmbeddedPhoneAppConfigValue(config: AppConfig): Promise<void> {
+  await putSetting(PHONE_APP_CONFIG_KEY, JSON.stringify(config));
+}
+
+async function buildEmbeddedPhoneSourceUsageSummary(): Promise<SourceUsageSummary> {
+  const records = await listStoredFileRecords();
+  const volumeUsages = new Map<string, SourceVolumeUsage>();
+  let totalBytes = 0;
+  let channelBytes = 0;
+  let blockBytes = 0;
+  let otherBytes = 0;
+  let blockCount = 0;
+
+  for (const record of records) {
+    const size = record.data.byteLength;
+    totalBytes += size;
+
+    const parsedEvent = parseCanonicalEventRelativePath(record.path);
+    if (parsedEvent) {
+      channelBytes += size;
+      const current = volumeUsages.get(parsedEvent.volumeId) ?? {
+        volumeId: parsedEvent.volumeId,
+        historyBytes: 0,
+        historyFileCount: 0,
+        fileBytes: 0,
+        fileCount: 0,
+      };
+      current.historyBytes += size;
+      current.historyFileCount += 1;
+      volumeUsages.set(parsedEvent.volumeId, current);
+      continue;
+    }
+
+    if (parseCanonicalBlockRelativePath(record.path)) {
+      blockBytes += size;
+      blockCount += 1;
+      continue;
+    }
+
+    otherBytes += size;
+  }
+
+  for (const usage of volumeUsages.values()) {
+    const snapshot = await readMirrorVolumeSnapshot(usage.volumeId);
+    if (!snapshot) {
+      continue;
+    }
+    usage.fileCount = snapshot.files.length;
+    usage.fileBytes = snapshot.files.reduce((sum, file) => sum + file.size, 0);
+  }
+
+  return {
+    totalBytes,
+    channelBytes,
+    blockBytes,
+    otherBytes,
+    blockCount,
+    volumeUsages: Array.from(volumeUsages.values()).sort((left, right) => left.volumeId.localeCompare(right.volumeId)),
+  };
+}
+
+async function buildEmbeddedPhoneRootsRuntimeSnapshot(
+  config: RootsConfig,
+  includeUsage: boolean
+): Promise<RootsRuntimeSnapshot> {
+  const usage = includeUsage ? await buildEmbeddedPhoneSourceUsageSummary() : createEmptyEmbeddedPhoneUsageSummary();
+
+  return {
+    sources: config.sources.map((source, index) => ({
+      id: source.id,
+      kind: 'source',
+      provider: source.provider,
+      path: source.path,
+      enabled: source.enabled,
+      writable: source.writable,
+      reservePercent: source.reservePercent,
+      opportunisticPolicy: source.opportunisticPolicy,
+      exists: index === 0,
+      isDirectory: index === 0,
+      canWrite: index === 0 && source.enabled && source.writable,
+      usage: index === 0 ? usage : createEmptyEmbeddedPhoneUsageSummary(),
+    })) satisfies RootRuntimeStatus[],
+    writeFailures: [],
+  };
+}
+
+export async function embeddedPhoneGetRootsConfig(includeUsage = false): Promise<RootsConfigResponse> {
+  const config = await readEmbeddedPhoneRootsConfigValue();
+  return {
+    configPath: null,
+    config,
+    runtime: await buildEmbeddedPhoneRootsRuntimeSnapshot(config, includeUsage),
+  };
+}
+
+export async function embeddedPhoneUpdateRootsConfig(config: RootsConfig): Promise<RootsConfigResponse> {
+  await writeEmbeddedPhoneRootsConfigValue(config);
+  return embeddedPhoneGetRootsConfig(true);
+}
+
+export async function embeddedPhoneGetAppConfig(): Promise<AppConfigResponse> {
+  return {
+    config: await readEmbeddedPhoneAppConfigValue(),
+  };
+}
+
+export async function embeddedPhoneUpdateProviderEnabled(provider: string, enabled: boolean): Promise<AppConfigResponse> {
+  const config = await readEmbeddedPhoneAppConfigValue();
+  switch (provider) {
+    case 'gdrive':
+      config.features.providers.googleDrive = enabled;
+      break;
+    case 'mega':
+      config.features.providers.mega = enabled;
+      break;
+    case 'github':
+      config.features.providers.github = enabled;
+      break;
+    case 'local-network':
+      config.features.providers.localNetwork = enabled;
+      break;
+    default:
+      break;
+  }
+  await writeEmbeddedPhoneAppConfigValue(config);
+  return { config };
+}
+
+export async function embeddedPhoneDiscoverSources(): Promise<DiscoverSourcesResponse> {
+  return {
+    scannedAt: Date.now(),
+    sourceCount: 0,
+    sources: [],
+  };
+}
+
+export async function embeddedPhoneReconcileSources(knownVolumeIds: string[] = []): Promise<ReconcileSourcesResponse> {
+  const roots = await embeddedPhoneGetRootsConfig(true);
+  return {
+    ...roots,
+    runKey: `embedded-phone-${Date.now()}`,
+    changed: false,
+    knownVolumeIds,
+    summary: {
+      scannedAt: Date.now(),
+      discoveredCount: 0,
+      sourcesAdded: 0,
+      volumeTargetsAdded: 0,
+      availableShares: 0,
+      meaningfulItemCount: 0,
+      providers: {},
+    },
+    items: [],
+  };
 }
 
 function buildEmbeddedPhoneCommitAck(receipt: EmbeddedPhoneCommitReceipt): DurableCommitAck {
@@ -430,7 +725,7 @@ function defaultEmbeddedPhoneLanServiceState(peerId: string, label: string): Loc
     port: null,
     discovery: 'dns-sd+multicast-fallback',
     transport: 'webrtc',
-    serviceType: '_nearbytes._tcp',
+    serviceType: '_nearbytes._udp',
     announceIntervalMs: 5000,
     peerCount: 0,
   };
@@ -456,7 +751,7 @@ async function readEmbeddedPhoneLanServiceState(): Promise<LocalNetworkServiceSt
       protocol: 'nearbytes-lan-v1',
       discovery: 'dns-sd+multicast-fallback',
       transport: 'webrtc',
-      serviceType: '_nearbytes._tcp',
+      serviceType: '_nearbytes._udp',
     };
   } catch {
     return defaults;
@@ -483,6 +778,22 @@ async function writeEmbeddedPhoneLanPeerOverlays(overlays: Record<string, Embedd
   await putSetting(PHONE_LAN_PEER_OVERLAYS_KEY, JSON.stringify(overlays));
 }
 
+async function readEmbeddedPhoneLanRouteStates(): Promise<Record<string, EmbeddedPhoneLanRouteState>> {
+  const stored = await getSetting(PHONE_LAN_ROUTE_STATES_KEY);
+  if (!stored) {
+    return {};
+  }
+  try {
+    return JSON.parse(stored) as Record<string, EmbeddedPhoneLanRouteState>;
+  } catch {
+    return {};
+  }
+}
+
+async function writeEmbeddedPhoneLanRouteStates(states: Record<string, EmbeddedPhoneLanRouteState>): Promise<void> {
+  await putSetting(PHONE_LAN_ROUTE_STATES_KEY, JSON.stringify(states));
+}
+
 function applyEmbeddedPhoneLanPeerOverlay(
   peer: LocalNetworkPeer,
   overlay: EmbeddedPhoneLanPeerOverlay | undefined
@@ -498,6 +809,11 @@ function applyEmbeddedPhoneLanPeerOverlay(
     lastSyncNotice: overlay.lastSyncNotice ?? peer.lastSyncNotice,
     status: overlay.status ?? peer.status,
     detail: overlay.detail ?? peer.detail,
+    lastImportedEvents: overlay.lastImportedEvents ?? peer.lastImportedEvents,
+    lastImportedBlocks: overlay.lastImportedBlocks ?? peer.lastImportedBlocks,
+    remoteCursorObservationId: overlay.remoteCursorObservationId ?? peer.remoteCursorObservationId,
+    lastRemoteHeadObservationId: overlay.lastRemoteHeadObservationId ?? peer.lastRemoteHeadObservationId,
+    volumeIds: overlay.volumeIds ?? peer.volumeIds,
   };
 }
 
@@ -686,6 +1002,17 @@ async function readBootstrappedEmbeddedPhoneMirror(secret: string): Promise<{
   files: FileMetadata[];
   timeline: TimelineEvent[];
 } | null> {
+  return readBootstrappedEmbeddedPhoneMirrorInternal(secret, true);
+}
+
+async function readBootstrappedEmbeddedPhoneMirrorInternal(
+  secret: string,
+  recordRead: boolean
+): Promise<{
+  volumeId: string;
+  files: FileMetadata[];
+  timeline: TimelineEvent[];
+} | null> {
   const volumeId = await deriveVolumeId(secret);
   const [head, volumeSnapshot, timelineSnapshot] = await Promise.all([
     readEmbeddedPhoneRuntimeHead(volumeId),
@@ -706,20 +1033,64 @@ async function readBootstrappedEmbeddedPhoneMirror(secret: string): Promise<{
     return null;
   }
 
-  embeddedPhoneRuntimeMetrics.bootstrappedReads += 1;
-  await writeMirrorCheckpoint(`bootstrap:volume:${volumeId}`, {
-    kind: 'head-bootstrap',
-    fileCount: head.fileCount,
-    eventCount: head.eventCount,
-    lastEventHash: head.lastEventHash,
-    updatedAt: Date.now(),
-    source: 'embedded-phone-runtime',
-  });
+  if (recordRead) {
+    embeddedPhoneRuntimeMetrics.bootstrappedReads += 1;
+    await writeMirrorCheckpoint(`bootstrap:volume:${volumeId}`, {
+      kind: 'head-bootstrap',
+      fileCount: head.fileCount,
+      eventCount: head.eventCount,
+      lastEventHash: head.lastEventHash,
+      updatedAt: Date.now(),
+      source: 'embedded-phone-runtime',
+    });
+  }
 
   return {
     volumeId,
     files: volumeSnapshot.files,
     timeline: timelineSnapshot.events,
+  };
+}
+
+function buildEmbeddedPhoneChatStateFromTimeline(events: TimelineEvent[]): VolumeChatState {
+  const identitiesByPublicKey = new Map<string, VolumeChatState['identities'][number]>();
+  const messages: VolumeChatState['messages'] = [];
+
+  for (const event of events) {
+    if (
+      (event.type === 'DECLARE_IDENTITY' ||
+        (event.type === 'APP_RECORD' &&
+          (event.protocol === 'nb.identity.record.v1' || event.protocol === 'nb.identity.snapshot.v1'))) &&
+      event.authorPublicKey &&
+      event.record
+    ) {
+      identitiesByPublicKey.set(event.authorPublicKey, {
+        eventHash: event.eventHash,
+        authorPublicKey: event.authorPublicKey,
+        publishedAt: event.publishedAt ?? event.timestamp,
+        record: event.record,
+      });
+      continue;
+    }
+
+    if (
+      (event.type === 'CHAT_MESSAGE' ||
+        (event.type === 'APP_RECORD' && event.protocol === 'nb.chat.message.v1')) &&
+      event.authorPublicKey &&
+      event.message
+    ) {
+      messages.push({
+        eventHash: event.eventHash,
+        authorPublicKey: event.authorPublicKey,
+        publishedAt: event.publishedAt ?? event.timestamp,
+        message: event.message,
+      });
+    }
+  }
+
+  return {
+    identities: Array.from(identitiesByPublicKey.values()),
+    messages,
   };
 }
 
@@ -1048,6 +1419,10 @@ export async function embeddedPhoneImportRecipientReferences(
 
 export async function embeddedPhoneListChat(secret: string): Promise<VolumeChatState> {
   await ensureEmbeddedPhonePendingCommitsDrained();
+  const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
+  if (bootstrapped) {
+    return buildEmbeddedPhoneChatStateFromTimeline(bootstrapped.timeline);
+  }
   const { chatService } = await getEmbeddedPhoneRuntimeServices();
   const state = await chatService.listChat(secret);
   await refreshMirrors(secret);
@@ -1130,6 +1505,73 @@ export async function embeddedPhoneHasLocalVolume(secret: string): Promise<boole
   return storage.exists(await getVolumeDirectory(secret));
 }
 
+export async function embeddedPhoneHasReadableVolume(secret: string): Promise<boolean> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
+  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  if (await storage.exists(await getVolumeDirectory(secret))) {
+    return true;
+  }
+  return (await readBootstrappedEmbeddedPhoneMirrorInternal(secret, false)) !== null;
+}
+
+export async function embeddedPhoneGetEventStorageLocations(
+  secret: string,
+  eventHash: string
+): Promise<EventStorageLocationsResponse> {
+  await ensureEmbeddedPhonePendingCommitsDrained();
+  const normalizedEventHash = eventHash.trim().toLowerCase();
+  const volumeId = await deriveVolumeId(secret);
+  const detail = await embeddedPhoneGetEventDetail(secret, normalizedEventHash);
+  const blockHash = detail.event.envelope.blockRefs[0]?.trim().toLowerCase() ?? null;
+  const eventPath = `channels/${volumeId}/${normalizedEventHash}.bin`;
+  const dataPath = blockHash ? `blocks/${blockHash}.bin` : null;
+  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  const config = await readEmbeddedPhoneRootsConfigValue();
+  const source = config.sources[0] ?? {
+    id: EMBEDDED_PHONE_SOURCE_ID,
+    provider: 'local',
+    path: '',
+  };
+
+  return {
+    eventHash: normalizedEventHash,
+    volumeId,
+    expectedEventRelativePath: eventPath,
+    expectedDataRelativePath: dataPath,
+    locations: [
+      {
+        rootId: source.id,
+        provider: source.provider,
+        rootPath: source.path,
+        eventPath,
+        dataPath,
+        hasEventFile: await storage.exists(eventPath),
+        hasDataBlock: dataPath ? await storage.exists(dataPath) : true,
+      },
+    ],
+  };
+}
+
+export async function seedEmbeddedPhoneRuntimeHeadForTests(secret: string): Promise<void> {
+  const volumeId = await deriveVolumeId(secret);
+  const [volumeSnapshot, timelineSnapshot] = await Promise.all([
+    readMirrorVolumeSnapshot(volumeId),
+    readMirrorTimelineSnapshot(volumeId),
+  ]);
+
+  if (!volumeSnapshot || !timelineSnapshot) {
+    throw new Error(`Missing mirror snapshots for embedded runtime head seed: ${volumeId}`);
+  }
+
+  await writeEmbeddedPhoneRuntimeHead({
+    volumeId,
+    fileCount: volumeSnapshot.files.length,
+    eventCount: timelineSnapshot.eventCount,
+    lastEventHash: timelineSnapshot.events.at(-1)?.eventHash ?? null,
+    updatedAt: Date.now(),
+  });
+}
+
 export async function seedEmbeddedPhonePendingUploadCommitForTests(secret: string, file: File): Promise<string> {
   const pending = await enqueueEmbeddedPhoneCommit('upload-file', secret, await serializeEmbeddedPhoneFile(file));
   return pending.id;
@@ -1159,14 +1601,19 @@ export async function embeddedPhoneLanServiceState(peerCount: number): Promise<L
 }
 
 export async function embeddedPhoneLanPeersResponse(
-  peers: LocalNetworkPeersResponse['peers'] = []
+  peers: LocalNetworkPeersResponse['peers'] = [],
+  servicePatch: Partial<Pick<LocalNetworkServiceState, 'listening' | 'port' | 'announceIntervalMs'>> = {},
+  options: { isOffline?: boolean } = {}
 ): Promise<LocalNetworkPeersResponse> {
   const overlays = await readEmbeddedPhoneLanPeerOverlays();
   const mergedPeers = peers.map((peer) => applyEmbeddedPhoneLanPeerOverlay(peer, overlays[peer.peerId]));
   return {
-    service: await embeddedPhoneLanServiceState(mergedPeers.length),
+    service: await embeddedPhoneUpdateLanServiceState({
+      ...servicePatch,
+      peerCount: mergedPeers.length,
+    }),
     peers: mergedPeers,
-    isOffline: true,
+    isOffline: options.isOffline === true,
   };
 }
 
@@ -1207,4 +1654,218 @@ export async function embeddedPhoneSyncPeer(
   return {
     peer: applyEmbeddedPhoneLanPeerOverlay(current, nextOverlay),
   };
+}
+
+export async function embeddedPhoneUpdateLanPeer(
+  peerId: string,
+  peers: LocalNetworkPeer[],
+  patch: EmbeddedPhoneLanPeerOverlay
+): Promise<LocalNetworkPeerMutationResponse> {
+  const current = peers.find((peer) => peer.peerId === peerId);
+  if (!current) {
+    throw new Error(`Local network peer not found: ${peerId}`);
+  }
+
+  const overlays = await readEmbeddedPhoneLanPeerOverlays();
+  const nextOverlay: EmbeddedPhoneLanPeerOverlay = {
+    ...overlays[peerId],
+    ...patch,
+  };
+  overlays[peerId] = nextOverlay;
+  await writeEmbeddedPhoneLanPeerOverlays(overlays);
+
+  return {
+    peer: applyEmbeddedPhoneLanPeerOverlay(current, nextOverlay),
+  };
+}
+
+export async function embeddedPhoneGetLanRouteState(peerId: string): Promise<EmbeddedPhoneLanRouteState> {
+  const states = await readEmbeddedPhoneLanRouteStates();
+  return states[peerId] ?? {
+    peerId,
+    lastAckedObservationId: null,
+    lastAttemptedObservationId: null,
+    updatedAt: 0,
+  };
+}
+
+export async function embeddedPhoneUpdateLanRouteState(
+  peerId: string,
+  patch: Partial<Omit<EmbeddedPhoneLanRouteState, 'peerId'>>
+): Promise<EmbeddedPhoneLanRouteState> {
+  const states = await readEmbeddedPhoneLanRouteStates();
+  const nextState: EmbeddedPhoneLanRouteState = {
+    peerId,
+    lastAckedObservationId: states[peerId]?.lastAckedObservationId ?? null,
+    lastAttemptedObservationId: states[peerId]?.lastAttemptedObservationId ?? null,
+    updatedAt: Date.now(),
+    ...patch,
+  };
+  states[peerId] = nextState;
+  await writeEmbeddedPhoneLanRouteStates(states);
+  return nextState;
+}
+
+export async function embeddedPhoneGetLanIdentity(): Promise<{ peerId: string; label: string }> {
+  const state = await readEmbeddedPhoneLanServiceState();
+  return {
+    peerId: state.peerId,
+    label: state.label,
+  };
+}
+
+export async function embeddedPhoneListLanVolumeIds(): Promise<string[]> {
+  const storedPaths = await listStoredPaths();
+  const volumeIds = new Set<string>();
+  for (const storedPath of storedPaths) {
+    const parsed = parseCanonicalEventRelativePath(storedPath);
+    if (parsed) {
+      volumeIds.add(parsed.volumeId);
+    }
+  }
+  return Array.from(volumeIds).sort((left, right) => left.localeCompare(right));
+}
+
+export async function embeddedPhoneGetLanVolumeInventory(volumeId: string): Promise<LanTransportVolumeInventory> {
+  const normalizedVolumeId = volumeId.trim().toLowerCase();
+  const storedPaths = await listStoredPaths();
+  const eventHashes = new Set<string>();
+  const blockHashes = new Set<string>();
+  for (const storedPath of storedPaths) {
+    const parsedEvent = parseCanonicalEventRelativePath(storedPath);
+    if (parsedEvent && parsedEvent.volumeId === normalizedVolumeId) {
+      eventHashes.add(parsedEvent.eventHash);
+      continue;
+    }
+    const parsedBlock = parseCanonicalBlockRelativePath(storedPath);
+    if (parsedBlock) {
+      blockHashes.add(parsedBlock.hash);
+    }
+  }
+  return {
+    volumeId: normalizedVolumeId,
+    generatedAt: Date.now(),
+    eventHashes: Array.from(eventHashes).sort((left, right) => left.localeCompare(right)),
+    blockHashes: Array.from(blockHashes).sort((left, right) => left.localeCompare(right)),
+  };
+}
+
+export async function embeddedPhoneReadLanEventBytes(volumeId: string, eventHash: string): Promise<Uint8Array> {
+  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  return storage.readFile(`channels/${volumeId.trim().toLowerCase()}/${eventHash.trim().toLowerCase()}.bin`);
+}
+
+export async function embeddedPhoneReadLanBlockBytes(blockHash: string): Promise<Uint8Array> {
+  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  return storage.readFile(`blocks/${blockHash.trim().toLowerCase()}.bin`);
+}
+
+export async function embeddedPhoneImportLanEvent(
+  volumeId: string,
+  eventHash: string,
+  bytes: Uint8Array
+): Promise<boolean> {
+  const normalizedVolumeId = volumeId.trim().toLowerCase();
+  const normalizedEventHash = eventHash.trim().toLowerCase();
+  const validation = await validateEventBytes(normalizedVolumeId, normalizedEventHash, bytes);
+  if (!validation.ok) {
+    throw new Error(validation.detail ?? `Invalid LAN event ${normalizedEventHash}`);
+  }
+  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  const relativePath = `channels/${normalizedVolumeId}/${normalizedEventHash}.bin`;
+  if (await storage.exists(relativePath)) {
+    return false;
+  }
+  await storage.writeFile(relativePath, bytes);
+  return true;
+}
+
+export async function embeddedPhoneImportLanBlock(blockHash: string, bytes: Uint8Array): Promise<boolean> {
+  const normalizedBlockHash = blockHash.trim().toLowerCase();
+  const validation = await validateBlockBytes(normalizedBlockHash, bytes);
+  if (!validation.ok) {
+    throw new Error(validation.detail ?? `Invalid LAN block ${normalizedBlockHash}`);
+  }
+  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  const relativePath = `blocks/${normalizedBlockHash}.bin`;
+  if (await storage.exists(relativePath)) {
+    return false;
+  }
+  await storage.writeFile(relativePath, bytes);
+  return true;
+}
+
+export async function embeddedPhoneBuildLanHello(): Promise<LanTransportHello> {
+  const identity = await embeddedPhoneGetLanIdentity();
+  return {
+    protocol: 'nearbytes.lan-sync.v1',
+    peerId: identity.peerId,
+    label: identity.label,
+    port: 0,
+    capabilities: ['webrtc', 'inventory', 'pull-sync', 'storage-command', 'push-hint'],
+    volumeIds: await embeddedPhoneListLanVolumeIds(),
+    observationHeadId: null,
+    generatedAt: Date.now(),
+  };
+}
+
+export async function embeddedPhoneListLanVolumes(): Promise<{
+  protocol: string;
+  peerId: string;
+  volumeIds: string[];
+  generatedAt: number;
+}> {
+  const identity = await embeddedPhoneGetLanIdentity();
+  return {
+    protocol: 'nearbytes.lan-sync.v1',
+    peerId: identity.peerId,
+    volumeIds: await embeddedPhoneListLanVolumeIds(),
+    generatedAt: Date.now(),
+  };
+}
+
+export async function embeddedPhoneListLanObservations(): Promise<LanTransportObservationPage<never>> {
+  const identity = await embeddedPhoneGetLanIdentity();
+  return {
+    protocol: 'nearbytes.lan-sync.v1',
+    peerId: identity.peerId,
+    observations: [],
+    headObservationId: null,
+    generatedAt: Date.now(),
+  };
+}
+
+export async function embeddedPhoneHandleLanRpcRequest(
+  request: LanTransportRpcRequest,
+  importFromPeer?: (command: LanTransportStorageCommand) => Promise<void>
+): Promise<unknown> {
+  switch (request.action) {
+    case 'hello':
+      return await embeddedPhoneBuildLanHello();
+    case 'volumes':
+      return await embeddedPhoneListLanVolumes();
+    case 'observations':
+      return await embeddedPhoneListLanObservations();
+    case 'inventory':
+      return await embeddedPhoneGetLanVolumeInventory(request.volumeId);
+    case 'event':
+      return await embeddedPhoneReadLanEventBytes(request.volumeId, request.eventHash);
+    case 'block':
+      return await embeddedPhoneReadLanBlockBytes(request.blockHash);
+    case 'sync-hint':
+      return {
+        ok: true,
+        acceptedAt: Date.now(),
+      };
+    case 'storage-command':
+      if (importFromPeer) {
+        await importFromPeer(request.command);
+      }
+      return {
+        ok: true,
+        acceptedAt: Date.now(),
+      };
+    default:
+      throw new Error(`Unsupported embedded LAN request: ${String((request as { action?: unknown }).action ?? 'unknown')}`);
+  }
 }

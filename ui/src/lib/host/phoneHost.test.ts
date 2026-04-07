@@ -12,6 +12,7 @@ import {
 import {
   readEmbeddedPhoneRuntimeMetricsForTests,
   resetEmbeddedPhoneRuntimeMetricsForTests,
+  seedEmbeddedPhoneRuntimeHeadForTests,
   seedEmbeddedPhonePendingUploadCommitForTests,
   embeddedPhoneUpdateLanServiceState,
   resetEmbeddedPhoneServicesForTests,
@@ -135,6 +136,74 @@ describe('phoneHost', () => {
     );
     expect(requestHostJson).not.toHaveBeenCalled();
     expect(openHostStream).not.toHaveBeenCalled();
+  });
+
+  it('serves embedded config requests locally without calling desktop request transport', async () => {
+    const host = await getPhoneHost();
+
+    const roots = await host.objects.requestJson('/config/roots?includeUsage=1', {
+      method: 'GET',
+    }) as {
+      config: { sources: Array<{ id: string; path: string }> };
+      runtime: { sources: Array<{ id: string; exists: boolean; canWrite: boolean }> };
+    };
+    const appConfig = await host.objects.requestJson('/config/app', {
+      method: 'GET',
+    }) as {
+      config: { features: { providers: { localNetwork: boolean; mega: boolean } } };
+    };
+
+    await host.objects.requestJson('/config/app/providers/local-network', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: false }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+
+    const updatedAppConfig = await host.objects.requestJson('/config/app', {
+      method: 'GET',
+    }) as {
+      config: { features: { providers: { localNetwork: boolean; mega: boolean } } };
+    };
+
+    expect(roots.config.sources).toMatchObject([{ id: 'src-embedded-phone', path: '' }]);
+    expect(roots.runtime.sources).toMatchObject([{ id: 'src-embedded-phone', exists: true, canWrite: true }]);
+    expect(appConfig.config.features.providers).toMatchObject({ localNetwork: true, mega: false });
+    expect(updatedAppConfig.config.features.providers.localNetwork).toBe(false);
+    expect(requestHostJson).not.toHaveBeenCalled();
+  });
+
+  it('reports local embedded event storage locations without requiring desktop auth', async () => {
+    const secret = 'phone-event-storage-secret';
+    const host = await getPhoneHost();
+
+    await host.legacyDesktop.uploadFile(
+      { type: 'secret', secret },
+      new File(['hello phone'], 'alpha.txt', { type: 'text/plain' })
+    );
+    const timeline = await host.legacyDesktop.getTimeline({ type: 'secret', secret }) as {
+      events: Array<{ eventHash: string }>;
+    };
+    const eventHash = timeline.events.at(-1)?.eventHash;
+
+    expect(eventHash).toBeTruthy();
+
+    const locations = await host.legacyDesktop.getEventStorageLocations(
+      { type: 'secret', secret },
+      eventHash as string
+    ) as {
+      eventHash: string;
+      locations: Array<{ rootId: string | null; hasEventFile: boolean; hasDataBlock: boolean }>;
+    };
+
+    expect(locations.eventHash).toBe(eventHash);
+    expect(locations.locations).toMatchObject([
+      {
+        rootId: 'src-embedded-phone',
+        hasEventFile: true,
+        hasDataBlock: true,
+      },
+    ]);
+    expect(requestHostJson).not.toHaveBeenCalled();
   });
 
   it('uses mirrored read fallbacks when the embedded phone runtime has no local volume yet', async () => {
@@ -296,6 +365,43 @@ describe('phoneHost', () => {
     );
     expect(requestHostJson).not.toHaveBeenCalled();
     expect(openHostStream).not.toHaveBeenCalled();
+  });
+
+  it('does not flag chat as offline when mirrored fallback contains no chat history', async () => {
+    const secret = 'phone-mirror-empty-chat-secret';
+    const keyPair = await deriveKeys(createSecret(secret));
+    const volumeId = Array.from(keyPair.publicKey)
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join('');
+
+    await importCompatibilityVolumeSnapshot({
+      volumeId,
+      files: [{ filename: 'alpha.txt', blobHash: 'h1', size: 3, createdAt: 1 }],
+    });
+    await importCompatibilityTimelineSnapshot({
+      volumeId,
+      eventCount: 1,
+      events: [
+        {
+          eventHash: 'evt-file',
+          type: 'CREATE_FILE',
+          filename: 'alpha.txt',
+          timestamp: 1,
+          publishedAt: 1,
+        },
+      ],
+    });
+
+    const host = await getPhoneHost();
+    const chat = await host.legacyDesktop.listChat({ type: 'secret', secret }) as {
+      identities: Array<{ authorPublicKey: string }>;
+      messages: Array<{ eventHash: string }>;
+      isOffline?: boolean;
+    };
+
+    expect(chat.identities).toEqual([]);
+    expect(chat.messages).toEqual([]);
+    expect(chat.isOffline).toBeUndefined();
   });
 
   it('persists and surfaces a distinct embedded phone LAN peer identity', async () => {
@@ -600,16 +706,55 @@ describe('phoneHost', () => {
     await host.legacyDesktop.getTimeline({ type: 'secret', secret });
 
     resetPhoneHostForTests();
+    resetEmbeddedPhoneServicesForTests();
+    await seedEmbeddedPhoneRuntimeHeadForTests(secret);
     resetEmbeddedPhoneRuntimeMetricsForTests();
 
     const reopenedHost = await getPhoneHost();
     const reopened = await reopenedHost.legacyDesktop.openVolume(secret) as {
       files: Array<{ filename: string }>;
+      isOffline?: boolean;
     };
 
     expect(reopened.files).toMatchObject([{ filename: 'bootstrap.txt' }]);
+    expect(reopened.isOffline).toBeUndefined();
     expect(readEmbeddedPhoneRuntimeMetricsForTests()).toMatchObject({
       refreshReads: 0,
+      bootstrappedReads: 1,
+    });
+  });
+
+  it('bootstraps embedded phone chat reads from durable runtime heads without falling back offline', async () => {
+    const secret = 'phone-chat-bootstrap-secret';
+    const host = await getPhoneHost();
+
+    await host.legacyDesktop.publishIdentity(
+      { type: 'secret', secret },
+      'identity:bootstrap',
+      { displayName: 'Bootstrap Alice' }
+    );
+    await host.legacyDesktop.sendChatMessage(
+      { type: 'secret', secret },
+      'identity:bootstrap',
+      { body: 'hello from bootstrap' }
+    );
+
+    resetPhoneHostForTests();
+    resetEmbeddedPhoneServicesForTests();
+    await seedEmbeddedPhoneRuntimeHeadForTests(secret);
+    resetEmbeddedPhoneRuntimeMetricsForTests();
+
+    const reopenedHost = await getPhoneHost();
+    const chat = await reopenedHost.legacyDesktop.listChat({ type: 'secret', secret }) as {
+      identities: Array<{ authorPublicKey: string }>;
+      messages: Array<{ message: { body?: string } }>;
+      isOffline?: boolean;
+    };
+
+    expect(chat.identities).toHaveLength(1);
+    expect(chat.messages).toMatchObject([{ message: { body: 'hello from bootstrap' } }]);
+    expect(chat.isOffline).toBeUndefined();
+    expect(readEmbeddedPhoneRuntimeMetricsForTests()).toMatchObject({
       bootstrappedReads: 1,
     });
   });

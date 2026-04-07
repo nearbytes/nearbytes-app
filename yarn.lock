@@ -2078,7 +2078,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@noble/curves@npm:^1.3.0, @noble/curves@npm:^1.8.1":
+"@noble/curves@npm:^1.3.0, @noble/curves@npm:^1.8.1, @noble/curves@npm:^1.9.7":
   version: 1.9.7
   resolution: "@noble/curves@npm:1.9.7"
   dependencies:
@@ -7506,6 +7506,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "nearbytes-crypto@workspace:."
   dependencies:
+    "@noble/curves": "npm:^1.9.7"
     "@playwright/test": "npm:^1.58.2"
     "@types/cors": "npm:^2.8.19"
     "@types/express": "npm:^4.17.25"

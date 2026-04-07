@@ -46,6 +46,10 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Nearbytes uses your local network to reach development servers and discover nearby peers.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_nearbytes._udp</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
