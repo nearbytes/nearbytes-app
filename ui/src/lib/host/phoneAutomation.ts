@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core';
+import { listFiles, openVolume } from '../api.js';
 
 import {
   clearNativeAutomationCommand,
@@ -19,6 +20,12 @@ import type { IdentityProfile } from '../api.js';
 type OpenVolumeCommand = {
   id: string;
   action: 'open-volume';
+  secret: string;
+};
+
+type UiOpenVolumeCommand = {
+  id: string;
+  action: 'ui-open-volume';
   secret: string;
 };
 
@@ -61,6 +68,7 @@ type ListChatCommand = {
 
 type PhoneAutomationCommand =
   | OpenVolumeCommand
+  | UiOpenVolumeCommand
   | PublishIdentityCommand
   | SendChatMessageCommand
   | UploadFileCommand
@@ -75,6 +83,7 @@ type PhoneAutomationResult = {
   finishedAt: number;
   result?: unknown;
   message?: string;
+  stack?: string;
 };
 
 let pendingExecution: Promise<boolean> | null = null;
@@ -123,6 +132,7 @@ async function runPendingPhoneAutomationCommand(): Promise<boolean> {
       startedAt,
       finishedAt: Date.now(),
       message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
     });
   } finally {
     await clearNativeAutomationCommand();
@@ -161,6 +171,11 @@ function normalizePhoneAutomationCommand(value: unknown): PhoneAutomationCommand
   }
 
   if (action === 'open-volume') {
+    const secret = readRequiredString(candidate.secret);
+    return secret ? { id, action, secret } : null;
+  }
+
+  if (action === 'ui-open-volume') {
     const secret = readRequiredString(candidate.secret);
     return secret ? { id, action, secret } : null;
   }
@@ -233,6 +248,15 @@ function readOptionalString(value: unknown): string | null {
 async function executePhoneAutomationCommand(command: PhoneAutomationCommand): Promise<unknown> {
   if (command.action === 'open-volume') {
     return embeddedPhoneOpenVolume(command.secret);
+  }
+
+  if (command.action === 'ui-open-volume') {
+    const opened = await openVolume(command.secret);
+    const files = await listFiles({ type: 'secret', secret: command.secret });
+    return {
+      opened,
+      files,
+    };
   }
 
   if (command.action === 'publish-identity') {

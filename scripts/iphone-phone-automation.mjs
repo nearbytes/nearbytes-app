@@ -23,8 +23,7 @@ async function main() {
   deleteAutomationFile(resultPath);
   writeAutomationFile(commandPath, JSON.stringify(command));
 
-  runAllowFailure('xcrun', ['simctl', 'terminate', 'booted', bundleId]);
-  run('xcrun', ['simctl', 'launch', 'booted', bundleId]);
+  runAllowFailure('xcrun', ['simctl', 'launch', 'booted', bundleId]);
 
   const deadline = Date.now() + input.timeoutMs;
   while (Date.now() < deadline) {
@@ -127,6 +126,9 @@ function parseArgs(args) {
 function buildCommand(input) {
   const id = randomUUID();
   if (input.action === 'open-volume') {
+    return { id, action: input.action, secret: input.secret };
+  }
+  if (input.action === 'ui-open-volume') {
     return { id, action: input.action, secret: input.secret };
   }
   if (input.action === 'publish-identity') {

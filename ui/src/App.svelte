@@ -74,7 +74,10 @@
     normalizePersistedUiState,
     saveHostPersistedUiState,
   } from './lib/host/persistedUiState.js';
-  import { processPendingPhoneAutomationCommand } from './lib/host/phoneAutomation.js';
+  import {
+    hasPhoneAutomationBridge,
+    processPendingPhoneAutomationCommand,
+  } from './lib/host/phoneAutomation.js';
   import { subscribePhoneAppState } from './lib/host/phonePersistence.js';
   import {
     canWipeStoredConfig,
@@ -1771,6 +1774,7 @@
 
     let cancelUpdaterSubscription: (() => void) | null = null;
     let cancelDeepLinkSubscription: (() => void) | null = null;
+    let phoneAutomationPollTimer: ReturnType<typeof setInterval> | null = null;
 
     void readDesktopUpdaterState()
       .then((nextState) => {
@@ -1797,6 +1801,14 @@
     void processPendingPhoneAutomationCommand().catch((error) => {
       console.warn('Failed to process pending phone automation command:', error);
     });
+
+    if (hasPhoneAutomationBridge()) {
+      phoneAutomationPollTimer = setInterval(() => {
+        void processPendingPhoneAutomationCommand().catch((error) => {
+          console.warn('Failed to process pending phone automation command:', error);
+        });
+      }, 250);
+    }
 
     void connectDesktopDeepLinks()
       .then((urls) => {
@@ -1830,6 +1842,9 @@
     })();
 
     return () => {
+      if (phoneAutomationPollTimer) {
+        clearInterval(phoneAutomationPollTimer);
+      }
       cancelUpdaterSubscription?.();
       cancelDeepLinkSubscription?.();
     };
