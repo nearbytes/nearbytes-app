@@ -96,7 +96,8 @@
   }
 
   @media (max-width: 760px) {
-    .secret-seed-fields {
+    .secret-seed-fields,
+    .secret-seed-fields.dense {
       grid-template-columns: 1fr;
     }
   }

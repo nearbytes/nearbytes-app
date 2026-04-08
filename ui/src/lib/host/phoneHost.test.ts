@@ -17,6 +17,7 @@ import {
   embeddedPhoneUpdateLanServiceState,
   resetEmbeddedPhoneServicesForTests,
 } from './embeddedPhoneServices.js';
+import * as embeddedPhoneServices from './embeddedPhoneServices.js';
 
 vi.mock('./runtimeTransport.js', () => ({
   HostRequestError: class HostRequestError extends Error {
@@ -49,6 +50,7 @@ describe('phoneHost', () => {
     resetPhoneHostForTests();
     resetBrowserMirrorForTests();
     resetEmbeddedPhoneServicesForTests();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -206,7 +208,7 @@ describe('phoneHost', () => {
     expect(requestHostJson).not.toHaveBeenCalled();
   });
 
-  it('uses mirrored read fallbacks when the embedded phone runtime has no local volume yet', async () => {
+  it('prefers live embedded reads over mirrored snapshots when the live runtime can still open the volume', async () => {
     const secret = 'phone-mirror-secret';
     const keyPair = await deriveKeys(createSecret(secret));
     const volumeId = Array.from(keyPair.publicKey)
@@ -336,24 +338,24 @@ describe('phoneHost', () => {
 
     expect(opened).toMatchObject({
       volumeId,
-      files: [{ filename: 'alpha.txt' }],
-      isOffline: true,
-      storageHint: 'Using persisted mirrored data. Runtime unavailable.',
+      files: [],
     });
+    expect(opened.isOffline).toBeUndefined();
+    expect(opened.storageHint).toBeUndefined();
     expect(files).toMatchObject({
       volumeId,
-      files: [{ filename: 'alpha.txt' }],
-      isOffline: true,
+      files: [],
     });
+    expect(files.isOffline).toBeUndefined();
     expect(timeline).toMatchObject({
-      eventCount: 2,
-      events: [{ eventHash: 'evt-identity' }, { eventHash: 'evt-chat' }],
-      isOffline: true,
+      eventCount: 0,
+      events: [],
     });
+    expect(timeline.isOffline).toBeUndefined();
     expect(detail).toMatchObject({ eventHash: 'evt-chat' });
     expect(chat).toMatchObject({
-      identities: [{ authorPublicKey: 'pk-1' }],
-      messages: [{ eventHash: 'evt-chat' }],
+      identities: [],
+      messages: [],
     });
     expect(chat.isOffline).toBeUndefined();
     expect(peers).toMatchObject({
@@ -365,6 +367,77 @@ describe('phoneHost', () => {
     );
     expect(requestHostJson).not.toHaveBeenCalled();
     expect(openHostStream).not.toHaveBeenCalled();
+  });
+
+  it('signals the live embedded failure reason when mirrored fallback is used', async () => {
+    const secret = 'phone-mirror-failure-secret';
+    const keyPair = await deriveKeys(createSecret(secret));
+    const volumeId = Array.from(keyPair.publicKey)
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join('');
+
+    await importCompatibilityVolumeSnapshot({
+      volumeId,
+      files: [{ filename: 'alpha.txt', blobHash: 'h1', size: 3, createdAt: 1 }],
+    });
+    await importCompatibilityTimelineSnapshot({
+      volumeId,
+      eventCount: 1,
+      events: [
+        {
+          eventHash: 'evt-file',
+          type: 'CREATE_FILE',
+          filename: 'alpha.txt',
+          timestamp: 1,
+          publishedAt: 1,
+        },
+      ],
+    });
+
+    vi.spyOn(embeddedPhoneServices, 'embeddedPhoneOpenVolume').mockRejectedValue(new Error('live-open-failed'));
+    vi.spyOn(embeddedPhoneServices, 'embeddedPhoneListFiles').mockRejectedValue(new Error('live-list-failed'));
+    vi.spyOn(embeddedPhoneServices, 'embeddedPhoneGetTimeline').mockRejectedValue(new Error('live-timeline-failed'));
+
+    const host = await getPhoneHost();
+    const opened = await host.legacyDesktop.openVolume(secret) as {
+      volumeId: string;
+      files: Array<{ filename: string }>;
+      isOffline?: boolean;
+      runtimeFailureReason?: string;
+      storageHint?: string;
+    };
+    const files = await host.legacyDesktop.listFiles({ type: 'secret', secret }) as {
+      volumeId: string;
+      files: Array<{ filename: string }>;
+      isOffline?: boolean;
+      runtimeFailureReason?: string;
+    };
+    const timeline = await host.legacyDesktop.getTimeline({ type: 'secret', secret }) as {
+      eventCount: number;
+      events: Array<{ eventHash: string }>;
+      isOffline?: boolean;
+      runtimeFailureReason?: string;
+    };
+
+    expect(opened).toMatchObject({
+      volumeId,
+      files: [{ filename: 'alpha.txt' }],
+      isOffline: true,
+      runtimeFailureReason: 'live-open-failed',
+      storageHint: 'Using persisted mirrored data. Runtime unavailable.',
+    });
+    expect(files).toMatchObject({
+      volumeId,
+      files: [{ filename: 'alpha.txt' }],
+      isOffline: true,
+      runtimeFailureReason: 'live-list-failed',
+    });
+    expect(timeline).toMatchObject({
+      eventCount: 1,
+      events: [{ eventHash: 'evt-file' }],
+      isOffline: true,
+      runtimeFailureReason: 'live-timeline-failed',
+    });
   });
 
   it('does not flag chat as offline when mirrored fallback contains no chat history', async () => {

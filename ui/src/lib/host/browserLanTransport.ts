@@ -226,13 +226,6 @@ export class BrowserLanTransport {
       protocol: 'nearbytes-control',
     });
     this.attachChannel(context, channel);
-    context.connection.addEventListener('datachannel', (event) => {
-      if (event.channel.label === CONTROL_CHANNEL_LABEL) {
-        this.attachChannel(context, event.channel);
-        return;
-      }
-      event.channel.close();
-    });
 
     const local = await gatherLocalDescription(context.connection, async () => {
       const offer = await context.connection.createOffer();
@@ -276,6 +269,13 @@ export class BrowserLanTransport {
         context.rejectReady(new Error(`WebRTC connection ${state} for ${peer.label}`));
         this.closePeer(peer.peerId);
       }
+    });
+    connection.addEventListener('datachannel', (event) => {
+      if (event.channel.label === CONTROL_CHANNEL_LABEL) {
+        this.attachChannel(context, event.channel);
+        return;
+      }
+      event.channel.close();
     });
     return context;
   }
@@ -513,7 +513,15 @@ async function applyRemoteCandidates(
 }
 
 async function waitForControlChannel(context: PeerConnectionContext, timeoutMs: number): Promise<RTCDataChannel> {
+  const deadline = Date.now() + timeoutMs;
   await withTimeout(context.readyPromise, timeoutMs, `Timed out waiting for LAN control channel for ${context.peer.label}`);
+  while (Date.now() < deadline) {
+    const channel = context.controlChannel;
+    if (channel && channel.readyState === 'open') {
+      return channel;
+    }
+    await sleep(25);
+  }
   const channel = context.controlChannel;
   if (!channel) {
     throw new Error(`LAN control channel is unavailable for ${context.peer.label}`);
@@ -531,6 +539,12 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
       clearTimeout(timer);
       reject(error);
     });
+  });
+}
+
+async function sleep(timeoutMs: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, timeoutMs);
   });
 }
 

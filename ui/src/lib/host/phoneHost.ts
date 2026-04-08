@@ -190,6 +190,37 @@ function ensureEmbeddedMirrorState<T>(
   return value;
 }
 
+function describeEmbeddedLiveFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.replace(/\s+/gu, ' ').trim();
+  return normalized.length > 0 ? normalized : 'Unknown embedded runtime failure';
+}
+
+function logEmbeddedMirrorFallback(scope: string, volumeId: string, reason: string): void {
+  console.warn(
+    `[Nearbytes Phone Host] Falling back to persisted mirror for ${scope} on ${volumeId}: ${reason}`
+  );
+}
+
+async function readEmbeddedLiveWithMirrorFallback<T>(options: {
+  secret: string;
+  state: Awaited<ReturnType<typeof readEmbeddedMirrorState>>;
+  scope: string;
+  liveRead: () => Promise<T>;
+  offlineValue: (state: Awaited<ReturnType<typeof readEmbeddedMirrorState>>, reason: string) => T;
+}): Promise<T> {
+  try {
+    return await options.liveRead();
+  } catch (error) {
+    if (!options.state.volumeSnapshot && !options.state.timelineSnapshot) {
+      throw error;
+    }
+    const reason = describeEmbeddedLiveFailure(error);
+    logEmbeddedMirrorFallback(options.scope, options.state.volumeId, reason);
+    return ensureEmbeddedMirrorState(options.state, options.offlineValue(options.state, reason));
+  }
+}
+
 async function ensureEmbeddedReadableVolume(secret: string, volumeIdHint?: string): Promise<boolean> {
   if (await embeddedPhoneHasReadableVolume(secret)) {
     return true;
@@ -275,19 +306,24 @@ function createEmbeddedWatchMessage(eventName: string, payload: unknown): Messag
 function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDesktop'] {
   return {
     async openVolume(secret: string): Promise<OpenVolumeResponse> {
-      if (await ensureEmbeddedReadableVolume(secret)) {
-        return await embeddedPhoneOpenVolume(secret);
-      }
       const state = await readEmbeddedMirrorState(secret);
+      await ensureEmbeddedReadableVolume(secret, state.volumeId);
       if (!state.volumeSnapshot && !state.timelineSnapshot) {
         return embeddedPhoneOpenVolume(secret);
       }
-      return ensureEmbeddedMirrorState(state, {
-        volumeId: state.volumeId,
-        fileCount: state.volumeSnapshot?.files.length ?? 0,
-        files: state.volumeSnapshot?.files ?? [],
-        isOffline: true,
-        storageHint: EMBEDDED_PHONE_MIRROR_MESSAGE,
+      return readEmbeddedLiveWithMirrorFallback({
+        secret,
+        state,
+        scope: 'openVolume',
+        liveRead: () => embeddedPhoneOpenVolume(secret),
+        offlineValue: (offlineState, reason) => ({
+          volumeId: offlineState.volumeId,
+          fileCount: offlineState.volumeSnapshot?.files.length ?? 0,
+          files: offlineState.volumeSnapshot?.files ?? [],
+          isOffline: true,
+          runtimeFailureReason: reason,
+          storageHint: EMBEDDED_PHONE_MIRROR_MESSAGE,
+        }),
       });
     },
     async listFiles(auth: NearbytesAuth): Promise<ListFilesResponse> {
@@ -295,17 +331,22 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      if (await ensureEmbeddedReadableVolume(secret)) {
-        return await embeddedPhoneListFiles(secret);
-      }
       const state = await readEmbeddedMirrorState(secret);
+      await ensureEmbeddedReadableVolume(secret, state.volumeId);
       if (!state.volumeSnapshot && !state.timelineSnapshot) {
         return embeddedPhoneListFiles(secret);
       }
-      return ensureEmbeddedMirrorState(state, {
-        volumeId: state.volumeId,
-        files: state.volumeSnapshot?.files ?? [],
-        isOffline: true,
+      return readEmbeddedLiveWithMirrorFallback({
+        secret,
+        state,
+        scope: 'listFiles',
+        liveRead: () => embeddedPhoneListFiles(secret),
+        offlineValue: (offlineState, reason) => ({
+          volumeId: offlineState.volumeId,
+          files: offlineState.volumeSnapshot?.files ?? [],
+          isOffline: true,
+          runtimeFailureReason: reason,
+        }),
       });
     },
     async getTimeline(auth: NearbytesAuth): Promise<TimelineResponse> {
@@ -313,28 +354,47 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      if (await ensureEmbeddedReadableVolume(secret)) {
-        return await embeddedPhoneGetTimeline(secret);
-      }
       const state = await readEmbeddedMirrorState(secret);
+      await ensureEmbeddedReadableVolume(secret, state.volumeId);
       if (!state.volumeSnapshot && !state.timelineSnapshot) {
         return embeddedPhoneGetTimeline(secret);
       }
-      return ensureEmbeddedMirrorState(state, {
-        volumeId: state.volumeId,
-        eventCount: state.timelineSnapshot?.eventCount ?? state.timelineSnapshot?.events.length ?? 0,
-        events: state.timelineSnapshot?.events ?? [],
-        isOffline: true,
+      return readEmbeddedLiveWithMirrorFallback({
+        secret,
+        state,
+        scope: 'getTimeline',
+        liveRead: () => embeddedPhoneGetTimeline(secret),
+        offlineValue: (offlineState, reason) => ({
+          volumeId: offlineState.volumeId,
+          eventCount: offlineState.timelineSnapshot?.eventCount ?? offlineState.timelineSnapshot?.events.length ?? 0,
+          events: offlineState.timelineSnapshot?.events ?? [],
+          isOffline: true,
+          runtimeFailureReason: reason,
+        }),
       });
     },
     async getEventDetail(auth: NearbytesAuth, eventHash: string): Promise<EventDetailResponse> {
       const secret = readSecretAuth(auth);
-      if (secret && await ensureEmbeddedReadableVolume(secret)) {
-          return await embeddedPhoneGetEventDetail(secret, eventHash);
-      }
       const mirrored = await readMirrorEventDetail(eventHash);
-      if (!mirrored) {
-        return createMissingPhoneRuntimeRequest();
+      if (!secret) {
+        if (!mirrored) {
+          return createMissingPhoneRuntimeRequest();
+        }
+        return {
+          eventHash: mirrored.eventHash,
+          event: mirrored.event,
+          decryptedPayload: mirrored.decryptedPayload,
+        };
+      }
+
+      await ensureEmbeddedReadableVolume(secret);
+      try {
+        return await embeddedPhoneGetEventDetail(secret, eventHash);
+      } catch (error) {
+        if (!mirrored) {
+          throw error;
+        }
+        logEmbeddedMirrorFallback('getEventDetail', eventHash, describeEmbeddedLiveFailure(error));
       }
       return {
         eventHash: mirrored.eventHash,
@@ -414,17 +474,18 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      if (await ensureEmbeddedReadableVolume(secret)) {
-        return await embeddedPhoneListChat(secret);
-      }
       const state = await readEmbeddedMirrorState(secret);
+      await ensureEmbeddedReadableVolume(secret, state.volumeId);
       if (!state.volumeSnapshot && !state.timelineSnapshot) {
         return embeddedPhoneListChat(secret);
       }
-      return ensureEmbeddedMirrorState(
+      return readEmbeddedLiveWithMirrorFallback({
+        secret,
         state,
-        buildChatStateFromTimeline(state.timelineSnapshot?.events ?? [])
-      );
+        scope: 'listChat',
+        liveRead: () => embeddedPhoneListChat(secret),
+        offlineValue: (offlineState) => buildChatStateFromTimeline(offlineState.timelineSnapshot?.events ?? []),
+      });
     },
     async publishIdentity(auth: NearbytesAuth, identitySecret: string, profile: unknown): Promise<PublishIdentityResponse> {
       const secret = readSecretAuth(auth);

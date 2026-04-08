@@ -153,6 +153,7 @@ export interface OpenVolumeResponse {
   fileCount: number;
   files: FileMetadata[];
   isOffline?: boolean;
+  runtimeFailureReason?: string;
   token?: string;
   /** Shown when storage appears empty (e.g. wrong NEARBYTES_STORAGE_DIR). */
   storageHint?: string;
@@ -162,6 +163,7 @@ export interface ListFilesResponse {
   volumeId: string;
   files: FileMetadata[];
   isOffline?: boolean;
+  runtimeFailureReason?: string;
 }
 
 export interface UploadResponse {
@@ -209,6 +211,7 @@ export interface TimelineResponse {
   eventCount: number;
   events: TimelineEvent[];
   isOffline?: boolean;
+  runtimeFailureReason?: string;
 }
 
 export interface SerializedEventPayload {
