@@ -245,6 +245,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
 
     this.multicastTimer = setInterval(() => {
       void this.sendMulticastAdvertisement();
+      void this.proactivelySignalKnownPeers();
     }, LAN_MULTICAST_ANNOUNCE_MS);
     await this.sendMulticastAdvertisement();
   }
@@ -959,6 +960,30 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       seenAt: Date.now(),
     });
     this.callbacks?.onPeerDiscovered(peer);
+  }
+
+  private async proactivelySignalKnownPeers(): Promise<void> {
+    if (!this.selfSignalPeer) {
+      return;
+    }
+    const signalPrefix = 'signal:';
+    for (const [fqdn, peer] of this.discoveryByFqdn.entries()) {
+      if (!fqdn.startsWith(signalPrefix)) {
+        continue;
+      }
+      if (this.connections.has(peer.peerId) && !this.connections.get(peer.peerId)!.closed) {
+        continue;
+      }
+      try {
+        await this.postSignal(peer, {
+          kind: 'connect',
+          from: this.selfSignalPeer,
+        });
+        this.rememberSignaledPeer(peer, 'signal');
+      } catch {
+        // Peer unreachable — keep in discovery for future attempts
+      }
+    }
   }
 
   private handleDiscoveryService(service: Service): void {

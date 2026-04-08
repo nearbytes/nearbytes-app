@@ -182,11 +182,20 @@ export class BrowserLanTransport {
     }
   }
 
+  hasActiveConnection(peerId: string): boolean {
+    const context = this.contexts.get(peerId);
+    if (!context) {
+      return false;
+    }
+    const connState = context.connection.connectionState;
+    return connState === 'connected' || connState === 'connecting';
+  }
+
   private async sendRequest(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<ChannelFrame> {
     const context = await this.ensurePeer(peer);
     const channel = await waitForControlChannel(context, CONNECTION_TIMEOUT_MS);
     if (channel.readyState !== 'open') {
-      throw new Error(`LAN control channel is not open for ${peer.label}`);
+      throw new Error(`Sync channel to ${peer.label} is no longer open. The connection may have been interrupted.`);
     }
     const requestId = createRandomId();
     return await new Promise<ChannelFrame>((resolve, reject) => {
@@ -214,7 +223,14 @@ export class BrowserLanTransport {
     const existing = this.contexts.get(peer.peerId);
     if (existing) {
       existing.peer = peer;
-      return existing;
+      const connState = existing.connection.connectionState;
+      const isConnectionDead = connState === 'failed' || connState === 'closed' || connState === 'disconnected';
+      const isChannelDead = connState === 'connected' &&
+        (!existing.controlChannel || existing.controlChannel.readyState === 'closed' || existing.controlChannel.readyState === 'closing');
+      if (!isConnectionDead && !isChannelDead) {
+        return existing;
+      }
+      this.closePeer(peer.peerId);
     }
     if (typeof RTCPeerConnection !== 'function') {
       throw new Error('WebRTC is unavailable in this runtime.');
@@ -524,7 +540,7 @@ async function waitForControlChannel(context: PeerConnectionContext, timeoutMs: 
   }
   const channel = context.controlChannel;
   if (!channel) {
-    throw new Error(`LAN control channel is unavailable for ${context.peer.label}`);
+    throw new Error(`Could not open a sync channel to ${context.peer.label}. The LAN connection was established but the data channel was not available. Try syncing again.`);
   }
   return channel;
 }

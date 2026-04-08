@@ -33,8 +33,10 @@ import {
   addNativeLanIncomingSignalListener,
   completeNativeLanSignalRequest,
   listNativeLanDiscoveredPeers,
+  postNativeLanSignal,
   startNativeLanRuntime,
   stopNativeLanRuntime,
+  type NativeLanDiscoveredPeer,
 } from './nativeLanPlugin.js';
 
 const OBSERVATION_PAGE_LIMIT = 512;
@@ -67,10 +69,12 @@ export interface LanSyncRpcClient {
 }
 
 const transports = new Map<string, BrowserLanTransport>();
+const signaledPeers = new Map<string, NativeLanDiscoveredPeer>();
 let runtimeState: NativeLanRuntimeState | null = null;
 let runtimeStartPromise: Promise<NativeLanRuntimeState> | null = null;
 let runtimeListenerHandle: { remove: () => Promise<void> } | null = null;
 let runtimeListenerPromise: Promise<void> | null = null;
+let proactiveSignalTimer: ReturnType<typeof setInterval> | null = null;
 
 interface NativeLanRuntimeState {
   listening: boolean;
@@ -83,7 +87,12 @@ interface NativeLanRuntimeState {
 export async function listNativeLanPeers(): Promise<LocalNetworkPeersResponse> {
   const runtime = await ensureNativeLanRuntimeStarted();
   const discovered = await listNativeLanDiscoveredPeers();
-  return embeddedPhoneLanPeersResponse(discovered.map((peer) => ({
+  const nativeIds = new Set(discovered.map((peer) => peer.peerId));
+  const merged = [
+    ...discovered,
+    ...[...signaledPeers.values()].filter((peer) => !nativeIds.has(peer.peerId)),
+  ];
+  return embeddedPhoneLanPeersResponse(merged.map((peer) => ({
     peerId: peer.peerId,
     label: peer.label,
     address: peer.address,
@@ -280,6 +289,7 @@ export async function syncLanPeerInventoryWithClient(
 }
 
 export function resetNativeLanRuntimeForTests(): void {
+  stopProactiveSignaling();
   if (runtimeListenerHandle) {
     void runtimeListenerHandle.remove().catch(() => undefined);
   }
@@ -292,6 +302,7 @@ export function resetNativeLanRuntimeForTests(): void {
     transport.reset();
   }
   transports.clear();
+  signaledPeers.clear();
 }
 
 async function getOrCreateTransport(peer: LanTransportDiscoveredPeer): Promise<BrowserLanTransport> {
@@ -326,6 +337,7 @@ async function ensureNativeLanRuntimeStarted(): Promise<NativeLanRuntimeState> {
     await ensureNativeLanListenerRegistered();
     const nextState = await refreshNativeLanRuntime();
     runtimeState = nextState;
+    startProactiveSignaling();
     return nextState;
   })();
   try {
@@ -394,15 +406,82 @@ async function buildSelfSignalPeer(
   };
 }
 
+function startProactiveSignaling(): void {
+  if (proactiveSignalTimer) {
+    return;
+  }
+  proactiveSignalTimer = setInterval(() => {
+    void proactivelySignalKnownPeers().catch(() => undefined);
+  }, DEFAULT_NATIVE_LAN_ANNOUNCE_INTERVAL_MS);
+}
+
+function stopProactiveSignaling(): void {
+  if (proactiveSignalTimer) {
+    clearInterval(proactiveSignalTimer);
+    proactiveSignalTimer = null;
+  }
+}
+
+async function proactivelySignalKnownPeers(): Promise<void> {
+  const selfPeer = await buildSelfSignalPeer();
+  if (!selfPeer.port || selfPeer.address === '0.0.0.0') {
+    return;
+  }
+  const discovered = await listNativeLanDiscoveredPeers();
+  const allPeers = new Map<string, { address: string; port: number }>();
+  for (const peer of discovered) {
+    allPeers.set(peer.peerId, { address: peer.address, port: peer.port });
+  }
+  for (const peer of signaledPeers.values()) {
+    if (!allPeers.has(peer.peerId)) {
+      allPeers.set(peer.peerId, { address: peer.address, port: peer.port });
+    }
+  }
+  for (const [peerId, peer] of allPeers) {
+    const transport = transports.get(peerId);
+    if (transport?.hasActiveConnection(peerId)) {
+      continue;
+    }
+    try {
+      await postNativeLanSignal(peer.address, peer.port, {
+        kind: 'connect',
+        from: selfPeer,
+      });
+      const existing = signaledPeers.get(peerId);
+      if (existing) {
+        signaledPeers.set(peerId, { ...existing, lastSeenAt: Date.now() });
+      }
+    } catch {
+      // Peer unreachable — keep for future retries
+    }
+  }
+}
+
 async function handleIncomingNativeLanSignal(event: {
   requestId: string;
   request: LanPeerTransportSignalRequest;
 }): Promise<void> {
+  rememberSignaledPeer(event.request.from);
   const transport = await getOrCreateTransport(toTransportPeerFromSignal(event.request.from));
   const response = await transport.handleSignal(event.request);
   await completeNativeLanSignalRequest({
     requestId: event.requestId,
     response,
+  });
+}
+
+function rememberSignaledPeer(peer: LanTransportSignalPeer): void {
+  const now = Date.now();
+  const existing = signaledPeers.get(peer.peerId);
+  signaledPeers.set(peer.peerId, {
+    peerId: peer.peerId,
+    label: peer.label,
+    address: peer.address,
+    port: peer.port,
+    capabilities: [...peer.capabilities],
+    headObservationId: peer.headObservationId,
+    firstSeenAt: existing?.firstSeenAt ?? now,
+    lastSeenAt: now,
   });
 }
 
