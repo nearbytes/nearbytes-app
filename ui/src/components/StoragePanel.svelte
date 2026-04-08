@@ -6130,6 +6130,7 @@
                   {#snippet actions()}
                     {#if localNetworkService}
                       <span class="provider-step-detail">Peer ID {localNetworkService.peerId.slice(0, 8)}</span>
+                      <span class="provider-step-detail" style="opacity:0.5">Build {__GIT_COMMIT__}</span>
                     {/if}
                   {/snippet}
                 </ProviderStatusCard>

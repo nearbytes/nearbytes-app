@@ -554,6 +554,11 @@ export class LocalNetworkSyncService {
       peer.volumeIds = dedupeVolumeIds(hello.volumeIds);
       peer.lastRemoteHeadObservationId = hello.observationHeadId ?? null;
       peer.lastHelloAt = Date.now();
+      // Refresh lastSeenAt so the peer stays non-stale as long as it
+      // responds to hello RPCs.  Without this, peers discovered once via
+      // DNS-SD go stale after PEER_STALE_AFTER_MS and the sync loop stops
+      // talking to them, causing the WebRTC connection to die from inactivity.
+      peer.lastSeenAt = Date.now();
       const routeKey = routeKeyForPeer(peer.peerId);
       const routeState = this.providerQueue.getRouteState(LOCAL_NETWORK_PROVIDER, routeKey);
       peer.remoteCursorObservationId = routeState.lastAckedObservationId;
@@ -586,6 +591,7 @@ export class LocalNetworkSyncService {
       peer.lastImportedEvents = importedEvents;
       peer.lastImportedBlocks = importedBlocks;
       peer.lastSyncAt = Date.now();
+      peer.lastSeenAt = Date.now();
       peer.lastSyncError = null;
       peer.lastSyncTransient = false;
       peer.lastSyncNotice = null;

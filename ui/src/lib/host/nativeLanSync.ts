@@ -16,6 +16,7 @@ import type {
   LocalNetworkPeersResponse,
 } from '../api.js';
 import {
+  embeddedPhoneClearStaleLanPeerErrors,
   embeddedPhoneFinalizeLanVolumeImport,
   embeddedPhoneBuildLanHello,
   embeddedPhoneGetLanRouteState,
@@ -353,6 +354,7 @@ async function ensureNativeLanRuntimeStarted(): Promise<NativeLanRuntimeState> {
     return await runtimeStartPromise;
   }
   runtimeStartPromise = (async () => {
+    await embeddedPhoneClearStaleLanPeerErrors();
     await ensureNativeLanListenerRegistered();
     const nextState = await refreshNativeLanRuntime();
     runtimeState = nextState;
@@ -480,17 +482,49 @@ async function proactivelySignalKnownPeers(): Promise<void> {
   }
 }
 
+/** Per-peer signal queue so concurrent signals from the same peer are serialized. */
+const peerSignalQueue = new Map<string, Promise<void>>();
+
 async function handleIncomingNativeLanSignal(event: {
+  requestId: string;
+  request: LanPeerTransportSignalRequest;
+}): Promise<void> {
+  const peerId = event.request.from.peerId;
+
+  // Chain behind any in-flight signal for the same peer so that concurrent
+  // offers don't race and clobber each other's connections.
+  const previous = peerSignalQueue.get(peerId) ?? Promise.resolve();
+  const current = previous.then(() => processSignal(event), () => processSignal(event));
+  peerSignalQueue.set(peerId, current);
+  await current;
+}
+
+async function processSignal(event: {
   requestId: string;
   request: LanPeerTransportSignalRequest;
 }): Promise<void> {
   rememberSignaledPeer(event.request.from);
   const transport = await getOrCreateTransport(toTransportPeerFromSignal(event.request.from));
   const response = await transport.handleSignal(event.request);
-  await completeNativeLanSignalRequest({
-    requestId: event.requestId,
-    response,
-  });
+  try {
+    await completeNativeLanSignalRequest({
+      requestId: event.requestId,
+      response,
+    });
+  } catch {
+    // The native side no longer recognises this request ID — likely a stale
+    // signal from before a page reload.  Only tear down the connection when
+    // we actually created a new one (response kind 'answer').  If the dedup
+    // guard returned 'accepted' we preserved the existing good connection and
+    // must NOT close it.
+    const peerId = event.request.from.peerId;
+    if (response.kind === 'answer') {
+      console.warn('[Nearbytes LAN][Phone] Signal completion failed — closing orphaned connection.', { peerId, requestId: event.requestId });
+      transport.closePeer(peerId, 'stale-signal-completion-failed');
+    } else {
+      console.warn('[Nearbytes LAN][Phone] Signal completion failed for dedup-accepted response — keeping existing connection.', { peerId, requestId: event.requestId });
+    }
+  }
 }
 
 function isFreshLanPeer(peer: Pick<NativeLanDiscoveredPeer, 'lastSeenAt'>): boolean {

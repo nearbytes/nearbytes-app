@@ -35,6 +35,7 @@ const LAN_SIGNAL_TIMEOUT_MS = 15_000;
 const LAN_CONNECTION_TIMEOUT_MS = 20_000;
 const LAN_RPC_TIMEOUT_MS = 30_000;
 const LAN_DISCONNECTED_GRACE_MS = 5_000;
+const LAN_PEER_REOFFER_COOLDOWN_MS = 5_000;
 const LAN_CONTROL_MESSAGE_CHUNK_BYTES = 48 * 1024;
 const LAN_MULTICAST_GROUP = '239.255.40.41';
 const LAN_MULTICAST_PORT = 40441;
@@ -192,6 +193,8 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
   private selfSignalPeer: LanTransportSignalPeer | null = null;
   private connections = new Map<string, ConnectionContext>();
   private pendingConnections = new Map<string, Promise<void>>();
+  /** Per-peer timestamp of the last connection close/failure — used to throttle re-offers. */
+  private peerCooldownUntil = new Map<string, number>();
   private readonly instanceToken = randomHex(3);
 
   constructor(
@@ -365,12 +368,27 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       return;
     }
 
+    // Throttle re-offers: after a connection closes/fails, wait before
+    // starting a new connection attempt.  Discovery and sync triggers fire
+    // rapidly and would otherwise create an offer storm.
+    const cooldownUntil = this.peerCooldownUntil.get(peer.peerId);
+    if (cooldownUntil && Date.now() < cooldownUntil) {
+      logDesktopWebRtc('Skipping connection attempt — peer in cooldown.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        cooldownRemainingMs: cooldownUntil - Date.now(),
+      });
+      return;
+    }
+
     const connectPromise = this.shouldInitiate(peer.peerId)
       ? this.initiateConnection(peer)
       : this.requestRemoteInitiation(peer);
     this.pendingConnections.set(peer.peerId, connectPromise);
     try {
       await connectPromise;
+      // Successful connection — clear any previous cooldown.
+      this.peerCooldownUntil.delete(peer.peerId);
     } finally {
       this.pendingConnections.delete(peer.peerId);
     }
@@ -395,6 +413,26 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
         kind: 'accepted',
         acceptedAt: Date.now(),
       };
+    }
+
+    // WebRTC glare guard: if we are the rightful initiator (lower peerId) and
+    // already have a healthy connection, keep ours and reject the remote's offer.
+    // If the remote is the rightful initiator, always accept — they wouldn't
+    // send a new offer if the old connection was still good on their end.
+    if (this.shouldInitiate(peer.peerId) && this.hasUsablePeerConnection(peer.peerId)) {
+      const existingCtx = this.connections.get(peer.peerId);
+      if (existingCtx && !existingCtx.closed && existingCtx.connection.connectionState === 'connected') {
+        logDesktopWebRtc('Dropping glare offer — we are initiator with a healthy connection.', {
+          peerId: peer.peerId,
+          label: peer.label,
+          connectionState: existingCtx.connection.connectionState,
+          controlChannelState: existingCtx.controlChannel?.readyState ?? null,
+        });
+        return {
+          kind: 'accepted',
+          acceptedAt: Date.now(),
+        };
+      }
     }
 
     this.resetPeerConnection(peer.peerId);
@@ -480,7 +518,13 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       responseCandidateCount: response.kind === 'answer' ? response.candidates.length : 0,
     });
     if (response.kind !== 'answer') {
-      throw new Error(`Peer ${peer.label} rejected the WebRTC offer`);
+      // The remote returned 'accepted' — it already has a working connection
+      // and considers our offer redundant. Tear down our speculative context
+      // and set a cooldown so we don't immediately re-offer.
+      destroyConnectionContext(context);
+      this.connections.delete(peer.peerId);
+      this.peerCooldownUntil.set(peer.peerId, Date.now() + LAN_PEER_REOFFER_COOLDOWN_MS);
+      return;
     }
     await context.connection.setRemoteDescription({
       sdp: sanitizeRemoteSessionDescription(response.sdp, peer.address),
@@ -521,6 +565,9 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     } catch (error) {
       if (!retried && shouldRetryAfterChannelFailure(error)) {
         this.resetPeerConnection(peer.peerId);
+        // Clear the cooldown for this explicit retry so we don't block ourselves.
+        // Cooldown is meant for opportunistic triggers (discovery, connect signals).
+        this.peerCooldownUntil.delete(peer.peerId);
         return await this.sendRequestWithRetry(peer, request, true);
       }
       throw error;
@@ -621,6 +668,8 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
           context.disconnectTimer = null;
         }
         context.closed = true;
+        // Set cooldown to prevent rapid re-offer storms after failure.
+        this.peerCooldownUntil.set(peer.peerId, Date.now() + LAN_PEER_REOFFER_COOLDOWN_MS);
         if (!context.readyResolved) {
           context.rejectReady(new Error(`WebRTC connection ${state} for ${peer.label}`));
         }
@@ -1170,7 +1219,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
 
   private shouldInitiate(remotePeerId: string): boolean {
     const selfPeerId = this.selfSignalPeer?.peerId ?? '';
-    return selfPeerId !== '' && selfPeerId.localeCompare(remotePeerId) < 0;
+    return selfPeerId !== '' && selfPeerId < remotePeerId;
   }
 
   private async getSelfSignalPeer(): Promise<LanTransportSignalPeer> {
@@ -1205,6 +1254,9 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     }
     destroyConnectionContext(context);
     this.connections.delete(peerId);
+    // Set cooldown eagerly — the connectionstatechange handler is async and
+    // may fire too late to prevent an immediate re-offer.
+    this.peerCooldownUntil.set(peerId, Date.now() + LAN_PEER_REOFFER_COOLDOWN_MS);
     return true;
   }
 
@@ -1221,7 +1273,10 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       return false;
     }
     if (connectionState === 'connected') {
-      const controlChannelState = context.controlChannel?.readyState ?? null;
+      if (!context.controlChannel) {
+        return true; // Channel not yet received via ondatachannel; still usable.
+      }
+      const controlChannelState = context.controlChannel.readyState;
       return controlChannelState === 'open' || controlChannelState === 'connecting';
     }
     return connectionState === 'connecting' || connectionState === 'new';
@@ -1276,7 +1331,7 @@ async function gatherLocalDescription(
         if (!settled && connection.localDescription) {
           maybeResolve();
         }
-      }, 150);
+      }, 2_000);
     }).catch((error) => {
       if (!settled) {
         settled = true;

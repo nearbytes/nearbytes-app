@@ -86,8 +86,14 @@ export interface BrowserLanTransportOptions {
   handleRequest: (request: LanTransportRpcRequest, peer: LanTransportDiscoveredPeer) => Promise<unknown>;
 }
 
+/** Minimum time (ms) after answering an offer before we accept a new offer from the same peer. */
+const OFFER_DEDUP_WINDOW_MS = 5_000;
+
 export class BrowserLanTransport {
   private readonly contexts = new Map<string, PeerConnectionContext>();
+  private readonly pendingConnections = new Map<string, Promise<PeerConnectionContext>>();
+  /** Tracks when we last answered an offer per peer so we can reject rapid re-offers. */
+  private readonly lastAnsweredAt = new Map<string, number>();
   private selfPeer: LanTransportSignalPeer;
 
   constructor(private readonly options: BrowserLanTransportOptions) {
@@ -109,7 +115,7 @@ export class BrowserLanTransport {
     });
 
     if (request.kind === 'connect') {
-      if (!this.hasUsableConnection(peer.peerId)) {
+      if (this.shouldInitiate(peer.peerId) && !this.hasUsableConnection(peer.peerId)) {
         void this.ensurePeer(peer).catch(() => undefined);
       }
       return {
@@ -118,7 +124,55 @@ export class BrowserLanTransport {
       };
     }
 
-    this.closePeer(peer.peerId);
+    // WebRTC glare guard: if we are the rightful initiator (lower peerId) and
+    // already have a healthy connection, keep ours and reject the remote's offer.
+    // If the remote is the rightful initiator, always accept — they wouldn't
+    // send a new offer if the old connection was still good on their end.
+    if (this.shouldInitiate(peer.peerId) && this.hasUsableConnection(peer.peerId)) {
+      const existing = this.contexts.get(peer.peerId);
+      if (existing && existing.connection.connectionState === 'connected') {
+        logPhoneWebRtc('Dropping glare offer — we are initiator with a healthy connection.', {
+          peerId: peer.peerId,
+          label: peer.label,
+          connectionState: existing.connection.connectionState,
+          controlChannelState: existing.controlChannel?.readyState ?? null,
+        });
+        return {
+          kind: 'accepted',
+          acceptedAt: Date.now(),
+        };
+      }
+    }
+
+    // Protect a recently-answered connection: if we answered an offer for this
+    // peer very recently and the current connection is still alive, the new
+    // offer is a duplicate triggered by the initiator's retry/discovery cycle.
+    // Returning 'accepted' lets the existing connection stabilise instead of
+    // tearing it down and creating a new one.
+    // Use hasUsableConnection() which also checks the control channel state —
+    // the ICE layer can stay "connected" after the data channel dies (SCTP
+    // error), and we must accept the new offer in that case.
+    const lastAnswer = this.lastAnsweredAt.get(peer.peerId);
+    if (
+      lastAnswer &&
+      Date.now() - lastAnswer < OFFER_DEDUP_WINDOW_MS &&
+      this.hasUsableConnection(peer.peerId)
+    ) {
+      const existing = this.contexts.get(peer.peerId);
+      logPhoneWebRtc('Skipping duplicate offer — recently answered and connection is alive.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        connectionState: existing?.connection.connectionState ?? null,
+        controlChannelState: existing?.controlChannel?.readyState ?? null,
+        msSinceLastAnswer: Date.now() - lastAnswer,
+      });
+      return {
+        kind: 'accepted',
+        acceptedAt: Date.now(),
+      };
+    }
+
+    this.closePeer(peer.peerId, 'handleSignal-new-offer');
     const context = this.createContext(peer);
     await context.connection.setRemoteDescription({
       sdp: request.sdp,
@@ -132,6 +186,7 @@ export class BrowserLanTransport {
       },
       CONNECTION_TIMEOUT_MS
     );
+    this.lastAnsweredAt.set(peer.peerId, Date.now());
     return {
       kind: 'answer',
       sdp: answer.sdp,
@@ -173,11 +228,18 @@ export class BrowserLanTransport {
     }
   }
 
-  closePeer(peerId: string): void {
+  closePeer(peerId: string, reason?: string): void {
     const context = this.contexts.get(peerId);
     if (!context) {
       return;
     }
+    logPhoneWebRtc('closePeer called.', {
+      peerId,
+      label: context.peer.label,
+      reason: reason ?? 'unknown',
+      connectionState: context.connection.connectionState,
+      controlChannelState: context.controlChannel?.readyState ?? null,
+    });
     this.contexts.delete(peerId);
     for (const pending of context.pending.values()) {
       clearTimeout(pending.timer);
@@ -190,11 +252,14 @@ export class BrowserLanTransport {
 
   reset(): void {
     for (const peerId of this.contexts.keys()) {
-      this.closePeer(peerId);
+      this.closePeer(peerId, 'reset');
     }
   }
 
   hasActiveConnection(peerId: string): boolean {
+    if (this.pendingConnections.has(peerId)) {
+      return true;
+    }
     const context = this.contexts.get(peerId);
     if (!context) {
       return false;
@@ -204,6 +269,9 @@ export class BrowserLanTransport {
   }
 
   private hasUsableConnection(peerId: string): boolean {
+    if (this.pendingConnections.has(peerId)) {
+      return true;
+    }
     const context = this.contexts.get(peerId);
     if (!context) {
       return false;
@@ -213,15 +281,18 @@ export class BrowserLanTransport {
       return false;
     }
     if (connectionState === 'connected') {
-      const controlChannelState = context.controlChannel?.readyState ?? null;
+      if (!context.controlChannel) {
+        return true; // Channel not yet received via ondatachannel; still usable.
+      }
+      const controlChannelState = context.controlChannel.readyState;
       return controlChannelState === 'open' || controlChannelState === 'connecting';
     }
     return connectionState === 'connecting' || connectionState === 'new';
   }
 
   private async sendRequest(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<ChannelFrame> {
-    const context = await this.ensurePeer(peer);
-    const channel = await waitForControlChannel(context, CONNECTION_TIMEOUT_MS);
+    await this.ensurePeer(peer);
+    const { context, channel } = await waitForControlChannel(this.contexts, peer.peerId, CONNECTION_TIMEOUT_MS);
     if (channel.readyState !== 'open') {
       throw new Error(`Sync channel to ${peer.label} is no longer open. The connection may have been interrupted.`);
     }
@@ -253,13 +324,29 @@ export class BrowserLanTransport {
       existing.peer = peer;
       const connState = existing.connection.connectionState;
       const isConnectionDead = connState === 'failed' || connState === 'closed' || connState === 'disconnected';
-      const isChannelDead = connState === 'connected' &&
-        (!existing.controlChannel || existing.controlChannel.readyState === 'closed' || existing.controlChannel.readyState === 'closing');
+      const isChannelDead = connState === 'connected' && existing.controlChannel !== null &&
+        (existing.controlChannel.readyState === 'closed' || existing.controlChannel.readyState === 'closing');
       if (!isConnectionDead && !isChannelDead) {
         return existing;
       }
-      this.closePeer(peer.peerId);
+      this.closePeer(peer.peerId, `ensurePeer-dead(conn=${connState},ch=${existing.controlChannel?.readyState ?? 'null'})`);
     }
+    const pending = this.pendingConnections.get(peer.peerId);
+    if (pending) {
+      return await pending;
+    }
+    const connectPromise = this.shouldInitiate(peer.peerId)
+      ? this.initiateConnection(peer)
+      : this.requestRemoteInitiation(peer);
+    this.pendingConnections.set(peer.peerId, connectPromise);
+    try {
+      return await connectPromise;
+    } finally {
+      this.pendingConnections.delete(peer.peerId);
+    }
+  }
+
+  private async initiateConnection(peer: LanTransportDiscoveredPeer): Promise<PeerConnectionContext> {
     if (typeof RTCPeerConnection !== 'function') {
       throw new Error('WebRTC is unavailable in this runtime.');
     }
@@ -289,9 +376,24 @@ export class BrowserLanTransport {
       responseKind: response.kind,
       responseCandidateCount: response.kind === 'answer' ? response.candidates.length : 0,
     });
+    if (response.kind !== 'answer') {
+      // Remote returned 'accepted' — it already has a working connection and
+      // our offer was a glare duplicate.  Tear down our speculative context and
+      // wait for the remote to send us an offer instead.
+      this.closePeer(peer.peerId, 'initiateConnection-accepted-response');
+      return await waitForPeerContext(this.contexts, peer.peerId, CONNECTION_TIMEOUT_MS);
+    }
     await applyRemoteSignalResponse(context.connection, response);
     await withTimeout(context.readyPromise, CONNECTION_TIMEOUT_MS, `Timed out connecting to ${peer.label}`);
     return context;
+  }
+
+  private async requestRemoteInitiation(peer: LanTransportDiscoveredPeer): Promise<PeerConnectionContext> {
+    await postNativeLanSignal(peer.address, peer.port, {
+      kind: 'connect',
+      from: this.selfPeer,
+    });
+    return await waitForPeerContext(this.contexts, peer.peerId, CONNECTION_TIMEOUT_MS);
   }
 
   private createContext(peer: LanTransportDiscoveredPeer): PeerConnectionContext {
@@ -347,7 +449,7 @@ export class BrowserLanTransport {
       }
       if (state === 'failed' || state === 'closed') {
         context.rejectReady(new Error(`WebRTC connection ${state} for ${peer.label}`));
-        this.closePeer(peer.peerId);
+        this.closePeer(peer.peerId, `connectionstatechange-${state}`);
       }
     });
     connection.addEventListener('datachannel', (event) => {
@@ -397,6 +499,13 @@ export class BrowserLanTransport {
         pending.reject(new Error(`LAN channel closed while waiting for request ${requestId}`));
       }
       context.pending.clear();
+      // If the ICE layer is still "connected" but the data channel died (e.g.
+      // remote SCTP association reset), the connection is a zombie — the
+      // connectionstatechange handler won't fire 'failed'/'closed'.  Clean up
+      // so the next offer can establish a fresh connection.
+      if (context.connection.connectionState === 'connected' && this.contexts.get(context.peer.peerId) === context) {
+        this.closePeer(context.peer.peerId, 'channel-closed-while-connected');
+      }
     };
     channel.onerror = () => {
       logPhoneWebRtc('Control channel errored.', {
@@ -527,6 +636,11 @@ export class BrowserLanTransport {
       }
     }
   }
+
+  private shouldInitiate(remotePeerId: string): boolean {
+    const selfPeerId = this.selfPeer.peerId.trim();
+    return selfPeerId.length > 0 && selfPeerId < remotePeerId;
+  }
 }
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
@@ -621,31 +735,59 @@ async function applyRemoteCandidates(
   }
 }
 
-async function waitForControlChannel(context: PeerConnectionContext, timeoutMs: number): Promise<RTCDataChannel> {
+async function waitForControlChannel(
+  contexts: Map<string, PeerConnectionContext>,
+  peerId: string,
+  timeoutMs: number
+): Promise<{ context: PeerConnectionContext; channel: RTCDataChannel }> {
   const deadline = Date.now() + timeoutMs;
-  await withTimeout(context.readyPromise, timeoutMs, `Timed out waiting for LAN control channel for ${context.peer.label}`);
   while (Date.now() < deadline) {
-    const channel = context.controlChannel;
-    if (channel && channel.readyState === 'open') {
-      return channel;
+    const context = contexts.get(peerId);
+    const channel = context?.controlChannel ?? null;
+    if (context && channel && channel.readyState === 'open') {
+      return { context, channel };
+    }
+    if (context) {
+      try {
+        await withTimeout(context.readyPromise, Math.min(250, Math.max(1, deadline - Date.now())), 'pending');
+      } catch {
+        // The active context may be replaced; continue polling the current peer context.
+      }
     }
     await sleep(25);
   }
+  const context = contexts.get(peerId);
   logPhoneWebRtc('Timed out waiting for control channel.', {
-    peerId: context.peer.peerId,
-    label: context.peer.label,
-    connectionState: context.connection.connectionState,
-    iceConnectionState: context.connection.iceConnectionState,
-    iceGatheringState: context.connection.iceGatheringState,
-    signalingState: context.connection.signalingState,
-    hasControlChannel: context.controlChannel !== null,
-    controlChannelState: context.controlChannel?.readyState ?? null,
+    peerId,
+    label: context?.peer.label ?? peerId,
+    connectionState: context?.connection.connectionState ?? null,
+    iceConnectionState: context?.connection.iceConnectionState ?? null,
+    iceGatheringState: context?.connection.iceGatheringState ?? null,
+    signalingState: context?.connection.signalingState ?? null,
+    hasControlChannel: context?.controlChannel !== null,
+    controlChannelState: context?.controlChannel?.readyState ?? null,
   });
-  const channel = context.controlChannel;
-  if (!channel) {
-    throw new Error(`Could not open a sync channel to ${context.peer.label}. The LAN connection was established but the data channel was not available. Try syncing again.`);
+  const channel = context?.controlChannel ?? null;
+  if (!context || !channel) {
+    throw new Error(`Could not open a sync channel to ${context?.peer.label ?? peerId}. The LAN connection was established but the data channel was not available. Try syncing again.`);
   }
-  return channel;
+  return { context, channel };
+}
+
+async function waitForPeerContext(
+  contexts: Map<string, PeerConnectionContext>,
+  peerId: string,
+  timeoutMs: number
+): Promise<PeerConnectionContext> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const context = contexts.get(peerId);
+    if (context) {
+      return context;
+    }
+    await sleep(25);
+  }
+  throw new Error(`Timed out waiting for WebRTC peer context for ${peerId}`);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

@@ -1641,6 +1641,22 @@ export async function embeddedPhoneUpdateLanServiceState(
   return next;
 }
 
+export async function embeddedPhoneClearStaleLanPeerErrors(): Promise<void> {
+  const overlays = await readEmbeddedPhoneLanPeerOverlays();
+  let changed = false;
+  for (const key of Object.keys(overlays)) {
+    const overlay = overlays[key];
+    if (overlay.lastSyncError) {
+      overlay.lastSyncError = null;
+      overlay.status = undefined;
+      changed = true;
+    }
+  }
+  if (changed) {
+    await writeEmbeddedPhoneLanPeerOverlays(overlays);
+  }
+}
+
 export async function embeddedPhoneSyncPeer(
   peerId: string,
   peers: LocalNetworkPeer[]

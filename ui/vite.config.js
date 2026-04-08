@@ -1,10 +1,15 @@
 import path from 'path';
+import { execSync } from 'child_process';
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
 import { nearbytesDevApiProxy } from './devApiProxy.js';
 
 const devPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
+const gitCommit = (() => {
+  try { return execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim(); }
+  catch { return 'unknown'; }
+})();
 
 export default defineConfig({
   plugins: [
@@ -57,6 +62,9 @@ export default defineConfig({
       },
     }),
   ],
+  define: {
+    __GIT_COMMIT__: JSON.stringify(gitCommit),
+  },
   server: {
     host: '127.0.0.1',
     port: devPort,

@@ -231,4 +231,128 @@ describe('BrowserLanTransport', () => {
       { action: 'hello' }
     )).resolves.toEqual({ ok: true });
   });
+
+  it('requests remote initiation when the phone is not the designated initiator', async () => {
+    globalThis.RTCPeerConnection = FakeRtcPeerConnection as unknown as typeof RTCPeerConnection;
+
+    const selfPeer: LanTransportSignalPeer = {
+      peerId: 'phone-peer',
+      label: 'Phone',
+      address: '192.168.0.2',
+      port: 4444,
+      capabilities: ['webrtc'],
+      headObservationId: null,
+    };
+    const remotePeer: LanTransportSignalPeer = {
+      peerId: 'desktop-peer',
+      label: 'Desktop',
+      address: '192.168.0.3',
+      port: 5555,
+      capabilities: ['webrtc'],
+      headObservationId: null,
+    };
+    const transport = new BrowserLanTransport({
+      selfPeer,
+      handleRequest: vi.fn(async () => ({ ok: true })),
+    });
+
+    vi.mocked(postNativeLanSignal).mockImplementation(async (_address, _port, request) => {
+      if (request.kind === 'connect') {
+        setTimeout(() => {
+          void transport.handleSignal({
+            kind: 'offer',
+            from: remotePeer,
+            sdp: 'offer-sdp',
+            type: 'offer',
+            candidates: [],
+          });
+        }, 0);
+        return {
+          kind: 'accepted',
+          acceptedAt: Date.now(),
+        };
+      }
+      throw new Error(`Unexpected signal kind ${request.kind}`);
+    });
+
+    await expect(transport.requestJson<{ ok: boolean }>(
+      {
+        peerId: remotePeer.peerId,
+        label: remotePeer.label,
+        address: remotePeer.address,
+        port: remotePeer.port,
+        capabilities: [...remotePeer.capabilities],
+        headObservationId: remotePeer.headObservationId,
+      },
+      { action: 'hello' }
+    )).resolves.toEqual({ ok: true });
+
+    expect(vi.mocked(postNativeLanSignal)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(postNativeLanSignal).mock.calls[0]?.[2]).toMatchObject({ kind: 'connect' });
+  });
+
+  it('uses the latest peer context when duplicate offers replace the first one', async () => {
+    globalThis.RTCPeerConnection = FakeRtcPeerConnection as unknown as typeof RTCPeerConnection;
+
+    const selfPeer: LanTransportSignalPeer = {
+      peerId: 'phone-peer',
+      label: 'Phone',
+      address: '192.168.0.2',
+      port: 4444,
+      capabilities: ['webrtc'],
+      headObservationId: null,
+    };
+    const remotePeer: LanTransportSignalPeer = {
+      peerId: 'desktop-peer',
+      label: 'Desktop',
+      address: '192.168.0.3',
+      port: 5555,
+      capabilities: ['webrtc'],
+      headObservationId: null,
+    };
+    const transport = new BrowserLanTransport({
+      selfPeer,
+      handleRequest: vi.fn(async () => ({ ok: true })),
+    });
+
+    vi.mocked(postNativeLanSignal).mockImplementation(async (_address, _port, request) => {
+      if (request.kind === 'connect') {
+        setTimeout(() => {
+          void transport.handleSignal({
+            kind: 'offer',
+            from: remotePeer,
+            sdp: 'offer-sdp',
+            type: 'offer',
+            candidates: [],
+          });
+        }, 0);
+        setTimeout(() => {
+          void transport.handleSignal({
+            kind: 'offer',
+            from: remotePeer,
+            sdp: 'offer-sdp-2',
+            type: 'offer',
+            candidates: [],
+          });
+        }, 5);
+        return {
+          kind: 'accepted',
+          acceptedAt: Date.now(),
+        };
+      }
+      throw new Error(`Unexpected signal kind ${request.kind}`);
+    });
+
+    await expect(transport.requestJson<{ ok: boolean }>(
+      {
+        peerId: remotePeer.peerId,
+        label: remotePeer.label,
+        address: remotePeer.address,
+        port: remotePeer.port,
+        capabilities: [...remotePeer.capabilities],
+        headObservationId: remotePeer.headObservationId,
+      },
+      { action: 'hello' }
+    )).resolves.toEqual({ ok: true });
+  });
 });
