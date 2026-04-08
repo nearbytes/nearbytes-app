@@ -13,6 +13,10 @@ const CONTROL_MESSAGE_CHUNK_BYTES = 48 * 1024;
 const CONNECTION_TIMEOUT_MS = 20_000;
 const RPC_TIMEOUT_MS = 30_000;
 
+function logPhoneWebRtc(message: string, detail: Record<string, unknown> = {}): void {
+  console.info('[Nearbytes LAN][Phone WebRTC]', message, detail);
+}
+
 type ControlPacket =
   | {
       type: 'request';
@@ -96,10 +100,18 @@ export class BrowserLanTransport {
 
   async handleSignal(request: LanPeerTransportSignalRequest): Promise<LanPeerTransportSignalResponse> {
     const peer = toDiscoveredPeer(request.from);
+    logPhoneWebRtc('Received signaling request.', {
+      peerId: peer.peerId,
+      label: peer.label,
+      kind: request.kind,
+      type: request.kind === 'offer' ? request.type : null,
+      candidateCount: request.kind === 'offer' ? request.candidates.length : 0,
+    });
 
     if (request.kind === 'connect') {
-      this.closePeer(peer.peerId);
-      void this.ensurePeer(peer).catch(() => undefined);
+      if (!this.hasUsableConnection(peer.peerId)) {
+        void this.ensurePeer(peer).catch(() => undefined);
+      }
       return {
         kind: 'accepted',
         acceptedAt: Date.now(),
@@ -191,6 +203,22 @@ export class BrowserLanTransport {
     return connState === 'connected' || connState === 'connecting';
   }
 
+  private hasUsableConnection(peerId: string): boolean {
+    const context = this.contexts.get(peerId);
+    if (!context) {
+      return false;
+    }
+    const connectionState = context.connection.connectionState;
+    if (connectionState === 'failed' || connectionState === 'closed' || connectionState === 'disconnected') {
+      return false;
+    }
+    if (connectionState === 'connected') {
+      const controlChannelState = context.controlChannel?.readyState ?? null;
+      return controlChannelState === 'open' || controlChannelState === 'connecting';
+    }
+    return connectionState === 'connecting' || connectionState === 'new';
+  }
+
   private async sendRequest(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<ChannelFrame> {
     const context = await this.ensurePeer(peer);
     const channel = await waitForControlChannel(context, CONNECTION_TIMEOUT_MS);
@@ -254,6 +282,13 @@ export class BrowserLanTransport {
       type: 'offer',
       candidates: local.candidates,
     });
+    logPhoneWebRtc('Posted WebRTC offer to peer.', {
+      peerId: peer.peerId,
+      label: peer.label,
+      offerCandidateCount: local.candidates.length,
+      responseKind: response.kind,
+      responseCandidateCount: response.kind === 'answer' ? response.candidates.length : 0,
+    });
     await applyRemoteSignalResponse(context.connection, response);
     await withTimeout(context.readyPromise, CONNECTION_TIMEOUT_MS, `Timed out connecting to ${peer.label}`);
     return context;
@@ -275,8 +310,37 @@ export class BrowserLanTransport {
       settled: false,
     };
     this.contexts.set(peer.peerId, context);
+    connection.addEventListener('signalingstatechange', () => {
+      logPhoneWebRtc('RTCPeerConnection signaling state changed.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        signalingState: connection.signalingState,
+      });
+    });
+    connection.addEventListener('iceconnectionstatechange', () => {
+      logPhoneWebRtc('RTCPeerConnection ICE connection state changed.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        iceConnectionState: connection.iceConnectionState,
+      });
+    });
+    connection.addEventListener('icegatheringstatechange', () => {
+      logPhoneWebRtc('RTCPeerConnection ICE gathering state changed.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        iceGatheringState: connection.iceGatheringState,
+      });
+    });
     connection.addEventListener('connectionstatechange', () => {
       const state = connection.connectionState;
+      logPhoneWebRtc('RTCPeerConnection connection state changed.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        connectionState: state,
+        iceConnectionState: connection.iceConnectionState,
+        signalingState: connection.signalingState,
+        controlChannelState: context.controlChannel?.readyState ?? null,
+      });
       if (state === 'connected') {
         context.resolveReady();
         return;
@@ -287,6 +351,12 @@ export class BrowserLanTransport {
       }
     });
     connection.addEventListener('datachannel', (event) => {
+      logPhoneWebRtc('Received remote data channel.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        channelLabel: event.channel.label,
+        readyState: event.channel.readyState,
+      });
       if (event.channel.label === CONTROL_CHANNEL_LABEL) {
         this.attachChannel(context, event.channel);
         return;
@@ -298,10 +368,27 @@ export class BrowserLanTransport {
 
   private attachChannel(context: PeerConnectionContext, channel: RTCDataChannel): void {
     context.controlChannel = channel;
+    logPhoneWebRtc('Attached control channel.', {
+      peerId: context.peer.peerId,
+      label: context.peer.label,
+      channelLabel: channel.label,
+      readyState: channel.readyState,
+    });
     channel.onopen = () => {
+      logPhoneWebRtc('Control channel opened.', {
+        peerId: context.peer.peerId,
+        label: context.peer.label,
+        readyState: channel.readyState,
+      });
       context.resolveReady();
     };
     channel.onclose = () => {
+      logPhoneWebRtc('Control channel closed.', {
+        peerId: context.peer.peerId,
+        label: context.peer.label,
+        readyState: channel.readyState,
+        connectionState: context.connection.connectionState,
+      });
       if (context.controlChannel === channel) {
         context.controlChannel = null;
       }
@@ -312,6 +399,12 @@ export class BrowserLanTransport {
       context.pending.clear();
     };
     channel.onerror = () => {
+      logPhoneWebRtc('Control channel errored.', {
+        peerId: context.peer.peerId,
+        label: context.peer.label,
+        readyState: channel.readyState,
+        connectionState: context.connection.connectionState,
+      });
       context.rejectReady(new Error(`LAN data channel failed for ${context.peer.label}`));
     };
     channel.onmessage = (event) => {
@@ -538,6 +631,16 @@ async function waitForControlChannel(context: PeerConnectionContext, timeoutMs: 
     }
     await sleep(25);
   }
+  logPhoneWebRtc('Timed out waiting for control channel.', {
+    peerId: context.peer.peerId,
+    label: context.peer.label,
+    connectionState: context.connection.connectionState,
+    iceConnectionState: context.connection.iceConnectionState,
+    iceGatheringState: context.connection.iceGatheringState,
+    signalingState: context.connection.signalingState,
+    hasControlChannel: context.controlChannel !== null,
+    controlChannelState: context.controlChannel?.readyState ?? null,
+  });
   const channel = context.controlChannel;
   if (!channel) {
     throw new Error(`Could not open a sync channel to ${context.peer.label}. The LAN connection was established but the data channel was not available. Try syncing again.`);

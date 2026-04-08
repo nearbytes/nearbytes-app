@@ -4,6 +4,7 @@ import Network
 
 @objc(NearbytesLanPlugin)
 public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDelegate, NetServiceDelegate {
+    private let peerExpiryMs = 20_000
     public let identifier = "NearbytesLanPlugin"
     public let jsName = "NearbytesLan"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -30,6 +31,7 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
 
     private var browser: NetServiceBrowser?
     private var servicesByKey: [String: NetService] = [:]
+    private var resolvingServiceKeys = Set<String>()
     private var peersById: [String: LanDiscoveredPeer] = [:]
     private var advertisedPeerId: String?
     private var publishedService: NetService?
@@ -48,6 +50,9 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
     }
 
     @objc func listPeers(_ call: CAPPluginCall) {
+        startBrowserIfNeeded()
+        refreshResolvableServices()
+        pruneExpiredPeers()
         call.resolve([
             "peers": peersById.values
                 .sorted(by: { left, right in
@@ -231,6 +236,7 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
         service.delegate = self
         service.includesPeerToPeer = true
         servicesByKey[key] = service
+        resolvingServiceKeys.insert(key)
         NSLog("[Nearbytes LAN][iPhone] found service %@ type=%@ domain=%@ port=%ld", service.name, service.type, service.domain, service.port)
         service.resolve(withTimeout: 5)
         if !moreComing {
@@ -239,7 +245,9 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
     }
 
     public func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
-        servicesByKey.removeValue(forKey: serviceKey(for: service))
+        let key = serviceKey(for: service)
+        servicesByKey.removeValue(forKey: key)
+        resolvingServiceKeys.remove(key)
         let peerIdsToRemove = peersById.values
             .filter { $0.serviceName == service.name }
             .map { $0.peerId }
@@ -252,6 +260,7 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
     }
 
     public func netServiceDidResolveAddress(_ sender: NetService) {
+        resolvingServiceKeys.remove(serviceKey(for: sender))
         guard let parsed = parsePeer(from: sender) else {
             return
         }
@@ -263,8 +272,23 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
     }
 
     public func netService(_ sender: NetService, didNotResolve errorDict: [String : NSNumber]) {
-        servicesByKey.removeValue(forKey: serviceKey(for: sender))
+        let key = serviceKey(for: sender)
+        servicesByKey.removeValue(forKey: key)
+        resolvingServiceKeys.remove(key)
         NSLog("[Nearbytes LAN][iPhone] failed to resolve service %@ errors=%@", sender.name, String(describing: errorDict))
+    }
+
+    private func refreshResolvableServices() {
+        let resolvedServiceNames = Set(peersById.values.map { $0.serviceName })
+        for (key, service) in servicesByKey {
+            if resolvedServiceNames.contains(service.name) || resolvingServiceKeys.contains(key) {
+                continue
+            }
+            service.delegate = self
+            service.includesPeerToPeer = true
+            resolvingServiceKeys.insert(key)
+            service.resolve(withTimeout: 5)
+        }
     }
 
     private func ensureSignalListenerStarted() throws -> Int {
@@ -556,8 +580,28 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
 
     private func pruneExpiredPeers() {
         let activeNames = Set(servicesByKey.values.map { $0.name })
-        peersById = peersById.filter { _, peer in
-            activeNames.contains(peer.serviceName)
+        let now = Int(Date().timeIntervalSince1970 * 1000)
+        let deadline = now - peerExpiryMs
+        peersById = peersById.reduce(into: [:]) { partialResult, entry in
+            let peerId = entry.key
+            let peer = entry.value
+            if activeNames.contains(peer.serviceName) {
+                partialResult[peerId] = LanDiscoveredPeer(
+                    peerId: peer.peerId,
+                    serviceName: peer.serviceName,
+                    label: peer.label,
+                    address: peer.address,
+                    port: peer.port,
+                    capabilities: peer.capabilities,
+                    headObservationId: peer.headObservationId,
+                    firstSeenAt: peer.firstSeenAt,
+                    lastSeenAt: now
+                )
+                return
+            }
+            if peer.lastSeenAt >= deadline {
+                partialResult[peerId] = peer
+            }
         }
     }
 

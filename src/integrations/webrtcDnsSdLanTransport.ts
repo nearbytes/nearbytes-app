@@ -41,6 +41,10 @@ const LAN_MULTICAST_PORT = 40441;
 const LAN_MULTICAST_ANNOUNCE_MS = 5_000;
 const LAN_UNREACHABLE_STATUS_CODES = new Set([404, 410, 502, 503, 504]);
 
+function logDesktopWebRtc(message: string, detail: Record<string, unknown> = {}): void {
+  console.info('[Nearbytes LAN][Desktop WebRTC]', message, detail);
+}
+
 interface DiscoveryDebugRecord {
   readonly source: string;
   readonly fqdn: string;
@@ -375,10 +379,16 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
   async handleSignal(request: LanPeerTransportSignalRequest): Promise<LanPeerTransportSignalResponse> {
     const peer = this.toDiscoveredPeer(request.from);
     this.rememberSignaledPeer(peer, 'signal');
+    logDesktopWebRtc('Received signaling request.', {
+      peerId: peer.peerId,
+      label: peer.label,
+      kind: request.kind,
+      type: request.kind === 'offer' ? request.type : null,
+      candidateCount: request.kind === 'offer' ? request.candidates.length : 0,
+    });
 
     if (request.kind === 'connect') {
-      if (this.shouldInitiate(peer.peerId)) {
-        this.resetPeerConnection(peer.peerId);
+      if (this.shouldInitiate(peer.peerId) && !this.hasUsablePeerConnection(peer.peerId)) {
         void this.ensurePeerReady(peer).catch(() => undefined);
       }
       return {
@@ -390,10 +400,10 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     this.resetPeerConnection(peer.peerId);
     const context = this.createConnectionContext(peer, false);
     await context.connection.setRemoteDescription({
-      sdp: request.sdp,
+      sdp: sanitizeRemoteSessionDescription(request.sdp, peer.address),
       type: request.type,
     });
-    await applyRemoteCandidates(context.connection, request.candidates);
+    await applyRemoteCandidates(context.connection, request.candidates, peer.address);
     const answer = await gatherLocalDescription(
       context.connection,
       async () => {
@@ -462,14 +472,21 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       type: 'offer',
       candidates: offer.candidates,
     });
+    logDesktopWebRtc('Posted WebRTC offer to peer.', {
+      peerId: peer.peerId,
+      label: peer.label,
+      offerCandidateCount: offer.candidates.length,
+      responseKind: response.kind,
+      responseCandidateCount: response.kind === 'answer' ? response.candidates.length : 0,
+    });
     if (response.kind !== 'answer') {
       throw new Error(`Peer ${peer.label} rejected the WebRTC offer`);
     }
     await context.connection.setRemoteDescription({
-      sdp: response.sdp,
+      sdp: sanitizeRemoteSessionDescription(response.sdp, peer.address),
       type: response.type,
     });
-    await applyRemoteCandidates(context.connection, response.candidates);
+    await applyRemoteCandidates(context.connection, response.candidates, peer.address);
     await waitForContextReady(context, LAN_CONNECTION_TIMEOUT_MS);
   }
 
@@ -514,6 +531,13 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     const existing = this.connections.get(peer.peerId);
     if (existing && !existing.closed) {
       existing.peer = peer;
+      logDesktopWebRtc('Reusing existing connection context.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        initiator,
+        connectionState: existing.connection.connectionState,
+        controlChannelState: existing.controlChannel?.readyState ?? null,
+      });
       return existing;
     }
     if (existing) {
@@ -554,6 +578,13 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
 
     connection.onconnectionstatechange = () => {
       const state = connection.connectionState;
+      logDesktopWebRtc('RTCPeerConnection connection state changed.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        initiator,
+        connectionState: state,
+        controlChannelState: context.controlChannel?.readyState ?? null,
+      });
       if (state === 'connected') {
         if (context.disconnectTimer) {
           clearTimeout(context.disconnectTimer);
@@ -599,6 +630,13 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       }
     };
     connection.onDataChannel.subscribe((channel: RTCDataChannel) => {
+      logDesktopWebRtc('Received remote data channel.', {
+        peerId: peer.peerId,
+        label: peer.label,
+        initiator,
+        channelLabel: channel.label,
+        readyState: channel.readyState,
+      });
       this.handleIncomingDataChannel(context, channel);
     });
 
@@ -617,7 +655,20 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
 
   private attachControlChannel(context: ConnectionContext, channel: RTCDataChannel): void {
     context.controlChannel = channel;
+    logDesktopWebRtc('Attached control channel.', {
+      peerId: context.peerId,
+      label: context.peer.label,
+      initiator: context.initiator,
+      channelLabel: channel.label,
+      readyState: channel.readyState,
+    });
     channel.onopen = () => {
+      logDesktopWebRtc('Control channel opened.', {
+        peerId: context.peerId,
+        label: context.peer.label,
+        initiator: context.initiator,
+        readyState: channel.readyState,
+      });
       context.resolveReady();
     };
     channel.onmessage = (event: WebRtcChannelMessageEvent) => {
@@ -630,6 +681,13 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       });
     };
     channel.onclose = () => {
+      logDesktopWebRtc('Control channel closed.', {
+        peerId: context.peerId,
+        label: context.peer.label,
+        initiator: context.initiator,
+        readyState: channel.readyState,
+        connectionState: context.connection.connectionState,
+      });
       if (context.controlChannel === channel) {
         context.controlChannel = null;
       }
@@ -640,6 +698,14 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       context.pendingControlResponses.clear();
     };
     channel.onerror = (event: WebRtcChannelErrorEvent) => {
+      logDesktopWebRtc('Control channel errored.', {
+        peerId: context.peerId,
+        label: context.peer.label,
+        initiator: context.initiator,
+        readyState: channel.readyState,
+        connectionState: context.connection.connectionState,
+        detail: event.error instanceof Error ? event.error.message : String(event.error ?? 'unknown'),
+      });
       if (!context.readyResolved) {
         context.rejectReady(new Error(String(event.error ?? 'WebRTC data channel error')));
       }
@@ -1141,6 +1207,25 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     this.connections.delete(peerId);
     return true;
   }
+
+  private hasUsablePeerConnection(peerId: string): boolean {
+    if (this.pendingConnections.has(peerId)) {
+      return true;
+    }
+    const context = this.connections.get(peerId);
+    if (!context || context.closed) {
+      return false;
+    }
+    const connectionState = context.connection.connectionState;
+    if (connectionState === 'failed' || connectionState === 'closed' || connectionState === 'disconnected') {
+      return false;
+    }
+    if (connectionState === 'connected') {
+      const controlChannelState = context.controlChannel?.readyState ?? null;
+      return controlChannelState === 'open' || controlChannelState === 'connecting';
+    }
+    return connectionState === 'connecting' || connectionState === 'new';
+  }
 }
 
 async function gatherLocalDescription(
@@ -1211,11 +1296,61 @@ async function gatherLocalDescription(
   };
 }
 
+function rewriteIceCandidateAddress(candidate: string, peerAddress: string | undefined): string {
+  if (!peerAddress) {
+    return candidate;
+  }
+  const trimmed = candidate.trim();
+  if (!trimmed.startsWith('candidate:')) {
+    return candidate;
+  }
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 6) {
+    return candidate;
+  }
+  const host = parts[4]?.trim().toLowerCase();
+  if (!host || !host.endsWith('.local')) {
+    return candidate;
+  }
+  parts[4] = peerAddress;
+  return parts.join(' ');
+}
+
+function sanitizeRemoteSessionDescription(sdp: string, peerAddress: string | undefined): string {
+  if (!peerAddress || !sdp.includes('.local')) {
+    return sdp;
+  }
+  return sdp
+    .split(/\r?\n/)
+    .map((line) => {
+      if (!line.startsWith('a=candidate:')) {
+        return line;
+      }
+      return `a=${rewriteIceCandidateAddress(line.slice(2), peerAddress)}`;
+    })
+    .join('\r\n');
+}
+
+function resolveMdnsCandidates(
+  candidates: readonly LanTransportSignalCandidate[],
+  peerAddress: string | undefined
+): LanTransportSignalCandidate[] {
+  if (!peerAddress) {
+    return [...candidates];
+  }
+  return candidates.map((candidate) => ({
+    candidate: rewriteIceCandidateAddress(candidate.candidate, peerAddress),
+    mid: candidate.mid,
+  }));
+}
+
 async function applyRemoteCandidates(
   connection: RTCPeerConnection,
-  candidates: readonly LanTransportSignalCandidate[]
+  candidates: readonly LanTransportSignalCandidate[],
+  peerAddress?: string
 ): Promise<void> {
-  for (const candidate of candidates) {
+  const resolved = resolveMdnsCandidates(candidates, peerAddress);
+  for (const candidate of resolved) {
     if (candidate.candidate.trim() === '') {
       continue;
     }
@@ -1268,6 +1403,14 @@ async function waitForControlChannelReady(
     }
     await sleep(25);
   }
+  logDesktopWebRtc('Timed out waiting for control channel.', {
+    peerId: context.peerId,
+    label: context.peer.label,
+    initiator: context.initiator,
+    connectionState: context.connection.connectionState,
+    hasControlChannel: context.controlChannel !== null,
+    controlChannelState: context.controlChannel?.readyState ?? null,
+  });
   return context.controlChannel;
 }
 
@@ -1353,6 +1496,10 @@ export function decodeLanWebRtcControlPacketForTest(
   message: string | Buffer | Uint8Array | ArrayBuffer
 ): unknown {
   return parseControlPacket(message);
+}
+
+export function sanitizeRemoteSessionDescriptionForTest(sdp: string, peerAddress: string): string {
+  return sanitizeRemoteSessionDescription(sdp, peerAddress);
 }
 
 function concatBytes(chunks: readonly Uint8Array[], size: number): Uint8Array {

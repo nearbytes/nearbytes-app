@@ -16,6 +16,7 @@ import type {
   LocalNetworkPeersResponse,
 } from '../api.js';
 import {
+  embeddedPhoneFinalizeLanVolumeImport,
   embeddedPhoneBuildLanHello,
   embeddedPhoneGetLanRouteState,
   embeddedPhoneGetLanVolumeInventory,
@@ -41,6 +42,7 @@ import {
 
 const OBSERVATION_PAGE_LIMIT = 512;
 const DEFAULT_NATIVE_LAN_ANNOUNCE_INTERVAL_MS = 5_000;
+const PHONE_PEER_STALE_AFTER_MS = 20_000;
 
 interface PeerHelloResponse {
   protocol: string;
@@ -86,11 +88,16 @@ interface NativeLanRuntimeState {
 
 export async function listNativeLanPeers(): Promise<LocalNetworkPeersResponse> {
   const runtime = await ensureNativeLanRuntimeStarted();
-  const discovered = await listNativeLanDiscoveredPeers();
+  const discovered = (await listNativeLanDiscoveredPeers()).filter(isFreshLanPeer);
   const nativeIds = new Set(discovered.map((peer) => peer.peerId));
+  for (const [peerId, peer] of signaledPeers.entries()) {
+    if (!isFreshLanPeer(peer)) {
+      signaledPeers.delete(peerId);
+    }
+  }
   const merged = [
     ...discovered,
-    ...[...signaledPeers.values()].filter((peer) => !nativeIds.has(peer.peerId)),
+    ...[...signaledPeers.values()].filter((peer) => !nativeIds.has(peer.peerId) && isFreshLanPeer(peer)),
   ];
   return embeddedPhoneLanPeersResponse(merged.map((peer) => ({
     peerId: peer.peerId,
@@ -204,6 +211,7 @@ export async function syncLanPeerInventoryWithClient(
 
   let importedEvents = observationDelta.importedEvents;
   let importedBlocks = observationDelta.importedBlocks;
+  const finalizedVolumeIds = new Set(observationDelta.changedVolumeIds);
   const hintedVolumeIds = new Set(normalizeVolumeIds(preferredVolumeIds ?? []));
   for (const volumeId of observationDelta.changedVolumeIds) {
     hintedVolumeIds.add(volumeId);
@@ -228,6 +236,7 @@ export async function syncLanPeerInventoryWithClient(
     const localInventory = await embeddedPhoneGetLanVolumeInventory(volumeId);
     const localEvents = new Set(localInventory.eventHashes);
     const localBlocks = new Set(localInventory.blockHashes);
+    let importedVolumeData = false;
 
     for (const eventHash of remoteInventory.eventHashes) {
       if (localEvents.has(eventHash)) {
@@ -239,6 +248,7 @@ export async function syncLanPeerInventoryWithClient(
       }
       if (await embeddedPhoneImportLanEvent(volumeId, eventHash, bytes)) {
         importedEvents += 1;
+        importedVolumeData = true;
       }
     }
 
@@ -252,8 +262,17 @@ export async function syncLanPeerInventoryWithClient(
       }
       if (await embeddedPhoneImportLanBlock(blockHash, bytes)) {
         importedBlocks += 1;
+        importedVolumeData = true;
       }
     }
+
+    if (importedVolumeData) {
+      finalizedVolumeIds.add(volumeId);
+    }
+  }
+
+  for (const volumeId of finalizedVolumeIds) {
+    await embeddedPhoneFinalizeLanVolumeImport(volumeId);
   }
 
   if (selectedVolumeIds.length === 0 && !hello.observationHeadId) {
@@ -427,12 +446,16 @@ async function proactivelySignalKnownPeers(): Promise<void> {
   if (!selfPeer.port || selfPeer.address === '0.0.0.0') {
     return;
   }
-  const discovered = await listNativeLanDiscoveredPeers();
+  const discovered = (await listNativeLanDiscoveredPeers()).filter(isFreshLanPeer);
   const allPeers = new Map<string, { address: string; port: number }>();
   for (const peer of discovered) {
     allPeers.set(peer.peerId, { address: peer.address, port: peer.port });
   }
-  for (const peer of signaledPeers.values()) {
+  for (const [peerId, peer] of signaledPeers.entries()) {
+    if (!isFreshLanPeer(peer)) {
+      signaledPeers.delete(peerId);
+      continue;
+    }
     if (!allPeers.has(peer.peerId)) {
       allPeers.set(peer.peerId, { address: peer.address, port: peer.port });
     }
@@ -468,6 +491,10 @@ async function handleIncomingNativeLanSignal(event: {
     requestId: event.requestId,
     response,
   });
+}
+
+function isFreshLanPeer(peer: Pick<NativeLanDiscoveredPeer, 'lastSeenAt'>): boolean {
+  return Date.now() - peer.lastSeenAt < PHONE_PEER_STALE_AFTER_MS;
 }
 
 function rememberSignaledPeer(peer: LanTransportSignalPeer): void {

@@ -96,6 +96,7 @@ const PHONE_RUNTIME_HEADS_KEY = 'phoneRuntimeHeads';
 const PHONE_ROOTS_CONFIG_KEY = 'phoneRootsConfig';
 const PHONE_APP_CONFIG_KEY = 'phoneAppConfig';
 const EMBEDDED_PHONE_SOURCE_ID = 'src-embedded-phone';
+const embeddedPhoneKnownVolumeSecrets = new Map<string, string>();
 
 interface EmbeddedPhoneLanRouteState {
   peerId: string;
@@ -372,6 +373,12 @@ async function writeEmbeddedPhoneRuntimeHeads(heads: Record<string, EmbeddedPhon
 async function writeEmbeddedPhoneRuntimeHead(head: EmbeddedPhoneRuntimeHead): Promise<void> {
   const heads = await readEmbeddedPhoneRuntimeHeads();
   heads[head.volumeId] = head;
+  await writeEmbeddedPhoneRuntimeHeads(heads);
+}
+
+async function deleteEmbeddedPhoneRuntimeHead(volumeId: string): Promise<void> {
+  const heads = await readEmbeddedPhoneRuntimeHeads();
+  delete heads[volumeId];
   await writeEmbeddedPhoneRuntimeHeads(heads);
 }
 
@@ -964,6 +971,7 @@ async function refreshMirrors(secret: string, eventHash?: string): Promise<{
     fileService.listFiles(secret),
     fileService.getTimeline(secret) as Promise<TimelineEvent[]>,
   ]);
+  embeddedPhoneKnownVolumeSecrets.set(volumeId, secret);
 
   await importCompatibilityVolumeSnapshot({ volumeId, files });
   await importCompatibilityTimelineSnapshot({
@@ -1292,6 +1300,7 @@ async function commitEmbeddedPhoneMutation<T extends object>(
 
 export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolumeResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
+  embeddedPhoneKnownVolumeSecrets.set(await deriveVolumeId(secret), secret);
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
     return {
@@ -1312,6 +1321,7 @@ export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolum
 
 export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
+  embeddedPhoneKnownVolumeSecrets.set(await deriveVolumeId(secret), secret);
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
     return {
@@ -1328,6 +1338,7 @@ export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesR
 
 export async function embeddedPhoneGetTimeline(secret: string): Promise<TimelineResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
+  embeddedPhoneKnownVolumeSecrets.set(await deriveVolumeId(secret), secret);
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
     return {
@@ -1346,6 +1357,7 @@ export async function embeddedPhoneGetTimeline(secret: string): Promise<Timeline
 
 export async function embeddedPhoneGetEventDetail(secret: string, eventHash: string): Promise<EventDetailResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
+  embeddedPhoneKnownVolumeSecrets.set(await deriveVolumeId(secret), secret);
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const detail = await fileService.getEvent(secret, eventHash);
   const response: EventDetailResponse = {
@@ -1793,6 +1805,16 @@ export async function embeddedPhoneImportLanBlock(blockHash: string, bytes: Uint
   }
   await storage.writeFile(relativePath, bytes);
   return true;
+}
+
+export async function embeddedPhoneFinalizeLanVolumeImport(volumeId: string): Promise<void> {
+  const normalizedVolumeId = volumeId.trim().toLowerCase();
+  const secret = embeddedPhoneKnownVolumeSecrets.get(normalizedVolumeId);
+  if (secret) {
+    await refreshMirrors(secret);
+    return;
+  }
+  await deleteEmbeddedPhoneRuntimeHead(normalizedVolumeId);
 }
 
 export async function embeddedPhoneBuildLanHello(): Promise<LanTransportHello> {

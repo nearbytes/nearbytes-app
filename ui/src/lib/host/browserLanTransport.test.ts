@@ -4,6 +4,7 @@ import type {
   LanPeerTransportSignalRequest,
   LanTransportSignalPeer,
 } from '../../../../src/integrations/lanPeerTransport.js';
+import { postNativeLanSignal } from './nativeLanPlugin.js';
 
 vi.mock('./nativeLanPlugin.js', () => ({
   postNativeLanSignal: vi.fn(),
@@ -167,6 +168,57 @@ describe('BrowserLanTransport', () => {
 
     await transport.handleSignal(offer);
 
+    await expect(transport.requestJson<{ ok: boolean }>(
+      {
+        peerId: remotePeer.peerId,
+        label: remotePeer.label,
+        address: remotePeer.address,
+        port: remotePeer.port,
+        capabilities: [...remotePeer.capabilities],
+        headObservationId: remotePeer.headObservationId,
+      },
+      { action: 'hello' }
+    )).resolves.toEqual({ ok: true });
+  });
+
+  it('does not renegotiate a healthy connection when a connect hint arrives', async () => {
+    globalThis.RTCPeerConnection = FakeRtcPeerConnection as unknown as typeof RTCPeerConnection;
+
+    const selfPeer: LanTransportSignalPeer = {
+      peerId: 'phone-peer',
+      label: 'Phone',
+      address: '192.168.0.2',
+      port: 4444,
+      capabilities: ['webrtc'],
+      headObservationId: null,
+    };
+    const remotePeer: LanTransportSignalPeer = {
+      peerId: 'desktop-peer',
+      label: 'Desktop',
+      address: '192.168.0.3',
+      port: 5555,
+      capabilities: ['webrtc'],
+      headObservationId: null,
+    };
+    const transport = new BrowserLanTransport({
+      selfPeer,
+      handleRequest: vi.fn(async () => ({ ok: true })),
+    });
+
+    await transport.handleSignal({
+      kind: 'offer',
+      from: remotePeer,
+      sdp: 'offer-sdp',
+      type: 'offer',
+      candidates: [],
+    });
+
+    await transport.handleSignal({
+      kind: 'connect',
+      from: remotePeer,
+    });
+
+    expect(vi.mocked(postNativeLanSignal)).not.toHaveBeenCalled();
     await expect(transport.requestJson<{ ok: boolean }>(
       {
         peerId: remotePeer.peerId,

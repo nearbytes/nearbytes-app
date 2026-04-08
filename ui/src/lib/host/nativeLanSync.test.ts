@@ -146,6 +146,35 @@ describe('nativeLanSync', () => {
     });
   });
 
+  it('refreshes a bootstrapped empty phone mirror after LAN imports', async () => {
+    const secret = 'native-lan-sync-secret-bootstrapped-empty';
+    const remote = await createRemoteHarness(secret, 'peer-bootstrapped-empty');
+
+    const initial = await embeddedPhoneOpenVolume(secret);
+    expect(initial.files).toEqual([]);
+
+    const result = await syncLanPeerInventoryWithClient(
+      {
+        peerId: 'peer-bootstrapped-empty',
+        label: 'Remote desktop',
+        address: '192.168.1.33',
+        port: 9444,
+        capabilities: ['webrtc', 'inventory', 'pull-sync'],
+        headObservationId: null,
+      },
+      remote.client
+    );
+
+    const reopened = await embeddedPhoneOpenVolume(secret);
+
+    expect(result).toMatchObject({
+      importedEvents: 1,
+      importedBlocks: 1,
+      volumeIds: [remote.volumeId],
+    });
+    expect(reopened.files.map((entry) => entry.filename)).toEqual(['hello.txt']);
+  });
+
   it('persists the remote observation cursor and imports later LAN deltas on the next sync', async () => {
     const secret = 'native-lan-sync-secret-cursor';
     const remote = await createRemoteHarness(secret, 'peer-cursor');

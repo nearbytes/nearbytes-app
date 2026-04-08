@@ -10,7 +10,11 @@ import type {
   LanTransportHello,
   LanTransportRpcRequest,
 } from '../lanPeerTransport.js';
-import { WebRtcDnsSdLanTransport, decodeLanWebRtcControlPacketForTest } from '../webrtcDnsSdLanTransport.js';
+import {
+  WebRtcDnsSdLanTransport,
+  decodeLanWebRtcControlPacketForTest,
+  sanitizeRemoteSessionDescriptionForTest,
+} from '../webrtcDnsSdLanTransport.js';
 
 const cleanupPaths: string[] = [];
 
@@ -379,6 +383,27 @@ describe('WebRtcDnsSdLanTransport', () => {
     });
   });
 
+  it('rewrites WKWebView mDNS ICE candidate hostnames in remote SDP', () => {
+    const sdp = [
+      'v=0',
+      'o=- 5964667894981931874 2 IN IP4 127.0.0.1',
+      's=-',
+      't=0 0',
+      'a=group:BUNDLE 0',
+      'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
+      'c=IN IP4 0.0.0.0',
+      'a=mid:0',
+      'a=candidate:887687980 1 udp 2113937151 58e0ba11-dab1-4aa1-8125-5bb9a03af32b.local 49910 typ host generation 0 ufrag Fz1N network-id 1',
+      'a=end-of-candidates',
+      '',
+    ].join('\r\n');
+
+    expect(sanitizeRemoteSessionDescriptionForTest(sdp, '192.168.8.165')).toContain(
+      'a=candidate:887687980 1 udp 2113937151 192.168.8.165 49910 typ host generation 0 ufrag Fz1N network-id 1'
+    );
+    expect(sanitizeRemoteSessionDescriptionForTest(sdp, '192.168.8.165')).not.toContain('.local');
+  });
+
   it('retries once with a fresh connection after a stale control-channel timeout', async () => {
     const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-retry-');
     const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });
@@ -434,7 +459,7 @@ describe('WebRtcDnsSdLanTransport', () => {
     expect(resetCalls).toBe(1);
   });
 
-  it('drops stale peer state and forces a fresh initiator handshake on connect signals', async () => {
+  it('treats connect signals as idempotent initiator hints', async () => {
     const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-connect-reset-');
     const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });
     const internal = transport as unknown as {
@@ -477,7 +502,7 @@ describe('WebRtcDnsSdLanTransport', () => {
     });
 
     expect(ensureCalls).toBe(1);
-    expect(resetCalls).toBe(1);
+    expect(resetCalls).toBe(0);
   });
 });
 
