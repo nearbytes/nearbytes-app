@@ -184,6 +184,7 @@
   const INITIAL_ROOTS_REQUEST_RETRY_DELAY_MS = 500;
   const AUTHORITATIVE_MANAGED_SHARE_REFRESH_MS = 3_000;
   const AUTHORITATIVE_MANAGED_SHARE_RAPID_REFRESH_MS = 1_200;
+  const LOCAL_NETWORK_REFRESH_MS = 4_000;
   const DEFAULT_DESTINATION: VolumeDestinationConfig = {
     sourceId: '',
     enabled: true,
@@ -371,6 +372,7 @@
   let runtimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let backfillPollTimer: ReturnType<typeof setTimeout> | null = null;
   let megaRuntimeLogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let localNetworkRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let panelRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let startupLoadRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let managedShareStateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -381,6 +383,7 @@
 
   onMount(() => {
     void loadPanel();
+    scheduleLocalNetworkRefresh();
 
     sourceWatchConnection = watchSources({
       onUpdate() {
@@ -416,6 +419,10 @@
       clearTimeout(megaRuntimeLogRefreshTimer);
       megaRuntimeLogRefreshTimer = null;
     }
+    if (localNetworkRefreshTimer) {
+      clearTimeout(localNetworkRefreshTimer);
+      localNetworkRefreshTimer = null;
+    }
     if (panelRefreshTimer) {
       clearTimeout(panelRefreshTimer);
       panelRefreshTimer = null;
@@ -431,6 +438,18 @@
     sourceWatchConnection?.close();
     sourceWatchConnection = null;
   });
+
+  function scheduleLocalNetworkRefresh(delayMs = LOCAL_NETWORK_REFRESH_MS): void {
+    if (localNetworkRefreshTimer) {
+      clearTimeout(localNetworkRefreshTimer);
+    }
+    localNetworkRefreshTimer = setTimeout(() => {
+      localNetworkRefreshTimer = null;
+      void refreshLocalNetworkPeers({ background: true }).finally(() => {
+        scheduleLocalNetworkRefresh();
+      });
+    }, delayMs);
+  }
 
   $effect(() => {
     if (refreshToken === 0 || refreshToken === lastRefreshToken) return;

@@ -1,4 +1,5 @@
 import type {
+  LanPeerTransportSignalRequest,
   LanPeerTransportSignalResponse,
   LanTransportDiscoveredPeer,
   LanTransportRpcRequest,
@@ -83,8 +84,50 @@ export interface BrowserLanTransportOptions {
 
 export class BrowserLanTransport {
   private readonly contexts = new Map<string, PeerConnectionContext>();
+  private selfPeer: LanTransportSignalPeer;
 
-  constructor(private readonly options: BrowserLanTransportOptions) {}
+  constructor(private readonly options: BrowserLanTransportOptions) {
+    this.selfPeer = options.selfPeer;
+  }
+
+  updateSelfPeer(peer: LanTransportSignalPeer): void {
+    this.selfPeer = peer;
+  }
+
+  async handleSignal(request: LanPeerTransportSignalRequest): Promise<LanPeerTransportSignalResponse> {
+    const peer = toDiscoveredPeer(request.from);
+
+    if (request.kind === 'connect') {
+      this.closePeer(peer.peerId);
+      void this.ensurePeer(peer).catch(() => undefined);
+      return {
+        kind: 'accepted',
+        acceptedAt: Date.now(),
+      };
+    }
+
+    this.closePeer(peer.peerId);
+    const context = this.createContext(peer);
+    await context.connection.setRemoteDescription({
+      sdp: request.sdp,
+      type: request.type,
+    });
+    await applyRemoteCandidates(context.connection, request.candidates);
+    const answer = await gatherLocalDescription(
+      context.connection,
+      async () => {
+        await context.connection.setLocalDescription(await context.connection.createAnswer());
+      },
+      CONNECTION_TIMEOUT_MS
+    );
+    return {
+      kind: 'answer',
+      sdp: answer.sdp,
+      type: 'answer',
+      candidates: answer.candidates,
+      acceptedAt: Date.now(),
+    };
+  }
 
   async requestJson<T>(peer: LanTransportDiscoveredPeer, request: LanTransportRpcRequest): Promise<T> {
     const frame = await this.sendRequest(peer, request);
@@ -177,18 +220,45 @@ export class BrowserLanTransport {
       throw new Error('WebRTC is unavailable in this runtime.');
     }
 
-    const connection = new RTCPeerConnection({
-      iceServers: [],
-    });
-    const channel = connection.createDataChannel(CONTROL_CHANNEL_LABEL, {
+    const context = this.createContext(peer);
+    const channel = context.connection.createDataChannel(CONTROL_CHANNEL_LABEL, {
       ordered: true,
       protocol: 'nearbytes-control',
+    });
+    this.attachChannel(context, channel);
+    context.connection.addEventListener('datachannel', (event) => {
+      if (event.channel.label === CONTROL_CHANNEL_LABEL) {
+        this.attachChannel(context, event.channel);
+        return;
+      }
+      event.channel.close();
+    });
+
+    const local = await gatherLocalDescription(context.connection, async () => {
+      const offer = await context.connection.createOffer();
+      await context.connection.setLocalDescription(offer);
+    }, CONNECTION_TIMEOUT_MS);
+    const response = await postNativeLanSignal(peer.address, peer.port, {
+      kind: 'offer',
+      from: this.selfPeer,
+      sdp: local.sdp,
+      type: 'offer',
+      candidates: local.candidates,
+    });
+    await applyRemoteSignalResponse(context.connection, response);
+    await withTimeout(context.readyPromise, CONNECTION_TIMEOUT_MS, `Timed out connecting to ${peer.label}`);
+    return context;
+  }
+
+  private createContext(peer: LanTransportDiscoveredPeer): PeerConnectionContext {
+    const connection = new RTCPeerConnection({
+      iceServers: [],
     });
     const deferred = createDeferred<void>();
     const context: PeerConnectionContext = {
       peer,
       connection,
-      controlChannel: channel,
+      controlChannel: null,
       pending: new Map(),
       readyPromise: deferred.promise,
       resolveReady: deferred.resolve,
@@ -196,14 +266,6 @@ export class BrowserLanTransport {
       settled: false,
     };
     this.contexts.set(peer.peerId, context);
-    this.attachChannel(context, channel);
-    connection.addEventListener('datachannel', (event) => {
-      if (event.channel.label === CONTROL_CHANNEL_LABEL) {
-        this.attachChannel(context, event.channel);
-        return;
-      }
-      event.channel.close();
-    });
     connection.addEventListener('connectionstatechange', () => {
       const state = connection.connectionState;
       if (state === 'connected') {
@@ -215,20 +277,6 @@ export class BrowserLanTransport {
         this.closePeer(peer.peerId);
       }
     });
-
-    const local = await gatherLocalDescription(connection, async () => {
-      const offer = await connection.createOffer();
-      await connection.setLocalDescription(offer);
-    }, CONNECTION_TIMEOUT_MS);
-    const response = await postNativeLanSignal(peer.address, peer.port, {
-      kind: 'offer',
-      from: this.options.selfPeer,
-      sdp: local.sdp,
-      type: 'offer',
-      candidates: local.candidates,
-    });
-    await applyRemoteSignalResponse(connection, response);
-    await withTimeout(context.readyPromise, CONNECTION_TIMEOUT_MS, `Timed out connecting to ${peer.label}`);
     return context;
   }
 
@@ -452,6 +500,18 @@ async function applyRemoteSignalResponse(
   }
 }
 
+async function applyRemoteCandidates(
+  connection: RTCPeerConnection,
+  candidates: readonly LanTransportSignalCandidate[]
+): Promise<void> {
+  for (const candidate of candidates) {
+    await connection.addIceCandidate({
+      candidate: candidate.candidate,
+      sdpMid: candidate.mid,
+    });
+  }
+}
+
 async function waitForControlChannel(context: PeerConnectionContext, timeoutMs: number): Promise<RTCDataChannel> {
   await withTimeout(context.readyPromise, timeoutMs, `Timed out waiting for LAN control channel for ${context.peer.label}`);
   const channel = context.controlChannel;
@@ -564,4 +624,15 @@ function decodeBase64(value: string): Uint8Array {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+function toDiscoveredPeer(signalPeer: LanTransportSignalPeer): LanTransportDiscoveredPeer {
+  return {
+    peerId: signalPeer.peerId,
+    label: signalPeer.label,
+    address: signalPeer.address,
+    port: signalPeer.port,
+    capabilities: [...signalPeer.capabilities],
+    headObservationId: signalPeer.headObservationId,
+  };
 }

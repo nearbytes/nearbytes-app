@@ -1,5 +1,6 @@
 import Foundation
 import Capacitor
+import Network
 
 @objc(NearbytesLanPlugin)
 public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDelegate, NetServiceDelegate {
@@ -7,20 +8,37 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
     public let jsName = "NearbytesLan"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "listPeers", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "postSignal", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "postSignal", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "startRuntime", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stopRuntime", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "completeSignalRequest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "removeListener", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
+
+    private let serviceType = "_nearbytes._udp."
+    private let serviceDomain = "local."
+    private let signalQueue = DispatchQueue(label: "org.nearbytes.mobile.lan.signal")
+    private let pendingSignalLock = NSLock()
 
     private var browser: NetServiceBrowser?
     private var servicesByKey: [String: NetService] = [:]
     private var peersById: [String: LanDiscoveredPeer] = [:]
+    private var advertisedPeerId: String?
+    private var publishedService: NetService?
+    private var signalListener: NWListener?
+    private var signalListenerPort: Int?
+    private var pendingSignalRequests: [String: PendingSignalRequest] = [:]
 
     override public func load() {
         super.load()
-        startBrowser()
+        startBrowserIfNeeded()
     }
 
     deinit {
         browser?.stop()
+        stopRuntimeResources()
     }
 
     @objc func listPeers(_ call: CAPPluginCall) {
@@ -98,11 +116,84 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
         task.resume()
     }
 
-    private func startBrowser() {
+    @objc func startRuntime(_ call: CAPPluginCall) {
+        guard let peerId = call.getString("peerId")?.trimmingCharacters(in: .whitespacesAndNewlines), !peerId.isEmpty else {
+            call.reject("peerId is required")
+            return
+        }
+        let label = call.getString("label")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Nearbytes phone"
+        let announceIntervalMs = max(call.getInt("announceIntervalMs") ?? 5_000, 1_000)
+        guard let txtRecord = call.getObject("txtRecord") else {
+            call.reject("txtRecord is required")
+            return
+        }
+
+        do {
+            startBrowserIfNeeded()
+            let port = try ensureSignalListenerStarted()
+            advertisedPeerId = peerId
+            publishService(peerId: peerId, label: label, port: port, txtRecord: txtRecord)
+            NSLog("[Nearbytes LAN][iPhone] native runtime started peer=%@ port=%d address=%@", peerId, port, bestLocalIPv4Address() ?? "unknown")
+            var response: JSObject = [
+                "listening": true,
+                "port": port,
+                "announceIntervalMs": announceIntervalMs,
+                "serviceType": serviceType.trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+            ]
+            if let address = bestLocalIPv4Address() {
+                response["address"] = address
+            } else {
+                response["address"] = NSNull()
+            }
+            call.resolve(response)
+        } catch {
+            call.reject("Failed to start native LAN runtime", nil, error)
+        }
+    }
+
+    @objc func stopRuntime(_ call: CAPPluginCall) {
+        stopRuntimeResources()
+        call.resolve()
+    }
+
+    @objc func completeSignalRequest(_ call: CAPPluginCall) {
+        guard let requestId = call.getString("requestId")?.trimmingCharacters(in: .whitespacesAndNewlines), !requestId.isEmpty else {
+            call.reject("requestId is required")
+            return
+        }
+
+        pendingSignalLock.lock()
+        defer { pendingSignalLock.unlock() }
+        guard let pending = pendingSignalRequests[requestId] else {
+            call.reject("Unknown signal request id")
+            return
+        }
+
+        if let errorMessage = call.getString("error")?.trimmingCharacters(in: .whitespacesAndNewlines), !errorMessage.isEmpty {
+            pending.error = errorMessage
+            pending.semaphore.signal()
+            call.resolve()
+            return
+        }
+
+        if let response = call.getObject("response") {
+            pending.response = response
+            pending.semaphore.signal()
+            call.resolve()
+            return
+        }
+
+        call.reject("response or error is required")
+    }
+
+    private func startBrowserIfNeeded() {
+        guard browser == nil else {
+            return
+        }
         let browser = NetServiceBrowser()
         browser.delegate = self
         browser.includesPeerToPeer = true
-        browser.searchForServices(ofType: "_nearbytes._udp.", inDomain: "local.")
+        browser.searchForServices(ofType: serviceType, inDomain: serviceDomain)
         self.browser = browser
     }
 
@@ -111,6 +202,7 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
         service.delegate = self
         service.includesPeerToPeer = true
         servicesByKey[key] = service
+        NSLog("[Nearbytes LAN][iPhone] found service %@ type=%@ domain=%@ port=%ld", service.name, service.type, service.domain, service.port)
         service.resolve(withTimeout: 5)
         if !moreComing {
             pruneExpiredPeers()
@@ -134,20 +226,267 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
         guard let parsed = parsePeer(from: sender) else {
             return
         }
+        if parsed.peerId == advertisedPeerId {
+            return
+        }
         peersById[parsed.peerId] = parsed
+        NSLog("[Nearbytes LAN][iPhone] discovered peer %@ at %@:%d", parsed.peerId, parsed.address, parsed.port)
     }
 
     public func netService(_ sender: NetService, didNotResolve errorDict: [String : NSNumber]) {
         servicesByKey.removeValue(forKey: serviceKey(for: sender))
+        NSLog("[Nearbytes LAN][iPhone] failed to resolve service %@ errors=%@", sender.name, String(describing: errorDict))
+    }
+
+    private func ensureSignalListenerStarted() throws -> Int {
+        if let port = signalListenerPort, signalListener != nil {
+            return port
+        }
+
+        let listener = try NWListener(using: .tcp)
+        let readySemaphore = DispatchSemaphore(value: 0)
+        var readyPort: Int?
+        var startError: Error?
+
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.handleIncomingConnection(connection)
+        }
+        listener.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                readyPort = listener.port.map { Int($0.rawValue) }
+                readySemaphore.signal()
+            case .failed(let error):
+                startError = error
+                self?.signalListener = nil
+                self?.signalListenerPort = nil
+                readySemaphore.signal()
+            case .cancelled:
+                self?.signalListener = nil
+                self?.signalListenerPort = nil
+            default:
+                break
+            }
+        }
+
+        listener.start(queue: signalQueue)
+        _ = readySemaphore.wait(timeout: .now() + 5)
+        if let startError {
+            throw startError
+        }
+        guard let readyPort, readyPort > 0 else {
+            throw LanPluginError.listenerDidNotStart
+        }
+        signalListener = listener
+        signalListenerPort = readyPort
+        return readyPort
+    }
+
+    private func stopRuntimeResources() {
+        advertisedPeerId = nil
+        publishedService?.stop()
+        publishedService = nil
+        signalListener?.cancel()
+        signalListener = nil
+        signalListenerPort = nil
+        pendingSignalLock.lock()
+        let pending = pendingSignalRequests.values
+        pendingSignalRequests.removeAll()
+        pendingSignalLock.unlock()
+        for request in pending {
+            request.error = "Native LAN runtime stopped"
+            request.semaphore.signal()
+        }
+    }
+
+    private func publishService(peerId: String, label: String, port: Int, txtRecord: JSObject) {
+        publishedService?.stop()
+
+        let service = NetService(domain: serviceDomain, type: serviceType, name: label.isEmpty ? peerId : label, port: Int32(port))
+        service.includesPeerToPeer = true
+        service.delegate = self
+        var publishedTxtRecord = txtRecord
+        if let address = bestLocalIPv4Address() {
+            publishedTxtRecord["addr"] = address
+        }
+        let encodedRecord = Self.makeTxtRecord(from: publishedTxtRecord)
+        service.setTXTRecord(encodedRecord)
+        service.publish()
+        publishedService = service
+        NSLog("[Nearbytes LAN][iPhone] publishing peer %@ on %@:%d", peerId, publishedTxtRecord["addr"] as? String ?? "unknown", port)
+    }
+
+    private func handleIncomingConnection(_ connection: NWConnection) {
+        connection.start(queue: signalQueue)
+        receiveHttpRequest(on: connection, buffer: Data())
+    }
+
+    private func receiveHttpRequest(on connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+            guard let self else {
+                connection.cancel()
+                return
+            }
+            if let error {
+                connection.cancel()
+                NSLog("[Nearbytes LAN][iPhone] incoming signal receive failed: %@", String(describing: error))
+                return
+            }
+            var nextBuffer = buffer
+            if let data, !data.isEmpty {
+                nextBuffer.append(data)
+            }
+            if let request = self.parseHttpRequest(nextBuffer) {
+                self.forwardSignalRequest(request, connection: connection)
+                return
+            }
+            if isComplete {
+                self.sendHttpResponse(on: connection, statusCode: 400, body: "Invalid LAN signal request")
+                return
+            }
+            self.receiveHttpRequest(on: connection, buffer: nextBuffer)
+        }
+    }
+
+    private func forwardSignalRequest(_ httpRequest: ParsedHttpRequest, connection: NWConnection) {
+        guard httpRequest.method == "POST", httpRequest.path == "/lan/transport/signal" else {
+            sendHttpResponse(on: connection, statusCode: 404, body: "Not Found")
+            return
+        }
+
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: httpRequest.body, options: [])
+        } catch {
+            sendHttpResponse(on: connection, statusCode: 400, body: "Invalid JSON body")
+            return
+        }
+        guard let requestObject = object as? [String: Any] else {
+            sendHttpResponse(on: connection, statusCode: 400, body: "LAN signal request body must be a JSON object")
+            return
+        }
+
+        let requestId = UUID().uuidString.lowercased()
+        let pending = PendingSignalRequest()
+        pendingSignalLock.lock()
+        pendingSignalRequests[requestId] = pending
+        pendingSignalLock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            self?.notifyListeners("incomingSignal", data: [
+                "requestId": requestId,
+                "request": requestObject,
+            ], retainUntilConsumed: true)
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else {
+                connection.cancel()
+                return
+            }
+            let status = pending.semaphore.wait(timeout: .now() + 15)
+            self.pendingSignalLock.lock()
+            let completed = self.pendingSignalRequests.removeValue(forKey: requestId)
+            self.pendingSignalLock.unlock()
+            guard let completed else {
+                self.sendHttpResponse(on: connection, statusCode: 500, body: "Missing pending LAN signal response")
+                return
+            }
+            if status == .timedOut {
+                self.sendHttpResponse(on: connection, statusCode: 504, body: "Timed out waiting for LAN signal response")
+                return
+            }
+            if let error = completed.error, !error.isEmpty {
+                self.sendHttpResponse(on: connection, statusCode: 500, body: error)
+                return
+            }
+            guard let response = completed.response else {
+                self.sendHttpResponse(on: connection, statusCode: 500, body: "Missing LAN signal response body")
+                return
+            }
+            self.sendHttpJsonResponse(on: connection, statusCode: 200, object: response)
+        }
+    }
+
+    private func sendHttpJsonResponse(on connection: NWConnection, statusCode: Int, object: JSObject) {
+        do {
+            let body = try JSONSerialization.data(withJSONObject: object, options: [])
+            var header = "HTTP/1.1 \(statusCode) \(reasonPhrase(for: statusCode))\r\n"
+            header += "Content-Type: application/json\r\n"
+            header += "Content-Length: \(body.count)\r\n"
+            header += "Connection: close\r\n\r\n"
+            var response = Data(header.utf8)
+            response.append(body)
+            connection.send(content: response, completion: .contentProcessed({ _ in
+                connection.cancel()
+            }))
+        } catch {
+            sendHttpResponse(on: connection, statusCode: 500, body: "Failed to encode LAN signal response")
+        }
+    }
+
+    private func sendHttpResponse(on connection: NWConnection, statusCode: Int, body: String) {
+        let bodyData = Data(body.utf8)
+        var header = "HTTP/1.1 \(statusCode) \(reasonPhrase(for: statusCode))\r\n"
+        header += "Content-Type: text/plain; charset=utf-8\r\n"
+        header += "Content-Length: \(bodyData.count)\r\n"
+        header += "Connection: close\r\n\r\n"
+        var response = Data(header.utf8)
+        response.append(bodyData)
+        connection.send(content: response, completion: .contentProcessed({ _ in
+            connection.cancel()
+        }))
+    }
+
+    private func parseHttpRequest(_ data: Data) -> ParsedHttpRequest? {
+        guard let headerRange = data.range(of: Data("\r\n\r\n".utf8)) else {
+            return nil
+        }
+        let headerData = data.subdata(in: 0..<headerRange.lowerBound)
+        guard let headerText = String(data: headerData, encoding: .utf8) else {
+            return nil
+        }
+        let lines = headerText.components(separatedBy: "\r\n")
+        guard let requestLine = lines.first else {
+            return nil
+        }
+        let requestParts = requestLine.split(separator: " ", omittingEmptySubsequences: true)
+        guard requestParts.count >= 2 else {
+            return nil
+        }
+        let method = String(requestParts[0]).uppercased()
+        let path = String(requestParts[1])
+
+        var contentLength = 0
+        for line in lines.dropFirst() {
+            let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else {
+                continue
+            }
+            let name = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            if name == "content-length" {
+                contentLength = Int(value) ?? 0
+            }
+        }
+
+        let bodyStart = headerRange.upperBound
+        guard data.count >= bodyStart + contentLength else {
+            return nil
+        }
+        let body = data.subdata(in: bodyStart..<(bodyStart + contentLength))
+        return ParsedHttpRequest(method: method, path: path, body: body)
     }
 
     private func parsePeer(from service: NetService) -> LanDiscoveredPeer? {
         guard let txtRecord = service.txtRecordData(),
               let txt = NetService.dictionary(fromTXTRecord: txtRecord) as? [String: Data] else {
+            NSLog("[Nearbytes LAN][iPhone] service %@ missing TXT record", service.name)
             return nil
         }
         let peerId = decodeTxtValue(txt["peer"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !peerId.isEmpty else {
+            NSLog("[Nearbytes LAN][iPhone] service %@ missing peer id in TXT", service.name)
             return nil
         }
         let capabilities = (decodeTxtValue(txt["caps"]) ?? "")
@@ -155,8 +494,12 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let headObservationId = decodeTxtValue(txt["head"])?.lowercased()
+        let explicitAddress = decodeTxtValue(txt["addr"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard let address = firstResolvedAddress(from: service.addresses) else {
+        let address = (explicitAddress?.isEmpty == false ? explicitAddress : nil) ?? firstResolvedAddress(from: service.addresses)
+        guard let address, !address.isEmpty else {
+            NSLog("[Nearbytes LAN][iPhone] service %@ peer=%@ has no usable address explicit=%@ resolved=%@", service.name, peerId, explicitAddress ?? "", String(describing: service.addresses))
             return nil
         }
 
@@ -217,12 +560,53 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
                 }
                 return String(cString: hostBuffer)
             }
-            if let host, !host.isEmpty {
+            if let host,
+               !host.isEmpty,
+               host != "0.0.0.0",
+               host != "::1",
+               host != "127.0.0.1" {
                 return host
             }
         }
         return nil
     }
+
+    private static func makeTxtRecord(from object: JSObject) -> Data {
+        let record = object.reduce(into: [String: Data]()) { partialResult, entry in
+            let value = String(describing: entry.value)
+            partialResult[entry.key] = Data(value.utf8)
+        }
+        return NetService.data(fromTXTRecord: record)
+    }
+
+    private func reasonPhrase(for statusCode: Int) -> String {
+        switch statusCode {
+        case 200:
+            return "OK"
+        case 400:
+            return "Bad Request"
+        case 404:
+            return "Not Found"
+        case 500:
+            return "Internal Server Error"
+        case 504:
+            return "Gateway Timeout"
+        default:
+            return "HTTP"
+        }
+    }
+}
+
+private final class PendingSignalRequest {
+    let semaphore = DispatchSemaphore(value: 0)
+    var response: JSObject?
+    var error: String?
+}
+
+private struct ParsedHttpRequest {
+    let method: String
+    let path: String
+    let body: Data
 }
 
 private struct LanDiscoveredPeer {
@@ -248,4 +632,50 @@ private struct LanDiscoveredPeer {
             "lastSeenAt": lastSeenAt,
         ]
     }
+}
+
+private enum LanPluginError: Error {
+    case listenerDidNotStart
+}
+
+private func bestLocalIPv4Address() -> String? {
+    var interfaces: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&interfaces) == 0, let first = interfaces else {
+        return nil
+    }
+    defer {
+        freeifaddrs(interfaces)
+    }
+
+    var cursor: UnsafeMutablePointer<ifaddrs>? = first
+    while let current = cursor {
+        defer { cursor = current.pointee.ifa_next }
+        let flags = Int32(current.pointee.ifa_flags)
+        let isUp = (flags & IFF_UP) != 0
+        let isLoopback = (flags & IFF_LOOPBACK) != 0
+        guard isUp, !isLoopback,
+              let address = current.pointee.ifa_addr,
+              address.pointee.sa_family == UInt8(AF_INET) else {
+            continue
+        }
+
+        var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        let result = getnameinfo(
+            address,
+            socklen_t(address.pointee.sa_len),
+            &hostBuffer,
+            socklen_t(hostBuffer.count),
+            nil,
+            0,
+            NI_NUMERICHOST
+        )
+        guard result == 0 else {
+            continue
+        }
+        let host = String(cString: hostBuffer)
+        if !host.isEmpty {
+            return host
+        }
+    }
+    return nil
 }

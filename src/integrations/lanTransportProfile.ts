@@ -11,12 +11,14 @@ export interface LanDiscoveryTxtRecord {
   readonly alpn: typeof LAN_TRANSPORT_PROFILE_ID;
   readonly caps: string;
   readonly head?: string;
+  readonly addr?: string;
 }
 
 export interface LanDiscoveryRecordInput {
   readonly peerId: string;
   readonly headObservationId?: string | null;
   readonly capabilities?: readonly string[];
+  readonly signalAddress?: string | null;
 }
 
 export interface ParsedLanDiscoveryTxtRecord {
@@ -25,6 +27,7 @@ export interface ParsedLanDiscoveryTxtRecord {
   readonly alpn: string;
   readonly capabilities: string[];
   readonly headObservationId: string | null;
+  readonly signalAddress: string | null;
 }
 
 export function buildLanDiscoveryTxtRecord(input: LanDiscoveryRecordInput): LanDiscoveryTxtRecord {
@@ -34,6 +37,9 @@ export function buildLanDiscoveryTxtRecord(input: LanDiscoveryRecordInput): LanD
     peer: input.peerId.trim(),
     alpn: LAN_TRANSPORT_PROFILE_ID,
     caps: capabilities.join(','),
+    ...(typeof input.signalAddress === 'string' && input.signalAddress.trim() !== ''
+      ? { addr: input.signalAddress.trim() }
+      : {}),
     ...(typeof input.headObservationId === 'string' && input.headObservationId.trim() !== ''
       ? { head: input.headObservationId.trim().toLowerCase() }
       : {}),
@@ -46,6 +52,7 @@ export function parseLanDiscoveryTxtRecord(value: Record<string, unknown>): Pars
   const alpn = typeof value.alpn === 'string' ? value.alpn.trim() : '';
   const rawCapabilities = typeof value.caps === 'string' ? value.caps.trim() : '';
   const headObservationId = parseHeadObservationId(value.head);
+  const signalAddress = parseSignalAddress(value.addr);
 
   if (protocolVersion === '' || peerId === '' || alpn === '') {
     return null;
@@ -57,6 +64,7 @@ export function parseLanDiscoveryTxtRecord(value: Record<string, unknown>): Pars
     alpn,
     capabilities: canonicalizeCapabilities(rawCapabilities.split(',')),
     headObservationId,
+    signalAddress,
   };
 }
 
@@ -86,4 +94,12 @@ function parseHeadObservationId(value: unknown): string | null {
     return null;
   }
   return normalized;
+}
+
+function parseSignalAddress(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized === '' ? null : normalized;
 }

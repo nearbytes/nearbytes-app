@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -10,13 +11,13 @@ const uiDir = path.join(repoRoot, 'ui');
 const iosDerivedDataPath = path.join(uiDir, 'ios', '.derived-dev-iphone');
 const simulatorAppPath = path.join(iosDerivedDataPath, 'Build', 'Products', 'Debug-iphonesimulator', 'App.app');
 const bundleId = 'org.nearbytes.mobile';
-const defaultUiUrl = `http://127.0.0.1:${parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177)}`;
 const explicitMobileServerUrl = process.env.NEARBYTES_MOBILE_SERVER_URL?.trim() || '';
-const mobileServerUrl = explicitMobileServerUrl || defaultUiUrl;
+const recordedMobileServerPath = path.join(repoRoot, '.nearbytes', 'last-mobile-server-url.json');
 
 await main();
 
 async function main() {
+  const mobileServerUrl = await resolveMobileServerUrl();
   const webDev = await prepareUiDevServer();
   const signalHandlers = installSignalHandlers(() => {
     if (webDev?.exitCode === null) {
@@ -76,6 +77,7 @@ async function main() {
     runCommand('xcrun', ['simctl', 'bootstatus', simulator.udid, '-b']);
     runCommand('xcrun', ['simctl', 'install', simulator.udid, simulatorAppPath]);
     runCommand('xcrun', ['simctl', 'launch', '--console', simulator.udid, bundleId]);
+    await writeRecordedMobileServerUrl(mobileServerUrl);
     console.log(`[iphone-dev] App launched in Simulator on ${simulator.name} using ${mobileServerUrl}. The backend is not started by this command.`);
     if (webDev) {
       await waitForExitOrSignal(webDev, signalHandlers.stopPromise);
@@ -91,10 +93,11 @@ async function main() {
 
 async function prepareUiDevServer() {
   if (explicitMobileServerUrl) {
-    console.log(`[iphone-dev] Using NEARBYTES_MOBILE_SERVER_URL=${mobileServerUrl}; local UI dev server will not be started.`);
+    console.log(`[iphone-dev] Using NEARBYTES_MOBILE_SERVER_URL=${explicitMobileServerUrl}; local UI dev server will not be started.`);
     return null;
   }
 
+  const mobileServerUrl = await resolveMobileServerUrl();
   if (await isHttpEndpointReady(mobileServerUrl, 1_000)) {
     console.log(`[iphone-dev] Reusing existing UI dev server at ${mobileServerUrl}.`);
     return null;
@@ -106,6 +109,37 @@ async function prepareUiDevServer() {
     stdio: 'inherit',
     shell: false,
   });
+}
+
+async function resolveMobileServerUrl() {
+  if (explicitMobileServerUrl) {
+    return explicitMobileServerUrl;
+  }
+
+  const recordedUrl = await readRecordedMobileServerUrl();
+  if (recordedUrl && await isHttpEndpointReady(recordedUrl, 1_000)) {
+    console.log(`[iphone-dev] Reusing recorded mobile server ${recordedUrl}. Set NEARBYTES_MOBILE_SERVER_URL to override.`);
+    return recordedUrl;
+  }
+
+  return `http://127.0.0.1:${parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177)}`;
+}
+
+async function readRecordedMobileServerUrl() {
+  if (!existsSync(recordedMobileServerPath)) {
+    return '';
+  }
+  try {
+    const parsed = JSON.parse(await fs.readFile(recordedMobileServerPath, 'utf8'));
+    return typeof parsed?.url === 'string' ? parsed.url.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+async function writeRecordedMobileServerUrl(url) {
+  await fs.mkdir(path.dirname(recordedMobileServerPath), { recursive: true });
+  await fs.writeFile(recordedMobileServerPath, `${JSON.stringify({ url }, null, 2)}\n`, 'utf8');
 }
 
 function runYarnInRepo(args, env = process.env) {

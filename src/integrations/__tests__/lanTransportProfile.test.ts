@@ -14,12 +14,14 @@ describe('lanTransportProfile', () => {
       peerId: 'peer-123',
       headObservationId: 'ab'.repeat(32),
       capabilities: ['inventory-recovery', 'webrtc', 'webrtc', 'push-hint'],
+      signalAddress: '192.168.8.165',
     });
 
     expect(txt).toEqual({
       pv: LAN_DISCOVERY_PROTOCOL_VERSION,
       peer: 'peer-123',
       alpn: LAN_TRANSPORT_PROFILE_ID,
+      addr: '192.168.8.165',
       caps: 'inventory-recovery,push-hint,webrtc',
       head: 'ab'.repeat(32),
     });
@@ -40,7 +42,20 @@ describe('lanTransportProfile', () => {
       alpn: LAN_TRANSPORT_PROFILE_ID,
       capabilities: ['inventory-recovery', 'webrtc'],
       headObservationId: 'cd'.repeat(32),
+      signalAddress: null,
     });
+  });
+
+  it('parses an explicit signal address from the discovery txt record', () => {
+    const parsed = parseLanDiscoveryTxtRecord({
+      pv: LAN_DISCOVERY_PROTOCOL_VERSION,
+      peer: 'peer-abc',
+      alpn: LAN_TRANSPORT_PROFILE_ID,
+      caps: 'webrtc,inventory-recovery',
+      addr: '192.168.8.165',
+    });
+
+    expect(parsed?.signalAddress).toBe('192.168.8.165');
   });
 
   it('keeps the recommended dns-sd txt record small', () => {

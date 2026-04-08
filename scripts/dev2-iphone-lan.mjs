@@ -33,6 +33,7 @@ const phoneUiLogPath = path.join(logsDir, 'dev2-iphone-lan-phone-ui.log');
 const desktopPaths = createManualTestPaths(desktopHome);
 const phonePaths = createManualTestPaths(phoneHome);
 const phoneUiUrl = `http://127.0.0.1:${phoneUiPort}`;
+const recordedMobileServerPath = path.join(repoRoot, '.nearbytes', 'last-mobile-server-url.json');
 
 const children = [];
 let shuttingDown = false;
@@ -124,6 +125,7 @@ try {
   children.push(phoneUiChild);
 
   await waitForHttpEndpoint(phoneUiUrl, startupTimeoutMs, phoneUiChild, 'Phone UI dev server');
+  writeRecordedMobileServerUrl(phoneUiUrl);
 
   console.error('[dev2-iphone-lan] launching iPhone simulator app');
   runIphoneLauncher(phoneUiUrl);
@@ -198,4 +200,9 @@ function readPort(name, fallback) {
 
 function writeDevApiDescriptor(dirPath, descriptor) {
   writeFileSync(path.join(dirPath, 'dev-api.json'), `${JSON.stringify(descriptor, null, 2)}\n`, 'utf8');
+}
+
+function writeRecordedMobileServerUrl(url) {
+  mkdirSync(path.dirname(recordedMobileServerPath), { recursive: true });
+  writeFileSync(recordedMobileServerPath, `${JSON.stringify({ url }, null, 2)}\n`, 'utf8');
 }

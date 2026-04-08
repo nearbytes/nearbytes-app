@@ -44,6 +44,7 @@ const desktopPaths = createManualTestPaths(desktopHome);
 const phonePaths = createManualTestPaths(phoneHome);
 const phoneApiUrl = `http://127.0.0.1:${phoneApiPort}`;
 const phoneUiUrl = `http://127.0.0.1:${phoneUiPort}`;
+const recordedMobileServerPath = path.join(repoRoot, '.nearbytes', 'last-mobile-server-url.json');
 const phoneAccountId = 'acct-mega-dev2-iphone-phone';
 const desktopAccountId = 'acct-mega-dev2-iphone-desktop';
 const phoneEmail = trimOrDefault(
@@ -226,6 +227,7 @@ try {
   children.push(phoneUiChild);
 
   await waitForHttpEndpoint(phoneUiUrl, startupTimeoutMs, phoneUiChild, 'Phone UI dev server');
+  writeRecordedMobileServerUrl(phoneUiUrl);
 
   console.error('[dev2-iphone-mega] launching iPhone simulator app');
   runIphoneLauncher(phoneUiUrl, phoneHome, phoneUiPort);
@@ -458,6 +460,11 @@ function describeWipeMode(mode) {
 
 function writeDevApiDescriptor(dirPath, descriptor) {
   writeFileSync(path.join(dirPath, 'dev-api.json'), `${JSON.stringify(descriptor, null, 2)}\n`, 'utf8');
+}
+
+function writeRecordedMobileServerUrl(url) {
+  mkdirSync(path.dirname(recordedMobileServerPath), { recursive: true });
+  writeFileSync(recordedMobileServerPath, `${JSON.stringify({ url }, null, 2)}\n`, 'utf8');
 }
 
 async function loadMegaBootstrapModules() {

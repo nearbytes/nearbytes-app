@@ -354,8 +354,8 @@ describe('phoneHost', () => {
     expect(chat).toMatchObject({
       identities: [{ authorPublicKey: 'pk-1' }],
       messages: [{ eventHash: 'evt-chat' }],
-      isOffline: true,
     });
+    expect(chat.isOffline).toBeUndefined();
     expect(peers).toMatchObject({
       peers: [{ peerId: 'peer-1' }],
       isOffline: true,

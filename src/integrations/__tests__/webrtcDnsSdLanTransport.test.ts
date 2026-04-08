@@ -257,6 +257,47 @@ describe('WebRtcDnsSdLanTransport', () => {
     expect(incompatible?.incompatibilityReason).toContain('Unsupported discovery protocol version');
   });
 
+  it('prefers an explicit signal address from TXT when dns-sd only resolves a link-local address', async () => {
+    const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-txt-address-');
+    const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });
+    const internal = transport as unknown as {
+      callbacks: LanPeerTransportCallbacks | null;
+      handleDiscoveryService: (service: {
+        fqdn: string;
+        name: string;
+        port: number;
+        addresses: string[];
+        txt: Record<string, string>;
+      }) => void;
+    };
+    internal.callbacks = createCallbacks({
+      peerId: 'peer-self',
+      label: 'peer-self',
+      port: 4101,
+      headObservationId: null,
+      capabilities: ['webrtc', 'observation-log'],
+      handleRequest: async () => ({ ok: true }),
+    });
+
+    internal.handleDiscoveryService({
+      fqdn: 'peer-phone.local',
+      name: 'This phone',
+      port: 51991,
+      addresses: ['fe80::1'],
+      txt: {
+        pv: '0.3',
+        peer: 'peer-phone',
+        alpn: 'nearbytes-lan/0.3',
+        caps: 'webrtc,inventory-recovery',
+        addr: '192.168.8.165',
+      },
+    });
+
+    expect(transport.getDebugState().discoveredPeers.find((entry) => entry.fqdn === 'peer-phone.local')?.chosenAddress).toBe('192.168.8.165');
+    expect(transport.getDebugState().discoveredPeers.find((entry) => entry.fqdn === 'peer-phone.local')?.chosenAddressReason)
+      .toBe('Selected the explicit signal address advertised in the discovery TXT record.');
+  });
+
   it('expires a discovered peer immediately when the signaling path returns 404', async () => {
     const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-expire-');
     const expiredPeerIds: string[] = [];
@@ -266,6 +307,9 @@ describe('WebRtcDnsSdLanTransport', () => {
         ({
           ok: false,
           status: 404,
+          async text() {
+            return '';
+          },
           async json() {
             return {};
           },

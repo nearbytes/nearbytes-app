@@ -250,12 +250,9 @@ function buildChatStateFromTimeline(events: TimelineEvent[]): VolumeChatState {
     }
   }
 
-  const hasMirroredChatHistory = identitiesByPublicKey.size > 0 || messages.length > 0;
-
   return {
     identities: Array.from(identitiesByPublicKey.values()),
     messages,
-    ...(hasMirroredChatHistory ? { isOffline: true } : {}),
   };
 }
 
@@ -515,6 +512,12 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
     const runtimeOwner: NearbytesHostContract['capabilities']['runtimeOwner'] = 'embedded';
     const integrations = createUnsupportedPhoneIntegrationsFamily();
     const legacyDesktop = createUnsupportedLegacyDesktopFamily();
+
+    if (hasNativeLanPlugin()) {
+      void listNativeLanPeers().catch((error) => {
+        console.warn('[Nearbytes LAN][Phone] Failed to warm the embedded native LAN runtime.', error);
+      });
+    }
 
     return {
       capabilities: {

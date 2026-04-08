@@ -197,9 +197,9 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
 
   async start(callbacks: LanPeerTransportCallbacks): Promise<void> {
     this.callbacks = callbacks;
-    await this.refreshAdvertisement();
 
     if (this.options.disableDiscovery) {
+      await this.refreshAdvertisement();
       return;
     }
 
@@ -219,6 +219,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     }
 
     this.bonjour = new Bonjour();
+    await this.refreshAdvertisement();
     this.browser = this.bonjour.find(
       {
         type: LAN_DISCOVERY_SERVICE_TYPE,
@@ -282,10 +283,12 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     }
     const hello = await this.callbacks.getAdvertisement();
     const capabilities = hello.capabilities.length > 0 ? hello.capabilities : LAN_DISCOVERY_CAPABILITIES;
+    const preferredLocalAddress = pickPreferredLocalAddress();
     const txt = buildLanDiscoveryTxtRecord({
       peerId: hello.peerId,
       headObservationId: hello.observationHeadId,
       capabilities,
+      signalAddress: preferredLocalAddress,
     });
     const instanceLabel = `${hello.label}-${hello.peerId.slice(0, 6)}-${this.instanceToken}`;
     const nextConfig: ServiceConfig = {
@@ -313,7 +316,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     this.selfSignalPeer = {
       peerId: hello.peerId,
       label: hello.label,
-      address: pickPreferredLocalAddress(),
+      address: preferredLocalAddress,
       port: hello.port,
       capabilities: [...capabilities],
       headObservationId: hello.observationHeadId,
@@ -895,10 +898,15 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
         signal: controller.signal,
       });
       if (!response.ok) {
+        const detail = (await response.text().catch(() => '')).trim();
         if (LAN_UNREACHABLE_STATUS_CODES.has(response.status)) {
           this.expirePeer(peer.peerId);
         }
-        throw new Error(`Signal POST failed with status ${response.status}`);
+        throw new Error(
+          detail.length > 0
+            ? `Signal POST failed with status ${response.status}: ${detail}`
+            : `Signal POST failed with status ${response.status}`
+        );
       }
       return await response.json() as LanPeerTransportSignalResponse;
     } catch (error) {
@@ -959,7 +967,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
       return;
     }
     const compatibility = describeDiscoveryCompatibility(parsed);
-    const selectedAddress = choosePeerAddress(service.addresses ?? []);
+    const selectedAddress = choosePeerAddress(service.addresses ?? [], parsed?.signalAddress ?? null);
     this.discoveryDebugByFqdn.set(service.fqdn, {
       source: 'dns-sd',
       fqdn: service.fqdn,
@@ -1494,8 +1502,17 @@ function describeMulticastCompatibility(advertisement: LanMulticastAdvertisement
   };
 }
 
-function choosePeerAddress(addresses: readonly string[]): ChosenPeerAddress {
+function choosePeerAddress(addresses: readonly string[], preferredAddress: string | null = null): ChosenPeerAddress {
   const normalized = normalizeDiscoveryAddresses(addresses);
+  const preferred = normalizeDiscoveryAddresses(preferredAddress ? [preferredAddress] : [])[0] ?? null;
+
+  if (preferred) {
+    return {
+      address: preferred,
+      reason: 'Selected the explicit signal address advertised in the discovery TXT record.',
+    };
+  }
+
   if (normalized.length === 0) {
     return {
       address: null,

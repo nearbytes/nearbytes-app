@@ -1,8 +1,8 @@
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 
 import type {
+  LanPeerTransportSignalRequest,
   LanPeerTransportSignalResponse,
-  LanTransportSignalRequest,
 } from '../../../../src/integrations/lanPeerTransport.js';
 
 export interface NativeLanDiscoveredPeer {
@@ -21,8 +21,30 @@ interface NearbytesLanPlugin {
   postSignal(options: {
     address: string;
     port: number;
-    request: LanTransportSignalRequest;
+    request: LanPeerTransportSignalRequest;
   }): Promise<LanPeerTransportSignalResponse>;
+  startRuntime(options: {
+    peerId: string;
+    label: string;
+    txtRecord: Record<string, string>;
+    announceIntervalMs: number;
+  }): Promise<{
+    listening: boolean;
+    port: number | null;
+    address?: string | null;
+    announceIntervalMs: number;
+    serviceType: string;
+  }>;
+  stopRuntime(): Promise<void>;
+  completeSignalRequest(options: {
+    requestId: string;
+    response?: LanPeerTransportSignalResponse;
+    error?: string;
+  }): Promise<void>;
+  addListener(
+    eventName: 'incomingSignal',
+    listenerFunc: (event: { requestId: string; request: LanPeerTransportSignalRequest }) => void
+  ): Promise<PluginListenerHandle>;
 }
 
 const nearbytesLanPlugin = registerPlugin<NearbytesLanPlugin>('NearbytesLan');
@@ -55,7 +77,7 @@ export async function listNativeLanDiscoveredPeers(): Promise<NativeLanDiscovere
 export async function postNativeLanSignal(
   address: string,
   port: number,
-  request: LanTransportSignalRequest
+  request: LanPeerTransportSignalRequest
 ): Promise<LanPeerTransportSignalResponse> {
   if (!hasNativeLanPlugin()) {
     throw new Error('Native LAN signaling is unavailable on this runtime.');
@@ -65,4 +87,49 @@ export async function postNativeLanSignal(
     port,
     request,
   });
+}
+
+export async function startNativeLanRuntime(options: {
+  peerId: string;
+  label: string;
+  txtRecord: Record<string, string>;
+  announceIntervalMs: number;
+}): Promise<{
+  listening: boolean;
+  port: number | null;
+  address?: string | null;
+  announceIntervalMs: number;
+  serviceType: string;
+}> {
+  if (!hasNativeLanPlugin()) {
+    throw new Error('Native LAN runtime is unavailable on this runtime.');
+  }
+  return await nearbytesLanPlugin.startRuntime(options);
+}
+
+export async function stopNativeLanRuntime(): Promise<void> {
+  if (!hasNativeLanPlugin()) {
+    return;
+  }
+  await nearbytesLanPlugin.stopRuntime();
+}
+
+export async function completeNativeLanSignalRequest(options: {
+  requestId: string;
+  response?: LanPeerTransportSignalResponse;
+  error?: string;
+}): Promise<void> {
+  if (!hasNativeLanPlugin()) {
+    throw new Error('Native LAN runtime is unavailable on this runtime.');
+  }
+  await nearbytesLanPlugin.completeSignalRequest(options);
+}
+
+export async function addNativeLanIncomingSignalListener(
+  listener: (event: { requestId: string; request: LanPeerTransportSignalRequest }) => void
+): Promise<PluginListenerHandle> {
+  if (!hasNativeLanPlugin()) {
+    throw new Error('Native LAN runtime is unavailable on this runtime.');
+  }
+  return await nearbytesLanPlugin.addListener('incomingSignal', listener);
 }
