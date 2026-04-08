@@ -74,6 +74,7 @@
     normalizePersistedUiState,
     saveHostPersistedUiState,
   } from './lib/host/persistedUiState.js';
+  import { processPendingPhoneAutomationCommand } from './lib/host/phoneAutomation.js';
   import { subscribePhoneAppState } from './lib/host/phonePersistence.js';
   import {
     canWipeStoredConfig,
@@ -1793,6 +1794,10 @@
       void handleDesktopDeepLink(url);
     });
 
+    void processPendingPhoneAutomationCommand().catch((error) => {
+      console.warn('Failed to process pending phone automation command:', error);
+    });
+
     void connectDesktopDeepLinks()
       .then((urls) => {
         for (const url of urls) {
@@ -2104,6 +2109,9 @@
     void subscribePhoneAppState((isActive) => {
       if (isActive) {
         scheduleSourceDiscovery(0);
+        void processPendingPhoneAutomationCommand().catch((error) => {
+          console.warn('Failed to process pending phone automation command:', error);
+        });
         return;
       }
       flushPersistedUiState();

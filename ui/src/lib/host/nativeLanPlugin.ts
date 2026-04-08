@@ -18,6 +18,9 @@ export interface NativeLanDiscoveredPeer {
 
 interface NearbytesLanPlugin {
   listPeers(): Promise<{ peers: NativeLanDiscoveredPeer[] }>;
+  getAutomationCommand(): Promise<{ value?: string | null }>;
+  clearAutomationCommand(): Promise<void>;
+  setAutomationResult(options: { value: string }): Promise<void>;
   postSignal(options: {
     address: string;
     port: number;
@@ -72,6 +75,28 @@ export async function listNativeLanDiscoveredPeers(): Promise<NativeLanDiscovere
     firstSeenAt: Number(peer.firstSeenAt ?? Date.now()),
     lastSeenAt: Number(peer.lastSeenAt ?? Date.now()),
   })).filter((peer) => peer.peerId.length > 0 && peer.address.length > 0 && Number.isFinite(peer.port) && peer.port > 0);
+}
+
+export async function getNativeAutomationCommand(): Promise<string | null> {
+  if (!hasNativeLanPlugin()) {
+    return null;
+  }
+  const response = await nearbytesLanPlugin.getAutomationCommand();
+  return typeof response.value === 'string' && response.value.trim().length > 0 ? response.value : null;
+}
+
+export async function clearNativeAutomationCommand(): Promise<void> {
+  if (!hasNativeLanPlugin()) {
+    return;
+  }
+  await nearbytesLanPlugin.clearAutomationCommand();
+}
+
+export async function setNativeAutomationResult(value: string): Promise<void> {
+  if (!hasNativeLanPlugin()) {
+    throw new Error('Native LAN runtime is unavailable on this runtime.');
+  }
+  await nearbytesLanPlugin.setAutomationResult({ value });
 }
 
 export async function postNativeLanSignal(

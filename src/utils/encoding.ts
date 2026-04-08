@@ -36,7 +36,18 @@ export function hexToBytes(hex: string): Uint8Array {
  * @returns Base64 string
  */
 export function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64');
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  if (typeof btoa !== 'function') {
+    throw new Error('Base64 encoding is unavailable in this runtime');
+  }
+  return btoa(binary);
 }
 
 /**
@@ -56,7 +67,18 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
  */
 export function base64ToBytes(base64: string): Uint8Array {
   try {
-    return new Uint8Array(Buffer.from(base64, 'base64'));
+    if (typeof Buffer !== 'undefined') {
+      return new Uint8Array(Buffer.from(base64, 'base64'));
+    }
+    if (typeof atob !== 'function') {
+      throw new Error('Base64 decoding is unavailable in this runtime');
+    }
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
   } catch (error) {
     throw new Error(`Invalid base64 string: ${error instanceof Error ? error.message : 'unknown error'}`);
   }
@@ -76,7 +98,7 @@ export function base64UrlToBytes(base64url: string): Uint8Array {
     while (base64.length % 4) {
       base64 += '=';
     }
-    return new Uint8Array(Buffer.from(base64, 'base64'));
+    return base64ToBytes(base64);
   } catch (error) {
     throw new Error(`Invalid base64url string: ${error instanceof Error ? error.message : 'unknown error'}`);
   }

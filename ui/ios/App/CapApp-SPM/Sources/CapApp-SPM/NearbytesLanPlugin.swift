@@ -8,6 +8,9 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
     public let jsName = "NearbytesLan"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "listPeers", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getAutomationCommand", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clearAutomationCommand", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setAutomationResult", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "postSignal", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startRuntime", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopRuntime", returnType: CAPPluginReturnPromise),
@@ -21,6 +24,9 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
     private let serviceDomain = "local."
     private let signalQueue = DispatchQueue(label: "org.nearbytes.mobile.lan.signal")
     private let pendingSignalLock = NSLock()
+    private let automationDirectoryName = "nearbytes-dev-automation"
+    private let automationCommandFileName = "command.json"
+    private let automationResultFileName = "result.json"
 
     private var browser: NetServiceBrowser?
     private var servicesByKey: [String: NetService] = [:]
@@ -114,6 +120,29 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
             }
         }
         task.resume()
+    }
+
+    @objc func getAutomationCommand(_ call: CAPPluginCall) {
+        let value = readAutomationFile(named: automationCommandFileName)
+        if let value {
+            call.resolve(["value": value])
+            return
+        }
+        call.resolve(["value": NSNull()])
+    }
+
+    @objc func clearAutomationCommand(_ call: CAPPluginCall) {
+        removeAutomationFile(named: automationCommandFileName)
+        call.resolve()
+    }
+
+    @objc func setAutomationResult(_ call: CAPPluginCall) {
+        guard let value = call.getString("value") else {
+            call.reject("value is required")
+            return
+        }
+        writeAutomationFile(value, named: automationResultFileName)
+        call.resolve()
     }
 
     @objc func startRuntime(_ call: CAPPluginCall) {
@@ -594,6 +623,54 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
         default:
             return "HTTP"
         }
+    }
+
+    private func automationDirectoryUrl() -> URL? {
+        guard let libraryUrl = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let directoryUrl = libraryUrl
+            .appendingPathComponent("Application Support")
+            .appendingPathComponent(automationDirectoryName)
+        do {
+            try FileManager.default.createDirectory(at: directoryUrl, withIntermediateDirectories: true)
+            return directoryUrl
+        } catch {
+            NSLog("[Nearbytes LAN][iPhone] failed to create automation directory: %@", String(describing: error))
+            return nil
+        }
+    }
+
+    private func automationFileUrl(named fileName: String) -> URL? {
+        automationDirectoryUrl()?.appendingPathComponent(fileName)
+    }
+
+    private func readAutomationFile(named fileName: String) -> String? {
+        guard let fileUrl = automationFileUrl(named: fileName),
+              let data = try? Data(contentsOf: fileUrl),
+              let value = String(data: data, encoding: .utf8),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private func writeAutomationFile(_ value: String, named fileName: String) {
+        guard let fileUrl = automationFileUrl(named: fileName) else {
+            return
+        }
+        do {
+            try Data(value.utf8).write(to: fileUrl, options: .atomic)
+        } catch {
+            NSLog("[Nearbytes LAN][iPhone] failed to write automation file %@: %@", fileName, String(describing: error))
+        }
+    }
+
+    private func removeAutomationFile(named fileName: String) {
+        guard let fileUrl = automationFileUrl(named: fileName) else {
+            return
+        }
+        try? FileManager.default.removeItem(at: fileUrl)
     }
 }
 
