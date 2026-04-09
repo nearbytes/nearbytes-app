@@ -40,6 +40,7 @@ import {
 } from './embeddedPhoneServices.js';
 import {
   listNativeLanPeers,
+  notifyNativeLanVolumeMutation,
   resetNativeLanRuntimeForTests,
   syncNativeLanPeer,
 } from './nativeLanSync.js';
@@ -157,6 +158,17 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
 async function deriveVolumeIdFromSecret(secret: string): Promise<string> {
   const keyPair = await deriveKeys(createSecret(secret));
   return bytesToHex(keyPair.publicKey);
+}
+
+async function notifyPhoneLanMutation(secret: string): Promise<void> {
+  if (!hasNativeLanPlugin()) {
+    return;
+  }
+  try {
+    await notifyNativeLanVolumeMutation(await deriveVolumeIdFromSecret(secret));
+  } catch {
+    // Peer hinting is best-effort; local mutation has already committed.
+  }
 }
 
 function readSecretAuth(auth: NearbytesAuth): string | null {
@@ -414,28 +426,35 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      return embeddedPhoneUploadFile(secret, file);
+      const result = await embeddedPhoneUploadFile(secret, file);
+      await notifyPhoneLanMutation(secret);
+      return result;
     },
     async deleteFile(auth: NearbytesAuth, filename: string): Promise<void> {
       const secret = readSecretAuth(auth);
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      return embeddedPhoneDeleteFile(secret, filename);
+      await embeddedPhoneDeleteFile(secret, filename);
+      await notifyPhoneLanMutation(secret);
     },
     async renameFile(auth: NearbytesAuth, from: string, to: string): Promise<RenameFileResponse> {
       const secret = readSecretAuth(auth);
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      return embeddedPhoneRenameFile(secret, from, to);
+      const result = await embeddedPhoneRenameFile(secret, from, to);
+      await notifyPhoneLanMutation(secret);
+      return result;
     },
     async renameFolder(auth: NearbytesAuth, from: string, to: string, merge: boolean): Promise<RenameFolderResponse> {
       const secret = readSecretAuth(auth);
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      return embeddedPhoneRenameFolder(secret, from, to, merge);
+      const result = await embeddedPhoneRenameFolder(secret, from, to, merge);
+      await notifyPhoneLanMutation(secret);
+      return result;
     },
     async exportSourceReferences(auth: NearbytesAuth, filenames: string[]): Promise<ReferenceExportResponse<SourceReferenceBundle>> {
       const secret = readSecretAuth(auth);
@@ -449,7 +468,9 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      return embeddedPhoneImportSourceReferences(secret, bundle as SourceReferenceBundle, sourceSecret);
+      const result = await embeddedPhoneImportSourceReferences(secret, bundle as SourceReferenceBundle, sourceSecret);
+      await notifyPhoneLanMutation(secret);
+      return result;
     },
     async exportRecipientReferences(
       auth: NearbytesAuth,
@@ -467,7 +488,9 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      return embeddedPhoneImportRecipientReferences(secret, bundle as RecipientReferenceBundle);
+      const result = await embeddedPhoneImportRecipientReferences(secret, bundle as RecipientReferenceBundle);
+      await notifyPhoneLanMutation(secret);
+      return result;
     },
     async listChat(auth: NearbytesAuth): Promise<VolumeChatState> {
       const secret = readSecretAuth(auth);
@@ -492,7 +515,9 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      return embeddedPhonePublishIdentity(secret, identitySecret, profile as IdentityProfile);
+      const result = await embeddedPhonePublishIdentity(secret, identitySecret, profile as IdentityProfile);
+      await notifyPhoneLanMutation(secret);
+      return result;
     },
     async sendChatMessage(
       auth: NearbytesAuth,
@@ -503,7 +528,9 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      return embeddedPhoneSendChatMessage(secret, identitySecret, input as { body?: string; attachment?: ChatAttachment });
+      const result = await embeddedPhoneSendChatMessage(secret, identitySecret, input as { body?: string; attachment?: ChatAttachment });
+      await notifyPhoneLanMutation(secret);
+      return result;
     },
   };
 }

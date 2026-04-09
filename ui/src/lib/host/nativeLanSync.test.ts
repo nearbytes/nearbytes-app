@@ -13,7 +13,10 @@ import {
   embeddedPhoneOpenVolume,
   resetEmbeddedPhoneServicesForTests,
 } from './embeddedPhoneServices.js';
-import { syncLanPeerInventoryWithClient } from './nativeLanSync.js';
+import {
+  importStorageCommandWithClientForTests,
+  syncLanPeerInventoryWithClient,
+} from './nativeLanSync.js';
 
 class MemoryStorageBackend implements StorageBackend {
   private readonly files = new Map<string, Uint8Array>();
@@ -172,6 +175,41 @@ describe('nativeLanSync', () => {
       importedBlocks: 1,
       volumeIds: [remote.volumeId],
     });
+    expect(reopened.files.map((entry) => entry.filename)).toEqual(['hello.txt']);
+  });
+
+  it('refreshes the bootstrapped phone mirror after a storage-command event import', async () => {
+    const secret = 'native-lan-sync-secret-storage-command';
+    const remote = await createRemoteHarness(secret, 'peer-storage-command');
+
+    const initial = await embeddedPhoneOpenVolume(secret);
+    expect(initial.files).toEqual([]);
+
+    const observations = await remote.client.requestJson<{
+      observations: ProviderQueueObservation[];
+    }>({
+      action: 'observations',
+      afterObservationId: null,
+      limit: 10,
+    } as LanTransportRpcRequest);
+    const eventObservation = observations.observations.find((entry) => entry.kind === 'event');
+    if (!eventObservation || !eventObservation.volumeId) {
+      throw new Error('Expected remote event observation');
+    }
+
+    await importStorageCommandWithClientForTests(
+      {
+        type: 'want-event',
+        fromPeerId: 'peer-storage-command',
+        volumeId: eventObservation.volumeId,
+        eventHash: eventObservation.hash,
+        observationId: eventObservation.observationId,
+        prevObservationId: eventObservation.prevObservationId,
+      },
+      remote.client
+    );
+
+    const reopened = await embeddedPhoneOpenVolume(secret);
     expect(reopened.files.map((entry) => entry.filename)).toEqual(['hello.txt']);
   });
 

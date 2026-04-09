@@ -43,6 +43,7 @@ import {
 
 const OBSERVATION_PAGE_LIMIT = 512;
 const DEFAULT_NATIVE_LAN_ANNOUNCE_INTERVAL_MS = 5_000;
+const DEFAULT_NATIVE_LAN_CONNECTION_WARMUP_INTERVAL_MS = 250;
 const PHONE_PEER_STALE_AFTER_MS = 20_000;
 
 interface PeerHelloResponse {
@@ -87,6 +88,7 @@ interface NativeLanModuleState {
   runtimeListenerHandle: { remove: () => Promise<void> } | null;
   runtimeListenerPromise: Promise<void> | null;
   proactiveSignalTimer: ReturnType<typeof setInterval> | null;
+  autoSyncTimer: ReturnType<typeof setInterval> | null;
   peerSignalQueue: Map<string, Promise<void>>;
 }
 
@@ -103,6 +105,7 @@ const nativeLanState = nativeLanGlobalScope.__nearbytesNativeLanSyncState__ ??= 
   runtimeListenerHandle: null,
   runtimeListenerPromise: null,
   proactiveSignalTimer: null,
+  autoSyncTimer: null,
   peerSignalQueue: new Map<string, Promise<void>>(),
 };
 
@@ -154,6 +157,39 @@ export async function listNativeLanPeers(): Promise<LocalNetworkPeersResponse> {
 
 export async function syncNativeLanPeer(peerId: string): Promise<LocalNetworkPeerMutationResponse> {
   return await syncNativeLanPeerWithOptions(peerId);
+}
+
+export async function notifyNativeLanVolumeMutation(volumeId: string): Promise<void> {
+  await ensureNativeLanRuntimeStarted();
+  const normalizedVolumeIds = normalizeVolumeIds([volumeId]);
+  if (normalizedVolumeIds.length === 0) {
+    return;
+  }
+  const discovered = (await listNativeLanDiscoveredPeers()).filter(isFreshLanPeer);
+  const peers = new Map<string, LanTransportDiscoveredPeer>();
+  for (const peer of discovered) {
+    peers.set(peer.peerId, toTransportPeer(peer));
+  }
+  for (const [peerId, peer] of signaledPeers.entries()) {
+    if (!isFreshLanPeer(peer) || peers.has(peerId)) {
+      continue;
+    }
+    peers.set(peerId, toTransportPeer(peer));
+  }
+  await Promise.all(
+    Array.from(peers.values()).map(async (peer) => {
+      try {
+        const transport = await getOrCreateTransport(peer);
+        await transport.notify(peer, {
+          action: 'sync-hint',
+          reason: 'local-mutation',
+          volumeIds: normalizedVolumeIds,
+        });
+      } catch {
+        // Best-effort hint only; automatic peer sync recovers missed deliveries.
+      }
+    })
+  );
 }
 
 async function syncNativeLanPeerWithOptions(
@@ -332,6 +368,7 @@ export async function syncLanPeerInventoryWithClient(
 
 export function resetNativeLanRuntimeForTests(): void {
   stopProactiveSignaling();
+  stopAutomaticPeerSync();
   if (nativeLanState.runtimeListenerHandle) {
     void nativeLanState.runtimeListenerHandle.remove().catch(() => undefined);
   }
@@ -382,6 +419,8 @@ async function ensureNativeLanRuntimeStarted(): Promise<NativeLanRuntimeState> {
     const nextState = await refreshNativeLanRuntime();
     nativeLanState.runtimeState = nextState;
     startProactiveSignaling();
+    startAutomaticPeerSync();
+    void warmFreshPeerConnections().catch(() => undefined);
     return nextState;
   })();
   try {
@@ -464,6 +503,49 @@ function stopProactiveSignaling(): void {
     clearInterval(nativeLanState.proactiveSignalTimer);
     nativeLanState.proactiveSignalTimer = null;
   }
+}
+
+function startAutomaticPeerSync(): void {
+  if (nativeLanState.autoSyncTimer) {
+    return;
+  }
+  nativeLanState.autoSyncTimer = setInterval(() => {
+    void warmFreshPeerConnections().catch(() => undefined);
+  }, DEFAULT_NATIVE_LAN_CONNECTION_WARMUP_INTERVAL_MS);
+}
+
+function stopAutomaticPeerSync(): void {
+  if (nativeLanState.autoSyncTimer) {
+    clearInterval(nativeLanState.autoSyncTimer);
+    nativeLanState.autoSyncTimer = null;
+  }
+}
+
+async function warmFreshPeerConnections(): Promise<void> {
+  const discovered = (await listNativeLanDiscoveredPeers()).filter(isFreshLanPeer);
+  const peers = new Map<string, LanTransportDiscoveredPeer>();
+  for (const peer of discovered) {
+    peers.set(peer.peerId, toTransportPeer(peer));
+  }
+  for (const [peerId, peer] of signaledPeers.entries()) {
+    if (!isFreshLanPeer(peer) || peers.has(peerId)) {
+      continue;
+    }
+    peers.set(peerId, toTransportPeer(peer));
+  }
+
+  await Promise.all(
+    Array.from(peers.values()).map(async (peer) => {
+      try {
+        const transport = await getOrCreateTransport(peer);
+        if (!transport.hasActiveConnection(peer.peerId)) {
+          return;
+        }
+      } catch {
+        // Best-effort warmup only; the next notify/sync path will retry.
+      }
+    })
+  );
 }
 
 async function proactivelySignalKnownPeers(): Promise<void> {
@@ -583,6 +665,20 @@ async function importStorageCommandFromPeer(
   transport: BrowserLanTransport
 ): Promise<void> {
   const client = createTransportClient(transport, peer);
+  await importStorageCommandWithClient(command, client);
+}
+
+export async function importStorageCommandWithClientForTests(
+  command: LanTransportStorageCommand,
+  client: LanSyncRpcClient
+): Promise<void> {
+  await importStorageCommandWithClient(command, client);
+}
+
+async function importStorageCommandWithClient(
+  command: LanTransportStorageCommand,
+  client: LanSyncRpcClient
+): Promise<void> {
   if (command.type === 'want-block') {
     const bytes = await requestBytesOrNull(client, {
       action: 'block',
@@ -617,6 +713,7 @@ async function importStorageCommandFromPeer(
     }
     await embeddedPhoneImportLanBlock(blockHash, blockBytes);
   }
+  await embeddedPhoneFinalizeLanVolumeImport(command.volumeId);
 }
 
 async function requestBytesOrNull(client: LanSyncRpcClient, request: LanTransportRpcRequest): Promise<Uint8Array | null> {

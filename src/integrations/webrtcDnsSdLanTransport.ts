@@ -353,7 +353,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     };
   }
 
-  async ensurePeerReady(peer: LanTransportDiscoveredPeer): Promise<void> {
+  async ensurePeerReady(peer: LanTransportDiscoveredPeer, options?: { ignoreCooldown?: boolean }): Promise<void> {
     const existing = this.connections.get(peer.peerId);
     if (existing && !existing.closed) {
       existing.peer = peer;
@@ -372,7 +372,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     // starting a new connection attempt.  Discovery and sync triggers fire
     // rapidly and would otherwise create an offer storm.
     const cooldownUntil = this.peerCooldownUntil.get(peer.peerId);
-    if (cooldownUntil && Date.now() < cooldownUntil) {
+    if (!options?.ignoreCooldown && cooldownUntil && Date.now() < cooldownUntil) {
       logDesktopWebRtc('Skipping connection attempt — peer in cooldown.', {
         peerId: peer.peerId,
         label: peer.label,
@@ -555,7 +555,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     request: LanTransportRpcRequest,
     retried: boolean
   ): Promise<ChannelFrame> {
-    await this.ensurePeerReady(peer);
+    await this.ensurePeerReady(peer, { ignoreCooldown: true });
     const context = this.connections.get(peer.peerId);
     if (!context || context.closed) {
       throw new Error(`LAN WebRTC connection is not ready for ${peer.label}`);
