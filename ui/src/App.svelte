@@ -8736,8 +8736,9 @@
   .identity-chip-row {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.55rem;
-    overflow-x: auto;
+    overflow-x: hidden;
     padding-bottom: 0.1rem;
     scrollbar-width: thin;
   }
@@ -8966,6 +8967,7 @@
   .create-chooser-modal,
   .identity-manager-modal {
     width: min(760px, calc(100vw - 2rem));
+    max-width: 100%;
     max-height: min(86vh, 920px);
     border-radius: 20px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
@@ -10222,7 +10224,8 @@
     min-height: 0;
     height: 100%;
     padding: 1rem;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     transition: background-color 0.3s ease;
     position: relative;
     display: flex;
@@ -10405,14 +10408,17 @@
     margin-left: auto;
     justify-content: flex-end;
     flex: 1 1 320px;
+    min-width: 0;
   }
 
   .workspace-utility-actions {
-    display: inline-flex;
+    display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.45rem;
     margin-left: auto;
-    flex: 0 0 auto;
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .workspace-selection-summary {
@@ -10453,7 +10459,9 @@
   }
 
   .workspace-toolbar-btn {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .workspace-toolbar-utility.active {
@@ -10510,7 +10518,8 @@
     gap: 0.5rem;
     min-height: 0;
     flex: 1 1 auto;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .workspace-panels {
@@ -10889,6 +10898,8 @@
     background: rgba(2, 6, 23, 0.56);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .tm-details-backdrop { z-index: 200; }
@@ -12815,12 +12826,22 @@
   }
 
   @media (max-width: 640px) {
+    .file-area,
+    .volume-workspace,
+    .workspace-panel-view,
+    .identity-manager-content,
+    .identity-manager-panel,
+    .identity-manager-modal {
+      overflow-x: hidden;
+    }
+
     .mount-dialog,
     .share-dialog,
     .join-dialog,
     .create-chooser-modal,
     .identity-manager-modal {
       width: min(calc(100vw - 0.75rem), 100%);
+      height: calc(100dvh - 0.75rem);
       max-height: calc(100dvh - 0.75rem);
       border-radius: 22px;
     }
@@ -12842,6 +12863,11 @@
       font-size: 0.72rem;
       min-width: auto;
       padding: 0 0.68rem;
+      min-height: 34px;
+      height: auto;
+      line-height: 1.25;
+      white-space: normal;
+      text-align: center;
     }
 
     :global(.panel-action-btn) {
@@ -12904,10 +12930,25 @@
     .identity-editor-panel-actions {
       flex-direction: column-reverse;
       align-items: stretch;
+      position: sticky;
+      bottom: 0;
+      z-index: 3;
+      margin-top: 0.4rem;
+      padding-top: 0.7rem;
+      padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
+      background:
+        linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--nb-panel-bg, #ffffff) 12%, transparent),
+          var(--nb-panel-bg, #ffffff) 26%
+        );
+      border-top: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 65%, transparent);
     }
 
     .identity-editor-panel-actions > .workspace-toggle {
+      flex: 0 0 auto;
       width: 100%;
+      min-height: 42px;
     }
 
     .time-machine-head {
@@ -12927,11 +12968,21 @@
       margin-left: 0;
       width: 100%;
       justify-content: flex-start;
+      align-items: stretch;
+      flex-basis: auto;
+    }
+
+    .workspace-utility-actions {
+      width: 100%;
+      margin-left: 0;
+      align-items: stretch;
+      justify-content: stretch;
     }
 
     .workspace-selection-summary {
       width: 100%;
       white-space: normal;
+      overflow-wrap: anywhere;
     }
 
     .workspace-toolbar-btn,
@@ -12941,8 +12992,33 @@
       width: 100%;
     }
 
+    .workspace-toolbar-btn,
+    :global(.manager-btn) {
+      min-height: 36px;
+      height: auto;
+      white-space: normal;
+      text-align: center;
+    }
+
+    .workspace-toolbar-btn span,
+    .workspace-toggle span,
+    :global(.manager-btn) span {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
     .workspace-search-strip {
       align-items: stretch;
+    }
+
+    .tm-events {
+      grid-auto-flow: row;
+      grid-auto-columns: auto;
+      grid-template-columns: minmax(0, 1fr);
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding-right: 0;
+      scroll-padding-inline-end: 0;
     }
 
     .create-chooser-grid {
@@ -13063,6 +13139,7 @@
     .create-chooser-modal,
     .identity-manager-modal {
       width: min(calc(100vw - 0.35rem), 100%);
+      height: calc(100dvh - 0.35rem);
       max-height: calc(100dvh - 0.35rem);
       border-radius: 18px;
     }
@@ -13084,6 +13161,7 @@
     .identity-manager-panel {
       padding: 0.72rem;
       gap: 0.62rem;
+      min-height: 100%;
     }
 
     .identity-chip-row {
