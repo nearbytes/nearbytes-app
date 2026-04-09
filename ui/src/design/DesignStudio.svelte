@@ -3,9 +3,13 @@
   import PhoneOverflowMenu from './components/PhoneOverflowMenu.svelte';
   import WorkspaceModeBar from './components/WorkspaceModeBar.svelte';
   import WorkspaceSearchStrip from './components/WorkspaceSearchStrip.svelte';
-
-  type WorkspaceMode = 'files' | 'chat' | 'split';
-  type ViewMode = 'icons' | 'details';
+  import {
+    createWorkspaceChromeState,
+    type FileManagerViewMode,
+    type WorkspaceChromeActions,
+    type WorkspaceMode,
+    type WorkspaceSortBy,
+  } from './workspaceChrome.js';
 
   const bridge = (globalThis as typeof globalThis & {
     NearbytesUiBridgeShared?: {
@@ -16,7 +20,7 @@
   }).NearbytesUiBridgeShared;
 
   let workspaceMode = $state<WorkspaceMode>('files');
-  let viewMode = $state<ViewMode>('details');
+  let viewMode = $state<FileManagerViewMode>('details');
   let searchOpen = $state(true);
   let storageOpen = $state(false);
   let shareOpen = $state(false);
@@ -24,42 +28,99 @@
   let flowOpen = $state(false);
   let phoneMenuOpen = $state(true);
   let searchQuery = $state('story');
-  let sortBy = $state<'newest' | 'oldest' | 'name' | 'name-desc' | 'size' | 'size-asc'>('newest');
+  let sortBy = $state<WorkspaceSortBy>('newest');
 
   const showFilesWorkspace = $derived.by(() => workspaceMode !== 'chat');
   const showChatWorkspace = $derived.by(() => workspaceMode !== 'files');
-  const snapshot = $derived.by(() =>
-    bridge?.createAppSnapshot?.({
-      mountCount: 3,
+  const workspaceChromeState = $derived.by(() =>
+    createWorkspaceChromeState({
       workspaceMode,
       showFilesWorkspace,
       showChatWorkspace,
       showSearchWorkspace: searchOpen,
+      showVolumeStoragePanel: storageOpen,
+      showVolumeShareDialog: shareOpen,
+      showTimeMachinePanel: timelineOpen,
+      showEventFlowPanel: flowOpen,
       fileManagerViewMode: viewMode,
+      showWorkspaceUtilities: true,
+      selectionSummary: '14 files · 2 selected',
+      storageDisabled: false,
+      searchQuery,
+      sortBy,
+      pasteVisible: true,
+      pasteCount: 2,
+      showResetAction: true,
+    })
+  );
+  const workspaceChromeActions: WorkspaceChromeActions = {
+    applyWorkspaceMode: (mode) => {
+      workspaceMode = mode;
+    },
+    toggleWorkspacePane: (pane) => {
+      workspaceMode = pane;
+    },
+    toggleSearch: () => {
+      searchOpen = !searchOpen;
+    },
+    toggleStorage: () => {
+      storageOpen = !storageOpen;
+    },
+    openShare: () => {
+      shareOpen = !shareOpen;
+    },
+    toggleTimeline: () => {
+      timelineOpen = !timelineOpen;
+    },
+    toggleFlow: () => {
+      flowOpen = !flowOpen;
+    },
+    setViewMode: (mode) => {
+      viewMode = mode;
+    },
+    setSearchQuery: (value) => {
+      searchQuery = value;
+    },
+    setSortBy: (value) => {
+      sortBy = value;
+    },
+    paste: () => undefined,
+    overflowAction: (value) => {
+      if (value === 'search') searchOpen = !searchOpen;
+      if (value === 'storage') storageOpen = !storageOpen;
+      if (value === 'share') shareOpen = !shareOpen;
+      if (value === 'timeline') timelineOpen = !timelineOpen;
+      if (value === 'flow') flowOpen = !flowOpen;
+    },
+  };
+  const snapshot = $derived.by(() =>
+    bridge?.createAppSnapshot?.({
+      mountCount: 3,
+      workspaceMode: workspaceChromeState.workspaceMode,
+      showFilesWorkspace: workspaceChromeState.showFilesWorkspace,
+      showChatWorkspace: workspaceChromeState.showChatWorkspace,
+      showSearchWorkspace: workspaceChromeState.showSearchWorkspace,
+      fileManagerViewMode: workspaceChromeState.fileManagerViewMode,
       fileCount: 14,
       selectedCount: 2,
-      searchQuery,
-      showPreviewPane: showFilesWorkspace,
-      showTimeMachinePanel: timelineOpen,
+      searchQuery: workspaceChromeState.searchQuery,
+      showPreviewPane: workspaceChromeState.showFilesWorkspace,
+      showTimeMachinePanel: workspaceChromeState.showTimeMachinePanel,
       timelineCount: 18,
       timelinePosition: 18,
-      timelineDetailOpen: timelineOpen,
+      timelineDetailOpen: workspaceChromeState.showTimeMachinePanel,
       showSourcesPanel: false,
-      showVolumeStoragePanel: storageOpen,
-      showEventFlowPanel: flowOpen,
+      showVolumeStoragePanel: workspaceChromeState.showVolumeStoragePanel,
+      showEventFlowPanel: workspaceChromeState.showEventFlowPanel,
       showPhoneOverflowMenu: phoneMenuOpen,
       showIdentityManager: false,
       showCreateChooser: false,
       showJoinVolumeDialog: false,
-      showVolumeShareDialog: shareOpen,
+      showVolumeShareDialog: workspaceChromeState.showVolumeShareDialog,
       showResetDialog: false,
-      activeModal: shareOpen ? 'share' : 'none',
+      activeModal: workspaceChromeState.showVolumeShareDialog ? 'share' : 'none',
     }) ?? { surfaces: [] }
   );
-
-  function selectionSummary(): string {
-    return '14 files · 2 selected';
-  }
 </script>
 
 <svelte:head>
@@ -99,37 +160,20 @@
         <span>Uses shared workspace chrome components</span>
       </div>
       <WorkspaceModeBar
-        {showFilesWorkspace}
-        {showChatWorkspace}
-        showSearchWorkspace={searchOpen}
-        showVolumeStoragePanel={storageOpen}
-        showVolumeShareDialog={shareOpen}
-        showTimeMachinePanel={timelineOpen}
-        showEventFlowPanel={flowOpen}
-        fileManagerViewMode={viewMode}
-        showWorkspaceUtilities={true}
-        selectionSummary={selectionSummary()}
-        storageDisabled={false}
-        onApplyWorkspaceMode={(mode) => (workspaceMode = mode)}
-        onToggleWorkspacePane={(pane) => (workspaceMode = pane)}
-        onToggleSearch={() => (searchOpen = !searchOpen)}
-        onToggleStorage={() => (storageOpen = !storageOpen)}
-        onOpenShare={() => (shareOpen = !shareOpen)}
-        onToggleTimeline={() => (timelineOpen = !timelineOpen)}
-        onToggleFlow={() => (flowOpen = !flowOpen)}
-        onSetViewMode={(mode) => (viewMode = mode)}
+        state={workspaceChromeState}
+        actions={workspaceChromeActions}
       />
-      {#if searchOpen && showFilesWorkspace}
-        <WorkspaceSearchStrip bind:searchQuery bind:sortBy pasteVisible={true} pasteCount={2} onPaste={() => undefined} />
+      {#if workspaceChromeState.showFilesWorkspace && workspaceChromeState.showSearchWorkspace}
+        <WorkspaceSearchStrip state={workspaceChromeState} actions={workspaceChromeActions} />
       {/if}
       <div class="surface-body">
         <div class="mock-panel">
           <strong>Files</strong>
-          <span>{viewMode === 'icons' ? 'Icon view' : 'Details view'} · {searchQuery || 'no query'}</span>
+          <span>{workspaceChromeState.fileManagerViewMode === 'icons' ? 'Icon view' : 'Details view'} · {workspaceChromeState.searchQuery || 'no query'}</span>
         </div>
         <div class="mock-panel secondary">
-          <strong>{flowOpen ? 'Event flow' : storageOpen ? 'Hub storage' : shareOpen ? 'Share dialog' : showChatWorkspace ? 'Chat companion' : 'Preview pane'}</strong>
-          <span>{timelineOpen ? 'Timeline active' : 'Runtime shell preview'}</span>
+          <strong>{workspaceChromeState.showEventFlowPanel ? 'Event flow' : workspaceChromeState.showVolumeStoragePanel ? 'Hub storage' : workspaceChromeState.showVolumeShareDialog ? 'Share dialog' : workspaceChromeState.showChatWorkspace ? 'Chat companion' : 'Preview pane'}</strong>
+          <span>{workspaceChromeState.showTimeMachinePanel ? 'Timeline active' : 'Runtime shell preview'}</span>
         </div>
       </div>
     </section>
@@ -140,21 +184,7 @@
         <span>Same overflow component used by the runtime header</span>
       </div>
       {#if phoneMenuOpen}
-        <PhoneOverflowMenu
-          showFilesWorkspace={showFilesWorkspace}
-          showSearchWorkspace={searchOpen}
-          showVolumeStoragePanel={storageOpen}
-          showTimeMachinePanel={timelineOpen}
-          showEventFlowPanel={flowOpen}
-          showResetAction={true}
-          onAction={(value) => {
-            if (value === 'search') searchOpen = !searchOpen;
-            if (value === 'storage') storageOpen = !storageOpen;
-            if (value === 'share') shareOpen = !shareOpen;
-            if (value === 'timeline') timelineOpen = !timelineOpen;
-            if (value === 'flow') flowOpen = !flowOpen;
-          }}
-        />
+        <PhoneOverflowMenu state={workspaceChromeState} actions={workspaceChromeActions} />
       {/if}
     </section>
   </div>

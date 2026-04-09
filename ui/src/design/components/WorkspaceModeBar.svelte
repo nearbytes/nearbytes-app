@@ -1,52 +1,17 @@
 <script lang="ts">
   import { Activity, FileText, HardDrive, History, LayoutGrid, Link2, MessageSquareText, Rows3, Search } from 'lucide-svelte';
+  import type { WorkspaceChromeActions, WorkspaceChromeState } from '../workspaceChrome.js';
 
   let {
-    workspaceMode = 'files',
-    showFilesWorkspace = false,
-    showChatWorkspace = false,
-    showSearchWorkspace = false,
-    showVolumeStoragePanel = false,
-    showVolumeShareDialog = false,
-    showTimeMachinePanel = false,
-    showEventFlowPanel = false,
-    fileManagerViewMode = 'details',
-    showWorkspaceUtilities = false,
-    selectionSummary = '',
-    storageDisabled = false,
-    onApplyWorkspaceMode,
-    onToggleWorkspacePane,
-    onToggleSearch,
-    onToggleStorage,
-    onOpenShare,
-    onToggleTimeline,
-    onToggleFlow,
-    onSetViewMode,
+    state,
+    actions,
   }: {
-    workspaceMode?: 'files' | 'chat' | 'split';
-    showFilesWorkspace?: boolean;
-    showChatWorkspace?: boolean;
-    showSearchWorkspace?: boolean;
-    showVolumeStoragePanel?: boolean;
-    showVolumeShareDialog?: boolean;
-    showTimeMachinePanel?: boolean;
-    showEventFlowPanel?: boolean;
-    fileManagerViewMode?: 'icons' | 'details';
-    showWorkspaceUtilities?: boolean;
-    selectionSummary?: string;
-    storageDisabled?: boolean;
-    onApplyWorkspaceMode?: (mode: 'files' | 'chat' | 'split') => void;
-    onToggleWorkspacePane?: (pane: 'files' | 'chat') => void;
-    onToggleSearch?: () => void;
-    onToggleStorage?: () => void;
-    onOpenShare?: () => void;
-    onToggleTimeline?: () => void;
-    onToggleFlow?: () => void;
-    onSetViewMode?: (mode: 'icons' | 'details') => void;
+    state: WorkspaceChromeState;
+    actions: WorkspaceChromeActions;
   } = $props();
 
   function handleWorkspaceModeChange(event: Event): void {
-    onApplyWorkspaceMode?.((event.currentTarget as HTMLSelectElement).value as 'files' | 'chat' | 'split');
+    actions.applyWorkspaceMode((event.currentTarget as HTMLSelectElement).value as WorkspaceChromeState['workspaceMode']);
   }
 </script>
 
@@ -54,7 +19,7 @@
   <div class="workspace-mode-primary">
     <label class="workspace-pane-select-wrap" aria-label="Hub workspace mode selector">
       <span class="sr-only">Workspace mode</span>
-      <select class="workspace-pane-select" value={workspaceMode} onchange={handleWorkspaceModeChange}>
+      <select class="workspace-pane-select" value={state.workspaceMode} onchange={handleWorkspaceModeChange}>
         <option value="files">Files</option>
         <option value="chat">Chat</option>
         <option value="split">Files and chat</option>
@@ -63,9 +28,9 @@
     <button
       type="button"
       class="workspace-mode-btn"
-      class:active={showFilesWorkspace}
-      aria-pressed={showFilesWorkspace}
-      onclick={() => onToggleWorkspacePane?.('files')}
+      class:active={state.showFilesWorkspace}
+      aria-pressed={state.showFilesWorkspace}
+      onclick={() => actions.toggleWorkspacePane('files')}
     >
       <FileText size={15} strokeWidth={2} />
       <span>Files</span>
@@ -73,27 +38,27 @@
     <button
       type="button"
       class="workspace-mode-btn"
-      class:active={showChatWorkspace}
-      aria-pressed={showChatWorkspace}
-      onclick={() => onToggleWorkspacePane?.('chat')}
+      class:active={state.showChatWorkspace}
+      aria-pressed={state.showChatWorkspace}
+      onclick={() => actions.toggleWorkspacePane('chat')}
     >
       <MessageSquareText size={15} strokeWidth={2} />
       <span>Chat</span>
     </button>
   </div>
-  {#if showWorkspaceUtilities}
+  {#if state.showWorkspaceUtilities}
     <div class="workspace-mode-secondary">
-      {#if showFilesWorkspace}
-        <span class="workspace-selection-summary">{selectionSummary}</span>
+      {#if state.showFilesWorkspace}
+        <span class="workspace-selection-summary">{state.selectionSummary}</span>
       {/if}
       <div class="workspace-utility-actions">
-        {#if showFilesWorkspace}
+        {#if state.showFilesWorkspace}
           <button
             type="button"
             class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-            class:active={showSearchWorkspace}
-            onclick={() => onToggleSearch?.()}
-            title={showSearchWorkspace ? 'Hide file search' : 'Show file search'}
+            class:active={state.showSearchWorkspace}
+            onclick={() => actions.toggleSearch()}
+            title={state.showSearchWorkspace ? 'Hide file search' : 'Show file search'}
           >
             <Search class="button-icon" size={15} strokeWidth={2} />
             <span>Search</span>
@@ -102,9 +67,9 @@
         <button
           type="button"
           class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-          class:active={showVolumeStoragePanel}
-          onclick={() => onToggleStorage?.()}
-          disabled={storageDisabled}
+          class:active={state.showVolumeStoragePanel}
+          onclick={() => actions.toggleStorage()}
+          disabled={state.storageDisabled}
           title="Choose storage locations for this hub"
         >
           <HardDrive class="button-icon" size={15} strokeWidth={2} />
@@ -113,9 +78,9 @@
         <button
           type="button"
           class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-          class:active={showVolumeShareDialog}
-          onclick={() => onOpenShare?.()}
-          disabled={storageDisabled}
+          class:active={state.showVolumeShareDialog}
+          onclick={() => actions.openShare()}
+          disabled={state.storageDisabled}
           title="Share this hub"
         >
           <Link2 class="button-icon" size={15} strokeWidth={2} />
@@ -124,8 +89,8 @@
         <button
           type="button"
           class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-          class:active={showTimeMachinePanel}
-          onclick={() => onToggleTimeline?.()}
+          class:active={state.showTimeMachinePanel}
+          onclick={() => actions.toggleTimeline()}
           title="Show hub timeline"
         >
           <History class="button-icon" size={15} strokeWidth={2} />
@@ -134,22 +99,22 @@
         <button
           type="button"
           class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-          class:active={showEventFlowPanel}
-          onclick={() => onToggleFlow?.()}
+          class:active={state.showEventFlowPanel}
+          onclick={() => actions.toggleFlow()}
           title="Event flow visualization"
         >
           <Activity class="button-icon" size={15} strokeWidth={2} />
           <span>Flow</span>
         </button>
       </div>
-      {#if showFilesWorkspace}
+      {#if state.showFilesWorkspace}
         <div class="manager-view-switch" role="tablist" aria-label="File browser view">
           <button
             type="button"
             class="view-toggle"
-            class:active={fileManagerViewMode === 'icons'}
-            onclick={() => onSetViewMode?.('icons')}
-            aria-pressed={fileManagerViewMode === 'icons'}
+            class:active={state.fileManagerViewMode === 'icons'}
+            onclick={() => actions.setViewMode('icons')}
+            aria-pressed={state.fileManagerViewMode === 'icons'}
             title="Icon view"
           >
             <LayoutGrid size={15} strokeWidth={2} />
@@ -157,9 +122,9 @@
           <button
             type="button"
             class="view-toggle"
-            class:active={fileManagerViewMode === 'details'}
-            onclick={() => onSetViewMode?.('details')}
-            aria-pressed={fileManagerViewMode === 'details'}
+            class:active={state.fileManagerViewMode === 'details'}
+            onclick={() => actions.setViewMode('details')}
+            aria-pressed={state.fileManagerViewMode === 'details'}
             title="Details view"
           >
             <Rows3 size={15} strokeWidth={2} />

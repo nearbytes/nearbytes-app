@@ -113,6 +113,11 @@
   import WorkspaceModeBar from './design/components/WorkspaceModeBar.svelte';
   import WorkspaceSearchStrip from './design/components/WorkspaceSearchStrip.svelte';
   import {
+    createWorkspaceChromeState,
+    createWorkspaceSelectionSummary,
+    type WorkspaceChromeActions,
+  } from './design/workspaceChrome.js';
+  import {
     joinDialogAttachmentTitle,
   } from './lib/joinLinkPresentation.js';
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
@@ -2867,6 +2872,59 @@
     };
   });
   const shareableVolumeId = $derived.by(() => activeHubVolumeId);
+  const workspaceChromeState = $derived.by(() =>
+    createWorkspaceChromeState({
+      workspaceMode: workspacePaneModeValue(activeMount),
+      showFilesWorkspace,
+      showChatWorkspace,
+      showSearchWorkspace,
+      showVolumeStoragePanel,
+      showVolumeShareDialog,
+      showTimeMachinePanel,
+      showEventFlowPanel,
+      fileManagerViewMode,
+      showWorkspaceUtilities: showFilesWorkspace || Boolean(activeMount) || Boolean(shareableVolumeId),
+      selectionSummary: createWorkspaceSelectionSummary({
+        fileCount: visibleFiles.length,
+        selectedCount: selectedFileNames.length,
+        selectedLabel: selectedFileNames.length === 1 && selectedFile ? displayFileName(selectedFile) : null,
+      }),
+      storageDisabled: !activeMount && !shareableVolumeId,
+      searchQuery,
+      sortBy,
+      pasteVisible: Boolean(appReferenceClipboard),
+      pasteCount: appReferenceClipboard?.itemCount ?? 0,
+      pasteDisabled: !auth || isHistoryMode,
+      pasteTitle: !auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : '',
+      showResetAction: canWipeStoredConfig(),
+    })
+  );
+  const workspaceChromeActions: WorkspaceChromeActions = {
+    applyWorkspaceMode: applyWorkspacePaneMode,
+    toggleWorkspacePane,
+    toggleSearch: toggleWorkspaceSearch,
+    toggleStorage: toggleVolumeStoragePanel,
+    openShare: openVolumeShareDialog,
+    toggleTimeline: () => {
+      showTimeMachinePanel = !showTimeMachinePanel;
+    },
+    toggleFlow: () => {
+      showEventFlowPanel = !showEventFlowPanel;
+    },
+    setViewMode: (mode) => {
+      fileManagerViewMode = mode;
+    },
+    setSearchQuery: (value) => {
+      searchQuery = value;
+    },
+    setSortBy: (value) => {
+      sortBy = value;
+    },
+    paste: () => {
+      void pasteCopiedFiles();
+    },
+    overflowAction: runPhoneOverflowAction,
+  };
 
   const knownMountedVolumes = $derived.by<Array<{ volumeId: string; label: string }>>(() => {
     const known = new Map<string, string>();
@@ -2894,27 +2952,27 @@
         mountCount: mounts.length,
         mountLabel: currentMountedVolumePresentation?.label ?? (activeMount ? mountLabel(activeMount) : ''),
         emptyState: address.trim() === '',
-        workspaceMode: workspacePaneModeValue(activeMount),
-        showFilesWorkspace,
-        showChatWorkspace,
-        showSearchWorkspace,
-        fileManagerViewMode,
+        workspaceMode: workspaceChromeState.workspaceMode,
+        showFilesWorkspace: workspaceChromeState.showFilesWorkspace,
+        showChatWorkspace: workspaceChromeState.showChatWorkspace,
+        showSearchWorkspace: workspaceChromeState.showSearchWorkspace,
+        fileManagerViewMode: workspaceChromeState.fileManagerViewMode,
         fileCount: fileList.length,
         selectedCount: selectedFileNames.length,
-        searchQuery,
+        searchQuery: workspaceChromeState.searchQuery,
         showPreviewPane,
-        showTimeMachinePanel,
+        showTimeMachinePanel: workspaceChromeState.showTimeMachinePanel,
         timelineCount: timelineEvents.length,
         timelinePosition,
         timelineDetailOpen,
         showSourcesPanel,
-        showVolumeStoragePanel,
-        showEventFlowPanel,
+        showVolumeStoragePanel: workspaceChromeState.showVolumeStoragePanel,
+        showEventFlowPanel: workspaceChromeState.showEventFlowPanel,
         showPhoneOverflowMenu,
         showIdentityManager,
         showCreateChooser,
         showJoinVolumeDialog,
-        showVolumeShareDialog,
+        showVolumeShareDialog: workspaceChromeState.showVolumeShareDialog,
         showResetDialog,
         activeModal: showVolumeShareDialog
           ? 'share'
@@ -6636,14 +6694,8 @@
                 {#if showPhoneOverflowMenu}
                   <PhoneOverflowMenu
                     bind:menuElement={phoneOverflowMenuElement}
-                    {showFilesWorkspace}
-                    {showSearchWorkspace}
-                    {showVolumeStoragePanel}
-                    {showTimeMachinePanel}
-                    {showEventFlowPanel}
-                    storageDisabled={!activeMount && !shareableVolumeId}
-                    showResetAction={canWipeStoredConfig()}
-                    onAction={runPhoneOverflowAction}
+                    state={workspaceChromeState}
+                    actions={workspaceChromeActions}
                   />
                 {/if}
                 <button
@@ -6841,47 +6893,14 @@
       {/if}
 
       <WorkspaceModeBar
-        workspaceMode={workspacePaneModeValue(activeMount)}
-        {showFilesWorkspace}
-        {showChatWorkspace}
-        {showSearchWorkspace}
-        {showVolumeStoragePanel}
-        {showVolumeShareDialog}
-        {showTimeMachinePanel}
-        {showEventFlowPanel}
-        {fileManagerViewMode}
-        showWorkspaceUtilities={showFilesWorkspace || Boolean(activeMount) || Boolean(shareableVolumeId)}
-        selectionSummary={selectedFileNames.length === 0
-          ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
-          : selectedFileNames.length === 1 && selectedFile
-            ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
-            : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
-        storageDisabled={!activeMount && !shareableVolumeId}
-        onApplyWorkspaceMode={applyWorkspacePaneMode}
-        onToggleWorkspacePane={toggleWorkspacePane}
-        onToggleSearch={toggleWorkspaceSearch}
-        onToggleStorage={toggleVolumeStoragePanel}
-        onOpenShare={openVolumeShareDialog}
-        onToggleTimeline={() => {
-          showTimeMachinePanel = !showTimeMachinePanel;
-        }}
-        onToggleFlow={() => {
-          showEventFlowPanel = !showEventFlowPanel;
-        }}
-        onSetViewMode={(mode) => {
-          fileManagerViewMode = mode;
-        }}
+        state={workspaceChromeState}
+        actions={workspaceChromeActions}
       />
 
-      {#if showFilesWorkspace && showSearchWorkspace}
+      {#if workspaceChromeState.showFilesWorkspace && workspaceChromeState.showSearchWorkspace}
         <WorkspaceSearchStrip
-          bind:searchQuery
-          bind:sortBy
-          pasteVisible={Boolean(appReferenceClipboard)}
-          pasteCount={appReferenceClipboard?.itemCount ?? 0}
-          pasteDisabled={!auth || isHistoryMode}
-          pasteTitle={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
-          onPaste={() => void pasteCopiedFiles()}
+          state={workspaceChromeState}
+          actions={workspaceChromeActions}
         />
       {/if}
 
@@ -10558,102 +10577,13 @@
     color: var(--nb-text-main, rgba(236, 254, 255, 0.95));
   }
 
-  :global(.workspace-mode-bar) {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    align-self: stretch;
-    margin: 0;
-    padding: 0.2rem 0.32rem;
-    border-radius: 10px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 70%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
-    backdrop-filter: blur(12px);
-    flex: 0 0 auto;
-    flex-wrap: wrap;
-  }
-
-  :global(.workspace-mode-primary),
-  :global(.workspace-mode-secondary) {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-width: 0;
-    flex-wrap: wrap;
-    font-family: var(--nb-font-body);
-  }
-
-  :global(.workspace-mode-secondary) {
-    margin-left: auto;
-    justify-content: flex-end;
-    flex: 1 1 320px;
-    min-width: 0;
-  }
-
-  :global(.workspace-utility-actions) {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.45rem;
-    margin-left: auto;
-    flex: 1 1 0;
-    min-width: 0;
-  }
-
-  :global(.workspace-selection-summary) {
-    font-size: 0.74rem;
-    font-weight: 460;
-    letter-spacing: 0.02em;
-    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
-    white-space: nowrap;
-    flex: 1 1 220px;
-    min-width: 0;
-  }
-
-  :global(.workspace-search-strip) {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    padding: 0.42rem 0.5rem;
-    border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 65%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
-    flex-wrap: wrap;
-  }
-
-  :global(.workspace-search-input) {
-    flex: 1 1 240px;
-    min-width: min(100%, 240px);
-  }
-
-  :global(.workspace-search-sort) {
-    flex: 0 0 180px;
-    width: 180px;
-    min-width: 0;
-  }
-
-  :global(.workspace-search-paste) {
-    flex: 0 0 auto;
-  }
-
-  :global(.workspace-toolbar-btn) {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 100%;
-  }
-
   .phone-mount-selector,
-  :global(.workspace-pane-select-wrap),
   .workspace-mobile-action-wrap,
   .phone-header-action {
     display: none;
   }
 
   .phone-mount-select,
-  :global(.workspace-pane-select),
   .workspace-mobile-action-select {
     appearance: none;
     width: 100%;
@@ -10665,48 +10595,6 @@
     padding: 0.55rem 2.3rem 0.55rem 0.85rem;
     font: inherit;
     box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-  }
-
-  .workspace-toolbar-utility.active {
-    border-color: var(--nb-btn-active-border, rgba(34, 211, 238, 0.42));
-    background: var(--nb-btn-active-bg, linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94)));
-    color: var(--nb-btn-active-color, rgba(236, 254, 255, 0.98));
-    box-shadow: var(--nb-btn-active-shadow, 0 10px 24px rgba(6, 182, 212, 0.16));
-  }
-
-  :global(.workspace-mode-btn) {
-    appearance: none;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 92%, transparent);
-    background: transparent;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.72));
-    border-radius: 999px;
-    min-height: 30px;
-    padding: 0 0.72rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.42rem;
-    font: inherit;
-    font-size: 0.76rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition:
-      color 0.18s ease,
-      border-color 0.18s ease,
-      background-color 0.18s ease,
-      box-shadow 0.18s ease;
-  }
-
-  :global(.workspace-mode-btn:hover) {
-    color: var(--nb-btn-hover-color, rgba(224, 242, 254, 0.94));
-    background: var(--nb-btn-bg, rgba(12, 26, 46, 0.9));
-    border-color: var(--nb-btn-border, rgba(96, 165, 250, 0.18));
-  }
-
-  :global(.workspace-mode-btn.active) {
-    color: rgba(255, 251, 245, 0.94);
-    background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, white)));
-    border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 26%, var(--nb-border-strong, rgba(166, 151, 136, 0.18)));
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.12);
   }
 
   .volume-workspace {
@@ -12431,41 +12319,6 @@
     min-width: 0;
   }
 
-  :global(.manager-view-switch) {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.32rem;
-    padding: 0.22rem;
-    border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.18)) 90%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
-  }
-
-  :global(.view-toggle) {
-    width: 34px;
-    height: 34px;
-    border: 0;
-    border-radius: 10px;
-    background: transparent;
-    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
-  }
-
-  :global(.view-toggle:hover) {
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-    background: color-mix(in srgb, var(--nb-accent, rgba(14, 165, 233, 0.12)) 20%, transparent);
-  }
-
-  :global(.view-toggle.active) {
-    color: var(--nb-btn-active-color, rgba(28, 28, 30, 0.98));
-    background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, white)));
-    box-shadow: var(--nb-btn-active-shadow, 0 4px 12px rgba(6, 182, 212, 0.14));
-  }
-
   .file-list-head {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
@@ -13198,55 +13051,10 @@
       justify-content: space-between;
     }
 
-    :global(.workspace-mode-bar) {
-      align-items: stretch;
-    }
-
-    :global(.workspace-mode-primary) {
-      width: 100%;
-    }
-
-    :global(.workspace-pane-select-wrap) {
-      display: block;
-      width: 100%;
-    }
-
-    :global(.workspace-mode-primary) > :global(.workspace-mode-btn) {
-      display: none;
-    }
-
-    :global(.workspace-mode-secondary) {
-      margin-left: 0;
-      width: 100%;
-      justify-content: flex-start;
-      align-items: stretch;
-      flex-basis: auto;
-      gap: 0.55rem;
-      flex-wrap: nowrap;
-      overflow-x: auto;
-      padding-bottom: 0.1rem;
-    }
-
     .workspace-mobile-action-wrap {
       display: block;
       width: min(11rem, 45vw);
       flex: 0 0 auto;
-    }
-
-    :global(.workspace-utility-actions) {
-      display: none;
-    }
-
-    :global(.workspace-selection-summary) {
-      width: 100%;
-      white-space: normal;
-      overflow-wrap: anywhere;
-    }
-
-    :global(.workspace-search-input),
-    :global(.workspace-search-sort),
-    :global(.workspace-search-paste) {
-      width: 100%;
     }
 
     :global(.manager-btn) {
@@ -13260,15 +13068,6 @@
     :global(.manager-btn) span {
       white-space: normal;
       overflow-wrap: anywhere;
-    }
-
-    :global(.manager-view-switch) {
-      margin-left: auto;
-      flex: 0 0 auto;
-    }
-
-    :global(.workspace-search-strip) {
-      align-items: stretch;
     }
 
     .tm-events {

@@ -1,49 +1,39 @@
 <script lang="ts">
+  import type { WorkspaceChromeActions, WorkspaceChromeState } from '../workspaceChrome.js';
+
   let {
     menuElement = $bindable<HTMLElement | null>(null),
-    showFilesWorkspace = false,
-    showSearchWorkspace = false,
-    showVolumeStoragePanel = false,
-    showTimeMachinePanel = false,
-    showEventFlowPanel = false,
-    storageDisabled = false,
-    showResetAction = false,
-    onAction,
+    state,
+    actions,
   }: {
     menuElement?: HTMLElement | null;
-    showFilesWorkspace?: boolean;
-    showSearchWorkspace?: boolean;
-    showVolumeStoragePanel?: boolean;
-    showTimeMachinePanel?: boolean;
-    showEventFlowPanel?: boolean;
-    storageDisabled?: boolean;
-    showResetAction?: boolean;
-    onAction?: (value: string) => void;
+    state: WorkspaceChromeState;
+    actions: WorkspaceChromeActions;
   } = $props();
 
-  function handleAction(value: string): void {
-    onAction?.(value);
+  function handleAction(value: Parameters<WorkspaceChromeActions['overflowAction']>[0]): void {
+    actions.overflowAction(value);
   }
 </script>
 
 <div class="phone-overflow-menu panel-surface" bind:this={menuElement}>
   <div class="phone-overflow-grid">
-    {#if showFilesWorkspace}
+    {#if state.showFilesWorkspace}
       <button type="button" class="phone-overflow-btn" onclick={() => handleAction('search')}>
-        {showSearchWorkspace ? 'Hide search' : 'Search'}
+        {state.showSearchWorkspace ? 'Hide search' : 'Search'}
       </button>
     {/if}
-    <button type="button" class="phone-overflow-btn" onclick={() => handleAction('storage')} disabled={storageDisabled}>
-      {showVolumeStoragePanel ? 'Hide storage' : 'Storage'}
+    <button type="button" class="phone-overflow-btn" onclick={() => handleAction('storage')} disabled={state.storageDisabled}>
+      {state.showVolumeStoragePanel ? 'Hide storage' : 'Storage'}
     </button>
     <button type="button" class="phone-overflow-btn" onclick={() => handleAction('share')}>
       Share
     </button>
     <button type="button" class="phone-overflow-btn" onclick={() => handleAction('timeline')}>
-      {showTimeMachinePanel ? 'Hide timeline' : 'Timeline'}
+      {state.showTimeMachinePanel ? 'Hide timeline' : 'Timeline'}
     </button>
     <button type="button" class="phone-overflow-btn" onclick={() => handleAction('flow')}>
-      {showEventFlowPanel ? 'Hide flow' : 'Flow'}
+      {state.showEventFlowPanel ? 'Hide flow' : 'Flow'}
     </button>
     <button type="button" class="phone-overflow-btn" onclick={() => handleAction('identities')}>
       Identities
@@ -51,7 +41,7 @@
     <button type="button" class="phone-overflow-btn" onclick={() => handleAction('locations')}>
       Locations
     </button>
-    {#if showResetAction}
+    {#if state.showResetAction}
       <button type="button" class="phone-overflow-btn danger" onclick={() => handleAction('reset')}>
         Reset
       </button>

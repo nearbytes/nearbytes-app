@@ -1,22 +1,13 @@
 <script lang="ts">
   import { ClipboardPaste } from 'lucide-svelte';
+  import type { WorkspaceChromeActions, WorkspaceChromeState } from '../workspaceChrome.js';
 
   let {
-    searchQuery = $bindable(''),
-    sortBy = $bindable<'newest' | 'oldest' | 'name' | 'name-desc' | 'size' | 'size-asc'>('newest'),
-    pasteVisible = false,
-    pasteCount = 0,
-    pasteDisabled = false,
-    pasteTitle = '',
-    onPaste,
+    state,
+    actions,
   }: {
-    searchQuery?: string;
-    sortBy?: 'newest' | 'oldest' | 'name' | 'name-desc' | 'size' | 'size-asc';
-    pasteVisible?: boolean;
-    pasteCount?: number;
-    pasteDisabled?: boolean;
-    pasteTitle?: string;
-    onPaste?: () => void;
+    state: WorkspaceChromeState;
+    actions: WorkspaceChromeActions;
   } = $props();
 </script>
 
@@ -25,10 +16,16 @@
     type="text"
     class="manager-search workspace-search-input"
     placeholder="Search files"
-    bind:value={searchQuery}
+    value={state.searchQuery}
+    oninput={(event) => actions.setSearchQuery((event.currentTarget as HTMLInputElement).value)}
     aria-label="Search files"
   />
-  <select class="manager-sort workspace-search-sort" bind:value={sortBy} aria-label="Sort files">
+  <select
+    class="manager-sort workspace-search-sort"
+    value={state.sortBy}
+    onchange={(event) => actions.setSortBy((event.currentTarget as HTMLSelectElement).value as WorkspaceChromeState['sortBy'])}
+    aria-label="Sort files"
+  >
     <option value="newest">Newest</option>
     <option value="oldest">Oldest</option>
     <option value="name">Name</option>
@@ -36,16 +33,16 @@
     <option value="size">Size</option>
     <option value="size-asc">Size (Smallest)</option>
   </select>
-  {#if pasteVisible}
+  {#if state.pasteVisible}
     <button
       type="button"
       class="manager-btn workspace-toolbar-btn workspace-search-paste"
-      onclick={() => onPaste?.()}
-      disabled={pasteDisabled}
-      title={pasteTitle}
+      onclick={() => actions.paste()}
+      disabled={state.pasteDisabled}
+      title={state.pasteTitle}
     >
       <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-      Paste {pasteCount} item{pasteCount === 1 ? '' : 's'}
+      Paste {state.pasteCount} item{state.pasteCount === 1 ? '' : 's'}
     </button>
   {/if}
 </div>
