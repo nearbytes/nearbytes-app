@@ -174,6 +174,90 @@ describe('WebRtcDnsSdLanTransport', () => {
     }
   }, 15_000);
 
+  it('does not treat a connected peer without a control channel as usable', async () => {
+    const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-usable-');
+    const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });
+    const internal = transport as unknown as {
+      connections: Map<string, unknown>;
+      hasUsablePeerConnection: (peerId: string) => boolean;
+    };
+
+    internal.connections.set('peer-remote', {
+      peerId: 'peer-remote',
+      peer: {
+        peerId: 'peer-remote',
+        label: 'peer-remote',
+        address: 'peer-remote.local',
+        port: 4200,
+        capabilities: ['webrtc'],
+        headObservationId: null,
+      },
+      connection: {
+        connectionState: 'connected',
+      },
+      controlChannel: null,
+      closed: false,
+    });
+
+    expect(internal.hasUsablePeerConnection('peer-remote')).toBe(false);
+  });
+
+  it('resets the desktop peer context when the control channel closes while connected', async () => {
+    const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-channel-close-');
+    const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });
+    const internal = transport as unknown as {
+      connections: Map<string, unknown>;
+      attachControlChannel: (context: any, channel: any) => void;
+      hasUsablePeerConnection: (peerId: string) => boolean;
+    };
+    const peer: LanTransportDiscoveredPeer = {
+      peerId: 'peer-remote',
+      label: 'peer-remote',
+      address: 'peer-remote.local',
+      port: 4200,
+      capabilities: ['webrtc'],
+      headObservationId: null,
+    };
+    const channel = {
+      label: 'nearbytes-control',
+      readyState: 'open',
+      close: vi.fn(),
+      onopen: undefined,
+      onmessage: undefined,
+      onclose: undefined,
+      onerror: undefined,
+    };
+    const context = {
+      peerId: peer.peerId,
+      peer,
+      connection: {
+        connectionState: 'connected',
+        close: vi.fn().mockResolvedValue(undefined),
+      },
+      controlChannel: null,
+      pendingControlResponses: new Map(),
+      initiator: true,
+      readyPromise: Promise.resolve(),
+      resolveReady: vi.fn(),
+      rejectReady: vi.fn(),
+      readyResolved: true,
+      closed: false,
+      disconnectTimer: null,
+    };
+    internal.connections.set(peer.peerId, context);
+
+    internal.attachControlChannel(context, channel);
+    expect(internal.hasUsablePeerConnection(peer.peerId)).toBe(true);
+
+    expect(channel.onclose).toBeTypeOf('function');
+    const handleClose = channel.onclose as (() => void) | undefined;
+    handleClose?.();
+
+    expect(internal.connections.has(peer.peerId)).toBe(false);
+    expect(context.closed).toBe(true);
+    expect(context.connection.close).toHaveBeenCalled();
+  });
+
   it('prefers private LAN addresses in discovery debug state and ignores incompatible records', async () => {
     const runtimeDir = await mkRuntimeDir('nearbytes-lan-webrtc-debug-');
     const transport = new WebRtcDnsSdLanTransport(runtimeDir, { disableDiscovery: true });

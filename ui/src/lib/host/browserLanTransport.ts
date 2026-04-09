@@ -9,7 +9,7 @@ import type {
 import { postNativeLanSignal } from './nativeLanPlugin.js';
 
 const CONTROL_CHANNEL_LABEL = 'nearbytes-control';
-const CONTROL_MESSAGE_CHUNK_BYTES = 48 * 1024;
+const CONTROL_MESSAGE_CHUNK_BYTES = 8 * 1024;
 const CONNECTION_TIMEOUT_MS = 20_000;
 const RPC_TIMEOUT_MS = 30_000;
 
@@ -257,15 +257,7 @@ export class BrowserLanTransport {
   }
 
   hasActiveConnection(peerId: string): boolean {
-    if (this.pendingConnections.has(peerId)) {
-      return true;
-    }
-    const context = this.contexts.get(peerId);
-    if (!context) {
-      return false;
-    }
-    const connState = context.connection.connectionState;
-    return connState === 'connected' || connState === 'connecting';
+    return this.hasUsableConnection(peerId);
   }
 
   private hasUsableConnection(peerId: string): boolean {

@@ -71,14 +71,6 @@ export interface LanSyncRpcClient {
   requestBytes(request: LanTransportRpcRequest): Promise<Uint8Array>;
 }
 
-const transports = new Map<string, BrowserLanTransport>();
-const signaledPeers = new Map<string, NativeLanDiscoveredPeer>();
-let runtimeState: NativeLanRuntimeState | null = null;
-let runtimeStartPromise: Promise<NativeLanRuntimeState> | null = null;
-let runtimeListenerHandle: { remove: () => Promise<void> } | null = null;
-let runtimeListenerPromise: Promise<void> | null = null;
-let proactiveSignalTimer: ReturnType<typeof setInterval> | null = null;
-
 interface NativeLanRuntimeState {
   listening: boolean;
   port: number | null;
@@ -86,6 +78,36 @@ interface NativeLanRuntimeState {
   announceIntervalMs: number;
   serviceType: string;
 }
+
+interface NativeLanModuleState {
+  transports: Map<string, BrowserLanTransport>;
+  signaledPeers: Map<string, NativeLanDiscoveredPeer>;
+  runtimeState: NativeLanRuntimeState | null;
+  runtimeStartPromise: Promise<NativeLanRuntimeState> | null;
+  runtimeListenerHandle: { remove: () => Promise<void> } | null;
+  runtimeListenerPromise: Promise<void> | null;
+  proactiveSignalTimer: ReturnType<typeof setInterval> | null;
+  peerSignalQueue: Map<string, Promise<void>>;
+}
+
+type NativeLanGlobalScope = typeof globalThis & {
+  __nearbytesNativeLanSyncState__?: NativeLanModuleState;
+};
+
+const nativeLanGlobalScope = globalThis as NativeLanGlobalScope;
+const nativeLanState = nativeLanGlobalScope.__nearbytesNativeLanSyncState__ ??= {
+  transports: new Map<string, BrowserLanTransport>(),
+  signaledPeers: new Map<string, NativeLanDiscoveredPeer>(),
+  runtimeState: null,
+  runtimeStartPromise: null,
+  runtimeListenerHandle: null,
+  runtimeListenerPromise: null,
+  proactiveSignalTimer: null,
+  peerSignalQueue: new Map<string, Promise<void>>(),
+};
+
+const transports = nativeLanState.transports;
+const signaledPeers = nativeLanState.signaledPeers;
 
 export async function listNativeLanPeers(): Promise<LocalNetworkPeersResponse> {
   const runtime = await ensureNativeLanRuntimeStarted();
@@ -310,19 +332,20 @@ export async function syncLanPeerInventoryWithClient(
 
 export function resetNativeLanRuntimeForTests(): void {
   stopProactiveSignaling();
-  if (runtimeListenerHandle) {
-    void runtimeListenerHandle.remove().catch(() => undefined);
+  if (nativeLanState.runtimeListenerHandle) {
+    void nativeLanState.runtimeListenerHandle.remove().catch(() => undefined);
   }
-  runtimeListenerHandle = null;
-  runtimeListenerPromise = null;
-  runtimeStartPromise = null;
-  runtimeState = null;
+  nativeLanState.runtimeListenerHandle = null;
+  nativeLanState.runtimeListenerPromise = null;
+  nativeLanState.runtimeStartPromise = null;
+  nativeLanState.runtimeState = null;
   void stopNativeLanRuntime().catch(() => undefined);
   for (const transport of transports.values()) {
     transport.reset();
   }
   transports.clear();
   signaledPeers.clear();
+  nativeLanState.peerSignalQueue.clear();
 }
 
 async function getOrCreateTransport(peer: LanTransportDiscoveredPeer): Promise<BrowserLanTransport> {
@@ -350,32 +373,32 @@ async function getOrCreateTransport(peer: LanTransportDiscoveredPeer): Promise<B
 }
 
 async function ensureNativeLanRuntimeStarted(): Promise<NativeLanRuntimeState> {
-  if (runtimeStartPromise) {
-    return await runtimeStartPromise;
+  if (nativeLanState.runtimeStartPromise) {
+    return await nativeLanState.runtimeStartPromise;
   }
-  runtimeStartPromise = (async () => {
+  nativeLanState.runtimeStartPromise = (async () => {
     await embeddedPhoneClearStaleLanPeerErrors();
     await ensureNativeLanListenerRegistered();
     const nextState = await refreshNativeLanRuntime();
-    runtimeState = nextState;
+    nativeLanState.runtimeState = nextState;
     startProactiveSignaling();
     return nextState;
   })();
   try {
-    return await runtimeStartPromise;
+    return await nativeLanState.runtimeStartPromise;
   } catch (error) {
-    runtimeStartPromise = null;
+    nativeLanState.runtimeStartPromise = null;
     throw error;
   }
 }
 
 async function ensureNativeLanListenerRegistered(): Promise<void> {
-  if (runtimeListenerPromise) {
-    await runtimeListenerPromise;
+  if (nativeLanState.runtimeListenerPromise) {
+    await nativeLanState.runtimeListenerPromise;
     return;
   }
-  runtimeListenerPromise = (async () => {
-    runtimeListenerHandle = await addNativeLanIncomingSignalListener((event) => {
+  nativeLanState.runtimeListenerPromise = (async () => {
+    nativeLanState.runtimeListenerHandle = await addNativeLanIncomingSignalListener((event) => {
       void handleIncomingNativeLanSignal(event).catch(async (error) => {
         await completeNativeLanSignalRequest({
           requestId: event.requestId,
@@ -384,7 +407,7 @@ async function ensureNativeLanListenerRegistered(): Promise<void> {
       });
     });
   })();
-  await runtimeListenerPromise;
+  await nativeLanState.runtimeListenerPromise;
 }
 
 async function refreshNativeLanRuntime(): Promise<NativeLanRuntimeState> {
@@ -416,7 +439,7 @@ async function buildSelfSignalPeer(
   state?: NativeLanRuntimeState | null
 ): Promise<LanTransportSignalPeer> {
   const currentHello = hello ?? await embeddedPhoneBuildLanHello();
-  const currentState = state ?? runtimeState ?? await ensureNativeLanRuntimeStarted();
+  const currentState = state ?? nativeLanState.runtimeState ?? await ensureNativeLanRuntimeStarted();
   return {
     peerId: currentHello.peerId,
     label: currentHello.label,
@@ -428,18 +451,18 @@ async function buildSelfSignalPeer(
 }
 
 function startProactiveSignaling(): void {
-  if (proactiveSignalTimer) {
+  if (nativeLanState.proactiveSignalTimer) {
     return;
   }
-  proactiveSignalTimer = setInterval(() => {
+  nativeLanState.proactiveSignalTimer = setInterval(() => {
     void proactivelySignalKnownPeers().catch(() => undefined);
   }, DEFAULT_NATIVE_LAN_ANNOUNCE_INTERVAL_MS);
 }
 
 function stopProactiveSignaling(): void {
-  if (proactiveSignalTimer) {
-    clearInterval(proactiveSignalTimer);
-    proactiveSignalTimer = null;
+  if (nativeLanState.proactiveSignalTimer) {
+    clearInterval(nativeLanState.proactiveSignalTimer);
+    nativeLanState.proactiveSignalTimer = null;
   }
 }
 
@@ -482,9 +505,6 @@ async function proactivelySignalKnownPeers(): Promise<void> {
   }
 }
 
-/** Per-peer signal queue so concurrent signals from the same peer are serialized. */
-const peerSignalQueue = new Map<string, Promise<void>>();
-
 async function handleIncomingNativeLanSignal(event: {
   requestId: string;
   request: LanPeerTransportSignalRequest;
@@ -493,9 +513,9 @@ async function handleIncomingNativeLanSignal(event: {
 
   // Chain behind any in-flight signal for the same peer so that concurrent
   // offers don't race and clobber each other's connections.
-  const previous = peerSignalQueue.get(peerId) ?? Promise.resolve();
+  const previous = nativeLanState.peerSignalQueue.get(peerId) ?? Promise.resolve();
   const current = previous.then(() => processSignal(event), () => processSignal(event));
-  peerSignalQueue.set(peerId, current);
+  nativeLanState.peerSignalQueue.set(peerId, current);
   await current;
 }
 

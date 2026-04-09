@@ -36,7 +36,7 @@ const LAN_CONNECTION_TIMEOUT_MS = 20_000;
 const LAN_RPC_TIMEOUT_MS = 30_000;
 const LAN_DISCONNECTED_GRACE_MS = 5_000;
 const LAN_PEER_REOFFER_COOLDOWN_MS = 5_000;
-const LAN_CONTROL_MESSAGE_CHUNK_BYTES = 48 * 1024;
+const LAN_CONTROL_MESSAGE_CHUNK_BYTES = 8 * 1024;
 const LAN_MULTICAST_GROUP = '239.255.40.41';
 const LAN_MULTICAST_PORT = 40441;
 const LAN_MULTICAST_ANNOUNCE_MS = 5_000;
@@ -745,6 +745,9 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
         pending.reject(new Error(`WebRTC control channel closed while waiting for request ${requestId}`));
       }
       context.pendingControlResponses.clear();
+      if (context.connection.connectionState === 'connected' && this.connections.get(context.peerId) === context) {
+        this.resetPeerConnection(context.peerId);
+      }
     };
     channel.onerror = (event: WebRtcChannelErrorEvent) => {
       logDesktopWebRtc('Control channel errored.', {
@@ -1274,7 +1277,7 @@ export class WebRtcDnsSdLanTransport implements LanPeerTransport {
     }
     if (connectionState === 'connected') {
       if (!context.controlChannel) {
-        return true; // Channel not yet received via ondatachannel; still usable.
+        return false; // Channel not yet received via ondatachannel; still usable.
       }
       const controlChannelState = context.controlChannel.readyState;
       return controlChannelState === 'open' || controlChannelState === 'connecting';
