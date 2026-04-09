@@ -64,17 +64,16 @@
       ['overview', 'Studio', './index.html'],
       ['moodboard', 'Moodboard', './moodboard.html'],
       ['palette', 'Palette', './palette.html'],
-      ['styles', 'Styles', './styles.html'],
+      ['styles', 'Toolkit', './styles.html'],
       ['desktop', 'Desktop UI', './desktop.html'],
       ['phone', 'Phone UI', './phone.html']
     ];
     return ''
       + '<section class="studio-nav">'
-      + '<div class="studio-top">'
+      + '<div class="studio-top minimal">'
       + '<div>'
       + '<p class="eyebrow">Nearbytes executable UI studio</p>'
-      + '<h1>Connected design studio</h1>'
-      + '<p class="nav-copy">Moodboard drives palette. Palette drives styles. Styles drive desktop and phone UI.</p>'
+      + '<p class="nav-copy">One connected UI spec.</p>'
       + '</div>'
       + '<div class="studio-nav-links">'
       + links.map(function (link) {
@@ -87,21 +86,22 @@
 
   function renderOverview() {
     return ''
-      + '<section class="studio-header">'
-      + '<p class="eyebrow">Studio overview</p>'
-      + '<h1>Design the product as one connected system.</h1>'
-      + '<p>This studio is the only source in this folder. You choose the atmosphere, palette, component language, and shell behavior, then inspect the resulting desktop and phone UI.</p>'
+      + '<div class="studio-overview">'
+      + '<section class="studio-card studio-launcher">'
+      + '<p class="eyebrow">Start here</p>'
+      + '<h1>UI studio</h1>'
+      + '<p class="launcher-copy">Pick a direction, then inspect the desktop and phone shell.</p>'
       + '</section>'
       + '<section class="studio-card">'
-      + '<h2>Pages</h2>'
       + '<div class="quick-links">'
       + '<a class="quick-link-card" href="./moodboard.html"><strong>Moodboard</strong><span class="mood-note">Choose the atmosphere and visual direction.</span></a>'
       + '<a class="quick-link-card" href="./palette.html"><strong>Palette</strong><span class="mood-note">Inspect the derived color system and token balance.</span></a>'
-      + '<a class="quick-link-card" href="./styles.html"><strong>Styles</strong><span class="mood-note">Test buttons, inputs, lists, shadows, and motion.</span></a>'
+      + '<a class="quick-link-card" href="./styles.html"><strong>Toolkit</strong><span class="mood-note">Inspect actual app controls, surfaces, dialogs, and primitives.</span></a>'
       + '<a class="quick-link-card" href="./desktop.html"><strong>Desktop UI</strong><span class="mood-note">Inspect the wide product shell.</span></a>'
       + '<a class="quick-link-card" href="./phone.html"><strong>Phone UI</strong><span class="mood-note">Inspect the narrow product shell.</span></a>'
       + '</div>'
       + '</section>';
+      + '</div>'
   }
 
   function renderMoodboard() {
@@ -158,19 +158,77 @@
   }
 
   function renderStyles() {
+    var sortOptions = {
+      newest: 'Newest first',
+      name: 'Name A-Z',
+      protected: 'Most protected'
+    };
+    var hub = activeHub();
+    var query = (state.stylesSearchText || '').trim().toLowerCase();
+    var files = hub.files.slice();
+    if (query) {
+      files = files.filter(function (file) {
+        return file.name.toLowerCase().indexOf(query) !== -1 || file.meta.toLowerCase().indexOf(query) !== -1;
+      });
+    }
+    if (state.stylesSortValue === 'name') {
+      files.sort(function (left, right) {
+        return left.name.localeCompare(right.name);
+      });
+    } else if (state.stylesSortValue === 'protected') {
+      files.sort(function (left, right) {
+        return Number(/(\d+)/.exec(right.meta)?.[1] || 0) - Number(/(\d+)/.exec(left.meta)?.[1] || 0);
+      });
+    }
     return ''
       + '<section class="studio-panel">'
-      + '<h2>Styles</h2>'
-      + '<p>Every specimen below uses the active palette and current control settings.</p>'
+      + '<h2>Toolkit</h2>'
+      + '<p>This page maps the real app UI vocabulary: actual controls, surfaces, dialogs, and shared primitives.</p>'
       + '<div class="styles-grid">'
       + '<article class="style-card"><h3 class="section-title">Buttons</h3><div class="component-actions"><button class="style-btn primary">Primary action</button><button class="style-btn ghost">Secondary action</button><button class="style-btn warn">Destructive action</button></div></article>'
-      + '<article class="style-card"><h3 class="section-title">Inputs</h3><div class="style-specimen"><input class="styles-input" value="Search files" readonly><select class="styles-select"><option>Newest</option></select></div></article>'
-      + '<article class="style-card"><h3 class="section-title">Chips</h3><div class="chip-row"><span class="mini-chip active">Files</span><span class="mini-chip">Chat</span><span class="mini-chip">Storage</span><span class="mini-chip">Share</span></div></article>'
+      + '<article class="style-card"><h3 class="section-title">Inputs</h3><div class="style-specimen lab"><div class="spec-line"><span class="spec-label">Search input</span><div class="input-row"><input class="styles-input" type="text" value="' + escapeHtml(state.stylesSearchText || '') + '" placeholder="Search files" data-style-input="stylesSearchText"><div class="combo"><button class="combo-trigger" type="button" data-style-combo-toggle="stylesSortOpen">' + sortOptions[state.stylesSortValue] + '</button>' + (state.stylesSortOpen ? '<div class="combo-list">' + Object.keys(sortOptions).map(function (key) { return '<button class="combo-option' + (state.stylesSortValue === key ? ' active' : '') + '" type="button" data-style-option="' + key + '"><strong>' + sortOptions[key] + '</strong><span>' + comboHint(key) + '</span></button>'; }).join('') + '</div>' : '') + '</div></div></div><div class="lab-meta"><span>' + files.length + ' results</span><span>' + activeHub().name + '</span></div><div class="lab-results">' + (files.length ? files.map(function (file) { return '<div class="mini-list-row"><div><strong>' + file.name + '</strong><span>' + file.meta + '</span></div><span>' + file.size + '</span></div>'; }).join('') : '<div class="mini-list-row"><div><strong>No results</strong><span>Try a broader query.</span></div><span>0</span></div>') + '</div></div></article>'
+      + '<article class="style-card"><h3 class="section-title">Chips</h3><div class="chip-row"><span class="spec-chip active">Files</span><span class="spec-chip">Chat</span><span class="spec-chip">Storage</span><span class="spec-chip">Share</span></div></article>'
       + '<article class="style-card"><h3 class="section-title">Lists</h3><div class="list-grid"><div class="mini-list-row"><div><strong>Draft notes.pdf</strong><span>Updated 2 minutes ago</span></div><span>2.4 MB</span></div><div class="mini-list-row"><div><strong>Storyboard.png</strong><span>Protected in 3 locations</span></div><span>8.1 MB</span></div></div></article>'
-      + '<article class="style-card"><h3 class="section-title">Shadows</h3><div class="shadow-stack"><div class="shadow-card soft"></div><div class="shadow-card lifted"></div></div></article>'
-      + '<article class="style-card"><h3 class="section-title">Motion</h3><div class="motion-strip"><div class="motion-card"></div><div class="motion-card"></div><div class="motion-card"></div></div></article>'
+      + '<article class="style-card"><h3 class="section-title">Shadows</h3><div class="shadow-stack"><div class="shadow-card inset"><strong>Inset surface</strong><span>Quiet internal depth for contained controls.</span></div><div class="shadow-card soft"><strong>Working card</strong><span>Low lift for everyday content blocks.</span></div><div class="shadow-card lifted"><strong>Floating layer</strong><span>High lift for menus, sheets, and interruptions.</span></div></div></article>'
+      + '<article class="style-card"><h3 class="section-title">Motion</h3><div class="motion-strip"><div class="motion-card drift"><strong>Traverse</strong><span>For horizontal movement between siblings.</span></div><div class="motion-card settle"><strong>Settle</strong><span>For entering panels and sheets.</span></div><div class="motion-card pulse"><strong>Pulse</strong><span>For quiet attention, not navigation.</span></div></div></article>'
       + '</div>'
+      + renderToolkitSpecs(sortOptions[ state.stylesSortValue ], files)
+      + renderToolkitMap()
       + '</section>';
+  }
+
+  function renderToolkitSpecs(sortLabel, files) {
+    return ''
+      + '<div class="toolkit-spec-grid">'
+      + '<article class="toolkit-spec"><div class="toolkit-spec-head"><h4>Workspace search strip</h4><p class="mood-note">Real app surface in the file workspace.</p></div><div class="style-specimen lab"><div class="input-row"><input class="styles-input" type="text" value="' + escapeHtml(state.stylesSearchText || '') + '" placeholder="Search files" data-style-input="stylesSearchText"><div class="combo"><button class="combo-trigger" type="button" data-style-combo-toggle="stylesSortOpen">' + sortLabel + '</button>' + (state.stylesSortOpen ? '<div class="combo-list">' + ['newest','name','protected'].map(function (key) { return '<button class="combo-option' + (state.stylesSortValue === key ? ' active' : '') + '" type="button" data-style-option="' + key + '"><strong>' + ({ newest: 'Newest first', name: 'Name A-Z', protected: 'Most protected' })[key] + '</strong><span>' + comboHint(key) + '</span></button>'; }).join('') + '</div>' : '') + '</div></div><div class="selection-summary"><span>' + files.length + ' visible files</span><span>' + (state.viewMode === 'icons' ? 'Icon view' : 'Details view') + '</span></div></div></article>'
+      + '<article class="toolkit-spec"><div class="toolkit-spec-head"><h4>Preview pane</h4><p class="mood-note">Metadata head, actions, and preview body.</p></div><div class="preview-pane-spec"><div class="preview-toolbar"><div><strong>Storyboard.png</strong><div class="mood-note">image/png • 8.1 MB • today</div></div><div class="component-actions"><button class="style-btn ghost">Download</button><button class="style-btn warn">Delete</button></div></div><div class="preview-stage">Image / video / audio / PDF / text preview body</div></div></article>'
+      + '<article class="toolkit-spec"><div class="toolkit-spec-head"><h4>Timeline and event detail</h4><p class="mood-note">History slider, event rows, and detail open action.</p></div><div class="preview-pane-spec"><div class="timeline-controls"><strong>Live view</strong><div class="component-actions"><button class="style-btn ghost">Play</button><button class="style-btn ghost">Latest</button></div></div><input class="timeline-slider" type="range" min="0" max="100" value="76"><div class="timeline-event-list"><div class="timeline-event-row"><span class="timeline-dot"></span><div><strong>Chat message</strong><span>Storage should feel like a place, not settings.</span></div><button class="style-btn ghost">Details</button></div><div class="timeline-event-row"><span class="timeline-dot"></span><div><strong>Identity publish</strong><span>Notebook bot published to this hub.</span></div><button class="style-btn ghost">Details</button></div></div></div></article>'
+      + '<article class="toolkit-spec"><div class="toolkit-spec-head"><h4>Phone overflow menu</h4><p class="mood-note">Actual mobile utility actions from the app shell.</p></div><div class="phone-overflow-spec"><div class="phone-overflow-grid"><div class="overflow-chip">Search</div><div class="overflow-chip">Storage</div><div class="overflow-chip">Share</div><div class="overflow-chip">Timeline</div><div class="overflow-chip">Flow</div><div class="overflow-chip">Identities</div><div class="overflow-chip">Locations</div><div class="overflow-chip">Reset</div></div></div></article>'
+      + '<article class="toolkit-spec"><div class="toolkit-spec-head"><h4>Dialog shell</h4><p class="mood-note">Shared AppDialog frame used across storage, share, join, reset, and theme flows.</p></div><div class="dialog-spec"><div class="dialog-spec-head"><div><p class="eyebrow">Hub link</p><strong>Share this hub</strong><p class="mood-note">Choose what to copy and whether storage sharing should open too.</p></div><button class="style-btn ghost">Close</button></div><div class="component-actions"><button class="style-btn primary">Copy link</button><button class="style-btn ghost">Open storage sharing</button></div></div></article>'
+      + '<article class="toolkit-spec"><div class="toolkit-spec-head"><h4>Reusable primitives</h4><p class="mood-note">Pieces reused across the app rather than one-off surfaces.</p></div><div class="primitive-grid"><div class="primitive-spec"><strong>StatusNotice</strong><p class="mood-note">Warning, success, error, muted.</p><div class="toolkit-badge">warning</div></div><div class="primitive-spec"><strong>ArmedActionButton</strong><p class="mood-note">Two-step destructive action.</p><div class="component-actions"><button class="style-btn warn">Arm delete</button><button class="style-btn ghost">Cancel</button></div></div><div class="primitive-spec"><strong>IconToggle</strong><p class="mood-note">Compact permission toggle.</p><div class="chip-row"><span class="spec-chip active">Read</span><span class="spec-chip">Write</span></div></div><div class="primitive-spec"><strong>VolumeIdentity</strong><p class="mood-note">Compact hub identity row.</p><div class="mini-list-row"><div><strong>Studio notes</strong><span>Current speaking identity</span></div><span>Joined</span></div></div></div></article>'
+      + '</div>';
+  }
+
+  function renderToolkitMap() {
+    return '<div class="toolkit-map">' + data.toolkitSections.map(function (section) {
+      return '<section class="toolkit-section"><div class="toolkit-section-head"><h4>' + section.title + '</h4><p class="mood-note">Real app elements already present in App.svelte or shared components.</p></div><div class="toolkit-item-grid">' + section.items.map(function (item) {
+        return '<article class="toolkit-item"><div class="toolkit-meta"><span class="toolkit-badge">' + item.kind + '</span><code class="toolkit-source">' + item.source + '</code></div><h5>' + item.name + '</h5><p class="mood-note">' + item.note + '</p></article>';
+      }).join('') + '</div></section>';
+    }).join('') + '</div>';
+  }
+
+  function comboHint(key) {
+    if (key === 'name') return 'Alphabetical order';
+    if (key === 'protected') return 'Surfaces replicated items first';
+    return 'Most recently updated first';
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   function renderListRows(items) {
@@ -278,8 +336,33 @@
     applyTokens();
     var app = document.getElementById('app');
     if (!app) return;
-    app.innerHTML = '<div class="studio">' + renderNav() + '<div class="studio-grid"><div class="studio-main">' + renderPageBody() + '</div>' + renderControls() + '</div></div>';
+    var activeElement = document.activeElement;
+    var focusDescriptor = null;
+    if (
+      activeElement instanceof HTMLInputElement &&
+      activeElement.hasAttribute('data-style-input')
+    ) {
+      focusDescriptor = {
+        key: activeElement.getAttribute('data-style-input'),
+        start: activeElement.selectionStart,
+        end: activeElement.selectionEnd
+      };
+    }
+    if (page === 'overview') {
+      app.innerHTML = '<div class="studio">' + renderNav() + '<div class="studio-main overview">' + renderPageBody() + '</div></div>';
+    } else {
+      app.innerHTML = '<div class="studio">' + renderNav() + '<div class="studio-grid"><div class="studio-main">' + renderPageBody() + '</div>' + renderControls() + '</div></div>';
+    }
     bind();
+    if (focusDescriptor) {
+      var nextFocus = document.querySelector('[data-style-input="' + focusDescriptor.key + '"]');
+      if (nextFocus instanceof HTMLInputElement) {
+        nextFocus.focus();
+        if (typeof focusDescriptor.start === 'number' && typeof focusDescriptor.end === 'number') {
+          nextFocus.setSelectionRange(focusDescriptor.start, focusDescriptor.end);
+        }
+      }
+    }
     saveState();
   }
 
@@ -321,6 +404,27 @@
     document.querySelectorAll('[data-view]').forEach(function (element) {
       element.addEventListener('click', function () {
         state.viewMode = element.getAttribute('data-view');
+        render();
+      });
+    });
+    document.querySelectorAll('[data-style-input]').forEach(function (element) {
+      element.addEventListener('input', function () {
+        var key = element.getAttribute('data-style-input');
+        state[key] = element.value;
+        render();
+      });
+    });
+    document.querySelectorAll('[data-style-combo-toggle]').forEach(function (element) {
+      element.addEventListener('click', function () {
+        var key = element.getAttribute('data-style-combo-toggle');
+        state[key] = !state[key];
+        render();
+      });
+    });
+    document.querySelectorAll('[data-style-option]').forEach(function (element) {
+      element.addEventListener('click', function () {
+        state.stylesSortValue = element.getAttribute('data-style-option') || state.stylesSortValue;
+        state.stylesSortOpen = false;
         render();
       });
     });

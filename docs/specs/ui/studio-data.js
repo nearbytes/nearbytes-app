@@ -132,6 +132,63 @@
         ]
       }
     ],
+    toolkitSections: [
+      {
+        title: 'Shell and navigation',
+        items: [
+          { name: 'MountRail', kind: 'component', source: 'ui/src/components/MountRail.svelte', note: 'Desktop hub selector rail with actions slot.' },
+          { name: 'Phone mount selector', kind: 'surface', source: 'ui/src/App.svelte', note: 'Mobile hub dropdown replacing the desktop rail.' },
+          { name: 'Workspace mode bar', kind: 'surface', source: 'ui/src/App.svelte', note: 'Files, Chat, and Files and chat mode buttons.' },
+          { name: 'Workspace search strip', kind: 'surface', source: 'ui/src/App.svelte', note: 'Search input plus sort control for file views.' },
+          { name: 'Phone overflow menu', kind: 'surface', source: 'ui/src/App.svelte', note: 'Search, storage, share, timeline, flow, identities, locations, reset.' }
+        ]
+      },
+      {
+        title: 'File workspace',
+        items: [
+          { name: 'File manager details view', kind: 'surface', source: 'ui/src/App.svelte', note: 'Sortable rows with name, size, and updated metadata.' },
+          { name: 'File manager icon view', kind: 'surface', source: 'ui/src/App.svelte', note: 'Card grid with file tiles and thumbnails.' },
+          { name: 'Selection summary', kind: 'surface', source: 'ui/src/App.svelte', note: 'Current count and active selection context.' },
+          { name: 'Preview pane', kind: 'surface', source: 'ui/src/App.svelte', note: 'Metadata head plus image, video, audio, PDF, text, or unsupported preview.' },
+          { name: 'AudioPreview', kind: 'component', source: 'ui/src/components/AudioPreview.svelte', note: 'Dedicated audio player used inside the preview pane.' }
+        ]
+      },
+      {
+        title: 'Chat, timeline, and flow',
+        items: [
+          { name: 'VolumeChat', kind: 'component', source: 'ui/src/components/VolumeChat.svelte', note: 'Messages, identity state, attachments, and composer.' },
+          { name: 'Timeline panel', kind: 'surface', source: 'ui/src/App.svelte', note: 'History slider, transport buttons, and event list.' },
+          { name: 'Timeline detail dialog', kind: 'dialog', source: 'ui/src/App.svelte', note: 'Event envelope, payload, references, and storage locations.' },
+          { name: 'EventFlowPanel', kind: 'component', source: 'ui/src/components/EventFlowPanel.svelte', note: 'Storage node flow visualization with particles and activity.' }
+        ]
+      },
+      {
+        title: 'Storage, sharing, identities',
+        items: [
+          { name: 'StoragePanel global', kind: 'component', source: 'ui/src/components/StoragePanel.svelte', note: 'Provider tabs, discovery, incoming shares, and source setup.' },
+          { name: 'StoragePanel volume', kind: 'component', source: 'ui/src/components/StoragePanel.svelte', note: 'Per-hub routing and managed share controls.' },
+          { name: 'ProviderStatusCard', kind: 'component', source: 'ui/src/components/ProviderStatusCard.svelte', note: 'Provider status, connect/disconnect, and sync state.' },
+          { name: 'ShareCard', kind: 'component', source: 'ui/src/components/ShareCard.svelte', note: 'Managed share summary with collaborator and access state.' },
+          { name: 'VolumeIdentity', kind: 'component', source: 'ui/src/components/VolumeIdentity.svelte', note: 'Compact hub identity label with preview tile.' },
+          { name: 'SharedSecretEditor', kind: 'component', source: 'ui/src/components/SharedSecretEditor.svelte', note: 'Secret file surface with thumbnail, metadata, and hash label.' },
+          { name: 'ShareSpaceLinkSection', kind: 'component', source: 'ui/src/components/ShareSpaceLinkSection.svelte', note: 'Copy link, copy secret payload, and storage sharing handoff.' },
+          { name: 'JoinLinkSections', kind: 'component', source: 'ui/src/components/JoinLinkSections.svelte', note: 'Paste/join textarea, route preview, and open result.' }
+        ]
+      },
+      {
+        title: 'Dialogs and reusable primitives',
+        items: [
+          { name: 'AppDialog', kind: 'primitive', source: 'ui/src/components/AppDialog.svelte', note: 'Shared modal container with eyebrow, title, subtitle, close, body, footer.' },
+          { name: 'StatusNotice', kind: 'primitive', source: 'ui/src/components/StatusNotice.svelte', note: 'Inline notices for error, warning, success, and muted states.' },
+          { name: 'ArmedActionButton', kind: 'primitive', source: 'ui/src/components/ArmedActionButton.svelte', note: 'Destructive action with arm and confirm behavior.' },
+          { name: 'IconToggle', kind: 'primitive', source: 'ui/src/components/IconToggle.svelte', note: 'Compact icon plus label toggle for permissions and modes.' },
+          { name: 'Create chooser', kind: 'dialog', source: 'ui/src/App.svelte', note: 'Hub, identity, and paste-link creation entrypoints.' },
+          { name: 'Identity manager', kind: 'dialog', source: 'ui/src/App.svelte', note: 'Identity pills, publish, join, and avatar upload.' },
+          { name: 'Reset dialog', kind: 'dialog', source: 'ui/src/App.svelte', note: 'Reset confirmation with delete-local-blocks option.' },
+          { name: 'Theme studio', kind: 'dialog', source: 'ui/src/App.svelte', note: 'Dev-only theme, material, accent, and logo controls.' }
+        ]
+      }
+    ],
     defaults: {
       moodboardId: 'linen-ledger',
       accentStrength: 100,
@@ -144,7 +201,10 @@
       modal: 'none',
       searchOpen: false,
       timelineOpen: false,
-      viewMode: 'details'
+      viewMode: 'details',
+      stylesSearchText: 'story',
+      stylesSortValue: 'newest',
+      stylesSortOpen: false
     }
   };
 })();
