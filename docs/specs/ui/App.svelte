@@ -5,16 +5,16 @@
   import { STUDIO_DATA } from './studio-data.js';
   import { createStudioModel } from './studio.js';
 
-  export let page = 'overview';
+  let { page = 'overview' } = $props();
 
   const bridge = globalThis.NearbytesUiBridgeShared || {};
-  const model = createStudioModel({ data: STUDIO_DATA, bridge, page });
+  const model = $derived.by(() => createStudioModel({ data: STUDIO_DATA, bridge, page }));
 
-  let studioRoot;
-  let state = model.loadState();
-  let uiState = model.normalizeUiState(state);
-  let bodyHtml = model.renderPageBody(state);
-  let title = model.pageTitle();
+  let studioRoot = $state();
+  let state = $state({});
+  let uiState = $state({});
+  let bodyHtml = $state('');
+  let title = $state('Nearbytes UI Studio');
 
   function refresh() {
     uiState = model.normalizeUiState(state);
@@ -85,6 +85,7 @@
   }
 
   onMount(() => {
+    state = model.loadState();
     refresh();
 
     if (!studioRoot) {

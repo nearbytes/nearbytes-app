@@ -1,5 +1,5 @@
 <script>
-  export let page = 'overview';
+  let { page = 'overview' } = $props();
 
   const links = [
     ['overview', 'Studio', './index.html'],

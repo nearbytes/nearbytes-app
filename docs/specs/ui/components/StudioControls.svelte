@@ -1,7 +1,5 @@
 <script>
-  export let data;
-  export let state;
-  export let uiState;
+  let { data, state, uiState } = $props();
 </script>
 
 <aside class="studio-controls">

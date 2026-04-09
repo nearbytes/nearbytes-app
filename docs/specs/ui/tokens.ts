@@ -262,11 +262,11 @@ export function designMoodboardVariables(moodboard: DesignMoodboard): Record<str
     '--nb-radius-md': chrome.radiusMd,
     '--nb-radius-sm': chrome.radiusSm,
     '--nb-radius-pill': chrome.radiusPill,
+    '--nb-surface-blur': chrome.blur,
+    '--nb-overlay-blur': chrome.overlayBlur,
     '--nb-shadow-lg': chrome.shadowLg,
     '--nb-shadow-md': chrome.shadowMd,
     '--nb-shadow-sm': chrome.shadowSm,
-    '--nb-surface-blur': chrome.blur,
-    '--nb-overlay-blur': chrome.overlayBlur,
     '--nb-motion-fast': motion.fast,
     '--nb-motion-medium': motion.medium,
     '--nb-motion-slow': motion.slow,
@@ -274,30 +274,34 @@ export function designMoodboardVariables(moodboard: DesignMoodboard): Record<str
     '--nb-space-panel-gap': space.panelGap,
     '--nb-space-panel-padding': space.panelPadding,
     '--nb-space-cluster-gap': space.clusterGap,
-    '--ds-bg': palette.bg,
+    '--nb-app-bg': palette.bg,
+    '--nb-shell-top': palette.paper,
+    '--nb-shell-bottom': palette.panel,
+    '--nb-panel-bg': buildPanelSurface(palette),
+    '--nb-card-bg': buildCardSurface(palette),
+    '--nb-border': palette.line,
+    '--nb-text-main': palette.ink,
+    '--nb-text-soft': palette.muted,
+    '--nb-text-faint': palette.muted,
+    '--nb-accent': palette.accent,
+    '--nb-accent-strong': palette.accentStrong,
+    '--nb-accent-soft': palette.accentSoft,
+    '--nb-glow': palette.glow,
     '--ds-paper': palette.paper,
     '--ds-panel': palette.panel,
+    '--ds-line': palette.line,
     '--ds-ink': palette.ink,
     '--ds-muted': palette.muted,
-    '--ds-line': palette.line,
     '--ds-accent': palette.accent,
-    '--ds-accent-strong': palette.accentStrong,
     '--ds-accent-soft': palette.accentSoft,
-    '--ds-glow': palette.glow,
-    '--ds-atmosphere': buildAtmosphere(palette),
-    '--ds-card-bg': buildCardSurface(palette),
     '--ds-panel-bg': buildPanelSurface(palette),
+    '--ds-card-bg': buildCardSurface(palette),
+    '--ds-atmosphere': buildAtmosphere(palette),
   };
 }
 
-export function designMoodboardCssVariables(moodboard: DesignMoodboard): string {
-  return Object.entries(designMoodboardVariables(moodboard))
-    .map(([name, value]) => `${name}:${value}`)
-    .join(';');
-}
-
-export function applyDesignMoodboardVariables(style: CSSStyleDeclaration, moodboard: DesignMoodboard): void {
-  for (const [name, value] of Object.entries(designMoodboardVariables(moodboard))) {
-    style.setProperty(name, value);
-  }
+export function applyDesignMoodboardVariables(root: CSSStyleDeclaration, moodboard: DesignMoodboard): void {
+  Object.entries(designMoodboardVariables(moodboard)).forEach(([key, value]) => {
+    root.setProperty(key, value);
+  });
 }
