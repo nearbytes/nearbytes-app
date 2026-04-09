@@ -13,6 +13,10 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*",
+    "../docs/specs/ui/components/**/*.svelte",
+    "../docs/specs/ui/workspaceChrome.ts"
+  ],
   "exclude": ["node_modules"]
 }

@@ -1,15 +1,15 @@
 <script lang="ts">
   import '../lib/design/uiBridgeShared.js';
-  import PhoneOverflowMenu from './components/PhoneOverflowMenu.svelte';
-  import WorkspaceModeBar from './components/WorkspaceModeBar.svelte';
-  import WorkspaceSearchStrip from './components/WorkspaceSearchStrip.svelte';
+  import PhoneOverflowMenu from '../../../docs/specs/ui/components/PhoneOverflowMenu.svelte';
+  import WorkspaceModeBar from '../../../docs/specs/ui/components/WorkspaceModeBar.svelte';
+  import WorkspaceSearchStrip from '../../../docs/specs/ui/components/WorkspaceSearchStrip.svelte';
   import {
     createWorkspaceChromeState,
     type FileManagerViewMode,
     type WorkspaceChromeActions,
     type WorkspaceMode,
     type WorkspaceSortBy,
-  } from './workspaceChrome.js';
+  } from '../../../docs/specs/ui/workspaceChrome.js';
 
   const bridge = (globalThis as typeof globalThis & {
     NearbytesUiBridgeShared?: {

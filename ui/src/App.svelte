@@ -109,18 +109,18 @@
   import EventFlowPanel from './components/EventFlowPanel.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
-  import PhoneOverflowMenu from './design/components/PhoneOverflowMenu.svelte';
-  import WorkspaceModeBar from './design/components/WorkspaceModeBar.svelte';
-  import WorkspaceSearchStrip from './design/components/WorkspaceSearchStrip.svelte';
-  import AppHeader from './design/components/AppHeader.svelte';
-  import WorkspaceStage from './design/components/WorkspaceStage.svelte';
-  import TimeMachinePanel from './design/components/TimeMachinePanel.svelte';
-  import EmptyStatePanel from './design/components/EmptyStatePanel.svelte';
+  import PhoneOverflowMenu from '../../docs/specs/ui/components/PhoneOverflowMenu.svelte';
+  import WorkspaceModeBar from '../../docs/specs/ui/components/WorkspaceModeBar.svelte';
+  import WorkspaceSearchStrip from '../../docs/specs/ui/components/WorkspaceSearchStrip.svelte';
+  import AppHeader from '../../docs/specs/ui/components/AppHeader.svelte';
+  import WorkspaceStage from '../../docs/specs/ui/components/WorkspaceStage.svelte';
+  import TimeMachinePanel from '../../docs/specs/ui/components/TimeMachinePanel.svelte';
+  import EmptyStatePanel from '../../docs/specs/ui/components/EmptyStatePanel.svelte';
   import {
     createWorkspaceChromeState,
     createWorkspaceSelectionSummary,
     type WorkspaceChromeActions,
-  } from './design/workspaceChrome.js';
+  } from '../../docs/specs/ui/workspaceChrome.js';
   import {
     joinDialogAttachmentTitle,
   } from './lib/joinLinkPresentation.js';
@@ -1557,6 +1557,14 @@
   let hydratedThemeState = $state<unknown>(null);
   let isHeaderHovering = $state(false);
   let isSecretDropTarget = $state(false);
+
+  function setHeaderHoveringFromSpec(value: boolean): void {
+    isHeaderHovering = value;
+  }
+
+  function setSecretDropTargetFromSpec(value: boolean): void {
+    isSecretDropTarget = value;
+  }
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
   let showTimeMachinePanel = $state(false);
   let showSourcesPanel = $state(false);
@@ -6490,14 +6498,10 @@
     mounts={mounts.map((mount) => ({ id: mount.id, label: mountLabel(mount) || 'Unnamed hub' }))}
     draggingMounts={draggingMountId !== null}
     isHeaderHovering={isHeaderHovering}
-    setHeaderHovering={(value) => {
-      isHeaderHovering = value;
-    }}
+    setHeaderHovering={setHeaderHoveringFromSpec}
     isSecretDropTarget={isSecretDropTarget}
     canHandleSecretDropPayload={canHandleSecretDropPayload}
-    setSecretDropTarget={(value) => {
-      isSecretDropTarget = value;
-    }}
+    setSecretDropTarget={setSecretDropTargetFromSpec}
     onSecretFileDrop={handleSecretFileDrop}
     onSelectMount={handleMountClick}
     onOpenThemeStudio={() => openThemeStudio('preset')}
