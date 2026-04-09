@@ -39,6 +39,7 @@ import {
   embeddedPhoneUploadFile,
 } from './embeddedPhoneServices.js';
 import {
+  notifyNativeLanEventMutation,
   listNativeLanPeers,
   notifyNativeLanVolumeMutation,
   resetNativeLanRuntimeForTests,
@@ -168,6 +169,17 @@ async function notifyPhoneLanMutation(secret: string): Promise<void> {
     await notifyNativeLanVolumeMutation(await deriveVolumeIdFromSecret(secret));
   } catch {
     // Peer hinting is best-effort; local mutation has already committed.
+  }
+}
+
+async function notifyPhoneLanEventMutation(secret: string, eventHash: string): Promise<void> {
+  if (!hasNativeLanPlugin()) {
+    return;
+  }
+  try {
+    await notifyNativeLanEventMutation(await deriveVolumeIdFromSecret(secret), eventHash);
+  } catch {
+    // Best-effort delivery only; caller already committed the local mutation.
   }
 }
 
@@ -516,7 +528,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhonePublishIdentity(secret, identitySecret, profile as IdentityProfile);
-      await notifyPhoneLanMutation(secret);
+      await notifyPhoneLanEventMutation(secret, result.published.eventHash);
       return result;
     },
     async sendChatMessage(
@@ -529,7 +541,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhoneSendChatMessage(secret, identitySecret, input as { body?: string; attachment?: ChatAttachment });
-      await notifyPhoneLanMutation(secret);
+      await notifyPhoneLanEventMutation(secret, result.sent.eventHash);
       return result;
     },
   };

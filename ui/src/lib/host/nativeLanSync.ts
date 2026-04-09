@@ -192,6 +192,54 @@ export async function notifyNativeLanVolumeMutation(volumeId: string): Promise<v
   );
 }
 
+export async function notifyNativeLanEventMutation(volumeId: string, eventHash: string): Promise<void> {
+  await ensureNativeLanRuntimeStarted();
+  const normalizedVolumeId = normalizeVolumeId(volumeId);
+  const normalizedEventHash = eventHash.trim().toLowerCase();
+  if (!normalizedVolumeId || !normalizedEventHash) {
+    return;
+  }
+  const selfPeer = await buildSelfSignalPeer();
+  const discovered = (await listNativeLanDiscoveredPeers()).filter(isFreshLanPeer);
+  const peers = new Map<string, LanTransportDiscoveredPeer>();
+  for (const peer of discovered) {
+    peers.set(peer.peerId, toTransportPeer(peer));
+  }
+  for (const [peerId, peer] of signaledPeers.entries()) {
+    if (!isFreshLanPeer(peer) || peers.has(peerId)) {
+      continue;
+    }
+    peers.set(peerId, toTransportPeer(peer));
+  }
+  await Promise.all(
+    Array.from(peers.values()).map(async (peer) => {
+      try {
+        const transport = await getOrCreateTransport(peer);
+        await transport.notify(peer, {
+          action: 'storage-command',
+          command: {
+            type: 'want-event',
+            fromPeerId: selfPeer.peerId,
+            volumeId: normalizedVolumeId,
+            eventHash: normalizedEventHash,
+          },
+        });
+      } catch {
+        try {
+          const transport = await getOrCreateTransport(peer);
+          await transport.notify(peer, {
+            action: 'sync-hint',
+            reason: 'event-storage-command-fallback',
+            volumeIds: [normalizedVolumeId],
+          });
+        } catch {
+          // Best-effort delivery only; later peer sync recovers missed events.
+        }
+      }
+    })
+  );
+}
+
 async function syncNativeLanPeerWithOptions(
   peerId: string,
   options: SyncLanPeerOptions = {}

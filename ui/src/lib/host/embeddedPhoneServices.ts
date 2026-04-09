@@ -36,6 +36,7 @@ import type {
   SourceReferenceBundle,
   SourceUsageSummary,
   SourceVolumeUsage,
+  TimelineDeltaResponse,
   TimelineEvent,
   TimelineResponse,
   UploadResponse,
@@ -45,6 +46,7 @@ import type {
 } from '../api.js';
 import {
   importCompatibilityEventDetail,
+  importCompatibilityTimelineDelta,
   importCompatibilityTimelineSnapshot,
   importCompatibilityVolumeSnapshot,
   readMirrorTimelineSnapshot,
@@ -161,6 +163,9 @@ interface EmbeddedPhoneRuntimeHead {
 interface EmbeddedPhoneRuntimeMetrics {
   refreshReads: number;
   bootstrappedReads: number;
+  fullRefreshReads: number;
+  incrementalRefreshReads: number;
+  cursorResetRefreshReads: number;
 }
 
 let dbPromise: Promise<IDBPDatabase | null> | null = null;
@@ -172,6 +177,9 @@ let embeddedPhoneCommitDrainPromise: Promise<void> | null = null;
 let embeddedPhoneRuntimeMetrics: EmbeddedPhoneRuntimeMetrics = {
   refreshReads: 0,
   bootstrappedReads: 0,
+  fullRefreshReads: 0,
+  incrementalRefreshReads: 0,
+  cursorResetRefreshReads: 0,
 };
 
 const embeddedPhoneVolumeWatchers = new Map<string, Map<number, (update: VolumeWatchUpdate) => void>>();
@@ -964,21 +972,33 @@ async function refreshMirrors(secret: string, eventHash?: string): Promise<{
   files: FileMetadata[];
   timeline: TimelineEvent[];
 }> {
+  // docs/specs/application/hash-cursor-refresh-v0.1.md
   embeddedPhoneRuntimeMetrics.refreshReads += 1;
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
-  const [volumeId, files, timeline] = await Promise.all([
-    deriveVolumeId(secret),
-    fileService.listFiles(secret),
-    fileService.getTimeline(secret) as Promise<TimelineEvent[]>,
-  ]);
-  embeddedPhoneKnownVolumeSecrets.set(volumeId, secret);
-
-  await importCompatibilityVolumeSnapshot({ volumeId, files });
-  await importCompatibilityTimelineSnapshot({
+  const volumeId = await deriveVolumeId(secret);
+  const head = await readEmbeddedPhoneRuntimeHead(volumeId);
+  const delta = await fileService.getTimelineDelta(secret, head?.lastEventHash ?? null);
+  const snapshot = await importCompatibilityTimelineDelta({
     volumeId,
-    eventCount: timeline.length,
-    events: timeline,
-  });
+    requestedCursor: delta.requestedCursor,
+    acceptedCursor: delta.acceptedCursor,
+    nextCursor: delta.nextCursor,
+    reset: delta.reset,
+    eventCount: delta.eventCount,
+    totalEventCount: delta.totalEventCount,
+    events: delta.events,
+  } satisfies TimelineDeltaResponse);
+
+  if (head?.lastEventHash && !delta.reset) {
+    embeddedPhoneRuntimeMetrics.incrementalRefreshReads += 1;
+  } else {
+    embeddedPhoneRuntimeMetrics.fullRefreshReads += 1;
+    if (head?.lastEventHash && delta.reset) {
+      embeddedPhoneRuntimeMetrics.cursorResetRefreshReads += 1;
+    }
+  }
+
+  embeddedPhoneKnownVolumeSecrets.set(volumeId, secret);
 
   if (eventHash) {
     const detail = await fileService.getEvent(secret, eventHash);
@@ -992,16 +1012,16 @@ async function refreshMirrors(secret: string, eventHash?: string): Promise<{
 
   await writeEmbeddedPhoneRuntimeHead({
     volumeId,
-    fileCount: files.length,
-    eventCount: timeline.length,
-    lastEventHash: timeline.at(-1)?.eventHash ?? null,
+    fileCount: snapshot.files.length,
+    eventCount: snapshot.timeline.length,
+    lastEventHash: snapshot.timeline.at(-1)?.eventHash ?? null,
     updatedAt: Date.now(),
   });
 
   return {
     volumeId,
-    files,
-    timeline,
+    files: snapshot.files,
+    timeline: snapshot.timeline,
   };
 }
 
@@ -1309,8 +1329,6 @@ export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolum
       files: bootstrapped.files,
     };
   }
-  const { fileService } = await getEmbeddedPhoneRuntimeServices();
-  await fileService.listFiles(secret);
   const snapshot = await refreshMirrors(secret);
   return {
     volumeId: snapshot.volumeId,
@@ -1435,10 +1453,8 @@ export async function embeddedPhoneListChat(secret: string): Promise<VolumeChatS
   if (bootstrapped) {
     return buildEmbeddedPhoneChatStateFromTimeline(bootstrapped.timeline);
   }
-  const { chatService } = await getEmbeddedPhoneRuntimeServices();
-  const state = await chatService.listChat(secret);
-  await refreshMirrors(secret);
-  return state;
+  const snapshot = await refreshMirrors(secret);
+  return buildEmbeddedPhoneChatStateFromTimeline(snapshot.timeline);
 }
 
 export async function embeddedPhonePublishIdentity(
@@ -1593,6 +1609,9 @@ export function resetEmbeddedPhoneRuntimeMetricsForTests(): void {
   embeddedPhoneRuntimeMetrics = {
     refreshReads: 0,
     bootstrappedReads: 0,
+    fullRefreshReads: 0,
+    incrementalRefreshReads: 0,
+    cursorResetRefreshReads: 0,
   };
 }
 

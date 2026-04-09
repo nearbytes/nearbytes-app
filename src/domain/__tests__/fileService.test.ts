@@ -212,6 +212,45 @@ describe('FileService', () => {
     await cleanup();
   });
 
+  it('returns only newer timeline events after a hash cursor', async () => {
+    const { service, cleanup } = await createTestService(START_TIME);
+    const secret = 'test:secret:timeline-delta';
+
+    await service.addFile(secret, 'a.txt', Buffer.from('a'));
+    await service.addFile(secret, 'b.txt', Buffer.from('b'));
+    await service.deleteFile(secret, 'a.txt');
+
+    const timeline = await service.getTimeline(secret);
+    const delta = await service.getTimelineDelta(secret, timeline[0].eventHash);
+
+    expect(delta.reset).toBe(false);
+    expect(delta.acceptedCursor).toBe(timeline[0].eventHash);
+    expect(delta.nextCursor).toBe(timeline[2].eventHash);
+    expect(delta.totalEventCount).toBe(3);
+    expect(delta.events).toHaveLength(2);
+    expect(delta.events.map((event) => event.type)).toEqual(['CREATE_FILE', 'DELETE_FILE']);
+
+    await cleanup();
+  });
+
+  it('falls back to a full replay when the hash cursor is unknown', async () => {
+    const { service, cleanup } = await createTestService(START_TIME);
+    const secret = 'test:secret:timeline-delta-reset';
+
+    await service.addFile(secret, 'a.txt', Buffer.from('a'));
+    await service.addFile(secret, 'b.txt', Buffer.from('b'));
+
+    const delta = await service.getTimelineDelta(secret, 'deadbeef');
+
+    expect(delta.reset).toBe(true);
+    expect(delta.acceptedCursor).toBeNull();
+    expect(delta.requestedCursor).toBe('deadbeef');
+    expect(delta.events).toHaveLength(2);
+    expect(delta.totalEventCount).toBe(2);
+
+    await cleanup();
+  });
+
   it('renames a folder prefix across all nested files', async () => {
     const { service, cleanup } = await createTestService(START_TIME);
     const secret = 'test:secret:rename-folder';

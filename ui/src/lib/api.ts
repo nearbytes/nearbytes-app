@@ -214,6 +214,14 @@ export interface TimelineResponse {
   runtimeFailureReason?: string;
 }
 
+export interface TimelineDeltaResponse extends TimelineResponse {
+  requestedCursor: string | null;
+  acceptedCursor: string | null;
+  nextCursor: string | null;
+  reset: boolean;
+  totalEventCount: number;
+}
+
 export interface SerializedEventPayload {
   type: string;
   fileName: string;
@@ -1131,6 +1139,15 @@ export async function getTimeline(auth: Auth): Promise<TimelineResponse> {
   const response = await host.legacyDesktop.getTimeline(auth) as TimelineResponse;
   await importCompatibilityTimelineSnapshot(response);
   return response;
+}
+
+export async function getTimelineDelta(auth: Auth, afterEventHash: string | null): Promise<TimelineDeltaResponse> {
+  const params = new URLSearchParams();
+  if (afterEventHash) {
+    params.set('afterEventHash', afterEventHash);
+  }
+  const endpoint = params.size > 0 ? `/timeline?${params.toString()}` : '/timeline';
+  return apiRequest<TimelineDeltaResponse>(endpoint, { auth });
 }
 
 /**

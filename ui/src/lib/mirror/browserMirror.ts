@@ -6,6 +6,7 @@ import type {
   LocalNetworkPeer,
   LocalNetworkPeersResponse,
   OpenVolumeResponse,
+  TimelineDeltaResponse,
   TimelineResponse,
 } from '../api.js';
 
@@ -209,6 +210,115 @@ export async function importCompatibilityTimelineSnapshot(snapshot: TimelineResp
     eventCount: snapshot.eventCount,
     updatedAt: Date.now(),
   } satisfies MirrorTimelineSnapshot);
+}
+
+function compareMirrorFiles(left: ListFilesResponse['files'][number], right: ListFilesResponse['files'][number]): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt - right.createdAt;
+  }
+  return left.filename.localeCompare(right.filename);
+}
+
+function applyTimelineEventToFiles(
+  files: Map<string, ListFilesResponse['files'][number]>,
+  event: TimelineResponse['events'][number]
+): void {
+  if (event.type === 'CREATE_FILE') {
+    if (!event.blobHash || event.size === undefined || event.createdAt === undefined) {
+      return;
+    }
+    files.set(event.filename, {
+      filename: event.filename,
+      blobHash: event.blobHash,
+      contentType: event.contentType,
+      size: event.size,
+      mimeType: event.mimeType,
+      createdAt: event.createdAt,
+    });
+    return;
+  }
+
+  if (event.type === 'DELETE_FILE') {
+    files.delete(event.filename);
+    return;
+  }
+
+  if (event.type !== 'RENAME_FILE' || !event.toFilename) {
+    return;
+  }
+
+  const existing = files.get(event.filename);
+  if (!existing) {
+    return;
+  }
+  files.delete(event.filename);
+  files.set(event.toFilename, {
+    ...existing,
+    filename: event.toFilename,
+  });
+}
+
+function materializeMirrorFilesFromTimeline(
+  timeline: TimelineResponse['events'],
+  existingFiles?: ListFilesResponse['files']
+): ListFilesResponse['files'] {
+  const files = new Map<string, ListFilesResponse['files'][number]>();
+  if (existingFiles) {
+    for (const file of existingFiles) {
+      files.set(file.filename, file);
+    }
+  }
+  for (const event of timeline) {
+    applyTimelineEventToFiles(files, event);
+  }
+  return Array.from(files.values()).sort(compareMirrorFiles);
+}
+
+export async function importCompatibilityTimelineDelta(snapshot: TimelineDeltaResponse): Promise<{
+  volumeId: string;
+  files: ListFilesResponse['files'];
+  timeline: TimelineResponse['events'];
+}> {
+  // docs/specs/application/hash-cursor-refresh-v0.1.md
+  const previousTimeline = snapshot.reset ? null : await readMirrorTimelineSnapshot(snapshot.volumeId);
+  const previousVolume = snapshot.reset ? null : await readMirrorVolumeSnapshot(snapshot.volumeId);
+  const canAppend =
+    previousTimeline !== null &&
+    previousVolume !== null &&
+    previousTimeline.events.at(-1)?.eventHash === snapshot.acceptedCursor;
+
+  const timeline = canAppend
+    ? [...previousTimeline.events, ...snapshot.events]
+    : snapshot.events;
+  const files = canAppend
+    ? materializeMirrorFilesFromTimeline(snapshot.events, previousVolume.files)
+    : materializeMirrorFilesFromTimeline(snapshot.events);
+
+  await importCompatibilityTimelineSnapshot({
+    volumeId: snapshot.volumeId,
+    eventCount: snapshot.totalEventCount,
+    events: timeline,
+  });
+  await importCompatibilityVolumeSnapshot({
+    volumeId: snapshot.volumeId,
+    files,
+  });
+  await writeMirrorCheckpoint(`cursor:timeline:${snapshot.volumeId}`, {
+    kind: 'event-hash',
+    requestedCursor: snapshot.requestedCursor,
+    acceptedCursor: snapshot.acceptedCursor,
+    nextCursor: snapshot.nextCursor,
+    reset: snapshot.reset,
+    totalEventCount: snapshot.totalEventCount,
+    updatedAt: Date.now(),
+    source: 'browser-mirror',
+  });
+
+  return {
+    volumeId: snapshot.volumeId,
+    files,
+    timeline,
+  };
 }
 
 export async function readMirrorTimelineSnapshot(volumeId: string): Promise<MirrorTimelineSnapshot | null> {

@@ -11,6 +11,8 @@ import type { ProviderQueueObservation } from '../../../../src/integrations/type
 import {
   embeddedPhoneGetLanRouteState,
   embeddedPhoneOpenVolume,
+  readEmbeddedPhoneRuntimeMetricsForTests,
+  resetEmbeddedPhoneRuntimeMetricsForTests,
   resetEmbeddedPhoneServicesForTests,
 } from './embeddedPhoneServices.js';
 import {
@@ -229,6 +231,9 @@ describe('nativeLanSync', () => {
       remote.client
     );
 
+    await embeddedPhoneOpenVolume(secret);
+    resetEmbeddedPhoneRuntimeMetricsForTests();
+
     const firstRoute = await embeddedPhoneGetLanRouteState('peer-cursor');
     await remote.addFile('later.txt', 'later payload');
 
@@ -251,6 +256,10 @@ describe('nativeLanSync', () => {
     expect(secondRoute.lastAckedObservationId).not.toBe(firstRoute.lastAckedObservationId);
     expect(second.importedEvents).toBeGreaterThan(0);
     expect(opened.files.map((entry) => entry.filename).sort()).toEqual(['hello.txt', 'later.txt']);
+    expect(readEmbeddedPhoneRuntimeMetricsForTests()).toMatchObject({
+      incrementalRefreshReads: 1,
+      fullRefreshReads: 0,
+    });
   });
 });
 

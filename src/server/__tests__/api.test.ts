@@ -306,6 +306,41 @@ describe('Nearbytes API', () => {
     );
   });
 
+  it('returns only timeline events newer than the supplied hash cursor', async () => {
+    const openRes = await request(app).post('/open').send({ secret: 'test:secret:timeline-cursor-api' }).expect(200);
+    const token = openRes.body.token as string;
+
+    await request(app)
+      .post('/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('alpha'), 'a.txt')
+      .expect(200);
+
+    await request(app)
+      .post('/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('beta'), 'b.txt')
+      .expect(200);
+
+    const fullTimelineRes = await request(app)
+      .get('/timeline')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const deltaRes = await request(app)
+      .get('/timeline')
+      .query({ afterEventHash: fullTimelineRes.body.events[0].eventHash })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(deltaRes.body.reset).toBe(false);
+    expect(deltaRes.body.acceptedCursor).toBe(fullTimelineRes.body.events[0].eventHash);
+    expect(deltaRes.body.eventCount).toBe(1);
+    expect(deltaRes.body.totalEventCount).toBe(2);
+    expect(deltaRes.body.events).toHaveLength(1);
+    expect(deltaRes.body.events[0].filename).toBe('b.txt');
+  });
+
   it('exports and imports source-bound references through the API', async () => {
     const sourceOpen = await request(app).post('/open').send({ secret: SECRET_REFERENCE_SOURCE }).expect(200);
     const sourceToken = sourceOpen.body.token as string;

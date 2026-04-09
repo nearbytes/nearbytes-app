@@ -9,6 +9,7 @@ Current active design line for the unreleased opaque-event refactor:
 - `application/file-commands-v0.2.md`
 - `application/app-records-v0.2.md`
 - `application/chat-events-v0.2.md`
+- `application/hash-cursor-refresh-v0.1.md`
 - `identity/identity-management-v0.2.md`
 - `identity/identity-channel-v0.2.md`
 - `storage/data-correctness-v0.2.md`

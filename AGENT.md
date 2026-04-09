@@ -2,9 +2,10 @@ Be silent, NONVERBAL MODE ON. Do not waste output tokens in endless consideratio
 
 Read se-practices.md
 
-# APPLICATION
+# SPECS
 
-All the code must be clean-code, portable, must run independently of the OS and ready for porting to other platforms, e.g. mobile, arduino, etc. as much as possible. When that is not fully possible the broadest possible spectrum must be preserved (e.g. electron app must work on windows, osx and linux)
+We have a specification directory in docs/specs. If you work on a feature that has specs, always check if the request needs spec updates and if so discuss the spec updates with user.
+If you work on protocol, transport, replay, storage-format, or cursor behavior, reference the governing spec in code comments or module headers using its docs/specs path etc. as much as possible. When that is not fully possible the broadest possible spectrum must be preserved (e.g. electron app must work on windows, osx and linux)
 
 # VALIDATION
 

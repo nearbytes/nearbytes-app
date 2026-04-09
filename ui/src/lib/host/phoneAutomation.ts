@@ -1,5 +1,12 @@
 import { Capacitor } from '@capacitor/core';
-import { listFiles, openVolume } from '../api.js';
+import {
+  listChat,
+  listFiles,
+  openVolume,
+  publishIdentity,
+  sendChatMessage,
+  uploadFiles,
+} from '../api.js';
 
 import {
   clearNativeAutomationCommand,
@@ -260,32 +267,33 @@ async function executePhoneAutomationCommand(command: PhoneAutomationCommand): P
   }
 
   if (command.action === 'publish-identity') {
-    await embeddedPhoneOpenVolume(command.secret);
-    return embeddedPhonePublishIdentity(command.secret, command.identitySecret, command.profile);
+    await openVolume(command.secret);
+    return publishIdentity({ type: 'secret', secret: command.secret }, command.identitySecret, command.profile);
   }
 
   if (command.action === 'send-chat-message') {
-    await embeddedPhoneOpenVolume(command.secret);
-    return embeddedPhoneSendChatMessage(command.secret, command.identitySecret, {
+    await openVolume(command.secret);
+    return sendChatMessage({ type: 'secret', secret: command.secret }, command.identitySecret, {
       body: command.body,
     });
   }
 
   if (command.action === 'upload-file') {
-    await embeddedPhoneOpenVolume(command.secret);
+    await openVolume(command.secret);
     const bytes = decodeBase64(command.contentBase64);
     const file = new File([bytes], command.filename, {
       type: command.mimeType ?? 'application/octet-stream',
     });
-    return embeddedPhoneUploadFile(command.secret, file);
+    return (await uploadFiles({ type: 'secret', secret: command.secret }, [file]))[0] ?? null;
   }
 
   if (command.action === 'list-files') {
-    await embeddedPhoneOpenVolume(command.secret);
-    return embeddedPhoneListFiles(command.secret);
+    await openVolume(command.secret);
+    return listFiles({ type: 'secret', secret: command.secret });
   }
 
-  return embeddedPhoneListChat(command.secret);
+  await openVolume(command.secret);
+  return listChat({ type: 'secret', secret: command.secret });
 }
 
 async function writePhoneAutomationResult(result: PhoneAutomationResult): Promise<void> {

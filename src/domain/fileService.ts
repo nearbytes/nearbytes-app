@@ -61,6 +61,16 @@ export interface SnapshotSummary {
   lastEventHash: string | null;
 }
 
+export interface TimelineDelta {
+  requestedCursor: string | null;
+  acceptedCursor: string | null;
+  nextCursor: string | null;
+  reset: boolean;
+  eventCount: number;
+  totalEventCount: number;
+  events: TimelineEvent[];
+}
+
 export interface ReferenceExportResult<TBundle> {
   bundle: TBundle;
   serialized: string;
@@ -143,6 +153,7 @@ export interface FileService {
   ): Promise<RenameFolderSummary>;
   computeSnapshot(secret: string): Promise<SnapshotSummary>;
   getTimeline(secret: string): Promise<TimelineEvent[]>;
+  getTimelineDelta(secret: string, afterEventHash?: string | null): Promise<TimelineDelta>;
   getEvent(secret: string, eventHash: string): Promise<EventDetail>;
   exportSourceReferences(
     secret: string,
@@ -274,6 +285,15 @@ export function createFileService(dependencies: FileServiceDependencies): FileSe
       ),
     getTimeline: async (secret) =>
       getTimelineWithDeps(secret, dependencies.crypto, dependencies.storage, channelStorage, pathMapper),
+    getTimelineDelta: async (secret, afterEventHash) =>
+      getTimelineDeltaWithDeps(
+        secret,
+        afterEventHash,
+        dependencies.crypto,
+        dependencies.storage,
+        channelStorage,
+        pathMapper
+      ),
     getEvent: async (secret, eventHash) =>
       getEventWithDeps(
         secret,
@@ -604,6 +624,68 @@ async function getTimelineWithDeps(
   const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
   return mapEntriesToTimeline(entries);
+}
+
+async function getTimelineDeltaWithDeps(
+  secret: string,
+  afterEventHash: string | null | undefined,
+  crypto: CryptoOperations,
+  storage: StorageBackend,
+  channelStorage: ChannelStorage,
+  pathMapper: ChannelPathMapper
+): Promise<TimelineDelta> {
+  // docs/specs/application/hash-cursor-refresh-v0.1.md
+  const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
+  const entries = await loadEventLog(volume, channelStorage, crypto);
+  await verifyEventLog(entries, volume, crypto);
+
+  const timeline = mapEntriesToTimeline(entries);
+  const requestedCursor = normalizeTimelineCursor(afterEventHash);
+  const nextCursor = timeline.at(-1)?.eventHash ?? null;
+
+  if (!requestedCursor) {
+    return {
+      requestedCursor: null,
+      acceptedCursor: null,
+      nextCursor,
+      reset: true,
+      eventCount: timeline.length,
+      totalEventCount: timeline.length,
+      events: timeline,
+    };
+  }
+
+  const cursorIndex = timeline.findIndex((event) => event.eventHash === requestedCursor);
+  if (cursorIndex < 0) {
+    return {
+      requestedCursor,
+      acceptedCursor: null,
+      nextCursor,
+      reset: true,
+      eventCount: timeline.length,
+      totalEventCount: timeline.length,
+      events: timeline,
+    };
+  }
+
+  const events = timeline.slice(cursorIndex + 1);
+  return {
+    requestedCursor,
+    acceptedCursor: requestedCursor,
+    nextCursor,
+    reset: false,
+    eventCount: events.length,
+    totalEventCount: timeline.length,
+    events,
+  };
+}
+
+function normalizeTimelineCursor(afterEventHash: string | null | undefined): string | null {
+  const normalized = afterEventHash?.trim().toLowerCase() ?? '';
+  if (!normalized) {
+    return null;
+  }
+  return normalized;
 }
 
 async function getEventWithDeps(

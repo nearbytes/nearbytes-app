@@ -1014,14 +1014,20 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get(
     '/timeline',
     requireSecret(deps),
-    asyncHandler(async (_req, res) => {
+    asyncHandler(async (req, res) => {
       const secret = res.locals.secret as string;
       const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
-      const events = await deps.fileService.getTimeline(secret);
+      const afterEventHash = typeof req.query.afterEventHash === 'string' ? req.query.afterEventHash : null;
+      const timeline = await deps.fileService.getTimelineDelta(secret, afterEventHash);
       res.json({
         volumeId,
-        eventCount: events.length,
-        events,
+        requestedCursor: timeline.requestedCursor,
+        acceptedCursor: timeline.acceptedCursor,
+        nextCursor: timeline.nextCursor,
+        reset: timeline.reset,
+        eventCount: timeline.eventCount,
+        totalEventCount: timeline.totalEventCount,
+        events: timeline.events,
       });
     })
   );

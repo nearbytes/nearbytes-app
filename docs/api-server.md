@@ -84,10 +84,19 @@ Returns the file list for the authenticated volume.
 
 Returns deterministic file events (chronological) for the authenticated volume.
 
+Optional query parameters:
+
+- `afterEventHash`: opaque event-hash cursor. When present, the server returns only events newer than that hash in the server's local event ordering.
+
 ```json
 {
   "volumeId": "hex",
+  "requestedCursor": "hex-or-null",
+  "acceptedCursor": "hex-or-null",
+  "nextCursor": "hex-or-null",
+  "reset": false,
   "eventCount": 2,
+  "totalEventCount": 2,
   "events": [
     {
       "eventHash": "hex",
@@ -382,6 +391,9 @@ curl -X DELETE http://localhost:3000/files/photo.jpg \
   -H "x-nearbytes-secret: my volume"
 
 curl http://localhost:3000/timeline \
+  -H "x-nearbytes-secret: my volume"
+
+curl 'http://localhost:3000/timeline?afterEventHash=<event-hash>' \
   -H "x-nearbytes-secret: my volume"
 
 curl -X POST http://localhost:3000/snapshot \
