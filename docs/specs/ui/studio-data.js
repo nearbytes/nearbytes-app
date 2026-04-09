@@ -21,6 +21,24 @@
           accentStrong: '#164162',
           accentSoft: 'rgba(36,94,145,0.12)',
           glow: 'rgba(36,94,145,0.18)'
+        },
+        typography: {
+          display: '"Iowan Old Style", "Palatino Linotype", serif',
+          body: '"IBM Plex Sans", "Avenir Next", sans-serif',
+          mono: '"IBM Plex Mono", monospace',
+          displayLabel: 'Iowan Old Style',
+          bodyLabel: 'IBM Plex Sans',
+          monoLabel: 'IBM Plex Mono'
+        },
+        chrome: {
+          styleLabel: 'Warm glass',
+          shellLabel: 'Cream paper surfaces with long editorial shadows',
+          radiusXl: '28px',
+          radiusLg: '20px',
+          radiusMd: '14px',
+          blur: '14px',
+          shadowLg: '0 28px 70px rgba(34,25,18,0.12)',
+          shadowMd: '0 18px 38px rgba(34,25,18,0.08)'
         }
       },
       {
@@ -43,6 +61,24 @@
           accentStrong: '#0d4c83',
           accentSoft: 'rgba(20,114,196,0.12)',
           glow: 'rgba(20,114,196,0.20)'
+        },
+        typography: {
+          display: '"Fraunces", "Iowan Old Style", serif',
+          body: '"IBM Plex Sans", "Avenir Next", sans-serif',
+          mono: '"IBM Plex Mono", monospace',
+          displayLabel: 'Fraunces',
+          bodyLabel: 'IBM Plex Sans',
+          monoLabel: 'IBM Plex Mono'
+        },
+        chrome: {
+          styleLabel: 'Signal glass',
+          shellLabel: 'Denser panels, tighter corners, stronger dividers',
+          radiusXl: '24px',
+          radiusLg: '18px',
+          radiusMd: '12px',
+          blur: '12px',
+          shadowLg: '0 24px 56px rgba(16,17,19,0.12)',
+          shadowMd: '0 16px 32px rgba(16,17,19,0.08)'
         }
       },
       {
@@ -65,6 +101,24 @@
           accentStrong: '#07505b',
           accentSoft: 'rgba(13,126,143,0.12)',
           glow: 'rgba(13,126,143,0.18)'
+        },
+        typography: {
+          display: '"Cormorant Garamond", "Iowan Old Style", serif',
+          body: '"IBM Plex Sans", "Avenir Next", sans-serif',
+          mono: '"IBM Plex Mono", monospace',
+          displayLabel: 'Cormorant Garamond',
+          bodyLabel: 'IBM Plex Sans',
+          monoLabel: 'IBM Plex Mono'
+        },
+        chrome: {
+          styleLabel: 'Mist glass',
+          shellLabel: 'Cool gradients, deeper blur, lighter atmospheric chrome',
+          radiusXl: '30px',
+          radiusLg: '22px',
+          radiusMd: '16px',
+          blur: '16px',
+          shadowLg: '0 28px 64px rgba(21,37,48,0.10)',
+          shadowMd: '0 18px 36px rgba(21,37,48,0.08)'
         }
       }
     ],

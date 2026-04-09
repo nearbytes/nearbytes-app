@@ -61,10 +61,10 @@
     justify-content: center;
     width: 132px;
     height: 132px;
-    border-radius: 28px;
+    border-radius: var(--nb-radius-xl, 28px);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(240, 249, 255, 0.72));
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.14)) 72%, transparent);
-    box-shadow: 0 20px 42px rgba(15, 23, 42, 0.08);
+    box-shadow: var(--nb-shadow-md, 0 20px 42px rgba(15, 23, 42, 0.08));
   }
 
   .empty-eyebrow,

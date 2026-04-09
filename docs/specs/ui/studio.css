@@ -61,7 +61,7 @@ button { border: 0; background: none; }
   border: 1px solid var(--line);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(var(--panel-blur, 14px));
 }
 
 .studio-header,
@@ -308,6 +308,37 @@ button { border: 0; background: none; }
   border-radius: 14px;
   border: 1px solid rgba(255,255,255,0.32);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.42);
+}
+
+.mood-spec-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mood-spec {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 90%, white);
+}
+
+.mood-spec strong {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.mood-spec span {
+  color: var(--ink);
+  font-size: 0.84rem;
+}
+
+.moodboard-meta-grid {
+  margin-top: 16px;
 }
 
 .palette-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }

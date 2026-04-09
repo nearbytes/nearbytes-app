@@ -118,7 +118,7 @@
   .time-machine {
     flex: 0 0 auto;
     border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
-    border-radius: 16px;
+    border-radius: var(--nb-radius-lg, 16px);
     background: var(--nb-time-machine-bg, color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7)));
     padding: 0.75rem;
     display: flex;
@@ -156,7 +156,7 @@
 
   .tm-btn {
     border: 1px solid var(--nb-btn-border, rgba(56, 189, 248, 0.22));
-    border-radius: 999px;
+    border-radius: var(--nb-radius-pill, 999px);
     background: var(--nb-btn-bg, rgba(12, 24, 43, 0.82));
     color: var(--nb-btn-color, #dbeafe);
     min-height: 34px;
@@ -188,7 +188,7 @@
 
   .tm-slider {
     width: 100%;
-    accent-color: #38bdf8;
+    accent-color: var(--nb-accent, #38bdf8);
   }
 
   .tm-scale {
@@ -226,7 +226,7 @@
     --tm-event-border: color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 94%, transparent);
     --tm-event-kind-color: var(--nb-text-soft, rgba(58, 58, 60, 0.72));
     border: 1px solid var(--tm-event-border);
-    border-radius: 14px;
+    border-radius: var(--nb-radius-md, 14px);
     background: color-mix(in srgb, var(--tm-event-bg) 56%, rgba(255, 255, 255, 0.98));
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     display: grid;
@@ -320,7 +320,7 @@
 
   .tm-event-details {
     border: 1px solid var(--nb-btn-border, rgba(148, 163, 184, 0.2));
-    border-radius: 8px;
+    border-radius: var(--nb-radius-sm, 8px);
     background: var(--nb-btn-bg, rgba(12, 22, 41, 0.6));
     color: var(--nb-btn-color, rgba(226, 232, 240, 0.85));
     font-size: 0.64rem;

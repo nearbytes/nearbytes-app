@@ -143,10 +143,10 @@
     justify-content: space-between;
     gap: 0.5rem;
     padding: 0.24rem 0.32rem;
-    border-radius: 14px;
+    border-radius: var(--nb-radius-md, 14px);
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(148, 163, 184, 0.24)) 88%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.94)) 98%, transparent);
-    backdrop-filter: blur(14px);
+    backdrop-filter: blur(var(--nb-surface-blur, 14px));
     flex-wrap: wrap;
   }
 
@@ -186,13 +186,13 @@
     appearance: none;
     width: 100%;
     min-height: 2.35rem;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-pill, 999px);
     border: 1px solid rgba(148, 163, 184, 0.22);
     background: rgba(255, 255, 255, 0.96);
     color: #1f2937;
     padding: 0.55rem 2.3rem 0.55rem 0.85rem;
     font: inherit;
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    box-shadow: var(--nb-shadow-sm, 0 10px 24px rgba(15, 23, 42, 0.08));
   }
 
   .workspace-mode-btn,
@@ -200,7 +200,7 @@
   .view-toggle {
     appearance: none;
     min-height: 34px;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-pill, 999px);
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(148, 163, 184, 0.24)) 88%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.96)) 98%, transparent);
     color: var(--nb-text-main, rgba(15, 23, 42, 0.9));
@@ -213,13 +213,13 @@
     gap: 0.4rem;
     padding: 0 0.78rem;
     cursor: pointer;
-    transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+    transition: transform var(--nb-motion-fast, 160ms) ease, border-color var(--nb-motion-fast, 160ms) ease, background-color var(--nb-motion-fast, 160ms) ease;
   }
 
   .view-toggle {
     width: 34px;
     padding: 0;
-    border-radius: 10px;
+    border-radius: var(--nb-radius-sm, 10px);
   }
 
   .workspace-mode-btn:hover,
@@ -244,7 +244,7 @@
     align-items: center;
     gap: 0.32rem;
     padding: 0.18rem;
-    border-radius: 12px;
+    border-radius: var(--nb-radius-sm, 12px);
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(148, 163, 184, 0.18)) 88%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.96)) 98%, transparent);
   }

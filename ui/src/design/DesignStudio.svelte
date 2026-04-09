@@ -213,18 +213,11 @@
 </div>
 
 <style>
-  :global(body) {
-    margin: 0;
-    background: linear-gradient(180deg, #eef3f8, #e7edf3);
-    color: #122033;
-    font-family: 'IBM Plex Sans', 'Avenir Next', sans-serif;
-  }
-
   .design-studio {
     min-height: 100vh;
-    padding: 24px;
+    padding: var(--nb-space-page, 24px);
     display: grid;
-    gap: 18px;
+    gap: var(--nb-space-panel-gap, 18px);
   }
 
   .studio-header,
@@ -233,18 +226,18 @@
   .registry-panel,
   .registry-card,
   .mock-panel {
-    border: 1px solid rgba(148, 163, 184, 0.18);
-    background: rgba(255, 255, 255, 0.84);
-    border-radius: 22px;
-    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
-    backdrop-filter: blur(18px);
+    border: 1px solid color-mix(in srgb, var(--ds-line, rgba(148, 163, 184, 0.18)) 100%, transparent);
+    background: var(--ds-card-bg, rgba(255, 255, 255, 0.84));
+    border-radius: var(--nb-radius-xl, 22px);
+    box-shadow: var(--nb-shadow-lg, 0 24px 60px rgba(15, 23, 42, 0.08));
+    backdrop-filter: blur(var(--nb-surface-blur, 18px));
   }
 
   .studio-header,
   .studio-controls,
   .studio-surface,
   .registry-panel {
-    padding: 20px;
+    padding: var(--nb-space-panel-padding, 20px);
   }
 
   .studio-header {
@@ -257,13 +250,13 @@
     font-size: 12px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #64748b;
+    color: var(--ds-muted, #64748b);
   }
 
   .studio-header h1,
   .registry-card h2 {
     margin: 0;
-    font-family: 'Iowan Old Style', 'Palatino Linotype', serif;
+    font-family: var(--nb-font-display, 'Iowan Old Style', 'Palatino Linotype', serif);
     letter-spacing: -0.03em;
   }
 
@@ -272,7 +265,7 @@
   .registry-row span,
   .mock-panel span {
     margin: 0;
-    color: #5b6878;
+    color: var(--ds-muted, #5b6878);
   }
 
   .studio-active-surfaces,
@@ -289,16 +282,16 @@
   .studio-controls button {
     min-height: 34px;
     padding: 0 14px;
-    border-radius: 999px;
-    border: 1px solid rgba(148, 163, 184, 0.18);
-    background: rgba(255, 255, 255, 0.9);
+    border-radius: var(--nb-radius-pill, 999px);
+    border: 1px solid color-mix(in srgb, var(--ds-line, rgba(148, 163, 184, 0.18)) 100%, transparent);
+    background: color-mix(in srgb, var(--ds-panel-bg, rgba(255, 255, 255, 0.9)) 96%, white);
     font: inherit;
   }
 
   .studio-controls button.active {
-    background: #0f6fb7;
+    background: var(--ds-accent, #0f6fb7);
     color: white;
-    border-color: rgba(15, 111, 183, 0.32);
+    border-color: color-mix(in srgb, var(--ds-accent, #0f6fb7) 32%, transparent);
   }
 
   .studio-grid {
@@ -332,7 +325,7 @@
   }
 
   .mock-panel.secondary {
-    background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(255, 255, 255, 0.88));
+    background: linear-gradient(135deg, color-mix(in srgb, var(--ds-accent-soft, rgba(14, 165, 233, 0.12)) 92%, transparent), color-mix(in srgb, var(--ds-paper, rgba(255, 255, 255, 0.88)) 92%, white));
   }
 
   .registry-grid {
@@ -351,8 +344,8 @@
     justify-content: space-between;
     gap: 12px;
     padding: 10px 12px;
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.72);
+    border-radius: var(--nb-radius-md, 14px);
+    background: color-mix(in srgb, var(--ds-panel, rgba(255, 255, 255, 0.72)) 96%, white);
   }
 
   @media (max-width: 980px) {

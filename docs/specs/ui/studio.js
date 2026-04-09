@@ -46,10 +46,16 @@
     }) || data.hubs[0];
   }
 
+  function scalePx(value, factor) {
+    var match = /(-?\d+(?:\.\d+)?)px/.exec(String(value || ''));
+    if (!match) return value;
+    return (Number(match[1]) * factor).toFixed(2).replace(/\.00$/, '') + 'px';
+  }
+
   function applyTokens() {
     var moodboard = activeMoodboard();
     var strength = Math.max(70, Math.min(130, Number(state.accentStrength) || 100));
-    var radius = state.radiusMode === 'crisp' ? '16px' : state.radiusMode === 'round' ? '32px' : '22px';
+    var radiusFactor = state.radiusMode === 'crisp' ? 0.84 : state.radiusMode === 'round' ? 1.14 : 1;
     var root = document.documentElement;
     root.style.setProperty('--bg', moodboard.palette.bg);
     root.style.setProperty('--paper', moodboard.palette.paper);
@@ -61,8 +67,17 @@
     root.style.setProperty('--accent-strong', moodboard.palette.accentStrong);
     root.style.setProperty('--accent-soft', moodboard.palette.accentSoft);
     root.style.setProperty('--glow', moodboard.palette.glow);
-    root.style.setProperty('--radius-xl', radius);
-    root.style.setProperty('--shadow-lg', '0 28px 70px rgba(34, 25, 18, ' + (strength / 1000).toFixed(3) + ')');
+    root.style.setProperty('--font-display', moodboard.typography.display);
+    root.style.setProperty('--font-body', moodboard.typography.body);
+    root.style.setProperty('--font-mono', moodboard.typography.mono);
+    root.style.setProperty('--radius-xl', scalePx(moodboard.chrome.radiusXl, radiusFactor));
+    root.style.setProperty('--radius-lg', scalePx(moodboard.chrome.radiusLg, radiusFactor));
+    root.style.setProperty('--radius-md', scalePx(moodboard.chrome.radiusMd, radiusFactor));
+    root.style.setProperty('--shadow-lg', moodboard.chrome.shadowLg.replace(/0\.12|0\.10|0\.08/g, function (alpha) {
+      return (Math.max(0.06, Number(alpha) * (strength / 100))).toFixed(3);
+    }));
+    root.style.setProperty('--shadow-md', moodboard.chrome.shadowMd);
+    root.style.setProperty('--panel-blur', moodboard.chrome.blur);
   }
 
   function escapeHtml(value) {
@@ -219,10 +234,17 @@
           + '<span style="background:' + item.palette.accent + '"></span>'
           + '<span style="background:' + item.palette.accentStrong + '"></span>'
           + '</div>'
+          + '<div class="mood-spec-grid">'
+          + '<div class="mood-spec"><strong>Display</strong><span>' + item.typography.displayLabel + '</span></div>'
+          + '<div class="mood-spec"><strong>Body</strong><span>' + item.typography.bodyLabel + '</span></div>'
+          + '<div class="mood-spec"><strong>Chrome</strong><span>' + item.chrome.styleLabel + '</span></div>'
+          + '<div class="mood-spec"><strong>Radius</strong><span>' + item.chrome.radiusXl + ' / ' + item.chrome.radiusLg + ' / ' + item.chrome.radiusMd + '</span></div>'
+          + '</div>'
           + '<div class="token-stack">'
           + item.notes.map(function (note) {
             return '<span class="token-note">' + note + '</span>';
           }).join('')
+          + '<span class="token-note"><strong>Shell</strong> ' + item.chrome.shellLabel + '</span>'
           + '</div>'
           + '</button>';
       }).join('')
@@ -231,7 +253,8 @@
   }
 
   function renderPalette() {
-    var palette = activeMoodboard().palette;
+    var moodboard = activeMoodboard();
+    var palette = moodboard.palette;
     var swatches = [
       ['Background', palette.bg],
       ['Paper', palette.paper],
@@ -250,6 +273,11 @@
       + swatches.map(function (swatch) {
         return '<article class="swatch"><div class="swatch-color" style="background:' + swatch[1] + '"></div><strong>' + swatch[0] + '</strong><code>' + swatch[1] + '</code></article>';
       }).join('')
+      + '</div>'
+      + '<div class="palette-grid moodboard-meta-grid">'
+      + '<article class="swatch"><strong>Display font</strong><code>' + moodboard.typography.displayLabel + '</code><p class="mood-note">' + moodboard.typography.display + '</p></article>'
+      + '<article class="swatch"><strong>Body font</strong><code>' + moodboard.typography.bodyLabel + '</code><p class="mood-note">' + moodboard.typography.body + '</p></article>'
+      + '<article class="swatch"><strong>Chrome</strong><code>' + moodboard.chrome.styleLabel + '</code><p class="mood-note">Blur ' + moodboard.chrome.blur + ' · ' + moodboard.chrome.shellLabel + '</p></article>'
       + '</div>'
       + '</section>';
   }

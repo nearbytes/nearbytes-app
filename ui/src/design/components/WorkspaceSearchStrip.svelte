@@ -54,7 +54,7 @@
     align-items: center;
     gap: 0.55rem;
     padding: 0.42rem 0.5rem;
-    border-radius: 14px;
+    border-radius: var(--nb-radius-md, 14px);
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(148, 163, 184, 0.24)) 88%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.96)) 98%, transparent);
     flex-wrap: wrap;
@@ -64,7 +64,7 @@
   .workspace-search-sort {
     appearance: none;
     min-height: 40px;
-    border-radius: 12px;
+    border-radius: var(--nb-radius-sm, 12px);
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(148, 163, 184, 0.24)) 88%, transparent);
     background: rgba(255, 255, 255, 0.96);
     color: var(--nb-text-main, rgba(15, 23, 42, 0.92));
@@ -92,7 +92,7 @@
   .workspace-search-paste {
     appearance: none;
     min-height: 40px;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-pill, 999px);
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(148, 163, 184, 0.24)) 88%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, rgba(255, 255, 255, 0.96)) 98%, transparent);
     color: var(--nb-text-main, rgba(15, 23, 42, 0.92));
@@ -104,7 +104,7 @@
     gap: 0.42rem;
     padding: 0 0.85rem;
     cursor: pointer;
-    transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+    transition: transform var(--nb-motion-fast, 160ms) ease, border-color var(--nb-motion-fast, 160ms) ease, background-color var(--nb-motion-fast, 160ms) ease;
   }
 
   .workspace-search-paste:hover {

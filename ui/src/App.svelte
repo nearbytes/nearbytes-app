@@ -8414,16 +8414,6 @@
     overflow: hidden;
   }
 
-  :global(*, *::before, *::after) {
-    box-sizing: border-box;
-  }
-
-  :global(:root) {
-    --nb-font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
-    --nb-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    --nb-font-mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
-  }
-
   :global(body) {
     margin: 0;
     padding: 0;

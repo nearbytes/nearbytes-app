@@ -130,7 +130,7 @@
     align-items: stretch;
     justify-content: stretch;
     background: rgba(0, 0, 0, 0.38);
-    backdrop-filter: blur(4px);
+    backdrop-filter: blur(var(--nb-overlay-blur, 4px));
     animation: panel-fade-in 200ms ease;
   }
 
@@ -140,7 +140,7 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    border-radius: 18px;
+    border-radius: var(--nb-radius-lg, 18px);
     overflow: hidden;
     margin: 0.75rem;
   }
@@ -156,7 +156,7 @@
     color: var(--nb-text-soft, rgba(191, 219, 254, 0.82));
     width: 32px;
     height: 32px;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-pill, 999px);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -187,7 +187,7 @@
 
     .volume-workspace,
     .workspace-panel-view {
-      border-radius: 18px;
+      border-radius: var(--nb-radius-lg, 18px);
     }
   }
 

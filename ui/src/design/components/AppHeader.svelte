@@ -266,11 +266,11 @@
     align-items: center;
     min-width: 0;
     padding: 0.4rem 0.5rem;
-    border-radius: 20px;
+    border-radius: var(--nb-radius-lg, 20px);
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.14)) 72%, transparent);
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, var(--nb-shell-bottom, #f4f4f7));
-    backdrop-filter: blur(18px);
-    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(var(--nb-surface-blur, 18px));
+    box-shadow: var(--nb-shadow-md, 0 20px 40px rgba(15, 23, 42, 0.08));
   }
 
   .brand-badge {
@@ -292,7 +292,7 @@
   .brand-logo-frame {
     width: 42px;
     height: 42px;
-    border-radius: 14px;
+    border-radius: var(--nb-radius-md, 14px);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -301,7 +301,7 @@
   }
 
   .brand-logo-frame.interactive {
-    transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
+    transition: transform var(--nb-motion-medium, 180ms) ease, border-color var(--nb-motion-medium, 180ms) ease, background-color var(--nb-motion-medium, 180ms) ease;
   }
 
   .brand-logo-trigger:hover .brand-logo-frame.interactive,
@@ -361,7 +361,7 @@
   .phone-mount-select {
     appearance: none;
     min-height: 36px;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-pill, 999px);
     border: 1px solid rgba(148, 163, 184, 0.22);
     background: rgba(255, 255, 255, 0.96);
     color: #1f2937;
@@ -381,7 +381,7 @@
     border: 1px solid var(--nb-btn-border, rgba(56, 189, 248, 0.14));
     background: var(--nb-btn-bg, rgba(10, 19, 34, 0.52));
     color: var(--nb-btn-color, rgba(191, 219, 254, 0.78));
-    border-radius: 999px;
+    border-radius: var(--nb-radius-pill, 999px);
     width: 30px;
     height: 30px;
     line-height: 1;
@@ -390,7 +390,7 @@
     justify-content: center;
     cursor: pointer;
     padding: 0;
-    transition: opacity 0.18s ease, transform 0.18s ease, background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+    transition: opacity var(--nb-motion-medium, 180ms) ease, transform var(--nb-motion-medium, 180ms) ease, background-color var(--nb-motion-medium, 180ms) ease, border-color var(--nb-motion-medium, 180ms) ease, color var(--nb-motion-medium, 180ms) ease, box-shadow var(--nb-motion-medium, 180ms) ease;
   }
 
   .header-tool-btn:hover {
