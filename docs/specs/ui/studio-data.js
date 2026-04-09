@@ -1,5 +1,4 @@
-(function () {
-  window.NearbytesUiStudioData = {
+export const STUDIO_DATA = {
     moodboards: [
       {
         id: 'linen-ledger',
@@ -217,5 +216,4 @@
       stylesSortValue: 'newest',
       stylesSortOpen: false
     }
-  };
-})();
+};
