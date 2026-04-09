@@ -32,7 +32,7 @@ async function main() {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       process.exit(result.status === 'success' ? 0 : 1);
     }
-    await sleep(500);
+    await sleep(50);
   }
 
   throw new Error(`Timed out waiting for phone automation result for ${command.action}.`);
@@ -43,6 +43,7 @@ function parseArgs(args) {
     action: '',
     secret: '',
     identitySecret: '',
+    eventHash: '',
     displayName: 'Phone Test5',
     bio: '',
     body: '',
@@ -68,6 +69,11 @@ function parseArgs(args) {
     }
     if (arg === '--identity-secret') {
       parsed.identitySecret = next ?? '';
+      index += 1;
+      continue;
+    }
+    if (arg === '--event-hash') {
+      parsed.eventHash = next ?? '';
       index += 1;
       continue;
     }
@@ -116,7 +122,7 @@ function parseArgs(args) {
   if (!parsed.action) {
     throw new Error('--action is required');
   }
-  if (!parsed.secret) {
+  if (!parsed.secret && parsed.action !== 'get-latency-traces' && parsed.action !== 'clear-latency-traces') {
     throw new Error('--secret is required');
   }
 
@@ -178,6 +184,24 @@ function buildCommand(input) {
       id,
       action: input.action,
       secret: input.secret,
+    };
+  }
+  if (input.action === 'wait-chat-event') {
+    if (!input.eventHash) {
+      throw new Error('--event-hash is required for wait-chat-event');
+    }
+    return {
+      id,
+      action: input.action,
+      secret: input.secret,
+      eventHash: input.eventHash,
+      timeoutMs: input.timeoutMs,
+    };
+  }
+  if (input.action === 'get-latency-traces' || input.action === 'clear-latency-traces') {
+    return {
+      id,
+      action: input.action,
     };
   }
   throw new Error(`Unsupported action: ${input.action}`);

@@ -66,6 +66,12 @@ import type {
   LanTransportStorageCommand,
   LanTransportVolumeInventory,
 } from '../../../../src/integrations/lanPeerTransport.js';
+import {
+  clearLanLatencyTraces,
+  listLanLatencyTraces,
+  recordLanLatencyTrace,
+  type LanLatencyTraceEntry,
+} from './lanLatencyTrace.js';
 
 interface StoredPathRecord {
   path: string;
@@ -1198,6 +1204,7 @@ async function performEmbeddedPhonePublishIdentity(
 ): Promise<PublishIdentityResponse> {
   const { chatService } = await getEmbeddedPhoneRuntimeServices();
   const published = await chatService.publishIdentity(secret, payload.identitySecret, payload.profile);
+  recordLanLatencyTrace(published.eventHash, 'phone.outgoing.identity.published');
   const snapshot = await refreshMirrors(secret, published.eventHash);
   await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/${published.eventHash}.json`);
   return { published };
@@ -1209,6 +1216,7 @@ async function performEmbeddedPhoneSendChatMessage(
 ): Promise<SendChatMessageResponse> {
   const { chatService } = await getEmbeddedPhoneRuntimeServices();
   const sent = await chatService.sendMessage(secret, payload.identitySecret, payload.input);
+  recordLanLatencyTrace(sent.eventHash, 'phone.outgoing.chat.sent');
   const snapshot = await refreshMirrors(secret, sent.eventHash);
   await emitEmbeddedPhoneVolumeUpdate(snapshot.volumeId, 'change', `channels/${sent.eventHash}.json`);
   return { sent };
@@ -1842,14 +1850,29 @@ export async function embeddedPhoneImportLanBlock(blockHash: string, bytes: Uint
   return true;
 }
 
-export async function embeddedPhoneFinalizeLanVolumeImport(volumeId: string): Promise<void> {
+export async function embeddedPhoneFinalizeLanVolumeImport(
+  volumeId: string,
+  options?: { readonly eventHash?: string | null }
+): Promise<void> {
   const normalizedVolumeId = volumeId.trim().toLowerCase();
   const secret = embeddedPhoneKnownVolumeSecrets.get(normalizedVolumeId);
   if (secret) {
     await refreshMirrors(secret);
+    await emitEmbeddedPhoneVolumeUpdate(normalizedVolumeId, 'change', options?.eventHash ? `channels/${options.eventHash}.json` : 'channels/lan-import.json');
+    if (options?.eventHash) {
+      recordLanLatencyTrace(options.eventHash, 'phone.incoming.event.materialized', normalizedVolumeId);
+    }
     return;
   }
   await deleteEmbeddedPhoneRuntimeHead(normalizedVolumeId);
+}
+
+export function embeddedPhoneGetLanLatencyTraces(): LanLatencyTraceEntry[] {
+  return listLanLatencyTraces();
+}
+
+export function embeddedPhoneClearLanLatencyTraces(): void {
+  clearLanLatencyTraces();
 }
 
 export async function embeddedPhoneBuildLanHello(): Promise<LanTransportHello> {

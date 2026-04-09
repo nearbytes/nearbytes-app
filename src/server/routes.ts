@@ -20,6 +20,7 @@ import {
   ManagedShareServiceError,
   type ManagedShareServiceOptions,
 } from '../integrations/managedShares.js';
+import { clearLanLatencyTraces, recordLanLatencyTrace } from '../integrations/lanLatencyTrace.js';
 import type { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { isProviderEnabled } from '../config/appConfig.js';
 import { bytesToHex } from '../utils/encoding.js';
@@ -151,6 +152,21 @@ export function createRoutes(deps: RouteDependencies): Router {
       throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
     }
     res.json(await deps.localNetworkSyncService.getDebugResponse());
+  }));
+
+  router.get('/lan/latency-traces', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    res.json({ traces: deps.localNetworkSyncService.getLatencyTraces() });
+  }));
+
+  router.post('/lan/latency-traces/clear', asyncHandler(async (_req, res) => {
+    if (!deps.localNetworkSyncService) {
+      throw new ApiError(501, 'NOT_IMPLEMENTED', 'Local network sync is not enabled');
+    }
+    clearLanLatencyTraces();
+    res.json({ ok: true });
   }));
 
   router.get('/lan/volumes', asyncHandler(async (_req, res) => {
@@ -1141,6 +1157,7 @@ export function createRoutes(deps: RouteDependencies): Router {
       const { identitySecret, body, attachment } = parseWithSchema(sendChatMessageBodySchema, req.body);
       const secret = res.locals.secret as string;
       const sent = await deps.chatService.sendMessage(secret, identitySecret, { body, attachment });
+      recordLanLatencyTrace(sent.eventHash, 'desktop.outgoing.chat.sent');
       res.json({ sent });
     })
   );

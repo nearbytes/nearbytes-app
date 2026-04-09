@@ -1606,6 +1606,7 @@
   const mountRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const MOUNT_RUNTIME_REFRESH_MS = 15000;
   const ACTIVE_MOUNT_RUNTIME_STALE_MS = 2500;
+  const AUTO_REFRESH_DEBOUNCE_MS = 25;
 
   async function loadThemeRegistryAsset(): Promise<void> {
     try {
@@ -1807,7 +1808,7 @@
         void processPendingPhoneAutomationCommand().catch((error) => {
           console.warn('Failed to process pending phone automation command:', error);
         });
-      }, 250);
+      }, 25);
     }
 
     void connectDesktopDeepLinks()
@@ -3345,7 +3346,7 @@
     autoRefreshTimer = setTimeout(() => {
       autoRefreshTimer = null;
       void refreshFiles();
-    }, 260);
+    }, AUTO_REFRESH_DEBOUNCE_MS);
   }
 
   $effect(() => {

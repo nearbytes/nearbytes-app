@@ -15,6 +15,7 @@ import type {
   LanTransportDiscoveredPeer,
   LanTransportStorageCommand,
 } from './lanPeerTransport.js';
+import { listLanLatencyTraces, recordLanLatencyTrace, type LanLatencyTraceEntry } from './lanLatencyTrace.js';
 import { WebRtcDnsSdLanTransport } from './webrtcDnsSdLanTransport.js';
 
 const LAN_SYNC_PROTOCOL = 'nearbytes.lan-sync.v1';
@@ -132,6 +133,7 @@ export interface LocalNetworkDebugResponse {
   readonly self: PeerHelloResponse;
   readonly peers: LocalNetworkPeerSnapshot[];
   readonly transport: import('./lanPeerTransport.js').LanPeerTransportDebugState | null;
+  readonly latencyTraces: LanLatencyTraceEntry[];
 }
 
 export class LocalNetworkSyncService {
@@ -337,6 +339,9 @@ export class LocalNetworkSyncService {
     if (activePeers.length === 0) {
       return;
     }
+    if (observation.kind === 'event' && observation.hash) {
+      recordLanLatencyTrace(observation.hash, 'desktop.outgoing.storage-command.dispatch', observation.volumeId ?? undefined);
+    }
     const request = {
       action: 'storage-command' as const,
       command: this.toStorageCommand(observation),
@@ -439,7 +444,12 @@ export class LocalNetworkSyncService {
       self: await this.buildHello(),
       peers: this.getPeersResponse().peers,
       transport: this.peerTransport.getDebugState?.() ?? null,
+      latencyTraces: listLanLatencyTraces(),
     };
+  }
+
+  getLatencyTraces(): LanLatencyTraceEntry[] {
+    return listLanLatencyTraces();
   }
 
   async syncPeer(peerId: string): Promise<LocalNetworkPeerSnapshot | null> {
@@ -751,6 +761,9 @@ export class LocalNetworkSyncService {
     readonly importedEvents: number;
     readonly importedBlocks: number;
   }> {
+    if (command.type === 'want-event') {
+      recordLanLatencyTrace(command.eventHash, 'desktop.incoming.storage-command.received', command.volumeId);
+    }
     const peer = this.peers.get(command.fromPeerId);
     if (!peer) {
       return {
@@ -795,6 +808,7 @@ export class LocalNetworkSyncService {
     if (!bytes) {
       return { importedEvents: 0, importedBlocks: 0 };
     }
+    recordLanLatencyTrace(normalizedEventHash, 'desktop.incoming.event.bytes.received', String(bytes.byteLength));
     const validation = await validateEventBytes(normalizedVolumeId, normalizedEventHash, bytes);
     if (!validation.ok) {
       throw new Error(validation.detail ?? `Invalid event ${normalizedEventHash} from ${peer.label}`);
@@ -806,6 +820,7 @@ export class LocalNetworkSyncService {
       importedBlocks += await this.importBlockFromStorageCommand(peer, blockHash).then((result) => result.importedBlocks);
     }
     this.storage.scheduleReconcileConfiguredVolumes();
+    recordLanLatencyTrace(normalizedEventHash, 'desktop.incoming.event.imported', normalizedVolumeId);
     return {
       importedEvents: 1,
       importedBlocks,

@@ -19,7 +19,9 @@ import {
   embeddedPhoneClearStaleLanPeerErrors,
   embeddedPhoneFinalizeLanVolumeImport,
   embeddedPhoneBuildLanHello,
+  embeddedPhoneClearLanLatencyTraces,
   embeddedPhoneGetLanRouteState,
+  embeddedPhoneGetLanLatencyTraces,
   embeddedPhoneGetLanVolumeInventory,
   embeddedPhoneHandleLanRpcRequest,
   embeddedPhoneImportLanBlock,
@@ -31,6 +33,7 @@ import {
   embeddedPhoneUpdateLanRouteState,
 } from './embeddedPhoneServices.js';
 import { BrowserLanTransport } from './browserLanTransport.js';
+import { recordLanLatencyTrace } from './lanLatencyTrace.js';
 import {
   addNativeLanIncomingSignalListener,
   completeNativeLanSignalRequest,
@@ -199,7 +202,9 @@ export async function notifyNativeLanEventMutation(volumeId: string, eventHash: 
   if (!normalizedVolumeId || !normalizedEventHash) {
     return;
   }
+  recordLanLatencyTrace(normalizedEventHash, 'phone.outgoing.storage-command.dispatch', normalizedVolumeId);
   const selfPeer = await buildSelfSignalPeer();
+  await proactivelySignalKnownPeers().catch(() => undefined);
   const discovered = (await listNativeLanDiscoveredPeers()).filter(isFreshLanPeer);
   const peers = new Map<string, LanTransportDiscoveredPeer>();
   for (const peer of discovered) {
@@ -223,6 +228,11 @@ export async function notifyNativeLanEventMutation(volumeId: string, eventHash: 
             volumeId: normalizedVolumeId,
             eventHash: normalizedEventHash,
           },
+        });
+        await transport.notify(peer, {
+          action: 'sync-hint',
+          reason: 'event-storage-command-confirm',
+          volumeIds: [normalizedVolumeId],
         });
       } catch {
         try {
@@ -746,10 +756,13 @@ async function importStorageCommandWithClient(
   if (!bytes) {
     return;
   }
+  recordLanLatencyTrace(command.eventHash, 'phone.incoming.storage-command.received', command.volumeId);
+  recordLanLatencyTrace(command.eventHash, 'phone.incoming.event.bytes.received', String(bytes.byteLength));
   const imported = await embeddedPhoneImportLanEvent(command.volumeId, command.eventHash, bytes);
   if (!imported) {
     return;
   }
+  recordLanLatencyTrace(command.eventHash, 'phone.incoming.event.imported', command.volumeId);
   const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(bytes)) as SerializedEvent);
   for (const blockHash of parsed.envelope.blockRefs) {
     const blockBytes = await requestBytesOrNull(client, {
@@ -761,7 +774,7 @@ async function importStorageCommandWithClient(
     }
     await embeddedPhoneImportLanBlock(blockHash, blockBytes);
   }
-  await embeddedPhoneFinalizeLanVolumeImport(command.volumeId);
+  await embeddedPhoneFinalizeLanVolumeImport(command.volumeId, { eventHash: command.eventHash });
 }
 
 async function requestBytesOrNull(client: LanSyncRpcClient, request: LanTransportRpcRequest): Promise<Uint8Array | null> {

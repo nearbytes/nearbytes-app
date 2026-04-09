@@ -15,6 +15,8 @@ import {
   setNativeAutomationResult,
 } from './nativeLanPlugin.js';
 import {
+  embeddedPhoneClearLanLatencyTraces,
+  embeddedPhoneGetLanLatencyTraces,
   embeddedPhoneListChat,
   embeddedPhoneListFiles,
   embeddedPhoneOpenVolume,
@@ -73,6 +75,24 @@ type ListChatCommand = {
   secret: string;
 };
 
+type WaitChatEventCommand = {
+  id: string;
+  action: 'wait-chat-event';
+  secret: string;
+  eventHash: string;
+  timeoutMs?: number;
+};
+
+type GetLatencyTracesCommand = {
+  id: string;
+  action: 'get-latency-traces';
+};
+
+type ClearLatencyTracesCommand = {
+  id: string;
+  action: 'clear-latency-traces';
+};
+
 type PhoneAutomationCommand =
   | OpenVolumeCommand
   | UiOpenVolumeCommand
@@ -80,7 +100,10 @@ type PhoneAutomationCommand =
   | SendChatMessageCommand
   | UploadFileCommand
   | ListFilesCommand
-  | ListChatCommand;
+  | ListChatCommand
+  | WaitChatEventCommand
+  | GetLatencyTracesCommand
+  | ClearLatencyTracesCommand;
 
 type PhoneAutomationResult = {
   id: string;
@@ -221,6 +244,23 @@ function normalizePhoneAutomationCommand(value: unknown): PhoneAutomationCommand
     return secret ? { id, action, secret } : null;
   }
 
+  if (action === 'wait-chat-event') {
+    const secret = readRequiredString(candidate.secret);
+    const eventHash = readRequiredString(candidate.eventHash);
+    const timeoutValue = typeof candidate.timeoutMs === 'number' ? candidate.timeoutMs : Number(candidate.timeoutMs);
+    return secret && eventHash
+      ? { id, action, secret, eventHash, timeoutMs: Number.isFinite(timeoutValue) ? timeoutValue : undefined }
+      : null;
+  }
+
+  if (action === 'get-latency-traces') {
+    return { id, action };
+  }
+
+  if (action === 'clear-latency-traces') {
+    return { id, action };
+  }
+
   return null;
 }
 
@@ -253,6 +293,15 @@ function readOptionalString(value: unknown): string | null {
 }
 
 async function executePhoneAutomationCommand(command: PhoneAutomationCommand): Promise<unknown> {
+  if (command.action === 'get-latency-traces') {
+    return { traces: embeddedPhoneGetLanLatencyTraces() };
+  }
+
+  if (command.action === 'clear-latency-traces') {
+    embeddedPhoneClearLanLatencyTraces();
+    return { ok: true };
+  }
+
   if (command.action === 'open-volume') {
     return embeddedPhoneOpenVolume(command.secret);
   }
@@ -290,6 +339,20 @@ async function executePhoneAutomationCommand(command: PhoneAutomationCommand): P
   if (command.action === 'list-files') {
     await openVolume(command.secret);
     return listFiles({ type: 'secret', secret: command.secret });
+  }
+
+  if (command.action === 'wait-chat-event') {
+    await openVolume(command.secret);
+    const deadline = Date.now() + Math.max(1_000, command.timeoutMs ?? 15_000);
+    while (Date.now() < deadline) {
+      const chat = await embeddedPhoneListChat(command.secret);
+      const message = chat.messages.find((entry) => entry.eventHash === command.eventHash);
+      if (message) {
+        return { eventHash: command.eventHash, message };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Timed out waiting for chat event ${command.eventHash}`);
   }
 
   await openVolume(command.secret);
