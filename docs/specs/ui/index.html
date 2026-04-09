@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nearbytes UI Specs</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3eee5;
+      --panel: rgba(255, 252, 246, 0.9);
+      --ink: #171411;
+      --muted: #6e655c;
+      --line: rgba(41, 31, 24, 0.12);
+      --accent: #8a3b24;
+      --accent-soft: rgba(138, 59, 36, 0.10);
+      --shadow: 0 26px 72px rgba(44, 31, 24, 0.12);
+      --radius-xl: 28px;
+      --radius-lg: 18px;
+      --font-display: "Iowan Old Style", "Palatino Linotype", serif;
+      --font-body: "IBM Plex Sans", "Avenir Next", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: var(--font-body); background: radial-gradient(circle at top, #faf7f0 0%, var(--bg) 56%, #e8dece 100%); color: var(--ink); }
+    .page { width: min(1080px, calc(100vw - 28px)); margin: 24px auto 56px; display: grid; gap: 20px; }
+    .hero, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-xl); box-shadow: var(--shadow); backdrop-filter: blur(12px); }
+    .hero { padding: 30px; display: grid; gap: 12px; }
+    .panel { padding: 22px; }
+    h1, h2, h3, p { margin: 0; }
+    h1, h2, h3 { font-family: var(--font-display); letter-spacing: -0.03em; }
+    h1 { font-size: clamp(2rem, 4vw, 3.8rem); }
+    h2 { font-size: 1.5rem; }
+    .eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--muted); }
+    .hero p, .panel p { color: var(--muted); line-height: 1.6; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+    a.card { display: grid; gap: 10px; padding: 18px; border-radius: var(--radius-lg); border: 1px solid var(--line); background: rgba(255,255,255,0.62); color: inherit; text-decoration: none; transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease; }
+    a.card:hover { transform: translateY(-2px); border-color: rgba(138,59,36,0.22); background: linear-gradient(135deg, rgba(138,59,36,0.10), rgba(255,255,255,0.82)); }
+    .badge { display: inline-flex; align-items: center; width: fit-content; padding: 6px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    .links { display: grid; gap: 12px; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">Nearbytes specifications · UI</p>
+      <h1>Shared UI redesign package</h1>
+      <p>This folder defines the high-level methodology, state machine, and shell mockups for a simpler, stronger Nearbytes interface that stays shared across desktop and phone.</p>
+    </section>
+
+    <section class="panel links">
+      <h2>Documents</h2>
+      <div class="cards">
+        <a class="card" href="./ui-methodology-v1.html">
+          <span class="badge">Method</span>
+          <h3>UI methodology v1</h3>
+          <p>Design principles, control taxonomy, and the review method for the shared UI redesign.</p>
+        </a>
+        <a class="card" href="./ui-state-machine-v1.html">
+          <span class="badge">State</span>
+          <h3>UI state machine v1</h3>
+          <p>The shared shell model and the explicit state layering that removes toggle confusion.</p>
+        </a>
+        <a class="card" href="./ui-shell-mockups-v1.html">
+          <span class="badge">Mockups</span>
+          <h3>UI shell mockups v1</h3>
+          <p>Directly viewable desktop and phone mockups showing the same design grammar adapted twice.</p>
+        </a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

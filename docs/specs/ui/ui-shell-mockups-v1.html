@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nearbytes UI Shell Mockups v1</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f2ede3;
+      --paper: rgba(255, 252, 246, 0.9);
+      --panel: rgba(255,255,255,0.78);
+      --ink: #171411;
+      --muted: #6f665d;
+      --line: rgba(38, 29, 22, 0.12);
+      --line-strong: rgba(38, 29, 22, 0.22);
+      --accent: #245e91;
+      --accent-soft: rgba(36, 94, 145, 0.12);
+      --shadow: 0 24px 72px rgba(42, 31, 24, 0.12);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --font-display: "Iowan Old Style", "Palatino Linotype", serif;
+      --font-body: "IBM Plex Sans", "Avenir Next", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: radial-gradient(circle at top, #faf7f0 0%, var(--bg) 54%, #e6ddce 100%); color: var(--ink); font-family: var(--font-body); }
+    .page { width: min(1320px, calc(100vw - 28px)); margin: 22px auto 56px; display: grid; gap: 20px; }
+    .hero, .card { background: var(--paper); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--radius-xl); backdrop-filter: blur(14px); }
+    .hero { padding: 28px; display: grid; gap: 12px; }
+    .hero p { margin: 0; max-width: 66ch; color: var(--muted); line-height: 1.55; }
+    .eyebrow { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--muted); }
+    h1, h2, h3 { margin: 0; font-family: var(--font-display); letter-spacing: -0.03em; }
+    h1 { font-size: clamp(2rem, 4vw, 3.7rem); }
+    h2 { font-size: 1.5rem; }
+    .grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; }
+    .card { padding: 20px; display: grid; gap: 16px; }
+    .artboard { border-radius: 24px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.82), rgba(246,240,231,0.95)); padding: 18px; }
+    .device { margin: 0 auto; background: #fbf8f2; border: 1px solid rgba(26,20,14,0.12); box-shadow: inset 0 1px 0 rgba(255,255,255,0.75); overflow: hidden; }
+    .desktop { width: 100%; min-height: 700px; border-radius: 28px; display: grid; grid-template-rows: auto auto 1fr; }
+    .phone { width: min(390px, 100%); min-height: 780px; border-radius: 34px; display: grid; grid-template-rows: auto auto 1fr auto; }
+    .topbar { padding: 18px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,0.58); }
+    .brand { font-family: var(--font-display); font-size: 1.1rem; letter-spacing: -0.02em; }
+    .chip { height: 38px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,0.82); display: inline-flex; align-items: center; padding: 0 14px; min-width: 0; }
+    .chip.icon { width: 38px; justify-content: center; padding: 0; }
+    .chip.active { border-color: rgba(36,94,145,0.24); background: var(--accent-soft); color: var(--accent); }
+    .grow { flex: 1 1 auto; min-width: 0; }
+    .modebar { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; background: rgba(252,249,243,0.72); }
+    .canvas-desktop { display: grid; grid-template-columns: minmax(280px, 0.72fr) minmax(340px, 1.28fr) 360px; min-height: 0; }
+    .canvas-phone { display: grid; min-height: 0; }
+    .pane, .sheet, .content-card { border-right: 1px solid var(--line); min-height: 0; }
+    .pane:last-child, .sheet:last-child { border-right: 0; }
+    .pane, .sheet { padding: 16px; display: grid; gap: 12px; background: rgba(255,255,255,0.48); }
+    .section-title { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); }
+    .list { display: grid; gap: 10px; }
+    .row { padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: rgba(255,255,255,0.72); display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .row strong { font-size: 0.98rem; }
+    .row span { font-size: 0.86rem; color: var(--muted); }
+    .hero-card { padding: 18px; border-radius: 20px; border: 1px solid rgba(36,94,145,0.16); background: linear-gradient(135deg, rgba(36,94,145,0.10), rgba(255,255,255,0.82)); display: grid; gap: 8px; }
+    .hero-card p { margin: 0; color: var(--muted); line-height: 1.5; }
+    .chat { display: grid; gap: 12px; align-content: start; }
+    .bubble { max-width: 78%; padding: 12px 14px; border-radius: 18px; background: rgba(255,255,255,0.82); border: 1px solid var(--line); }
+    .bubble.self { margin-left: auto; background: rgba(36,94,145,0.12); border-color: rgba(36,94,145,0.18); }
+    .sheet { background: rgba(250,246,239,0.94); }
+    .phone .topbar { padding: 14px; }
+    .phone .modebar { padding: 12px 14px; overflow: hidden; }
+    .phone-content { padding: 14px; display: grid; gap: 12px; min-height: 0; overflow: hidden; }
+    .phone-sheet { margin: 0 10px 10px; border: 1px solid var(--line); background: rgba(250,246,239,0.98); border-radius: 24px 24px 20px 20px; padding: 14px; display: grid; gap: 12px; box-shadow: 0 -10px 30px rgba(28,20,14,0.08); }
+    .handle { width: 48px; height: 5px; border-radius: 999px; background: rgba(38,29,22,0.16); margin: 2px auto 6px; }
+    .footerbar { padding: 12px 14px 18px; display: flex; gap: 10px; justify-content: center; }
+    .mini-note { color: var(--muted); font-size: 0.92rem; line-height: 1.55; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .canvas-desktop { grid-template-columns: 1fr; } .pane, .sheet { border-right: 0; border-bottom: 1px solid var(--line); } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">Nearbytes UI specification · shell mockups</p>
+      <h1>One shell language, adapted twice.</h1>
+      <p>These mockups show the same shared UI system on desktop and phone. The goal is not stripped capability; it is reduced chrome, stronger hierarchy, and a single understandable action grammar.</p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Desktop shell</h2>
+        <div class="artboard">
+          <div class="device desktop">
+            <div class="topbar">
+              <div class="brand">Nearbytes</div>
+              <div class="chip grow">Current hub</div>
+              <div class="chip icon">+</div>
+              <div class="chip icon">⋯</div>
+            </div>
+            <div class="modebar">
+              <div class="chip active">Files</div>
+              <div class="chip">Chat</div>
+              <div class="chip">Split</div>
+            </div>
+            <div class="canvas-desktop">
+              <section class="pane">
+                <div class="section-title">Files</div>
+                <div class="hero-card">
+                  <h3>Hub contents</h3>
+                  <p>The content surface owns the screen. Toolbar verbs stay inside the content surface instead of leaking into the shell.</p>
+                </div>
+                <div class="list">
+                  <div class="row"><div><strong>Draft notes.pdf</strong><br><span>Updated 2 minutes ago</span></div><span>2.4 MB</span></div>
+                  <div class="row"><div><strong>Storyboard.png</strong><br><span>Protected in 3 locations</span></div><span>8.1 MB</span></div>
+                  <div class="row"><div><strong>Voice memo.m4a</strong><br><span>Synced</span></div><span>912 KB</span></div>
+                </div>
+              </section>
+              <section class="pane">
+                <div class="section-title">Preview or chat</div>
+                <div class="hero-card">
+                  <h3>Focused companion pane</h3>
+                  <p>In split mode this area shows the companion workspace. It is not another toolbar field.</p>
+                </div>
+                <div class="chat">
+                  <div class="bubble">We can keep the working files in this hub and review the final export after lunch.</div>
+                  <div class="bubble self">I moved the notes and the storyboard into the protected copy.</div>
+                  <div class="bubble">Perfect. The history panel should be enough for the review, no extra controls needed.</div>
+                </div>
+              </section>
+              <aside class="sheet">
+                <div class="section-title">Secondary sheet</div>
+                <div class="hero-card">
+                  <h3>Storage locations</h3>
+                  <p>All secondary surfaces use one consistent side-sheet grammar with a visible close affordance and one scroll owner.</p>
+                </div>
+                <div class="list">
+                  <div class="row"><div><strong>Dropbox</strong><br><span>Keeping a full copy</span></div><span>72 GB</span></div>
+                  <div class="row"><div><strong>MEGA</strong><br><span>Incoming share connected</span></div><span>18 GB</span></div>
+                  <div class="row"><div><strong>Mac folder</strong><br><span>Available locally</span></div><span>214 GB</span></div>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+        <p class="mini-note">Desktop scales by widening content and turning secondary surfaces into a side sheet. It does not multiply header controls.</p>
+      </article>
+
+      <article class="card">
+        <h2>Phone shell</h2>
+        <div class="artboard">
+          <div class="device phone">
+            <div class="topbar">
+              <div class="brand">Nearbytes</div>
+              <div class="chip grow">Current hub</div>
+              <div class="chip icon">+</div>
+              <div class="chip icon">⋯</div>
+            </div>
+            <div class="modebar">
+              <div class="chip active grow" style="justify-content:center;">Files</div>
+              <div class="chip grow" style="justify-content:center;">Chat</div>
+            </div>
+            <div class="canvas-phone">
+              <div class="phone-content">
+                <div class="hero-card">
+                  <h3>Single-column content</h3>
+                  <p>No horizontal overflow. No competing rails. The shell is reduced to selection, creation, and secondary access.</p>
+                </div>
+                <div class="list">
+                  <div class="row"><div><strong>Draft notes.pdf</strong><br><span>Updated 2 minutes ago</span></div><span>2.4 MB</span></div>
+                  <div class="row"><div><strong>Storyboard.png</strong><br><span>Protected in 3 locations</span></div><span>8.1 MB</span></div>
+                  <div class="row"><div><strong>Voice memo.m4a</strong><br><span>Synced</span></div><span>912 KB</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="phone-sheet">
+              <div class="handle"></div>
+              <div class="section-title">Secondary sheet</div>
+              <div class="row"><div><strong>History</strong><br><span>Recent timeline for this hub</span></div><span>Open</span></div>
+              <div class="row"><div><strong>Identities</strong><br><span>Current speaking identity</span></div><span>Ada</span></div>
+              <div class="row"><div><strong>Locations</strong><br><span>Protected copies and providers</span></div><span>3</span></div>
+            </div>
+            <div class="footerbar">
+              <div class="chip active">Content</div>
+              <div class="chip">Sheet</div>
+            </div>
+          </div>
+        </div>
+        <p class="mini-note">Phone keeps the same hierarchy but collapses secondary surfaces into a takeover sheet. The user never has to decode whether a control is a toggle, a menu, or a tab.</p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

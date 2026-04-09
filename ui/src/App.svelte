@@ -1544,6 +1544,7 @@
   let mountDialogStorageMode = $state<MountStorageMode>('unknown');
   let mountDialogStorageModeLoading = $state(false);
   let showEventFlowPanel = $state(false);
+  let showPhoneOverflowMenu = $state(false);
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
   let isRefreshing = $state(false);
@@ -1553,6 +1554,8 @@
   let volumeChatIdentityAssignments = $state<Record<string, string>>({});
   let showIdentityManager = $state(false);
   let showCreateChooser = $state(false);
+  let phoneOverflowMenuElement = $state<HTMLElement | null>(null);
+  let phoneOverflowMenuButtonElement = $state<HTMLButtonElement | null>(null);
   let identityManagerLoading = $state(false);
   let identityManagerAction = $state<IdentityManagerAction>('idle');
   let identityManagerMessage = $state('');
@@ -1786,6 +1789,10 @@
   }
 
   function handleCompactWorkspaceAction(value: string) {
+    if (value === 'new-hub') {
+      openCreateChooser();
+      return;
+    }
     if (value === 'search') {
       toggleWorkspaceSearch();
       return;
@@ -1810,9 +1817,26 @@
       openIdentityManager();
       return;
     }
+    if (value === 'reset') {
+      openResetDialog();
+      return;
+    }
     if (value === 'locations') {
       toggleSourcesPanel();
     }
+  }
+
+  function togglePhoneOverflowMenu(): void {
+    showPhoneOverflowMenu = !showPhoneOverflowMenu;
+  }
+
+  function closePhoneOverflowMenu(): void {
+    showPhoneOverflowMenu = false;
+  }
+
+  function runPhoneOverflowAction(value: string): void {
+    closePhoneOverflowMenu();
+    handleCompactWorkspaceAction(value);
   }
 
   function providerPriority(provider: string): number {
@@ -6254,6 +6278,11 @@
 
 <svelte:window onkeydown={(e) => {
   if (e.key === 'Escape') {
+    if (showPhoneOverflowMenu) {
+      e.preventDefault();
+      closePhoneOverflowMenu();
+      return;
+    }
     if (timelineDetailOpen) {
       e.preventDefault();
       closeTimelineDetails();
@@ -6311,6 +6340,14 @@
     }
   }
 }} onpointerdown={(event) => {
+  if (
+    showPhoneOverflowMenu &&
+    event.target instanceof Node &&
+    !phoneOverflowMenuElement?.contains(event.target) &&
+    !phoneOverflowMenuButtonElement?.contains(event.target)
+  ) {
+    closePhoneOverflowMenu();
+  }
   if (
     fileManagerElement &&
     (!(event.target instanceof Node) || !fileManagerElement.contains(event.target))
@@ -6393,15 +6430,29 @@
 
               <label class="phone-mount-selector" aria-label="Active hub selector">
                 <span class="sr-only">Active hub</span>
-                <select
-                  class="phone-mount-select"
-                  value={activeMountId}
-                  onchange={(event) => handleMountClick((event.currentTarget as HTMLSelectElement).value)}
-                >
-                  {#each mounts as mount (mount.id)}
-                    <option value={mount.id}>{mountLabel(mount) || 'Unnamed hub'}</option>
-                  {/each}
-                </select>
+                <span class="phone-mount-selector-inner">
+                  <select
+                    class="phone-mount-select"
+                    value={activeMountId}
+                    onchange={(event) => handleMountClick((event.currentTarget as HTMLSelectElement).value)}
+                  >
+                    {#each mounts as mount (mount.id)}
+                      <option value={mount.id}>{mountLabel(mount) || 'Unnamed hub'}</option>
+                    {/each}
+                  </select>
+                  <button
+                    type="button"
+                    class="header-tool-btn phone-mount-create-btn"
+                    aria-label="Create hub"
+                    title="Create hub"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      openCreateChooser();
+                    }}
+                  >
+                    <Plus class="button-icon" size={14} strokeWidth={2.2} />
+                  </button>
+                </span>
               </label>
 
               <MountRail dragging={draggingMountId !== null}>
@@ -6507,7 +6558,56 @@
               <div class="mounts-actions brand-actions">
                 <button
                   type="button"
-                  class="header-tool-btn"
+                  class="header-tool-btn phone-overflow-toggle"
+                  bind:this={phoneOverflowMenuButtonElement}
+                  class:active={showPhoneOverflowMenu}
+                  aria-label="More actions"
+                  aria-expanded={showPhoneOverflowMenu}
+                  title="More actions"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    togglePhoneOverflowMenu();
+                  }}
+                >
+                  <Rows3 class="button-icon" size={14} strokeWidth={2.2} />
+                </button>
+                {#if showPhoneOverflowMenu}
+                  <div class="phone-overflow-menu panel-surface" bind:this={phoneOverflowMenuElement}>
+                    <div class="phone-overflow-grid">
+                      {#if showFilesWorkspace}
+                        <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('search')}>
+                          {showSearchWorkspace ? 'Hide search' : 'Search'}
+                        </button>
+                      {/if}
+                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('storage')} disabled={!activeMount && !shareableVolumeId}>
+                        {showVolumeStoragePanel ? 'Hide storage' : 'Storage'}
+                      </button>
+                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('share')}>
+                        Share
+                      </button>
+                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('timeline')}>
+                        {showTimeMachinePanel ? 'Hide timeline' : 'Timeline'}
+                      </button>
+                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('flow')}>
+                        {showEventFlowPanel ? 'Hide flow' : 'Flow'}
+                      </button>
+                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('identities')}>
+                        Identities
+                      </button>
+                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('locations')}>
+                        Locations
+                      </button>
+                      {#if canWipeStoredConfig()}
+                        <button type="button" class="phone-overflow-btn danger" onclick={() => runPhoneOverflowAction('reset')}>
+                          Reset
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+                <button
+                  type="button"
+                  class="header-tool-btn desktop-header-action"
                   class:active={showIdentityManager}
                   aria-label="Identities"
                   title="Identities"
@@ -6521,7 +6621,7 @@
                 {#if canWipeStoredConfig()}
                   <button
                     type="button"
-                    class="header-tool-btn"
+                    class="header-tool-btn desktop-header-action"
                     class:danger={showResetDialog}
                     aria-label="Reset app state"
                     title="Reset app state"
@@ -6535,7 +6635,7 @@
                 {/if}
                 <button
                   type="button"
-                  class="header-tool-btn"
+                  class="header-tool-btn desktop-header-action"
                   class:active={showSourcesPanel}
                   aria-label="Locations"
                   title="Locations"
@@ -6745,31 +6845,6 @@
                     : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
               </span>
             {/if}
-            <label class="workspace-mobile-action-wrap" aria-label="Workspace actions selector">
-              <span class="sr-only">Workspace actions</span>
-              <select
-                class="workspace-mobile-action-select"
-                onchange={(event) => {
-                  const target = event.currentTarget as HTMLSelectElement;
-                  const value = target.value;
-                  target.value = '';
-                  if (value) {
-                    handleCompactWorkspaceAction(value);
-                  }
-                }}
-              >
-                <option value="">Actions</option>
-                {#if showFilesWorkspace}
-                  <option value="search">{showSearchWorkspace ? 'Hide search' : 'Show search'}</option>
-                {/if}
-                <option value="storage">{showVolumeStoragePanel ? 'Hide storage' : 'Storage'}</option>
-                <option value="share">Share</option>
-                <option value="timeline">{showTimeMachinePanel ? 'Hide timeline' : 'Timeline'}</option>
-                <option value="flow">{showEventFlowPanel ? 'Hide flow' : 'Flow'}</option>
-                <option value="identities">Identities</option>
-                <option value="locations">Locations</option>
-              </select>
-            </label>
             <div class="workspace-utility-actions">
               {#if showFilesWorkspace}
                 <button
@@ -10652,7 +10727,8 @@
 
   .phone-mount-selector,
   .workspace-pane-select-wrap,
-  .workspace-mobile-action-wrap {
+  .workspace-mobile-action-wrap,
+  .phone-header-action {
     display: none;
   }
 
@@ -13083,6 +13159,10 @@
 
     .mounts-actions.brand-actions {
       flex: 0 0 auto;
+    }
+
+    .phone-header-action {
+      display: inline-flex;
     }
 
     .mount-quick-actions {
