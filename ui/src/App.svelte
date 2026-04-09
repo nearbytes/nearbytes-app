@@ -109,6 +109,9 @@
   import EventFlowPanel from './components/EventFlowPanel.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
+  import PhoneOverflowMenu from './design/components/PhoneOverflowMenu.svelte';
+  import WorkspaceModeBar from './design/components/WorkspaceModeBar.svelte';
+  import WorkspaceSearchStrip from './design/components/WorkspaceSearchStrip.svelte';
   import {
     joinDialogAttachmentTitle,
   } from './lib/joinLinkPresentation.js';
@@ -6631,38 +6634,17 @@
                   <Rows3 class="button-icon" size={14} strokeWidth={2.2} />
                 </button>
                 {#if showPhoneOverflowMenu}
-                  <div class="phone-overflow-menu panel-surface" bind:this={phoneOverflowMenuElement}>
-                    <div class="phone-overflow-grid">
-                      {#if showFilesWorkspace}
-                        <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('search')}>
-                          {showSearchWorkspace ? 'Hide search' : 'Search'}
-                        </button>
-                      {/if}
-                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('storage')} disabled={!activeMount && !shareableVolumeId}>
-                        {showVolumeStoragePanel ? 'Hide storage' : 'Storage'}
-                      </button>
-                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('share')}>
-                        Share
-                      </button>
-                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('timeline')}>
-                        {showTimeMachinePanel ? 'Hide timeline' : 'Timeline'}
-                      </button>
-                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('flow')}>
-                        {showEventFlowPanel ? 'Hide flow' : 'Flow'}
-                      </button>
-                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('identities')}>
-                        Identities
-                      </button>
-                      <button type="button" class="phone-overflow-btn" onclick={() => runPhoneOverflowAction('locations')}>
-                        Locations
-                      </button>
-                      {#if canWipeStoredConfig()}
-                        <button type="button" class="phone-overflow-btn danger" onclick={() => runPhoneOverflowAction('reset')}>
-                          Reset
-                        </button>
-                      {/if}
-                    </div>
-                  </div>
+                  <PhoneOverflowMenu
+                    bind:menuElement={phoneOverflowMenuElement}
+                    {showFilesWorkspace}
+                    {showSearchWorkspace}
+                    {showVolumeStoragePanel}
+                    {showTimeMachinePanel}
+                    {showEventFlowPanel}
+                    storageDisabled={!activeMount && !shareableVolumeId}
+                    showResetAction={canWipeStoredConfig()}
+                    onAction={runPhoneOverflowAction}
+                  />
                 {/if}
                 <button
                   type="button"
@@ -6858,170 +6840,49 @@
       </section>
       {/if}
 
-      <div class="workspace-mode-bar panel-surface" role="group" aria-label="Hub workspace">
-        <div class="workspace-mode-primary">
-          <label class="workspace-pane-select-wrap" aria-label="Hub workspace mode selector">
-            <span class="sr-only">Workspace mode</span>
-            <select
-              class="workspace-pane-select"
-              value={workspacePaneModeValue(activeMount)}
-              onchange={(event) => applyWorkspacePaneMode((event.currentTarget as HTMLSelectElement).value as 'files' | 'chat' | 'split')}
-            >
-              <option value="files">Files</option>
-              <option value="chat">Chat</option>
-              <option value="split">Files and chat</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            class="workspace-mode-btn"
-            class:active={showFilesWorkspace}
-            aria-pressed={showFilesWorkspace}
-            onclick={() => toggleWorkspacePane('files')}
-          >
-            <FileText size={15} strokeWidth={2} />
-            <span>Files</span>
-          </button>
-          <button
-            type="button"
-            class="workspace-mode-btn"
-            class:active={showChatWorkspace}
-            aria-pressed={showChatWorkspace}
-            onclick={() => toggleWorkspacePane('chat')}
-          >
-            <MessageSquareText size={15} strokeWidth={2} />
-            <span>Chat</span>
-          </button>
-        </div>
-        {#if showFilesWorkspace || activeMount || shareableVolumeId}
-          <div class="workspace-mode-secondary">
-            {#if showFilesWorkspace}
-              <span class="workspace-selection-summary">
-                {selectedFileNames.length === 0
-                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
-                  : selectedFileNames.length === 1 && selectedFile
-                    ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
-                    : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
-              </span>
-            {/if}
-            <div class="workspace-utility-actions">
-              {#if showFilesWorkspace}
-                <button
-                  type="button"
-                  class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                  class:active={showSearchWorkspace}
-                  onclick={toggleWorkspaceSearch}
-                  title={showSearchWorkspace ? 'Hide file search' : 'Show file search'}
-                >
-                  <Search class="button-icon" size={15} strokeWidth={2} />
-                  <span>Search</span>
-                </button>
-              {/if}
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showVolumeStoragePanel}
-                onclick={toggleVolumeStoragePanel}
-                disabled={!activeMount && !shareableVolumeId}
-                title="Choose storage locations for this hub"
-              >
-                <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                <span>Storage</span>
-              </button>
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showVolumeShareDialog}
-                onclick={openVolumeShareDialog}
-                disabled={!activeMount && !shareableVolumeId}
-                title="Share this hub"
-              >
-                <Link2 class="button-icon" size={15} strokeWidth={2} />
-                <span>Share</span>
-              </button>
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showTimeMachinePanel}
-                onclick={() => {
-                  showTimeMachinePanel = !showTimeMachinePanel;
-                }}
-                title="Show hub timeline"
-              >
-                <History class="button-icon" size={15} strokeWidth={2} />
-                <span>Timeline</span>
-              </button>
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showEventFlowPanel}
-                onclick={() => {
-                  showEventFlowPanel = !showEventFlowPanel;
-                }}
-                title="Event flow visualization"
-              >
-                <Activity class="button-icon" size={15} strokeWidth={2} />
-                <span>Flow</span>
-              </button>
-            </div>
-            {#if showFilesWorkspace}
-              <div class="manager-view-switch" role="tablist" aria-label="File browser view">
-                <button
-                  type="button"
-                  class="view-toggle"
-                  class:active={fileManagerViewMode === 'icons'}
-                  onclick={() => (fileManagerViewMode = 'icons')}
-                  aria-pressed={fileManagerViewMode === 'icons'}
-                  title="Icon view"
-                >
-                  <LayoutGrid size={15} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="view-toggle"
-                  class:active={fileManagerViewMode === 'details'}
-                  onclick={() => (fileManagerViewMode = 'details')}
-                  aria-pressed={fileManagerViewMode === 'details'}
-                  title="Details view"
-                >
-                  <Rows3 size={15} strokeWidth={2} />
-                </button>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
+      <WorkspaceModeBar
+        workspaceMode={workspacePaneModeValue(activeMount)}
+        {showFilesWorkspace}
+        {showChatWorkspace}
+        {showSearchWorkspace}
+        {showVolumeStoragePanel}
+        {showVolumeShareDialog}
+        {showTimeMachinePanel}
+        {showEventFlowPanel}
+        {fileManagerViewMode}
+        showWorkspaceUtilities={showFilesWorkspace || Boolean(activeMount) || Boolean(shareableVolumeId)}
+        selectionSummary={selectedFileNames.length === 0
+          ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
+          : selectedFileNames.length === 1 && selectedFile
+            ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
+            : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
+        storageDisabled={!activeMount && !shareableVolumeId}
+        onApplyWorkspaceMode={applyWorkspacePaneMode}
+        onToggleWorkspacePane={toggleWorkspacePane}
+        onToggleSearch={toggleWorkspaceSearch}
+        onToggleStorage={toggleVolumeStoragePanel}
+        onOpenShare={openVolumeShareDialog}
+        onToggleTimeline={() => {
+          showTimeMachinePanel = !showTimeMachinePanel;
+        }}
+        onToggleFlow={() => {
+          showEventFlowPanel = !showEventFlowPanel;
+        }}
+        onSetViewMode={(mode) => {
+          fileManagerViewMode = mode;
+        }}
+      />
 
       {#if showFilesWorkspace && showSearchWorkspace}
-        <div class="workspace-search-strip panel-surface" role="group" aria-label="File search and sorting">
-          <input
-            type="text"
-            class="manager-search workspace-search-input"
-            placeholder="Search files"
-            bind:value={searchQuery}
-            aria-label="Search files"
-          />
-          <select class="manager-sort workspace-search-sort" bind:value={sortBy} aria-label="Sort files">
-            <option value="newest">Newest</option>
-            <option value="oldest">Oldest</option>
-            <option value="name">Name</option>
-            <option value="name-desc">Name (Z-A)</option>
-            <option value="size">Size</option>
-            <option value="size-asc">Size (Smallest)</option>
-          </select>
-          {#if appReferenceClipboard}
-            <button
-              type="button"
-              class="manager-btn workspace-toolbar-btn workspace-search-paste"
-              onclick={() => void pasteCopiedFiles()}
-              disabled={!auth || isHistoryMode}
-              title={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
-            >
-              <ClipboardPaste class="button-icon" size={15} strokeWidth={2} />
-              Paste {appReferenceClipboard.itemCount} item{appReferenceClipboard.itemCount === 1 ? '' : 's'}
-            </button>
-          {/if}
-        </div>
+        <WorkspaceSearchStrip
+          bind:searchQuery
+          bind:sortBy
+          pasteVisible={Boolean(appReferenceClipboard)}
+          pasteCount={appReferenceClipboard?.itemCount ?? 0}
+          pasteDisabled={!auth || isHistoryMode}
+          pasteTitle={!auth ? 'Open a destination hub before pasting' : isHistoryMode ? 'Jump to Latest before pasting' : ''}
+          onPaste={() => void pasteCopiedFiles()}
+        />
       {/if}
 
       <div
@@ -10697,7 +10558,7 @@
     color: var(--nb-text-main, rgba(236, 254, 255, 0.95));
   }
 
-  .workspace-mode-bar {
+  :global(.workspace-mode-bar) {
     width: 100%;
     display: flex;
     align-items: center;
@@ -10714,8 +10575,8 @@
     flex-wrap: wrap;
   }
 
-  .workspace-mode-primary,
-  .workspace-mode-secondary {
+  :global(.workspace-mode-primary),
+  :global(.workspace-mode-secondary) {
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -10724,14 +10585,14 @@
     font-family: var(--nb-font-body);
   }
 
-  .workspace-mode-secondary {
+  :global(.workspace-mode-secondary) {
     margin-left: auto;
     justify-content: flex-end;
     flex: 1 1 320px;
     min-width: 0;
   }
 
-  .workspace-utility-actions {
+  :global(.workspace-utility-actions) {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
@@ -10741,7 +10602,7 @@
     min-width: 0;
   }
 
-  .workspace-selection-summary {
+  :global(.workspace-selection-summary) {
     font-size: 0.74rem;
     font-weight: 460;
     letter-spacing: 0.02em;
@@ -10751,7 +10612,7 @@
     min-width: 0;
   }
 
-  .workspace-search-strip {
+  :global(.workspace-search-strip) {
     width: 100%;
     display: flex;
     align-items: center;
@@ -10763,36 +10624,36 @@
     flex-wrap: wrap;
   }
 
-  .workspace-search-input {
+  :global(.workspace-search-input) {
     flex: 1 1 240px;
     min-width: min(100%, 240px);
   }
 
-  .workspace-search-sort {
+  :global(.workspace-search-sort) {
     flex: 0 0 180px;
     width: 180px;
     min-width: 0;
   }
 
-  .workspace-search-paste {
+  :global(.workspace-search-paste) {
     flex: 0 0 auto;
   }
 
-  .workspace-toolbar-btn {
+  :global(.workspace-toolbar-btn) {
     flex: 0 1 auto;
     min-width: 0;
     max-width: 100%;
   }
 
   .phone-mount-selector,
-  .workspace-pane-select-wrap,
+  :global(.workspace-pane-select-wrap),
   .workspace-mobile-action-wrap,
   .phone-header-action {
     display: none;
   }
 
   .phone-mount-select,
-  .workspace-pane-select,
+  :global(.workspace-pane-select),
   .workspace-mobile-action-select {
     appearance: none;
     width: 100%;
@@ -10813,7 +10674,7 @@
     box-shadow: var(--nb-btn-active-shadow, 0 10px 24px rgba(6, 182, 212, 0.16));
   }
 
-  .workspace-mode-btn {
+  :global(.workspace-mode-btn) {
     appearance: none;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 92%, transparent);
     background: transparent;
@@ -10835,13 +10696,13 @@
       box-shadow 0.18s ease;
   }
 
-  .workspace-mode-btn:hover {
+  :global(.workspace-mode-btn:hover) {
     color: var(--nb-btn-hover-color, rgba(224, 242, 254, 0.94));
     background: var(--nb-btn-bg, rgba(12, 26, 46, 0.9));
     border-color: var(--nb-btn-border, rgba(96, 165, 250, 0.18));
   }
 
-  .workspace-mode-btn.active {
+  :global(.workspace-mode-btn.active) {
     color: rgba(255, 251, 245, 0.94);
     background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, white)));
     border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 26%, var(--nb-border-strong, rgba(166, 151, 136, 0.18)));
@@ -12570,7 +12431,7 @@
     min-width: 0;
   }
 
-  .manager-view-switch {
+  :global(.manager-view-switch) {
     display: inline-flex;
     align-items: center;
     gap: 0.32rem;
@@ -12580,7 +12441,7 @@
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
   }
 
-  .view-toggle {
+  :global(.view-toggle) {
     width: 34px;
     height: 34px;
     border: 0;
@@ -12594,12 +12455,12 @@
     transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
   }
 
-  .view-toggle:hover {
+  :global(.view-toggle:hover) {
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
     background: color-mix(in srgb, var(--nb-accent, rgba(14, 165, 233, 0.12)) 20%, transparent);
   }
 
-  .view-toggle.active {
+  :global(.view-toggle.active) {
     color: var(--nb-btn-active-color, rgba(28, 28, 30, 0.98));
     background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, white)));
     box-shadow: var(--nb-btn-active-shadow, 0 4px 12px rgba(6, 182, 212, 0.14));
@@ -13337,24 +13198,24 @@
       justify-content: space-between;
     }
 
-    .workspace-mode-bar {
+    :global(.workspace-mode-bar) {
       align-items: stretch;
     }
 
-    .workspace-mode-primary {
+    :global(.workspace-mode-primary) {
       width: 100%;
     }
 
-    .workspace-pane-select-wrap {
+    :global(.workspace-pane-select-wrap) {
       display: block;
       width: 100%;
     }
 
-    .workspace-mode-primary > .workspace-mode-btn {
+    :global(.workspace-mode-primary) > :global(.workspace-mode-btn) {
       display: none;
     }
 
-    .workspace-mode-secondary {
+    :global(.workspace-mode-secondary) {
       margin-left: 0;
       width: 100%;
       justify-content: flex-start;
@@ -13372,19 +13233,19 @@
       flex: 0 0 auto;
     }
 
-    .workspace-utility-actions {
+    :global(.workspace-utility-actions) {
       display: none;
     }
 
-    .workspace-selection-summary {
+    :global(.workspace-selection-summary) {
       width: 100%;
       white-space: normal;
       overflow-wrap: anywhere;
     }
 
-    .workspace-search-input,
-    .workspace-search-sort,
-    .workspace-search-paste {
+    :global(.workspace-search-input),
+    :global(.workspace-search-sort),
+    :global(.workspace-search-paste) {
       width: 100%;
     }
 
@@ -13401,12 +13262,12 @@
       overflow-wrap: anywhere;
     }
 
-    .manager-view-switch {
+    :global(.manager-view-switch) {
       margin-left: auto;
       flex: 0 0 auto;
     }
 
-    .workspace-search-strip {
+    :global(.workspace-search-strip) {
       align-items: stretch;
     }
 
