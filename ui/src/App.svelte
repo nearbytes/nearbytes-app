@@ -8895,7 +8895,9 @@
     display: grid;
     gap: 0.7rem;
     min-height: 0;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     padding-right: 0.1rem;
   }
 
@@ -12846,6 +12848,14 @@
       border-radius: 22px;
     }
 
+    .identity-manager-modal {
+      overflow-x: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      touch-action: pan-y;
+    }
+
     .brand-meta-row {
       gap: 0.4rem;
     }
@@ -12930,25 +12940,33 @@
     .identity-editor-panel-actions {
       flex-direction: column-reverse;
       align-items: stretch;
-      position: sticky;
-      bottom: 0;
-      z-index: 3;
-      margin-top: 0.4rem;
-      padding-top: 0.7rem;
-      padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
-      background:
-        linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--nb-panel-bg, #ffffff) 12%, transparent),
-          var(--nb-panel-bg, #ffffff) 26%
-        );
-      border-top: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 65%, transparent);
+      position: static;
+      margin-top: 0.75rem;
+      padding-top: 0;
+      padding-bottom: 0;
+      background: none;
+      border-top: 0;
     }
 
     .identity-editor-panel-actions > .workspace-toggle {
       flex: 0 0 auto;
       width: 100%;
       min-height: 42px;
+    }
+
+    .identity-manager-panel {
+      min-height: 0;
+      height: 100%;
+    }
+
+    .identity-manager-content {
+      min-height: auto;
+      overflow: visible;
+      padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    }
+
+    .identity-manager-panel {
+      overflow: visible;
     }
 
     .time-machine-head {
@@ -13156,12 +13174,18 @@
       max-height: calc(100dvh - 0.35rem);
       padding-top: max(0.2rem, env(safe-area-inset-top));
       padding-bottom: max(0.2rem, env(safe-area-inset-bottom));
+      overflow-x: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      touch-action: pan-y;
     }
 
     .identity-manager-panel {
       padding: 0.72rem;
       gap: 0.62rem;
-      min-height: 100%;
+      min-height: auto;
+      overflow: visible;
     }
 
     .identity-chip-row {
