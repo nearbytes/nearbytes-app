@@ -53,6 +53,7 @@
     loadActiveIdentityId,
     loadConfiguredIdentities,
     loadVolumeIdentityAssignments,
+    normalizeConfiguredIdentities,
     persistActiveIdentityId,
     persistConfiguredIdentities,
     persistVolumeIdentityAssignments,
@@ -831,6 +832,19 @@
     } catch {
       return {};
     }
+  }
+
+  function normalizeActiveMountId(value: unknown): string {
+    return typeof value === 'string' ? value : '';
+  }
+
+  function normalizeVolumeIdentityAssignmentsState(value: unknown): Record<string, string> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(value).filter(([key, entry]) => typeof key === 'string' && typeof entry === 'string')
+    );
   }
 
   function persistUiStateLocally(state: PersistedUiState): void {
@@ -1721,8 +1735,84 @@
     }
   }
 
-  function preferredActiveMountId(nextMounts: VolumeMount[]): string {
+  function preferredActiveMountId(nextMounts: VolumeMount[], preferredId: string | null = null): string {
+    if (preferredId && nextMounts.some((mount) => mount.id === preferredId)) {
+      return preferredId;
+    }
     return nextMounts.find((mount) => !mount.collapsed)?.id ?? nextMounts[0]?.id ?? '';
+  }
+
+  function workspacePaneModeValue(mount: VolumeMount | null): 'files' | 'chat' | 'split' {
+    if (!mount) {
+      return 'files';
+    }
+    if (mount.showFilesPane && mount.showChatPane) {
+      return 'split';
+    }
+    return mount.showChatPane ? 'chat' : 'files';
+  }
+
+  function applyWorkspacePaneMode(mode: 'files' | 'chat' | 'split') {
+    const currentMount = mounts.find((mount) => mount.id === activeMountId);
+    if (!currentMount) {
+      return;
+    }
+    if (mode === 'files') {
+      updateActiveMountWorkspace({
+        showFilesPane: true,
+        showChatPane: false,
+        showSearchPane: currentMount.showSearchPane,
+      });
+      return;
+    }
+    if (mode === 'chat') {
+      updateActiveMountWorkspace({
+        showFilesPane: false,
+        showChatPane: true,
+        showSearchPane: false,
+      });
+      showPreviewPane = false;
+      renamingFileName = null;
+      renameDraft = '';
+      fileManagerActive = false;
+      searchQuery = '';
+      return;
+    }
+    updateActiveMountWorkspace({
+      showFilesPane: true,
+      showChatPane: true,
+      showSearchPane: currentMount.showSearchPane,
+    });
+  }
+
+  function handleCompactWorkspaceAction(value: string) {
+    if (value === 'search') {
+      toggleWorkspaceSearch();
+      return;
+    }
+    if (value === 'storage') {
+      toggleVolumeStoragePanel();
+      return;
+    }
+    if (value === 'share') {
+      openVolumeShareDialog();
+      return;
+    }
+    if (value === 'timeline') {
+      showTimeMachinePanel = !showTimeMachinePanel;
+      return;
+    }
+    if (value === 'flow') {
+      showEventFlowPanel = !showEventFlowPanel;
+      return;
+    }
+    if (value === 'identities') {
+      openIdentityManager();
+      return;
+    }
+    if (value === 'locations') {
+      toggleSourcesPanel();
+    }
   }
 
   function providerPriority(provider: string): number {
@@ -1828,7 +1918,18 @@
         const nextMounts = normalizeMounts(nextState.volumeMounts);
         if (hasPersistedMounts) {
           mounts = nextMounts.length > 0 ? nextMounts : [createMount()];
-          activeMountId = preferredActiveMountId(mounts);
+          activeMountId = preferredActiveMountId(mounts, normalizeActiveMountId(nextState.activeMountId));
+        } else if (normalizeActiveMountId(nextState.activeMountId)) {
+          activeMountId = preferredActiveMountId(mounts, normalizeActiveMountId(nextState.activeMountId));
+        }
+        if (Object.prototype.hasOwnProperty.call(nextState ?? {}, 'configuredIdentities')) {
+          configuredIdentities = normalizeConfiguredIdentities(nextState.configuredIdentities);
+        }
+        if (Object.prototype.hasOwnProperty.call(nextState ?? {}, 'activeChatIdentityId')) {
+          activeChatIdentityId = typeof nextState.activeChatIdentityId === 'string' ? nextState.activeChatIdentityId : '';
+        }
+        if (Object.prototype.hasOwnProperty.call(nextState ?? {}, 'volumeChatIdentityAssignments')) {
+          volumeChatIdentityAssignments = normalizeVolumeIdentityAssignmentsState(nextState.volumeChatIdentityAssignments);
         }
         const discoveryState = normalizePersistedSourceDiscovery(nextState.sourceDiscovery);
         latestSourceDiscovery = discoveryState.latestResult;
@@ -2022,6 +2123,7 @@
 
     const payload: PersistedUiState = {
       volumeMounts: snapshotVolumeMounts(mounts),
+      activeMountId,
       savedAt: Date.now(),
     };
     persistUiStateLocally(payload);
@@ -2032,6 +2134,33 @@
         }
       }).catch((error) => {
           console.warn('Failed to persist host volume mounts:', error);
+      });
+    }, 120);
+
+    return () => {
+      clearTimeout(persistTimer);
+    };
+  });
+
+  $effect(() => {
+    if (!persistedUiStateReady || !identityHydrated) {
+      return;
+    }
+
+    const payload: PersistedUiState = {
+      configuredIdentities,
+      activeChatIdentityId,
+      volumeChatIdentityAssignments,
+      savedAt: Date.now(),
+    };
+    persistUiStateLocally(payload);
+    const persistTimer = setTimeout(() => {
+      void saveHostPersistedUiState(payload).then((saved) => {
+        if (!saved) {
+          persistUiStateLocally(payload);
+        }
+      }).catch((error) => {
+        console.warn('Failed to persist host identity state:', error);
       });
     }, 120);
 
@@ -2106,6 +2235,10 @@
       }
       const payload: PersistedUiState = {
         volumeMounts: snapshotVolumeMounts(mounts),
+        activeMountId,
+        configuredIdentities,
+        activeChatIdentityId,
+        volumeChatIdentityAssignments,
         sourceDiscovery: {
           lastAcknowledgedRunKey: lastAcknowledgedSourceDiscoveryRunKey,
           latestRunKey: latestSourceDiscoveryRunKey,
@@ -6258,6 +6391,19 @@
                 <span class="brand-note">{activeThemePreset().palette.label}</span>
               </span>
 
+              <label class="phone-mount-selector" aria-label="Active hub selector">
+                <span class="sr-only">Active hub</span>
+                <select
+                  class="phone-mount-select"
+                  value={activeMountId}
+                  onchange={(event) => handleMountClick((event.currentTarget as HTMLSelectElement).value)}
+                >
+                  {#each mounts as mount (mount.id)}
+                    <option value={mount.id}>{mountLabel(mount) || 'Unnamed hub'}</option>
+                  {/each}
+                </select>
+              </label>
+
               <MountRail dragging={draggingMountId !== null}>
         {#snippet children()}
         {#each mounts as mount, index (mount.id)}
@@ -6555,6 +6701,18 @@
 
       <div class="workspace-mode-bar panel-surface" role="group" aria-label="Hub workspace">
         <div class="workspace-mode-primary">
+          <label class="workspace-pane-select-wrap" aria-label="Hub workspace mode selector">
+            <span class="sr-only">Workspace mode</span>
+            <select
+              class="workspace-pane-select"
+              value={workspacePaneModeValue(activeMount)}
+              onchange={(event) => applyWorkspacePaneMode((event.currentTarget as HTMLSelectElement).value as 'files' | 'chat' | 'split')}
+            >
+              <option value="files">Files</option>
+              <option value="chat">Chat</option>
+              <option value="split">Files and chat</option>
+            </select>
+          </label>
           <button
             type="button"
             class="workspace-mode-btn"
@@ -6587,6 +6745,31 @@
                     : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
               </span>
             {/if}
+            <label class="workspace-mobile-action-wrap" aria-label="Workspace actions selector">
+              <span class="sr-only">Workspace actions</span>
+              <select
+                class="workspace-mobile-action-select"
+                onchange={(event) => {
+                  const target = event.currentTarget as HTMLSelectElement;
+                  const value = target.value;
+                  target.value = '';
+                  if (value) {
+                    handleCompactWorkspaceAction(value);
+                  }
+                }}
+              >
+                <option value="">Actions</option>
+                {#if showFilesWorkspace}
+                  <option value="search">{showSearchWorkspace ? 'Hide search' : 'Show search'}</option>
+                {/if}
+                <option value="storage">{showVolumeStoragePanel ? 'Hide storage' : 'Storage'}</option>
+                <option value="share">Share</option>
+                <option value="timeline">{showTimeMachinePanel ? 'Hide timeline' : 'Timeline'}</option>
+                <option value="flow">{showEventFlowPanel ? 'Hide flow' : 'Flow'}</option>
+                <option value="identities">Identities</option>
+                <option value="locations">Locations</option>
+              </select>
+            </label>
             <div class="workspace-utility-actions">
               {#if showFilesWorkspace}
                 <button
@@ -10467,6 +10650,27 @@
     max-width: 100%;
   }
 
+  .phone-mount-selector,
+  .workspace-pane-select-wrap,
+  .workspace-mobile-action-wrap {
+    display: none;
+  }
+
+  .phone-mount-select,
+  .workspace-pane-select,
+  .workspace-mobile-action-select {
+    appearance: none;
+    width: 100%;
+    min-height: 2.35rem;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: rgba(255, 255, 255, 0.94);
+    color: #1f2937;
+    padding: 0.55rem 2.3rem 0.55rem 0.85rem;
+    font: inherit;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  }
+
   .workspace-toolbar-utility.active {
     border-color: var(--nb-btn-active-border, rgba(34, 211, 238, 0.42));
     background: var(--nb-btn-active-bg, linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94)));
@@ -12859,11 +13063,26 @@
 
     .brand-meta-row {
       gap: 0.4rem;
+      align-items: stretch;
     }
 
     .brand-meta-row :global(.mount-rail),
     .brand-meta-row :global(.mount-rail-track) {
       justify-content: flex-start;
+    }
+
+    .brand-meta-row :global(.mount-rail) {
+      display: none;
+    }
+
+    .phone-mount-selector {
+      display: block;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .mounts-actions.brand-actions {
+      flex: 0 0 auto;
     }
 
     .mount-quick-actions {
@@ -12983,19 +13202,39 @@
       align-items: stretch;
     }
 
+    .workspace-mode-primary {
+      width: 100%;
+    }
+
+    .workspace-pane-select-wrap {
+      display: block;
+      width: 100%;
+    }
+
+    .workspace-mode-primary > .workspace-mode-btn {
+      display: none;
+    }
+
     .workspace-mode-secondary {
       margin-left: 0;
       width: 100%;
       justify-content: flex-start;
       align-items: stretch;
       flex-basis: auto;
+      gap: 0.55rem;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      padding-bottom: 0.1rem;
+    }
+
+    .workspace-mobile-action-wrap {
+      display: block;
+      width: min(11rem, 45vw);
+      flex: 0 0 auto;
     }
 
     .workspace-utility-actions {
-      width: 100%;
-      margin-left: 0;
-      align-items: stretch;
-      justify-content: stretch;
+      display: none;
     }
 
     .workspace-selection-summary {
@@ -13004,14 +13243,12 @@
       overflow-wrap: anywhere;
     }
 
-    .workspace-toolbar-btn,
     .workspace-search-input,
     .workspace-search-sort,
     .workspace-search-paste {
       width: 100%;
     }
 
-    .workspace-toolbar-btn,
     :global(.manager-btn) {
       min-height: 36px;
       height: auto;
@@ -13019,11 +13256,15 @@
       text-align: center;
     }
 
-    .workspace-toolbar-btn span,
     .workspace-toggle span,
     :global(.manager-btn) span {
       white-space: normal;
       overflow-wrap: anywhere;
+    }
+
+    .manager-view-switch {
+      margin-left: auto;
+      flex: 0 0 auto;
     }
 
     .workspace-search-strip {

@@ -17,6 +17,10 @@ export interface DesktopRemoteFile {
 
 export interface PersistedUiState {
   volumeMounts?: unknown;
+  activeMountId?: unknown;
+  configuredIdentities?: unknown;
+  activeChatIdentityId?: unknown;
+  volumeChatIdentityAssignments?: unknown;
   sourceDiscovery?: unknown;
   theme?: unknown;
   savedAt?: unknown;

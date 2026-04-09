@@ -183,6 +183,14 @@ async function notifyPhoneLanEventMutation(secret: string, eventHash: string): P
   }
 }
 
+function enqueuePhoneLanMutation(secret: string): void {
+  void notifyPhoneLanMutation(secret);
+}
+
+function enqueuePhoneLanEventMutation(secret: string, eventHash: string): void {
+  void notifyPhoneLanEventMutation(secret, eventHash);
+}
+
 function readSecretAuth(auth: NearbytesAuth): string | null {
   return auth.type === 'secret' && auth.secret.trim().length > 0 ? auth.secret : null;
 }
@@ -439,7 +447,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhoneUploadFile(secret, file);
-      await notifyPhoneLanMutation(secret);
+      enqueuePhoneLanMutation(secret);
       return result;
     },
     async deleteFile(auth: NearbytesAuth, filename: string): Promise<void> {
@@ -448,7 +456,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       await embeddedPhoneDeleteFile(secret, filename);
-      await notifyPhoneLanMutation(secret);
+      enqueuePhoneLanMutation(secret);
     },
     async renameFile(auth: NearbytesAuth, from: string, to: string): Promise<RenameFileResponse> {
       const secret = readSecretAuth(auth);
@@ -456,7 +464,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhoneRenameFile(secret, from, to);
-      await notifyPhoneLanMutation(secret);
+      enqueuePhoneLanMutation(secret);
       return result;
     },
     async renameFolder(auth: NearbytesAuth, from: string, to: string, merge: boolean): Promise<RenameFolderResponse> {
@@ -465,7 +473,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhoneRenameFolder(secret, from, to, merge);
-      await notifyPhoneLanMutation(secret);
+      enqueuePhoneLanMutation(secret);
       return result;
     },
     async exportSourceReferences(auth: NearbytesAuth, filenames: string[]): Promise<ReferenceExportResponse<SourceReferenceBundle>> {
@@ -481,7 +489,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhoneImportSourceReferences(secret, bundle as SourceReferenceBundle, sourceSecret);
-      await notifyPhoneLanMutation(secret);
+      enqueuePhoneLanMutation(secret);
       return result;
     },
     async exportRecipientReferences(
@@ -501,7 +509,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhoneImportRecipientReferences(secret, bundle as RecipientReferenceBundle);
-      await notifyPhoneLanMutation(secret);
+      enqueuePhoneLanMutation(secret);
       return result;
     },
     async listChat(auth: NearbytesAuth): Promise<VolumeChatState> {
@@ -528,7 +536,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhonePublishIdentity(secret, identitySecret, profile as IdentityProfile);
-      await notifyPhoneLanEventMutation(secret, result.published.eventHash);
+      enqueuePhoneLanEventMutation(secret, result.published.eventHash);
       return result;
     },
     async sendChatMessage(
@@ -541,7 +549,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
         return createMissingPhoneRuntimeRequest();
       }
       const result = await embeddedPhoneSendChatMessage(secret, identitySecret, input as { body?: string; attachment?: ChatAttachment });
-      await notifyPhoneLanEventMutation(secret, result.sent.eventHash);
+      enqueuePhoneLanEventMutation(secret, result.sent.eventHash);
       return result;
     },
   };

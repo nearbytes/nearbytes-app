@@ -18,6 +18,10 @@ export function normalizePersistedUiState(input: unknown): PersistedUiState {
   const candidate = input as PersistedUiState;
   return {
     volumeMounts: candidate.volumeMounts,
+    activeMountId: candidate.activeMountId,
+    configuredIdentities: candidate.configuredIdentities,
+    activeChatIdentityId: candidate.activeChatIdentityId,
+    volumeChatIdentityAssignments: candidate.volumeChatIdentityAssignments,
     sourceDiscovery: candidate.sourceDiscovery,
     theme: candidate.theme,
     savedAt: typeof candidate.savedAt === 'number' && Number.isFinite(candidate.savedAt) ? candidate.savedAt : 0,

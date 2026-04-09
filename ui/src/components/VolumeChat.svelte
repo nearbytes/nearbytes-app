@@ -203,8 +203,8 @@
       });
       draftBody = '';
       pendingAttachment = null;
-      await refreshChat();
-      await onChatMutated?.();
+      void refreshChat();
+      void onChatMutated?.();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Failed to send message';
     } finally {
