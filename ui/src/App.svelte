@@ -112,6 +112,10 @@
   import PhoneOverflowMenu from './design/components/PhoneOverflowMenu.svelte';
   import WorkspaceModeBar from './design/components/WorkspaceModeBar.svelte';
   import WorkspaceSearchStrip from './design/components/WorkspaceSearchStrip.svelte';
+  import AppHeader from './design/components/AppHeader.svelte';
+  import WorkspaceStage from './design/components/WorkspaceStage.svelte';
+  import TimeMachinePanel from './design/components/TimeMachinePanel.svelte';
+  import EmptyStatePanel from './design/components/EmptyStatePanel.svelte';
   import {
     createWorkspaceChromeState,
     createWorkspaceSelectionSummary,
@@ -6478,105 +6482,41 @@
 }} onpaste={handlePaste} />
 
 <div class="app" style={appThemeCssText}>
-  <header class="header">
-    <div
-      class="header-shell"
-      class:secret-drop-target={isSecretDropTarget}
-      role="group"
-      aria-label="Hub controls"
-      onmouseenter={() => {
-        isHeaderHovering = true;
-      }}
-      onmouseleave={() => {
-        isHeaderHovering = false;
-      }}
-      onfocusin={() => {
-        isHeaderHovering = true;
-      }}
-      onfocusout={(event) => {
-        const relatedTarget = event.relatedTarget;
-        if (relatedTarget instanceof Node && (event.currentTarget as HTMLElement).contains(relatedTarget)) {
-          return;
-        }
-        isHeaderHovering = false;
-      }}
-      ondragenter={(event) => {
-        if (canHandleSecretDropPayload(event.dataTransfer)) {
-          isSecretDropTarget = true;
-        }
-      }}
-      ondragover={(event) => {
-        if (!canHandleSecretDropPayload(event.dataTransfer)) return;
-        event.preventDefault();
-        isSecretDropTarget = true;
-        if (event.dataTransfer) {
-          event.dataTransfer.dropEffect = 'copy';
-        }
-      }}
-      ondragleave={(event) => {
-        const relatedTarget = event.relatedTarget;
-        if (relatedTarget instanceof Node && (event.currentTarget as HTMLElement).contains(relatedTarget)) {
-          return;
-        }
-        isSecretDropTarget = false;
-      }}
-      ondrop={handleSecretFileDrop}
-    >
-      <div class="brand-rail panel-surface">
-        <div class="brand-badge static" aria-label="Nearbytes branding">
-          {#if isDevThemeStudio}
-            <button
-              type="button"
-              class="brand-logo-trigger"
-              onclick={() => openThemeStudio('preset')}
-              aria-label="Open theme studio"
-              title="Open theme studio"
-            >
-              <span class="brand-logo-frame interactive">
-                <NearbytesLogo size={24} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
-              </span>
-            </button>
-          {:else}
-            <span class="brand-logo-frame">
-              <NearbytesLogo size={24} options={themeSettings.logo} ariaLabel="Nearbytes brand mark" />
-            </span>
-          {/if}
-          <div class="brand-stack">
-            <div class="brand-meta-row">
-              <span class="brand-copy">
-                <span class="brand-title">Nearbytes</span>
-                <span class="brand-note">{activeThemePreset().palette.label}</span>
-              </span>
-
-              <label class="phone-mount-selector" aria-label="Active hub selector">
-                <span class="sr-only">Active hub</span>
-                <span class="phone-mount-selector-inner">
-                  <select
-                    class="phone-mount-select"
-                    value={activeMountId}
-                    onchange={(event) => handleMountClick((event.currentTarget as HTMLSelectElement).value)}
-                  >
-                    {#each mounts as mount (mount.id)}
-                      <option value={mount.id}>{mountLabel(mount) || 'Unnamed hub'}</option>
-                    {/each}
-                  </select>
-                  <button
-                    type="button"
-                    class="header-tool-btn phone-mount-create-btn"
-                    aria-label="Create hub"
-                    title="Create hub"
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      openCreateChooser();
-                    }}
-                  >
-                    <Plus class="button-icon" size={14} strokeWidth={2.2} />
-                  </button>
-                </span>
-              </label>
-
-              <MountRail dragging={draggingMountId !== null}>
-        {#snippet children()}
+  <AppHeader
+    isDevThemeStudio={isDevThemeStudio}
+    themeLogoOptions={themeSettings.logo}
+    paletteLabel={activeThemePreset().palette.label}
+    activeMountId={activeMountId}
+    mounts={mounts.map((mount) => ({ id: mount.id, label: mountLabel(mount) || 'Unnamed hub' }))}
+    draggingMounts={draggingMountId !== null}
+    isHeaderHovering={isHeaderHovering}
+    setHeaderHovering={(value) => {
+      isHeaderHovering = value;
+    }}
+    isSecretDropTarget={isSecretDropTarget}
+    canHandleSecretDropPayload={canHandleSecretDropPayload}
+    setSecretDropTarget={(value) => {
+      isSecretDropTarget = value;
+    }}
+    onSecretFileDrop={handleSecretFileDrop}
+    onSelectMount={handleMountClick}
+    onOpenThemeStudio={() => openThemeStudio('preset')}
+    onOpenCreateChooser={openCreateChooser}
+    showPhoneOverflowMenu={showPhoneOverflowMenu}
+    bind:phoneOverflowMenuButtonElement
+    bind:phoneOverflowMenuElement
+    showIdentityManager={showIdentityManager}
+    showResetAction={canWipeStoredConfig()}
+    showResetDialog={showResetDialog}
+    showSourcesPanel={showSourcesPanel}
+    onTogglePhoneOverflowMenu={togglePhoneOverflowMenu}
+    onOpenIdentityManager={openIdentityManager}
+    onOpenResetDialog={openResetDialog}
+    onToggleSourcesPanel={toggleSourcesPanel}
+    workspaceState={workspaceChromeState}
+    workspaceActions={workspaceChromeActions}
+  >
+    {#snippet mountRailChildren()}
         {#each mounts as mount, index (mount.id)}
           {@const isPending = pendingMountId === mount.id}
           <div
@@ -6659,8 +6599,8 @@
             </div>
           </div>
         {/each}
-        {/snippet}
-        {#snippet actions()}
+    {/snippet}
+    {#snippet mountRailActions()}
           <div class="mount-quick-actions" class:revealed={isHeaderHovering}>
             <button
               type="button"
@@ -6672,92 +6612,23 @@
               <Plus size={15} strokeWidth={2.2} />
             </button>
           </div>
-        {/snippet}
-              </MountRail>
-
-              <div class="mounts-actions brand-actions">
-                <button
-                  type="button"
-                  class="header-tool-btn phone-overflow-toggle"
-                  bind:this={phoneOverflowMenuButtonElement}
-                  class:active={showPhoneOverflowMenu}
-                  aria-label="More actions"
-                  aria-expanded={showPhoneOverflowMenu}
-                  title="More actions"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    togglePhoneOverflowMenu();
-                  }}
-                >
-                  <Rows3 class="button-icon" size={14} strokeWidth={2.2} />
-                </button>
-                {#if showPhoneOverflowMenu}
-                  <PhoneOverflowMenu
-                    bind:menuElement={phoneOverflowMenuElement}
-                    state={workspaceChromeState}
-                    actions={workspaceChromeActions}
-                  />
-                {/if}
-                <button
-                  type="button"
-                  class="header-tool-btn desktop-header-action"
-                  class:active={showIdentityManager}
-                  aria-label="Identities"
-                  title="Identities"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    openIdentityManager();
-                  }}
-                >
-                  <UserRound class="button-icon" size={14} strokeWidth={2} />
-                </button>
-                {#if canWipeStoredConfig()}
-                  <button
-                    type="button"
-                    class="header-tool-btn desktop-header-action"
-                    class:danger={showResetDialog}
-                    aria-label="Reset app state"
-                    title="Reset app state"
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      openResetDialog();
-                    }}
-                  >
-                    <Trash2 class="button-icon" size={14} strokeWidth={2} />
-                  </button>
-                {/if}
-                <button
-                  type="button"
-                  class="header-tool-btn desktop-header-action"
-                  class:active={showSourcesPanel}
-                  aria-label="Locations"
-                  title="Locations"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    toggleSourcesPanel();
-                  }}
-                >
-                  <HardDrive class="button-icon" size={14} strokeWidth={2} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      </div>
-  </header>
+    {/snippet}
+  </AppHeader>
 
   <!-- Main file area -->
-  <main
-    class="file-area"
-    class:volume-workspace-active={!showSourcesPanel && !showVolumeStoragePanel && address.trim() !== ''}
-    class:dragging={isDragging}
-    ondragover={handleDragOver}
-    ondragleave={handleDragLeave}
-    ondrop={handleDrop}
+  <WorkspaceStage
+    mode={showSourcesPanel ? 'global-panel' : showVolumeStoragePanel ? 'volume-panel' : address.trim() === '' ? 'empty' : 'workspace'}
+    isVolumeWorkspaceActive={!showSourcesPanel && !showVolumeStoragePanel && address.trim() !== ''}
+    {isDragging}
+    onDragOver={handleDragOver}
+    onDragLeave={handleDragLeave}
+    onDrop={handleDrop}
+    {showEventFlowPanel}
+    onCloseFlow={() => {
+      showEventFlowPanel = false;
+    }}
   >
-    {#if showSourcesPanel}
-      <div class="workspace-panel-view">
+    {#snippet globalPanel()}
         <StoragePanel
           mode="global"
           volumeId={shareableVolumeId}
@@ -6769,9 +6640,8 @@
           refreshToken={sourceDiscoveryRefreshToken}
           focusSection={sourceDiscoveryPanelFocus}
         />
-      </div>
-    {:else if showVolumeStoragePanel}
-      <div class="workspace-panel-view">
+    {/snippet}
+    {#snippet volumePanel()}
         <StoragePanel
           mode="volume"
           volumeId={shareableVolumeId}
@@ -6781,21 +6651,17 @@
           onOpenStorageSetup={() => openSourcesPanelWithFocus(null)}
           refreshToken={sourceDiscoveryRefreshToken}
         />
-      </div>
-    {:else if address.trim() === ''}
-      <!-- Initial state -->
-      <div class="empty-state">
-        <div class="empty-content">
-          <div class="empty-brand-shell">
-            <NearbytesLogo size={112} options={themeSettings.logo} ariaLabel="Nearbytes logo" />
-          </div>
-          <p class="empty-eyebrow">{activeThemePreset().palette.label}</p>
-          <p class="empty-hint">Enter an address to access your files</p>
-          <p class="empty-subhint">Or drag and drop files here to create a new hub.{#if isDevThemeStudio} Click the brand mark to edit presets and export the checked-in logo asset.{:else} The active preset stays consistent across launches.{/if}</p>
-        </div>
-      </div>
-    {:else}
-      <div class="volume-workspace">
+    {/snippet}
+    {#snippet emptyState()}
+      <EmptyStatePanel
+        showBrand={true}
+        themeLogoOptions={themeSettings.logo}
+        eyebrow={activeThemePreset().palette.label}
+        title="Enter an address to access your files"
+        subtitle={`Or drag and drop files here to create a new hub.${isDevThemeStudio ? ' Click the brand mark to edit presets and export the checked-in logo asset.' : ' The active preset stays consistent across launches.'}`}
+      />
+    {/snippet}
+    {#snippet workspaceContent()}
       {#if isVolumeTransitioning}
         <div class="volume-transition-state panel-surface" aria-live="polite">
           <div class="volume-transition-spinner"></div>
@@ -6806,90 +6672,31 @@
         </div>
       {:else}
       {#if showTimeMachinePanel}
-      <section class="time-machine panel-surface" aria-label="Hub timeline">
-        <div class="time-machine-head">
-          <div>
-            <p class="time-machine-eyebrow">Timeline</p>
-            <p class="time-machine-marker">{timelineMarker}</p>
-          </div>
-          <div class="time-machine-actions">
-            <button
-              type="button"
-              class="tm-btn"
-              onclick={toggleTimelinePlayback}
-              disabled={timelineEvents.length === 0 || isTimelineLoading}
-            >
-              {isTimelinePlaying ? 'Pause' : 'Play'}
-            </button>
-            <button
-              type="button"
-              class="tm-btn live"
-              onclick={jumpToLatest}
-              disabled={timelinePosition === timelineEvents.length}
-            >
-              Latest
-            </button>
-          </div>
-        </div>
-        <div class="time-machine-track">
-          <input
-            class="tm-slider"
-            type="range"
-            min="0"
-            max={timelineEvents.length}
-            value={timelinePosition}
-            disabled={timelineEvents.length === 0}
-            aria-label="Timeline position"
-            oninput={(e) => {
-              stopTimelinePlayback();
-              setTimelinePosition(Number((e.currentTarget as HTMLInputElement).value));
-            }}
-          />
-          <div class="tm-scale">
-            <span>Start</span>
-            <span>{timelinePosition}/{timelineEvents.length}</span>
-            <span>Latest</span>
-          </div>
-        </div>
-        {#if timelineEvents.length > 0}
-          <div class="tm-events" bind:this={timelineEventsElement} onscroll={handleTimelineScroll}>
-            {#each timelineEvents as event, index (event.eventHash)}
-              <div class="tm-event-row">
-                <button
-                  type="button"
-                  class="tm-event"
-                  class:applied={index < timelinePosition}
-                  class:current={index === timelinePosition - 1}
-                  class:create={event.type === 'CREATE_FILE'}
-                  class:delete={event.type === 'DELETE_FILE'}
-                  class:rename={event.type === 'RENAME_FILE'}
-                  class:identity={isTimelineIdentityEvent(event)}
-                  class:chat={isTimelineChatEvent(event)}
-                  onclick={() => jumpToEvent(index)}
-                  title={timelineTitle(event)}
-                >
-                  <span class="tm-event-kind">{timelineKindLabel(event)}</span>
-                  <span class="tm-event-name">{timelineHeadline(event)}</span>
-                  <span class="tm-event-time">{formatShortDate(event.timestamp)}</span>
-                </button>
-                <button
-                  type="button"
-                  class="tm-event-details"
-                  onclick={(clickEvent) => {
-                    clickEvent.stopPropagation();
-                    void openTimelineDetails(event);
-                  }}
-                  aria-label={`View details for ${event.filename || 'event'}`}
-                >
-                  Details
-                </button>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <p class="tm-empty">Timeline is empty. Add files to create history.</p>
-        {/if}
-      </section>
+      <TimeMachinePanel
+        timelineMarker={timelineMarker}
+        {isTimelinePlaying}
+        {isTimelineLoading}
+        timelineEvents={timelineEvents}
+        {timelinePosition}
+        bind:timelineEventsElement
+        {timelineKindLabel}
+        {timelineHeadline}
+        {timelineTitle}
+        {formatShortDate}
+        {isTimelineIdentityEvent}
+        {isTimelineChatEvent}
+        onTogglePlayback={toggleTimelinePlayback}
+        onJumpToLatest={jumpToLatest}
+        onSetTimelinePosition={(value) => {
+          stopTimelinePlayback();
+          setTimelinePosition(value);
+        }}
+        onJumpToEvent={jumpToEvent}
+        onOpenDetails={(event) => {
+          void openTimelineDetails(event);
+        }}
+        onScroll={handleTimelineScroll}
+      />
       {/if}
 
       <WorkspaceModeBar
@@ -6912,22 +6719,18 @@
         {#if showFilesWorkspace}
           <div class="workspace-pane">
             {#if viewFiles.length === 0 && !isLoading}
-              <div class="empty-state">
-                <div class="empty-content">
+              <EmptyStatePanel
+                title={isHistoryMode ? 'No files at this point in history' : 'No files yet'}
+                subtitle={isHistoryMode ? 'Move the timeline toward Latest to see newer files' : 'Drop files here to add them'}
+              >
+                {#snippet icon()}
                   <svg class="empty-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M32 8L8 20L32 32L56 20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
                     <path d="M8 20V44L32 56L56 44V20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
                     <path d="M32 32V56" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
                   </svg>
-                  {#if isHistoryMode}
-                    <p class="empty-hint">No files at this point in history</p>
-                    <p class="empty-subhint">Move the timeline toward Latest to see newer files</p>
-                  {:else}
-                    <p class="empty-hint">No files yet</p>
-                    <p class="empty-subhint">Drop files here to add them</p>
-                  {/if}
-                </div>
-              </div>
+                {/snippet}
+              </EmptyStatePanel>
             {:else}
               <div
                 class="file-manager"
@@ -7193,6 +6996,12 @@
         {/if}
       </div>
       {/if}
+    {/snippet}
+    {#snippet flowPanel()}
+      <EventFlowPanel auth={auth ?? undefined} volumeId={shareableVolumeId ?? undefined} />
+    {/snippet}
+  </WorkspaceStage>
+
       {#if showMountStorageDialog}
         <AppDialog
           ariaLabel="Hub storage"
@@ -7219,37 +7028,6 @@
           {/snippet}
         </AppDialog>
       {/if}
-      {#if showEventFlowPanel}
-        <div
-          class="flow-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Event flow"
-          tabindex="-1"
-          onclick={(e) => { if (e.target === e.currentTarget) showEventFlowPanel = false; }}
-          onkeydown={(event) => {
-            if (event.key === 'Escape') {
-              event.preventDefault();
-              showEventFlowPanel = false;
-            }
-          }}
-        >
-          <div class="flow-overlay-panel panel-surface">
-            <button
-              type="button"
-              class="flow-overlay-close"
-              onclick={() => { showEventFlowPanel = false; }}
-              aria-label="Close event flow"
-            >
-              <X size={18} strokeWidth={2} />
-            </button>
-            <EventFlowPanel auth={auth ?? undefined} volumeId={shareableVolumeId ?? undefined} />
-          </div>
-        </div>
-      {/if}
-      </div>
-    {/if}
-  </main>
 
   {#if shouldShowDesktopUpdaterToast(desktopUpdaterState) || sourceDiscoveryToast}
     <div class="toast-stack">
@@ -8749,13 +8527,6 @@
 
   .brand-logo-frame.interactive {
     transition: border-color 0.18s ease, background-color 0.18s ease;
-  }
-
-  .brand-logo-trigger:hover .brand-logo-frame.interactive,
-  .brand-logo-trigger:focus-visible .brand-logo-frame.interactive {
-    border-color: var(--nb-border-strong, rgba(56, 189, 248, 0.32));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, var(--nb-accent-soft, rgba(255, 59, 48, 0.08)));
-    box-shadow: 0 2px 6px rgba(28, 28, 30, 0.08);
   }
 
   .brand-copy {
