@@ -95,6 +95,7 @@
     subscribeDesktopUpdaterState,
     wipeStoredConfig,
   } from './lib/host/desktopShell.js';
+  import './lib/design/uiBridgeShared.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
   import AppDialog from './components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
@@ -162,6 +163,15 @@
   const WORKSPACE_CHAT_PANE_MIN_WIDTH = 180;
   const PARKED_MOUNT_WIDTH = 46;
   const isDevThemeStudio = import.meta.env.DEV;
+  const sharedUiBridge = (
+    globalThis as typeof globalThis & {
+      NearbytesUiBridgeShared?: {
+        createAppSnapshot?: (input: Record<string, unknown>) => unknown;
+        publishAppSnapshot?: (snapshot: unknown) => void;
+        clearAppSnapshot?: () => void;
+      };
+    }
+  ).NearbytesUiBridgeShared;
   const SPEC_DOC_CONTENTS = import.meta.glob('../../docs/specs/**/*.md', {
     query: '?raw',
     import: 'default',
@@ -1978,6 +1988,9 @@
 
   onMount(() => {
     return () => {
+      if (isDevThemeStudio) {
+        sharedUiBridge?.clearAppSnapshot?.();
+      }
     };
   });
 
@@ -2867,6 +2880,52 @@
       }
     }
     return Array.from(known, ([volumeId, label]) => ({ volumeId, label }));
+  });
+
+  $effect(() => {
+    if (!isDevThemeStudio || !sharedUiBridge?.createAppSnapshot || !sharedUiBridge.publishAppSnapshot) {
+      return;
+    }
+    sharedUiBridge.publishAppSnapshot(
+      sharedUiBridge.createAppSnapshot({
+        mountCount: mounts.length,
+        mountLabel: currentMountedVolumePresentation?.label ?? (activeMount ? mountLabel(activeMount) : ''),
+        emptyState: address.trim() === '',
+        workspaceMode: workspacePaneModeValue(activeMount),
+        showFilesWorkspace,
+        showChatWorkspace,
+        showSearchWorkspace,
+        fileManagerViewMode,
+        fileCount: fileList.length,
+        selectedCount: selectedFileNames.length,
+        searchQuery,
+        showPreviewPane,
+        showTimeMachinePanel,
+        timelineCount: timelineEvents.length,
+        timelinePosition,
+        timelineDetailOpen,
+        showSourcesPanel,
+        showVolumeStoragePanel,
+        showEventFlowPanel,
+        showPhoneOverflowMenu,
+        showIdentityManager,
+        showCreateChooser,
+        showJoinVolumeDialog,
+        showVolumeShareDialog,
+        showResetDialog,
+        activeModal: showVolumeShareDialog
+          ? 'share'
+          : showJoinVolumeDialog
+            ? 'join'
+            : showCreateChooser
+              ? 'create'
+              : showIdentityManager
+                ? 'identity'
+                : showResetDialog
+                  ? 'reset'
+                  : 'none',
+      })
+    );
   });
 
   function matchingMountRuntime(mount: VolumeMount | null): MountRuntimeState | null {
