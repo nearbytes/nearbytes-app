@@ -23,7 +23,8 @@
 
 ### Phase 1: Canonical Design System In Svelte
 
-- [ ] Re-express the approved `docs/specs/ui` visual language as canonical runtime design tokens in `ui/src/design` so palette, type, spacing, surfaces, and motion come from one source. Commit:
+- [x] Re-express the approved `docs/specs/ui` visual language as canonical runtime design tokens in `ui/src/design` so palette, type, spacing, surfaces, and motion come from one source. Commit: `2abef2b`
+	Implementation notes: added `ui/src/design/tokens.ts` and `ui/src/design/global.css`; root runtime now applies moodboard typography, radius, shadow, blur, spacing, and motion tokens; extracted design components now consume shared chrome tokens; studio moodboards now define typography and chrome metadata in addition to palette values.
 - [ ] Re-express the approved chrome and shell patterns from `docs/specs/ui` as canonical Svelte design primitives and shell components in `ui/src/design/components`. Commit:
 - [ ] Make the design host consume those canonical Svelte tokens and components rather than maintaining a parallel static implementation. Commit:
 - [ ] Remove any design-host-only visual rules that are not represented in the canonical Svelte design layer. Commit:
