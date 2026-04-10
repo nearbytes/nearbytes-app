@@ -6,6 +6,7 @@
     ['moodboard', 'Moodboard', './moodboard.html'],
     ['palette', 'Palette', './palette.html'],
     ['styles', 'Toolkit', './styles.html'],
+    ['graph', 'Graph', './graph.html'],
     ['desktop', 'Desktop UI', './desktop.html'],
     ['phone', 'Phone UI', './phone.html'],
   ];

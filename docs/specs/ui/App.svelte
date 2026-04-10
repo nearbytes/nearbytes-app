@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import StudioNav from './components/StudioNav.svelte';
   import StudioControls from './components/StudioControls.svelte';
+  import TransitionGraphPage from './components/TransitionGraphPage.svelte';
   import { STUDIO_DATA } from './studio-data.js';
   import { createStudioModel } from './studio.js';
 
@@ -47,6 +48,10 @@
     refresh();
     await tick();
     restoreFocus(focusDescriptor);
+  }
+
+  async function patchStudioState(patch) {
+    await commitState({ ...state, ...patch });
   }
 
   async function handleClick(event) {
@@ -110,6 +115,13 @@
   <StudioNav {page} />
   {#if page === 'overview'}
     <div class="studio-main overview">{@html bodyHtml}</div>
+  {:else if page === 'graph'}
+    <TransitionGraphPage
+      data={STUDIO_DATA}
+      {bridge}
+      studioState={state}
+      onStudioStateChange={patchStudioState}
+    />
   {:else}
     <div class="studio-grid">
       <div class="studio-main">{@html bodyHtml}</div>
