@@ -98,13 +98,13 @@
   } from './lib/host/desktopShell.js';
   import './lib/design/uiBridgeShared.js';
   import ArmedActionButton from '../../docs/specs/ui/components/ArmedActionButton.svelte';
-  import AppDialog from './components/AppDialog.svelte';
+  import AppDialog from '../../docs/specs/ui/components/AppDialog.svelte';
   import AudioPreview from '../../docs/specs/ui/components/AudioPreview.svelte';
-  import JoinLinkSections from './components/JoinLinkSections.svelte';
+  import JoinLinkSections from '../../docs/specs/ui/components/JoinLinkSections.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from '../../docs/specs/ui/components/MountRail.svelte';
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
-  import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
+  import ShareSpaceLinkSection from '../../docs/specs/ui/components/ShareSpaceLinkSection.svelte';
   import StatusNotice from '../../docs/specs/ui/components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import EventFlowPanel from './components/EventFlowPanel.svelte';

@@ -1,7 +1,6 @@
 <script lang="ts">
-  //FIXME: MIGRATION: port this surface to the UI design system
   import { ClipboardPaste } from 'lucide-svelte';
-  import type { JoinLinkOpenResponse, JoinLinkParseResponse } from '../lib/api.js';
+  import type { JoinLinkOpenResponse, JoinLinkParseResponse } from '../../../../ui/src/lib/api.js';
   import {
     joinDialogActionStatusLabel,
     joinDialogActionTitle,
@@ -9,8 +8,8 @@
     joinDialogAttachmentTitle,
     joinDialogEndpointLabel,
     joinDialogSpaceSummary,
-  } from '../lib/joinLinkPresentation.js';
-  import StatusNotice from '../../../docs/specs/ui/components/StatusNotice.svelte';
+  } from '../../../../ui/src/lib/joinLinkPresentation.js';
+  import StatusNotice from './StatusNotice.svelte';
 
   let {
     serialized,

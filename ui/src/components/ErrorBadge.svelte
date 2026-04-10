@@ -1,5 +1,5 @@
 <script lang="ts">
-  import AppDialog from './AppDialog.svelte';
+  import AppDialog from '../../../docs/specs/ui/components/AppDialog.svelte';
   import type { ShareCardBadgeTone } from './ShareCard.svelte';
 
   const {

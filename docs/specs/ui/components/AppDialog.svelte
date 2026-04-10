@@ -1,5 +1,4 @@
 <script module lang="ts">
-  //FIXME: MIGRATION: port this surface to the UI design system
   let dialogStackSeed = 0;
 
   function nextDialogStackLevel(): number {
@@ -174,25 +173,11 @@
       0 10px 24px rgba(39, 24, 15, 0.12);
   }
 
-  .app-dialog-surface.width-narrow {
-    width: min(520px, calc(100vw - 2rem));
-  }
-
-  .app-dialog-surface.width-medium {
-    width: min(680px, calc(100vw - 2rem));
-  }
-
-  .app-dialog-surface.width-wide {
-    width: min(820px, calc(100vw - 2rem));
-  }
-
-  .app-dialog-surface.width-xwide {
-    width: min(980px, calc(100vw - 2rem));
-  }
-
-  .app-dialog-surface.width-full {
-    width: min(1180px, calc(100vw - 2rem));
-  }
+  .app-dialog-surface.width-narrow { width: min(520px, calc(100vw - 2rem)); }
+  .app-dialog-surface.width-medium { width: min(680px, calc(100vw - 2rem)); }
+  .app-dialog-surface.width-wide { width: min(820px, calc(100vw - 2rem)); }
+  .app-dialog-surface.width-xwide { width: min(980px, calc(100vw - 2rem)); }
+  .app-dialog-surface.width-full { width: min(1180px, calc(100vw - 2rem)); }
 
   .app-dialog-header {
     display: grid;
@@ -287,23 +272,14 @@
   }
 
   @media (max-width: 720px) {
-    .app-dialog-backdrop {
-      padding: 0.5rem;
-    }
-
+    .app-dialog-backdrop { padding: 0.5rem; }
     .app-dialog-surface {
       width: calc(100vw - 1rem);
       max-height: calc(100vh - 1rem);
       padding: 0.84rem;
       border-radius: 18px;
     }
-
-    .app-dialog-header {
-      grid-template-columns: 1fr;
-    }
-
-    .app-dialog-head-actions {
-      justify-content: space-between;
-    }
+    .app-dialog-header { grid-template-columns: 1fr; }
+    .app-dialog-head-actions { justify-content: space-between; }
   }
 </style>
