@@ -102,7 +102,7 @@
   import AudioPreview from '../../docs/specs/ui/components/AudioPreview.svelte';
   import JoinLinkSections from './components/JoinLinkSections.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
-  import MountRail from './components/MountRail.svelte';
+  import MountRail from '../../docs/specs/ui/components/MountRail.svelte';
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
   import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
   import StatusNotice from '../../docs/specs/ui/components/StatusNotice.svelte';
