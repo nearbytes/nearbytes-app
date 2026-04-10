@@ -1,4 +1,5 @@
 <script lang="ts">
+  //FIXME: MIGRATION: port this surface to the UI design system
   import { HardDrive, KeyRound, Link2 } from 'lucide-svelte';
   import StatusNotice from './StatusNotice.svelte';
 

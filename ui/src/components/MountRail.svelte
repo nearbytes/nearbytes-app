@@ -1,4 +1,5 @@
 <script lang="ts">
+  //FIXME: MIGRATION: port this surface to the UI design system
   import type { Snippet } from 'svelte';
 
   const {

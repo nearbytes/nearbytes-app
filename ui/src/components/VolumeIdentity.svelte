@@ -1,4 +1,5 @@
 <script lang="ts">
+  //FIXME: MIGRATION: port this surface to the UI design system
   import { FileText, HardDrive, Image as ImageIcon } from 'lucide-svelte';
 
   const FILE_SECRET_PREFIX = 'nb-file-secret:v1:';

@@ -1,4 +1,5 @@
 <script module lang="ts">
+  //FIXME: MIGRATION: port this surface to the UI design system
   let dialogStackSeed = 0;
 
   function nextDialogStackLevel(): number {
