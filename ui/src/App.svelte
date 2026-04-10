@@ -97,7 +97,7 @@
     wipeStoredConfig,
   } from './lib/host/desktopShell.js';
   import './lib/design/uiBridgeShared.js';
-  import ArmedActionButton from './components/ArmedActionButton.svelte';
+  import ArmedActionButton from '../../docs/specs/ui/components/ArmedActionButton.svelte';
   import AppDialog from './components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
   import JoinLinkSections from './components/JoinLinkSections.svelte';
@@ -105,11 +105,11 @@
   import MountRail from './components/MountRail.svelte';
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
   import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
-  import StatusNotice from './components/StatusNotice.svelte';
+  import StatusNotice from '../../docs/specs/ui/components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import EventFlowPanel from './components/EventFlowPanel.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
-  import VolumeIdentity from './components/VolumeIdentity.svelte';
+  import VolumeIdentity from '../../docs/specs/ui/components/VolumeIdentity.svelte';
   import PhoneOverflowMenu from '../../docs/specs/ui/components/PhoneOverflowMenu.svelte';
   import WorkspaceModeBar from '../../docs/specs/ui/components/WorkspaceModeBar.svelte';
   import WorkspaceSearchStrip from '../../docs/specs/ui/components/WorkspaceSearchStrip.svelte';

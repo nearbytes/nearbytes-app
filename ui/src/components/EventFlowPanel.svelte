@@ -14,7 +14,7 @@
     type VolumeWatchUpdate,
     type SourceWatchUpdate,
   } from '../lib/api.js';
-  import StatusNotice from './StatusNotice.svelte';
+  import StatusNotice from '../../../docs/specs/ui/components/StatusNotice.svelte';
 
   let {
     auth = undefined,

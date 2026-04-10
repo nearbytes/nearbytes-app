@@ -10,7 +10,7 @@
     joinDialogEndpointLabel,
     joinDialogSpaceSummary,
   } from '../lib/joinLinkPresentation.js';
-  import StatusNotice from './StatusNotice.svelte';
+  import StatusNotice from '../../../docs/specs/ui/components/StatusNotice.svelte';
 
   let {
     serialized,
