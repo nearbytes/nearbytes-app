@@ -22,6 +22,7 @@ export function normalizePersistedUiState(input: unknown): PersistedUiState {
     configuredIdentities: candidate.configuredIdentities,
     activeChatIdentityId: candidate.activeChatIdentityId,
     volumeChatIdentityAssignments: candidate.volumeChatIdentityAssignments,
+    uiMachine: candidate.uiMachine,
     sourceDiscovery: candidate.sourceDiscovery,
     theme: candidate.theme,
     savedAt: typeof candidate.savedAt === 'number' && Number.isFinite(candidate.savedAt) ? candidate.savedAt : 0,

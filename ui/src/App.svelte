@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { get } from 'svelte/store';
   import { onDestroy, onMount, tick } from 'svelte';
   import { flip } from 'svelte/animate';
   import {
@@ -100,9 +101,15 @@
   import AppDialog from '../../docs/specs/ui/components/AppDialog.svelte';
   import AudioPreview from '../../docs/specs/ui/components/AudioPreview.svelte';
   import JoinLinkSections from '../../docs/specs/ui/components/JoinLinkSections.svelte';
-  import NearbytesLogo from './components/NearbytesLogo.svelte';
+  import CreateChooserDialog from '../../docs/specs/ui/components/CreateChooserDialog.svelte';
+  import IdentityManagerDialog from '../../docs/specs/ui/components/IdentityManagerDialog.svelte';
+  import JoinDialog from '../../docs/specs/ui/components/JoinDialog.svelte';
+  import MountDialog from '../../docs/specs/ui/components/MountDialog.svelte';
+  import NearbytesLogo from '../../docs/specs/ui/components/NearbytesLogo.svelte';
+  import ResetDialog from '../../docs/specs/ui/components/ResetDialog.svelte';
+  import ShareDialog from '../../docs/specs/ui/components/ShareDialog.svelte';
   import MountRail from '../../docs/specs/ui/components/MountRail.svelte';
-  import SharedSecretEditor from './components/SharedSecretEditor.svelte';
+  import SharedSecretEditor from '../../docs/specs/ui/components/SharedSecretEditor.svelte';
   import ShareSpaceLinkSection from '../../docs/specs/ui/components/ShareSpaceLinkSection.svelte';
   import StatusNotice from '../../docs/specs/ui/components/StatusNotice.svelte';
   import StoragePanel from '../../docs/specs/ui/components/StoragePanel.svelte';
@@ -121,6 +128,11 @@
     createWorkspaceSelectionSummary,
     type WorkspaceChromeActions,
   } from '../../docs/specs/ui/workspaceChrome.js';
+  import {
+    createUiTransitionStore,
+    normalizeUiTransitionState,
+    type UiThemeDialogSection,
+  } from '../../docs/specs/ui/uiTransitionStore.js';
   import {
     joinDialogAttachmentTitle,
   } from './lib/joinLinkPresentation.js';
@@ -284,8 +296,7 @@
 
   type PersistedDiscoveryResult = Pick<ReconcileSourcesResponse, 'runKey' | 'changed' | 'summary' | 'items'>;
 
-
-  type ThemeDialogSection = 'preset' | 'material' | 'accent' | 'logo';
+  type ThemeDialogSection = UiThemeDialogSection;
 
   type SecretFileHashEntry = {
     payload: string;
@@ -346,6 +357,11 @@
     bundle: SourceReferenceBundle;
     itemCount: number;
   };
+
+  const uiTransitionStore = createUiTransitionStore(
+    normalizeUiTransitionState(loadPersistedUiStateLocally().uiMachine)
+  );
+  const uiTransitions = uiTransitionStore.transitions;
 
   function normalizeVolumeKey(value: string | null | undefined): string | null {
     if (typeof value !== 'string') {
@@ -657,14 +673,12 @@
 
   function openSourcesPanelWithFocus(focus: 'discovery' | 'defaults' | null): void {
     sourceDiscoveryPanelFocus = focus;
-    showSourcesPanel = true;
-    showVolumeStoragePanel = false;
+    uiTransitions.openSourcesPanel();
   }
 
   function openVolumeStoragePanel(): void {
     sourceDiscoveryPanelFocus = null;
-    showVolumeStoragePanel = true;
-    showSourcesPanel = false;
+    uiTransitions.openVolumeStoragePanel();
   }
 
   function openMountStorageDialog(targetMountId: string | null = activeMountId): void {
@@ -1324,14 +1338,14 @@
     resetDialogDeleteLocalData = false;
     resetDialogBusy = false;
     resetDialogError = '';
-    showResetDialog = true;
+    uiTransitions.openResetDialog();
   }
 
   function closeResetDialog(): void {
     if (resetDialogBusy) {
       return;
     }
-    showResetDialog = false;
+    uiTransitions.closeResetDialog();
     resetDialogDeleteLocalData = false;
     resetDialogError = '';
   }
@@ -1485,8 +1499,6 @@
   let isOffline = $state(false);
   let lastRefresh = $state<number | null>(null);
   let copiedVolumeId = $state(false);
-  let searchQuery = $state('');
-  let sortBy = $state<'newest' | 'oldest' | 'name' | 'name-desc' | 'size' | 'size-asc'>('newest');
   let selectedFileName = $state<string | null>(null);
   let selectedFileNames = $state<string[]>([]);
   let selectionAnchorFileName = $state<string | null>(null);
@@ -1542,18 +1554,16 @@
   let clipboardImageAvailable = $state(false);
   let clipboardImageLoading = $state(false);
   let persistedUiStateReady = $state(false);
+  let uiMachineState = $state(get(uiTransitionStore));
   let themeRegistry = $state<NearbytesThemeRegistry>(defaultThemeRegistry());
   let themeSettings = $state<NearbytesThemeSettings>(defaultThemeSettings());
-  let showThemeDialog = $state(false);
-  let showResetDialog = $state(false);
   let resetDialogDeleteLocalData = $state(false);
   let resetDialogBusy = $state(false);
   let resetDialogError = $state('');
-  let themeDialogSection = $state<ThemeDialogSection>('preset');
   let themeDialogBusy = $state(false);
   let themeDialogFeedback = $state<{ tone: 'success' | 'warning'; message: string } | null>(null);
   let themeDialogError = $state('');
-  let themeDialogLogoPreview = $state<{ exportPngDataUrl: () => Promise<string | null> } | null>(null);
+  let themeDialogLogoPreview = $state<any>(null);
   let hydratedThemeState = $state<unknown>(null);
   let isHeaderHovering = $state(false);
   let isSecretDropTarget = $state(false);
@@ -1566,15 +1576,10 @@
     isSecretDropTarget = value;
   }
   let timelinePlayTimer: ReturnType<typeof setInterval> | null = null;
-  let showTimeMachinePanel = $state(false);
-  let showSourcesPanel = $state(false);
-  let showVolumeStoragePanel = $state(false);
   let showMountStorageDialog = $state(false);
   let mountStorageDialogMountId = $state<string | null>(null);
   let mountDialogStorageMode = $state<MountStorageMode>('unknown');
   let mountDialogStorageModeLoading = $state(false);
-  let showEventFlowPanel = $state(false);
-  let showPhoneOverflowMenu = $state(false);
   let autoSyncEnabled = $state(false);
   let autoSyncStatus = $state<'idle' | 'connecting' | 'active' | 'unsupported' | 'error'>('idle');
   let isRefreshing = $state(false);
@@ -1582,8 +1587,6 @@
   let configuredIdentities = $state<ConfiguredIdentity[]>([]);
   let activeChatIdentityId = $state('');
   let volumeChatIdentityAssignments = $state<Record<string, string>>({});
-  let showIdentityManager = $state(false);
-  let showCreateChooser = $state(false);
   let phoneOverflowMenuElement = $state<HTMLElement | null>(null);
   let phoneOverflowMenuButtonElement = $state<HTMLButtonElement | null>(null);
   let identityManagerLoading = $state(false);
@@ -1593,7 +1596,6 @@
   let identityAvatarFileInput = $state<HTMLInputElement | null>(null);
   let identityHydrated = false;
   let chatRefreshVersion = $state(0);
-  let fileManagerViewMode = $state<FileManagerViewMode>('icons');
   let fileManagerSplit = $state(38);
   let fileManagerElement = $state<HTMLElement | null>(null);
   let workspacePanelsElement = $state<HTMLElement | null>(null);
@@ -1612,7 +1614,6 @@
   let joinLinkCopyBusy = $state(false);
   let joinLinkCopyFeedback = $state<JoinLinkCopyFeedbackState | null>(null);
   let volumeSharingFeedback = $state<{ tone: 'success' | 'warning'; message: string } | null>(null);
-  let showJoinVolumeDialog = $state(false);
   let joinDialogSerialized = $state('');
   let joinDialogAllowCredentialBootstrap = $state(false);
   let joinDialogPreview = $state<JoinLinkParseResponse | JoinLinkOpenResponse | null>(null);
@@ -1621,7 +1622,6 @@
   let joinDialogClipboardBusy = $state(false);
   let joinDialogPreviewBusy = $state(false);
   let joinDialogOpenBusy = $state(false);
-  let showVolumeShareDialog = $state(false);
   let sourceDiscoveryRefreshToken = $state(0);
   let sourceDiscoveryPanelFocus = $state<'discovery' | 'defaults' | 'shares' | null>(null);
   let sourceDiscoveryInFlight = false;
@@ -1654,6 +1654,24 @@
   const MOUNT_RUNTIME_REFRESH_MS = 15000;
   const ACTIVE_MOUNT_RUNTIME_STALE_MS = 2500;
   const AUTO_REFRESH_DEBOUNCE_MS = 25;
+  const destroyUiTransitionSubscription = uiTransitionStore.subscribe((value) => {
+    uiMachineState = value;
+  });
+  const showThemeDialog = $derived(uiMachineState.showThemeDialog);
+  const showResetDialog = $derived(uiMachineState.showResetDialog);
+  const themeDialogSection = $derived(uiMachineState.themeDialogSection);
+  const showTimeMachinePanel = $derived(uiMachineState.showTimeMachinePanel);
+  const showSourcesPanel = $derived(uiMachineState.showSourcesPanel);
+  const showVolumeStoragePanel = $derived(uiMachineState.showVolumeStoragePanel);
+  const showEventFlowPanel = $derived(uiMachineState.showEventFlowPanel);
+  const showPhoneOverflowMenu = $derived(uiMachineState.showPhoneOverflowMenu);
+  const showIdentityManager = $derived(uiMachineState.showIdentityManager);
+  const showCreateChooser = $derived(uiMachineState.showCreateChooser);
+  const fileManagerViewMode = $derived(uiMachineState.fileManagerViewMode);
+  const searchQuery = $derived(uiMachineState.searchQuery);
+  const sortBy = $derived(uiMachineState.sortBy);
+  const showJoinVolumeDialog = $derived(uiMachineState.showJoinVolumeDialog);
+  const showVolumeShareDialog = $derived(uiMachineState.showVolumeShareDialog);
 
   async function loadThemeRegistryAsset(): Promise<void> {
     try {
@@ -1683,10 +1701,9 @@
     if (!isDevThemeStudio) {
       return;
     }
-    themeDialogSection = section;
     themeDialogFeedback = null;
     themeDialogError = '';
-    showThemeDialog = true;
+    uiTransitions.openThemeDialog(section);
   }
 
   async function persistThemeRegistry(
@@ -1808,7 +1825,7 @@
       renamingFileName = null;
       renameDraft = '';
       fileManagerActive = false;
-      searchQuery = '';
+      uiTransitions.clearSearchQuery();
       return;
     }
     updateActiveMountWorkspace({
@@ -1836,11 +1853,11 @@
       return;
     }
     if (value === 'timeline') {
-      showTimeMachinePanel = !showTimeMachinePanel;
+      uiTransitions.toggleTimeMachinePanel();
       return;
     }
     if (value === 'flow') {
-      showEventFlowPanel = !showEventFlowPanel;
+      uiTransitions.toggleEventFlowPanel();
       return;
     }
     if (value === 'identities') {
@@ -1857,11 +1874,11 @@
   }
 
   function togglePhoneOverflowMenu(): void {
-    showPhoneOverflowMenu = !showPhoneOverflowMenu;
+    uiTransitions.togglePhoneOverflowMenu();
   }
 
   function closePhoneOverflowMenu(): void {
-    showPhoneOverflowMenu = false;
+    uiTransitions.closePhoneOverflowMenu();
   }
 
   function runPhoneOverflowAction(value: string): void {
@@ -1990,6 +2007,7 @@
         latestSourceDiscoveryRunKey = discoveryState.latestRunKey;
         lastAcknowledgedSourceDiscoveryRunKey = discoveryState.lastAcknowledgedRunKey;
         applyHydratedThemeState(nextState.theme);
+        uiTransitionStore.replaceState(normalizeUiTransitionState(nextState.uiMachine));
       } catch (error) {
         console.warn('Failed to hydrate desktop UI state:', error);
       } finally {
@@ -2015,6 +2033,7 @@
   });
 
   onDestroy(() => {
+    destroyUiTransitionSubscription();
     if (mountPressReleaseTimer) {
       clearTimeout(mountPressReleaseTimer);
       mountPressReleaseTimer = null;
@@ -2266,6 +2285,31 @@
     }
 
     const payload: PersistedUiState = {
+      uiMachine: uiMachineState,
+      savedAt: Date.now(),
+    };
+    persistUiStateLocally(payload);
+    const persistTimer = setTimeout(() => {
+      void saveHostPersistedUiState(payload).then((saved) => {
+        if (!saved) {
+          persistUiStateLocally(payload);
+        }
+      }).catch((error) => {
+          console.warn('Failed to persist host UI machine state:', error);
+      });
+    }, 120);
+
+    return () => {
+      clearTimeout(persistTimer);
+    };
+  });
+
+  $effect(() => {
+    if (!persistedUiStateReady) {
+      return;
+    }
+
+    const payload: PersistedUiState = {
       theme: cloneThemeSettings(themeSettings),
       savedAt: Date.now(),
     };
@@ -2296,6 +2340,7 @@
         configuredIdentities,
         activeChatIdentityId,
         volumeChatIdentityAssignments,
+        uiMachine: uiMachineState,
         sourceDiscovery: {
           lastAcknowledgedRunKey: lastAcknowledgedSourceDiscoveryRunKey,
           latestRunKey: latestSourceDiscoveryRunKey,
@@ -2918,19 +2963,19 @@
     toggleStorage: toggleVolumeStoragePanel,
     openShare: openVolumeShareDialog,
     toggleTimeline: () => {
-      showTimeMachinePanel = !showTimeMachinePanel;
+      uiTransitions.toggleTimeMachinePanel();
     },
     toggleFlow: () => {
-      showEventFlowPanel = !showEventFlowPanel;
+      uiTransitions.toggleEventFlowPanel();
     },
     setViewMode: (mode) => {
-      fileManagerViewMode = mode;
+      uiTransitions.setFileManagerViewMode(mode);
     },
     setSearchQuery: (value) => {
-      searchQuery = value;
+      uiTransitions.setSearchQuery(value);
     },
     setSortBy: (value) => {
-      sortBy = value;
+      uiTransitions.setSortBy(value);
     },
     paste: () => {
       void pasteCopiedFiles();
@@ -2981,6 +3026,7 @@
         showVolumeStoragePanel: workspaceChromeState.showVolumeStoragePanel,
         showEventFlowPanel: workspaceChromeState.showEventFlowPanel,
         showPhoneOverflowMenu,
+        showMountDialog: Boolean(mountDialogMount),
         showIdentityManager,
         showCreateChooser,
         showJoinVolumeDialog,
@@ -2990,6 +3036,8 @@
           ? 'share'
           : showJoinVolumeDialog
             ? 'join'
+            : mountDialogMount
+              ? 'mount'
             : showCreateChooser
               ? 'create'
               : showIdentityManager
@@ -3243,7 +3291,7 @@
     isTimelineLoading = false;
     timelineEvents = [];
     timelinePosition = 0;
-    searchQuery = '';
+    uiTransitions.clearSearchQuery();
     selectedFileName = null;
     previewKind = 'none';
     previewText = '';
@@ -4349,20 +4397,20 @@
   }
 
   function toggleVolumeStoragePanel() {
-    showVolumeStoragePanel = !showVolumeStoragePanel;
+    uiTransitions.toggleVolumeStoragePanel();
     sourceDiscoveryPanelFocus = null;
-    if (showVolumeStoragePanel) {
-      showSourcesPanel = false;
-      showEventFlowPanel = false;
+    if (!showVolumeStoragePanel) {
+      uiTransitions.closeSourcesPanel();
+      uiTransitions.closeEventFlowPanel();
     }
   }
 
   function toggleSourcesPanel() {
-    showSourcesPanel = !showSourcesPanel;
+    uiTransitions.toggleSourcesPanel();
     sourceDiscoveryPanelFocus = null;
-    if (showSourcesPanel) {
-      showVolumeStoragePanel = false;
-      showEventFlowPanel = false;
+    if (!showSourcesPanel) {
+      uiTransitions.closeVolumeStoragePanel();
+      uiTransitions.closeEventFlowPanel();
     }
   }
 
@@ -4377,16 +4425,14 @@
   }
 
   function openVolumeShareStoragePanel(): void {
-    showVolumeShareDialog = false;
+    uiTransitions.closeVolumeShareDialog();
     openVolumeStoragePanel();
     sourceDiscoveryPanelFocus = 'shares';
   }
 
   function openJoinVolumeDialog(): void {
-    showVolumeShareDialog = false;
-    showCreateChooser = false;
+    uiTransitions.openJoinVolumeDialog();
     resetJoinDialogState();
-    showJoinVolumeDialog = true;
   }
 
   async function openJoinVolumeDialogFromClipboard(): Promise<void> {
@@ -4395,7 +4441,7 @@
   }
 
   function closeJoinVolumeDialog(): void {
-    showJoinVolumeDialog = false;
+    uiTransitions.closeJoinVolumeDialog();
     resetJoinDialogState();
   }
 
@@ -4403,18 +4449,15 @@
     if (!activeMount && !shareableVolumeId) {
       return;
     }
-    showJoinVolumeDialog = false;
-    showCreateChooser = false;
-    showVolumeShareDialog = true;
+    uiTransitions.openVolumeShareDialog();
   }
 
   function openCreateChooser(): void {
-    showIdentityManager = false;
-    showCreateChooser = true;
+    uiTransitions.openCreateChooser();
   }
 
   function closeCreateChooser(): void {
-    showCreateChooser = false;
+    uiTransitions.closeCreateChooser();
   }
 
   function startCreateHub(): void {
@@ -4428,7 +4471,7 @@
   }
 
   function closeVolumeShareDialog(): void {
-    showVolumeShareDialog = false;
+    uiTransitions.closeVolumeShareDialog();
   }
 
   async function previewJoinDialogLink(): Promise<void> {
@@ -4513,8 +4556,7 @@
       activeMountId = targetMountId;
       pendingMountId = null;
       secretPasteTargetMountId = null;
-      showVolumeStoragePanel = true;
-      showSourcesPanel = false;
+      uiTransitions.openVolumeStoragePanel();
       sourceDiscoveryPanelFocus = 'shares';
       return;
     }
@@ -4553,8 +4595,8 @@
     activeMountId = targetMountId;
     pendingMountId = targetMountId;
     secretPasteTargetMountId = null;
-    showSourcesPanel = false;
-    showVolumeStoragePanel = false;
+    uiTransitions.closeSourcesPanel();
+    uiTransitions.closeVolumeStoragePanel();
     sourceDiscoveryPanelFocus = null;
 
     await tick();
@@ -5359,7 +5401,7 @@
       renamingFileName = null;
       renameDraft = '';
       fileManagerActive = false;
-      searchQuery = '';
+      uiTransitions.clearSearchQuery();
     }
     if (!nextShowChat) {
     }
@@ -5375,7 +5417,7 @@
       showSearchPane: nextShowSearch,
     });
     if (!nextShowSearch) {
-      searchQuery = '';
+      uiTransitions.clearSearchQuery();
     }
   }
 
@@ -5383,7 +5425,7 @@
     const next = createConfiguredIdentity();
     configuredIdentities = [...configuredIdentities, next];
     activeChatIdentityId = next.id;
-    showIdentityManager = true;
+    uiTransitions.openIdentityManager();
     identityManagerError = '';
     identityManagerMessage = '';
   }
@@ -5470,11 +5512,39 @@
     return applySecretFileToMount(file, mountDialogMount.id);
   }
 
+  function handleMountDialogValueInput(value: string): void {
+    if (!mountDialogMount) {
+      return;
+    }
+    updateMountAddress(mountDialogMount.id, value);
+  }
+
+  function handleMountDialogPasswordInput(value: string): void {
+    if (!mountDialogMount) {
+      return;
+    }
+    updateMountPassword(mountDialogMount.id, value);
+  }
+
   function handleSelectedIdentitySecretSelected(file: globalThis.File) {
     if (!selectedChatIdentity) {
       return;
     }
     return applySecretFileToIdentity(file, selectedChatIdentity.id);
+  }
+
+  function handleSelectedIdentityValueInput(value: string): void {
+    if (!selectedChatIdentity) {
+      return;
+    }
+    updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'address', value);
+  }
+
+  function handleSelectedIdentityPasswordInput(value: string): void {
+    if (!selectedChatIdentity) {
+      return;
+    }
+    updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'password', value);
   }
 
   async function applyAvatarFileToIdentity(file: globalThis.File, identityId: string) {
@@ -5532,15 +5602,14 @@
   }
 
   function openIdentityManager() {
-    showCreateChooser = false;
+    uiTransitions.openIdentityManager();
     if (currentVolumeChatIdentityId) {
       activeChatIdentityId = currentVolumeChatIdentityId;
     }
-    showIdentityManager = true;
   }
 
   function closeIdentityManager() {
-    showIdentityManager = false;
+    uiTransitions.closeIdentityManager();
   }
 
   function configuredIdentityNeedsPublish(identity: ConfiguredIdentity): boolean {
@@ -5575,7 +5644,7 @@
       identityManagerError = 'Identity secret is required.';
       identityManagerMessage = '';
       if (options.openManagerOnError) {
-        showIdentityManager = true;
+        uiTransitions.openIdentityManager();
       }
       return null;
     }
@@ -5583,7 +5652,7 @@
       identityManagerError = 'Display name is required before publishing.';
       identityManagerMessage = '';
       if (options.openManagerOnError) {
-        showIdentityManager = true;
+        uiTransitions.openIdentityManager();
       }
       return null;
     }
@@ -5620,7 +5689,7 @@
     } catch (error) {
       identityManagerError = error instanceof Error ? error.message : 'Failed to publish identity';
       if (options.openManagerOnError) {
-        showIdentityManager = true;
+        uiTransitions.openIdentityManager();
       }
       return null;
     } finally {
@@ -5651,7 +5720,7 @@
     if (!selectedChatIdentity) {
       identityManagerError = 'Choose an identity before joining this chat.';
       identityManagerMessage = '';
-      showIdentityManager = true;
+      uiTransitions.openIdentityManager();
       return null;
     }
     if (isHistoryMode) {
@@ -5675,20 +5744,20 @@
     };
     identityManagerError = '';
     identityManagerMessage = `Joined this hub as ${publishedIdentity.displayName.trim()}.`;
-    showIdentityManager = false;
+    uiTransitions.closeIdentityManager();
     return publishedIdentity;
   }
 
   function toggleColumnSort(column: 'name' | 'size' | 'date') {
     if (column === 'name') {
-      sortBy = sortBy === 'name' ? 'name-desc' : 'name';
+      uiTransitions.setSortBy(sortBy === 'name' ? 'name-desc' : 'name');
       return;
     }
     if (column === 'size') {
-      sortBy = sortBy === 'size' ? 'size-asc' : 'size';
+      uiTransitions.setSortBy(sortBy === 'size' ? 'size-asc' : 'size');
       return;
     }
-    sortBy = sortBy === 'newest' ? 'oldest' : 'newest';
+    uiTransitions.setSortBy(sortBy === 'newest' ? 'oldest' : 'newest');
   }
 
   function columnSortState(column: 'name' | 'size' | 'date'): 'ascending' | 'descending' | 'none' {
@@ -6422,7 +6491,7 @@
     }
     if (showThemeDialog) {
       e.preventDefault();
-      showThemeDialog = false;
+      uiTransitions.closeThemeDialog();
       return;
     }
     if (showResetDialog) {
@@ -6442,7 +6511,7 @@
     }
     if (showEventFlowPanel) {
       e.preventDefault();
-      showEventFlowPanel = false;
+      uiTransitions.closeEventFlowPanel();
       return;
     }
     handleManagerKeydown(e);
@@ -6629,7 +6698,7 @@
     onDrop={handleDrop}
     {showEventFlowPanel}
     onCloseFlow={() => {
-      showEventFlowPanel = false;
+      uiTransitions.closeEventFlowPanel();
     }}
   >
     {#snippet globalPanel()}
@@ -7636,616 +7705,163 @@
   {/if}
 
   {#if mountDialogMount}
-    <div
-      class="mount-dialog-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label={isMountEmpty(mountDialogMount) ? 'Create hub' : 'Edit hub properties'}
-      tabindex="-1"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) {
-          collapseMount(mountDialogMount.id);
-        }
+    {@const secretHash = hasFileSecret(mountDialogMount) ? secretFileHashForMount(mountDialogMount) : null}
+    <MountDialog
+      mount={mountDialogMount}
+      isEmpty={isMountEmpty(mountDialogMount)}
+      mountLabel={mountLabel(mountDialogMount)}
+      mode={mountDialogMode}
+      resolvedVolumeId={mountDialogResolvedVolumeId ?? undefined}
+      resolvedLastRefresh={mountDialogResolvedLastRefresh ? formatDate(mountDialogResolvedLastRefresh) : ''}
+      storageLabel={mountDialogStorageLabel}
+      isHistoryMode={mountDialogMount.id === activeMountId && isHistoryMode}
+      resolvedOffline={mountDialogResolvedOffline}
+      resolvedError={mountDialogResolvedError}
+      {joinDialogSerialized}
+      {joinDialogError}
+      joinDialogPreview={joinDialogPreview}
+      {joinDialogClipboardBusy}
+      {joinDialogPreviewBusy}
+      {joinDialogOpenBusy}
+      {clipboardImageAvailable}
+      clipboardImageLoading={clipboardImageLoading}
+      filePreviewUrl={secretFilePayloadDataUrl(mountDialogMount)}
+      fileIsImage={hasImageSecretPreview(mountDialogMount)}
+      fileInfo={secretFileBytes(mountDialogMount) ? formatSize(secretFileBytes(mountDialogMount)?.byteLength ?? 0) : ''}
+      fileHashLabel={hasFileSecret(mountDialogMount) ? 'SHA-256' : ''}
+      fileHashValue={secretHash?.hash ?? ''}
+      fileHashPending={secretHash?.pending ?? false}
+      loading={isLoading && mountDialogMount.id === activeMountId}
+      onClose={() => collapseMount(mountDialogMount.id)}
+      onCopyVolumeId={() => void copyVolumeId(mountDialogResolvedVolumeId)}
+      onOpenStorage={() => openMountStorageDialog(mountDialogMount.id)}
+      onSetMode={setMountDialogMode}
+      onJoinSerializedInput={(value) => {
+        joinDialogSerialized = value;
       }}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          collapseMount(mountDialogMount.id);
-        }
-      }}
-    >
-      <div class="mount-dialog panel-surface" role="document" tabindex="-1" data-mount-id={mountDialogMount.id}>
-        <div class="mount-dialog-header">
-          <div class="mount-dialog-head-meta">
-            <p class="mount-dialog-eyebrow">Hub properties</p>
-            {#if !isMountEmpty(mountDialogMount)}
-              <p class="mount-dialog-title">{mountLabel(mountDialogMount) || 'Unnamed hub'}</p>
-              {#if mountDialogResolvedVolumeId || mountDialogResolvedLastRefresh || mountDialogStorageLabel || (mountDialogMount.id === activeMountId && isHistoryMode) || mountDialogResolvedOffline}
-                <div class="mount-dialog-info-row" aria-label="Hub details">
-                  {#if mountDialogResolvedVolumeId}
-                    <div class="mount-dialog-info-item">
-                      <span class="mount-dialog-info-label">Hub ID</span>
-                      <button
-                        class="volume-id-btn"
-                        onclick={() => void copyVolumeId(mountDialogResolvedVolumeId)}
-                        title="Copy hub ID"
-                      >
-                        {mountDialogResolvedVolumeId.slice(0, 16)}...
-                        {#if copiedVolumeId}
-                          <span class="copied-indicator">Copied</span>
-                        {/if}
-                      </button>
-                    </div>
-                  {/if}
-                  <div class="mount-dialog-info-item mount-dialog-info-item-storage">
-                    <span class="mount-dialog-info-label">Storage</span>
-                    <span class="mount-dialog-info-value mount-dialog-info-value-storage">{mountDialogStorageLabel}</span>
-                    <button
-                      type="button"
-                      class="mount-dialog-inline-action"
-                      onclick={() => openMountStorageDialog(mountDialogMount.id)}
-                      disabled={!mountDialogResolvedVolumeId}
-                    >
-                      <span>Change</span>
-                    </button>
-                  </div>
-                  {#if mountDialogResolvedLastRefresh}
-                    <div class="mount-dialog-info-item mount-dialog-info-item-refresh">
-                      <span class="mount-dialog-info-label">Updated</span>
-                      <span class="mount-dialog-info-value mount-dialog-info-value-refresh">{formatDate(mountDialogResolvedLastRefresh)}</span>
-                    </div>
-                  {/if}
-                  {#if mountDialogMount.id === activeMountId && isHistoryMode}
-                    <span class="mount-dialog-info-pill">History mode</span>
-                  {/if}
-                  {#if mountDialogResolvedOffline}
-                    <span class="mount-dialog-info-pill">Offline</span>
-                  {/if}
-                </div>
-              {/if}
-              {#if mountDialogResolvedError}
-                <StatusNotice tone="error" role="alert" compact={true} message={mountDialogResolvedError} />
-              {/if}
-            {/if}
-            {#if isMountEmpty(mountDialogMount)}
-              <div class="mount-dialog-mode-switch" role="tablist" aria-label="Create hub mode">
-                <button
-                  type="button"
-                  class="mount-dialog-mode-btn"
-                  class:active={mountDialogMode === 'secret'}
-                  aria-pressed={mountDialogMode === 'secret'}
-                  onclick={() => setMountDialogMode('secret')}
-                >
-                  <Plus size={14} strokeWidth={2.2} />
-                  <span>Secret</span>
-                </button>
-                <button
-                  type="button"
-                  class="mount-dialog-mode-btn"
-                  class:active={mountDialogMode === 'join-link'}
-                  aria-pressed={mountDialogMode === 'join-link'}
-                  onclick={() => setMountDialogMode('join-link')}
-                >
-                  <ClipboardPaste size={14} strokeWidth={2} />
-                  <span>Paste link</span>
-                </button>
-              </div>
-            {/if}
-          </div>
-          <button type="button" class="tm-details-close" aria-label="Close hub properties" onclick={() => collapseMount(mountDialogMount.id)}>
-            <X size={18} strokeWidth={2} />
-          </button>
-        </div>
-
-        <div class="mount-dialog-body">
-          {#if mountDialogMode === 'join-link' && isMountEmpty(mountDialogMount)}
-            <JoinLinkSections
-              serialized={joinDialogSerialized}
-              error={joinDialogError}
-              preview={joinDialogPreview}
-              clipboardBusy={joinDialogClipboardBusy}
-              previewBusy={joinDialogPreviewBusy}
-              openBusy={joinDialogOpenBusy}
-              onSerializedInput={(value) => {
-                joinDialogSerialized = value;
-              }}
-              onReadClipboard={readJoinDialogClipboard}
-              onOpenLink={openJoinDialogLink}
-            />
-
-            <section class="mount-dialog-section">
-              <div class="mount-dialog-actions">
-                <button
-                  type="button"
-                  class="workspace-toggle"
-                  onclick={() => setMountDialogMode('secret')}
-                >
-                  <span>Use secret instead</span>
-                </button>
-                <button
-                  type="button"
-                  class="workspace-toggle"
-                  onclick={() => collapseMount(mountDialogMount.id)}
-                >
-                  <span>Cancel</span>
-                </button>
-              </div>
-            </section>
-          {:else}
-          {@const secretHash = hasFileSecret(mountDialogMount) ? secretFileHashForMount(mountDialogMount) : null}
-          <section class="mount-dialog-section">
-            <div class="secret-input-wrapper mount-dialog-inputs">
-              <SharedSecretEditor
-                dense={true}
-                value={mountDialogMount.address}
-                password={mountDialogMount.password}
-                valueLabel="Hub secret"
-                valueAriaLabel="Hub address"
-                valuePlaceholder="address or secret seed"
-                passwordLabel="Password (optional)"
-                passwordAriaLabel="Optional hub password"
-                passwordPlaceholder="optional"
-                hint="Drop an image/file here, or press Cmd/Ctrl + V."
-                showPasteButton={clipboardImageAvailable || clipboardImageLoading}
-                pasteButtonLabel="Paste image"
-                pasteButtonBusy={clipboardImageLoading}
-                fileName={mountDialogMount.secretFileName}
-                fileMimeType={mountDialogMount.secretFileMimeType}
-                filePreviewUrl={secretFilePayloadDataUrl(mountDialogMount)}
-                fileIsImage={hasImageSecretPreview(mountDialogMount)}
-                fileInfo={secretFileBytes(mountDialogMount) ? formatSize(secretFileBytes(mountDialogMount)?.byteLength ?? 0) : ''}
-                fileHashLabel={hasFileSecret(mountDialogMount) ? 'SHA-256' : ''}
-                fileHashValue={secretHash?.hash ?? ''}
-                fileHashPending={secretHash?.pending ?? false}
-                showDownloadButton={hasFileSecret(mountDialogMount)}
-                onValueInput={(value) => updateMountAddress(mountDialogMount.id, value)}
-                onPasswordInput={(value) => updateMountPassword(mountDialogMount.id, value)}
-                onFileSelected={handleMountDialogSecretSelected}
-                onPasteButton={() => handlePasteImageButton(mountDialogMount.id)}
-                onDownloadFile={() => downloadSecretFile(mountDialogMount)}
-              />
-              {#if isLoading && mountDialogMount.id === activeMountId}
-                <span class="loading-spinner"></span>
-              {/if}
-            </div>
-          </section>
-
-          <div class="mount-dialog-footer">
-            <ArmedActionButton
-              class="panel-action-btn danger"
-              text="Detach"
-              icon={Trash2}
-              armed={true}
-              armDelayMs={0}
-              autoDisarmMs={3000}
-              resetKey={mountDialogMount.id}
-              onPress={() => removeMount(mountDialogMount.id)}
-              title="Detach hub"
-              ariaLabel="Detach hub"
-            />
-            <div class="mount-dialog-footer-actions">
-              <button
-                type="button"
-                class="workspace-toggle"
-                onclick={() => collapseMount(mountDialogMount.id)}
-              >
-                <span>Done</span>
-              </button>
-            </div>
-          </div>
-          {/if}
-        </div>
-      </div>
-    </div>
+      onReadClipboard={readJoinDialogClipboard}
+      onOpenLink={openJoinDialogLink}
+      onSecretValueInput={handleMountDialogValueInput}
+      onSecretPasswordInput={handleMountDialogPasswordInput}
+      onSecretFileSelected={handleMountDialogSecretSelected}
+      onPasteButton={() => handlePasteImageButton(mountDialogMount.id)}
+      onDownloadFile={() => downloadSecretFile(mountDialogMount)}
+      onRemove={() => removeMount(mountDialogMount.id)}
+    />
   {/if}
 
   {#if showCreateChooser}
-    <div
-      class="mount-dialog-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Create"
-      tabindex="-1"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) {
-          closeCreateChooser();
-        }
-      }}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeCreateChooser();
-        }
-      }}
-    >
-      <div class="create-chooser-modal panel-surface" role="document" tabindex="-1">
-        <div class="create-chooser-head">
-          <div>
-            <p class="mount-dialog-eyebrow">Create</p>
-            <p class="mount-dialog-title">What do you want to make?</p>
-          </div>
-          <button type="button" class="tm-details-close" aria-label="Close create chooser" onclick={closeCreateChooser}>
-            <X size={18} strokeWidth={2} />
-          </button>
-        </div>
-        <div class="create-chooser-grid">
-          <button type="button" class="create-chooser-card" onclick={startCreateHub}>
-            <Plus size={18} strokeWidth={2.2} />
-            <span class="create-chooser-card-title">Hub</span>
-          </button>
-          <button type="button" class="create-chooser-card" onclick={startCreateIdentity}>
-            <UserRound size={18} strokeWidth={2} />
-            <span class="create-chooser-card-title">Identity</span>
-          </button>
-          <button type="button" class="create-chooser-card" onclick={() => void openJoinVolumeDialogFromClipboard()}>
-            <ClipboardPaste size={18} strokeWidth={2} />
-            <span class="create-chooser-card-title">Paste link</span>
-          </button>
-        </div>
-      </div>
-    </div>
+    <CreateChooserDialog
+      onClose={closeCreateChooser}
+      onCreateHub={startCreateHub}
+      onCreateIdentity={startCreateIdentity}
+      onPasteLink={() => void openJoinVolumeDialogFromClipboard()}
+    />
   {/if}
 
   {#if showIdentityManager}
-    <div
-      class="mount-dialog-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Manage identities"
-      tabindex="-1"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) {
-          closeIdentityManager();
+    <IdentityManagerDialog
+      {configuredIdentities}
+      {activeChatIdentityId}
+      {currentVolumeChatIdentityId}
+      {joinedChatIdentityNeedsPublish}
+      {selectedChatIdentityNeedsPublish}
+      {selectedChatIdentity}
+      {selectedChatIdentityStatus}
+      selectedSecretPreviewUrl={selectedChatIdentity ? configuredIdentitySecretDataUrl(selectedChatIdentity) : null}
+      selectedSecretIsImage={selectedChatIdentity ? configuredIdentityHasImageSecret(selectedChatIdentity) : false}
+      selectedAvatarLabel={selectedChatIdentity ? configuredIdentityAvatarLabel(selectedChatIdentity) : ''}
+      errorMessage={identityManagerError}
+      successMessage={identityManagerMessage}
+      {identityManagerLoading}
+      {identityManagerAction}
+      activeHubAuth={Boolean(activeHubAuth)}
+      {isHistoryMode}
+      onClose={closeIdentityManager}
+      onAddIdentity={addConfiguredChatIdentity}
+      onSelectIdentity={(identityId) => {
+        activeChatIdentityId = identityId;
+        identityManagerError = '';
+        identityManagerMessage = '';
+      }}
+      onSecretValueInput={handleSelectedIdentityValueInput}
+      onSecretPasswordInput={handleSelectedIdentityPasswordInput}
+      onSecretFileSelected={handleSelectedIdentitySecretSelected}
+      onClearSecretFile={() => {
+        if (selectedChatIdentity) {
+          clearConfiguredChatIdentitySecretFile(selectedChatIdentity.id);
         }
       }}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeIdentityManager();
+      onAvatarFileSelected={(file) => {
+        if (selectedChatIdentity) {
+          return applyAvatarFileToIdentity(file, selectedChatIdentity.id);
         }
       }}
-    >
-      <div class="identity-manager-modal panel-surface" role="document" tabindex="-1">
-        <div class="identity-row identity-manager-panel">
-          <div class="identity-row-head">
-            <div class="identity-row-title">
-              <UserRound class="button-icon" size={15} strokeWidth={2} />
-              <span>Identities</span>
-            </div>
-            <button type="button" class="tm-details-close identity-row-close" aria-label="Close identities" onclick={closeIdentityManager}>
-              <X size={18} strokeWidth={2} />
-            </button>
-          </div>
-
-          <div class="identity-manager-content">
-            <div class="identity-chip-row">
-              {#if configuredIdentities.length === 0}
-                <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
-                  <Plus size={14} strokeWidth={2} />
-                  <span>Add identity</span>
-                </button>
-              {:else}
-                {#each configuredIdentities as identity (identity.id)}
-                  <button
-                    type="button"
-                    class="identity-pill"
-                    class:active={identity.id === activeChatIdentityId}
-                    onclick={() => {
-                      activeChatIdentityId = identity.id;
-                      identityManagerError = '';
-                      identityManagerMessage = '';
-                    }}
-                  >
-                    <span class="identity-pill-name">{identity.displayName || 'Unnamed identity'}</span>
-                    <span class="identity-pill-state">
-                      {#if identity.id === currentVolumeChatIdentityId && joinedChatIdentityNeedsPublish}
-                        Joined · update pending
-                      {:else if identity.id === currentVolumeChatIdentityId}
-                        Joined
-                      {:else if identity.id === activeChatIdentityId && selectedChatIdentityNeedsPublish}
-                        Needs publish
-                      {:else if identity.publicKey}
-                        Published
-                      {:else}
-                        Local
-                      {/if}
-                    </span>
-                  </button>
-                {/each}
-                <button type="button" class="identity-pill add" onclick={addConfiguredChatIdentity}>
-                  <Plus size={14} strokeWidth={2} />
-                  <span>New</span>
-                </button>
-              {/if}
-            </div>
-
-            {#if selectedChatIdentityStatus}
-              <div class={`identity-status-card ${selectedChatIdentityStatus.tone}`}>
-                <p class="identity-status-title">{selectedChatIdentityStatus.title}</p>
-                <p class="identity-status-detail">{selectedChatIdentityStatus.detail}</p>
-              </div>
-            {/if}
-
-            {#if identityManagerError}
-              <StatusNotice tone="error" role="alert" compact={true} message={identityManagerError} />
-            {:else if identityManagerMessage}
-              <StatusNotice tone="success" compact={true} message={identityManagerMessage} />
-            {/if}
-
-            {#if selectedChatIdentity}
-              <div class="identity-editor-panel">
-                <div class="identity-editor-panel-wide">
-                  <SharedSecretEditor
-                    value={selectedChatIdentity.address}
-                    password={selectedChatIdentity.password}
-                    valueLabel="Identity secret"
-                    valueAriaLabel="Identity secret"
-                    valuePlaceholder="address or secret seed"
-                    passwordLabel="Password (optional)"
-                    passwordAriaLabel="Optional identity password"
-                    passwordPlaceholder="optional"
-                    hint="Use text, or attach a file to act as this identity secret."
-                    fileName={selectedChatIdentity.secretFileName}
-                    fileMimeType={selectedChatIdentity.secretFileMimeType}
-                    filePreviewUrl={configuredIdentitySecretDataUrl(selectedChatIdentity)}
-                    fileIsImage={configuredIdentityHasImageSecret(selectedChatIdentity)}
-                    onValueInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'address', value)}
-                    onPasswordInput={(value) => updateConfiguredChatIdentitySecretText(selectedChatIdentity.id, 'password', value)}
-                    onFileSelected={handleSelectedIdentitySecretSelected}
-                    onClearFile={() => clearConfiguredChatIdentitySecretFile(selectedChatIdentity.id)}
-                  />
-                </div>
-                <label class="identity-editor-panel-wide">
-                  <span>Picture</span>
-                  <div class="identity-avatar-row">
-                    <div class="identity-avatar-preview">
-                      {#if selectedChatIdentity.avatarDataUrl}
-                        <img
-                          class="identity-avatar-image"
-                          src={selectedChatIdentity.avatarDataUrl}
-                          alt={selectedChatIdentity.displayName || 'Identity avatar'}
-                        />
-                      {:else}
-                        <span>{configuredIdentityAvatarLabel(selectedChatIdentity)}</span>
-                      {/if}
-                    </div>
-                    <div class="identity-avatar-actions">
-                      <input
-                        bind:this={identityAvatarFileInput}
-                        hidden
-                        type="file"
-                        accept="image/*"
-                        aria-label="Choose identity picture"
-                        onchange={(event) => void handleIdentityAvatarFileChange(event, selectedChatIdentity.id)}
-                      />
-                      <button type="button" class="workspace-toggle" onclick={() => identityAvatarFileInput?.click()}>
-                        <span>{selectedChatIdentity.avatarDataUrl ? 'Change picture' : 'Choose picture'}</span>
-                      </button>
-                      {#if selectedChatIdentity.avatarDataUrl}
-                        <button
-                          type="button"
-                          class="workspace-toggle remove"
-                          onclick={() => clearConfiguredChatIdentityAvatar(selectedChatIdentity.id)}
-                        >
-                          <span>Remove picture</span>
-                        </button>
-                      {/if}
-                    </div>
-                  </div>
-                </label>
-                <label>
-                  <span>Display name</span>
-                  <input
-                    type="text"
-                    value={selectedChatIdentity.displayName}
-                    oninput={(event) =>
-                      updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                        displayName: (event.currentTarget as HTMLInputElement).value,
-                      })}
-                    placeholder="Ada"
-                  />
-                </label>
-                <label class="identity-editor-panel-wide">
-                  <span>Bio</span>
-                  <textarea
-                    rows="2"
-                    oninput={(event) =>
-                      updateConfiguredChatIdentity(selectedChatIdentity.id, {
-                        bio: (event.currentTarget as HTMLTextAreaElement).value,
-                      })}
-                    placeholder="Who is speaking from this key?"
-                  >{selectedChatIdentity.bio}</textarea>
-                </label>
-                <div class="identity-editor-panel-actions">
-                  <button
-                    type="button"
-                    class="workspace-toggle remove"
-                    onclick={() => removeConfiguredChatIdentity(selectedChatIdentity.id)}
-                  >
-                    <Trash2 class="button-icon" size={15} strokeWidth={2} />
-                    <span>Remove</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="workspace-toggle"
-                    onclick={closeIdentityManager}
-                  >
-                    <span>Done</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="workspace-toggle"
-                    onclick={() => void publishSelectedChatIdentity()}
-                    disabled={!activeHubAuth || isHistoryMode || identityManagerLoading}
-                  >
-                    <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                    <span>
-                      {identityManagerLoading && identityManagerAction === 'publish'
-                        ? 'Publishing…'
-                        : selectedChatIdentityNeedsPublish
-                          ? 'Publish to hub'
-                          : 'Published'}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    class="workspace-toggle"
-                    onclick={() => void joinCurrentVolumeChat()}
-                    disabled={!activeHubAuth || isHistoryMode || identityManagerLoading}
-                  >
-                    <MessageSquareText class="button-icon" size={15} strokeWidth={2} />
-                    <span>
-                      {identityManagerLoading && identityManagerAction === 'join'
-                        ? 'Joining…'
-                        : selectedChatIdentity.id === currentVolumeChatIdentityId
-                          ? 'Joined to hub'
-                          : selectedChatIdentityNeedsPublish
-                            ? 'Publish and join'
-                            : 'Join this hub'}
-                    </span>
-                  </button>
-                </div>
-              </div>
-            {/if}
-          </div>
-        </div>
-      </div>
-    </div>
+      onClearAvatar={() => {
+        if (selectedChatIdentity) {
+          clearConfiguredChatIdentityAvatar(selectedChatIdentity.id);
+        }
+      }}
+      onDisplayNameInput={(value) => {
+        if (selectedChatIdentity) {
+          updateConfiguredChatIdentity(selectedChatIdentity.id, { displayName: value });
+        }
+      }}
+      onBioInput={(value) => {
+        if (selectedChatIdentity) {
+          updateConfiguredChatIdentity(selectedChatIdentity.id, { bio: value });
+        }
+      }}
+      onRemoveIdentity={() => {
+        if (selectedChatIdentity) {
+          removeConfiguredChatIdentity(selectedChatIdentity.id);
+        }
+      }}
+      onPublish={() => void publishSelectedChatIdentity()}
+      onJoin={() => void joinCurrentVolumeChat()}
+    />
   {/if}
 
   {#if showVolumeShareDialog}
-    <div
-      class="share-dialog-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Share this hub"
-      tabindex="-1"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) {
-          closeVolumeShareDialog();
-        }
-      }}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeVolumeShareDialog();
-        }
-      }}
-    >
-      <div class="share-dialog panel-surface" role="document" tabindex="-1">
-        <div class="share-dialog-header">
-          <div class="share-dialog-head-meta">
-            <p class="share-dialog-eyebrow">Shared hub</p>
-            <p class="share-dialog-title">Share this hub</p>
-          </div>
-          <button type="button" class="tm-details-close" aria-label="Close share dialog" onclick={closeVolumeShareDialog}>
-            <X size={18} strokeWidth={2} />
-          </button>
-        </div>
-
-        <div class="share-dialog-body">
-          <section class="share-dialog-section">
-            <ShareSpaceLinkSection
-              canCopySecretLink={hasCopyableCurrentSecret()}
-              shareLinkBusy={joinLinkCopyBusy}
-              shareLinkFeedback={volumeSharingFeedback}
-              onCopyShareLink={copyCurrentJoinLink}
-              onManageStorage={openVolumeShareStoragePanel}
-              showManageStorage={true}
-            />
-          </section>
-        </div>
-      </div>
-    </div>
+    <ShareDialog
+      canCopySecretLink={hasCopyableCurrentSecret()}
+      shareLinkBusy={joinLinkCopyBusy}
+      shareLinkFeedback={volumeSharingFeedback}
+      onCopyShareLink={copyCurrentJoinLink}
+      onManageStorage={openVolumeShareStoragePanel}
+      onClose={closeVolumeShareDialog}
+    />
   {/if}
 
   {#if showJoinVolumeDialog}
-    <AppDialog
-      ariaLabel="Join a shared hub"
-      eyebrow="Join shared hub"
-      title="Open from clipboard"
-      subtitle="Paste a Nearbytes link or raw share data copied from Nearbytes."
-      width="wide"
-      closeLabel="Close join dialog"
+    <JoinDialog
+      serialized={joinDialogSerialized}
+      error={joinDialogError}
+      preview={joinDialogPreview}
+      opened={joinDialogOpened}
+      clipboardBusy={joinDialogClipboardBusy}
+      previewBusy={joinDialogPreviewBusy}
+      openBusy={joinDialogOpenBusy}
+      onSerializedInput={(value) => {
+        joinDialogSerialized = value;
+      }}
+      onReadClipboard={readJoinDialogClipboard}
+      onOpenLink={openJoinDialogLink}
       onClose={closeJoinVolumeDialog}
-    >
-      {#snippet body()}
-        <JoinLinkSections
-          serialized={joinDialogSerialized}
-          error={joinDialogError}
-          preview={joinDialogPreview}
-          opened={joinDialogOpened}
-          clipboardBusy={joinDialogClipboardBusy}
-          previewBusy={joinDialogPreviewBusy}
-          openBusy={joinDialogOpenBusy}
-          description="Paste the link copied from Nearbytes, or read it from the clipboard."
-          onSerializedInput={(value) => {
-            joinDialogSerialized = value;
-          }}
-          onReadClipboard={readJoinDialogClipboard}
-          onOpenLink={openJoinDialogLink}
-        />
-      {/snippet}
-    </AppDialog>
+    />
   {/if}
 
   {#if showResetDialog}
-    <div
-      class="theme-dialog-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Reset Nearbytes data"
-      tabindex="-1"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) {
-          closeResetDialog();
-        }
+    <ResetDialog
+      deleteLocalData={resetDialogDeleteLocalData}
+      busy={resetDialogBusy}
+      errorMessage={resetDialogError}
+      onDeleteLocalDataChange={(value) => {
+        resetDialogDeleteLocalData = value;
       }}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeResetDialog();
-        }
-      }}
-    >
-      <div class="theme-dialog panel-surface reset-dialog" role="document" tabindex="-1">
-        <div class="theme-dialog-header">
-          <div class="theme-dialog-head-meta">
-            <p class="theme-dialog-eyebrow danger">Reset</p>
-            <p class="theme-dialog-title">Clear stored configuration</p>
-          </div>
-          <button type="button" class="tm-details-close" aria-label="Close reset dialog" onclick={closeResetDialog} disabled={resetDialogBusy}>
-            <X size={18} strokeWidth={2} />
-          </button>
-        </div>
-
-        <div class="theme-dialog-body">
-          <section class="theme-dialog-section reset-dialog-section">
-            <div class="reset-warning-card">
-              <p class="reset-warning-title">Safe start-from-scratch helper</p>
-            </div>
-
-            <label class="reset-checkbox-row">
-              <input type="checkbox" bind:checked={resetDialogDeleteLocalData} disabled={resetDialogBusy} />
-              <span>
-                <strong>Also delete local blocks and channels</strong>
-              </span>
-            </label>
-
-            {#if resetDialogError}
-              <StatusNotice tone="error" role="alert" compact={true} message={resetDialogError} />
-            {/if}
-
-            <div class="theme-dialog-actions">
-              <button type="button" class="status-link-btn secondary" onclick={closeResetDialog} disabled={resetDialogBusy}>Cancel</button>
-              <button type="button" class="status-link-btn danger" onclick={confirmStoredConfigReset} disabled={resetDialogBusy}>
-                {resetDialogBusy ? 'Resetting...' : 'Reset and restart'}
-              </button>
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
+      onCancel={closeResetDialog}
+      onConfirm={confirmStoredConfigReset}
+    />
   {/if}
 
   {#if isDevThemeStudio && showThemeDialog}
@@ -8257,13 +7873,13 @@
       tabindex="-1"
       onclick={(event) => {
         if (event.target === event.currentTarget) {
-          showThemeDialog = false;
+          uiTransitions.closeThemeDialog();
         }
       }}
       onkeydown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault();
-          showThemeDialog = false;
+          uiTransitions.closeThemeDialog();
         }
       }}
     >
@@ -8273,7 +7889,7 @@
             <p class="theme-dialog-eyebrow">Appearance</p>
             <p class="theme-dialog-title">Brand system</p>
           </div>
-          <button type="button" class="tm-details-close" aria-label="Close appearance dialog" onclick={() => (showThemeDialog = false)}>
+          <button type="button" class="tm-details-close" aria-label="Close appearance dialog" onclick={() => uiTransitions.closeThemeDialog()}>
             <X size={18} strokeWidth={2} />
           </button>
         </div>
@@ -8296,10 +7912,10 @@
 
           <section class="theme-dialog-section">
             <div class="theme-dialog-tab-row" role="tablist" aria-label="Appearance sections">
-              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'preset'} onclick={() => (themeDialogSection = 'preset')}>Presets</button>
-              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'material'} onclick={() => (themeDialogSection = 'material')}>Material</button>
-              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'accent'} onclick={() => (themeDialogSection = 'accent')}>Accent</button>
-              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'logo'} onclick={() => (themeDialogSection = 'logo')}>Logo</button>
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'preset'} onclick={() => uiTransitions.setThemeDialogSection('preset')}>Presets</button>
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'material'} onclick={() => uiTransitions.setThemeDialogSection('material')}>Material</button>
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'accent'} onclick={() => uiTransitions.setThemeDialogSection('accent')}>Accent</button>
+              <button type="button" class="theme-dialog-tab" class:active={themeDialogSection === 'logo'} onclick={() => uiTransitions.setThemeDialogSection('logo')}>Logo</button>
             </div>
 
             {#if themeDialogSection === 'preset'}
@@ -8402,7 +8018,7 @@
               <button type="button" class="status-link-btn secondary" disabled={themeDialogBusy} onclick={setThemePresetAsDefault}>Set as default</button>
               <button type="button" class="status-link-btn secondary" disabled={themeDialogBusy} onclick={exportThemeLogoPng}>Export logo PNG</button>
               <button type="button" class="status-link-btn secondary" onclick={resetThemeToPreset}>Reset to preset</button>
-              <button type="button" class="status-link-btn" onclick={() => (showThemeDialog = false)}>Done</button>
+              <button type="button" class="status-link-btn" onclick={() => uiTransitions.closeThemeDialog()}>Done</button>
             </div>
           </section>
         </div>
@@ -8837,14 +8453,6 @@
     align-items: start;
   }
 
-  .identity-editor-panel label {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    color: var(--nb-text-soft, rgba(70, 70, 73, 0.78));
-    font-size: 0.82rem;
-  }
-
   .identity-manager-panel {
     min-height: 0;
     flex: 1 1 auto;
@@ -8864,35 +8472,12 @@
     padding-right: 0.1rem;
   }
 
-  .identity-editor-panel input,
-  .identity-editor-panel textarea {
-    width: 100%;
-    border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.03));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, rgba(249, 244, 240, 0.9));
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-    font: inherit;
-    padding: 0.75rem 0.85rem;
-  }
-
-  .identity-editor-panel input:focus,
-  .identity-editor-panel textarea:focus {
-    outline: none;
-    border-color: color-mix(in srgb, var(--nb-accent, #7c6f64) 18%, rgba(60, 60, 67, 0.14));
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-panel-bg, #ffffff) 72%, rgba(240, 232, 226, 0.8));
-  }
-
   .identity-editor-panel-wide {
     grid-column: 1 / -1;
   }
 
   .identity-editor-panel-actions {
     grid-column: 1 / -1;
-  }
-
-  .identity-editor-panel-actions > .workspace-toggle {
-    flex: 1 1 180px;
-    justify-content: center;
   }
 
   .identity-avatar-row {
@@ -11016,32 +10601,6 @@
     color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
   }
 
-  .reset-checkbox-row {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.85rem;
-    align-items: flex-start;
-    padding: 0.95rem 1rem;
-    border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 88%, rgba(0, 0, 0, 0.04));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 94%, rgba(255, 248, 244, 0.9));
-  }
-
-  .reset-checkbox-row input {
-    margin-top: 0.18rem;
-  }
-
-  .reset-checkbox-row span {
-    display: grid;
-    gap: 0.32rem;
-  }
-
-  .reset-checkbox-row strong {
-    font-size: 0.94rem;
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-  }
-
-
   .mount-dialog-section {
     gap: 0.8rem;
     padding: 1rem 1.05rem;
@@ -11270,11 +10829,6 @@
     color: var(--nb-text-faint, rgba(110, 110, 115, 0.66));
   }
 
-  .mount-dialog .secret-input-wrapper {
-    display: grid;
-    gap: 0.72rem;
-  }
-
   .mount-dialog :global(.secret-seed-fields.dense) {
     grid-template-columns: minmax(0, 1.5fr) minmax(172px, 0.92fr);
     gap: 0.6rem;
@@ -11300,7 +10854,6 @@
     gap: 0.7rem;
   }
 
-  .mount-dialog-actions > .workspace-toggle,
   .mount-dialog-actions :global(.panel-action-btn) {
     width: 100%;
     min-width: 0;
@@ -12786,12 +12339,6 @@
       border-top: 0;
     }
 
-    .identity-editor-panel-actions > .workspace-toggle {
-      flex: 0 0 auto;
-      width: 100%;
-      min-height: 42px;
-    }
-
     .identity-manager-panel {
       min-height: 0;
       height: 100%;
@@ -12829,7 +12376,6 @@
       text-align: center;
     }
 
-    .workspace-toggle span,
     :global(.manager-btn) span {
       white-space: normal;
       overflow-wrap: anywhere;
@@ -12881,7 +12427,6 @@
     }
 
     .join-dialog-actions > :global(button),
-    .mount-dialog-footer-actions > .workspace-toggle,
     .mount-dialog-inline-action {
       width: 100%;
       justify-content: center;
@@ -13014,12 +12559,6 @@
       gap: 0.62rem;
     }
 
-    .identity-editor-panel input,
-    .identity-editor-panel textarea {
-      font-size: 16px;
-      padding: 0.68rem 0.78rem;
-    }
-
     .identity-avatar-row,
     .identity-avatar-actions {
       align-items: stretch;
@@ -13027,11 +12566,6 @@
 
     .identity-avatar-actions {
       width: 100%;
-    }
-
-    .identity-avatar-actions > .workspace-toggle {
-      width: 100%;
-      justify-content: center;
     }
 
     .join-dialog-header,

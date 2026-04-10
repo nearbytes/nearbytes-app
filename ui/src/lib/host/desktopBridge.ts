@@ -21,6 +21,7 @@ export interface PersistedUiState {
   configuredIdentities?: unknown;
   activeChatIdentityId?: unknown;
   volumeChatIdentityAssignments?: unknown;
+  uiMachine?: unknown;
   sourceDiscovery?: unknown;
   theme?: unknown;
   savedAt?: unknown;
