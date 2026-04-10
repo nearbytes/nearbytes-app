@@ -16,6 +16,7 @@
   "scripts": {
     "build": "tsc",
     "build:ui": "yarn --cwd ui build",
+    "design": "yarn --cwd docs/specs/ui dev",
     "build:electron": "tsc -p tsconfig.electron.json",
     "test": "vitest run",
     "test:mega:manual": "vitest run src/integrations/__tests__/megaAdapter.test.ts src/server/__tests__/megaManagedShareApi.test.ts",
