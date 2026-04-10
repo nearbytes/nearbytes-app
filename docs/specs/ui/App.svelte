@@ -17,12 +17,14 @@
   let bodyHtml = $state('');
   let title = $state('Nearbytes UI Studio');
 
-  function refresh() {
-    uiState = model.normalizeUiState(state);
-    model.applyTokens(document.documentElement.style, state);
-    bodyHtml = model.renderPageBody(state);
+  function refresh(nextState = state) {
+    const normalizedState = model.normalizeUiState(nextState);
+    state = normalizedState;
+    uiState = normalizedState;
+    model.applyTokens(document.documentElement.style, normalizedState);
+    bodyHtml = model.renderPageBody(normalizedState);
     title = model.pageTitle();
-    model.saveState(state);
+    model.saveState(normalizedState);
   }
 
   function captureFocusDescriptor(target) {
@@ -44,8 +46,7 @@
   }
 
   async function commitState(nextState, focusDescriptor = null) {
-    state = nextState;
-    refresh();
+    refresh(nextState);
     await tick();
     restoreFocus(focusDescriptor);
   }
@@ -90,8 +91,7 @@
   }
 
   onMount(() => {
-    state = model.loadState();
-    refresh();
+    refresh(model.loadState());
 
     if (!studioRoot) {
       return undefined;

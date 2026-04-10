@@ -6,10 +6,13 @@ export type UiThemeDialogSection = 'preset' | 'material' | 'accent' | 'logo';
 export type UiTransitionState = {
   showThemeDialog: boolean;
   themeDialogSection: UiThemeDialogSection;
+  showPreviewPane: boolean;
   showResetDialog: boolean;
   showTimeMachinePanel: boolean;
+  showTimelineDetailDialog: boolean;
   showSourcesPanel: boolean;
   showVolumeStoragePanel: boolean;
+  showMountStorageDialog: boolean;
   showEventFlowPanel: boolean;
   showPhoneOverflowMenu: boolean;
   showIdentityManager: boolean;
@@ -17,6 +20,7 @@ export type UiTransitionState = {
   fileManagerViewMode: FileManagerViewMode;
   searchQuery: string;
   sortBy: WorkspaceSortBy;
+  showSpecDialog: boolean;
   showJoinVolumeDialog: boolean;
   showVolumeShareDialog: boolean;
 };
@@ -32,16 +36,22 @@ export type UiTransitionInvocation =
   | { name: 'openThemeDialog'; args: [UiThemeDialogSection] }
   | { name: 'closeThemeDialog'; args: [] }
   | { name: 'setThemeDialogSection'; args: [UiThemeDialogSection] }
+  | { name: 'openPreviewPane'; args: [] }
+  | { name: 'closePreviewPane'; args: [] }
   | { name: 'openResetDialog'; args: [] }
   | { name: 'closeResetDialog'; args: [] }
   | { name: 'toggleTimeMachinePanel'; args: [] }
   | { name: 'closeTimeMachinePanel'; args: [] }
+  | { name: 'openTimelineDetailDialog'; args: [] }
+  | { name: 'closeTimelineDetailDialog'; args: [] }
   | { name: 'toggleSourcesPanel'; args: [] }
   | { name: 'openSourcesPanel'; args: [] }
   | { name: 'closeSourcesPanel'; args: [] }
   | { name: 'toggleVolumeStoragePanel'; args: [] }
   | { name: 'openVolumeStoragePanel'; args: [] }
   | { name: 'closeVolumeStoragePanel'; args: [] }
+  | { name: 'openMountStorageDialog'; args: [] }
+  | { name: 'closeMountStorageDialog'; args: [] }
   | { name: 'toggleEventFlowPanel'; args: [] }
   | { name: 'closeEventFlowPanel'; args: [] }
   | { name: 'togglePhoneOverflowMenu'; args: [] }
@@ -54,6 +64,8 @@ export type UiTransitionInvocation =
   | { name: 'setSearchQuery'; args: [string] }
   | { name: 'clearSearchQuery'; args: [] }
   | { name: 'setSortBy'; args: [WorkspaceSortBy] }
+  | { name: 'openSpecDialog'; args: [] }
+  | { name: 'closeSpecDialog'; args: [] }
   | { name: 'openJoinVolumeDialog'; args: [] }
   | { name: 'closeJoinVolumeDialog'; args: [] }
   | { name: 'openVolumeShareDialog'; args: [] }
@@ -70,10 +82,13 @@ export type UiTransitionGraphEdge = {
 export const UI_TRANSITION_DEFAULT_STATE: UiTransitionState = {
   showThemeDialog: false,
   themeDialogSection: 'preset',
+  showPreviewPane: false,
   showResetDialog: false,
   showTimeMachinePanel: false,
+  showTimelineDetailDialog: false,
   showSourcesPanel: false,
   showVolumeStoragePanel: false,
+  showMountStorageDialog: false,
   showEventFlowPanel: false,
   showPhoneOverflowMenu: false,
   showIdentityManager: false,
@@ -81,6 +96,7 @@ export const UI_TRANSITION_DEFAULT_STATE: UiTransitionState = {
   fileManagerViewMode: 'icons',
   searchQuery: '',
   sortBy: 'newest',
+  showSpecDialog: false,
   showJoinVolumeDialog: false,
   showVolumeShareDialog: false,
 };
@@ -112,15 +128,24 @@ export function normalizeUiTransitionState(input: unknown): UiTransitionState {
       UI_TRANSITION_DEFAULT_STATE.themeDialogSection,
       ['preset', 'material', 'accent', 'logo'] as const
     ),
+    showPreviewPane: normalizeBoolean(candidate.showPreviewPane, UI_TRANSITION_DEFAULT_STATE.showPreviewPane),
     showResetDialog: normalizeBoolean(candidate.showResetDialog, UI_TRANSITION_DEFAULT_STATE.showResetDialog),
     showTimeMachinePanel: normalizeBoolean(
       candidate.showTimeMachinePanel,
       UI_TRANSITION_DEFAULT_STATE.showTimeMachinePanel
     ),
+    showTimelineDetailDialog: normalizeBoolean(
+      candidate.showTimelineDetailDialog,
+      UI_TRANSITION_DEFAULT_STATE.showTimelineDetailDialog
+    ),
     showSourcesPanel: normalizeBoolean(candidate.showSourcesPanel, UI_TRANSITION_DEFAULT_STATE.showSourcesPanel),
     showVolumeStoragePanel: normalizeBoolean(
       candidate.showVolumeStoragePanel,
       UI_TRANSITION_DEFAULT_STATE.showVolumeStoragePanel
+    ),
+    showMountStorageDialog: normalizeBoolean(
+      candidate.showMountStorageDialog,
+      UI_TRANSITION_DEFAULT_STATE.showMountStorageDialog
     ),
     showEventFlowPanel: normalizeBoolean(
       candidate.showEventFlowPanel,
@@ -146,6 +171,7 @@ export function normalizeUiTransitionState(input: unknown): UiTransitionState {
       UI_TRANSITION_DEFAULT_STATE.sortBy,
       ['newest', 'oldest', 'name', 'name-desc', 'size', 'size-asc'] as const
     ),
+    showSpecDialog: normalizeBoolean(candidate.showSpecDialog, UI_TRANSITION_DEFAULT_STATE.showSpecDialog),
     showJoinVolumeDialog: normalizeBoolean(
       candidate.showJoinVolumeDialog,
       UI_TRANSITION_DEFAULT_STATE.showJoinVolumeDialog
@@ -179,6 +205,10 @@ export function applyUiTransitionInvocation(
       return withPatch(state, { showThemeDialog: false });
     case 'setThemeDialogSection':
       return withPatch(state, { themeDialogSection: invocation.args[0], showThemeDialog: true });
+    case 'openPreviewPane':
+      return withPatch(state, { showPreviewPane: true });
+    case 'closePreviewPane':
+      return withPatch(state, { showPreviewPane: false });
     case 'openResetDialog':
       return withPatch(state, { showResetDialog: true });
     case 'closeResetDialog':
@@ -187,6 +217,10 @@ export function applyUiTransitionInvocation(
       return withPatch(state, { showTimeMachinePanel: !state.showTimeMachinePanel });
     case 'closeTimeMachinePanel':
       return withPatch(state, { showTimeMachinePanel: false });
+    case 'openTimelineDetailDialog':
+      return withPatch(state, { showTimelineDetailDialog: true });
+    case 'closeTimelineDetailDialog':
+      return withPatch(state, { showTimelineDetailDialog: false });
     case 'toggleSourcesPanel': {
       const nextValue = !state.showSourcesPanel;
       return withPatch(state, {
@@ -217,6 +251,10 @@ export function applyUiTransitionInvocation(
       });
     case 'closeVolumeStoragePanel':
       return withPatch(state, { showVolumeStoragePanel: false });
+    case 'openMountStorageDialog':
+      return withPatch(state, { showMountStorageDialog: true });
+    case 'closeMountStorageDialog':
+      return withPatch(state, { showMountStorageDialog: false });
     case 'toggleEventFlowPanel':
       return withPatch(state, { showEventFlowPanel: !state.showEventFlowPanel });
     case 'closeEventFlowPanel':
@@ -241,6 +279,10 @@ export function applyUiTransitionInvocation(
       return withPatch(state, { searchQuery: '' });
     case 'setSortBy':
       return withPatch(state, { sortBy: invocation.args[0] });
+    case 'openSpecDialog':
+      return withPatch(state, { showSpecDialog: true });
+    case 'closeSpecDialog':
+      return withPatch(state, { showSpecDialog: false });
     case 'openJoinVolumeDialog':
       return withPatch(state, {
         showVolumeShareDialog: false,
@@ -282,6 +324,12 @@ function createTransitionMethods(store: ReturnType<typeof writable<UiTransitionS
     setThemeDialogSection(section: UiThemeDialogSection): void {
       dispatch({ name: 'setThemeDialogSection', args: [section] });
     },
+    openPreviewPane(): void {
+      dispatch({ name: 'openPreviewPane', args: [] });
+    },
+    closePreviewPane(): void {
+      dispatch({ name: 'closePreviewPane', args: [] });
+    },
     openResetDialog(): void {
       dispatch({ name: 'openResetDialog', args: [] });
     },
@@ -293,6 +341,12 @@ function createTransitionMethods(store: ReturnType<typeof writable<UiTransitionS
     },
     closeTimeMachinePanel(): void {
       dispatch({ name: 'closeTimeMachinePanel', args: [] });
+    },
+    openTimelineDetailDialog(): void {
+      dispatch({ name: 'openTimelineDetailDialog', args: [] });
+    },
+    closeTimelineDetailDialog(): void {
+      dispatch({ name: 'closeTimelineDetailDialog', args: [] });
     },
     toggleSourcesPanel(): void {
       dispatch({ name: 'toggleSourcesPanel', args: [] });
@@ -311,6 +365,12 @@ function createTransitionMethods(store: ReturnType<typeof writable<UiTransitionS
     },
     closeVolumeStoragePanel(): void {
       dispatch({ name: 'closeVolumeStoragePanel', args: [] });
+    },
+    openMountStorageDialog(): void {
+      dispatch({ name: 'openMountStorageDialog', args: [] });
+    },
+    closeMountStorageDialog(): void {
+      dispatch({ name: 'closeMountStorageDialog', args: [] });
     },
     toggleEventFlowPanel(): void {
       dispatch({ name: 'toggleEventFlowPanel', args: [] });
@@ -347,6 +407,12 @@ function createTransitionMethods(store: ReturnType<typeof writable<UiTransitionS
     },
     setSortBy(value: WorkspaceSortBy): void {
       dispatch({ name: 'setSortBy', args: [value] });
+    },
+    openSpecDialog(): void {
+      dispatch({ name: 'openSpecDialog', args: [] });
+    },
+    closeSpecDialog(): void {
+      dispatch({ name: 'closeSpecDialog', args: [] });
     },
     openJoinVolumeDialog(): void {
       dispatch({ name: 'openJoinVolumeDialog', args: [] });
@@ -395,6 +461,12 @@ const graphStateSpecs: Array<Omit<UiTransitionGraphState, 'assignment'> & { assi
     title: 'Theme dialog',
     note: 'Appearance dialog on the preset section.',
     assignment: { showThemeDialog: true, themeDialogSection: 'preset' },
+  },
+  {
+    id: 'preview-open',
+    title: 'Preview open',
+    note: 'File preview surface is visible.',
+    assignment: { showPreviewPane: true },
   },
   {
     id: 'theme-material',
@@ -457,10 +529,22 @@ const graphStateSpecs: Array<Omit<UiTransitionGraphState, 'assignment'> & { assi
     assignment: { showVolumeStoragePanel: true },
   },
   {
+    id: 'mount-storage-open',
+    title: 'Hub storage dialog',
+    note: 'Per-hub storage routing dialog is visible.',
+    assignment: { showMountStorageDialog: true },
+  },
+  {
     id: 'timeline-open',
     title: 'Timeline open',
     note: 'Time machine panel is visible.',
     assignment: { showTimeMachinePanel: true },
+  },
+  {
+    id: 'timeline-detail-open',
+    title: 'Timeline detail',
+    note: 'Timeline detail dialog is visible.',
+    assignment: { showTimelineDetailDialog: true },
   },
   {
     id: 'flow-open',
@@ -504,6 +588,12 @@ const graphStateSpecs: Array<Omit<UiTransitionGraphState, 'assignment'> & { assi
     note: 'File manager is sorted by name.',
     assignment: { sortBy: 'name' },
   },
+  {
+    id: 'spec-open',
+    title: 'Spec dialog',
+    note: 'Protocol spec dialog is visible.',
+    assignment: { showSpecDialog: true },
+  },
 ];
 
 export const UI_TRANSITION_GRAPH_STATES: UiTransitionGraphState[] = graphStateSpecs.map((state) => ({
@@ -522,6 +612,8 @@ export const UI_TRANSITION_GRAPH_INVOCATIONS: UiTransitionInvocation[] = [
   { name: 'setThemeDialogSection', args: ['accent'] },
   { name: 'setThemeDialogSection', args: ['logo'] },
   { name: 'closeThemeDialog', args: [] },
+  { name: 'openPreviewPane', args: [] },
+  { name: 'closePreviewPane', args: [] },
   { name: 'openCreateChooser', args: [] },
   { name: 'closeCreateChooser', args: [] },
   { name: 'openIdentityManager', args: [] },
@@ -534,7 +626,11 @@ export const UI_TRANSITION_GRAPH_INVOCATIONS: UiTransitionInvocation[] = [
   { name: 'closeResetDialog', args: [] },
   { name: 'toggleSourcesPanel', args: [] },
   { name: 'toggleVolumeStoragePanel', args: [] },
+  { name: 'openMountStorageDialog', args: [] },
+  { name: 'closeMountStorageDialog', args: [] },
   { name: 'toggleTimeMachinePanel', args: [] },
+  { name: 'openTimelineDetailDialog', args: [] },
+  { name: 'closeTimelineDetailDialog', args: [] },
   { name: 'toggleEventFlowPanel', args: [] },
   { name: 'togglePhoneOverflowMenu', args: [] },
   { name: 'setFileManagerViewMode', args: ['details'] },
@@ -543,6 +639,8 @@ export const UI_TRANSITION_GRAPH_INVOCATIONS: UiTransitionInvocation[] = [
   { name: 'clearSearchQuery', args: [] },
   { name: 'setSortBy', args: ['name'] },
   { name: 'setSortBy', args: ['newest'] },
+  { name: 'openSpecDialog', args: [] },
+  { name: 'closeSpecDialog', args: [] },
 ];
 
 export function createUiTransitionGraph(): {

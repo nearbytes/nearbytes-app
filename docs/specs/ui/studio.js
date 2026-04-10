@@ -14,15 +14,15 @@ export function createStudioModel(options) {
     var base = clone(data.defaults);
     try {
       var raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return base;
-      return Object.assign(base, JSON.parse(raw));
+      if (!raw) return normalizeUiState(base);
+      return normalizeUiState(Object.assign(base, JSON.parse(raw)));
     } catch (_error) {
-      return base;
+      return normalizeUiState(base);
     }
   }
 
   function saveState(state) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeUiState(state)));
   }
 
   function normalizeUiState(state) {

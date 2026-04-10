@@ -4,10 +4,12 @@
   import { onDestroy, onMount } from 'svelte';
   import { createStudioModel } from '../studio.js';
   import {
+    applyUiTransitionInvocation,
     createUiTransitionGraph,
     createUiTransitionSignature,
     createUiTransitionStore,
     formatUiTransitionInvocation,
+    normalizeUiTransitionState,
     type UiTransitionGraphEdge,
     type UiTransitionGraphState,
     type UiTransitionState,
@@ -34,6 +36,30 @@
     edges: GraphEdgeLayout[];
   };
 
+  type ElkLayoutSection = {
+    startPoint?: { x: number; y: number };
+    bendPoints?: Array<{ x: number; y: number }>;
+    endPoint?: { x: number; y: number };
+  };
+
+  type ElkLayoutEdge = {
+    id: string;
+    sections?: ElkLayoutSection[];
+  };
+
+  type ElkLayoutResult = {
+    width?: number;
+    height?: number;
+    children?: Array<{
+      id: string;
+      x?: number;
+      y?: number;
+      width?: number;
+      height?: number;
+    }>;
+    edges?: ElkLayoutEdge[];
+  };
+
   let {
     data,
     bridge,
@@ -55,12 +81,14 @@
     graph.states.map((state) => [state.id, graph.edges.filter((edge) => edge.from === state.id)])
   );
 
-  const uiStore = createUiTransitionStore(graph.states[0]?.assignment);
+  const uiStore = createUiTransitionStore();
 
   let machineState = $state(get(uiStore));
   let selectedNodeId = $state(graph.states[0]?.id ?? '');
   let selectedEdgeId = $state<string | null>(null);
   let previewPage = $state<'desktop' | 'phone'>('desktop');
+  let persistedStudioMachineSignature = $state('');
+  let pendingStudioMachineSignature = $state<string | null>(null);
   let layout = $state<GraphLayout>({
     width: 1600,
     height: 920,
@@ -100,13 +128,15 @@
       fileCount: activeHub.files.length,
       selectedCount: 1,
       searchQuery: machineState.searchQuery,
-      showPreviewPane: true,
+      showPreviewPane: machineState.showPreviewPane,
       showTimeMachinePanel: machineState.showTimeMachinePanel,
       timelineCount: activeHub.timeline.length,
       timelinePosition: Math.max(0, activeHub.timeline.length - 1),
-      timelineDetailOpen: machineState.showTimeMachinePanel,
+      timelineDetailOpen: machineState.showTimelineDetailDialog,
+      showSpecDialog: machineState.showSpecDialog,
       showSourcesPanel: machineState.showSourcesPanel,
       showVolumeStoragePanel: machineState.showVolumeStoragePanel,
+      showMountStorageDialog: machineState.showMountStorageDialog,
       showEventFlowPanel: machineState.showEventFlowPanel,
       showPhoneOverflowMenu: machineState.showPhoneOverflowMenu,
       showIdentityManager: machineState.showIdentityManager,
@@ -139,10 +169,13 @@
   const assignmentRows = $derived.by(() => [
     ['showThemeDialog', String(machineState.showThemeDialog)],
     ['themeDialogSection', machineState.themeDialogSection],
+    ['showPreviewPane', String(machineState.showPreviewPane)],
     ['showResetDialog', String(machineState.showResetDialog)],
     ['showTimeMachinePanel', String(machineState.showTimeMachinePanel)],
+    ['showTimelineDetailDialog', String(machineState.showTimelineDetailDialog)],
     ['showSourcesPanel', String(machineState.showSourcesPanel)],
     ['showVolumeStoragePanel', String(machineState.showVolumeStoragePanel)],
+    ['showMountStorageDialog', String(machineState.showMountStorageDialog)],
     ['showEventFlowPanel', String(machineState.showEventFlowPanel)],
     ['showPhoneOverflowMenu', String(machineState.showPhoneOverflowMenu)],
     ['showIdentityManager', String(machineState.showIdentityManager)],
@@ -150,6 +183,7 @@
     ['fileManagerViewMode', machineState.fileManagerViewMode],
     ['searchQuery', machineState.searchQuery || ''],
     ['sortBy', machineState.sortBy],
+    ['showSpecDialog', String(machineState.showSpecDialog)],
     ['showJoinVolumeDialog', String(machineState.showJoinVolumeDialog)],
     ['showVolumeShareDialog', String(machineState.showVolumeShareDialog)],
   ]);
@@ -176,19 +210,74 @@
     return 'newest';
   }
 
+  function machineStateFromStudioState(value: Record<string, unknown>): UiTransitionState {
+    const persistedMachine = value.uiMachine;
+    if (persistedMachine) {
+      return normalizeUiTransitionState(persistedMachine);
+    }
+
+    return normalizeUiTransitionState({
+      showThemeDialog: false,
+      themeDialogSection: 'preset',
+      showPreviewPane: false,
+      showResetDialog: value.dialogSurface === 'reset',
+      showTimeMachinePanel: value.timelineOpen === true,
+      showTimelineDetailDialog: false,
+      showSourcesPanel: value.secondary === 'locations' && value.storageMode === 'global',
+      showVolumeStoragePanel: value.secondary === 'locations' && value.storageMode === 'volume',
+      showMountStorageDialog: false,
+      showEventFlowPanel: value.secondary === 'flow',
+      showPhoneOverflowMenu: value.phoneMenuOpen === true,
+      showIdentityManager: value.secondary === 'identities' || value.dialogSurface === 'identity',
+      showCreateChooser: value.dialogSurface === 'create',
+      fileManagerViewMode: value.viewMode === 'details' ? 'details' : 'icons',
+      searchQuery: typeof value.stylesSearchText === 'string' ? value.stylesSearchText : '',
+      sortBy:
+        value.stylesSortValue === 'name'
+          ? 'name'
+          : value.stylesSortValue === 'protected'
+            ? 'size'
+            : 'newest',
+      showSpecDialog: false,
+      showJoinVolumeDialog: value.dialogSurface === 'join',
+      showVolumeShareDialog: value.dialogSurface === 'share',
+    });
+  }
+
+  function studioPatchFromMachine(state: UiTransitionState): Record<string, unknown> {
+    return {
+      uiMachine: normalizeUiTransitionState(state),
+      workspace: 'split',
+      secondary: secondaryFromMachine(state),
+      dialogSurface: activeModalFromMachine(state),
+      storageMode: state.showSourcesPanel ? 'global' : 'volume',
+      searchOpen: state.searchQuery.trim() !== '',
+      timelineOpen: state.showTimeMachinePanel,
+      phoneMenuOpen: state.showPhoneOverflowMenu,
+      viewMode: state.fileManagerViewMode,
+      stylesSearchText: state.searchQuery,
+      stylesSortValue: styleSortValueFromMachine(state.sortBy),
+      stylesSortOpen: false,
+    };
+  }
+
   function summarizeAssignment(state: UiTransitionState): string[] {
     const chips: string[] = [];
     if (state.showThemeDialog) chips.push(`theme:${state.themeDialogSection}`);
+    if (state.showPreviewPane) chips.push('preview');
     if (state.showResetDialog) chips.push('reset');
     if (state.showTimeMachinePanel) chips.push('timeline');
+    if (state.showTimelineDetailDialog) chips.push('timeline-detail');
     if (state.showSourcesPanel) chips.push('global-locations');
     if (state.showVolumeStoragePanel) chips.push('hub-storage');
+    if (state.showMountStorageDialog) chips.push('hub-storage-dialog');
     if (state.showEventFlowPanel) chips.push('flow');
     if (state.showPhoneOverflowMenu) chips.push('phone-menu');
     if (state.showIdentityManager) chips.push('identity');
     if (state.showCreateChooser) chips.push('create');
     if (state.showJoinVolumeDialog) chips.push('join');
     if (state.showVolumeShareDialog) chips.push('share');
+    if (state.showSpecDialog) chips.push('spec');
     if (state.fileManagerViewMode !== 'icons') chips.push(`view:${state.fileManagerViewMode}`);
     if (state.searchQuery.trim() !== '') chips.push(`search:${state.searchQuery}`);
     if (state.sortBy !== 'newest') chips.push(`sort:${state.sortBy}`);
@@ -277,7 +366,7 @@
             height: 24,
           }],
         })),
-      });
+      }) as ElkLayoutResult;
 
       const nodes = (result.children ?? []).map((node) => {
         const source = graphStateById.get(node.id);
@@ -323,11 +412,15 @@
     if (!nextState) return;
     selectedNodeId = nodeId;
     selectedEdgeId = null;
+    pendingStudioMachineSignature = createUiTransitionSignature(nextState.assignment);
     uiStore.replaceState(nextState.assignment);
   }
 
   function invokeEdge(edge: UiTransitionGraphEdge): void {
     selectedEdgeId = edge.id;
+    pendingStudioMachineSignature = createUiTransitionSignature(
+      applyUiTransitionInvocation(machineState, edge.invocation)
+    );
     uiStore.transitions.dispatch(edge.invocation);
     selectedNodeId = edge.to;
   }
@@ -353,9 +446,33 @@
   }
 
   $effect(() => {
+    const persistedMachine = machineStateFromStudioState(studioState);
+    const persistedSignature = createUiTransitionSignature(persistedMachine);
+    persistedStudioMachineSignature = persistedSignature;
+    if (pendingStudioMachineSignature === persistedSignature) {
+      pendingStudioMachineSignature = null;
+      return;
+    }
+    if (persistedSignature !== createUiTransitionSignature(machineState)) {
+      uiStore.replaceState(persistedMachine);
+    }
+  });
+
+  $effect(() => {
     const matchedState = graphStateBySignature.get(createUiTransitionSignature(machineState));
     if (!matchedState) return;
     selectedNodeId = matchedState.id;
+  });
+
+  $effect(() => {
+    const nextSignature = createUiTransitionSignature(machineState);
+    if (nextSignature === persistedStudioMachineSignature) {
+      pendingStudioMachineSignature = null;
+      return;
+    }
+    persistedStudioMachineSignature = nextSignature;
+    pendingStudioMachineSignature = nextSignature;
+    void patchStudioState(studioPatchFromMachine(machineState));
   });
 
   onMount(() => {
