@@ -1,5 +1,4 @@
 <script lang="ts">
-  //FIXME: MIGRATION: port this surface to the UI design system
   import { onMount } from 'svelte';
   import { AudioLines, Disc3 } from 'lucide-svelte';
 
@@ -77,13 +76,9 @@
     const rms = count > 0 ? Math.sqrt(sumSquares / count) : 0;
     const blended = rms * 0.72 + peak * 0.28;
     const progress = barCount <= 1 ? 0 : index / (barCount - 1);
-
-    // Gentle tilt compensation so the top end reads closer to perceptual loudness.
     const tiltCompensation = 0.8 + Math.pow(progress, 0.78) * 0.95;
     const presenceLift = progress > 0.58 ? (progress - 0.58) * 0.32 : 0;
     const leveled = clamp(blended * tiltCompensation + presenceLift, 0, 1);
-
-    // Slight compression avoids the low-end columns dwarfing everything else.
     return Math.pow(leveled, 0.82);
   }
 

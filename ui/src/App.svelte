@@ -99,7 +99,7 @@
   import './lib/design/uiBridgeShared.js';
   import ArmedActionButton from '../../docs/specs/ui/components/ArmedActionButton.svelte';
   import AppDialog from './components/AppDialog.svelte';
-  import AudioPreview from './components/AudioPreview.svelte';
+  import AudioPreview from '../../docs/specs/ui/components/AudioPreview.svelte';
   import JoinLinkSections from './components/JoinLinkSections.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
