@@ -106,7 +106,7 @@
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
   import ShareSpaceLinkSection from '../../docs/specs/ui/components/ShareSpaceLinkSection.svelte';
   import StatusNotice from '../../docs/specs/ui/components/StatusNotice.svelte';
-  import StoragePanel from './components/StoragePanel.svelte';
+  import StoragePanel from '../../docs/specs/ui/components/StoragePanel.svelte';
   import EventFlowPanel from '../../docs/specs/ui/components/EventFlowPanel.svelte';
   import VolumeChat from '../../docs/specs/ui/components/VolumeChat.svelte';
   import VolumeIdentity from '../../docs/specs/ui/components/VolumeIdentity.svelte';
