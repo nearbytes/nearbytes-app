@@ -1,4 +1,5 @@
 <script lang="ts">
+  //FIXME: MIGRATION: port this surface to the UI design system
   import { onDestroy, onMount, tick } from 'svelte';
   import {
     acceptManagedShare,
@@ -50,9 +51,9 @@
     type VolumeDestinationConfig,
     type VolumePolicyEntry,
     updateRootsConfig,
-  } from '../../../../ui/src/lib/api.js';
-  import type { DesktopRuntimeLogEntry } from '../../../../ui/src/lib/host/desktopBridge.js';
-  import { readMirrorLocalNetworkPeers } from '../../../../ui/src/lib/mirror/browserMirror.js';
+  } from '../lib/api.js';
+  import type { DesktopRuntimeLogEntry } from '../lib/host/desktopBridge.js';
+  import { readMirrorLocalNetworkPeers } from '../lib/mirror/browserMirror.js';
   import {
     formatAccessLevelLabel,
     getCollaboratorDedupeKey,
@@ -60,13 +61,13 @@
     getCollaboratorRoleLabel,
     getIncomingSharePresentation,
     getManagedShareAccessLabel,
-  } from '../../../../ui/src/lib/megaSharePresentation.js';
-  import ArmedActionButton from './ArmedActionButton.svelte';
-  import AppDialog from './AppDialog.svelte';
+  } from '../lib/megaSharePresentation.js';
+  import ArmedActionButton from '../../../docs/specs/ui/components/ArmedActionButton.svelte';
+  import AppDialog from '../../../docs/specs/ui/components/AppDialog.svelte';
   import IconToggle from './IconToggle.svelte';
   import ProviderStatusCard from './ProviderStatusCard.svelte';
   import ShareCard from './ShareCard.svelte';
-  import StatusNotice from './StatusNotice.svelte';
+  import StatusNotice from '../../../docs/specs/ui/components/StatusNotice.svelte';
   import {
     ArrowRightLeft,
     BookOpen,

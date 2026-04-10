@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import NearbytesLogo from '../../../../ui/src/components/NearbytesLogo.svelte';
+  import NearbytesLogo from './NearbytesLogo.svelte';
   import type { NearbytesLogoOptions } from '../../../../ui/src/lib/branding.js';
 
   let {

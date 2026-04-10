@@ -13,6 +13,13 @@ declare module '../../docs/specs/ui/components/EmptyStatePanel.svelte' {
   export default class EmptyStatePanel extends SvelteComponentTyped<Record<string, unknown>> {}
 }
 
+declare module '../../docs/specs/ui/components/NearbytesLogo.svelte' {
+  import type { SvelteComponentTyped } from 'svelte';
+  export default class NearbytesLogo extends SvelteComponentTyped<Record<string, unknown>> {
+    exportPngDataUrl(): Promise<string | null>;
+  }
+}
+
 declare module '../../docs/specs/ui/components/PhoneOverflowMenu.svelte' {
   import type { SvelteComponentTyped } from 'svelte';
   export default class PhoneOverflowMenu extends SvelteComponentTyped<Record<string, unknown>> {}

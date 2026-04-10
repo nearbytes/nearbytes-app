@@ -11,13 +11,13 @@
     'workspace-mode-bar': {
       id: 'workspace-mode-bar',
       title: 'Workspace mode bar',
-      component: 'App.svelte',
+      component: 'WorkspaceModeBar',
       host: 'Hub workspace'
     },
     'workspace-search-strip': {
       id: 'workspace-search-strip',
       title: 'Workspace search strip',
-      component: 'App.svelte',
+      component: 'WorkspaceSearchStrip',
       host: 'File search and sorting'
     },
     'file-details-view': {
@@ -47,7 +47,7 @@
     'timeline-panel': {
       id: 'timeline-panel',
       title: 'Timeline panel',
-      component: 'App.svelte',
+      component: 'TimeMachinePanel',
       host: 'Time machine'
     },
     'timeline-detail': {
@@ -77,37 +77,43 @@
     'share-dialog': {
       id: 'share-dialog',
       title: 'Share dialog',
-      component: 'ShareSpaceLinkSection',
-      host: 'AppDialog'
+      component: 'ShareDialog',
+      host: 'Hub sharing dialog'
     },
     'join-dialog': {
       id: 'join-dialog',
       title: 'Join dialog',
-      component: 'JoinLinkSections',
-      host: 'AppDialog'
+      component: 'JoinDialog',
+      host: 'Open shared hub flow'
+    },
+    'mount-dialog': {
+      id: 'mount-dialog',
+      title: 'Hub properties dialog',
+      component: 'MountDialog',
+      host: 'Mount configuration'
     },
     'create-chooser': {
       id: 'create-chooser',
       title: 'Create chooser',
-      component: 'App.svelte',
+      component: 'CreateChooserDialog',
       host: 'Create flow'
     },
     'identity-manager': {
       id: 'identity-manager',
       title: 'Identity manager',
-      component: 'VolumeIdentity',
+      component: 'IdentityManagerDialog',
       host: 'Identity sheet'
     },
     'phone-overflow-menu': {
       id: 'phone-overflow-menu',
       title: 'Phone overflow menu',
-      component: 'App.svelte',
+      component: 'PhoneOverflowMenu',
       host: 'Compact actions'
     },
     'reset-dialog': {
       id: 'reset-dialog',
       title: 'Reset dialog',
-      component: 'AppDialog',
+      component: 'ResetDialog',
       host: 'Reset confirmation'
     },
     'status-primitives': {
@@ -119,7 +125,7 @@
     'empty-state': {
       id: 'empty-state',
       title: 'Empty hub state',
-      component: 'App.svelte',
+      component: 'EmptyStatePanel',
       host: 'Initial shell'
     }
   };
@@ -148,7 +154,7 @@
     {
       id: 'dialogs',
       title: 'Dialogs and primitives',
-      surfaces: ['create-chooser', 'identity-manager', 'reset-dialog', 'status-primitives']
+      surfaces: ['mount-dialog', 'create-chooser', 'identity-manager', 'reset-dialog', 'status-primitives']
     }
   ];
 
@@ -211,6 +217,9 @@
     if (source.showJoinVolumeDialog) {
       surfaces.push('join-dialog');
     }
+    if (source.showMountDialog) {
+      surfaces.push('mount-dialog');
+    }
     if (source.showCreateChooser) {
       surfaces.push('create-chooser');
     }
@@ -228,7 +237,7 @@
     return {
       workspaceMode: workspaceMode,
       fileManagerViewMode: fileManagerViewMode,
-      activeModal: normalizeEnum(source.activeModal, 'none', ['none', 'share', 'join', 'create', 'identity', 'reset']),
+      activeModal: normalizeEnum(source.activeModal, 'none', ['none', 'share', 'join', 'mount', 'create', 'identity', 'reset']),
       mountLabel: source.mountLabel || '',
       fileCount: Number(source.fileCount) || 0,
       selectedCount: Number(source.selectedCount) || 0,
