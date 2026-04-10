@@ -1,5 +1,4 @@
 <script lang="ts">
-  //FIXME: MIGRATION: port this surface to the UI design system
   import { onMount, onDestroy } from 'svelte';
   import {
     getRootsConfig,
@@ -13,8 +12,8 @@
     type VolumeWatchConnection,
     type VolumeWatchUpdate,
     type SourceWatchUpdate,
-  } from '../lib/api.js';
-  import StatusNotice from '../../../docs/specs/ui/components/StatusNotice.svelte';
+  } from '../../../../ui/src/lib/api.js';
+  import StatusNotice from './StatusNotice.svelte';
 
   let {
     auth = undefined,
