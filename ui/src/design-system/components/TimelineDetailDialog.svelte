@@ -5,7 +5,7 @@
     RecipientFileReference,
     SerializedEventPayload,
     SourceFileReference,
-  } from '../../../../ui/src/lib/api.js';
+  } from '../../lib/api.js';
 
   type EventReference = {
     kind: 'source' | 'recipient';

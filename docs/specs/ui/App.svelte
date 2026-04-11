@@ -1,5 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import CreateChooserDialog from '../../../ui/src/design-system/components/CreateChooserDialog.svelte';
   import StudioNav from './components/StudioNav.svelte';
   import StudioControls from './components/StudioControls.svelte';
   import TransitionGraphPage from './components/TransitionGraphPage.svelte';
@@ -53,6 +54,24 @@
 
   async function patchStudioState(patch) {
     await commitState({ ...state, ...patch });
+  }
+
+  const usesDialogPreview = $derived(page === 'desktop' || page === 'phone');
+
+  async function closeCreateChooser() {
+    await patchStudioState({ dialogSurface: 'none' });
+  }
+
+  async function openJoinPreview() {
+    await patchStudioState({ dialogSurface: 'join' });
+  }
+
+  async function openIdentityPreview() {
+    await patchStudioState({ dialogSurface: 'identity' });
+  }
+
+  async function createHubPreview() {
+    await closeCreateChooser();
   }
 
   async function handleClick(event) {
@@ -127,5 +146,14 @@
       <div class="studio-main">{@html bodyHtml}</div>
       <StudioControls data={STUDIO_DATA} {state} {uiState} />
     </div>
+  {/if}
+
+  {#if usesDialogPreview && uiState.dialogSurface === 'create'}
+    <CreateChooserDialog
+      onClose={closeCreateChooser}
+      onCreateHub={createHubPreview}
+      onCreateIdentity={openIdentityPreview}
+      onPasteLink={openJoinPreview}
+    />
   {/if}
 </div>

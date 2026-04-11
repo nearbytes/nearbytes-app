@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { TimelineEvent } from '../../../../ui/src/lib/api.js';
+  import type { TimelineEvent } from '../../lib/api.js';
 
   let {
     timelineMarker = '',

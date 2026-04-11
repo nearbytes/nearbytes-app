@@ -1,5 +1,6 @@
-export const STUDIO_DATA = {
-    moodboards: [
+import appConfig from '../../../app-config.json';
+
+const moodboards = [
       {
         id: 'linen-ledger',
         name: 'Linen Ledger',
@@ -120,7 +121,23 @@ export const STUDIO_DATA = {
           shadowMd: '0 18px 36px rgba(21,37,48,0.08)'
         }
       }
-    ],
+    ];
+
+const configuredMoodboardId =
+  appConfig &&
+  typeof appConfig === 'object' &&
+  appConfig.studio &&
+  typeof appConfig.studio === 'object' &&
+  typeof appConfig.studio.moodboardId === 'string'
+    ? appConfig.studio.moodboardId
+    : null;
+
+const defaultMoodboardId = moodboards.some((item) => item.id === configuredMoodboardId)
+  ? configuredMoodboardId
+  : moodboards[0]?.id ?? 'harbor-night';
+
+export const STUDIO_DATA = {
+    moodboards,
     hubs: [
       {
         id: 'studio',
@@ -198,7 +215,7 @@ export const STUDIO_DATA = {
       }
     ],
     defaults: {
-      moodboardId: 'linen-ledger',
+      moodboardId: defaultMoodboardId,
       accentStrength: 100,
       radiusMode: 'soft',
       density: 'relaxed',

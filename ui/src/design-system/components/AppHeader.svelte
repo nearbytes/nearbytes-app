@@ -3,7 +3,7 @@
   import { HardDrive, Plus, Rows3, Trash2, UserRound } from 'lucide-svelte';
   import MountRail from './MountRail.svelte';
   import NearbytesLogo from './NearbytesLogo.svelte';
-  import type { NearbytesLogoOptions } from '../../../../ui/src/lib/branding.js';
+  import type { NearbytesLogoOptions } from '../../lib/branding.js';
   import PhoneOverflowMenu from './PhoneOverflowMenu.svelte';
   import type { WorkspaceChromeActions, WorkspaceChromeState } from '../workspaceChrome.js';
 

@@ -1,5 +1,4 @@
 <script lang="ts">
-  //FIXME: MIGRATION: port this surface to the UI design system
   import { tick } from 'svelte';
   import {
     listChat,
@@ -9,24 +8,24 @@
     type ChatAttachment,
     type IdentityProfile,
     type VolumeChatState,
-  } from '../lib/api.js';
+  } from '../../lib/api.js';
   import {
     buildIdentitySecret,
     type ConfiguredIdentity,
-  } from '../lib/chatIdentities.js';
-  import { NEARBYTES_DRAG_TYPE } from '../lib/nearbytesDrag.js';
+  } from '../../lib/chatIdentities.js';
+  import { NEARBYTES_DRAG_TYPE } from '../../lib/nearbytesDrag.js';
   import {
     createChatAttachmentFromSourceBundle,
     exportSourceReferenceBundleFromDrag,
     parseSourceReferenceBundleText,
-  } from '../lib/nearbytesReferenceTransfer.js';
+  } from '../../lib/nearbytesReferenceTransfer.js';
   import {
     MessageSquareText,
     Paperclip,
     Send,
     X,
   } from 'lucide-svelte';
-  import StatusNotice from '../../../docs/specs/ui/components/StatusNotice.svelte';
+  import StatusNotice from './StatusNotice.svelte';
 
   let {
     auth = null,

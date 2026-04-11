@@ -5,6 +5,7 @@ export function createStudioModel(options) {
   var STORAGE_KEY = 'nearbytes-ui-studio-v1';
   var surfaceRegistry = bridge.surfaceRegistry || {};
   var toolkitSections = bridge.toolkitSections || [];
+  var lastSavedMoodboardId = null;
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -14,15 +15,48 @@ export function createStudioModel(options) {
     var base = clone(data.defaults);
     try {
       var raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return normalizeUiState(base);
-      return normalizeUiState(Object.assign(base, JSON.parse(raw)));
+      if (!raw) {
+        var normalizedBase = normalizeUiState(base);
+        lastSavedMoodboardId = typeof normalizedBase.moodboardId === 'string' ? normalizedBase.moodboardId : null;
+        return normalizedBase;
+      }
+      var normalizedLoaded = normalizeUiState(Object.assign(base, JSON.parse(raw)));
+      lastSavedMoodboardId = typeof normalizedLoaded.moodboardId === 'string' ? normalizedLoaded.moodboardId : null;
+      return normalizedLoaded;
     } catch (_error) {
-      return normalizeUiState(base);
+      var normalizedFallback = normalizeUiState(base);
+      lastSavedMoodboardId = typeof normalizedFallback.moodboardId === 'string' ? normalizedFallback.moodboardId : null;
+      return normalizedFallback;
     }
   }
 
   function saveState(state) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeUiState(state)));
+    var normalizedState = normalizeUiState(state);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizedState));
+
+    var nextMoodboardId = typeof normalizedState.moodboardId === 'string' ? normalizedState.moodboardId : null;
+    if (nextMoodboardId && nextMoodboardId !== lastSavedMoodboardId) {
+      lastSavedMoodboardId = nextMoodboardId;
+      void saveRepoAppConfig({
+        studio: {
+          moodboardId: nextMoodboardId,
+        },
+      });
+    }
+  }
+
+  async function saveRepoAppConfig(patch) {
+    try {
+      await fetch('/__studio/app-config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(patch),
+      });
+    } catch (_error) {
+      // Persisting to the repo is best-effort during Vite dev; local state still remains usable.
+    }
   }
 
   function normalizeUiState(state) {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Download, RefreshCw, Search, Settings2, X } from 'lucide-svelte';
-  import type { DesktopUpdaterState } from '../../../../ui/src/lib/host/desktopBridge.js';
+  import type { DesktopUpdaterState } from '../../lib/host/desktopBridge.js';
 
   type DiscoveryToastState = {
     runKey: string;
