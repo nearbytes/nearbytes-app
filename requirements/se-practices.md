@@ -38,6 +38,23 @@ This document captures non-negotiable software engineering principles for the Ne
 
 ## Code Quality Requirements
 
+### [REQ-ARCH-001] Design System Owns Shared UI
+
+- Shared surfaces, dialogs, shell composition, tokens, and presentation contracts must live under `docs/specs/ui/system`.
+- `ui/src` must consume those design-owned modules instead of defining parallel visual copies.
+
+### [REQ-ARCH-002] Studio Is A Pure Mocked Runtime
+
+- `yarn design` must render without backend dependencies.
+- The studio may use mock data and local persistence, but not runtime transports, backend fetches, or app-only shells to render its primary design views.
+- The transition graph must drive the same UI store type used by the app, backed by mocked data in the studio.
+
+### [REQ-ARCH-003] App Integrates Logic, Not Alternate Design
+
+- The app may own browser/runtime effects, subscriptions, and transport logic.
+- The app must not become a second place where shared UI surfaces are designed or re-authored.
+- When a reusable UI surface changes, the change belongs in the design system and the app should pick it up through imports.
+
 ### [REQ-CODE-001] No Dead Reactive Declarations
 
 - Svelte `{@const}` bindings declared inside templates must be used in that template. Remove unused ones.
@@ -56,6 +73,9 @@ This document captures non-negotiable software engineering principles for the Ne
 - [ ] No duplicate badges/labels that repeat toggle state (REQ-UI-002)
 - [ ] Every opened panel/dialog can be closed (REQ-UI-003)
 - [ ] Primary flows remain usable at iPhone width with no horizontal overflow (REQ-UI-004)
+- [ ] Shared surfaces live in `docs/specs/ui/system` and are consumed by the app, not duplicated (REQ-ARCH-001)
+- [ ] `yarn design` remains backend-free and graph-driven by the shared UI store type (REQ-ARCH-002)
+- [ ] App-side changes do not re-author shared surface design in `ui/src` (REQ-ARCH-003)
 - [ ] No unused `{@const}` declarations in templates (REQ-CODE-001)
 - [ ] No orphaned CSS selectors (REQ-CODE-002)
 - [ ] Build produces zero errors and zero unused-CSS warnings
