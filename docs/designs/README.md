@@ -19,6 +19,7 @@ Current active design line for the shared web app plus Capacitor translation:
 - `architecture/host-contract-runtime-boundary-v1.md`
 - `architecture/browser-application-crypto-boundary-v1.md`
 - `architecture/portable-core-system-v1.md`
+- `architecture/ui-designer-system-v1.md`
 - `migration/desktop-safe-capacitor-translation-v1.md`
 - `migration/phase-1-voyage-v1.md`
 - `platform/README.md`
@@ -31,11 +32,12 @@ Current active design line for the shared web app plus Capacitor translation:
 2. `architecture/host-contract-runtime-boundary-v1.md`
 3. `architecture/browser-application-crypto-boundary-v1.md`
 4. `architecture/portable-core-system-v1.md`
-5. `migration/desktop-safe-capacitor-translation-v1.md`
-6. `migration/phase-1-voyage-v1.md`
-7. `platform/README.md`
-8. `platform/phase-1-surface-inventory-v1.md`
-9. `platform/phase-1-capability-matrix-v1.md`
+5. `architecture/ui-designer-system-v1.md`
+6. `migration/desktop-safe-capacitor-translation-v1.md`
+7. `migration/phase-1-voyage-v1.md`
+8. `platform/README.md`
+9. `platform/phase-1-surface-inventory-v1.md`
+10. `platform/phase-1-capability-matrix-v1.md`
 
 ## Precedence
 
