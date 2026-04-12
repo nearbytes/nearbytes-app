@@ -1,0 +1,19 @@
+.nb-theme-scope {
+  color: var(--nb-text);
+  background:
+    radial-gradient(circle at top, var(--nb-canvas-glow), transparent 42%),
+    linear-gradient(180deg, var(--nb-shell-top), var(--nb-shell-bottom));
+}
+
+.nb-panel-surface {
+  background: var(--nb-surface);
+  border: 1px solid var(--nb-border);
+  color: var(--nb-text);
+  box-shadow:
+    0 18px 50px rgba(8, 15, 21, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.nb-accent-ring {
+  box-shadow: 0 0 0 1px var(--nb-accent-soft), 0 0 0 4px color-mix(in srgb, var(--nb-accent) 12%, transparent);
+}

@@ -1,0 +1,65 @@
+<script lang="ts">
+  import type { FileFixture } from '../state/types.js';
+  import UiChip from './UiChip.svelte';
+
+  let {
+    file,
+    active = false,
+    onSelect,
+  } = $props<{
+    file: FileFixture;
+    active?: boolean;
+    onSelect?: (() => void) | undefined;
+  }>();
+
+  const tone = $derived(file.status === 'warning' ? 'warning' : file.status === 'syncing' ? 'accent' : 'success');
+</script>
+
+<button class:active class="file-row" type="button" onclick={onSelect}>
+  <div class="file-row-copy">
+    <strong>{file.name}</strong>
+    <span>{file.kind} · {file.sizeLabel}</span>
+  </div>
+  <div class="file-row-meta">
+    <UiChip label={file.status} tone={tone} />
+    <span>{file.updatedAt}</span>
+  </div>
+</button>
+
+<style>
+  .file-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    width: 100%;
+    border: 1px solid var(--nb-border);
+    background: transparent;
+    border-radius: 18px;
+    padding: 0.8rem 0.9rem;
+    cursor: pointer;
+    color: inherit;
+    text-align: left;
+  }
+
+  .file-row.active {
+    background: var(--nb-accent-soft);
+    border-color: var(--nb-accent);
+  }
+
+  .file-row-copy,
+  .file-row-meta {
+    display: grid;
+    gap: 0.22rem;
+  }
+
+  .file-row-copy span,
+  .file-row-meta span {
+    color: var(--nb-text-soft);
+    font-size: 0.8rem;
+  }
+
+  .file-row-meta {
+    justify-items: end;
+  }
+</style>

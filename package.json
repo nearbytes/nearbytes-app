@@ -6,7 +6,8 @@
   "packageManager": "yarn@4.10.3",
   "description": "Nearbytes cryptographic storage protocol - immutable data collections with end-to-end encryption",
   "workspaces": [
-    "ui"
+    "ui",
+    "ui-designer"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -16,6 +17,7 @@
   "scripts": {
     "build": "tsc",
     "build:ui": "yarn --cwd ui build",
+    "build:ui-designer": "yarn --cwd ui-designer build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "test": "vitest run",
     "test:mega:manual": "vitest run src/integrations/__tests__/megaAdapter.test.ts src/server/__tests__/megaManagedShareApi.test.ts",
@@ -38,6 +40,7 @@
     "type-check": "tsc --noEmit",
     "dev:server": "yarn build && yarn server",
     "dev:ui": "yarn --cwd ui dev:raw",
+    "dev:ui-designer": "yarn --cwd ui-designer dev:raw",
     "dev": "node scripts/run-web-dev.mjs",
     "dev-iphone": "node scripts/run-iphone-dev.mjs",
     "dev-2": "node scripts/dev-2.mjs",

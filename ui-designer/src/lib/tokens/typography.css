@@ -1,0 +1,20 @@
+.nb-type-display {
+  font-family: var(--nb-font-display);
+  font-weight: var(--nb-font-display-weight);
+  letter-spacing: var(--nb-font-tracking);
+}
+
+.nb-type-heading {
+  font-family: var(--nb-font-display);
+  font-weight: var(--nb-font-heading-weight);
+  letter-spacing: var(--nb-font-tracking);
+}
+
+.nb-type-body {
+  font-family: var(--nb-font-body);
+  font-weight: var(--nb-font-body-weight);
+}
+
+.nb-type-mono {
+  font-family: var(--nb-font-mono);
+}
