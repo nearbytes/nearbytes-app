@@ -61,7 +61,7 @@
     getCollaboratorRoleLabel,
     getIncomingSharePresentation,
     getManagedShareAccessLabel,
-  } from '../../../../../ui/src/lib/megaSharePresentation.js';
+  } from '../sharePresentation.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
   import AppDialog from './AppDialog.svelte';
   import IconToggle from './IconToggle.svelte';

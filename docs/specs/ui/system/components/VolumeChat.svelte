@@ -13,13 +13,13 @@
   import {
     buildIdentitySecret,
     type ConfiguredIdentity,
-  } from '../../../../../ui/src/lib/chatIdentities.js';
-  import { NEARBYTES_DRAG_TYPE } from '../../../../../ui/src/lib/nearbytesDrag.js';
+  } from '../identities.js';
+  import { NEARBYTES_DRAG_TYPE } from '../nearbytesDrag.js';
   import {
     createChatAttachmentFromSourceBundle,
-    exportSourceReferenceBundleFromDrag,
     parseSourceReferenceBundleText,
-  } from '../../../../../ui/src/lib/nearbytesReferenceTransfer.js';
+  } from '../sourceReferences.js';
+  import { exportSourceReferenceBundleFromDrag } from '../../../../../ui/src/lib/nearbytesReferenceTransfer.js';
   import {
     MessageSquareText,
     Paperclip,

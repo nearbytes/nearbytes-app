@@ -9,15 +9,30 @@ export interface FileMetadata {
   createdAt: number;
 }
 
+export interface ContentDescriptor {
+  t: 'b' | 'm';
+  h: string;
+  z: number;
+}
+
 export interface SourceFileReference {
   p: 'nb.src.ref.v1';
   s: string;
-  c: {
-    t: 'b' | 'm';
-    h: string;
-    z: number;
-  };
+  c: ContentDescriptor;
   x: string;
+}
+
+export interface SourceReferenceBundleItem {
+  name: string;
+  mime?: string;
+  createdAt?: number;
+  ref: SourceFileReference;
+}
+
+export interface SourceReferenceBundle {
+  p: 'nb.src.refs.v1';
+  s: string;
+  items: SourceReferenceBundleItem[];
 }
 
 export interface ChatAttachment {
