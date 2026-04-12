@@ -5,8 +5,9 @@ import * as fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
-const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const uiDir = path.join(repoRoot, 'ui');
 const sessionPath =
   process.env.NEARBYTES_WEB_DEV_SESSION_FILE && process.env.NEARBYTES_WEB_DEV_SESSION_FILE.trim().length > 0
