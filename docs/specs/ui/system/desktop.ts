@@ -21,3 +21,8 @@ export interface DesktopRuntimeLogEntry {
   updatedAt: number | null;
   content: string;
 }
+
+export interface DesktopRuntimeLogsResponse {
+  generatedAt: number;
+  entries: DesktopRuntimeLogEntry[];
+}

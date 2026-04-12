@@ -97,8 +97,10 @@
     wipeStoredConfig,
   } from './lib/host/desktopShell.js';
   import { setDevContext } from '../../docs/specs/ui/system/dev.js';
+  import { setDesignRuntimeContext } from '../../docs/specs/ui/system/runtime.js';
   import './app-shell.css';
   import './lib/design/uiBridgeShared.js';
+  import { createAppDesignRuntime } from './lib/design/runtime.js';
   import DevBadge from '../../docs/specs/ui/system/components/DevBadge.svelte';
   import CreateChooserDialog from '../../docs/specs/ui/system/components/CreateChooserDialog.svelte';
   import FileManagerWorkspace from '../../docs/specs/ui/system/components/FileManagerWorkspace.svelte';
@@ -141,6 +143,7 @@
     new URL(window.location.href).searchParams.get('embed') === '1';
 
   setDevContext(!isEmbeddedStudioMirror);
+  setDesignRuntimeContext(createAppDesignRuntime());
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
   import {
     cloneThemeSettings,

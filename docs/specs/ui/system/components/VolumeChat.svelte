@@ -1,25 +1,22 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import type {
+    Auth,
+    ChatAttachment,
+    IdentityProfile,
+    VolumeChatState,
+  } from '../contracts.js';
   import { devSurface, getDevContext } from '../dev.js';
-  import {
-    listChat,
-    publishIdentity,
-    sendChatMessage,
-    type Auth,
-    type ChatAttachment,
-    type IdentityProfile,
-    type VolumeChatState,
-  } from '../../../../../ui/src/lib/api.js';
   import {
     buildIdentitySecret,
     type ConfiguredIdentity,
   } from '../identities.js';
   import { NEARBYTES_DRAG_TYPE } from '../nearbytesDrag.js';
+  import { getDesignRuntimeContext } from '../runtime.js';
   import {
     createChatAttachmentFromSourceBundle,
     parseSourceReferenceBundleText,
   } from '../sourceReferences.js';
-  import { exportSourceReferenceBundleFromDrag } from '../../../../../ui/src/lib/nearbytesReferenceTransfer.js';
   import {
     MessageSquareText,
     Paperclip,
@@ -27,6 +24,12 @@
     X,
   } from 'lucide-svelte';
   import StatusNotice from './StatusNotice.svelte';
+  const {
+    listChat,
+    publishIdentity,
+    sendChatMessage,
+    exportSourceReferenceBundleFromDrag,
+  } = getDesignRuntimeContext().chat;
 
   let {
     auth = null,

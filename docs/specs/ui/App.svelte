@@ -9,6 +9,8 @@
   import StudioPalettePage from './components/StudioPalettePage.svelte';
   import StudioRuntime from './components/StudioRuntime.svelte';
   import TransitionGraphPage from './components/TransitionGraphPage.svelte';
+  import { createStudioDesignRuntime } from './system/mockRuntime.js';
+  import { setDesignRuntimeContext } from './system/runtime.js';
   import { STUDIO_DATA } from './studio-data.js';
   import {
     applyStudioStateTokens,
@@ -31,6 +33,12 @@
     storageMode: STUDIO_DATA.defaults.storageMode,
     uiMachine: STUDIO_DATA.defaults.uiMachine ?? undefined,
   });
+  setDesignRuntimeContext(
+    createStudioDesignRuntime({
+      data: STUDIO_DATA,
+      getState: () => controller.snapshot(),
+    })
+  );
   let state = $state(controller.snapshot());
   let uiState = $state(controller.snapshot());
   const pageTitles = {

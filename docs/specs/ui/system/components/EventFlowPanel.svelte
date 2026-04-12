@@ -1,20 +1,23 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import type { Auth } from '../contracts.js';
   import { devSurface, getDevContext } from '../dev.js';
-  import {
+  import { getDesignRuntimeContext } from '../runtime.js';
+  import type {
+    RootRuntimeStatus,
+    SourceProvider,
+    SourceVolumeUsage,
+    SourceWatchUpdate,
+    VolumeWatchConnection,
+    VolumeWatchUpdate,
+  } from '../runtimeContracts.js';
+  import StatusNotice from './StatusNotice.svelte';
+  const {
     getRootsConfig,
     watchSources,
     watchVolume,
     getTimeline,
-    type Auth,
-    type RootRuntimeStatus,
-    type SourceVolumeUsage,
-    type SourceProvider,
-    type VolumeWatchConnection,
-    type VolumeWatchUpdate,
-    type SourceWatchUpdate,
-  } from '../../../../../ui/src/lib/api.js';
-  import StatusNotice from './StatusNotice.svelte';
+  } = getDesignRuntimeContext().flow;
 
   let {
     auth = undefined,

@@ -9,11 +9,13 @@
   } from 'lucide-svelte';
   import CreateChooserDialog from '../system/components/CreateChooserDialog.svelte';
   import EmptyStatePanel from '../system/components/EmptyStatePanel.svelte';
+  import EventFlowPanel from '../system/components/EventFlowPanel.svelte';
   import FileManagerWorkspace from '../system/components/FileManagerWorkspace.svelte';
   import IdentityManagerDialog from '../system/components/IdentityManagerDialog.svelte';
   import JoinDialog from '../system/components/JoinDialog.svelte';
   import ResetDialog from '../system/components/ResetDialog.svelte';
   import ShareDialog from '../system/components/ShareDialog.svelte';
+  import StoragePanel from '../system/components/StoragePanel.svelte';
   import StatusNotice from '../system/components/StatusNotice.svelte';
   import TimeMachinePanel from '../system/components/TimeMachinePanel.svelte';
   import VolumeChat from '../system/components/VolumeChat.svelte';
@@ -32,7 +34,7 @@
     defaultThemeRegistry,
     defaultThemeSettings,
   } from '../system/branding.js';
-  import type { FileMetadata, TimelineEvent, VolumeChatState } from '../system/contracts.js';
+  import type { Auth, FileMetadata, TimelineEvent } from '../system/contracts.js';
 
   let {
     page = 'desktop',
@@ -72,6 +74,12 @@
       label: hub.name,
     }))
   );
+  const knownVolumes = $derived.by(() =>
+    data.hubs.map((hub) => ({
+      volumeId: hub.id,
+      label: hub.name,
+    }))
+  );
 
   const configuredIdentities = $derived.by(() => [
     {
@@ -104,6 +112,14 @@
       configuredIdentities[0] ??
       null
   );
+  const studioAuth: Auth = { type: 'token', token: 'studio-preview' };
+  const currentVolumePresentation = $derived.by(() => ({
+    volumeId: activeHub.id,
+    label: activeHub.name,
+    filePayload: `studio://${activeHub.id}`,
+    fileMimeType: 'application/x-nearbytes-share',
+    fileName: `${activeHub.name}.nearbytes`,
+  }));
 
   const previewFiles = $derived.by<FileMetadata[]>(() =>
     activeHub.files.map((file, index) => ({
@@ -142,44 +158,6 @@
       visiblePreviewFiles[0] ??
       null
   );
-
-  const previewChatState = $derived.by<VolumeChatState>(() => {
-    const now = Date.now();
-    return {
-      identities: configuredIdentities.map((identity, index) => ({
-        eventHash: `${activeHub.id}:identity:${identity.id}`,
-        authorPublicKey: identity.publicKey,
-        publishedAt: now - index * 60_000,
-        record: {
-          p: 'nb.identity.record.v1',
-          k: identity.publicKey,
-          ts: now - index * 60_000,
-          profile: {
-            displayName: identity.displayName,
-            bio: identity.bio,
-          },
-          sig: 'studio-preview',
-        },
-      })),
-      messages: activeHub.chat.map((message, index) => {
-        const identity =
-          configuredIdentities[message.self ? 0 : Math.min(index % configuredIdentities.length, configuredIdentities.length - 1)];
-        const ts = now - (activeHub.chat.length - index) * 240_000;
-        return {
-          eventHash: `${activeHub.id}:message:${index}`,
-          authorPublicKey: identity.publicKey,
-          publishedAt: ts,
-          message: {
-            p: 'nb.chat.message.v1',
-            k: `${activeHub.id}:message:${index}`,
-            ts,
-            body: message.text,
-            sig: 'studio-preview',
-          },
-        };
-      }),
-    };
-  });
 
   const previewTimelineEvents = $derived.by<TimelineEvent[]>(() =>
     activeHub.timeline.map((event, index) => {
@@ -548,45 +526,36 @@
         {/snippet}
 
         {#snippet globalPanel()}
-          <section class="preview-panel-surface">
-            <div class="preview-panel-head">
-              <div>
-                <p class="panel-eyebrow">Global storage</p>
-                <strong>Source discovery preview</strong>
-              </div>
-              <span>{activeHub.availableStorage} free</span>
-            </div>
-            <div class="preview-card-grid">
-              {#each activeHub.storage as item}
-                <article class="preview-info-card">
-                  <strong>{item.title}</strong>
-                  <span>{item.note}</span>
-                  <em>{item.value}</em>
-                </article>
-              {/each}
-            </div>
-          </section>
+          {@key `storage-global:${activeHub.id}`}
+            <StoragePanel
+              mode="global"
+              volumeId={null}
+              {knownVolumes}
+              onOpenVolumeRouting={(volumeId) => {
+                patch({ hubId: volumeId, secondary: 'locations', storageMode: 'volume' });
+              }}
+              onOpenStorageSetup={() => {
+                patch({ secondary: 'locations', storageMode: 'global' });
+              }}
+            />
+          {/key}
         {/snippet}
 
         {#snippet volumePanel()}
-          <section class="preview-panel-surface">
-            <div class="preview-panel-head">
-              <div>
-                <p class="panel-eyebrow">Hub storage</p>
-                <strong>{activeHub.name}</strong>
-              </div>
-              <span>{activeHub.availableStorage}</span>
-            </div>
-            <div class="preview-card-grid">
-              {#each activeHub.storage.slice(0, 2) as item}
-                <article class="preview-info-card">
-                  <strong>{item.title}</strong>
-                  <span>{item.note}</span>
-                  <em>{item.value}</em>
-                </article>
-              {/each}
-            </div>
-          </section>
+          {@key `storage-volume:${activeHub.id}`}
+            <StoragePanel
+              mode="volume"
+              volumeId={activeHub.id}
+              currentVolumePresentation={currentVolumePresentation}
+              {knownVolumes}
+              onOpenVolumeRouting={(volumeId) => {
+                patch({ hubId: volumeId, secondary: 'locations', storageMode: 'volume' });
+              }}
+              onOpenStorageSetup={() => {
+                patch({ secondary: 'locations', storageMode: 'global' });
+              }}
+            />
+          {/key}
         {/snippet}
 
         {#snippet emptyState()}
@@ -700,10 +669,10 @@
             {#if workspaceChromeState.showChatWorkspace}
               <div class="preview-workspace-pane">
                 <VolumeChat
-                  auth={null}
+                  auth={studioAuth}
                   volumeId={activeHub.id}
-                  readonlyMode={true}
-                  historyState={previewChatState}
+                  readonlyMode={false}
+                  historyState={null}
                   activeIdentity={selectedChatIdentity}
                   identityNeedsPublish={false}
                   onOpenIdentityManager={() => patch({ dialogSurface: 'identity' })}
@@ -718,24 +687,9 @@
         {/snippet}
 
         {#snippet flowPanel()}
-          <section class="preview-panel-surface flow-preview">
-            <div class="preview-panel-head">
-              <div>
-                <p class="panel-eyebrow">Event flow</p>
-                <strong>Runtime movement</strong>
-              </div>
-            </div>
-            <div class="preview-flow-list">
-              {#each activeHub.flow as item, index}
-                <article class="preview-flow-card">
-                  <span>0{index + 1}</span>
-                  <strong>{item.title}</strong>
-                  <p>{item.note}</p>
-                  <em>{item.value}</em>
-                </article>
-              {/each}
-            </div>
-          </section>
+          {@key `flow:${activeHub.id}`}
+            <EventFlowPanel auth={studioAuth} volumeId={activeHub.id} />
+          {/key}
         {/snippet}
       </WorkspaceShell>
     </div>
@@ -749,12 +703,12 @@
           <StatusNotice
             tone="info"
             title="Shared shell contract"
-            message="Desktop, phone, and the app now compose the same shared shell component."
+            message="Desktop, phone, and the app all render the same shared shell and the same shared surfaces."
           />
           <StatusNotice
-            tone="warning"
+            tone="info"
             compact={true}
-            message="Runtime-bound surfaces like storage still need richer preview adapters."
+            message="Storage and flow now come from the shared Svelte surfaces running on the mocked design runtime."
           />
         </div>
       </div>
@@ -935,86 +889,6 @@
     width: 100%;
   }
 
-  .preview-panel-surface,
-  .preview-info-card,
-  .preview-flow-card {
-    border-radius: var(--nb-radius-lg, 18px);
-    border: 1px solid var(--nb-border, rgba(60, 60, 67, 0.12));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, white);
-    box-shadow: var(--nb-shadow-sm, 0 10px 24px rgba(34, 25, 18, 0.06));
-  }
-
-  .preview-panel-surface {
-    padding: 1rem;
-    display: grid;
-    gap: 0.9rem;
-  }
-
-  .preview-panel-head {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.9rem;
-    align-items: flex-start;
-  }
-
-  .preview-panel-head strong,
-  .preview-info-card strong,
-  .preview-flow-card strong {
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.96));
-  }
-
-  .panel-eyebrow {
-    margin: 0 0 0.25rem;
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
-  }
-
-  .preview-card-grid,
-  .preview-flow-list {
-    display: grid;
-    gap: 0.75rem;
-  }
-
-  .preview-card-grid {
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  }
-
-  .preview-info-card,
-  .preview-flow-card {
-    padding: 0.9rem;
-    display: grid;
-    gap: 0.25rem;
-  }
-
-  .preview-info-card span,
-  .preview-flow-card p,
-  .preview-flow-card em {
-    margin: 0;
-    color: var(--nb-text-soft, rgba(70, 70, 73, 0.76));
-    line-height: 1.45;
-    font-style: normal;
-  }
-
-  .preview-flow-card span {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    border-radius: 999px;
-    background: var(--nb-accent-soft, rgba(36, 94, 145, 0.12));
-    color: var(--nb-accent-strong, #164162);
-    font-size: 0.78rem;
-    font-weight: 700;
-  }
-
-  .flow-preview {
-    min-height: 100%;
-  }
-
   .runtime-toolkit-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -1042,11 +916,6 @@
   @media (max-width: 900px) {
     .runtime-device {
       min-height: 640px;
-    }
-
-    .preview-workspace-panels,
-    .preview-card-grid {
-      grid-template-columns: 1fr;
     }
   }
 </style>
