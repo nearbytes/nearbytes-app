@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import type { NearbytesLogoOptions } from '../../../../../ui/src/lib/branding.js';
+  import type { NearbytesLogoOptions } from '../branding.js';
 
   let {
     size = 88,

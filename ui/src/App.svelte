@@ -119,12 +119,9 @@
   import VolumeChat from '../../docs/specs/ui/system/components/VolumeChat.svelte';
   import VolumeIdentity from '../../docs/specs/ui/system/components/VolumeIdentity.svelte';
   import PhoneOverflowMenu from '../../docs/specs/ui/system/components/PhoneOverflowMenu.svelte';
-  import WorkspaceModeBar from '../../docs/specs/ui/system/components/WorkspaceModeBar.svelte';
-  import WorkspaceSearchStrip from '../../docs/specs/ui/system/components/WorkspaceSearchStrip.svelte';
-  import AppHeader from '../../docs/specs/ui/system/components/AppHeader.svelte';
-  import WorkspaceStage from '../../docs/specs/ui/system/components/WorkspaceStage.svelte';
   import TimeMachinePanel from '../../docs/specs/ui/system/components/TimeMachinePanel.svelte';
   import EmptyStatePanel from '../../docs/specs/ui/system/components/EmptyStatePanel.svelte';
+  import WorkspaceShell from '../../docs/specs/ui/system/components/WorkspaceShell.svelte';
   import {
     createWorkspaceChromeState,
     createWorkspaceSelectionSummary,
@@ -139,7 +136,11 @@
     joinDialogAttachmentTitle,
   } from './lib/joinLinkPresentation.js';
 
-  setDevContext(true);
+  const isEmbeddedStudioMirror =
+    typeof window !== 'undefined' &&
+    new URL(window.location.href).searchParams.get('embed') === '1';
+
+  setDevContext(!isEmbeddedStudioMirror);
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
   import {
     cloneThemeSettings,
@@ -6567,7 +6568,7 @@
 }} onpaste={handlePaste} />
 
 <div class="app" style={appThemeCssText}>
-  <AppHeader
+  <WorkspaceShell
     isDevThemeStudio={isInAppThemeStudioEnabled}
     themeLogoOptions={themeSettings.logo}
     paletteLabel={activeThemePreset().palette.label}
@@ -6596,6 +6597,17 @@
     onToggleSourcesPanel={toggleSourcesPanel}
     workspaceState={workspaceChromeState}
     workspaceActions={workspaceChromeActions}
+    mode={showSourcesPanel ? 'global-panel' : showVolumeStoragePanel ? 'volume-panel' : address.trim() === '' ? 'empty' : 'workspace'}
+    {isDragging}
+    isVolumeWorkspaceActive={!showSourcesPanel && !showVolumeStoragePanel && address.trim() !== ''}
+    onDragOver={handleDragOver}
+    onDragLeave={handleDragLeave}
+    onDrop={handleDrop}
+    {showEventFlowPanel}
+    onCloseFlow={() => {
+      uiTransitions.closeEventFlowPanel();
+    }}
+    showWorkspaceChrome={!isVolumeTransitioning}
   >
     {#snippet mountRailChildren()}
         {#each mounts as mount, index (mount.id)}
@@ -6694,21 +6706,6 @@
             </button>
           </div>
     {/snippet}
-  </AppHeader>
-
-  <!-- Main file area -->
-  <WorkspaceStage
-    mode={showSourcesPanel ? 'global-panel' : showVolumeStoragePanel ? 'volume-panel' : address.trim() === '' ? 'empty' : 'workspace'}
-    isVolumeWorkspaceActive={!showSourcesPanel && !showVolumeStoragePanel && address.trim() !== ''}
-    {isDragging}
-    onDragOver={handleDragOver}
-    onDragLeave={handleDragLeave}
-    onDrop={handleDrop}
-    {showEventFlowPanel}
-    onCloseFlow={() => {
-      uiTransitions.closeEventFlowPanel();
-    }}
-  >
     {#snippet globalPanel()}
         <StoragePanel
           mode="global"
@@ -6742,7 +6739,7 @@
         subtitle={`Or drag and drop files here to create a new hub.${isInAppThemeStudioEnabled ? ' Click the brand mark to edit presets and export the checked-in logo asset.' : ' The active preset stays consistent across launches.'}`}
       />
     {/snippet}
-    {#snippet workspaceContent()}
+    {#snippet workspaceLead()}
       {#if isVolumeTransitioning}
         <div class="volume-transition-state panel-surface" aria-live="polite">
           <div class="volume-transition-spinner"></div>
@@ -6751,171 +6748,160 @@
             <p class="volume-transition-subtitle">Replaying history off-screen…</p>
           </div>
         </div>
-      {:else}
-      {#if showTimeMachinePanel}
-      <TimeMachinePanel
-        timelineMarker={timelineMarker}
-        {isTimelinePlaying}
-        {isTimelineLoading}
-        timelineEvents={timelineEvents}
-        {timelinePosition}
-        bind:timelineEventsElement
-        {timelineKindLabel}
-        {timelineHeadline}
-        {timelineTitle}
-        {formatShortDate}
-        {isTimelineIdentityEvent}
-        {isTimelineChatEvent}
-        onTogglePlayback={toggleTimelinePlayback}
-        onJumpToLatest={jumpToLatest}
-        onSetTimelinePosition={(value) => {
-          stopTimelinePlayback();
-          setTimelinePosition(value);
-        }}
-        onJumpToEvent={jumpToEvent}
-        onOpenDetails={(event) => {
-          void openTimelineDetails(event);
-        }}
-        onScroll={handleTimelineScroll}
-      />
-      {/if}
-
-      <WorkspaceModeBar
-        state={workspaceChromeState}
-        actions={workspaceChromeActions}
-      />
-
-      {#if workspaceChromeState.showFilesWorkspace && workspaceChromeState.showSearchWorkspace}
-        <WorkspaceSearchStrip
-          state={workspaceChromeState}
-          actions={workspaceChromeActions}
+      {:else if showTimeMachinePanel}
+        <TimeMachinePanel
+          timelineMarker={timelineMarker}
+          {isTimelinePlaying}
+          {isTimelineLoading}
+          timelineEvents={timelineEvents}
+          {timelinePosition}
+          bind:timelineEventsElement
+          {timelineKindLabel}
+          {timelineHeadline}
+          {timelineTitle}
+          {formatShortDate}
+          {isTimelineIdentityEvent}
+          {isTimelineChatEvent}
+          onTogglePlayback={toggleTimelinePlayback}
+          onJumpToLatest={jumpToLatest}
+          onSetTimelinePosition={(value) => {
+            stopTimelinePlayback();
+            setTimelinePosition(value);
+          }}
+          onJumpToEvent={jumpToEvent}
+          onOpenDetails={(event) => {
+            void openTimelineDetails(event);
+          }}
+          onScroll={handleTimelineScroll}
         />
       {/if}
+    {/snippet}
+    {#snippet workspaceMain()}
+      {#if !isVolumeTransitioning}
+        <div
+          class="workspace-panels"
+          bind:this={workspacePanelsElement}
+          style:grid-template-columns={workspacePanelsTemplate}
+        >
+          {#if showFilesWorkspace}
+            <div class="workspace-pane">
+              <FileManagerWorkspace
+                {viewFiles}
+                {visibleFiles}
+                {isLoading}
+                {fileManagerViewMode}
+                {showPreviewPane}
+                {fileManagerTemplate}
+                {thumbnailUrls}
+                currentPreviewFile={currentPreviewFile}
+                {selectedFile}
+                {previewFileOverride}
+                {previewKind}
+                {previewUrl}
+                {previewText}
+                {previewLoading}
+                previewError={previewError}
+                {renamingFileName}
+                {renameDraft}
+                {isHistoryMode}
+                {fileAccentTone}
+                {fileIconComponent}
+                {isFileSelected}
+                {columnSortState}
+                {formatSize}
+                {formatDate}
+                {formatRelativeDay}
+                {displayFileName}
+                onElementChange={(element) => {
+                  fileManagerElement = element;
+                }}
+                onActivate={() => {
+                  fileManagerActive = true;
+                }}
+                onToggleColumnSort={toggleColumnSort}
+                onFilePointerSelect={handleFilePointerSelect}
+                onOpenPreview={openPreviewPane}
+                onDragStart={handleNearbytesFileDragStart}
+                onFileRowKeydown={handleFileRowKeydown}
+                onStartRenaming={startRenaming}
+                onRenameDraftChange={(value) => {
+                  renameDraft = value;
+                }}
+                onCommitRename={(file) => commitRename(file)}
+                onCancelRenaming={cancelRenaming}
+                onClearSelection={clearSelection}
+                onStartResize={startFileManagerResize}
+                onDelete={() => {
+                  if (selectedFile) {
+                    handleDelete(selectedFile.filename);
+                  }
+                }}
+                onDownload={() => {
+                  if (currentPreviewFile) {
+                    handleDownload(currentPreviewFile);
+                  }
+                }}
+                onClosePreview={closePreviewPane}
+              >
+                {#snippet empty()}
+                  <EmptyStatePanel
+                    title={isHistoryMode ? 'No files at this point in history' : 'No files yet'}
+                    subtitle={isHistoryMode ? 'Move the timeline toward Latest to see newer files' : 'Drop files here to add them'}
+                  >
+                    {#snippet icon()}
+                      <svg class="empty-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M32 8L8 20L32 32L56 20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
+                        <path d="M8 20V44L32 56L56 44V20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
+                        <path d="M32 32V56" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
+                      </svg>
+                    {/snippet}
+                  </EmptyStatePanel>
+                {/snippet}
+              </FileManagerWorkspace>
+            </div>
+          {/if}
 
-      <div
-        class="workspace-panels"
-        bind:this={workspacePanelsElement}
-        style:grid-template-columns={workspacePanelsTemplate}
-      >
-        {#if showFilesWorkspace}
-          <div class="workspace-pane">
-            <FileManagerWorkspace
-              {viewFiles}
-              {visibleFiles}
-              {isLoading}
-              {fileManagerViewMode}
-              {showPreviewPane}
-              {fileManagerTemplate}
-              {thumbnailUrls}
-              currentPreviewFile={currentPreviewFile}
-              {selectedFile}
-              {previewFileOverride}
-              {previewKind}
-              {previewUrl}
-              {previewText}
-              {previewLoading}
-              previewError={previewError}
-              {renamingFileName}
-              {renameDraft}
-              {isHistoryMode}
-              {fileAccentTone}
-              {fileIconComponent}
-              {isFileSelected}
-              {columnSortState}
-              {formatSize}
-              {formatDate}
-              {formatRelativeDay}
-              {displayFileName}
-              onElementChange={(element) => {
-                fileManagerElement = element;
-              }}
-              onActivate={() => {
-                fileManagerActive = true;
-              }}
-              onToggleColumnSort={toggleColumnSort}
-              onFilePointerSelect={handleFilePointerSelect}
-              onOpenPreview={openPreviewPane}
-              onDragStart={handleNearbytesFileDragStart}
-              onFileRowKeydown={handleFileRowKeydown}
-              onStartRenaming={startRenaming}
-              onRenameDraftChange={(value) => {
-                renameDraft = value;
-              }}
-              onCommitRename={(file) => commitRename(file)}
-              onCancelRenaming={cancelRenaming}
-              onClearSelection={clearSelection}
-              onStartResize={startFileManagerResize}
-              onDelete={() => {
-                if (selectedFile) {
-                  handleDelete(selectedFile.filename);
-                }
-              }}
-              onDownload={() => {
-                if (currentPreviewFile) {
-                  handleDownload(currentPreviewFile);
-                }
-              }}
-              onClosePreview={closePreviewPane}
+          {#if showSplitWorkspace}
+            <button
+              type="button"
+              class="workspace-divider"
+              aria-label="Resize files and chat panes"
+              onpointerdown={startWorkspaceResize}
             >
-              {#snippet empty()}
-                <EmptyStatePanel
-                  title={isHistoryMode ? 'No files at this point in history' : 'No files yet'}
-                  subtitle={isHistoryMode ? 'Move the timeline toward Latest to see newer files' : 'Drop files here to add them'}
-                >
-                  {#snippet icon()}
-                    <svg class="empty-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M32 8L8 20L32 32L56 20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
-                      <path d="M8 20V44L32 56L56 44V20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
-                      <path d="M32 32V56" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
-                    </svg>
-                  {/snippet}
-                </EmptyStatePanel>
-              {/snippet}
-            </FileManagerWorkspace>
-          </div>
-        {/if}
+              <span class="workspace-divider-grip">
+                <GripVertical size={16} strokeWidth={1.8} />
+              </span>
+            </button>
+          {/if}
 
-        {#if showSplitWorkspace}
-          <button
-            type="button"
-            class="workspace-divider"
-            aria-label="Resize files and chat panes"
-            onpointerdown={startWorkspaceResize}
-          >
-            <span class="workspace-divider-grip">
-              <GripVertical size={16} strokeWidth={1.8} />
-            </span>
-          </button>
-        {/if}
-
-        {#if showChatWorkspace}
-          <div class="workspace-pane">
-            <VolumeChat
-              auth={activeHubAuth}
-              volumeId={activeHubVolumeId}
-              readonlyMode={isHistoryMode}
-              historyState={isHistoryMode ? historicalChatState : null}
-              activeIdentity={joinedChatIdentity}
-              identityNeedsPublish={joinedChatIdentityNeedsPublish}
-              onOpenIdentityManager={openIdentityManager}
-              onEnsureIdentityPublished={async (identity) =>
-                (await ensureChatIdentityPublished(identity, {
-                  announceSuccess: false,
-                  openManagerOnError: false,
-                })) !== null}
-              onPreviewAttachment={previewChatAttachment}
-              onChatMutated={handleChatMutated}
-              externalRefreshVersion={chatRefreshVersion}
-            />
-          </div>
-        {/if}
-      </div>
+          {#if showChatWorkspace}
+            <div class="workspace-pane">
+              <VolumeChat
+                auth={activeHubAuth}
+                volumeId={activeHubVolumeId}
+                readonlyMode={isHistoryMode}
+                historyState={isHistoryMode ? historicalChatState : null}
+                activeIdentity={joinedChatIdentity}
+                identityNeedsPublish={joinedChatIdentityNeedsPublish}
+                onOpenIdentityManager={openIdentityManager}
+                onEnsureIdentityPublished={async (identity) =>
+                  (await ensureChatIdentityPublished(identity, {
+                    announceSuccess: false,
+                    openManagerOnError: false,
+                  })) !== null}
+                onPreviewAttachment={previewChatAttachment}
+                onChatMutated={handleChatMutated}
+                externalRefreshVersion={chatRefreshVersion}
+              />
+            </div>
+          {/if}
+        </div>
       {/if}
     {/snippet}
     {#snippet flowPanel()}
       <EventFlowPanel auth={auth ?? undefined} volumeId={shareableVolumeId ?? undefined} />
     {/snippet}
-  </WorkspaceStage>
+  </WorkspaceShell>
 
       {#if showMountStorageDialog}
         <VolumeStorageDialog
@@ -7189,4 +7175,6 @@
 
 </div>
 
-<DevBadge />
+{#if !isEmbeddedStudioMirror}
+  <DevBadge />
+{/if}

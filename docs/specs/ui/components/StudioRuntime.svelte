@@ -31,8 +31,8 @@
   import {
     defaultThemeRegistry,
     defaultThemeSettings,
-  } from '../../../../ui/src/lib/branding.js';
-  import type { FileMetadata, TimelineEvent, VolumeChatState } from '../../../../ui/src/lib/api.js';
+  } from '../system/branding.js';
+  import type { FileMetadata, TimelineEvent, VolumeChatState } from '../system/contracts.js';
 
   let {
     page = 'desktop',

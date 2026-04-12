@@ -2,7 +2,7 @@
   import AppDialog from './AppDialog.svelte';
   import NearbytesLogo from './NearbytesLogo.svelte';
   import StatusNotice from './StatusNotice.svelte';
-  import type { NearbytesArcStyle, NearbytesSurfaceStyle } from '../../../../../ui/src/lib/branding.ts';
+  import type { NearbytesArcStyle, NearbytesSurfaceStyle } from '../branding.js';
 
   type ThemeDialogSection = 'preset' | 'material' | 'accent' | 'logo';
 

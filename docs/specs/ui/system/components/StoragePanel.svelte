@@ -52,7 +52,7 @@
     type VolumePolicyEntry,
     updateRootsConfig,
   } from '../../../../../ui/src/lib/api.js';
-  import type { DesktopRuntimeLogEntry } from '../../../../../ui/src/lib/host/desktopBridge.js';
+  import type { DesktopRuntimeLogEntry } from '../desktop.js';
   import { readMirrorLocalNetworkPeers } from '../../../../../ui/src/lib/mirror/browserMirror.js';
   import {
     formatAccessLevelLabel,

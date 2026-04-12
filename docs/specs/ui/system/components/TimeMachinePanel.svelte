@@ -1,6 +1,6 @@
 <script lang="ts">
   import { devSurface, getDevContext } from '../dev.js';
-  import type { TimelineEvent } from '../../../../../ui/src/lib/api.js';
+  import type { TimelineEvent } from '../contracts.js';
 
   let {
     timelineMarker = '',
