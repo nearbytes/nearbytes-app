@@ -24,8 +24,18 @@ export function isStudioPage(value: string | null | undefined): value is StudioP
   return value !== null && value !== undefined && STUDIO_PAGES.includes(value as StudioPage);
 }
 
+function bodyStudioPage(): string | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+  return document.body?.dataset?.page ?? null;
+}
+
 function isStandaloneStudioPath(pathname: string): boolean {
-  return pathname.includes('/docs/specs/ui/');
+  if (pathname.includes('/docs/specs/ui/')) {
+    return true;
+  }
+  return isStudioPage(bodyStudioPage());
 }
 
 function pageFile(page: StudioPage): string {
@@ -36,7 +46,16 @@ export function buildStudioUrl(page: StudioPage, currentHref = window.location.h
   const url = new URL(currentHref);
 
   if (isStandaloneStudioPath(url.pathname)) {
-    const nextPath = url.pathname.replace(/\/[^/]*$/, `/${pageFile(page)}`);
+    const fileName = pageFile(page);
+    const pathname =
+      url.pathname === '/' || url.pathname === ''
+        ? `/${fileName}`
+        : url.pathname.endsWith('.html')
+          ? url.pathname.replace(/\/[^/]*$/, `/${fileName}`)
+          : url.pathname.endsWith('/')
+            ? `${url.pathname}${fileName}`
+            : `/${fileName}`;
+    const nextPath = pathname;
     url.pathname = nextPath;
     url.searchParams.delete('design');
     url.hash = '';
