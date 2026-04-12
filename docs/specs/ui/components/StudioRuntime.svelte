@@ -526,7 +526,7 @@
         {/snippet}
 
         {#snippet globalPanel()}
-          {@key `storage-global:${activeHub.id}`}
+          {#key `storage-global:${activeHub.id}`}
             <StoragePanel
               mode="global"
               volumeId={null}
@@ -542,7 +542,7 @@
         {/snippet}
 
         {#snippet volumePanel()}
-          {@key `storage-volume:${activeHub.id}`}
+          {#key `storage-volume:${activeHub.id}`}
             <StoragePanel
               mode="volume"
               volumeId={activeHub.id}
@@ -687,7 +687,7 @@
         {/snippet}
 
         {#snippet flowPanel()}
-          {@key `flow:${activeHub.id}`}
+          {#key `flow:${activeHub.id}`}
             <EventFlowPanel auth={studioAuth} volumeId={activeHub.id} />
           {/key}
         {/snippet}
