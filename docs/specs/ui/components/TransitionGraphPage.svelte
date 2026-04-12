@@ -1,18 +1,16 @@
 <script lang="ts">
   import ELK from 'elkjs/lib/elk.bundled.js';
   import { get } from 'svelte/store';
-  import { onDestroy, onMount } from 'svelte';
-  import { createStudioModel } from '../studio.js';
+  import { onMount } from 'svelte';
+  import StudioRuntime from './StudioRuntime.svelte';
   import {
-    applyUiTransitionInvocation,
     createUiTransitionGraph,
     createUiTransitionSignature,
-    createUiTransitionStore,
     formatUiTransitionInvocation,
-    normalizeUiTransitionState,
     type UiTransitionGraphEdge,
     type UiTransitionGraphState,
     type UiTransitionState,
+    type UiTransitionStore,
   } from '../uiTransitionStore.js';
 
   type GraphNodeLayout = UiTransitionGraphState & {
@@ -62,12 +60,12 @@
 
   let {
     data,
-    bridge,
+    uiStore,
     studioState,
     onStudioStateChange = undefined,
   } = $props<{
     data: typeof import('../studio-data.js').STUDIO_DATA;
-    bridge: Record<string, unknown>;
+    uiStore: UiTransitionStore;
     studioState: Record<string, unknown>;
     onStudioStateChange?: ((patch: Record<string, unknown>) => Promise<void> | void) | undefined;
   }>();
@@ -81,26 +79,36 @@
     graph.states.map((state) => [state.id, graph.edges.filter((edge) => edge.from === state.id)])
   );
 
-  const uiStore = createUiTransitionStore();
-
-  let machineState = $state(get(uiStore));
+  let machineState = $state<UiTransitionState>(graph.states[0]?.assignment ?? {
+    showThemeDialog: false,
+    themeDialogSection: 'preset',
+    showPreviewPane: false,
+    showResetDialog: false,
+    showTimeMachinePanel: false,
+    showTimelineDetailDialog: false,
+    showSourcesPanel: false,
+    showVolumeStoragePanel: false,
+    showMountStorageDialog: false,
+    showEventFlowPanel: false,
+    showPhoneOverflowMenu: false,
+    showIdentityManager: false,
+    showCreateChooser: false,
+    fileManagerViewMode: 'icons',
+    searchQuery: '',
+    sortBy: 'newest',
+    showSpecDialog: false,
+    showJoinVolumeDialog: false,
+    showVolumeShareDialog: false,
+  });
   let selectedNodeId = $state(graph.states[0]?.id ?? '');
   let selectedEdgeId = $state<string | null>(null);
   let previewPage = $state<'desktop' | 'phone'>('desktop');
-  let persistedStudioMachineSignature = $state('');
-  let pendingStudioMachineSignature = $state<string | null>(null);
   let layout = $state<GraphLayout>({
     width: 1600,
     height: 920,
     nodes: [],
     edges: [],
   });
-
-  const unsubscribe = uiStore.subscribe((value) => {
-    machineState = value;
-  });
-
-  const previewModel = $derived.by(() => createStudioModel({ data, bridge, page: previewPage }));
 
   const activeHub = $derived.by(() => {
     const requestedHubId = typeof studioState.hubId === 'string' ? studioState.hubId : data.defaults.hubId;
@@ -109,44 +117,6 @@
 
   const selectedNode = $derived.by(() => graphStateById.get(selectedNodeId) ?? null);
   const outgoingTransitions = $derived.by(() => outgoingEdgesByState.get(selectedNodeId) ?? []);
-  const previewSnapshot = $derived.by(() => {
-    const createAppSnapshot = typeof bridge.createAppSnapshot === 'function'
-      ? (bridge.createAppSnapshot as (value: Record<string, unknown>) => Record<string, unknown>)
-      : null;
-    if (!createAppSnapshot) {
-      return null;
-    }
-    return createAppSnapshot({
-      mountCount: 3,
-      mountLabel: activeHub.name,
-      emptyState: false,
-      workspaceMode: 'split',
-      showFilesWorkspace: true,
-      showChatWorkspace: true,
-      showSearchWorkspace: machineState.searchQuery.trim() !== '',
-      fileManagerViewMode: machineState.fileManagerViewMode,
-      fileCount: activeHub.files.length,
-      selectedCount: 1,
-      searchQuery: machineState.searchQuery,
-      showPreviewPane: machineState.showPreviewPane,
-      showTimeMachinePanel: machineState.showTimeMachinePanel,
-      timelineCount: activeHub.timeline.length,
-      timelinePosition: Math.max(0, activeHub.timeline.length - 1),
-      timelineDetailOpen: machineState.showTimelineDetailDialog,
-      showSpecDialog: machineState.showSpecDialog,
-      showSourcesPanel: machineState.showSourcesPanel,
-      showVolumeStoragePanel: machineState.showVolumeStoragePanel,
-      showMountStorageDialog: machineState.showMountStorageDialog,
-      showEventFlowPanel: machineState.showEventFlowPanel,
-      showPhoneOverflowMenu: machineState.showPhoneOverflowMenu,
-      showIdentityManager: machineState.showIdentityManager,
-      showCreateChooser: machineState.showCreateChooser,
-      showJoinVolumeDialog: machineState.showJoinVolumeDialog,
-      showVolumeShareDialog: machineState.showVolumeShareDialog,
-      showResetDialog: machineState.showResetDialog,
-      activeModal: activeModalFromMachine(machineState),
-    });
-  });
 
   const previewState = $derived.by(() => ({
     ...data.defaults,
@@ -163,8 +133,6 @@
     stylesSortValue: styleSortValueFromMachine(machineState.sortBy),
     stylesSortOpen: false,
   }));
-
-  const previewHtml = $derived.by(() => previewModel.renderPageBody(previewState));
 
   const assignmentRows = $derived.by(() => [
     ['showThemeDialog', String(machineState.showThemeDialog)],
@@ -208,57 +176,6 @@
     if (sortBy === 'name' || sortBy === 'name-desc') return 'name';
     if (sortBy === 'size' || sortBy === 'size-asc') return 'protected';
     return 'newest';
-  }
-
-  function machineStateFromStudioState(value: Record<string, unknown>): UiTransitionState {
-    const persistedMachine = value.uiMachine;
-    if (persistedMachine) {
-      return normalizeUiTransitionState(persistedMachine);
-    }
-
-    return normalizeUiTransitionState({
-      showThemeDialog: false,
-      themeDialogSection: 'preset',
-      showPreviewPane: false,
-      showResetDialog: value.dialogSurface === 'reset',
-      showTimeMachinePanel: value.timelineOpen === true,
-      showTimelineDetailDialog: false,
-      showSourcesPanel: value.secondary === 'locations' && value.storageMode === 'global',
-      showVolumeStoragePanel: value.secondary === 'locations' && value.storageMode === 'volume',
-      showMountStorageDialog: false,
-      showEventFlowPanel: value.secondary === 'flow',
-      showPhoneOverflowMenu: value.phoneMenuOpen === true,
-      showIdentityManager: value.secondary === 'identities' || value.dialogSurface === 'identity',
-      showCreateChooser: value.dialogSurface === 'create',
-      fileManagerViewMode: value.viewMode === 'details' ? 'details' : 'icons',
-      searchQuery: typeof value.stylesSearchText === 'string' ? value.stylesSearchText : '',
-      sortBy:
-        value.stylesSortValue === 'name'
-          ? 'name'
-          : value.stylesSortValue === 'protected'
-            ? 'size'
-            : 'newest',
-      showSpecDialog: false,
-      showJoinVolumeDialog: value.dialogSurface === 'join',
-      showVolumeShareDialog: value.dialogSurface === 'share',
-    });
-  }
-
-  function studioPatchFromMachine(state: UiTransitionState): Record<string, unknown> {
-    return {
-      uiMachine: normalizeUiTransitionState(state),
-      workspace: 'split',
-      secondary: secondaryFromMachine(state),
-      dialogSurface: activeModalFromMachine(state),
-      storageMode: state.showSourcesPanel ? 'global' : 'volume',
-      searchOpen: state.searchQuery.trim() !== '',
-      timelineOpen: state.showTimeMachinePanel,
-      phoneMenuOpen: state.showPhoneOverflowMenu,
-      viewMode: state.fileManagerViewMode,
-      stylesSearchText: state.searchQuery,
-      stylesSortValue: styleSortValueFromMachine(state.sortBy),
-      stylesSortOpen: false,
-    };
   }
 
   function summarizeAssignment(state: UiTransitionState): string[] {
@@ -412,15 +329,11 @@
     if (!nextState) return;
     selectedNodeId = nodeId;
     selectedEdgeId = null;
-    pendingStudioMachineSignature = createUiTransitionSignature(nextState.assignment);
     uiStore.replaceState(nextState.assignment);
   }
 
   function invokeEdge(edge: UiTransitionGraphEdge): void {
     selectedEdgeId = edge.id;
-    pendingStudioMachineSignature = createUiTransitionSignature(
-      applyUiTransitionInvocation(machineState, edge.invocation)
-    );
     uiStore.transitions.dispatch(edge.invocation);
     selectedNodeId = edge.to;
   }
@@ -446,16 +359,13 @@
   }
 
   $effect(() => {
-    const persistedMachine = machineStateFromStudioState(studioState);
-    const persistedSignature = createUiTransitionSignature(persistedMachine);
-    persistedStudioMachineSignature = persistedSignature;
-    if (pendingStudioMachineSignature === persistedSignature) {
-      pendingStudioMachineSignature = null;
-      return;
-    }
-    if (persistedSignature !== createUiTransitionSignature(machineState)) {
-      uiStore.replaceState(persistedMachine);
-    }
+    machineState = get(uiStore);
+    const unsubscribe = uiStore.subscribe((value) => {
+      machineState = value;
+    });
+    return () => {
+      unsubscribe();
+    };
   });
 
   $effect(() => {
@@ -464,23 +374,8 @@
     selectedNodeId = matchedState.id;
   });
 
-  $effect(() => {
-    const nextSignature = createUiTransitionSignature(machineState);
-    if (nextSignature === persistedStudioMachineSignature) {
-      pendingStudioMachineSignature = null;
-      return;
-    }
-    persistedStudioMachineSignature = nextSignature;
-    pendingStudioMachineSignature = nextSignature;
-    void patchStudioState(studioPatchFromMachine(machineState));
-  });
-
   onMount(() => {
     void buildLayout();
-  });
-
-  onDestroy(() => {
-    unsubscribe();
   });
 </script>
 
@@ -645,29 +540,31 @@
             <p class="eyebrow">Preview</p>
             <strong>{previewPage === 'desktop' ? 'Desktop shell' : 'Phone shell'}</strong>
           </div>
-          {#if previewSnapshot && Array.isArray(previewSnapshot.surfaces)}
-            <span class="graph-state-id">{previewSnapshot.surfaces.length} surfaces</span>
-          {/if}
+          <span class="graph-state-id">{summarizeAssignment(machineState).length} active markers</span>
         </div>
 
         <div class="graph-chip-row compact">
-          {#if previewSnapshot && Array.isArray(previewSnapshot.surfaces)}
-            {#each previewSnapshot.surfaces as surfaceId}
-              <span class="graph-chip surface">{String(surfaceId)}</span>
-            {/each}
-          {/if}
+          {#each summarizeAssignment(machineState) as chip}
+            <span class="graph-chip surface">{chip}</span>
+          {/each}
           {#if machineState.showThemeDialog}
             <span class="graph-chip accent">appearance:{machineState.themeDialogSection}</span>
           {/if}
         </div>
 
         <div class="graph-preview-shell">
-          {@html previewHtml}
+          <StudioRuntime
+            page={previewPage}
+            {data}
+            studioState={previewState}
+            uiState={previewState}
+            onPatchState={patchStudioState}
+          />
           {#if machineState.showThemeDialog}
             <div class="graph-preview-overlay">
               <p class="eyebrow">Appearance</p>
               <strong>{machineState.themeDialogSection} section</strong>
-              <span>Theme dialog is open in this machine state even though the legacy shell preview does not render that modal directly.</span>
+              <span>Theme dialog state is active in the machine, but the shared runtime does not expose that modal yet.</span>
             </div>
           {/if}
         </div>

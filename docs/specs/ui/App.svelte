@@ -1,36 +1,48 @@
 <script>
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import { setDevContext } from './system/dev.js';
   import DevBadge from './system/components/DevBadge.svelte';
   import StudioNav from './components/StudioNav.svelte';
   import StudioControls from './components/StudioControls.svelte';
+  import StudioOverviewPage from './components/StudioOverviewPage.svelte';
+  import StudioMoodboardPage from './components/StudioMoodboardPage.svelte';
+  import StudioPalettePage from './components/StudioPalettePage.svelte';
   import StudioRuntime from './components/StudioRuntime.svelte';
   import TransitionGraphPage from './components/TransitionGraphPage.svelte';
   import { STUDIO_DATA } from './studio-data.js';
-  import { createStudioModel } from './studio.js';
+  import {
+    applyStudioStateTokens,
+    createStudioStateController,
+  } from './system/studioState.js';
 
   let { page = 'overview' } = $props();
 
-  const bridge = globalThis.NearbytesUiBridgeShared || {};
-  const model = $derived.by(() => createStudioModel({ data: STUDIO_DATA, bridge, page }));
-
-  setDevContext(true);
+  setDevContext(false);
 
   let studioRoot = $state();
-  let state = $state({});
-  let uiState = $state({});
-  let bodyHtml = $state('');
-  let title = $state('Nearbytes UI Studio');
-
-  function refresh(nextState = state) {
-    const normalizedState = model.normalizeUiState(nextState);
-    state = normalizedState;
-    uiState = normalizedState;
-    model.applyTokens(document.documentElement.style, normalizedState);
-    bodyHtml = model.renderPageBody(normalizedState);
-    title = model.pageTitle();
-    model.saveState(normalizedState);
-  }
+  const controller = createStudioStateController({
+    moodboardId: STUDIO_DATA.defaults.moodboardId,
+    accentStrength: STUDIO_DATA.defaults.accentStrength,
+    radiusMode: STUDIO_DATA.defaults.radiusMode,
+    density: STUDIO_DATA.defaults.density,
+    viewport: STUDIO_DATA.defaults.viewport,
+    hubId: STUDIO_DATA.defaults.hubId,
+    workspace: STUDIO_DATA.defaults.workspace,
+    storageMode: STUDIO_DATA.defaults.storageMode,
+    uiMachine: STUDIO_DATA.defaults.uiMachine ?? undefined,
+  });
+  let state = $state(controller.snapshot());
+  let uiState = $state(controller.snapshot());
+  const pageTitles = {
+    overview: 'Nearbytes UI Studio',
+    moodboard: 'Nearbytes UI Studio · Moodboard',
+    palette: 'Nearbytes UI Studio · Palette',
+    styles: 'Nearbytes UI Studio · Toolkit',
+    graph: 'Nearbytes UI Studio · Graph',
+    desktop: 'Nearbytes UI Studio · Desktop',
+    phone: 'Nearbytes UI Studio · Phone',
+  };
+  const title = $derived(pageTitles[page] ?? pageTitles.overview);
 
   function captureFocusDescriptor(target) {
     if (target instanceof HTMLInputElement && target.dataset.styleInput) {
@@ -50,8 +62,8 @@
     }
   }
 
-  async function commitState(nextState, focusDescriptor = null) {
-    refresh(nextState);
+  async function commitState(patch, focusDescriptor = null) {
+    controller.patch(patch);
     await tick();
     restoreFocus(focusDescriptor);
   }
@@ -64,51 +76,64 @@
     const target = event.target instanceof Element ? event.target.closest('[data-moodboard],[data-radius],[data-control],[data-toggle],[data-view],[data-style-combo-toggle],[data-style-option]') : null;
     if (!(target instanceof HTMLElement)) return;
     event.preventDefault();
-    const nextState = { ...state };
+    const nextPatch = {};
     const focusDescriptor = captureFocusDescriptor(event.target);
-    if (target.dataset.moodboard) nextState.moodboardId = target.dataset.moodboard;
-    if (target.dataset.radius) nextState.radiusMode = target.dataset.radius;
-    if (target.dataset.control) nextState[target.dataset.control] = target.dataset.value;
-    if (target.dataset.toggle) nextState[target.dataset.toggle] = !nextState[target.dataset.toggle];
-    if (target.dataset.view) nextState.viewMode = target.dataset.view;
-    if (target.dataset.styleComboToggle) nextState[target.dataset.styleComboToggle] = !nextState[target.dataset.styleComboToggle];
+    if (target.dataset.moodboard) nextPatch.moodboardId = target.dataset.moodboard;
+    if (target.dataset.radius) nextPatch.radiusMode = target.dataset.radius;
+    if (target.dataset.control) nextPatch[target.dataset.control] = target.dataset.value;
+    if (target.dataset.toggle) nextPatch[target.dataset.toggle] = !state[target.dataset.toggle];
+    if (target.dataset.view) nextPatch.viewMode = target.dataset.view;
+    if (target.dataset.styleComboToggle) nextPatch[target.dataset.styleComboToggle] = !state[target.dataset.styleComboToggle];
     if (target.dataset.styleOption) {
-      nextState.stylesSortValue = target.dataset.styleOption;
-      nextState.stylesSortOpen = false;
+      nextPatch.stylesSortValue = target.dataset.styleOption;
+      nextPatch.stylesSortOpen = false;
     }
-    await commitState(nextState, focusDescriptor);
+    await commitState(nextPatch, focusDescriptor);
   }
 
   async function handleInput(event) {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
-    const nextState = { ...state };
+    const nextPatch = {};
     const focusDescriptor = captureFocusDescriptor(target);
     if (target.dataset.range) {
-      nextState[target.dataset.range] = Number(target.value);
-      await commitState(nextState, focusDescriptor);
+      nextPatch[target.dataset.range] = Number(target.value);
+      await commitState(nextPatch, focusDescriptor);
       return;
     }
     if (target.dataset.styleInput) {
-      nextState[target.dataset.styleInput] = target.value;
-      await commitState(nextState, focusDescriptor);
+      nextPatch[target.dataset.styleInput] = target.value;
+      await commitState(nextPatch, focusDescriptor);
     }
   }
 
   onMount(() => {
-    refresh(model.loadState());
+    const unsubscribe = controller.subscribe((value) => {
+      state = value;
+      uiState = value;
+      applyStudioStateTokens(document.documentElement.style, value);
+      controller.save();
+    });
+    controller.load();
 
     if (!studioRoot) {
-      return undefined;
+      return () => {
+        unsubscribe();
+      };
     }
 
     studioRoot.addEventListener('click', handleClick);
     studioRoot.addEventListener('input', handleInput);
 
     return () => {
+      unsubscribe();
       studioRoot.removeEventListener('click', handleClick);
       studioRoot.removeEventListener('input', handleInput);
     };
+  });
+
+  onDestroy(() => {
+    controller.save();
   });
 </script>
 
@@ -119,11 +144,31 @@
 <div class="studio" bind:this={studioRoot}>
   <StudioNav {page} />
   {#if page === 'overview'}
-    <div class="studio-main overview">{@html bodyHtml}</div>
+    <div class="studio-main overview">
+      <StudioOverviewPage
+        data={STUDIO_DATA}
+        {state}
+        {uiState}
+        onPatchState={patchStudioState}
+      />
+    </div>
+  {:else if page === 'moodboard'}
+    <div class="studio-main">
+      <StudioMoodboardPage
+        data={STUDIO_DATA}
+        {state}
+        {uiState}
+        onPatchState={patchStudioState}
+      />
+    </div>
+  {:else if page === 'palette'}
+    <div class="studio-main">
+      <StudioPalettePage data={STUDIO_DATA} {state} />
+    </div>
   {:else if page === 'graph'}
     <TransitionGraphPage
       data={STUDIO_DATA}
-      {bridge}
+      uiStore={controller.uiStore}
       studioState={state}
       onStudioStateChange={patchStudioState}
     />
@@ -133,16 +178,11 @@
         <StudioRuntime
           {page}
           data={STUDIO_DATA}
-          {state}
+          studioState={state}
           {uiState}
           onPatchState={patchStudioState}
         />
       </div>
-      <StudioControls data={STUDIO_DATA} {state} {uiState} />
-    </div>
-  {:else}
-    <div class="studio-grid">
-      <div class="studio-main">{@html bodyHtml}</div>
       <StudioControls data={STUDIO_DATA} {state} {uiState} />
     </div>
   {/if}
