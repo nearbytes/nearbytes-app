@@ -12,7 +12,7 @@
     type VolumeWatchConnection,
     type VolumeWatchUpdate,
     type SourceWatchUpdate,
-  } from '../../lib/api.js';
+  } from '../../../../../ui/src/lib/api.js';
   import StatusNotice from './StatusNotice.svelte';
 
   let {

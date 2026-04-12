@@ -8,17 +8,17 @@
     type ChatAttachment,
     type IdentityProfile,
     type VolumeChatState,
-  } from '../../lib/api.js';
+  } from '../../../../../ui/src/lib/api.js';
   import {
     buildIdentitySecret,
     type ConfiguredIdentity,
-  } from '../../lib/chatIdentities.js';
-  import { NEARBYTES_DRAG_TYPE } from '../../lib/nearbytesDrag.js';
+  } from '../../../../../ui/src/lib/chatIdentities.js';
+  import { NEARBYTES_DRAG_TYPE } from '../../../../../ui/src/lib/nearbytesDrag.js';
   import {
     createChatAttachmentFromSourceBundle,
     exportSourceReferenceBundleFromDrag,
     parseSourceReferenceBundleText,
-  } from '../../lib/nearbytesReferenceTransfer.js';
+  } from '../../../../../ui/src/lib/nearbytesReferenceTransfer.js';
   import {
     MessageSquareText,
     Paperclip,

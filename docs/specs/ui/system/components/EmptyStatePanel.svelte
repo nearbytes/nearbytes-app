@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import NearbytesLogo from './NearbytesLogo.svelte';
-  import type { NearbytesLogoOptions } from '../../lib/branding.js';
+  import type { NearbytesLogoOptions } from '../../../../../ui/src/lib/branding.js';
 
   let {
     eyebrow = '',

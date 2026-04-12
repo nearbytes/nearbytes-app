@@ -3,8 +3,8 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import SpecStudioApp from '../../docs/specs/ui/App.svelte';
 import '../../docs/specs/ui/studio.css';
-import './design-system/global.css';
-import { applyDesignMoodboardVariables, defaultDesignMoodboard } from './design-system/tokens.js';
+import '../../docs/specs/ui/system/global.css';
+import { applyDesignMoodboardVariables, defaultDesignMoodboard } from '../../docs/specs/ui/system/tokens.js';
 
 const runtimeGlobals = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
 runtimeGlobals.Buffer ??= Buffer;

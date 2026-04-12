@@ -98,41 +98,41 @@
   } from './lib/host/desktopShell.js';
   import './app-shell.css';
   import './lib/design/uiBridgeShared.js';
-  import CreateChooserDialog from './design-system/components/CreateChooserDialog.svelte';
-  import FileManagerWorkspace from './design-system/components/FileManagerWorkspace.svelte';
-  import IdentityManagerDialog from './design-system/components/IdentityManagerDialog.svelte';
-  import JoinDialog from './design-system/components/JoinDialog.svelte';
-  import MountDialog from './design-system/components/MountDialog.svelte';
-  import ResetDialog from './design-system/components/ResetDialog.svelte';
-  import ShareDialog from './design-system/components/ShareDialog.svelte';
-  import SpecDialog from './design-system/components/SpecDialog.svelte';
-  import MountRail from './design-system/components/MountRail.svelte';
-  import StatusNotice from './design-system/components/StatusNotice.svelte';
-  import StoragePanel from './design-system/components/StoragePanel.svelte';
-  import SystemToastStack from './design-system/components/SystemToastStack.svelte';
-  import ThemeStudioDialog from './design-system/components/ThemeStudioDialog.svelte';
-  import TimelineDetailDialog from './design-system/components/TimelineDetailDialog.svelte';
-  import VolumeStorageDialog from './design-system/components/VolumeStorageDialog.svelte';
-  import EventFlowPanel from './design-system/components/EventFlowPanel.svelte';
-  import VolumeChat from './design-system/components/VolumeChat.svelte';
-  import VolumeIdentity from './design-system/components/VolumeIdentity.svelte';
-  import PhoneOverflowMenu from './design-system/components/PhoneOverflowMenu.svelte';
-  import WorkspaceModeBar from './design-system/components/WorkspaceModeBar.svelte';
-  import WorkspaceSearchStrip from './design-system/components/WorkspaceSearchStrip.svelte';
-  import AppHeader from './design-system/components/AppHeader.svelte';
-  import WorkspaceStage from './design-system/components/WorkspaceStage.svelte';
-  import TimeMachinePanel from './design-system/components/TimeMachinePanel.svelte';
-  import EmptyStatePanel from './design-system/components/EmptyStatePanel.svelte';
+  import CreateChooserDialog from '../../docs/specs/ui/system/components/CreateChooserDialog.svelte';
+  import FileManagerWorkspace from '../../docs/specs/ui/system/components/FileManagerWorkspace.svelte';
+  import IdentityManagerDialog from '../../docs/specs/ui/system/components/IdentityManagerDialog.svelte';
+  import JoinDialog from '../../docs/specs/ui/system/components/JoinDialog.svelte';
+  import MountDialog from '../../docs/specs/ui/system/components/MountDialog.svelte';
+  import ResetDialog from '../../docs/specs/ui/system/components/ResetDialog.svelte';
+  import ShareDialog from '../../docs/specs/ui/system/components/ShareDialog.svelte';
+  import SpecDialog from '../../docs/specs/ui/system/components/SpecDialog.svelte';
+  import MountRail from '../../docs/specs/ui/system/components/MountRail.svelte';
+  import StatusNotice from '../../docs/specs/ui/system/components/StatusNotice.svelte';
+  import StoragePanel from '../../docs/specs/ui/system/components/StoragePanel.svelte';
+  import SystemToastStack from '../../docs/specs/ui/system/components/SystemToastStack.svelte';
+  import ThemeStudioDialog from '../../docs/specs/ui/system/components/ThemeStudioDialog.svelte';
+  import TimelineDetailDialog from '../../docs/specs/ui/system/components/TimelineDetailDialog.svelte';
+  import VolumeStorageDialog from '../../docs/specs/ui/system/components/VolumeStorageDialog.svelte';
+  import EventFlowPanel from '../../docs/specs/ui/system/components/EventFlowPanel.svelte';
+  import VolumeChat from '../../docs/specs/ui/system/components/VolumeChat.svelte';
+  import VolumeIdentity from '../../docs/specs/ui/system/components/VolumeIdentity.svelte';
+  import PhoneOverflowMenu from '../../docs/specs/ui/system/components/PhoneOverflowMenu.svelte';
+  import WorkspaceModeBar from '../../docs/specs/ui/system/components/WorkspaceModeBar.svelte';
+  import WorkspaceSearchStrip from '../../docs/specs/ui/system/components/WorkspaceSearchStrip.svelte';
+  import AppHeader from '../../docs/specs/ui/system/components/AppHeader.svelte';
+  import WorkspaceStage from '../../docs/specs/ui/system/components/WorkspaceStage.svelte';
+  import TimeMachinePanel from '../../docs/specs/ui/system/components/TimeMachinePanel.svelte';
+  import EmptyStatePanel from '../../docs/specs/ui/system/components/EmptyStatePanel.svelte';
   import {
     createWorkspaceChromeState,
     createWorkspaceSelectionSummary,
     type WorkspaceChromeActions,
-  } from './design-system/workspaceChrome.js';
+  } from '../../docs/specs/ui/system/workspaceChrome.js';
   import {
     createUiTransitionStore,
     normalizeUiTransitionState,
     type UiThemeDialogSection,
-  } from './design-system/uiTransitionStore.js';
+  } from '../../docs/specs/ui/system/uiTransitionStore.js';
   import {
     joinDialogAttachmentTitle,
   } from './lib/joinLinkPresentation.js';

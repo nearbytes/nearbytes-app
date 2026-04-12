@@ -50,9 +50,9 @@
     type VolumeDestinationConfig,
     type VolumePolicyEntry,
     updateRootsConfig,
-  } from '../../lib/api.js';
-  import type { DesktopRuntimeLogEntry } from '../../lib/host/desktopBridge.js';
-  import { readMirrorLocalNetworkPeers } from '../../lib/mirror/browserMirror.js';
+  } from '../../../../../ui/src/lib/api.js';
+  import type { DesktopRuntimeLogEntry } from '../../../../../ui/src/lib/host/desktopBridge.js';
+  import { readMirrorLocalNetworkPeers } from '../../../../../ui/src/lib/mirror/browserMirror.js';
   import {
     formatAccessLevelLabel,
     getCollaboratorDedupeKey,
@@ -60,7 +60,7 @@
     getCollaboratorRoleLabel,
     getIncomingSharePresentation,
     getManagedShareAccessLabel,
-  } from '../../lib/megaSharePresentation.js';
+  } from '../../../../../ui/src/lib/megaSharePresentation.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
   import AppDialog from './AppDialog.svelte';
   import IconToggle from './IconToggle.svelte';

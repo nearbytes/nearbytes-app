@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ClipboardPaste } from 'lucide-svelte';
-  import type { JoinLinkOpenResponse, JoinLinkParseResponse } from '../../lib/api.js';
+  import type { JoinLinkOpenResponse, JoinLinkParseResponse } from '../../../../../ui/src/lib/api.js';
   import {
     joinDialogActionStatusLabel,
     joinDialogActionTitle,
@@ -8,7 +8,7 @@
     joinDialogAttachmentTitle,
     joinDialogEndpointLabel,
     joinDialogSpaceSummary,
-  } from '../../lib/joinLinkPresentation.js';
+  } from '../../../../../ui/src/lib/joinLinkPresentation.js';
   import StatusNotice from './StatusNotice.svelte';
 
   let {

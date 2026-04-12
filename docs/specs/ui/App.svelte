@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import CreateChooserDialog from '../../../ui/src/design-system/components/CreateChooserDialog.svelte';
+  import CreateChooserDialog from './system/components/CreateChooserDialog.svelte';
   import StudioNav from './components/StudioNav.svelte';
   import StudioControls from './components/StudioControls.svelte';
   import TransitionGraphPage from './components/TransitionGraphPage.svelte';
