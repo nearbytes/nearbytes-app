@@ -31,32 +31,32 @@
     z-index: 1000;
     display: inline-flex;
     align-items: center;
-    gap: 0.45rem;
-    min-height: 30px;
-    padding: 0 0.75rem;
+    gap: 0.38rem;
+    min-height: 26px;
+    padding: 0 0.58rem;
     border-radius: 999px;
-    border: 1px solid rgba(153, 27, 27, 0.28);
-    background: rgba(255, 251, 251, 0.94);
-    color: rgba(153, 27, 27, 0.92);
+    border: 1px solid rgba(153, 27, 27, 0.18);
+    background: rgba(255, 252, 252, 0.84);
+    color: rgba(153, 27, 27, 0.78);
     font: inherit;
-    font-size: 0.72rem;
+    font-size: 0.66rem;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
     cursor: pointer;
-    backdrop-filter: blur(10px);
+    backdrop-filter: blur(8px);
   }
 
   .dev-badge.inactive {
     border-color: rgba(15, 23, 42, 0.14);
-    color: rgba(15, 23, 42, 0.72);
-    background: rgba(255, 255, 255, 0.9);
+    color: rgba(15, 23, 42, 0.62);
+    background: rgba(255, 255, 255, 0.78);
   }
 
   .dev-badge-dot {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 999px;
     background: currentColor;
   }
