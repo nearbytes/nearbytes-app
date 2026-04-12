@@ -42,18 +42,21 @@ This document captures non-negotiable software engineering principles for the Ne
 
 - Shared surfaces, dialogs, shell composition, tokens, and presentation contracts must live under `docs/specs/ui/system`.
 - `ui/src` must consume those design-owned modules instead of defining parallel visual copies.
+- Shared surfaces under `docs/specs/ui/system/components` must not import `ui/src/lib/*` directly; they consume runtime behavior only through `docs/specs/ui/system/runtime.ts`.
 
 ### [REQ-ARCH-002] Studio Is A Pure Mocked Runtime
 
 - `yarn design` must render without backend dependencies.
 - The studio may use mock data and local persistence, but not runtime transports, backend fetches, or app-only shells to render its primary design views.
 - The transition graph must drive the same UI store type used by the app, backed by mocked data in the studio.
+- The studio-owned runtime implementation lives under `docs/specs/ui/system/mockRuntime.ts`.
 
 ### [REQ-ARCH-003] App Integrates Logic, Not Alternate Design
 
 - The app may own browser/runtime effects, subscriptions, and transport logic.
 - The app must not become a second place where shared UI surfaces are designed or re-authored.
 - When a reusable UI surface changes, the change belongs in the design system and the app should pick it up through imports.
+- The app must provide live runtime behavior to shared surfaces through `ui/src/lib/design/runtime.ts` and `docs/specs/ui/system/runtime.ts`, not by re-implementing those surfaces in `ui/src`.
 
 ### [REQ-CODE-001] No Dead Reactive Declarations
 
@@ -74,6 +77,7 @@ This document captures non-negotiable software engineering principles for the Ne
 - [ ] Every opened panel/dialog can be closed (REQ-UI-003)
 - [ ] Primary flows remain usable at iPhone width with no horizontal overflow (REQ-UI-004)
 - [ ] Shared surfaces live in `docs/specs/ui/system` and are consumed by the app, not duplicated (REQ-ARCH-001)
+- [ ] Shared surfaces do not import `ui/src/lib/*` directly; runtime behavior is injected through `docs/specs/ui/system/runtime.ts` (REQ-ARCH-001)
 - [ ] `yarn design` remains backend-free and graph-driven by the shared UI store type (REQ-ARCH-002)
 - [ ] App-side changes do not re-author shared surface design in `ui/src` (REQ-ARCH-003)
 - [ ] No unused `{@const}` declarations in templates (REQ-CODE-001)
