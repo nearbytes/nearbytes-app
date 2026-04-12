@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { HardDrive, Plus, Rows3, Trash2, UserRound } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import MountRail from './MountRail.svelte';
   import NearbytesLogo from './NearbytesLogo.svelte';
   import type { NearbytesLogoOptions } from '../../../../../ui/src/lib/branding.js';
@@ -75,9 +76,10 @@
     mountRailChildren?: Snippet;
     mountRailActions?: Snippet;
   } = $props();
+  const dev = getDevContext();
 </script>
 
-<header class="header">
+<header class="header" use:devSurface={{ enabled: $dev, name: 'AppHeader' }}>
   <div
     class="header-shell"
     class:secret-drop-target={isSecretDropTarget}

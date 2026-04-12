@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { devSurface, getDevContext } from '../dev.js';
 
   export type StatusNoticeTone = 'error' | 'warning' | 'success' | 'info';
 
@@ -18,9 +19,10 @@
     role?: 'status' | 'alert';
     actions?: Snippet;
   }>();
+  const dev = getDevContext();
 </script>
 
-<div class="status-notice" data-tone={tone} data-compact={compact ? 'true' : undefined} {role} aria-live={role === 'alert' ? 'assertive' : 'polite'}>
+<div class="status-notice" data-tone={tone} data-compact={compact ? 'true' : undefined} {role} aria-live={role === 'alert' ? 'assertive' : 'polite'} use:devSurface={{ enabled: $dev, name: 'StatusNotice' }}>
   <div class="status-notice-copy">
     {#if title}
       <p class="status-notice-title">{title}</p>

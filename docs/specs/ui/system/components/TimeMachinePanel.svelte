@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { devSurface, getDevContext } from '../dev.js';
   import type { TimelineEvent } from '../../../../../ui/src/lib/api.js';
 
   let {
@@ -40,9 +41,10 @@
     onOpenDetails?: (event: TimelineEvent) => void;
     onScroll?: (event: Event) => void;
   } = $props();
+  const dev = getDevContext();
 </script>
 
-<section class="time-machine panel-surface" aria-label="Hub timeline">
+<section class="time-machine panel-surface" aria-label="Hub timeline" use:devSurface={{ enabled: $dev, name: 'TimeMachinePanel' }}>
   <div class="time-machine-head">
     <div>
       <p class="time-machine-eyebrow">Timeline</p>

@@ -1,8 +1,10 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import CreateChooserDialog from './system/components/CreateChooserDialog.svelte';
+  import { setDevContext } from './system/dev.js';
+  import DevBadge from './system/components/DevBadge.svelte';
   import StudioNav from './components/StudioNav.svelte';
   import StudioControls from './components/StudioControls.svelte';
+  import StudioRuntime from './components/StudioRuntime.svelte';
   import TransitionGraphPage from './components/TransitionGraphPage.svelte';
   import { STUDIO_DATA } from './studio-data.js';
   import { createStudioModel } from './studio.js';
@@ -11,6 +13,8 @@
 
   const bridge = globalThis.NearbytesUiBridgeShared || {};
   const model = $derived.by(() => createStudioModel({ data: STUDIO_DATA, bridge, page }));
+
+  setDevContext(true);
 
   let studioRoot = $state();
   let state = $state({});
@@ -54,24 +58,6 @@
 
   async function patchStudioState(patch) {
     await commitState({ ...state, ...patch });
-  }
-
-  const usesDialogPreview = $derived(page === 'desktop' || page === 'phone');
-
-  async function closeCreateChooser() {
-    await patchStudioState({ dialogSurface: 'none' });
-  }
-
-  async function openJoinPreview() {
-    await patchStudioState({ dialogSurface: 'join' });
-  }
-
-  async function openIdentityPreview() {
-    await patchStudioState({ dialogSurface: 'identity' });
-  }
-
-  async function createHubPreview() {
-    await closeCreateChooser();
   }
 
   async function handleClick(event) {
@@ -141,19 +127,25 @@
       studioState={state}
       onStudioStateChange={patchStudioState}
     />
+  {:else if page === 'desktop' || page === 'phone' || page === 'styles'}
+    <div class="studio-grid">
+      <div class="studio-main">
+        <StudioRuntime
+          {page}
+          data={STUDIO_DATA}
+          {state}
+          {uiState}
+          onPatchState={patchStudioState}
+        />
+      </div>
+      <StudioControls data={STUDIO_DATA} {state} {uiState} />
+    </div>
   {:else}
     <div class="studio-grid">
       <div class="studio-main">{@html bodyHtml}</div>
       <StudioControls data={STUDIO_DATA} {state} {uiState} />
     </div>
   {/if}
-
-  {#if usesDialogPreview && uiState.dialogSurface === 'create'}
-    <CreateChooserDialog
-      onClose={closeCreateChooser}
-      onCreateHub={createHubPreview}
-      onCreateIdentity={openIdentityPreview}
-      onPasteLink={openJoinPreview}
-    />
-  {/if}
 </div>
+
+<DevBadge />

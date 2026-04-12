@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { devSurface, getDevContext } from '../dev.js';
   import type { WorkspaceChromeActions, WorkspaceChromeState } from '../workspaceChrome.js';
 
   let {
@@ -10,13 +11,14 @@
     state: WorkspaceChromeState;
     actions: WorkspaceChromeActions;
   } = $props();
+  const dev = getDevContext();
 
   function handleAction(value: Parameters<WorkspaceChromeActions['overflowAction']>[0]): void {
     actions.overflowAction(value);
   }
 </script>
 
-<div class="phone-overflow-menu panel-surface" bind:this={menuElement}>
+<div class="phone-overflow-menu panel-surface" bind:this={menuElement} use:devSurface={{ enabled: $dev, name: 'PhoneOverflowMenu' }}>
   <div class="phone-overflow-grid">
     {#if state.showFilesWorkspace}
       <button type="button" class="phone-overflow-btn" onclick={() => handleAction('search')}>

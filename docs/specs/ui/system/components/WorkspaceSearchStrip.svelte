@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ClipboardPaste } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import type { WorkspaceChromeActions, WorkspaceChromeState } from '../workspaceChrome.js';
 
   let {
@@ -9,9 +10,10 @@
     state: WorkspaceChromeState;
     actions: WorkspaceChromeActions;
   } = $props();
+  const dev = getDevContext();
 </script>
 
-<div class="workspace-search-strip panel-surface" role="group" aria-label="File search and sorting">
+<div class="workspace-search-strip panel-surface" role="group" aria-label="File search and sorting" use:devSurface={{ enabled: $dev, name: 'WorkspaceSearchStrip' }}>
   <input
     type="text"
     class="manager-search workspace-search-input"

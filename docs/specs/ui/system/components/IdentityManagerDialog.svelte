@@ -1,5 +1,6 @@
 <script lang="ts">
   import { MessageSquareText, Plus, Trash2, UserRound, X } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import SharedSecretEditor from './SharedSecretEditor.svelte';
   import StatusNotice from './StatusNotice.svelte';
 
@@ -80,6 +81,7 @@
     onPublish?: (() => void | Promise<void>) | undefined;
     onJoin?: (() => void | Promise<void>) | undefined;
   }>();
+  const dev = getDevContext();
 
   function handleBackdropClick(event: MouseEvent): void {
     if (event.target === event.currentTarget) {
@@ -128,6 +130,7 @@
   aria-modal="true"
   aria-label="Manage identities"
   tabindex="-1"
+  use:devSurface={{ enabled: $dev, name: 'IdentityManagerDialog' }}
   onclick={handleBackdropClick}
   onkeydown={handleKeydown}
 >

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { X } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
 
   let {
     mode = 'workspace',
@@ -31,12 +32,14 @@
     workspaceContent?: Snippet;
     flowPanel?: Snippet;
   } = $props();
+  const dev = getDevContext();
 </script>
 
 <main
   class="file-area"
   class:volume-workspace-active={isVolumeWorkspaceActive}
   class:dragging={isDragging}
+  use:devSurface={{ enabled: $dev, name: 'WorkspaceStage' }}
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}

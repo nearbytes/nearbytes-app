@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import NearbytesLogo from './NearbytesLogo.svelte';
   import type { NearbytesLogoOptions } from '../../../../../ui/src/lib/branding.js';
 
@@ -18,9 +19,10 @@
     themeLogoOptions?: NearbytesLogoOptions;
     icon?: Snippet;
   } = $props();
+  const dev = getDevContext();
 </script>
 
-<div class="empty-state">
+<div class="empty-state" use:devSurface={{ enabled: $dev, name: 'EmptyStatePanel' }}>
   <div class="empty-content">
     {#if showBrand}
       <div class="empty-brand-shell">

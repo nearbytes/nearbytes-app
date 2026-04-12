@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Activity, FileText, HardDrive, History, LayoutGrid, Link2, MessageSquareText, Rows3, Search } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import type { WorkspaceChromeActions, WorkspaceChromeState } from '../workspaceChrome.js';
 
   let {
@@ -9,13 +10,14 @@
     state: WorkspaceChromeState;
     actions: WorkspaceChromeActions;
   } = $props();
+  const dev = getDevContext();
 
   function handleWorkspaceModeChange(event: Event): void {
     actions.applyWorkspaceMode((event.currentTarget as HTMLSelectElement).value as WorkspaceChromeState['workspaceMode']);
   }
 </script>
 
-<div class="workspace-mode-bar panel-surface" role="group" aria-label="Hub workspace">
+<div class="workspace-mode-bar panel-surface" role="group" aria-label="Hub workspace" use:devSurface={{ enabled: $dev, name: 'WorkspaceModeBar' }}>
   <div class="workspace-mode-primary">
     <label class="workspace-pane-select-wrap" aria-label="Hub workspace mode selector">
       <span class="sr-only">Workspace mode</span>

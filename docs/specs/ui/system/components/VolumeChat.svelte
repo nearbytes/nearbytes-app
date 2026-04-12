@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import {
     listChat,
     publishIdentity,
@@ -52,6 +53,7 @@
     onChatMutated?: (() => Promise<void> | void) | undefined;
     externalRefreshVersion?: number;
   }>();
+  const dev = getDevContext();
 
   let chatState = $state<VolumeChatState>({ identities: [], messages: [] });
   let draftBody = $state('');
@@ -389,7 +391,7 @@
   });
 </script>
 
-<div class="chat-shell panel-surface">
+<div class="chat-shell panel-surface" use:devSurface={{ enabled: $dev, name: 'VolumeChat' }}>
   <div class="chat-header">
     <div class="chat-title-wrap">
       <div class="chat-title-mark">

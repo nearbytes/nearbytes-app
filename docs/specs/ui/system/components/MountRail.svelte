@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { devSurface, getDevContext } from '../dev.js';
 
   const {
     dragging = false,
@@ -10,9 +11,10 @@
     children?: Snippet;
     actions?: Snippet;
   }>();
+  const dev = getDevContext();
 </script>
 
-<div class="mount-rail" class:dragging>
+<div class="mount-rail" class:dragging use:devSurface={{ enabled: $dev, name: 'MountRail' }}>
   <div class="mount-rail-track">
     {@render children?.()}
   </div>

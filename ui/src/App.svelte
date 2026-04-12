@@ -96,8 +96,10 @@
     subscribeDesktopUpdaterState,
     wipeStoredConfig,
   } from './lib/host/desktopShell.js';
+  import { setDevContext } from '../../docs/specs/ui/system/dev.js';
   import './app-shell.css';
   import './lib/design/uiBridgeShared.js';
+  import DevBadge from '../../docs/specs/ui/system/components/DevBadge.svelte';
   import CreateChooserDialog from '../../docs/specs/ui/system/components/CreateChooserDialog.svelte';
   import FileManagerWorkspace from '../../docs/specs/ui/system/components/FileManagerWorkspace.svelte';
   import IdentityManagerDialog from '../../docs/specs/ui/system/components/IdentityManagerDialog.svelte';
@@ -136,6 +138,8 @@
   import {
     joinDialogAttachmentTitle,
   } from './lib/joinLinkPresentation.js';
+
+  setDevContext(true);
   import { NEARBYTES_DRAG_TYPE } from './lib/nearbytesDrag.js';
   import {
     cloneThemeSettings,
@@ -7184,3 +7188,5 @@
   {/if}
 
 </div>
+
+<DevBadge />

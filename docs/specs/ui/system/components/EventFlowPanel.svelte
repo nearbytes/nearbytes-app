@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import {
     getRootsConfig,
     watchSources,
@@ -22,6 +23,7 @@
     auth?: Auth;
     volumeId?: string;
   }>();
+  const dev = getDevContext();
 
   /* ── Types ── */
   interface StorageNode {
@@ -664,7 +666,7 @@
   }
 </script>
 
-<div class="event-flow-panel" bind:this={container}>
+<div class="event-flow-panel" bind:this={container} use:devSurface={{ enabled: $dev, name: 'EventFlowPanel' }}>
   <div class="ef-header">
     <div class="ef-title-row">
       <h2 class="ef-title">Event Flow</h2>

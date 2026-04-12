@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ClipboardPaste, Plus, UserRound, X } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
 
   let {
     onClose = undefined,
@@ -12,6 +13,7 @@
     onCreateIdentity?: (() => void) | undefined;
     onPasteLink?: (() => void | Promise<void>) | undefined;
   }>();
+  const dev = getDevContext();
 
   function handleBackdropClick(event: MouseEvent): void {
     if (event.target === event.currentTarget) {
@@ -34,6 +36,7 @@
   aria-modal="true"
   aria-label="Create"
   tabindex="-1"
+  use:devSurface={{ enabled: $dev, name: 'CreateChooserDialog' }}
   onclick={handleBackdropClick}
   onkeydown={handleKeydown}
 >
@@ -41,7 +44,7 @@
     <div class="create-chooser-head">
       <div>
         <p class="mount-dialog-eyebrow">Create</p>
-        <p class="mount-dialog-title">What do you want to make?</p>
+        <p class="mount-dialog-title">What do you want to make a?</p>
       </div>
       <button type="button" class="dialog-close-btn" aria-label="Close create chooser" onclick={() => onClose?.()}>
         <X size={18} strokeWidth={2} />

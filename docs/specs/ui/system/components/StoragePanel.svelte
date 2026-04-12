@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import {
     acceptManagedShare,
     acceptIncomingProviderContactInvite,
@@ -80,6 +81,7 @@
     SquarePen,
     Trash2,
   } from 'lucide-svelte';
+  const dev = getDevContext();
 
   let {
     mode = 'volume',
@@ -5274,7 +5276,7 @@
 </script>
 
 {#if loading && !configDraft}
-  <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
+  <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'} use:devSurface={{ enabled: $dev, name: 'StoragePanel' }}>
     <p class="storage-message">Loading storage locations...</p>
     {#if startupRecoveryMessage}
       <p class="storage-message">{startupRecoveryMessage}</p>
@@ -5284,7 +5286,7 @@
     {/if}
   </section>
 {:else if !configDraft}
-  <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
+  <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'} use:devSurface={{ enabled: $dev, name: 'StoragePanel' }}>
     <p class="storage-message">Storage locations are not ready yet.</p>
     {#if errorMessage}
       <StatusNotice tone="error" role="alert" compact={true} message={errorMessage} />
@@ -5297,7 +5299,7 @@
     </div>
   </section>
 {:else if configDraft}
-  <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'}>
+  <section class="storage-panel panel-surface" class:global-mode={mode === 'global'} class:volume-mode={mode === 'volume'} use:devSurface={{ enabled: $dev, name: 'StoragePanel' }}>
     {#if mode === 'global'}
       {@const visibleMegaToasts = megaToastList()}
       {#if visibleMegaToasts.length > 0}

@@ -11,6 +11,7 @@
   import { onMount } from 'svelte';
   import type { Snippet } from 'svelte';
   import { X } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
 
   type DialogWidth = 'narrow' | 'medium' | 'wide' | 'xwide' | 'full';
 
@@ -51,6 +52,7 @@
   }>();
 
   let stackLevel = $state(0);
+  const dev = getDevContext();
 
   const backdropZIndex = $derived(baseZIndex + stackLevel * 2);
   const surfaceZIndex = $derived(backdropZIndex + 1);
@@ -89,6 +91,7 @@
   aria-modal="true"
   aria-label={ariaLabel}
   tabindex="-1"
+  use:devSurface={{ enabled: $dev, name: `AppDialog:${ariaLabel}` }}
   style={`--app-dialog-backdrop-z:${backdropZIndex}; --app-dialog-surface-z:${surfaceZIndex};`}
   onclick={handleBackdropClick}
   onkeydown={handleKeydown}

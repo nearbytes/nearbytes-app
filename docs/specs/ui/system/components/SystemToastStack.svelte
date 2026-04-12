@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Download, RefreshCw, Search, Settings2, X } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import type { DesktopUpdaterState } from '../../../../../ui/src/lib/host/desktopBridge.js';
 
   type DiscoveryToastState = {
@@ -32,10 +33,11 @@
     onOpenDiscoveryDefaults?: (() => void) | undefined;
     onDismissDiscovery?: ((runKey: string) => void) | undefined;
   }>();
+  const dev = getDevContext();
 </script>
 
 {#if shouldShowUpdater || discoveryToast}
-  <div class="toast-stack">
+  <div class="toast-stack" use:devSurface={{ enabled: $dev, name: 'SystemToastStack' }}>
     {#if shouldShowUpdater && updaterState}
       <aside class="update-toast panel-surface" role="status" aria-live="polite">
         <div class="update-toast-copy">

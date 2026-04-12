@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { GripVertical } from 'lucide-svelte';
+  import { devSurface, getDevContext } from '../dev.js';
   import PreviewPane from './PreviewPane.svelte';
 
   type FileMetadata = {
@@ -100,6 +101,7 @@
     onDownload?: (() => void) | undefined;
     onClosePreview?: (() => void) | undefined;
   }>();
+  const dev = getDevContext();
 
   let fileManagerElement = $state<HTMLDivElement | null>(null);
 
@@ -115,6 +117,7 @@
     class="file-manager"
     role="presentation"
     bind:this={fileManagerElement}
+    use:devSurface={{ enabled: $dev, name: 'FileManagerWorkspace' }}
     style:grid-template-columns={fileManagerTemplate}
     onpointerdown={() => onActivate?.()}
     onfocusin={() => onActivate?.()}
