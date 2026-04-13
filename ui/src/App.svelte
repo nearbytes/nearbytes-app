@@ -100,13 +100,13 @@
   import AudioPreview from './components/AudioPreview.svelte';
   import JoinLinkSections from './components/JoinLinkSections.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
-  import MountRail from './components/MountRail.svelte';
+  import MountRail from '../../ui-designer/src/lib/components/MountRail.svelte';
   import SharedSecretEditor from '../../ui-designer/src/lib/components/SharedSecretEditor.svelte';
   import StatusNotice from '../../ui-designer/src/lib/components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import VolumeShareDialog from '../../ui-designer/src/lib/components/VolumeShareDialog.svelte';
   import EventFlowPanel from './components/EventFlowPanel.svelte';
-  import WorkspaceModeBar from './components/WorkspaceModeBar.svelte';
+  import WorkspaceModeBar from '../../ui-designer/src/lib/components/WorkspaceModeBar.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import {

@@ -29,12 +29,12 @@
 	Commit: 0f3736c
 7. [x] Route the real app's current structural UI transitions through the designer transition adapter for overlays, timeline, event flow, pane/view mode, and related workspace chrome state.
 	Commit: fda45a7
-8. [ ] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers through the transition adapter path.
-	Commit: pending
+8. [x] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers through the transition adapter path.
+	Commit: 90a8b47
 9. [ ] Promote `WorkspaceModeBar` and `MountRail` into `ui-designer`, then rewire app consumers so toolbar interactions dispatch designer transitions instead of mutating app UI state directly.
 	Commit: pending
 
 ## Progress
 
-- Completed steps: 7 / 9
-- Remaining steps: 2
+- Completed steps: 8 / 9
+- Remaining steps: 1
