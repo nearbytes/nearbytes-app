@@ -61,9 +61,9 @@
     getIncomingSharePresentation,
     getManagedShareAccessLabel,
   } from '../lib/megaSharePresentation.js';
-  import ArmedActionButton from './ArmedActionButton.svelte';
+  import ArmedActionButton from '../../../ui-designer/src/lib/components/ArmedActionButton.svelte';
   import AppDialog from '../../../ui-designer/src/lib/components/AppDialog.svelte';
-  import IconToggle from './IconToggle.svelte';
+  import IconToggle from '../../../ui-designer/src/lib/components/IconToggle.svelte';
   import ProviderStatusCard from '../../../ui-designer/src/lib/components/ProviderStatusCard.svelte';
   import ShareCard from '../../../ui-designer/src/lib/components/ShareCard.svelte';
   import StatusNotice from './StatusNotice.svelte';
