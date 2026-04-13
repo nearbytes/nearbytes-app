@@ -25,7 +25,7 @@
     Send,
     X,
   } from 'lucide-svelte';
-  import StatusNotice from './StatusNotice.svelte';
+  import StatusNotice from '../../../ui-designer/src/lib/components/StatusNotice.svelte';
 
   let {
     auth = null,

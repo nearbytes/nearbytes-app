@@ -101,8 +101,8 @@
   import JoinLinkSections from './components/JoinLinkSections.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
-  import SharedSecretEditor from './components/SharedSecretEditor.svelte';
-  import StatusNotice from './components/StatusNotice.svelte';
+  import SharedSecretEditor from '../../ui-designer/src/lib/components/SharedSecretEditor.svelte';
+  import StatusNotice from '../../ui-designer/src/lib/components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import VolumeShareDialog from './components/VolumeShareDialog.svelte';
   import EventFlowPanel from './components/EventFlowPanel.svelte';

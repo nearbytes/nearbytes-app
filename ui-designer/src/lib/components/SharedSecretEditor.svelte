@@ -293,9 +293,8 @@
 
   .shared-secret-editor-file-meta {
     min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.14rem;
+    display: grid;
+    gap: 0.18rem;
   }
 
   .shared-secret-editor-file-name,
@@ -303,54 +302,42 @@
   .shared-secret-editor-file-hash-label,
   .shared-secret-editor-file-hash {
     margin: 0;
+    min-width: 0;
   }
 
   .shared-secret-editor-file-name {
-    font-size: 0.9rem;
+    font-size: 0.88rem;
     font-weight: 600;
-    color: var(--nb-text-main, rgba(240, 249, 255, 0.97));
+    color: var(--nb-text-main, rgba(248, 250, 252, 0.94));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .shared-secret-editor-file-info {
+  .shared-secret-editor-file-info,
+  .shared-secret-editor-file-hash-label,
+  .shared-secret-editor-file-hash {
     font-size: 0.74rem;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.74));
+    line-height: 1.4;
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.8));
+    overflow-wrap: anywhere;
   }
 
   .shared-secret-editor-file-hash-label {
-    margin-top: 0.18rem;
     font-size: 0.68rem;
-    letter-spacing: 0.12em;
+    font-weight: 700;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: var(--nb-accent, rgba(94, 234, 212, 0.7));
   }
 
-  .shared-secret-editor-file-hash {
-    font-family: var(--nb-font-mono);
-    font-size: 0.72rem;
-    line-height: 1.35;
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.9));
-    word-break: break-all;
-  }
-
-  .shared-secret-editor-download {
-    min-width: 108px;
-  }
-
-  @media (max-width: 760px) {
-    .shared-secret-editor-hint-row,
-    .shared-secret-editor-actions {
-      align-items: stretch;
-    }
-
+  @media (max-width: 720px) {
     .shared-secret-editor-file-card {
-      grid-template-columns: 1fr;
+      grid-template-columns: auto minmax(0, 1fr);
     }
 
     .shared-secret-editor-download {
-      width: 100%;
+      grid-column: 1 / -1;
+      justify-self: stretch;
     }
   }
 </style>

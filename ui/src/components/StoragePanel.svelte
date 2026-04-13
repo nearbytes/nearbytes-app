@@ -66,7 +66,7 @@
   import IconToggle from '../../../ui-designer/src/lib/components/IconToggle.svelte';
   import ProviderStatusCard from '../../../ui-designer/src/lib/components/ProviderStatusCard.svelte';
   import ShareCard from '../../../ui-designer/src/lib/components/ShareCard.svelte';
-  import StatusNotice from './StatusNotice.svelte';
+  import StatusNotice from '../../../ui-designer/src/lib/components/StatusNotice.svelte';
   import {
     ArrowRightLeft,
     BookOpen,

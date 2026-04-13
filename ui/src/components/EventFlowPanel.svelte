@@ -13,7 +13,7 @@
     type VolumeWatchUpdate,
     type SourceWatchUpdate,
   } from '../lib/api.js';
-  import StatusNotice from './StatusNotice.svelte';
+  import StatusNotice from '../../../ui-designer/src/lib/components/StatusNotice.svelte';
 
   let {
     auth = undefined,

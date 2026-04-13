@@ -20,8 +20,8 @@
 	Commit: d302134
 3. [x] Upgrade designer `ShareCard` and `ProviderStatusCard` to the app-safe prop contract, then rewire `StoragePanel` and related consumers to the designer-owned versions.
 	Commit: f634ea4
-4. [ ] Promote `ArmedActionButton` and `IconToggle` into `ui-designer`, then rewire app consumers.
-	Commit: pending
+4. [x] Promote `ArmedActionButton` and `IconToggle` into `ui-designer`, then rewire app consumers.
+	Commit: fb2ecaf
 5. [ ] Promote `StatusNotice`, `SecretSeedFields`, and `SharedSecretEditor` into `ui-designer`, then rewire app consumers.
 	Commit: pending
 6. [ ] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers.
@@ -31,5 +31,5 @@
 
 ## Progress
 
-- Completed steps: 3 / 7
-- Remaining steps: 4
+- Completed steps: 4 / 7
+- Remaining steps: 3
