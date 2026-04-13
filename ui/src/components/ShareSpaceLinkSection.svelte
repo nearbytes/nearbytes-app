@@ -1,6 +1,6 @@
 <script lang="ts">
   import { HardDrive, KeyRound, Link2 } from 'lucide-svelte';
-  import StatusNotice from './StatusNotice.svelte';
+  import StatusNotice from '../../../ui-designer/src/lib/components/StatusNotice.svelte';
 
   type ShareLinkFeedback = { tone: 'success' | 'warning'; message: string } | null;
 

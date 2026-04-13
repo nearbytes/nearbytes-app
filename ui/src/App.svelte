@@ -104,7 +104,7 @@
   import SharedSecretEditor from '../../ui-designer/src/lib/components/SharedSecretEditor.svelte';
   import StatusNotice from '../../ui-designer/src/lib/components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
-  import VolumeShareDialog from '../../ui-designer/src/lib/components/VolumeShareDialog.svelte';
+  import VolumeShareDialog from './components/VolumeShareDialog.svelte';
   import EventFlowPanel from './components/EventFlowPanel.svelte';
   import WorkspaceModeBar from './components/WorkspaceModeBar.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
