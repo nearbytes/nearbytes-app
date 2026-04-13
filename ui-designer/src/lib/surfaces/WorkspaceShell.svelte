@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FolderKanban, History, MessageSquareText, PanelRight, Plus, Search, Share2, Shield, Settings2 } from 'lucide-svelte';
+  import { Bell, FolderKanban, Search, Share2, Shield, Settings2 } from 'lucide-svelte';
   import UiButton from '../components/UiButton.svelte';
   import HubChip from '../components/HubChip.svelte';
   import FilesPane from './FilesPane.svelte';
@@ -31,13 +31,14 @@
 <div class={`workspace-shell ${mode}`}>
   <header class="workspace-header nb-panel-surface">
     <div class="workspace-brand">
-      <span class="workspace-kicker">Nearbytes UI designer</span>
-      <strong class="nb-type-heading">{mode === 'desktop' ? 'Desktop shell preview' : 'Phone shell preview'}</strong>
+      <span class="workspace-kicker">Nearbytes</span>
+      <strong class="nb-type-heading">{ui.activeHubId === 'atlas' ? 'Atlas Relay' : ui.activeHubId === 'harbor' ? 'Harbor Storage' : 'Quiet Archive'}</strong>
     </div>
     <div class="workspace-tools">
       <button type="button" class="icon-pill" onclick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'join' })}><Search size={16} /></button>
       <button type="button" class="icon-pill" onclick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'share' })}><Share2 size={16} /></button>
       <button type="button" class="icon-pill" onclick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'identity' })}><Shield size={16} /></button>
+      <button type="button" class="icon-pill"><Bell size={16} /></button>
       <button type="button" class="icon-pill" onclick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'sources' })}><Settings2 size={16} /></button>
     </div>
   </header>
@@ -98,7 +99,7 @@
   .workspace-shell {
     position: relative;
     display: grid;
-    gap: 0.9rem;
+    gap: 0.8rem;
     padding: 1rem;
     border-radius: 34px;
     background:
@@ -106,6 +107,8 @@
       linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top) 86%, transparent), color-mix(in srgb, var(--nb-shell-bottom) 92%, black 2%));
     border: 1px solid var(--nb-border);
     overflow: hidden;
+    min-height: 0;
+    height: 100%;
   }
 
   .workspace-header,
@@ -154,6 +157,8 @@
     display: grid;
     gap: 0.85rem;
     grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    min-height: 0;
+    overflow: hidden;
   }
 
   .workspace-body.pane-files-focus {

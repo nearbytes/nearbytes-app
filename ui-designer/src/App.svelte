@@ -102,6 +102,17 @@
   </aside>
 
   <main class="app-main">
+    <header class="app-main-header nb-panel-surface">
+      <div class="app-main-copy">
+        <p class="app-main-kicker">{tabs.find((tab) => tab.id === state.tab)?.label}</p>
+        <h2>{moodboard.label}</h2>
+      </div>
+      <div class="app-main-tools">
+        <UiChip label={state.fixturePreset} tone="accent" />
+        <UiChip label={activeGraphNode} tone="neutral" />
+      </div>
+    </header>
+
     {#if state.tab === 'moodboards'}
       <section class="content-grid">
         {#each MOODBOARDS as board}
