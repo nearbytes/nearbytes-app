@@ -31,6 +31,24 @@ export type TypographyTokens = {
   scale: Array<{ label: string; size: string; lineHeight: string; use: string }>;
 };
 
+export type ChromeTokens = {
+  shellRadius: string;
+  panelRadius: string;
+  dialogRadius: string;
+  itemRadius: string;
+  controlRadius: string;
+  frameRadius: string;
+  shadowPanel: string;
+  shadowFrame: string;
+  contrastSoft: string;
+  contrastStrong: string;
+  scrollbarSize: string;
+  scrollbarInset: string;
+  scrollbarTrack: string;
+  scrollbarThumb: string;
+  scrollbarThumbHover: string;
+};
+
 export type Moodboard = {
   id: MoodboardId;
   mode: 'light' | 'dark';
@@ -39,6 +57,7 @@ export type Moodboard = {
   summary: string;
   palette: PaletteTokens;
   typography: TypographyTokens;
+  chrome: ChromeTokens;
   atmosphere: string[];
 };
 
@@ -86,6 +105,23 @@ export const MOODBOARDS: Moodboard[] = [
       tracking: '-0.015em',
       scale: TYPE_SCALE,
     },
+    chrome: {
+      shellRadius: '34px',
+      panelRadius: '24px',
+      dialogRadius: '28px',
+      itemRadius: '18px',
+      controlRadius: '999px',
+      frameRadius: '42px',
+      shadowPanel: '0 18px 50px rgba(30, 38, 50, 0.1)',
+      shadowFrame: '0 24px 60px rgba(24, 32, 44, 0.18)',
+      contrastSoft: '18%',
+      contrastStrong: '30%',
+      scrollbarSize: '0.78rem',
+      scrollbarInset: '0.2rem',
+      scrollbarTrack: 'color-mix(in srgb, var(--nb-surface-strong) 78%, transparent)',
+      scrollbarThumb: 'color-mix(in srgb, var(--nb-border-strong) 72%, var(--nb-accent) 16%)',
+      scrollbarThumbHover: 'color-mix(in srgb, var(--nb-accent) 28%, var(--nb-border-strong))',
+    },
   },
   {
     id: 'slate-day',
@@ -122,6 +158,23 @@ export const MOODBOARDS: Moodboard[] = [
       bodyWeight: '400',
       tracking: '-0.012em',
       scale: TYPE_SCALE,
+    },
+    chrome: {
+      shellRadius: '28px',
+      panelRadius: '20px',
+      dialogRadius: '24px',
+      itemRadius: '16px',
+      controlRadius: '14px',
+      frameRadius: '34px',
+      shadowPanel: '0 14px 34px rgba(25, 37, 52, 0.09)',
+      shadowFrame: '0 22px 48px rgba(20, 31, 44, 0.16)',
+      contrastSoft: '14%',
+      contrastStrong: '24%',
+      scrollbarSize: '0.72rem',
+      scrollbarInset: '0.18rem',
+      scrollbarTrack: 'color-mix(in srgb, var(--nb-surface-strong) 84%, transparent)',
+      scrollbarThumb: 'color-mix(in srgb, var(--nb-border-strong) 80%, var(--nb-accent) 10%)',
+      scrollbarThumbHover: 'color-mix(in srgb, var(--nb-accent) 20%, var(--nb-border-strong))',
     },
   },
   {
@@ -160,6 +213,23 @@ export const MOODBOARDS: Moodboard[] = [
       tracking: '-0.015em',
       scale: TYPE_SCALE,
     },
+    chrome: {
+      shellRadius: '32px',
+      panelRadius: '24px',
+      dialogRadius: '26px',
+      itemRadius: '18px',
+      controlRadius: '999px',
+      frameRadius: '40px',
+      shadowPanel: '0 16px 42px rgba(68, 48, 26, 0.12)',
+      shadowFrame: '0 24px 54px rgba(66, 46, 24, 0.18)',
+      contrastSoft: '16%',
+      contrastStrong: '26%',
+      scrollbarSize: '0.8rem',
+      scrollbarInset: '0.2rem',
+      scrollbarTrack: 'color-mix(in srgb, var(--nb-surface-strong) 74%, transparent)',
+      scrollbarThumb: 'color-mix(in srgb, var(--nb-border-strong) 64%, var(--nb-accent) 24%)',
+      scrollbarThumbHover: 'color-mix(in srgb, var(--nb-accent) 34%, var(--nb-border-strong))',
+    },
   },
   {
     id: 'graphite-night',
@@ -196,6 +266,23 @@ export const MOODBOARDS: Moodboard[] = [
       bodyWeight: '400',
       tracking: '-0.015em',
       scale: TYPE_SCALE,
+    },
+    chrome: {
+      shellRadius: '30px',
+      panelRadius: '22px',
+      dialogRadius: '26px',
+      itemRadius: '16px',
+      controlRadius: '14px',
+      frameRadius: '36px',
+      shadowPanel: '0 18px 48px rgba(0, 0, 0, 0.34)',
+      shadowFrame: '0 28px 64px rgba(0, 0, 0, 0.42)',
+      contrastSoft: '12%',
+      contrastStrong: '20%',
+      scrollbarSize: '0.72rem',
+      scrollbarInset: '0.18rem',
+      scrollbarTrack: 'color-mix(in srgb, var(--nb-surface-strong) 44%, transparent)',
+      scrollbarThumb: 'color-mix(in srgb, var(--nb-border-strong) 74%, var(--nb-accent) 14%)',
+      scrollbarThumbHover: 'color-mix(in srgb, var(--nb-accent) 26%, var(--nb-border-strong))',
     },
   },
   {
@@ -234,6 +321,23 @@ export const MOODBOARDS: Moodboard[] = [
       tracking: '-0.005em',
       scale: TYPE_SCALE,
     },
+    chrome: {
+      shellRadius: '22px',
+      panelRadius: '16px',
+      dialogRadius: '20px',
+      itemRadius: '12px',
+      controlRadius: '10px',
+      frameRadius: '28px',
+      shadowPanel: '0 10px 24px rgba(0, 0, 0, 0.26)',
+      shadowFrame: '0 18px 42px rgba(0, 0, 0, 0.34)',
+      contrastSoft: '10%',
+      contrastStrong: '18%',
+      scrollbarSize: '0.68rem',
+      scrollbarInset: '0.16rem',
+      scrollbarTrack: 'color-mix(in srgb, var(--nb-surface-strong) 36%, transparent)',
+      scrollbarThumb: 'color-mix(in srgb, var(--nb-border-strong) 88%, var(--nb-accent) 8%)',
+      scrollbarThumbHover: 'color-mix(in srgb, var(--nb-accent) 16%, var(--nb-border-strong))',
+    },
   },
   {
     id: 'pine-night',
@@ -270,6 +374,23 @@ export const MOODBOARDS: Moodboard[] = [
       bodyWeight: '400',
       tracking: '-0.015em',
       scale: TYPE_SCALE,
+    },
+    chrome: {
+      shellRadius: '28px',
+      panelRadius: '20px',
+      dialogRadius: '24px',
+      itemRadius: '16px',
+      controlRadius: '14px',
+      frameRadius: '34px',
+      shadowPanel: '0 16px 40px rgba(4, 18, 14, 0.28)',
+      shadowFrame: '0 24px 56px rgba(3, 16, 12, 0.36)',
+      contrastSoft: '12%',
+      contrastStrong: '22%',
+      scrollbarSize: '0.72rem',
+      scrollbarInset: '0.18rem',
+      scrollbarTrack: 'color-mix(in srgb, var(--nb-surface-strong) 42%, transparent)',
+      scrollbarThumb: 'color-mix(in srgb, var(--nb-border-strong) 76%, var(--nb-accent) 16%)',
+      scrollbarThumbHover: 'color-mix(in srgb, var(--nb-accent) 28%, var(--nb-border-strong))',
     },
   },
 ];
@@ -367,5 +488,20 @@ export function buildThemeStyle(id: MoodboardId): string {
     `--nb-font-heading-weight:${board.typography.headingWeight}`,
     `--nb-font-body-weight:${board.typography.bodyWeight}`,
     `--nb-font-tracking:${board.typography.tracking}`,
+    `--nb-radius-shell:${board.chrome.shellRadius}`,
+    `--nb-radius-panel:${board.chrome.panelRadius}`,
+    `--nb-radius-dialog:${board.chrome.dialogRadius}`,
+    `--nb-radius-item:${board.chrome.itemRadius}`,
+    `--nb-radius-control:${board.chrome.controlRadius}`,
+    `--nb-radius-frame:${board.chrome.frameRadius}`,
+    `--nb-shadow-panel:${board.chrome.shadowPanel}`,
+    `--nb-shadow-frame:${board.chrome.shadowFrame}`,
+    `--nb-chrome-contrast-soft:${board.chrome.contrastSoft}`,
+    `--nb-chrome-contrast-strong:${board.chrome.contrastStrong}`,
+    `--nb-scrollbar-size:${board.chrome.scrollbarSize}`,
+    `--nb-scrollbar-inset:${board.chrome.scrollbarInset}`,
+    `--nb-scrollbar-track:${board.chrome.scrollbarTrack}`,
+    `--nb-scrollbar-thumb:${board.chrome.scrollbarThumb}`,
+    `--nb-scrollbar-thumb-hover:${board.chrome.scrollbarThumbHover}`,
   ].join(';');
 }

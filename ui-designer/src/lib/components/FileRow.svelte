@@ -35,7 +35,7 @@
     width: 100%;
     border: 1px solid var(--nb-border);
     background: transparent;
-    border-radius: 18px;
+    border-radius: var(--nb-radius-item);
     padding: 0.8rem 0.9rem;
     cursor: pointer;
     color: inherit;

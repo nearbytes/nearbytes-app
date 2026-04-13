@@ -51,7 +51,7 @@
 <style>
   .files-pane {
     min-height: 0;
-    border-radius: 24px;
+    border-radius: var(--nb-radius-panel);
     padding: 0.9rem;
     display: grid;
     gap: 0.9rem;
@@ -81,7 +81,7 @@
 
   .icon-action,
   .files-toolbar button {
-    border-radius: 999px;
+    border-radius: var(--nb-radius-control);
     border: 1px solid var(--nb-border);
     background: transparent;
     color: var(--nb-text-soft);
@@ -114,7 +114,7 @@
   }
 
   .files-empty {
-    border-radius: 18px;
+    border-radius: var(--nb-radius-item);
     border: 1px dashed var(--nb-border-strong);
     padding: 1rem;
     display: grid;

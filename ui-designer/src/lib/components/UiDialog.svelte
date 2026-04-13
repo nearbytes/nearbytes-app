@@ -69,7 +69,7 @@
 
   .ui-dialog {
     width: min(34rem, 100%);
-    border-radius: 28px;
+    border-radius: var(--nb-radius-dialog);
     padding: 1rem;
     display: grid;
     gap: 1rem;
@@ -110,7 +110,7 @@
     color: var(--nb-text-soft);
     width: 2.25rem;
     height: 2.25rem;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-control);
     cursor: pointer;
   }
 </style>

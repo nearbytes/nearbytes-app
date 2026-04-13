@@ -49,7 +49,7 @@
 <style>
   .chat-pane {
     min-height: 0;
-    border-radius: 24px;
+    border-radius: var(--nb-radius-panel);
     padding: 0.9rem;
     display: grid;
     gap: 0.85rem;
@@ -80,7 +80,7 @@
   }
 
   .chat-message {
-    border-radius: 18px;
+    border-radius: var(--nb-radius-item);
     border: 1px solid var(--nb-border);
     padding: 0.82rem 0.9rem;
     display: grid;
@@ -112,7 +112,7 @@
   .composer-icon {
     width: 2.25rem;
     height: 2.25rem;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-control);
     border: 1px solid var(--nb-border);
     background: transparent;
     color: var(--nb-text-soft);
@@ -120,7 +120,7 @@
 
   .composer-input {
     min-height: 2.5rem;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-control);
     border: 1px solid var(--nb-border);
     display: flex;
     align-items: center;

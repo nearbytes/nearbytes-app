@@ -15,9 +15,9 @@
     margin-inline: auto;
     min-height: 44rem;
     padding: 0.4rem;
-    border-radius: 42px;
+    border-radius: var(--nb-radius-frame);
     border: 1px solid var(--nb-border-strong);
     background: color-mix(in srgb, var(--nb-surface-strong) 88%, black 6%);
-    box-shadow: 0 24px 60px rgba(8, 14, 20, 0.22);
+    box-shadow: var(--nb-shadow-frame);
   }
 </style>

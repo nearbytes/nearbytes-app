@@ -31,7 +31,7 @@
     align-items: center;
     gap: 1rem;
     width: 100%;
-    border-radius: 18px;
+    border-radius: var(--nb-radius-item);
     border: 1px solid var(--nb-border);
     background: transparent;
     color: inherit;

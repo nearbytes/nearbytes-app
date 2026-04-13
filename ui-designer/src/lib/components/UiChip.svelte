@@ -16,7 +16,7 @@
     align-items: center;
     gap: 0.35rem;
     padding: 0.32rem 0.6rem;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-control);
     font-size: 0.74rem;
     border: 1px solid var(--nb-border);
     background: color-mix(in srgb, var(--nb-surface-strong) 88%, var(--nb-accent-soft));

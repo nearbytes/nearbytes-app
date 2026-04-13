@@ -32,7 +32,7 @@
 <style>
   .timeline-pane {
     min-height: 0;
-    border-radius: 24px;
+    border-radius: var(--nb-radius-panel);
     padding: 0.9rem;
     display: grid;
     gap: 0.85rem;
@@ -59,7 +59,7 @@
     height: 2.2rem;
     display: grid;
     place-items: center;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-control);
     border: 1px solid var(--nb-border);
     background: transparent;
     color: var(--nb-text-soft);

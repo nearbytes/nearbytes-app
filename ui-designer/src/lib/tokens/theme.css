@@ -8,10 +8,12 @@
   border: 1px solid var(--nb-border);
   color: var(--nb-text);
   box-shadow:
-    0 18px 50px rgba(8, 15, 21, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+    var(--nb-shadow-panel),
+    inset 0 1px 0 color-mix(in srgb, white var(--nb-chrome-contrast-soft), transparent);
 }
 
 .nb-accent-ring {
-  box-shadow: 0 0 0 1px var(--nb-accent-soft), 0 0 0 4px color-mix(in srgb, var(--nb-accent) 12%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--nb-accent-soft) var(--nb-chrome-contrast-strong), transparent),
+    0 0 0 4px color-mix(in srgb, var(--nb-accent) var(--nb-chrome-contrast-soft), transparent);
 }

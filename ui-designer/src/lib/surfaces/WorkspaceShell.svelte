@@ -110,7 +110,7 @@
     display: grid;
     gap: 0.8rem;
     padding: 1rem;
-    border-radius: 34px;
+    border-radius: var(--nb-radius-shell);
     background: var(--nb-shell-top);
     border: 1px solid var(--nb-border);
     overflow: hidden;
@@ -119,7 +119,7 @@
   }
 
   .workspace-header {
-    border-radius: 24px;
+    border-radius: var(--nb-radius-panel);
     padding: 0.85rem;
     display: flex;
     justify-content: space-between;
@@ -140,7 +140,7 @@
   .icon-pill {
     width: 2.4rem;
     height: 2.4rem;
-    border-radius: 999px;
+    border-radius: var(--nb-radius-control);
     border: 1px solid var(--nb-border);
     background: transparent;
     color: var(--nb-text-soft);

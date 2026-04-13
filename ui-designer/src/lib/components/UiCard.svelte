@@ -46,7 +46,7 @@
 
 <style>
   .ui-card {
-    border-radius: 24px;
+    border-radius: var(--nb-radius-panel);
     padding: 1rem;
     display: grid;
     gap: 0.9rem;

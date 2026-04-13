@@ -25,7 +25,7 @@
     border: 1px solid var(--nb-border-strong);
     background: var(--nb-surface-strong);
     color: var(--nb-text);
-    border-radius: 999px;
+    border-radius: var(--nb-radius-control);
     font: inherit;
     font-size: 0.86rem;
     padding: 0.72rem 1rem;
