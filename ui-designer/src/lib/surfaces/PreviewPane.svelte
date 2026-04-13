@@ -3,7 +3,9 @@
   import UiChip from '../components/UiChip.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { ui, data } = $props() as WorkspaceSurfaceProps;
+  interface $$Props extends WorkspaceSurfaceProps {}
+
+  let { ui, data, capabilities, handlers }: $$Props = $props();
 
   const selectedFile = $derived(
     data.files.find((file) => file.id === ui.selectedFileId) ?? data.files[0] ?? null

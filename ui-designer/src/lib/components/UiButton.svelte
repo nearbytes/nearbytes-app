@@ -42,7 +42,7 @@
   }
 
   .ui-button.primary {
-    background: linear-gradient(180deg, var(--nb-accent), var(--nb-accent-strong));
+    background: var(--nb-accent);
     color: #fff;
     border-color: transparent;
   }

@@ -3,7 +3,9 @@
   import EventRow from '../components/EventRow.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { ui, data, handlers } = $props() as WorkspaceSurfaceProps;
+  interface $$Props extends WorkspaceSurfaceProps {}
+
+  let { ui, data, capabilities, handlers }: $$Props = $props();
 </script>
 
 <section class="timeline-pane nb-panel-surface">

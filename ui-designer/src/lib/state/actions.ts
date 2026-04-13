@@ -27,7 +27,7 @@ const DEFAULT_WORKSPACE: SharedWorkspaceState = {
 export function createInitialState(): UiDesignerState {
   return {
     tab: 'moodboards',
-    moodboardId: 'warm-ledger',
+    moodboardId: 'apple-light',
     fixturePreset: 'populated',
     componentFamily: 'primitives',
     workspace: { ...DEFAULT_WORKSPACE },

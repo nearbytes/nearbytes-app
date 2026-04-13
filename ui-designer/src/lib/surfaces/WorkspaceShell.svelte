@@ -17,13 +17,17 @@
   import ResetDialog from './ResetDialog.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
+  interface $$Props extends WorkspaceSurfaceProps {
+    mode?: 'desktop' | 'phone';
+  }
+
   let {
     ui,
     data,
     capabilities,
     handlers,
     mode = 'desktop',
-  } = $props<WorkspaceSurfaceProps & { mode?: 'desktop' | 'phone' }>();
+  }: $$Props = $props();
 
   const showFilesFirst = $derived(ui.primaryPane === 'files');
 </script>
@@ -101,9 +105,7 @@
     gap: 0.8rem;
     padding: 1rem;
     border-radius: 34px;
-    background:
-      radial-gradient(circle at top, color-mix(in srgb, var(--nb-accent) 16%, transparent), transparent 46%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top) 86%, transparent), color-mix(in srgb, var(--nb-shell-bottom) 92%, black 2%));
+    background: var(--nb-shell-top);
     border: 1px solid var(--nb-border);
     overflow: hidden;
     min-height: 0;

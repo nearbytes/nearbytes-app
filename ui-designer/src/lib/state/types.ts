@@ -8,11 +8,12 @@ export type DesignerTab =
   | 'phone';
 
 export type MoodboardId =
-  | 'warm-ledger'
-  | 'signal-harbor'
-  | 'quiet-workshop'
-  | 'polar-archive'
-  | 'night-relay';
+  | 'apple-light'
+  | 'slate-day'
+  | 'sand'
+  | 'apple-dark'
+  | 'workbench'
+  | 'pine-night';
 
 export type FixturePreset = 'populated' | 'empty' | 'warning' | 'capability-limited';
 

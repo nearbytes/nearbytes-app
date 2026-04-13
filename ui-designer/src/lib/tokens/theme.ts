@@ -33,6 +33,7 @@ export type TypographyTokens = {
 
 export type Moodboard = {
   id: MoodboardId;
+  mode: 'light' | 'dark';
   label: string;
   tagline: string;
   summary: string;
@@ -50,186 +51,289 @@ const TYPE_SCALE = [
 
 export const MOODBOARDS: Moodboard[] = [
   {
-    id: 'warm-ledger',
-    label: 'Warm Ledger',
-    tagline: 'Documentary trust with tactile copper signal.',
-    summary: 'Paper-white surfaces, dark graphite text, and copper accents for a calm archival feel.',
-    atmosphere: ['archival', 'crafted', 'clear'],
+    id: 'apple-light',
+    mode: 'light',
+    label: 'Apple Light',
+    tagline: 'Soft neutral chrome with the familiar iOS blue accent.',
+    summary: 'A clean light system modeled on current Apple product surfaces: quiet, bright, and highly legible.',
+    atmosphere: ['apple-like', 'clean', 'familiar'],
     palette: {
-      canvas: '#f3efe7',
-      canvasGlow: 'rgba(175, 114, 76, 0.18)',
-      shellTop: '#fbf7f1',
-      shellBottom: '#ebe3d8',
-      surface: 'rgba(255, 251, 246, 0.88)',
-      surfaceStrong: '#fffaf4',
-      border: 'rgba(86, 70, 56, 0.15)',
-      borderStrong: 'rgba(86, 70, 56, 0.26)',
-      accent: '#a55d37',
-      accentStrong: '#7c4324',
-      accentSoft: 'rgba(165, 93, 55, 0.12)',
-      text: '#231b16',
-      textSoft: 'rgba(35, 27, 22, 0.72)',
-      textFaint: 'rgba(35, 27, 22, 0.42)',
-      success: '#267f57',
-      warning: '#ba7b17',
-      danger: '#b44738',
-    },
-    typography: {
-      displayFont: '"Newsreader", serif',
-      bodyFont: '"IBM Plex Sans", sans-serif',
-      monoFont: '"IBM Plex Mono", monospace',
-      displayWeight: '600',
-      headingWeight: '600',
-      bodyWeight: '400',
-      tracking: '0.02em',
-      scale: TYPE_SCALE,
-    },
-  },
-  {
-    id: 'signal-harbor',
-    label: 'Signal Harbor',
-    tagline: 'Network topology with a maritime pulse.',
-    summary: 'Oceanic blues, teal relays, and crisp shells suited to sync-heavy surfaces.',
-    atmosphere: ['networked', 'directional', 'confident'],
-    palette: {
-      canvas: '#e7f1f4',
-      canvasGlow: 'rgba(42, 130, 126, 0.18)',
-      shellTop: '#f3fafb',
-      shellBottom: '#d7e7ea',
-      surface: 'rgba(247, 252, 252, 0.86)',
-      surfaceStrong: '#fbffff',
-      border: 'rgba(19, 72, 84, 0.14)',
-      borderStrong: 'rgba(19, 72, 84, 0.24)',
-      accent: '#187d87',
-      accentStrong: '#0f5e68',
-      accentSoft: 'rgba(24, 125, 135, 0.13)',
-      text: '#0c2530',
-      textSoft: 'rgba(12, 37, 48, 0.7)',
-      textFaint: 'rgba(12, 37, 48, 0.4)',
-      success: '#198754',
-      warning: '#b56d10',
-      danger: '#b53d33',
-    },
-    typography: {
-      displayFont: '"Space Grotesk", sans-serif',
-      bodyFont: '"IBM Plex Sans", sans-serif',
-      monoFont: '"IBM Plex Mono", monospace',
-      displayWeight: '700',
-      headingWeight: '600',
-      bodyWeight: '400',
-      tracking: '0.01em',
-      scale: TYPE_SCALE,
-    },
-  },
-  {
-    id: 'quiet-workshop',
-    label: 'Quiet Workshop',
-    tagline: 'Maker-bench calm with earthy precision.',
-    summary: 'Soft stone surfaces and workshop browns, designed to feel intentional rather than corporate.',
-    atmosphere: ['tactile', 'humble', 'intentional'],
-    palette: {
-      canvas: '#ede8df',
-      canvasGlow: 'rgba(126, 94, 58, 0.16)',
-      shellTop: '#f7f3ec',
-      shellBottom: '#e1d8ca',
-      surface: 'rgba(252, 248, 241, 0.87)',
-      surfaceStrong: '#fffaf1',
-      border: 'rgba(72, 56, 39, 0.13)',
-      borderStrong: 'rgba(72, 56, 39, 0.24)',
-      accent: '#7d5b3f',
-      accentStrong: '#60452f',
-      accentSoft: 'rgba(125, 91, 63, 0.12)',
-      text: '#211912',
-      textSoft: 'rgba(33, 25, 18, 0.68)',
-      textFaint: 'rgba(33, 25, 18, 0.38)',
-      success: '#35765d',
-      warning: '#af6d1e',
-      danger: '#b34b39',
-    },
-    typography: {
-      displayFont: '"Newsreader", serif',
-      bodyFont: '"Space Grotesk", sans-serif',
-      monoFont: '"IBM Plex Mono", monospace',
-      displayWeight: '600',
-      headingWeight: '500',
-      bodyWeight: '400',
-      tracking: '0.015em',
-      scale: TYPE_SCALE,
-    },
-  },
-  {
-    id: 'polar-archive',
-    label: 'Polar Archive',
-    tagline: 'Cold-light legibility for long-form inspection.',
-    summary: 'Clean white, steel, and blue tokens tuned for precise reading and dense state displays.',
-    atmosphere: ['precise', 'archival', 'cool'],
-    palette: {
-      canvas: '#edf4fb',
-      canvasGlow: 'rgba(82, 126, 182, 0.18)',
-      shellTop: '#f7fbff',
-      shellBottom: '#dce8f5',
-      surface: 'rgba(252, 254, 255, 0.9)',
+      canvas: '#f2f2f7',
+      canvasGlow: '#f2f2f7',
+      shellTop: '#f5f5f7',
+      shellBottom: '#f5f5f7',
+      surface: '#fbfbfd',
       surfaceStrong: '#ffffff',
-      border: 'rgba(66, 98, 134, 0.14)',
-      borderStrong: 'rgba(66, 98, 134, 0.24)',
-      accent: '#406f9d',
-      accentStrong: '#2d5378',
-      accentSoft: 'rgba(64, 111, 157, 0.12)',
-      text: '#132033',
-      textSoft: 'rgba(19, 32, 51, 0.72)',
-      textFaint: 'rgba(19, 32, 51, 0.42)',
-      success: '#2d7f63',
-      warning: '#ba791c',
-      danger: '#b34439',
+      border: '#d7d9df',
+      borderStrong: '#bcc1ca',
+      accent: '#007aff',
+      accentStrong: '#0059c7',
+      accentSoft: '#d9ecff',
+      text: '#1d1d1f',
+      textSoft: '#5f6368',
+      textFaint: '#8e8e93',
+      success: '#248a53',
+      warning: '#9c6b16',
+      danger: '#d93025',
     },
     typography: {
-      displayFont: '"Space Grotesk", sans-serif',
-      bodyFont: '"IBM Plex Sans", sans-serif',
+      displayFont: '"SF Pro Display", "Inter", sans-serif',
+      bodyFont: '"IBM Plex Sans", "Segoe UI", sans-serif',
       monoFont: '"IBM Plex Mono", monospace',
       displayWeight: '700',
       headingWeight: '600',
       bodyWeight: '400',
-      tracking: '0.008em',
+      tracking: '-0.015em',
       scale: TYPE_SCALE,
     },
   },
   {
-    id: 'night-relay',
-    label: 'Night Relay',
-    tagline: 'Carbon shells with relay-light contrast.',
-    summary: 'Low-light operational workspace with cyan emphasis and restrained alert tones.',
-    atmosphere: ['focused', 'signal-rich', 'night'],
+    id: 'slate-day',
+    mode: 'light',
+    label: 'Slate Day',
+    tagline: 'Cool paper neutrals with a restrained product-blue signal.',
+    summary: 'A serious desktop-app light palette with less gloss than Apple and more editorial neutrality.',
+    atmosphere: ['neutral', 'professional', 'controlled'],
     palette: {
-      canvas: '#091219',
-      canvasGlow: 'rgba(60, 192, 204, 0.18)',
-      shellTop: '#0c1b23',
-      shellBottom: '#081017',
-      surface: 'rgba(11, 24, 31, 0.82)',
-      surfaceStrong: '#0f2028',
-      border: 'rgba(168, 221, 228, 0.12)',
-      borderStrong: 'rgba(168, 221, 228, 0.24)',
-      accent: '#48bac4',
-      accentStrong: '#7ad9df',
-      accentSoft: 'rgba(72, 186, 196, 0.14)',
-      text: '#effbfd',
-      textSoft: 'rgba(239, 251, 253, 0.7)',
-      textFaint: 'rgba(239, 251, 253, 0.42)',
-      success: '#5dc48f',
-      warning: '#e0ac44',
-      danger: '#ea7964',
+      canvas: '#eef1f5',
+      canvasGlow: '#eef1f5',
+      shellTop: '#f4f6f9',
+      shellBottom: '#f4f6f9',
+      surface: '#f9fafc',
+      surfaceStrong: '#ffffff',
+      border: '#d1d8e0',
+      borderStrong: '#b0bcc8',
+      accent: '#2f6feb',
+      accentStrong: '#194fb6',
+      accentSoft: '#dbe7ff',
+      text: '#111827',
+      textSoft: '#4b5563',
+      textFaint: '#7b8794',
+      success: '#237b59',
+      warning: '#9c6a14',
+      danger: '#c2413c',
     },
     typography: {
-      displayFont: '"Space Grotesk", sans-serif',
-      bodyFont: '"IBM Plex Sans", sans-serif',
+      displayFont: '"Plus Jakarta Sans", "Inter", sans-serif',
+      bodyFont: '"IBM Plex Sans", "Segoe UI", sans-serif',
       monoFont: '"IBM Plex Mono", monospace',
       displayWeight: '700',
       headingWeight: '600',
       bodyWeight: '400',
-      tracking: '0.01em',
+      tracking: '-0.012em',
+      scale: TYPE_SCALE,
+    },
+  },
+  {
+    id: 'sand',
+    mode: 'light',
+    label: 'Sand',
+    tagline: 'Warm off-white surfaces with a muted bronze accent.',
+    summary: 'A softer light palette for apps that need warmth without drifting into lifestyle branding.',
+    atmosphere: ['warm', 'quiet', 'freeform'],
+    palette: {
+      canvas: '#f3efe8',
+      canvasGlow: '#f3efe8',
+      shellTop: '#f8f4ee',
+      shellBottom: '#f8f4ee',
+      surface: '#fcfaf6',
+      surfaceStrong: '#fffdfa',
+      border: '#d9cfc1',
+      borderStrong: '#baab96',
+      accent: '#9a6a3a',
+      accentStrong: '#6d471f',
+      accentSoft: '#eadccf',
+      text: '#1f1914',
+      textSoft: '#5e5246',
+      textFaint: '#8d7d70',
+      success: '#2a7a58',
+      warning: '#95680f',
+      danger: '#ba4a3d',
+    },
+    typography: {
+      displayFont: '"Manrope", "Inter", sans-serif',
+      bodyFont: '"IBM Plex Sans", "Segoe UI", sans-serif',
+      monoFont: '"IBM Plex Mono", monospace',
+      displayWeight: '700',
+      headingWeight: '600',
+      bodyWeight: '400',
+      tracking: '-0.015em',
+      scale: TYPE_SCALE,
+    },
+  },
+  {
+    id: 'apple-dark',
+    mode: 'dark',
+    label: 'Apple Dark',
+    tagline: 'Graphite surfaces with the familiar Apple blue accent.',
+    summary: 'A dark system aligned with modern Apple product surfaces: polished, readable, and understated.',
+    atmosphere: ['apple-like', 'dark', 'polished'],
+    palette: {
+      canvas: '#000000',
+      canvasGlow: '#000000',
+      shellTop: '#1c1c1e',
+      shellBottom: '#1c1c1e',
+      surface: '#1c1c1e',
+      surfaceStrong: '#2c2c2e',
+      border: '#3a3a3c',
+      borderStrong: '#545458',
+      accent: '#0a84ff',
+      accentStrong: '#8ec8ff',
+      accentSoft: '#123a60',
+      text: '#f5f5f7',
+      textSoft: '#c7c7cc',
+      textFaint: '#8e8e93',
+      success: '#30d158',
+      warning: '#ff9f0a',
+      danger: '#ff453a',
+    },
+    typography: {
+      displayFont: '"SF Pro Display", "Inter", sans-serif',
+      bodyFont: '"IBM Plex Sans", "Segoe UI", sans-serif',
+      monoFont: '"IBM Plex Mono", monospace',
+      displayWeight: '700',
+      headingWeight: '600',
+      bodyWeight: '400',
+      tracking: '-0.015em',
+      scale: TYPE_SCALE,
+    },
+  },
+  {
+    id: 'workbench',
+    mode: 'dark',
+    label: 'Workbench',
+    tagline: 'A VS Code-like dark workbench with clear blue focus states.',
+    summary: 'Modeled on VS Code standards for long coding sessions: low noise, familiar hierarchy, and stable contrast.',
+    atmosphere: ['vscode', 'familiar', 'functional'],
+    palette: {
+      canvas: '#1e1e1e',
+      canvasGlow: '#1e1e1e',
+      shellTop: '#252526',
+      shellBottom: '#252526',
+      surface: '#252526',
+      surfaceStrong: '#2d2d30',
+      border: '#3c3c3c',
+      borderStrong: '#4e4e50',
+      accent: '#3794ff',
+      accentStrong: '#a6d1ff',
+      accentSoft: '#082e52',
+      text: '#cccccc',
+      textSoft: '#9da1a6',
+      textFaint: '#6b6f76',
+      success: '#4ec9b0',
+      warning: '#cca700',
+      danger: '#f14c4c',
+    },
+    typography: {
+      displayFont: '"Segoe UI", "Inter", sans-serif',
+      bodyFont: '"IBM Plex Sans", "Segoe UI", sans-serif',
+      monoFont: '"IBM Plex Mono", monospace',
+      displayWeight: '600',
+      headingWeight: '600',
+      bodyWeight: '400',
+      tracking: '-0.005em',
+      scale: TYPE_SCALE,
+    },
+  },
+  {
+    id: 'pine-night',
+    mode: 'dark',
+    label: 'Pine Night',
+    tagline: 'Deep green-black surfaces with a muted mint accent.',
+    summary: 'The freeform option: distinctive without being loud, with a calmer identity than blue-led dark themes.',
+    atmosphere: ['freeform', 'calm', 'distinct'],
+    palette: {
+      canvas: '#0d1413',
+      canvasGlow: '#0d1413',
+      shellTop: '#13201d',
+      shellBottom: '#13201d',
+      surface: '#152421',
+      surfaceStrong: '#1b2d29',
+      border: '#294440',
+      borderStrong: '#3b605b',
+      accent: '#49a38d',
+      accentStrong: '#b7eadf',
+      accentSoft: '#1a4138',
+      text: '#ecf8f5',
+      textSoft: '#bfd3ce',
+      textFaint: '#839b95',
+      success: '#73d39b',
+      warning: '#ddbb63',
+      danger: '#ef8f84',
+    },
+    typography: {
+      displayFont: '"Sora", "Inter", sans-serif',
+      bodyFont: '"IBM Plex Sans", "Segoe UI", sans-serif',
+      monoFont: '"IBM Plex Mono", monospace',
+      displayWeight: '700',
+      headingWeight: '600',
+      bodyWeight: '400',
+      tracking: '-0.015em',
       scale: TYPE_SCALE,
     },
   },
 ];
+
+function expandHex(value: string): string {
+  if (value.length === 4 || value.length === 5) {
+    return `#${value.slice(1).split('').map((part) => part + part).join('')}`;
+  }
+  return value;
+}
+
+function hexToRgb(value: string): [number, number, number] {
+  const normalized = expandHex(value.trim());
+  if (!/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(normalized)) {
+    throw new Error(`Contrast validation requires solid hex colors, received ${value}`);
+  }
+
+  return [
+    parseInt(normalized.slice(1, 3), 16),
+    parseInt(normalized.slice(3, 5), 16),
+    parseInt(normalized.slice(5, 7), 16),
+  ];
+}
+
+function channelToLinear(value: number): number {
+  const normalized = value / 255;
+  return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance(value: string): number {
+  const [red, green, blue] = hexToRgb(value);
+  return 0.2126 * channelToLinear(red) + 0.7152 * channelToLinear(green) + 0.0722 * channelToLinear(blue);
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const light = Math.max(relativeLuminance(foreground), relativeLuminance(background));
+  const dark = Math.min(relativeLuminance(foreground), relativeLuminance(background));
+  return (light + 0.05) / (dark + 0.05);
+}
+
+function assertContrast(label: string, foreground: string, background: string, minimum: number) {
+  const ratio = contrastRatio(foreground, background);
+  if (ratio < minimum) {
+    throw new Error(`${label} contrast ${ratio.toFixed(2)} is below ${minimum.toFixed(1)}`);
+  }
+}
+
+function validateMoodboards(boards: Moodboard[]) {
+  const lightCount = boards.filter((board) => board.mode === 'light').length;
+  const darkCount = boards.filter((board) => board.mode === 'dark').length;
+
+  if (lightCount !== 3 || darkCount !== 3) {
+    throw new Error(`Expected exactly 3 light and 3 dark moodboards, received ${lightCount} light and ${darkCount} dark`);
+  }
+
+  for (const board of boards) {
+    assertContrast(`${board.label} text on surface`, board.palette.text, board.palette.surface, 7);
+    assertContrast(`${board.label} text on surfaceStrong`, board.palette.text, board.palette.surfaceStrong, 7);
+    assertContrast(`${board.label} textSoft on surfaceStrong`, board.palette.textSoft, board.palette.surfaceStrong, 4.5);
+    assertContrast(`${board.label} accentStrong on accentSoft`, board.palette.accentStrong, board.palette.accentSoft, 4.5);
+  }
+}
+
+validateMoodboards(MOODBOARDS);
 
 export const MOODBOARD_BY_ID = Object.fromEntries(MOODBOARDS.map((board) => [board.id, board])) as Record<
   MoodboardId,

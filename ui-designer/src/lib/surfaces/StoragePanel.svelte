@@ -4,7 +4,9 @@
   import UiDialog from '../components/UiDialog.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { data, handlers } = $props() as WorkspaceSurfaceProps;
+  interface $$Props extends WorkspaceSurfaceProps {}
+
+  let { ui, data, capabilities, handlers }: $$Props = $props();
 </script>
 
 <UiDialog title="Storage" onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>

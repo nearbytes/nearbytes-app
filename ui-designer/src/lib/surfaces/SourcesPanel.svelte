@@ -4,7 +4,9 @@
   import PeerRow from '../components/PeerRow.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { data, capabilities, handlers } = $props() as WorkspaceSurfaceProps;
+  interface $$Props extends WorkspaceSurfaceProps {}
+
+  let { ui, data, capabilities, handlers }: $$Props = $props();
 </script>
 
 <UiDialog title="Sources and integrations" onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>

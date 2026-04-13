@@ -4,7 +4,9 @@
   import FileRow from '../components/FileRow.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { ui, data, handlers } = $props() as WorkspaceSurfaceProps;
+  interface $$Props extends WorkspaceSurfaceProps {}
+
+  let { ui, data, capabilities, handlers }: $$Props = $props();
 </script>
 
 <section class="files-pane nb-panel-surface">

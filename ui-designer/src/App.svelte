@@ -117,12 +117,17 @@
         {#each MOODBOARDS as board}
           <UiCard title={board.label}>
             {#snippet actions()}
-              <UiButton label={designerState.moodboardId === board.id ? 'Selected' : 'Use moodboard'} tone={designerState.moodboardId === board.id ? 'secondary' : 'primary'} onClick={() => setMoodboard(board.id)} />
+              <UiButton label={designerState.moodboardId === board.id ? 'Selected' : 'Apply theme'} tone={designerState.moodboardId === board.id ? 'secondary' : 'primary'} onClick={() => setMoodboard(board.id)} />
             {/snippet}
 
             {#snippet body()}
               <div class="moodboard-card">
+                <div
+                  class="moodboard-scene"
+                  style={`background:${board.palette.surfaceStrong}; box-shadow: inset 0 0 0 1px ${board.palette.border}, inset 0 -2.5rem 0 0 ${board.palette.canvas}, inset 4.25rem 0 0 0 ${board.palette.accentSoft};`}
+                ></div>
                 <p class="moodboard-tagline">{board.tagline}</p>
+                <p class="moodboard-summary">{board.summary}</p>
                 <div class="moodboard-swatches">
                   <span style={`background:${board.palette.canvas}`}></span>
                   <span style={`background:${board.palette.surfaceStrong}`}></span>
@@ -156,7 +161,7 @@
                     <small>{item.use}</small>
                   </div>
                   <div class="type-sample" style={`font-size:${item.size}; line-height:${item.lineHeight};`}>
-                    Nearbytes keeps structure visible.
+                    Hold what matters. Share it beautifully.
                   </div>
                 </div>
               {/each}

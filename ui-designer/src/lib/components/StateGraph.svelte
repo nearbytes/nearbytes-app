@@ -240,9 +240,7 @@ function handlePointerUp() {
     overflow: hidden;
     border-radius: 28px;
     border: 1px solid var(--nb-border);
-    background:
-      radial-gradient(circle at top, color-mix(in srgb, var(--nb-accent) 16%, transparent), transparent 45%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-surface) 86%, rgba(255, 255, 255, 0.04)), var(--nb-surface));
+    background: var(--nb-surface);
     cursor: grab;
     touch-action: none;
   }

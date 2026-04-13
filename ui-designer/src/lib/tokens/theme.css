@@ -1,8 +1,6 @@
 .nb-theme-scope {
   color: var(--nb-text);
-  background:
-    radial-gradient(circle at top, var(--nb-canvas-glow), transparent 42%),
-    linear-gradient(180deg, var(--nb-shell-top), var(--nb-shell-bottom));
+  background: var(--nb-canvas);
 }
 
 .nb-panel-surface {

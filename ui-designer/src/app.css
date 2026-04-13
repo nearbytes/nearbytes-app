@@ -74,6 +74,7 @@ textarea {
 .sidebar-kicker,
 .sidebar-label,
 .moodboard-tagline,
+.moodboard-summary,
 .type-fonts span,
 .type-row small,
 .palette-row small {
@@ -157,6 +158,7 @@ textarea {
 }
 
 .moodboard-card,
+.moodboard-scene,
 .moodboard-swatches,
 .moodboard-atmosphere,
 .type-grid,
@@ -171,9 +173,25 @@ textarea {
   grid-template-columns: repeat(4, 1fr);
 }
 
+.moodboard-scene {
+  min-height: 8rem;
+  border-radius: 22px;
+  border: 1px solid var(--nb-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 12px 30px rgba(15, 18, 22, 0.08);
+}
+
+.moodboard-summary {
+  font-size: 0.92rem;
+  line-height: 1.55;
+  max-width: 34ch;
+}
+
 .moodboard-swatches span {
   min-height: 3.5rem;
   border-radius: 16px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .moodboard-atmosphere {

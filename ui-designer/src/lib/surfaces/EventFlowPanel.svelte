@@ -2,7 +2,9 @@
   import UiDialog from '../components/UiDialog.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { ui, data, handlers } = $props() as WorkspaceSurfaceProps;
+  interface $$Props extends WorkspaceSurfaceProps {}
+
+  let { ui, data, capabilities, handlers }: $$Props = $props();
 
   const selectedEvent = $derived(
     data.events.find((event) => event.id === ui.selectedEventId) ?? data.events[0] ?? null
