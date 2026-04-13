@@ -31,10 +31,10 @@
 	Commit: fda45a7
 8. [x] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers through the transition adapter path.
 	Commit: 90a8b47
-9. [ ] Promote `WorkspaceModeBar` and `MountRail` into `ui-designer`, then rewire app consumers so toolbar interactions dispatch designer transitions instead of mutating app UI state directly.
-	Commit: pending
+9. [x] Promote `WorkspaceModeBar` and `MountRail` into `ui-designer`, then rewire app consumers so toolbar interactions dispatch designer transitions instead of mutating app UI state directly.
+	Commit: 6e5d56f
 
 ## Progress
 
-- Completed steps: 8 / 9
-- Remaining steps: 1
+- Completed steps: 9 / 9
+- Remaining steps: 0
