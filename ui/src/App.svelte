@@ -127,16 +127,6 @@
     type NearbytesThemePresetId,
     type NearbytesThemeSettings,
   } from './lib/branding.js';
-  import { applySurfaceAction, createInitialState } from '../../ui-designer/src/lib/state/actions.js';
-  import type {
-    FileBrowserView as DesignerFileBrowserView,
-    FileSort as DesignerFileSort,
-    OverlayKind as DesignerOverlayKind,
-    SharedWorkspaceState,
-    SurfaceAction,
-    UiDesignerState,
-    WorkspacePaneMode as DesignerWorkspacePaneMode,
-  } from '../../ui-designer/src/lib/state/types.js';
   import {
     ClipboardPaste,
     Download,
@@ -327,7 +317,7 @@
     fileName: string;
   };
 
-  type FileManagerViewMode = DesignerFileBrowserView;
+  type FileManagerViewMode = 'icons' | 'details';
   type MountDialogMode = 'secret' | 'join-link';
   type MountStorageMode = 'default' | 'custom' | 'unknown';
 
@@ -1623,7 +1613,6 @@
   let dragRaf = 0;
   let dragClientX = 0;
   let dragCaptureElement: HTMLElement | null = null;
-  let designerUiState = $state<UiDesignerState>(createInitialState());
   let joinLinkCopyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   let suppressMountClickTimer: ReturnType<typeof setTimeout> | null = null;
   const mountNodes = new Map<string, HTMLElement>();
@@ -1762,124 +1751,6 @@
       return 'split';
     }
     return mount.showChatPane ? 'chat' : 'files';
-  }
-
-  function toDesignerPaneMode(mode: 'files' | 'chat' | 'split'): DesignerWorkspacePaneMode {
-    if (mode === 'files') {
-      return 'files-focus';
-    }
-    if (mode === 'chat') {
-      return 'chat-focus';
-    }
-    return 'balanced';
-  }
-
-  function toDesignerFileSort(value: typeof sortBy): DesignerFileSort {
-    if (value === 'oldest') {
-      return 'oldest';
-    }
-    if (value === 'name' || value === 'name-desc') {
-      return 'name';
-    }
-    if (value === 'size' || value === 'size-asc') {
-      return 'size';
-    }
-    return 'newest';
-  }
-
-  function currentDesignerOverlay(): DesignerOverlayKind {
-    if (showJoinVolumeDialog) {
-      return 'join';
-    }
-    if (showVolumeShareDialog) {
-      return 'share';
-    }
-    if (showIdentityManager) {
-      return 'identity';
-    }
-    if (showCreateChooser) {
-      return 'create';
-    }
-    if (showSourcesPanel) {
-      return 'sources';
-    }
-    if (showVolumeStoragePanel) {
-      return 'storage';
-    }
-    if (showEventFlowPanel) {
-      return 'event-flow';
-    }
-    if (showResetDialog) {
-      return 'reset';
-    }
-    return 'none';
-  }
-
-  function snapshotDesignerWorkspaceState(): SharedWorkspaceState {
-    return {
-      activeHubId: activeMount?.volumeId?.trim() || activeMountId || 'app',
-      primaryPane: showChatWorkspace && !showFilesWorkspace ? 'chat' : 'files',
-      paneMode: toDesignerPaneMode(workspacePaneModeValue(activeMount)),
-      fileBrowserView: fileManagerViewMode,
-      fileSearch: searchQuery,
-      fileSort: toDesignerFileSort(sortBy),
-      overlay: currentDesignerOverlay(),
-      showPreview: showPreviewPane,
-      showTimeline: showTimeMachinePanel,
-      selectedFileId: selectedFile?.reference.id ?? null,
-      selectedEventId: timelineDetailEvent?.id ?? selectedTimelineEvent?.id ?? null,
-      selectedPeerId: null,
-    };
-  }
-
-  function syncAppStructuralUiFromDesigner(workspace: SharedWorkspaceState): void {
-    const currentMount = mounts.find((mount) => mount.id === activeMountId) ?? null;
-    const nextShowFiles = workspace.paneMode !== 'chat-focus';
-    const nextShowChat = workspace.paneMode !== 'files-focus';
-    if (currentMount) {
-      const nextShowSearch = nextShowFiles ? currentMount.showSearchPane : false;
-      if (
-        currentMount.showFilesPane !== nextShowFiles ||
-        currentMount.showChatPane !== nextShowChat ||
-        currentMount.showSearchPane !== nextShowSearch
-      ) {
-        updateActiveMountWorkspace({
-          showFilesPane: nextShowFiles,
-          showChatPane: nextShowChat,
-          showSearchPane: nextShowSearch,
-        });
-      }
-    }
-    if (!nextShowFiles) {
-      showPreviewPane = false;
-      renamingFileName = null;
-      renameDraft = '';
-      fileManagerActive = false;
-      searchQuery = '';
-    }
-
-    fileManagerViewMode = workspace.fileBrowserView;
-    showTimeMachinePanel = workspace.showTimeline;
-    showJoinVolumeDialog = workspace.overlay === 'join';
-    showVolumeShareDialog = workspace.overlay === 'share';
-    showIdentityManager = workspace.overlay === 'identity';
-    showCreateChooser = workspace.overlay === 'create';
-    showSourcesPanel = workspace.overlay === 'sources';
-    showVolumeStoragePanel = workspace.overlay === 'storage';
-    showEventFlowPanel = workspace.overlay === 'event-flow';
-    showResetDialog = workspace.overlay === 'reset';
-  }
-
-  function dispatchDesignerAction(action: SurfaceAction): SharedWorkspaceState {
-    designerUiState = applySurfaceAction(
-      {
-        ...designerUiState,
-        workspace: snapshotDesignerWorkspaceState(),
-      },
-      action
-    );
-    syncAppStructuralUiFromDesigner(designerUiState.workspace);
-    return designerUiState.workspace;
   }
 
   function applyWorkspacePaneMode(mode: 'files' | 'chat' | 'split') {
