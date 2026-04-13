@@ -11,10 +11,10 @@
   }>();
 </script>
 
-<UiDialog title="Reset application state" eyebrow="Dialog" detail="This destructive surface remains part of the shared UI even when a host cannot fulfill the action." {onClose}>
+<UiDialog title="Reset application state" {onClose}>
   {#snippet body()}
     <div class="reset-grid">
-      <p>This host preview {canReset ? 'allows' : 'does not allow'} destructive reset wiring.</p>
+      <p>This host {canReset ? 'allows' : 'does not allow'} destructive reset.</p>
       <div class="reset-actions">
         <UiButton label="Cancel" tone="secondary" onClick={onClose} />
         <UiButton label="Reset now" tone="danger" disabled={!canReset} />

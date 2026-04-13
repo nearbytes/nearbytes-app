@@ -13,7 +13,7 @@
   }>();
 </script>
 
-<UiDialog title="Identity manager" eyebrow="Dialog" detail="Joined, published, and draft identities remain previewable without runtime ownership." {onClose}>
+<UiDialog title="Identity manager" {onClose}>
   {#snippet body()}
     <div class="identity-list">
       {#each data.identities as identity}

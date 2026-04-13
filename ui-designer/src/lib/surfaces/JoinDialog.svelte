@@ -9,7 +9,7 @@
   }>();
 </script>
 
-<UiDialog title="Join hub" eyebrow="Dialog" detail="Parse a join payload, confirm the hub identity, then enter the shared workspace." {onClose}>
+<UiDialog title="Join hub" {onClose}>
   {#snippet body()}
     <div class="dialog-grid">
       <label>
@@ -17,7 +17,7 @@
         <textarea rows="5" placeholder="nearbytes://join#..."></textarea>
       </label>
       <div class="dialog-actions">
-        <UiButton label="Preview link" tone="secondary" />
+        <UiButton label="Validate link" tone="secondary" />
         <UiButton label="Join hub" />
       </div>
     </div>

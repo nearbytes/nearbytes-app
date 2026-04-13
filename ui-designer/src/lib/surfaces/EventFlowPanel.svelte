@@ -2,14 +2,14 @@
   import UiDialog from '../components/UiDialog.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { ui, data, handlers } = $props<WorkspaceSurfaceProps>();
+  let { ui, data, handlers } = $props() as WorkspaceSurfaceProps;
 
   const selectedEvent = $derived(
     data.events.find((event) => event.id === ui.selectedEventId) ?? data.events[0] ?? null
   );
 </script>
 
-<UiDialog title="Event flow" eyebrow="Panel" detail="Protocol-level state, references, and lineage all render without backend-coupled semantics." onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>
+<UiDialog title="Event flow" onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>
   {#snippet body()}
     <div class="event-flow-grid">
       {#if selectedEvent}

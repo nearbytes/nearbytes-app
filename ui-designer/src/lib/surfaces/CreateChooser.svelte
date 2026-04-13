@@ -12,11 +12,11 @@
     ['Create hub', 'Start a brand-new shared space.'],
     ['Import handoff', 'Bring in a shared reference bundle.'],
     ['Join link', 'Paste or scan a join payload.'],
-    ['Mirror demo', 'Render a fully mocked system state.'],
+    ['Mirror workspace', 'Load a copied workspace snapshot.'],
   ];
 </script>
 
-<UiDialog title="Create chooser" eyebrow="Dialog" detail="This is the structural launcher for new shared workspace states." {onClose}>
+<UiDialog title="Create" {onClose}>
   {#snippet body()}
     <div class="chooser-grid">
       {#each options as [title, detail]}

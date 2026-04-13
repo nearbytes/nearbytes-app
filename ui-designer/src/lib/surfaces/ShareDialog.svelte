@@ -10,7 +10,7 @@
   }>();
 </script>
 
-<UiDialog title="Share hub" eyebrow="Dialog" detail="Produce share links, secret payloads, and designer-only capability previews." {onClose}>
+<UiDialog title="Share hub" {onClose}>
   {#snippet body()}
     <div class="share-dialog-grid">
       <div class="share-copy">

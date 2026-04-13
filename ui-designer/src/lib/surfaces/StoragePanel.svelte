@@ -4,10 +4,10 @@
   import UiDialog from '../components/UiDialog.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { data, handlers } = $props<WorkspaceSurfaceProps>();
+  let { data, handlers } = $props() as WorkspaceSurfaceProps;
 </script>
 
-<UiDialog title="Storage panel" eyebrow="Panel" detail="Global location health, routing defaults, and per-hub drill-in all live in the UI layer." onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>
+<UiDialog title="Storage" onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>
   {#snippet body()}
     <div class="storage-grid">
       {#each data.storageLocations as location}

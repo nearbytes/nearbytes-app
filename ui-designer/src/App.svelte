@@ -82,10 +82,6 @@
   <aside class="app-sidebar nb-panel-surface">
     <div class="sidebar-brand">
       <p class="sidebar-kicker">Nearbytes</p>
-      <h1 class="sidebar-title nb-type-display">UI designer system</h1>
-      <p class="sidebar-summary">
-        Executable design system, centralized UI state, and future export surface for the real app.
-      </p>
     </div>
 
     <nav class="sidebar-nav">
@@ -97,7 +93,7 @@
     </nav>
 
     <div class="sidebar-footer">
-      <p class="sidebar-label">Fixture preset</p>
+      <p class="sidebar-label">Preset</p>
       <div class="preset-pills">
         {#each fixturePresets as preset}
           <button class:active={designerState.fixturePreset === preset.id} type="button" onclick={() => setPreset(preset.id)}>
@@ -107,7 +103,7 @@
       </div>
 
       <div class="live-summary">
-        <p class="sidebar-label">Live structural state</p>
+        <p class="sidebar-label">State</p>
         <UiChip label={activeGraphNode} tone="accent" />
       </div>
     </div>
@@ -116,7 +112,6 @@
   <main class="app-main">
     <header class="app-main-header nb-panel-surface">
       <div class="app-main-copy">
-        <p class="app-main-kicker">{tabs.find((tab) => tab.id === designerState.tab)?.label}</p>
         <h2>{moodboard.label}</h2>
       </div>
       <div class="app-main-tools">
@@ -128,7 +123,7 @@
     {#if designerState.tab === 'moodboards'}
       <section class="content-grid">
         {#each MOODBOARDS as board}
-          <UiCard eyebrow="Moodboard" title={board.label} detail={board.summary}>
+          <UiCard title={board.label}>
             {#snippet actions()}
               <UiButton label={designerState.moodboardId === board.id ? 'Selected' : 'Use moodboard'} tone={designerState.moodboardId === board.id ? 'secondary' : 'primary'} onClick={() => setMoodboard(board.id)} />
             {/snippet}
@@ -154,7 +149,7 @@
       </section>
     {:else if designerState.tab === 'typography'}
       <section class="content-solo">
-        <UiCard eyebrow="Typography" title={moodboard.label} detail="Read-only token sheet derived from the selected moodboard.">
+        <UiCard title={moodboard.label}>
           {#snippet body()}
             <div class="type-grid">
               <div class="type-fonts">
@@ -179,7 +174,7 @@
       </section>
     {:else if designerState.tab === 'palette'}
       <section class="content-solo">
-        <UiCard eyebrow="Palette" title={moodboard.label} detail="Read-only semantic palette derived from the selected moodboard.">
+        <UiCard title={moodboard.label}>
           {#snippet body()}
             <div class="palette-grid">
               {#each Object.entries(moodboard.palette) as [key, value]}
@@ -197,7 +192,7 @@
       </section>
     {:else if designerState.tab === 'components'}
       <section class="content-solo">
-        <UiCard eyebrow="Components" title="Shared component library" detail="All reusable components live here independently from runtime wiring.">
+        <UiCard title="Components">
           {#snippet body()}
             <div class="family-pills">
               {#each families as family}
@@ -241,7 +236,7 @@
       </section>
     {:else if designerState.tab === 'graph'}
       <section class="content-solo graph-tab">
-        <UiCard eyebrow="State graph" title="Structural UI transition graph" detail="The graph, previews, and store all share the same structural UI state.">
+        <UiCard title="State graph">
           {#snippet body()}
             <div class="graph-layout">
               <StateGraph

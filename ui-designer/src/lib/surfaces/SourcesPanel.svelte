@@ -4,10 +4,10 @@
   import PeerRow from '../components/PeerRow.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { data, capabilities, handlers } = $props<WorkspaceSurfaceProps>();
+  let { data, capabilities, handlers } = $props() as WorkspaceSurfaceProps;
 </script>
 
-<UiDialog title="Sources and integrations" eyebrow="Panel" detail="Provider, LAN, and discovery surfaces stay visible even when runtime support is gated." onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>
+<UiDialog title="Sources and integrations" onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>
   {#snippet body()}
     <div class="sources-grid">
       <div class="sources-actions">

@@ -3,7 +3,7 @@
   import UiChip from '../components/UiChip.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { ui, data } = $props<WorkspaceSurfaceProps>();
+  let { ui, data } = $props() as WorkspaceSurfaceProps;
 
   const selectedFile = $derived(
     data.files.find((file) => file.id === ui.selectedFileId) ?? data.files[0] ?? null
@@ -13,7 +13,6 @@
 <section class="preview-pane nb-panel-surface">
   <header class="preview-header">
     <div>
-      <p class="preview-kicker">Preview</p>
       <h3>{selectedFile ? selectedFile.name : 'No selection'}</h3>
     </div>
     <div class="preview-actions">
@@ -55,16 +54,8 @@
     align-items: start;
   }
 
-  .preview-kicker,
   .preview-header h3 {
     margin: 0;
-  }
-
-  .preview-kicker {
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-    font-size: 0.68rem;
-    color: var(--nb-accent-strong);
   }
 
   .preview-header h3 {

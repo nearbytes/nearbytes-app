@@ -4,13 +4,12 @@
   import FileRow from '../components/FileRow.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { ui, data, handlers } = $props<WorkspaceSurfaceProps>();
+  let { ui, data, handlers } = $props() as WorkspaceSurfaceProps;
 </script>
 
 <section class="files-pane nb-panel-surface">
   <header class="files-pane-header">
     <div>
-      <p class="files-pane-kicker">Files</p>
       <h3>Atlas Relay</h3>
     </div>
     <div class="files-pane-actions">
@@ -64,16 +63,8 @@
     align-items: start;
   }
 
-  .files-pane-kicker,
   .files-pane-header h3 {
     margin: 0;
-  }
-
-  .files-pane-kicker {
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-    font-size: 0.68rem;
-    color: var(--nb-accent-strong);
   }
 
   .files-pane-header h3 {

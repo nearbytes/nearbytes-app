@@ -2,11 +2,11 @@
   import type { WorkspaceSurfaceProps } from '../state/types.js';
   import WorkspaceShell from './WorkspaceShell.svelte';
 
-  let props = $props<WorkspaceSurfaceProps>();
+  let surfaceProps = $props() as WorkspaceSurfaceProps;
 </script>
 
 <div class="desktop-frame">
-  <WorkspaceShell {...props} mode="desktop" />
+  <WorkspaceShell {...surfaceProps} mode="desktop" />
 </div>
 
 <style>

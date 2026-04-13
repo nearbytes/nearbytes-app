@@ -9,7 +9,7 @@
   }>();
 </script>
 
-<UiDialog title="Per-hub storage" eyebrow="Dialog" detail="A hub-specific routing surface that later receives real destination data as props." {onClose}>
+<UiDialog title="Per-hub storage" {onClose}>
   {#snippet body()}
     <div class="hub-storage-grid">
       <label><input type="checkbox" checked> Store encrypted events locally</label>

@@ -3,13 +3,12 @@
   import EventRow from '../components/EventRow.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { ui, data, handlers } = $props<WorkspaceSurfaceProps>();
+  let { ui, data, handlers } = $props() as WorkspaceSurfaceProps;
 </script>
 
 <section class="timeline-pane nb-panel-surface">
   <header class="timeline-pane-header">
     <div>
-      <p class="timeline-kicker">Timeline</p>
       <h3>Recent event stream</h3>
     </div>
     <button type="button" class="timeline-icon" aria-label="Inspect event flow" onclick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'event-flow' })}>
@@ -45,16 +44,8 @@
     align-items: start;
   }
 
-  .timeline-kicker,
   .timeline-pane-header h3 {
     margin: 0;
-  }
-
-  .timeline-kicker {
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-    font-size: 0.68rem;
-    color: var(--nb-accent-strong);
   }
 
   .timeline-pane-header h3 {

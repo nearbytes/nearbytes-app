@@ -4,13 +4,12 @@
   import UiChip from '../components/UiChip.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
-  let { data, handlers } = $props<WorkspaceSurfaceProps>();
+  let { data, handlers } = $props() as WorkspaceSurfaceProps;
 </script>
 
 <section class="chat-pane nb-panel-surface">
   <header class="chat-pane-header">
     <div>
-      <p class="chat-pane-kicker">Chat</p>
       <h3>Protocol room</h3>
     </div>
     <UiButton label="Identity" tone="secondary" onClick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'identity' })} />
@@ -62,16 +61,8 @@
     align-items: start;
   }
 
-  .chat-pane-kicker,
   .chat-pane-header h3 {
     margin: 0;
-  }
-
-  .chat-pane-kicker {
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-    font-size: 0.68rem;
-    color: var(--nb-accent-strong);
   }
 
   .chat-pane-header h3 {

@@ -31,7 +31,6 @@
 <div class={`workspace-shell ${mode}`}>
   <header class="workspace-header nb-panel-surface">
     <div class="workspace-brand">
-      <span class="workspace-kicker">Nearbytes</span>
       <strong class="nb-type-heading">{ui.activeHubId === 'atlas' ? 'Atlas Relay' : ui.activeHubId === 'harbor' ? 'Harbor Storage' : 'Quiet Archive'}</strong>
     </div>
     <div class="workspace-tools">
@@ -123,14 +122,7 @@
 
   .workspace-brand {
     display: grid;
-    gap: 0.18rem;
-  }
-
-  .workspace-kicker {
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-    font-size: 0.68rem;
-    color: var(--nb-accent-strong);
+    gap: 0;
   }
 
   .workspace-tools {
