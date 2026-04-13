@@ -25,8 +25,8 @@
 	Commit: fb2ecaf
 5. [x] Promote `StatusNotice`, `SecretSeedFields`, and `SharedSecretEditor` into `ui-designer`, then rewire app consumers.
 	Commit: 3db7315
-6. [ ] Expand the designer transition contract where needed and add a real-app transition adapter that invokes `ui-designer` transition functions for structural workspace UI state.
-	Commit: pending
+6. [x] Expand the designer transition contract where needed and add a real-app transition adapter that invokes `ui-designer` transition functions for structural workspace UI state.
+	Commit: 0f3736c
 7. [ ] Route the real app's current structural UI transitions through the designer transition adapter for overlays, timeline, event flow, pane/view mode, and related workspace chrome state.
 	Commit: pending
 8. [ ] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers through the transition adapter path.
@@ -36,5 +36,5 @@
 
 ## Progress
 
-- Completed steps: 5 / 9
-- Remaining steps: 4
+- Completed steps: 6 / 9
+- Remaining steps: 3
