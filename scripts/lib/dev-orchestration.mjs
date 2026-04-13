@@ -199,15 +199,46 @@ export async function requestJson(baseUrl, method, pathName, body, headers = {})
 
 export async function clearPorts(ports) {
   for (const port of ports) {
-    const command = `for pid in $(lsof -ti tcp:${port} -sTCP:LISTEN 2>/dev/null); do kill $pid >/dev/null 2>&1 || true; done`;
-    await new Promise((resolve) => {
-      const child = spawn('zsh', ['-lc', command], {
-        cwd: repoRoot,
-        stdio: 'ignore',
-      });
-      child.once('exit', () => resolve());
-    });
+    await clearPort(port);
   }
+}
+
+async function clearPort(port) {
+  if (process.platform === 'win32') {
+    await runDetachedCommand(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', buildWindowsPortClearScript(port)]
+    );
+    return;
+  }
+
+  const command = `for pid in $(lsof -ti tcp:${port} -sTCP:LISTEN 2>/dev/null); do kill $pid >/dev/null 2>&1 || true; done`;
+  await runDetachedCommand('sh', ['-lc', command]);
+}
+
+function buildWindowsPortClearScript(port) {
+  return [
+    '$pids = @()'
+    , `if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {`
+    , `  $pids = @(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)`
+    , `} else {`
+    , `  $pids = @(netstat -ano -p tcp | Select-String ':${port}\s+.*LISTENING\s+(\d+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Unique)`
+    , `}`
+    , `foreach ($pid in $pids) {`
+    , `  if ($pid) { Stop-Process -Id ([int]$pid) -Force -ErrorAction SilentlyContinue }`
+    , `}`
+  ].join('; ');
+}
+
+async function runDetachedCommand(command, args) {
+  await new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: repoRoot,
+      stdio: 'ignore',
+    });
+    child.once('error', () => resolve());
+    child.once('exit', () => resolve());
+  });
 }
 
 export function openSystemBrowser(url) {

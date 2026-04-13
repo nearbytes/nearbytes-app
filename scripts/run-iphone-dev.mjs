@@ -17,6 +17,10 @@ const recordedMobileServerPath = path.join(repoRoot, '.nearbytes', 'last-mobile-
 await main();
 
 async function main() {
+  if (process.platform !== 'darwin') {
+    throw new Error(`run-iphone-dev requires macOS because it uses Xcode and the iOS Simulator. Current platform: ${process.platform}.`);
+  }
+
   const mobileServerUrl = await resolveMobileServerUrl();
   const webDev = await prepareUiDevServer();
   const signalHandlers = installSignalHandlers(() => {

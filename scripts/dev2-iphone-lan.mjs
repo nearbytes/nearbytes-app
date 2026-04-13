@@ -127,8 +127,12 @@ try {
   await waitForHttpEndpoint(phoneUiUrl, startupTimeoutMs, phoneUiChild, 'Phone UI dev server');
   writeRecordedMobileServerUrl(phoneUiUrl);
 
-  console.error('[dev2-iphone-lan] launching iPhone simulator app');
-  runIphoneLauncher(phoneUiUrl);
+  if (process.platform === 'darwin') {
+    console.error('[dev2-iphone-lan] launching iPhone simulator app');
+    runIphoneLauncher(phoneUiUrl);
+  } else {
+    console.error(`[dev2-iphone-lan] skipping iPhone simulator launch on ${process.platform}; use the phone UI URL on a physical device.`);
+  }
 
   await requestJson(desktopApiUrl, 'GET', '/health', undefined, {
     'x-nearbytes-runtime-token': desktopSession.token,
