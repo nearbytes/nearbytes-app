@@ -8,10 +8,10 @@ export type DesignerTab =
   | 'phone';
 
 export type MoodboardId =
-  | 'apple-light'
+  | 'quartz-light'
   | 'slate-day'
   | 'sand'
-  | 'apple-dark'
+  | 'graphite-night'
   | 'workbench'
   | 'pine-night';
 

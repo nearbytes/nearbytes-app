@@ -51,12 +51,12 @@ const TYPE_SCALE = [
 
 export const MOODBOARDS: Moodboard[] = [
   {
-    id: 'apple-light',
+    id: 'quartz-light',
     mode: 'light',
-    label: 'Apple Light',
+    label: 'Quartz Light',
     tagline: 'Soft neutral chrome with the familiar iOS blue accent.',
-    summary: 'A clean light system modeled on current Apple product surfaces: quiet, bright, and highly legible.',
-    atmosphere: ['apple-like', 'clean', 'familiar'],
+    summary: 'A clean light system with modern platform-grade surfaces: quiet, bright, and highly legible.',
+    atmosphere: ['platform', 'clean', 'familiar'],
     palette: {
       canvas: '#f2f2f7',
       canvasGlow: '#f2f2f7',
@@ -92,7 +92,7 @@ export const MOODBOARDS: Moodboard[] = [
     mode: 'light',
     label: 'Slate Day',
     tagline: 'Cool paper neutrals with a restrained product-blue signal.',
-    summary: 'A serious desktop-app light palette with less gloss than Apple and more editorial neutrality.',
+    summary: 'A serious desktop-app light palette with reduced gloss and stronger editorial neutrality.',
     atmosphere: ['neutral', 'professional', 'controlled'],
     palette: {
       canvas: '#eef1f5',
@@ -162,12 +162,12 @@ export const MOODBOARDS: Moodboard[] = [
     },
   },
   {
-    id: 'apple-dark',
+    id: 'graphite-night',
     mode: 'dark',
-    label: 'Apple Dark',
-    tagline: 'Graphite surfaces with the familiar Apple blue accent.',
-    summary: 'A dark system aligned with modern Apple product surfaces: polished, readable, and understated.',
-    atmosphere: ['apple-like', 'dark', 'polished'],
+    label: 'Graphite Night',
+    tagline: 'Graphite surfaces with a familiar system-blue accent.',
+    summary: 'A dark system aligned with modern platform surfaces: polished, readable, and understated.',
+    atmosphere: ['platform', 'dark', 'polished'],
     palette: {
       canvas: '#000000',
       canvasGlow: '#000000',

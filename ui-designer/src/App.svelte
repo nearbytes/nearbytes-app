@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import UiButton from './lib/components/UiButton.svelte';
   import UiCard from './lib/components/UiCard.svelte';
   import UiChip from './lib/components/UiChip.svelte';
@@ -18,8 +19,17 @@
     selectTab,
   } from './lib/state/actions.js';
   import { createUiDesignerStore } from './lib/state/store.js';
-  import type { ComponentFamily, DesignerTab, GraphNodeId } from './lib/state/types.js';
+  import type {
+    ComponentFamily,
+    DesignerTab,
+    GraphNodeId,
+    MoodboardId,
+    OverlayKind,
+    WorkspacePaneMode,
+  } from './lib/state/types.js';
   import type { GraphLayoutMode } from './lib/state/graph.js';
+
+  const MOODBOARD_STORAGE_KEY = 'nearbytes.uiDesigner.moodboardId';
 
   const designerStore = createUiDesignerStore();
   const activeGraphNodeStore = designerStore.activeGraphNode;
@@ -35,6 +45,22 @@
   ];
 
   const families: ComponentFamily[] = ['primitives', 'inputs', 'display', 'shell', 'protocol'];
+  const paneModes: Array<{ id: WorkspacePaneMode; label: string }> = [
+    { id: 'balanced', label: 'Balanced' },
+    { id: 'files-focus', label: 'Files focus' },
+    { id: 'chat-focus', label: 'Chat focus' },
+  ];
+  const overlays: Array<{ id: Exclude<OverlayKind, 'none'>; label: string }> = [
+    { id: 'join', label: 'Join' },
+    { id: 'share', label: 'Share' },
+    { id: 'identity', label: 'Identity' },
+    { id: 'create', label: 'Create' },
+    { id: 'sources', label: 'Sources' },
+    { id: 'storage', label: 'Storage' },
+    { id: 'hub-storage', label: 'Hub storage' },
+    { id: 'event-flow', label: 'Event flow' },
+    { id: 'reset', label: 'Reset' },
+  ];
 
   const fixturePresets = [
     { id: 'populated', label: 'Populated' },
@@ -59,6 +85,12 @@
     selectedGraphEdgeId ? GRAPH_EDGE_BY_ID[selectedGraphEdgeId] ?? null : null
   );
   const graphLayout = $derived(layoutGraph(graphLayoutMode));
+  const selectedFileName = $derived(
+    fixtures.files.find((file) => file.id === designerState.workspace.selectedFileId)?.name ?? 'No file selected'
+  );
+  const selectedEventTitle = $derived(
+    fixtures.events.find((event) => event.id === designerState.workspace.selectedEventId)?.title ?? 'No event selected'
+  );
 
   function setTab(tab: DesignerTab) {
     designerStore.update((value) => selectTab(value, tab));
@@ -75,6 +107,45 @@
   function setFamily(family: ComponentFamily) {
     designerStore.update((value) => selectComponentFamily(value, family));
   }
+
+  function setPaneMode(paneMode: WorkspacePaneMode) {
+    designerStore.dispatchSurfaceAction({ type: 'set-pane-mode', paneMode });
+  }
+
+  function togglePreview() {
+    designerStore.dispatchSurfaceAction({ type: 'toggle-preview' });
+  }
+
+  function toggleTimeline() {
+    designerStore.dispatchSurfaceAction({ type: 'toggle-timeline' });
+  }
+
+  function openOverlay(overlay: Exclude<OverlayKind, 'none'>) {
+    designerStore.dispatchSurfaceAction({ type: 'open-overlay', overlay });
+  }
+
+  function closeOverlay() {
+    designerStore.dispatchSurfaceAction({ type: 'close-overlay' });
+  }
+
+  onMount(() => {
+    try {
+      const storedId = localStorage.getItem(MOODBOARD_STORAGE_KEY);
+      if (storedId && storedId in MOODBOARD_BY_ID) {
+        designerStore.update((value) => selectMoodboard(value, storedId as MoodboardId));
+      }
+    } catch {
+      // Ignore storage access errors in restricted browser contexts.
+    }
+  });
+
+  $effect(() => {
+    try {
+      localStorage.setItem(MOODBOARD_STORAGE_KEY, designerState.moodboardId);
+    } catch {
+      // Ignore storage access errors in restricted browser contexts.
+    }
+  });
 </script>
 
 <div class="designer-app nb-theme-scope nb-type-body" style={themeStyle}>
@@ -113,7 +184,7 @@
 
   <main class="app-main">
     {#if designerState.tab === 'moodboards'}
-      <section class="content-grid">
+      <section class="content-grid moodboards-grid">
         {#each MOODBOARDS as board}
           <UiCard title={board.label}>
             {#snippet actions()}
@@ -124,20 +195,40 @@
               <div class="moodboard-card">
                 <div
                   class="moodboard-scene"
-                  style={`background:${board.palette.surfaceStrong}; box-shadow: inset 0 0 0 1px ${board.palette.border}, inset 0 -2.5rem 0 0 ${board.palette.canvas}, inset 4.25rem 0 0 0 ${board.palette.accentSoft};`}
-                ></div>
-                <p class="moodboard-tagline">{board.tagline}</p>
-                <p class="moodboard-summary">{board.summary}</p>
-                <div class="moodboard-swatches">
-                  <span style={`background:${board.palette.canvas}`}></span>
-                  <span style={`background:${board.palette.surfaceStrong}`}></span>
-                  <span style={`background:${board.palette.accent}`}></span>
-                  <span style={`background:${board.palette.text}`}></span>
+                  style={`--scene-canvas:${board.palette.canvas}; --scene-surface:${board.palette.surfaceStrong}; --scene-accent-soft:${board.palette.accentSoft}; --scene-accent:${board.palette.accent}; --scene-border:${board.palette.border}; --scene-text:${board.palette.text};`}
+                >
+                  <div class="moodboard-scene-topbar">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                  <div class="moodboard-scene-body">
+                    <div class="moodboard-scene-sidebar"></div>
+                    <div class="moodboard-scene-main">
+                      <div class="moodboard-scene-card moodboard-scene-card-hero"></div>
+                      <div class="moodboard-scene-row">
+                        <div class="moodboard-scene-card moodboard-scene-card-accent"></div>
+                        <div class="moodboard-scene-card"></div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div class="moodboard-atmosphere">
-                  {#each board.atmosphere as tag}
-                    <UiChip label={tag} tone="neutral" />
-                  {/each}
+                <div class="moodboard-copy-block">
+                  <p class="moodboard-tagline">{board.tagline}</p>
+                  <p class="moodboard-summary">{board.summary}</p>
+                </div>
+                <div class="moodboard-footer">
+                  <div class="moodboard-swatches">
+                    <span style={`background:${board.palette.canvas}`}></span>
+                    <span style={`background:${board.palette.surfaceStrong}`}></span>
+                    <span style={`background:${board.palette.accent}`}></span>
+                    <span style={`background:${board.palette.text}`}></span>
+                  </div>
+                  <div class="moodboard-atmosphere">
+                    {#each board.atmosphere as tag}
+                      <UiChip label={tag} tone="neutral" />
+                    {/each}
+                  </div>
                 </div>
               </div>
             {/snippet}
@@ -170,7 +261,7 @@
         </UiCard>
       </section>
     {:else if designerState.tab === 'palette'}
-      <section class="content-solo">
+      <section class="content-solo palette-tab">
         <UiCard title={moodboard.label}>
           {#snippet body()}
             <div class="palette-grid">
@@ -302,15 +393,163 @@
         </UiCard>
       </section>
     {:else if designerState.tab === 'desktop'}
-      <section class="content-solo">
-        <div class="preview-desktop-frame">
-          <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="desktop" />
+      <section class="content-solo viewport-surface-tab">
+        <div class="viewport-layout">
+          <div class="preview-desktop-frame">
+            <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="desktop" />
+          </div>
+
+          <aside class="viewport-detail nb-panel-surface">
+            <div class="viewport-detail-header">
+              <p class="viewport-detail-kicker">Designer detail</p>
+              <h3>Desktop preview controls</h3>
+              <p>
+                These controls mutate the designer's structural state. They are not part of the intended desktop shell UI.
+              </p>
+            </div>
+
+            <div class="viewport-detail-section">
+              <p class="viewport-detail-label">Current state</p>
+              <div class="viewport-detail-chips">
+                <UiChip label={activeGraphNode} tone="accent" />
+                <UiChip label={designerState.workspace.overlay === 'none' ? 'no overlay' : designerState.workspace.overlay} tone="neutral" />
+                <UiChip label={designerState.workspace.showPreview ? 'preview open' : 'preview closed'} tone="neutral" />
+                <UiChip label={designerState.workspace.showTimeline ? 'timeline open' : 'timeline closed'} tone="neutral" />
+              </div>
+              <div class="viewport-detail-copy">
+                <p>Selected file: {selectedFileName}</p>
+                <p>Selected event: {selectedEventTitle}</p>
+              </div>
+            </div>
+
+            <div class="viewport-detail-section">
+              <p class="viewport-detail-label">Pane layout</p>
+              <div class="viewport-detail-actions">
+                {#each paneModes as paneMode}
+                  <UiButton
+                    label={paneMode.label}
+                    tone={designerState.workspace.paneMode === paneMode.id ? 'primary' : 'secondary'}
+                    onClick={() => setPaneMode(paneMode.id)}
+                  />
+                {/each}
+              </div>
+            </div>
+
+            <div class="viewport-detail-section">
+              <p class="viewport-detail-label">Panels</p>
+              <div class="viewport-detail-actions">
+                <UiButton
+                  label={designerState.workspace.showPreview ? 'Hide preview panel' : 'Show preview panel'}
+                  tone={designerState.workspace.showPreview ? 'primary' : 'secondary'}
+                  onClick={togglePreview}
+                />
+                <UiButton
+                  label={designerState.workspace.showTimeline ? 'Hide timeline panel' : 'Show timeline panel'}
+                  tone={designerState.workspace.showTimeline ? 'primary' : 'secondary'}
+                  onClick={toggleTimeline}
+                />
+              </div>
+            </div>
+
+            <div class="viewport-detail-section">
+              <p class="viewport-detail-label">Overlays</p>
+              <div class="viewport-detail-actions">
+                {#each overlays as overlay}
+                  <UiButton
+                    label={overlay.label}
+                    tone={designerState.workspace.overlay === overlay.id ? 'primary' : 'secondary'}
+                    onClick={() => openOverlay(overlay.id)}
+                  />
+                {/each}
+                <UiButton
+                  label="Close overlay"
+                  tone="secondary"
+                  disabled={designerState.workspace.overlay === 'none'}
+                  onClick={closeOverlay}
+                />
+              </div>
+            </div>
+          </aside>
         </div>
       </section>
     {:else if designerState.tab === 'phone'}
-      <section class="content-solo">
-        <div class="preview-phone-frame">
-          <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="phone" />
+      <section class="content-solo viewport-surface-tab">
+        <div class="viewport-layout viewport-layout-phone">
+          <div class="preview-phone-frame">
+            <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="phone" />
+          </div>
+
+          <aside class="viewport-detail nb-panel-surface">
+            <div class="viewport-detail-header">
+              <p class="viewport-detail-kicker">Designer detail</p>
+              <h3>Phone preview controls</h3>
+              <p>
+                The same structural state drives phone and desktop previews. The controls live here so they do not read as product chrome.
+              </p>
+            </div>
+
+            <div class="viewport-detail-section">
+              <p class="viewport-detail-label">Current state</p>
+              <div class="viewport-detail-chips">
+                <UiChip label={activeGraphNode} tone="accent" />
+                <UiChip label={designerState.workspace.overlay === 'none' ? 'no overlay' : designerState.workspace.overlay} tone="neutral" />
+                <UiChip label={designerState.workspace.showPreview ? 'preview open' : 'preview closed'} tone="neutral" />
+                <UiChip label={designerState.workspace.showTimeline ? 'timeline open' : 'timeline closed'} tone="neutral" />
+              </div>
+              <div class="viewport-detail-copy">
+                <p>Selected file: {selectedFileName}</p>
+                <p>Selected event: {selectedEventTitle}</p>
+              </div>
+            </div>
+
+            <div class="viewport-detail-section">
+              <p class="viewport-detail-label">Pane layout</p>
+              <div class="viewport-detail-actions">
+                {#each paneModes as paneMode}
+                  <UiButton
+                    label={paneMode.label}
+                    tone={designerState.workspace.paneMode === paneMode.id ? 'primary' : 'secondary'}
+                    onClick={() => setPaneMode(paneMode.id)}
+                  />
+                {/each}
+              </div>
+            </div>
+
+            <div class="viewport-detail-section">
+              <p class="viewport-detail-label">Panels</p>
+              <div class="viewport-detail-actions">
+                <UiButton
+                  label={designerState.workspace.showPreview ? 'Hide preview panel' : 'Show preview panel'}
+                  tone={designerState.workspace.showPreview ? 'primary' : 'secondary'}
+                  onClick={togglePreview}
+                />
+                <UiButton
+                  label={designerState.workspace.showTimeline ? 'Hide timeline panel' : 'Show timeline panel'}
+                  tone={designerState.workspace.showTimeline ? 'primary' : 'secondary'}
+                  onClick={toggleTimeline}
+                />
+              </div>
+            </div>
+
+            <div class="viewport-detail-section">
+              <p class="viewport-detail-label">Overlays</p>
+              <div class="viewport-detail-actions">
+                {#each overlays as overlay}
+                  <UiButton
+                    label={overlay.label}
+                    tone={designerState.workspace.overlay === overlay.id ? 'primary' : 'secondary'}
+                    onClick={() => openOverlay(overlay.id)}
+                  />
+                {/each}
+                <UiButton
+                  label="Close overlay"
+                  tone="secondary"
+                  disabled={designerState.workspace.overlay === 'none'}
+                  onClick={closeOverlay}
+                />
+              </div>
+            </div>
+          </aside>
         </div>
       </section>
     {/if}

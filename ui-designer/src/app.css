@@ -129,7 +129,9 @@ textarea {
 .app-main {
   min-width: 0;
   min-height: 0;
-  display: block;
+  height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -142,14 +144,51 @@ textarea {
   padding-right: 0.1rem;
 }
 
+.moodboards-grid {
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.85rem;
+  align-content: start;
+}
+
+.moodboards-grid :global(.ui-card) {
+  padding: 0.85rem;
+  gap: 0.65rem;
+}
+
+.moodboards-grid :global(.ui-card-header) {
+  display: flex;
+  align-items: start;
+}
+
+.moodboards-grid :global(.ui-card-copy) {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.moodboards-grid :global(.ui-card-title) {
+  font-size: 0.98rem;
+}
+
+.moodboards-grid :global(.ui-card-body) {
+  display: flex;
+  min-height: 0;
+}
+
+.moodboards-grid :global(.ui-card-actions .ui-button) {
+  padding: 0.52rem 0.82rem;
+  font-size: 0.78rem;
+}
+
 .content-solo {
   display: grid;
+  height: 100%;
   min-height: 0;
   overflow: auto;
   padding-right: 0.1rem;
 }
 
 .graph-tab {
+  height: 100%;
   overflow: hidden;
 }
 
@@ -157,10 +196,12 @@ textarea {
   height: 100%;
 }
 
-.moodboard-card,
+.graph-tab :global(.ui-card-body) {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .moodboard-scene,
-.moodboard-swatches,
-.moodboard-atmosphere,
 .type-grid,
 .palette-grid,
 .component-grid,
@@ -169,33 +210,138 @@ textarea {
   gap: 0.8rem;
 }
 
+.moodboards-grid .moodboard-card {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.6rem;
+}
+
+.moodboard-copy-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.moodboard-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .moodboard-swatches {
-  grid-template-columns: repeat(4, 1fr);
+  display: flex;
+  gap: 0.45rem;
 }
 
 .moodboard-scene {
-  min-height: 8rem;
-  border-radius: 22px;
+  min-height: 4.75rem;
+  border-radius: 18px;
   border: 1px solid var(--nb-border);
+  background: var(--scene-canvas);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 12px 30px rgba(15, 18, 22, 0.08);
+    0 8px 20px rgba(15, 18, 22, 0.06);
+  overflow: hidden;
+  padding: 0.5rem;
+}
+
+.moodboard-scene-topbar {
+  display: flex;
+  gap: 0.24rem;
+  margin-bottom: 0.45rem;
+}
+
+.moodboard-scene-topbar span {
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--scene-text) 18%, var(--scene-surface));
+}
+
+.moodboard-scene-body {
+  display: flex;
+  gap: 0.42rem;
+  min-height: 0;
+  height: calc(100% - 0.83rem);
+}
+
+.moodboard-scene-sidebar {
+  width: 1.55rem;
+  border-radius: 0.8rem;
+  background: var(--scene-accent-soft);
+  border: 1px solid var(--scene-border);
+  flex: 0 0 auto;
+}
+
+.moodboard-scene-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
+.moodboard-scene-row {
+  display: flex;
+  gap: 0.42rem;
+  min-height: 0;
+}
+
+.moodboard-scene-card {
+  min-width: 0;
+  flex: 1 1 0;
+  border-radius: 0.8rem;
+  border: 1px solid var(--scene-border);
+  background: var(--scene-surface);
+}
+
+.moodboard-scene-card-hero {
+  min-height: 1.45rem;
+}
+
+.moodboard-scene-card-accent {
+  background: color-mix(in srgb, var(--scene-accent-soft) 78%, var(--scene-surface));
+  border-color: color-mix(in srgb, var(--scene-accent) 24%, var(--scene-border));
+}
+
+.moodboards-grid .moodboard-tagline {
+  font-size: 0.8rem;
+  line-height: 1.34;
 }
 
 .moodboard-summary {
-  font-size: 0.92rem;
-  line-height: 1.55;
-  max-width: 34ch;
+  font-size: 0.8rem;
+  line-height: 1.36;
+  max-width: 30ch;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .moodboard-swatches span {
-  min-height: 3.5rem;
-  border-radius: 16px;
+  flex: 1 1 0;
+  min-height: 2.2rem;
+  border-radius: 12px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .moodboard-atmosphere {
-  grid-template-columns: repeat(auto-fit, minmax(5rem, max-content));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.moodboards-grid .moodboard-atmosphere {
+  gap: 0.45rem;
+}
+
+.moodboards-grid .moodboard-atmosphere :global(.ui-chip) {
+  padding: 0.24rem 0.5rem;
+  font-size: 0.68rem;
 }
 
 .type-fonts {
@@ -259,18 +405,103 @@ textarea {
 
 .preview-desktop-frame {
   width: 100%;
-  min-height: 44rem;
+  height: 100%;
+  min-height: 0;
 }
 
 .preview-phone-frame {
   width: min(24rem, 100%);
   margin-inline: auto;
-  min-height: 44rem;
+  height: min(100%, calc(100dvh - 2rem));
+  min-height: 0;
   padding: 0.4rem;
   border-radius: 42px;
   border: 1px solid var(--nb-border-strong);
   background: color-mix(in srgb, var(--nb-surface-strong) 88%, black 6%);
   box-shadow: 0 24px 60px rgba(8, 14, 20, 0.22);
+}
+
+.viewport-surface-tab {
+  height: 100%;
+  overflow: hidden;
+}
+
+.viewport-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 21rem;
+  gap: 1rem;
+  height: 100%;
+  min-height: 0;
+}
+
+.viewport-layout-phone {
+  grid-template-columns: minmax(0, 1fr) 21rem;
+}
+
+.viewport-detail {
+  border-radius: 24px;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  min-height: 0;
+  overflow: auto;
+}
+
+.viewport-detail-header,
+.viewport-detail-section,
+.viewport-detail-copy {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.viewport-detail-kicker,
+.viewport-detail-label,
+.viewport-detail-header h3,
+.viewport-detail-header p,
+.viewport-detail-copy p {
+  margin: 0;
+}
+
+.viewport-detail-kicker,
+.viewport-detail-label {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 0.68rem;
+  color: var(--nb-accent-strong);
+}
+
+.viewport-detail-header h3 {
+  font-size: 1.02rem;
+}
+
+.viewport-detail-header p,
+.viewport-detail-copy p {
+  color: var(--nb-text-soft);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.viewport-detail-chips,
+.viewport-detail-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.palette-tab {
+  height: 100%;
+  overflow: hidden;
+}
+
+.palette-tab :global(.ui-card) {
+  height: 100%;
+}
+
+.palette-tab :global(.ui-card-body) {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.1rem;
 }
 
 .component-list {
@@ -354,6 +585,11 @@ textarea {
   }
 
   .graph-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .viewport-layout,
+  .viewport-layout-phone {
     grid-template-columns: 1fr;
   }
 }

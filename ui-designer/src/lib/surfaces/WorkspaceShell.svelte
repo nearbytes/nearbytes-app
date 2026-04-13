@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Bell, FolderKanban, Search, Share2, Shield, Settings2 } from 'lucide-svelte';
-  import UiButton from '../components/UiButton.svelte';
+  import UiDialog from '../components/UiDialog.svelte';
   import HubChip from '../components/HubChip.svelte';
   import FilesPane from './FilesPane.svelte';
   import ChatPane from './ChatPane.svelte';
@@ -13,7 +13,6 @@
   import SourcesPanel from './SourcesPanel.svelte';
   import StoragePanel from './StoragePanel.svelte';
   import HubStorageDialog from './HubStorageDialog.svelte';
-  import EventFlowPanel from './EventFlowPanel.svelte';
   import ResetDialog from './ResetDialog.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
@@ -30,6 +29,9 @@
   }: $$Props = $props();
 
   const showFilesFirst = $derived(ui.primaryPane === 'files');
+  const selectedEvent = $derived(
+    data.events.find((event) => event.id === ui.selectedEventId) ?? data.events[0] ?? null
+  );
 </script>
 
 <div class={`workspace-shell ${mode}`}>
@@ -67,16 +69,6 @@
       <TimelinePanel {ui} {data} {capabilities} {handlers} />
     {/if}
   </section>
-
-  <footer class="workspace-footer nb-panel-surface">
-    <UiButton label="Files focus" tone="secondary" onClick={() => handlers?.onAction?.({ type: 'set-pane-mode', paneMode: 'files-focus' })} />
-    <UiButton label="Chat focus" tone="secondary" onClick={() => handlers?.onAction?.({ type: 'set-pane-mode', paneMode: 'chat-focus' })} />
-    <UiButton label="Preview" tone="secondary" onClick={() => handlers?.onAction?.({ type: 'toggle-preview' })} />
-    <UiButton label="Timeline" tone="secondary" onClick={() => handlers?.onAction?.({ type: 'toggle-timeline' })} />
-    <UiButton label="Create" tone="secondary" onClick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'create' })} />
-    <UiButton label="Reset" tone="danger" quiet onClick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'reset' })} />
-  </footer>
-
   {#if ui.overlay === 'join'}
     <JoinDialog onClose={() => handlers?.onAction?.({ type: 'close-overlay' })} />
   {:else if ui.overlay === 'share'}
@@ -92,7 +84,21 @@
   {:else if ui.overlay === 'hub-storage'}
     <HubStorageDialog onClose={() => handlers?.onAction?.({ type: 'close-overlay' })} />
   {:else if ui.overlay === 'event-flow'}
-    <EventFlowPanel {ui} {data} {capabilities} {handlers} />
+    <UiDialog title="Event flow" onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>
+      {#snippet body()}
+        <div class="event-flow-grid">
+          {#if selectedEvent}
+            <strong>{selectedEvent.title}</strong>
+            <p>{selectedEvent.summary}</p>
+            <ul>
+              <li>Source object acknowledged</li>
+              <li>Encrypted block linked</li>
+              <li>Projection visible in current hub shell</li>
+            </ul>
+          {/if}
+        </div>
+      {/snippet}
+    </UiDialog>
   {:else if ui.overlay === 'reset'}
     <ResetDialog canReset={capabilities?.destructiveReset} onClose={() => handlers?.onAction?.({ type: 'close-overlay' })} />
   {/if}
@@ -112,8 +118,7 @@
     height: 100%;
   }
 
-  .workspace-header,
-  .workspace-footer {
+  .workspace-header {
     border-radius: 24px;
     padding: 0.85rem;
     display: flex;
@@ -163,19 +168,24 @@
     grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr);
   }
 
-  .workspace-footer {
-    flex-wrap: wrap;
-  }
-
   .workspace-shell.phone .workspace-body {
     grid-template-columns: 1fr;
   }
 
-  .workspace-shell.phone .workspace-footer {
-    justify-content: stretch;
+  .event-flow-grid {
+    display: grid;
+    gap: 0.6rem;
   }
 
-  .workspace-shell.phone .workspace-footer :global(button) {
-    flex: 1 1 calc(50% - 0.4rem);
+  .event-flow-grid p,
+  .event-flow-grid ul {
+    margin: 0;
+    color: var(--nb-text-soft);
+    font-size: 0.86rem;
+    line-height: 1.45;
+  }
+
+  .event-flow-grid ul {
+    padding-left: 1.15rem;
   }
 </style>
