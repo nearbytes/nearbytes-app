@@ -441,6 +441,7 @@ textarea {
   min-height: 0;
   overflow: auto;
   padding-right: 0.1rem;
+  align-content: start;
 }
 
 .graph-tab {
@@ -755,18 +756,26 @@ textarea {
 }
 
 .palette-tab {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
+  min-height: 0;
 }
 
 .palette-tab :global(.ui-card) {
   height: 100%;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .palette-tab :global(.ui-card-body) {
   min-height: 0;
+  height: 100%;
   overflow: auto;
   padding-right: 0.1rem;
+  align-content: start;
 }
 
 .component-list {

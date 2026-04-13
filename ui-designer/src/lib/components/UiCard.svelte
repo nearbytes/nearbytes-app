@@ -66,6 +66,10 @@
     min-height: 0;
   }
 
+  .ui-card-body {
+    align-content: start;
+  }
+
   .ui-card-eyebrow,
   .ui-card-title,
   .ui-card-detail {
