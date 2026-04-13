@@ -11,7 +11,7 @@
   import PhonePreview from './lib/surfaces/PhonePreview.svelte';
   import { buildCapabilities, buildFixtures } from './lib/fixtures/mockData.js';
   import { MOODBOARDS, MOODBOARD_BY_ID, buildThemeStyle } from './lib/tokens/theme.js';
-  import { GRAPH_EDGE_BY_ID, GRAPH_NODE_BY_ID } from './lib/state/graph.js';
+  import { GRAPH_EDGE_BY_ID, GRAPH_NODE_BY_ID, layoutGraph } from './lib/state/graph.js';
   import {
     selectComponentFamily,
     selectFixturePreset,
@@ -20,6 +20,7 @@
   } from './lib/state/actions.js';
   import { createUiDesignerStore } from './lib/state/store.js';
   import type { ComponentFamily, DesignerTab, GraphNodeId } from './lib/state/types.js';
+  import type { GraphLayoutMode } from './lib/state/graph.js';
 
   const designerStore = createUiDesignerStore();
   const activeGraphNodeStore = designerStore.activeGraphNode;
@@ -43,20 +44,22 @@
     { id: 'capability-limited', label: 'Limited' },
   ] as const;
 
-  const state = $derived($designerStore);
+  const designerState = $derived($designerStore);
   const activeGraphNode = $derived($activeGraphNodeStore);
-  let selectedGraphNodeId = $state<GraphNodeId | null>(null);
-  let selectedGraphEdgeId = $state<string | null>(null);
-  const moodboard = $derived(MOODBOARD_BY_ID[state.moodboardId]);
-  const fixtures = $derived(buildFixtures(state.fixturePreset));
-  const capabilities = $derived(buildCapabilities(state.fixturePreset));
-  const themeStyle = $derived(buildThemeStyle(state.moodboardId));
+  let graphLayoutMode: GraphLayoutMode = $state('planar');
+  let selectedGraphNodeId: GraphNodeId | null = $state(null);
+  let selectedGraphEdgeId: string | null = $state(null);
+  const moodboard = $derived(MOODBOARD_BY_ID[designerState.moodboardId]);
+  const fixtures = $derived(buildFixtures(designerState.fixturePreset));
+  const capabilities = $derived(buildCapabilities(designerState.fixturePreset));
+  const themeStyle = $derived(buildThemeStyle(designerState.moodboardId));
   const selectedGraphNode = $derived(
     GRAPH_NODE_BY_ID[selectedGraphNodeId ?? activeGraphNode]
   );
   const selectedGraphEdge = $derived(
     selectedGraphEdgeId ? GRAPH_EDGE_BY_ID[selectedGraphEdgeId] ?? null : null
   );
+  const graphLayout = $derived(layoutGraph(graphLayoutMode));
 
   function setTab(tab: DesignerTab) {
     designerStore.update((value) => selectTab(value, tab));
@@ -66,7 +69,7 @@
     designerStore.update((value) => selectMoodboard(value, id));
   }
 
-  function setPreset(id: typeof state.fixturePreset) {
+  function setPreset(id: typeof designerState.fixturePreset) {
     designerStore.update((value) => selectFixturePreset(value, id));
   }
 
@@ -87,7 +90,7 @@
 
     <nav class="sidebar-nav">
       {#each tabs as tab}
-        <button class:active={state.tab === tab.id} type="button" onclick={() => setTab(tab.id)}>
+        <button class:active={designerState.tab === tab.id} type="button" onclick={() => setTab(tab.id)}>
           {tab.label}
         </button>
       {/each}
@@ -97,7 +100,7 @@
       <p class="sidebar-label">Fixture preset</p>
       <div class="preset-pills">
         {#each fixturePresets as preset}
-          <button class:active={state.fixturePreset === preset.id} type="button" onclick={() => setPreset(preset.id)}>
+          <button class:active={designerState.fixturePreset === preset.id} type="button" onclick={() => setPreset(preset.id)}>
             {preset.label}
           </button>
         {/each}
@@ -113,21 +116,21 @@
   <main class="app-main">
     <header class="app-main-header nb-panel-surface">
       <div class="app-main-copy">
-        <p class="app-main-kicker">{tabs.find((tab) => tab.id === state.tab)?.label}</p>
+        <p class="app-main-kicker">{tabs.find((tab) => tab.id === designerState.tab)?.label}</p>
         <h2>{moodboard.label}</h2>
       </div>
       <div class="app-main-tools">
-        <UiChip label={state.fixturePreset} tone="accent" />
+        <UiChip label={designerState.fixturePreset} tone="accent" />
         <UiChip label={activeGraphNode} tone="neutral" />
       </div>
     </header>
 
-    {#if state.tab === 'moodboards'}
+    {#if designerState.tab === 'moodboards'}
       <section class="content-grid">
         {#each MOODBOARDS as board}
           <UiCard eyebrow="Moodboard" title={board.label} detail={board.summary}>
             {#snippet actions()}
-              <UiButton label={state.moodboardId === board.id ? 'Selected' : 'Use moodboard'} tone={state.moodboardId === board.id ? 'secondary' : 'primary'} onClick={() => setMoodboard(board.id)} />
+              <UiButton label={designerState.moodboardId === board.id ? 'Selected' : 'Use moodboard'} tone={designerState.moodboardId === board.id ? 'secondary' : 'primary'} onClick={() => setMoodboard(board.id)} />
             {/snippet}
 
             {#snippet body()}
@@ -149,7 +152,7 @@
           </UiCard>
         {/each}
       </section>
-    {:else if state.tab === 'typography'}
+    {:else if designerState.tab === 'typography'}
       <section class="content-solo">
         <UiCard eyebrow="Typography" title={moodboard.label} detail="Read-only token sheet derived from the selected moodboard.">
           {#snippet body()}
@@ -174,7 +177,7 @@
           {/snippet}
         </UiCard>
       </section>
-    {:else if state.tab === 'palette'}
+    {:else if designerState.tab === 'palette'}
       <section class="content-solo">
         <UiCard eyebrow="Palette" title={moodboard.label} detail="Read-only semantic palette derived from the selected moodboard.">
           {#snippet body()}
@@ -192,17 +195,17 @@
           {/snippet}
         </UiCard>
       </section>
-    {:else if state.tab === 'components'}
+    {:else if designerState.tab === 'components'}
       <section class="content-solo">
         <UiCard eyebrow="Components" title="Shared component library" detail="All reusable components live here independently from runtime wiring.">
           {#snippet body()}
             <div class="family-pills">
               {#each families as family}
-                <button class:active={state.componentFamily === family} type="button" onclick={() => setFamily(family)}>{family}</button>
+                <button class:active={designerState.componentFamily === family} type="button" onclick={() => setFamily(family)}>{family}</button>
               {/each}
             </div>
 
-            {#if state.componentFamily === 'primitives' || state.componentFamily === 'inputs'}
+            {#if designerState.componentFamily === 'primitives' || designerState.componentFamily === 'inputs'}
               <div class="component-grid">
                 <UiButton label="Primary action" />
                 <UiButton label="Secondary action" tone="secondary" />
@@ -213,7 +216,7 @@
               </div>
             {/if}
 
-            {#if state.componentFamily === 'display' || state.componentFamily === 'protocol'}
+            {#if designerState.componentFamily === 'display' || designerState.componentFamily === 'protocol'}
               <div class="component-list">
                 <HubChip hub={fixtures.hubs[0]} active />
                 {#if fixtures.files[0]}
@@ -228,27 +231,31 @@
               </div>
             {/if}
 
-            {#if state.componentFamily === 'shell'}
+            {#if designerState.componentFamily === 'shell'}
               <div class="component-grid component-grid-wide">
-                <DesktopPreview ui={state.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
+                <DesktopPreview ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
               </div>
             {/if}
           {/snippet}
         </UiCard>
       </section>
-    {:else if state.tab === 'graph'}
+    {:else if designerState.tab === 'graph'}
       <section class="content-solo graph-tab">
         <UiCard eyebrow="State graph" title="Structural UI transition graph" detail="The graph, previews, and store all share the same structural UI state.">
           {#snippet body()}
             <div class="graph-layout">
               <StateGraph
-                nodes={designerStore.graph.nodes}
-                edges={designerStore.graph.edges}
-                width={designerStore.graph.width}
-                height={designerStore.graph.height}
+                nodes={graphLayout.nodes}
+                edges={graphLayout.edges}
+                width={graphLayout.width}
+                height={graphLayout.height}
+                layoutMode={graphLayoutMode}
                 activeNodeId={activeGraphNode}
-                {selectedGraphNodeId}
-                {selectedGraphEdgeId}
+                selectedNodeId={selectedGraphNodeId}
+                selectedEdgeId={selectedGraphEdgeId}
+                onChangeLayout={(mode) => {
+                  graphLayoutMode = mode;
+                }}
                 onSelectNode={(nodeId) => {
                   selectedGraphNodeId = nodeId;
                   selectedGraphEdgeId = null;
@@ -300,13 +307,13 @@
           {/snippet}
         </UiCard>
       </section>
-    {:else if state.tab === 'desktop'}
+    {:else if designerState.tab === 'desktop'}
       <section class="content-solo">
-        <DesktopPreview ui={state.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
+        <DesktopPreview ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
       </section>
-    {:else if state.tab === 'phone'}
+    {:else if designerState.tab === 'phone'}
       <section class="content-solo">
-        <PhonePreview ui={state.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
+        <PhonePreview ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
       </section>
     {/if}
   </main>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { LaidOutGraphEdge, LaidOutGraphNode } from '../state/graph.js';
+  import type { GraphLayoutMode, LaidOutGraphEdge, LaidOutGraphNode } from '../state/graph.js';
   import type { GraphNodeId } from '../state/types.js';
 
   let {
@@ -7,21 +7,25 @@
     edges,
     width,
     height,
+    layoutMode = 'planar',
     activeNodeId,
     selectedNodeId = null,
     selectedEdgeId = null,
     onSelectNode,
     onSelectEdge,
+    onChangeLayout,
   } = $props<{
     nodes: LaidOutGraphNode[];
     edges: LaidOutGraphEdge[];
     width: number;
     height: number;
+    layoutMode?: GraphLayoutMode;
     activeNodeId: GraphNodeId;
     selectedNodeId?: GraphNodeId | null;
     selectedEdgeId?: string | null;
     onSelectNode?: ((nodeId: GraphNodeId) => void) | undefined;
     onSelectEdge?: ((edgeId: string) => void) | undefined;
+    onChangeLayout?: ((mode: GraphLayoutMode) => void) | undefined;
   }>();
 
   let scale = $state(1);
@@ -155,6 +159,26 @@ function handlePointerUp() {
   onpointerleave={handlePointerUp}
 >
   <div class="graph-controls">
+    <div class="graph-layout-controls" role="group" aria-label="Graph layout mode">
+      <button
+        class:active={layoutMode === 'planar'}
+        class="graph-control graph-layout-control"
+        type="button"
+        onclick={() => onChangeLayout?.('planar')}
+        aria-label="Use planar layout"
+      >
+        Planar
+      </button>
+      <button
+        class:active={layoutMode === 'layered'}
+        class="graph-control graph-layout-control"
+        type="button"
+        onclick={() => onChangeLayout?.('layered')}
+        aria-label="Use layered layout"
+      >
+        Layered
+      </button>
+    </div>
     <button class="graph-control" type="button" onclick={() => { hasInteracted = true; scale = clampScale(scale * 1.15); }} aria-label="Zoom in">+</button>
     <button class="graph-control" type="button" onclick={() => { hasInteracted = true; scale = clampScale(scale / 1.15); }} aria-label="Zoom out">-</button>
     <button class="graph-control graph-control-fit" type="button" onclick={() => { hasInteracted = false; fitToView(); }} aria-label="Fit graph to view">Fit</button>
@@ -240,6 +264,18 @@ function handlePointerUp() {
     z-index: 2;
     display: flex;
     gap: 0.45rem;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .graph-layout-controls {
+    display: flex;
+    gap: 0.32rem;
+    padding: 0.22rem;
+    border-radius: 999px;
+    border: 1px solid var(--nb-border);
+    background: color-mix(in srgb, var(--nb-surface) 84%, var(--nb-accent-soft));
   }
 
   .graph-control {
@@ -254,6 +290,23 @@ function handlePointerUp() {
     color: var(--nb-text);
     cursor: pointer;
     backdrop-filter: blur(12px);
+  }
+
+  .graph-layout-control {
+    min-width: 4.9rem;
+    height: 2rem;
+    padding: 0 0.72rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .graph-layout-control.active {
+    border-color: color-mix(in srgb, var(--nb-accent) 50%, var(--nb-border));
+    background: color-mix(in srgb, var(--nb-accent-soft) 66%, var(--nb-surface-strong));
+    color: var(--nb-accent-strong);
   }
 
   .graph-control-fit {

@@ -1,5 +1,7 @@
 import type { GraphNodeId, SharedWorkspaceState } from './types.js';
 
+export type GraphLayoutMode = 'planar' | 'layered';
+
 export type GraphNodeDefinition = {
   id: GraphNodeId;
   label: string;
@@ -37,6 +39,10 @@ const ROW_GAP = 140;
 const STUB = 28;
 const OUTER_PADDING = 64;
 const LANE_STEP = 18;
+const PLANAR_WIDTH = 1820;
+const PLANAR_HOME_Y = 520;
+const PLANAR_LEFT_X = 88;
+const PLANAR_RIGHT_X = 1500;
 
 export const GRAPH_NODES: GraphNodeDefinition[] = [
   {
@@ -225,7 +231,7 @@ function orthPath(points: Array<[number, number]>): string {
   return points.map(([x, y], index) => `${index === 0 ? 'M' : 'L'} ${x} ${y}`).join(' ');
 }
 
-export function layoutGraph(): { nodes: LaidOutGraphNode[]; edges: LaidOutGraphEdge[]; width: number; height: number } {
+function layoutLayeredGraph(): { nodes: LaidOutGraphNode[]; edges: LaidOutGraphEdge[]; width: number; height: number } {
   const maxLayer = Math.max(...GRAPH_NODES.map((node) => node.layer));
   const nodes = GRAPH_NODES.map((node) => {
     const x = (maxLayer - node.layer) * LAYER_GAP + OUTER_PADDING;
@@ -267,4 +273,149 @@ export function layoutGraph(): { nodes: LaidOutGraphNode[]; edges: LaidOutGraphE
   const width = maxLayer * LAYER_GAP + NODE_WIDTH + OUTER_PADDING * 2;
   const height = Math.max(...nodes.map((node) => node.y)) + NODE_HEIGHT + OUTER_PADDING;
   return { nodes, edges, width, height };
+}
+
+function curvePath(startX: number, startY: number, endX: number, endY: number, toRight: boolean): string {
+  const controlDistance = Math.max(130, Math.abs(endX - startX) * 0.35);
+  const controlSign = toRight ? 1 : -1;
+  const control1X = startX + controlDistance * controlSign;
+  const control2X = endX - controlDistance * controlSign;
+  return `M ${startX} ${startY} C ${control1X} ${startY}, ${control2X} ${endY}, ${endX} ${endY}`;
+}
+
+function layoutPlanarGraph(): { nodes: LaidOutGraphNode[]; edges: LaidOutGraphEdge[]; width: number; height: number } {
+  const leftColumn: GraphNodeId[] = [
+    'join-dialog',
+    'share-dialog',
+    'identity-manager',
+    'create-chooser',
+    'sources-panel',
+    'files-focus',
+    'chat-focus',
+  ];
+
+  const rightColumn: GraphNodeId[] = [
+    'preview-open',
+    'timeline-open',
+    'storage-panel',
+    'hub-storage-dialog',
+    'event-flow-panel',
+    'reset-dialog',
+  ];
+
+  const positionById = new Map<GraphNodeId, { x: number; y: number }>();
+  positionById.set('workspace-home', { x: Math.round((PLANAR_WIDTH - NODE_WIDTH) / 2), y: PLANAR_HOME_Y });
+
+  leftColumn.forEach((id, index) => {
+    positionById.set(id, { x: PLANAR_LEFT_X, y: 96 + index * 136 });
+  });
+
+  rightColumn.forEach((id, index) => {
+    positionById.set(id, { x: PLANAR_RIGHT_X, y: 132 + index * 136 });
+  });
+
+  const nodes = GRAPH_NODES.map((node) => {
+    const pos = positionById.get(node.id);
+    if (!pos) {
+      return {
+        ...node,
+        x: OUTER_PADDING,
+        y: OUTER_PADDING,
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
+      };
+    }
+    return {
+      ...node,
+      x: pos.x,
+      y: pos.y,
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+    };
+  });
+
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const homeNode = nodeById.get('workspace-home')!;
+  const homePeers = Array.from(
+    new Set(
+      GRAPH_EDGES
+        .filter((edge) => edge.from === 'workspace-home' || edge.to === 'workspace-home')
+        .map((edge) => (edge.from === 'workspace-home' ? edge.to : edge.from))
+    )
+  ).sort((a, b) => (nodeById.get(a)?.y ?? 0) - (nodeById.get(b)?.y ?? 0));
+
+  const homeSlotStep = homePeers.length > 1 ? (homeNode.height - 20) / (homePeers.length - 1) : 0;
+  const homeSlotYByNode = new Map<GraphNodeId, number>(
+    homePeers.map((nodeId, index) => [nodeId, homeNode.y + 10 + index * homeSlotStep])
+  );
+
+  const edges = GRAPH_EDGES.map((edge) => {
+    const from = nodeById.get(edge.from)!;
+    const to = nodeById.get(edge.to)!;
+    const homeRelated = edge.from === 'workspace-home' || edge.to === 'workspace-home';
+
+    if (homeRelated) {
+      const fromHome = edge.from === 'workspace-home';
+      const peer = fromHome ? to : from;
+      const peerIsRight = peer.x > homeNode.x;
+      const homeSlot = homeSlotYByNode.get(peer.id) ?? homeNode.y + homeNode.height / 2;
+
+      const startX = fromHome
+        ? peerIsRight
+          ? homeNode.x + homeNode.width
+          : homeNode.x
+        : peerIsRight
+          ? peer.x
+          : peer.x + peer.width;
+      const endX = fromHome
+        ? peerIsRight
+          ? peer.x
+          : peer.x + peer.width
+        : peerIsRight
+          ? homeNode.x + homeNode.width
+          : homeNode.x;
+      const startY = fromHome ? homeSlot - 4 : peer.y + peer.height / 2;
+      const endY = fromHome ? peer.y + peer.height / 2 : homeSlot + 4;
+      const path = curvePath(startX, startY, endX, endY, peerIsRight);
+
+      return {
+        ...edge,
+        path,
+        labelX: (startX + endX) / 2,
+        labelY: (startY + endY) / 2 + (fromHome ? -16 : 16),
+      };
+    }
+
+    const vertical = Math.abs(from.x - to.x) < 20;
+    const startX = vertical ? from.x + from.width / 2 : from.x + from.width;
+    const startY = vertical ? from.y + from.height : from.y + from.height / 2;
+    const endX = vertical ? to.x + to.width / 2 : to.x;
+    const endY = vertical ? to.y : to.y + to.height / 2;
+    const path = vertical
+      ? `M ${startX} ${startY} C ${startX} ${(startY + endY) / 2}, ${endX} ${(startY + endY) / 2}, ${endX} ${endY}`
+      : curvePath(startX, startY, endX, endY, true);
+
+    return {
+      ...edge,
+      path,
+      labelX: (startX + endX) / 2,
+      labelY: (startY + endY) / 2 - 14,
+    };
+  });
+
+  const width = Math.max(...nodes.map((node) => node.x + node.width)) + OUTER_PADDING;
+  const height = Math.max(...nodes.map((node) => node.y + node.height)) + OUTER_PADDING;
+  return { nodes, edges, width, height };
+}
+
+export function layoutGraph(mode: GraphLayoutMode = 'planar'): {
+  nodes: LaidOutGraphNode[];
+  edges: LaidOutGraphEdge[];
+  width: number;
+  height: number;
+} {
+  if (mode === 'layered') {
+    return layoutLayeredGraph();
+  }
+  return layoutPlanarGraph();
 }
