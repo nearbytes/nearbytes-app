@@ -646,12 +646,14 @@
 
   function openSourcesPanelWithFocus(focus: 'discovery' | 'defaults' | null): void {
     sourceDiscoveryPanelFocus = focus;
-    openDesignerOverlay('sources');
+    showSourcesPanel = true;
+    showVolumeStoragePanel = false;
   }
 
   function openVolumeStoragePanel(): void {
     sourceDiscoveryPanelFocus = null;
-    openDesignerOverlay('storage');
+    showVolumeStoragePanel = true;
+    showSourcesPanel = false;
   }
 
   function openMountStorageDialog(targetMountId: string | null = activeMountId): void {
@@ -1311,14 +1313,14 @@
     resetDialogDeleteLocalData = false;
     resetDialogBusy = false;
     resetDialogError = '';
-    openDesignerOverlay('reset');
+    showResetDialog = true;
   }
 
   function closeResetDialog(): void {
     if (resetDialogBusy) {
       return;
     }
-    closeDesignerOverlay('reset');
+    showResetDialog = false;
     resetDialogDeleteLocalData = false;
     resetDialogError = '';
   }
@@ -1868,33 +1870,6 @@
     showResetDialog = workspace.overlay === 'reset';
   }
 
-  function openDesignerOverlay(overlay: Exclude<DesignerOverlayKind, 'none' | 'timeline-detail' | 'hub-storage'>): void {
-    dispatchDesignerAction({ type: 'open-overlay', overlay });
-  }
-
-  function closeDesignerOverlay(overlay?: DesignerOverlayKind): void {
-    if (overlay && currentDesignerOverlay() !== overlay) {
-      return;
-    }
-    dispatchDesignerAction({ type: 'close-overlay' });
-  }
-
-  function toggleDesignerOverlay(overlay: Exclude<DesignerOverlayKind, 'none' | 'timeline-detail' | 'hub-storage'>): void {
-    if (currentDesignerOverlay() === overlay) {
-      closeDesignerOverlay(overlay);
-      return;
-    }
-    openDesignerOverlay(overlay);
-  }
-
-  function toggleDesignerTimeline(): void {
-    dispatchDesignerAction({ type: 'toggle-timeline' });
-  }
-
-  function setDesignerFileManagerViewMode(mode: FileManagerViewMode): void {
-    dispatchDesignerAction({ type: 'set-file-browser-view', view: mode });
-  }
-
   function dispatchDesignerAction(action: SurfaceAction): SharedWorkspaceState {
     designerUiState = applySurfaceAction(
       {
@@ -1912,7 +1887,32 @@
     if (!currentMount) {
       return;
     }
-    dispatchDesignerAction({ type: 'set-pane-mode', paneMode: toDesignerPaneMode(mode) });
+    if (mode === 'files') {
+      updateActiveMountWorkspace({
+        showFilesPane: true,
+        showChatPane: false,
+        showSearchPane: currentMount.showSearchPane,
+      });
+      return;
+    }
+    if (mode === 'chat') {
+      updateActiveMountWorkspace({
+        showFilesPane: false,
+        showChatPane: true,
+        showSearchPane: false,
+      });
+      showPreviewPane = false;
+      renamingFileName = null;
+      renameDraft = '';
+      fileManagerActive = false;
+      searchQuery = '';
+      return;
+    }
+    updateActiveMountWorkspace({
+      showFilesPane: true,
+      showChatPane: true,
+      showSearchPane: currentMount.showSearchPane,
+    });
   }
 
   function handleCompactWorkspaceAction(value: string) {
@@ -1929,11 +1929,11 @@
       return;
     }
     if (value === 'timeline') {
-      toggleDesignerTimeline();
+      showTimeMachinePanel = !showTimeMachinePanel;
       return;
     }
     if (value === 'flow') {
-      toggleDesignerOverlay('event-flow');
+      showEventFlowPanel = !showEventFlowPanel;
       return;
     }
     if (value === 'identities') {
@@ -4333,13 +4333,21 @@
   }
 
   function toggleVolumeStoragePanel() {
+    showVolumeStoragePanel = !showVolumeStoragePanel;
     sourceDiscoveryPanelFocus = null;
-    toggleDesignerOverlay('storage');
+    if (showVolumeStoragePanel) {
+      showSourcesPanel = false;
+      showEventFlowPanel = false;
+    }
   }
 
   function toggleSourcesPanel() {
+    showSourcesPanel = !showSourcesPanel;
     sourceDiscoveryPanelFocus = null;
-    toggleDesignerOverlay('sources');
+    if (showSourcesPanel) {
+      showVolumeStoragePanel = false;
+      showEventFlowPanel = false;
+    }
   }
 
   function openMountedVolumeRouting(targetVolumeId: string) {
@@ -4353,13 +4361,16 @@
   }
 
   function openVolumeShareStoragePanel(): void {
+    showVolumeShareDialog = false;
     openVolumeStoragePanel();
     sourceDiscoveryPanelFocus = 'shares';
   }
 
   function openJoinVolumeDialog(): void {
+    showVolumeShareDialog = false;
+    showCreateChooser = false;
     resetJoinDialogState();
-    openDesignerOverlay('join');
+    showJoinVolumeDialog = true;
   }
 
   async function openJoinVolumeDialogFromClipboard(): Promise<void> {
@@ -4368,7 +4379,7 @@
   }
 
   function closeJoinVolumeDialog(): void {
-    closeDesignerOverlay('join');
+    showJoinVolumeDialog = false;
     resetJoinDialogState();
   }
 
@@ -4376,15 +4387,18 @@
     if (!activeMount && !shareableVolumeId) {
       return;
     }
-    openDesignerOverlay('share');
+    showJoinVolumeDialog = false;
+    showCreateChooser = false;
+    showVolumeShareDialog = true;
   }
 
   function openCreateChooser(): void {
-    openDesignerOverlay('create');
+    showIdentityManager = false;
+    showCreateChooser = true;
   }
 
   function closeCreateChooser(): void {
-    closeDesignerOverlay('create');
+    showCreateChooser = false;
   }
 
   function startCreateHub(): void {
@@ -4398,7 +4412,7 @@
   }
 
   function closeVolumeShareDialog(): void {
-    closeDesignerOverlay('share');
+    showVolumeShareDialog = false;
   }
 
   async function previewJoinDialogLink(): Promise<void> {
@@ -4483,8 +4497,9 @@
       activeMountId = targetMountId;
       pendingMountId = null;
       secretPasteTargetMountId = null;
+      showVolumeStoragePanel = true;
+      showSourcesPanel = false;
       sourceDiscoveryPanelFocus = 'shares';
-      openVolumeStoragePanel();
       return;
     }
 
@@ -4522,8 +4537,8 @@
     activeMountId = targetMountId;
     pendingMountId = targetMountId;
     secretPasteTargetMountId = null;
-    closeDesignerOverlay('sources');
-    closeDesignerOverlay('storage');
+    showSourcesPanel = false;
+    showVolumeStoragePanel = false;
     sourceDiscoveryPanelFocus = null;
 
     await tick();
@@ -5316,8 +5331,22 @@
     if (!nextShowFiles && !nextShowChat) {
       return;
     }
-    const nextPaneMode: DesignerWorkspacePaneMode = nextShowFiles && nextShowChat ? 'balanced' : nextShowChat ? 'chat-focus' : 'files-focus';
-    dispatchDesignerAction({ type: 'set-pane-mode', paneMode: nextPaneMode });
+
+    updateActiveMountWorkspace({
+      showFilesPane: nextShowFiles,
+      showChatPane: nextShowChat,
+      showSearchPane: nextShowFiles ? currentMount.showSearchPane : false,
+    });
+
+    if (!nextShowFiles) {
+      showPreviewPane = false;
+      renamingFileName = null;
+      renameDraft = '';
+      fileManagerActive = false;
+      searchQuery = '';
+    }
+    if (!nextShowChat) {
+    }
   }
 
   function toggleWorkspaceSearch() {
@@ -5338,7 +5367,7 @@
     const next = createConfiguredIdentity();
     configuredIdentities = [...configuredIdentities, next];
     activeChatIdentityId = next.id;
-    openIdentityManager();
+    showIdentityManager = true;
     identityManagerError = '';
     identityManagerMessage = '';
   }
@@ -5487,14 +5516,15 @@
   }
 
   function openIdentityManager() {
+    showCreateChooser = false;
     if (currentVolumeChatIdentityId) {
       activeChatIdentityId = currentVolumeChatIdentityId;
     }
-    openDesignerOverlay('identity');
+    showIdentityManager = true;
   }
 
   function closeIdentityManager() {
-    closeDesignerOverlay('identity');
+    showIdentityManager = false;
   }
 
   function configuredIdentityNeedsPublish(identity: ConfiguredIdentity): boolean {
@@ -5529,7 +5559,7 @@
       identityManagerError = 'Identity secret is required.';
       identityManagerMessage = '';
       if (options.openManagerOnError) {
-        openIdentityManager();
+        showIdentityManager = true;
       }
       return null;
     }
@@ -5537,7 +5567,7 @@
       identityManagerError = 'Display name is required before publishing.';
       identityManagerMessage = '';
       if (options.openManagerOnError) {
-        openIdentityManager();
+        showIdentityManager = true;
       }
       return null;
     }
@@ -5574,7 +5604,7 @@
     } catch (error) {
       identityManagerError = error instanceof Error ? error.message : 'Failed to publish identity';
       if (options.openManagerOnError) {
-        openIdentityManager();
+        showIdentityManager = true;
       }
       return null;
     } finally {
@@ -5605,7 +5635,7 @@
     if (!selectedChatIdentity) {
       identityManagerError = 'Choose an identity before joining this chat.';
       identityManagerMessage = '';
-      openIdentityManager();
+      showIdentityManager = true;
       return null;
     }
     if (isHistoryMode) {
@@ -5629,7 +5659,7 @@
     };
     identityManagerError = '';
     identityManagerMessage = `Joined this hub as ${publishedIdentity.displayName.trim()}.`;
-    closeIdentityManager();
+    showIdentityManager = false;
     return publishedIdentity;
   }
 
@@ -6391,7 +6421,7 @@
     }
     if (showEventFlowPanel) {
       e.preventDefault();
-      closeDesignerOverlay('event-flow');
+      showEventFlowPanel = false;
       return;
     }
     handleManagerKeydown(e);
@@ -6829,9 +6859,15 @@
         onToggleWorkspaceSearch={toggleWorkspaceSearch}
         onToggleVolumeStoragePanel={toggleVolumeStoragePanel}
         onOpenVolumeShareDialog={openVolumeShareDialog}
-        onToggleTimeMachinePanel={toggleDesignerTimeline}
-        onToggleEventFlowPanel={() => toggleDesignerOverlay('event-flow')}
-        onSetFileManagerViewMode={setDesignerFileManagerViewMode}
+        onToggleTimeMachinePanel={() => {
+          showTimeMachinePanel = !showTimeMachinePanel;
+        }}
+        onToggleEventFlowPanel={() => {
+          showEventFlowPanel = !showEventFlowPanel;
+        }}
+        onSetFileManagerViewMode={(mode) => {
+          fileManagerViewMode = mode;
+        }}
       />
 
       {#if showFilesWorkspace && showSearchWorkspace}
@@ -7188,11 +7224,11 @@
           aria-modal="true"
           aria-label="Event flow"
           tabindex="-1"
-          onclick={(e) => { if (e.target === e.currentTarget) closeDesignerOverlay('event-flow'); }}
+          onclick={(e) => { if (e.target === e.currentTarget) showEventFlowPanel = false; }}
           onkeydown={(event) => {
             if (event.key === 'Escape') {
               event.preventDefault();
-              closeDesignerOverlay('event-flow');
+              showEventFlowPanel = false;
             }
           }}
         >
@@ -7200,7 +7236,7 @@
             <button
               type="button"
               class="flow-overlay-close"
-              onclick={() => { closeDesignerOverlay('event-flow'); }}
+              onclick={() => { showEventFlowPanel = false; }}
               aria-label="Close event flow"
             >
               <X size={18} strokeWidth={2} />
