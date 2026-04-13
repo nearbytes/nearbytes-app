@@ -11,6 +11,7 @@
   import PhonePreview from './lib/surfaces/PhonePreview.svelte';
   import { buildCapabilities, buildFixtures } from './lib/fixtures/mockData.js';
   import { MOODBOARDS, MOODBOARD_BY_ID, buildThemeStyle } from './lib/tokens/theme.js';
+  import { GRAPH_EDGE_BY_ID, GRAPH_NODE_BY_ID } from './lib/state/graph.js';
   import {
     selectComponentFamily,
     selectFixturePreset,
@@ -18,7 +19,7 @@
     selectTab,
   } from './lib/state/actions.js';
   import { createUiDesignerStore } from './lib/state/store.js';
-  import type { ComponentFamily, DesignerTab } from './lib/state/types.js';
+  import type { ComponentFamily, DesignerTab, GraphNodeId } from './lib/state/types.js';
 
   const designerStore = createUiDesignerStore();
   const activeGraphNodeStore = designerStore.activeGraphNode;
@@ -44,10 +45,18 @@
 
   const state = $derived($designerStore);
   const activeGraphNode = $derived($activeGraphNodeStore);
+  let selectedGraphNodeId = $state<GraphNodeId | null>(null);
+  let selectedGraphEdgeId = $state<string | null>(null);
   const moodboard = $derived(MOODBOARD_BY_ID[state.moodboardId]);
   const fixtures = $derived(buildFixtures(state.fixturePreset));
   const capabilities = $derived(buildCapabilities(state.fixturePreset));
   const themeStyle = $derived(buildThemeStyle(state.moodboardId));
+  const selectedGraphNode = $derived(
+    GRAPH_NODE_BY_ID[selectedGraphNodeId ?? activeGraphNode]
+  );
+  const selectedGraphEdge = $derived(
+    selectedGraphEdgeId ? GRAPH_EDGE_BY_ID[selectedGraphEdgeId] ?? null : null
+  );
 
   function setTab(tab: DesignerTab) {
     designerStore.update((value) => selectTab(value, tab));
@@ -231,14 +240,63 @@
       <section class="content-solo">
         <UiCard eyebrow="State graph" title="Structural UI transition graph" detail="The graph, previews, and store all share the same structural UI state.">
           {#snippet body()}
-            <StateGraph
-              nodes={designerStore.graph.nodes}
-              edges={designerStore.graph.edges}
-              width={designerStore.graph.width}
-              height={designerStore.graph.height}
-              activeNodeId={activeGraphNode}
-              onSelectNode={(nodeId) => designerStore.setStructuralState(nodeId)}
-            />
+            <div class="graph-layout">
+              <StateGraph
+                nodes={designerStore.graph.nodes}
+                edges={designerStore.graph.edges}
+                width={designerStore.graph.width}
+                height={designerStore.graph.height}
+                activeNodeId={activeGraphNode}
+                {selectedGraphNodeId}
+                {selectedGraphEdgeId}
+                onSelectNode={(nodeId) => {
+                  selectedGraphNodeId = nodeId;
+                  selectedGraphEdgeId = null;
+                  designerStore.setStructuralState(nodeId);
+                }}
+                onSelectEdge={(edgeId) => {
+                  selectedGraphEdgeId = edgeId;
+                  selectedGraphNodeId = null;
+                }}
+              />
+
+              <aside class="graph-detail nb-panel-surface">
+                {#if selectedGraphEdge}
+                  <p class="graph-detail-kicker">Transition</p>
+                  <h3>{selectedGraphEdge.label}</h3>
+                  <p class="graph-detail-copy">{selectedGraphEdge.detail}</p>
+                  <div class="graph-detail-grid">
+                    <div>
+                      <span>From</span>
+                      <strong>{GRAPH_NODE_BY_ID[selectedGraphEdge.from].label}</strong>
+                    </div>
+                    <div>
+                      <span>To</span>
+                      <strong>{GRAPH_NODE_BY_ID[selectedGraphEdge.to].label}</strong>
+                    </div>
+                  </div>
+                {:else}
+                  <p class="graph-detail-kicker">State</p>
+                  <h3>{selectedGraphNode.label}</h3>
+                  <p class="graph-detail-copy">{selectedGraphNode.detail}</p>
+                  <div class="graph-detail-grid">
+                    <div>
+                      <span>Layer</span>
+                      <strong>{selectedGraphNode.layer}</strong>
+                    </div>
+                    <div>
+                      <span>Row</span>
+                      <strong>{selectedGraphNode.row}</strong>
+                    </div>
+                  </div>
+                  <div class="graph-detail-notes">
+                    {#each selectedGraphNode.notes as note}
+                      <p>{note}</p>
+                    {/each}
+                  </div>
+                {/if}
+              </aside>
+            </div>
           {/snippet}
         </UiCard>
       </section>
