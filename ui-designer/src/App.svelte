@@ -237,7 +237,7 @@
         </UiCard>
       </section>
     {:else if state.tab === 'graph'}
-      <section class="content-solo">
+      <section class="content-solo graph-tab">
         <UiCard eyebrow="State graph" title="Structural UI transition graph" detail="The graph, previews, and store all share the same structural UI state.">
           {#snippet body()}
             <div class="graph-layout">

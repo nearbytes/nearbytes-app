@@ -50,6 +50,7 @@
     padding: 1rem;
     display: grid;
     gap: 0.9rem;
+    min-height: 0;
   }
 
   .ui-card-header {
@@ -62,6 +63,7 @@
   .ui-card-body {
     display: grid;
     gap: 0.35rem;
+    min-height: 0;
   }
 
   .ui-card-eyebrow,
