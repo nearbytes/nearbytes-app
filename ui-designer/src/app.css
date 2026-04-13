@@ -57,6 +57,20 @@ textarea {
   gap: 0.35rem;
 }
 
+.sidebar-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.sidebar-title {
+  margin: 0;
+  font-size: 1.04rem;
+  letter-spacing: 0.01em;
+}
+
 .sidebar-kicker,
 .sidebar-label,
 .moodboard-tagline,
@@ -114,35 +128,8 @@ textarea {
 .app-main {
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 1rem;
+  display: block;
   overflow: hidden;
-}
-
-.app-main-header {
-  border-radius: 30px;
-  padding: 0.9rem 1rem;
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: center;
-}
-
-.app-main-copy,
-.app-main-tools {
-  display: flex;
-  gap: 0.6rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.app-main-copy h2 {
-  margin: 0;
-}
-
-.app-main-copy h2 {
-  font-size: 1.1rem;
 }
 
 .content-grid {
@@ -250,6 +237,22 @@ textarea {
 
 .component-grid-wide {
   grid-template-columns: 1fr;
+}
+
+.preview-desktop-frame {
+  width: 100%;
+  min-height: 44rem;
+}
+
+.preview-phone-frame {
+  width: min(24rem, 100%);
+  margin-inline: auto;
+  min-height: 44rem;
+  padding: 0.4rem;
+  border-radius: 42px;
+  border: 1px solid var(--nb-border-strong);
+  background: color-mix(in srgb, var(--nb-surface-strong) 88%, black 6%);
+  box-shadow: 0 24px 60px rgba(8, 14, 20, 0.22);
 }
 
 .component-list {

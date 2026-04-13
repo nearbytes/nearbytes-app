@@ -7,8 +7,7 @@
   import FileRow from './lib/components/FileRow.svelte';
   import PeerRow from './lib/components/PeerRow.svelte';
   import EventRow from './lib/components/EventRow.svelte';
-  import DesktopPreview from './lib/surfaces/DesktopPreview.svelte';
-  import PhonePreview from './lib/surfaces/PhonePreview.svelte';
+  import WorkspaceShell from './lib/surfaces/WorkspaceShell.svelte';
   import { buildCapabilities, buildFixtures } from './lib/fixtures/mockData.js';
   import { MOODBOARDS, MOODBOARD_BY_ID, buildThemeStyle } from './lib/tokens/theme.js';
   import { GRAPH_EDGE_BY_ID, GRAPH_NODE_BY_ID, layoutGraph } from './lib/state/graph.js';
@@ -81,7 +80,10 @@
 <div class="designer-app nb-theme-scope nb-type-body" style={themeStyle}>
   <aside class="app-sidebar nb-panel-surface">
     <div class="sidebar-brand">
-      <p class="sidebar-kicker">Nearbytes</p>
+      <div class="sidebar-brand-row">
+        <h1 class="sidebar-title nb-type-heading">Nearbytes</h1>
+        <UiChip label={moodboard.label} tone="neutral" />
+      </div>
     </div>
 
     <nav class="sidebar-nav">
@@ -110,16 +112,6 @@
   </aside>
 
   <main class="app-main">
-    <header class="app-main-header nb-panel-surface">
-      <div class="app-main-copy">
-        <h2>{moodboard.label}</h2>
-      </div>
-      <div class="app-main-tools">
-        <UiChip label={designerState.fixturePreset} tone="accent" />
-        <UiChip label={activeGraphNode} tone="neutral" />
-      </div>
-    </header>
-
     {#if designerState.tab === 'moodboards'}
       <section class="content-grid">
         {#each MOODBOARDS as board}
@@ -228,7 +220,9 @@
 
             {#if designerState.componentFamily === 'shell'}
               <div class="component-grid component-grid-wide">
-                <DesktopPreview ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
+                <div class="preview-desktop-frame">
+                  <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="desktop" />
+                </div>
               </div>
             {/if}
           {/snippet}
@@ -304,11 +298,15 @@
       </section>
     {:else if designerState.tab === 'desktop'}
       <section class="content-solo">
-        <DesktopPreview ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
+        <div class="preview-desktop-frame">
+          <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="desktop" />
+        </div>
       </section>
     {:else if designerState.tab === 'phone'}
       <section class="content-solo">
-        <PhonePreview ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} />
+        <div class="preview-phone-frame">
+          <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="phone" />
+        </div>
       </section>
     {/if}
   </main>
