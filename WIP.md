@@ -3,6 +3,7 @@
 ## Scope For This Pass
 
 - Move only presentational UI shells and explicit structural transition surfaces into `ui-designer`.
+- All real-app UI state transitions must be executed by invoking transition functions exported by `ui-designer`; the app must not directly mutate structural UI state when a design transition exists.
 - Keep all runtime, network, backend, orchestration, crypto, parsing, bridge, and non-trivial computation in `ui/src`.
 - Explicitly staying in `ui/src` for this pass: `StoragePanel.svelte`, `EventFlowPanel.svelte`, `VolumeChat.svelte`, `JoinLinkSections.svelte`, `NearbytesLogo.svelte`, `AppBrandMark.svelte`, `VolumeIdentity.svelte`, `AudioPreview.svelte`.
 
@@ -22,14 +23,18 @@
 	Commit: f634ea4
 4. [x] Promote `ArmedActionButton` and `IconToggle` into `ui-designer`, then rewire app consumers.
 	Commit: fb2ecaf
-5. [ ] Promote `StatusNotice`, `SecretSeedFields`, and `SharedSecretEditor` into `ui-designer`, then rewire app consumers.
+5. [x] Promote `StatusNotice`, `SecretSeedFields`, and `SharedSecretEditor` into `ui-designer`, then rewire app consumers.
+	Commit: 3db7315
+6. [ ] Expand the designer transition contract where needed and add a real-app transition adapter that invokes `ui-designer` transition functions for structural workspace UI state.
 	Commit: pending
-6. [ ] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers.
+7. [ ] Route the real app's current structural UI transitions through the designer transition adapter for overlays, timeline, event flow, pane/view mode, and related workspace chrome state.
 	Commit: pending
-7. [ ] Promote `WorkspaceModeBar` and `MountRail` into `ui-designer`, then rewire app consumers.
+8. [ ] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers through the transition adapter path.
+	Commit: pending
+9. [ ] Promote `WorkspaceModeBar` and `MountRail` into `ui-designer`, then rewire app consumers so toolbar interactions dispatch designer transitions instead of mutating app UI state directly.
 	Commit: pending
 
 ## Progress
 
-- Completed steps: 4 / 7
-- Remaining steps: 3
+- Completed steps: 5 / 9
+- Remaining steps: 4
