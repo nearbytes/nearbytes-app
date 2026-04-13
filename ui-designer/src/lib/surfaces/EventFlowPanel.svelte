@@ -135,9 +135,7 @@
 <div class="event-flow-panel">
   <div class="ef-header">
     <div>
-      <p class="ef-eyebrow">Protocol inspection</p>
       <h2>Event Flow</h2>
-      <p class="ef-copy">A reusable animated surface for showing how timeline events move through provider lanes and storage projections.</p>
     </div>
     <div class="ef-stats">
       <UiChip label={`${totalEvents} events`} tone="accent" />
@@ -231,33 +229,8 @@
     align-items: start;
   }
 
-  .ef-header h2,
-  .ef-copy,
-  .ef-eyebrow {
+  .ef-header h2 {
     margin: 0;
-  }
-
-  .ef-eyebrow,
-  .ef-rail-label {
-    color: var(--nb-accent-strong);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-size: 0.7rem;
-  }
-
-  .ef-copy {
-    margin-top: 0.35rem;
-    color: var(--nb-text-soft);
-    font-size: 0.84rem;
-    max-width: 44rem;
-    line-height: 1.45;
-  }
-
-  .ef-stats {
-    display: flex;
-    gap: 0.55rem;
-    flex-wrap: wrap;
-    justify-content: flex-end;
   }
 
   .ef-layout {

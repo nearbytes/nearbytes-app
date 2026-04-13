@@ -437,9 +437,7 @@
 
               <aside class="graph-detail nb-panel-surface">
                 {#if selectedGraphEdge}
-                  <p class="graph-detail-kicker">Transition</p>
                   <h3>{selectedGraphEdge.label}</h3>
-                  <p class="graph-detail-copy">{selectedGraphEdge.detail}</p>
                   <div class="graph-detail-grid">
                     <div>
                       <span>From</span>
@@ -451,9 +449,7 @@
                     </div>
                   </div>
                 {:else}
-                  <p class="graph-detail-kicker">State</p>
                   <h3>{selectedGraphNode.label}</h3>
-                  <p class="graph-detail-copy">{selectedGraphNode.detail}</p>
                   <div class="graph-detail-grid">
                     <div>
                       <span>Layer</span>
@@ -463,11 +459,6 @@
                       <span>Row</span>
                       <strong>{selectedGraphNode.row}</strong>
                     </div>
-                  </div>
-                  <div class="graph-detail-notes">
-                    {#each selectedGraphNode.notes as note}
-                      <p>{note}</p>
-                    {/each}
                   </div>
                 {/if}
               </aside>
@@ -497,11 +488,7 @@
           <aside class:hidden={!inspectorVisible} class="viewport-detail nb-panel-surface">
             <div class="viewport-detail-header">
               <div>
-                <p class="viewport-detail-kicker">Designer detail</p>
-                <h3>Desktop preview controls</h3>
-                <p>
-                  These controls mutate the designer's structural state. They are not part of the intended desktop shell UI.
-                </p>
+                <h3>Desktop controls</h3>
               </div>
               <button
                 type="button"
@@ -600,11 +587,7 @@
           <aside class:hidden={!inspectorVisible} class="viewport-detail nb-panel-surface">
             <div class="viewport-detail-header">
               <div>
-                <p class="viewport-detail-kicker">Designer detail</p>
-                <h3>Phone preview controls</h3>
-                <p>
-                  The same structural state drives phone and desktop previews. The controls live here so they do not read as product chrome.
-                </p>
+                <h3>Phone controls</h3>
               </div>
               <button
                 type="button"

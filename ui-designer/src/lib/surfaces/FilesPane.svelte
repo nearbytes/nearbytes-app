@@ -44,7 +44,7 @@
     <div class="files-pane-title-block">
       <div>
         <h3>{selectedHub?.label ?? 'Workspace files'}</h3>
-        <p>{selectedHub?.members ?? 0} members • authoritative desktop file browser surface</p>
+        <p>{selectedHub?.members ?? 0} members</p>
       </div>
     </div>
     <div class="files-pane-actions">

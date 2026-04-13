@@ -144,10 +144,10 @@ export const GRAPH_NODES: GraphNodeDefinition[] = [
   {
     id: 'event-flow-panel',
     label: 'Event Flow',
-    detail: 'Inspect event lineage and references.',
+    detail: '',
     layer: 2,
     row: 12,
-    notes: ['Protocol inspection surface.', 'Later specs can deepen this without changing the graph contract.'],
+    notes: [],
   },
   {
     id: 'reset-dialog',

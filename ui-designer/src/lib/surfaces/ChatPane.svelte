@@ -12,7 +12,7 @@
 <section class="chat-pane nb-panel-surface">
   <header class="chat-pane-header">
     <div>
-      <h3>Protocol room</h3>
+      <h3>Chat</h3>
     </div>
     <UiButton label="Identity" tone="secondary" onClick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'identity' })} />
   </header>

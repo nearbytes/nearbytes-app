@@ -14,7 +14,6 @@
 <UiDialog
   title="Share hub"
   eyebrow="Distribution"
-  detail="Review delivery lanes, provider readiness, and the surfaces that recipients will see."
   onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}
 >
   {#snippet body()}

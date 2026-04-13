@@ -16,7 +16,6 @@
   <header class="timeline-pane-header">
     <div>
       <h3>Recent event stream</h3>
-      <p>Inspect timeline payloads, transport states, and protocol consequences.</p>
     </div>
     <div class="timeline-actions">
       <button type="button" class="timeline-icon" aria-label="Inspect selected event" onclick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'timeline-detail' })}>
@@ -66,12 +65,6 @@
 
   .timeline-pane-header h3 {
     margin: 0;
-  }
-
-  .timeline-pane-header p {
-    margin: 0.3rem 0 0;
-    color: var(--nb-text-soft);
-    font-size: 0.8rem;
   }
 
   .timeline-actions {
