@@ -16,8 +16,8 @@
 
 1. [x] Commit the pending designer palette scroll/layout fix in `ui-designer/src/app.css`.
 	Commit: d9755c7
-2. [ ] Promote `AppDialog` and `ErrorBadge` into `ui-designer`, then rewire app consumers to the designer-owned versions.
-	Commit: pending
+2. [x] Promote `AppDialog` and `ErrorBadge` into `ui-designer`, then rewire app consumers to the designer-owned versions.
+	Commit: d302134
 3. [ ] Upgrade designer `ShareCard` and `ProviderStatusCard` to the app-safe prop contract, then rewire `StoragePanel` and related consumers to the designer-owned versions.
 	Commit: pending
 4. [ ] Promote `ArmedActionButton` and `IconToggle` into `ui-designer`, then rewire app consumers.
@@ -31,5 +31,5 @@
 
 ## Progress
 
-- Completed steps: 1 / 7
-- Remaining steps: 6
+- Completed steps: 2 / 7
+- Remaining steps: 5

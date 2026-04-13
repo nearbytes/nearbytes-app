@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorBadge from './ErrorBadge.svelte';
   import type { Snippet } from 'svelte';
 
   export type ShareCardBadgeTone = 'good' | 'warn' | 'muted' | 'durable' | 'replica' | 'off';
@@ -10,7 +11,11 @@
     compact = false,
     statusBadges = [],
     meta = [],
+    metaActions,
     body,
+    controls,
+    details,
+    actions,
     footer,
   } = $props<{
     title: string;
@@ -19,7 +24,11 @@
     compact?: boolean;
     statusBadges?: Array<{ label: string; tone?: ShareCardBadgeTone; description?: string }>;
     meta?: string[];
+    metaActions?: Snippet;
     body?: Snippet;
+    controls?: Snippet;
+    details?: Snippet;
+    actions?: Snippet;
     footer?: Snippet;
   }>();
 </script>
@@ -30,19 +39,36 @@
     {#if statusBadges.length > 0}
       <span class="card-head-badges">
         {#each statusBadges as badge}
-          <span class={`status-pill tone-${badge.tone ?? 'muted'}`} title={badge.description ?? badge.label}>
-            {badge.label}
-          </span>
+          {#if badge.tone === 'warn' && badge.description?.trim()}
+            <ErrorBadge
+              label={badge.label}
+              description={badge.description}
+              title={title}
+              tone={badge.tone}
+            />
+          {:else}
+            <span class={`status-pill tone-${badge.tone ?? 'muted'}`} title={badge.description ?? badge.label}>
+              {badge.label}
+            </span>
+          {/if}
         {/each}
+      </span>
+    {/if}
+    {#if actions}
+      <span class="card-head-actions">
+        {@render actions()}
       </span>
     {/if}
   </div>
 
-  {#if meta.length > 0}
+  {#if meta.length > 0 || metaActions}
     <div class="card-sub">
       {#each meta as item}
         <span>{item}</span>
       {/each}
+      {#if metaActions}
+        {@render metaActions()}
+      {/if}
     </div>
   {/if}
 
@@ -53,6 +79,18 @@
   {#if body}
     <div class="card-body">
       {@render body()}
+    </div>
+  {/if}
+
+  {#if controls}
+    <div class="card-controls">
+      {@render controls()}
+    </div>
+  {/if}
+
+  {#if details}
+    <div class="card-details">
+      {@render details()}
     </div>
   {/if}
 
@@ -108,6 +146,14 @@
     flex-wrap: wrap;
     gap: 0.28rem;
     align-items: center;
+    min-width: 0;
+  }
+
+  .card-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-shrink: 0;
   }
 
   .status-pill {
@@ -152,10 +198,25 @@
     color: var(--nb-text-soft);
     font-size: 0.76rem;
     line-height: 1.42;
+    overflow-wrap: anywhere;
+  }
+
+  .card-controls {
+    display: flex;
+    gap: 0.35rem;
+    align-items: center;
+    padding-top: 0.15rem;
   }
 
   .card-body,
+  .card-details,
   .card-footer {
     min-width: 0;
+  }
+
+  @media (max-width: 480px) {
+    .card-head {
+      flex-wrap: wrap;
+    }
   }
 </style>
