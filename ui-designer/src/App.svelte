@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Focus, LayoutPanelLeft, PanelRightClose } from 'lucide-svelte';
+  import { Focus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-svelte';
   import UiButton from './lib/components/UiButton.svelte';
   import UiCard from './lib/components/UiCard.svelte';
   import UiChip from './lib/components/UiChip.svelte';
@@ -96,6 +96,7 @@
     fixtures.events.find((event) => event.id === designerState.workspace.selectedEventId)?.title ?? 'No event selected'
   );
   const uiFocusActive = $derived(!sidebarVisible && !inspectorVisible);
+  const focusButtonTitle = $derived(uiFocusActive ? 'Exit focus mode (F)' : 'Focus preview (F)');
 
   function setTab(tab: DesignerTab) {
     designerStore.update((value) => selectTab(value, tab));
@@ -195,27 +196,47 @@
   });
 </script>
 
-<div class:ui-focus={uiFocusActive} class="designer-app nb-theme-scope nb-type-body" style={themeStyle}>
-  <div class="designer-chrome-controls nb-panel-surface">
-    <button type="button" class:active={sidebarVisible} class="chrome-toggle" onclick={toggleSidebar} title={sidebarVisible ? 'Hide left panel' : 'Show left panel'}>
-      <LayoutPanelLeft size={16} />
-      <span>Left panel</span>
+<div class:ui-focus={uiFocusActive} class:sidebar-collapsed={!sidebarVisible} class="designer-app nb-theme-scope nb-type-body" style={themeStyle}>
+  <button
+    type="button"
+    class:active={uiFocusActive}
+    class="floating-focus-button"
+    title={focusButtonTitle}
+    aria-label={focusButtonTitle}
+    aria-keyshortcuts="F"
+    onclick={toggleUiFocus}
+  >
+    <Focus size={16} />
+  </button>
+
+  {#if !sidebarVisible && !uiFocusActive}
+    <button
+      type="button"
+      class="edge-toggle edge-toggle-left"
+      title="Show left panel"
+      aria-label="Show left panel"
+      onclick={toggleSidebar}
+    >
+      <PanelLeftOpen size={16} />
     </button>
-    <button type="button" class:active={inspectorVisible} class="chrome-toggle" onclick={toggleInspector} title={inspectorVisible ? 'Hide right panel' : 'Show right panel'}>
-      <PanelRightClose size={16} />
-      <span>Right panel</span>
-    </button>
-    <button type="button" class:active={uiFocusActive} class="chrome-toggle chrome-toggle-focus" onclick={toggleUiFocus} title="Toggle UI focus (F)">
-      <Focus size={16} />
-      <span>{uiFocusActive ? 'Exit focus' : 'Focus UI'}</span>
-    </button>
-  </div>
+  {/if}
 
   <aside class:hidden={!sidebarVisible} class="app-sidebar nb-panel-surface">
     <div class="sidebar-brand">
       <div class="sidebar-brand-row">
         <h1 class="sidebar-title nb-type-heading">Nearbytes</h1>
-        <UiChip label={moodboard.label} tone="neutral" />
+        <div class="sidebar-brand-actions">
+          <UiChip label={moodboard.label} tone="neutral" />
+          <button
+            type="button"
+            class="panel-collapse-button"
+            title="Hide left panel"
+            aria-label="Hide left panel"
+            onclick={toggleSidebar}
+          >
+            <PanelLeftClose size={16} />
+          </button>
+        </div>
       </div>
     </div>
 
@@ -461,13 +482,36 @@
             <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="desktop" />
           </div>
 
+          {#if !inspectorVisible && !uiFocusActive}
+            <button
+              type="button"
+              class="edge-toggle edge-toggle-right"
+              title="Show preview controls"
+              aria-label="Show preview controls"
+              onclick={toggleInspector}
+            >
+              <PanelRightOpen size={16} />
+            </button>
+          {/if}
+
           <aside class:hidden={!inspectorVisible} class="viewport-detail nb-panel-surface">
             <div class="viewport-detail-header">
-              <p class="viewport-detail-kicker">Designer detail</p>
-              <h3>Desktop preview controls</h3>
-              <p>
-                These controls mutate the designer's structural state. They are not part of the intended desktop shell UI.
-              </p>
+              <div>
+                <p class="viewport-detail-kicker">Designer detail</p>
+                <h3>Desktop preview controls</h3>
+                <p>
+                  These controls mutate the designer's structural state. They are not part of the intended desktop shell UI.
+                </p>
+              </div>
+              <button
+                type="button"
+                class="panel-collapse-button"
+                title="Hide preview controls"
+                aria-label="Hide preview controls"
+                onclick={toggleInspector}
+              >
+                <PanelRightClose size={16} />
+              </button>
             </div>
 
             <div class="viewport-detail-section">
@@ -541,13 +585,36 @@
             <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="phone" />
           </div>
 
+          {#if !inspectorVisible && !uiFocusActive}
+            <button
+              type="button"
+              class="edge-toggle edge-toggle-right"
+              title="Show preview controls"
+              aria-label="Show preview controls"
+              onclick={toggleInspector}
+            >
+              <PanelRightOpen size={16} />
+            </button>
+          {/if}
+
           <aside class:hidden={!inspectorVisible} class="viewport-detail nb-panel-surface">
             <div class="viewport-detail-header">
-              <p class="viewport-detail-kicker">Designer detail</p>
-              <h3>Phone preview controls</h3>
-              <p>
-                The same structural state drives phone and desktop previews. The controls live here so they do not read as product chrome.
-              </p>
+              <div>
+                <p class="viewport-detail-kicker">Designer detail</p>
+                <h3>Phone preview controls</h3>
+                <p>
+                  The same structural state drives phone and desktop previews. The controls live here so they do not read as product chrome.
+                </p>
+              </div>
+              <button
+                type="button"
+                class="panel-collapse-button"
+                title="Hide preview controls"
+                aria-label="Hide preview controls"
+                onclick={toggleInspector}
+              >
+                <PanelRightClose size={16} />
+              </button>
             </div>
 
             <div class="viewport-detail-section">

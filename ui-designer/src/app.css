@@ -191,38 +191,36 @@ textarea {
 }
 
 .designer-app {
+  position: relative;
   height: 100vh;
   max-height: 100vh;
   display: grid;
   grid-template-columns: 21rem minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
   gap: 1rem;
   padding: 1rem;
   overflow: hidden;
 }
 
-.designer-chrome-controls {
-  grid-column: 1 / -1;
-  display: flex;
-  gap: 0.55rem;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 0.65rem 0.8rem;
-  border-radius: 999px;
-  backdrop-filter: blur(20px);
+.designer-app.sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.chrome-toggle {
+.floating-focus-button,
+.panel-collapse-button,
+.edge-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 0.42rem;
-  min-height: 2.3rem;
-  padding: 0 0.85rem;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
   border-radius: 999px;
   border: 1px solid var(--nb-border);
-  background: color-mix(in srgb, var(--nb-surface-strong) 86%, transparent);
+  background: color-mix(in srgb, var(--nb-surface-strong) 84%, transparent);
   color: var(--nb-text-soft);
   cursor: pointer;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 10px 28px rgba(12, 18, 24, 0.12);
   transition:
     transform 160ms ease,
     border-color 160ms ease,
@@ -231,20 +229,49 @@ textarea {
     box-shadow 160ms ease;
 }
 
-.chrome-toggle:hover {
+.floating-focus-button:hover,
+.panel-collapse-button:hover,
+.edge-toggle:hover {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--nb-accent) 28%, var(--nb-border));
   color: var(--nb-text);
 }
 
-.chrome-toggle.active {
+.floating-focus-button.active {
   border-color: color-mix(in srgb, var(--nb-accent) 34%, var(--nb-border));
-  background: color-mix(in srgb, var(--nb-accent-soft) 46%, var(--nb-surface-strong));
+  background: color-mix(in srgb, var(--nb-accent-soft) 62%, var(--nb-surface-strong));
   color: var(--nb-text);
 }
 
-.chrome-toggle-focus {
-  margin-left: auto;
+.floating-focus-button {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 20;
+}
+
+.panel-collapse-button {
+  flex: 0 0 auto;
+}
+
+.edge-toggle {
+  position: absolute;
+  z-index: 12;
+}
+
+.edge-toggle-left {
+  top: 1rem;
+  left: 1rem;
+}
+
+.edge-toggle-right {
+  top: 50%;
+  right: 1rem;
+  transform: translateY(-50%);
+}
+
+.edge-toggle-right:hover {
+  transform: translateY(calc(-50% - 1px));
 }
 
 .app-sidebar.hidden,
@@ -252,8 +279,16 @@ textarea {
   display: none;
 }
 
-.designer-app.ui-focus .designer-chrome-controls {
-  background: color-mix(in srgb, var(--nb-surface-strong) 62%, transparent);
+.designer-app.ui-focus {
+  padding: 0;
+  gap: 0;
+}
+
+.designer-app.ui-focus .floating-focus-button {
+  top: 0.9rem;
+  right: 0.9rem;
+  background: color-mix(in srgb, var(--nb-surface-strong) 52%, transparent);
+  box-shadow: 0 12px 32px rgba(9, 14, 18, 0.18);
 }
 
 .app-sidebar {
@@ -278,6 +313,12 @@ textarea {
   justify-content: space-between;
   gap: 0.6rem;
   flex-wrap: wrap;
+}
+
+.sidebar-brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
 }
 
 .sidebar-title {
@@ -642,6 +683,7 @@ textarea {
 }
 
 .viewport-layout {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 21rem;
   gap: 1rem;
@@ -673,6 +715,11 @@ textarea {
 .viewport-detail-copy {
   display: grid;
   gap: 0.55rem;
+}
+
+.viewport-detail-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
 }
 
 .viewport-detail-kicker,
@@ -795,16 +842,20 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .designer-chrome-controls {
-    justify-content: stretch;
-    flex-wrap: wrap;
+  .edge-toggle-left {
+    top: 0.85rem;
+    left: 0.85rem;
   }
 
-  .chrome-toggle,
-  .chrome-toggle-focus {
-    flex: 1 1 11rem;
-    justify-content: center;
-    margin-left: 0;
+  .edge-toggle-right {
+    top: auto;
+    right: 0.85rem;
+    bottom: 0.85rem;
+    transform: none;
+  }
+
+  .edge-toggle-right:hover {
+    transform: translateY(-1px);
   }
 
   .app-main-header {

@@ -102,9 +102,9 @@
   import NearbytesLogo from './components/NearbytesLogo.svelte';
   import MountRail from './components/MountRail.svelte';
   import SharedSecretEditor from './components/SharedSecretEditor.svelte';
-  import ShareSpaceLinkSection from './components/ShareSpaceLinkSection.svelte';
   import StatusNotice from './components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
+  import VolumeShareDialog from './components/VolumeShareDialog.svelte';
   import EventFlowPanel from './components/EventFlowPanel.svelte';
   import WorkspaceModeBar from './components/WorkspaceModeBar.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
@@ -8201,49 +8201,14 @@
   {/if}
 
   {#if showVolumeShareDialog}
-    <div
-      class="share-dialog-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Share this hub"
-      tabindex="-1"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) {
-          closeVolumeShareDialog();
-        }
-      }}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeVolumeShareDialog();
-        }
-      }}
-    >
-      <div class="share-dialog panel-surface" role="document" tabindex="-1">
-        <div class="share-dialog-header">
-          <div class="share-dialog-head-meta">
-            <p class="share-dialog-eyebrow">Shared hub</p>
-            <p class="share-dialog-title">Share this hub</p>
-          </div>
-          <button type="button" class="tm-details-close" aria-label="Close share dialog" onclick={closeVolumeShareDialog}>
-            <X size={18} strokeWidth={2} />
-          </button>
-        </div>
-
-        <div class="share-dialog-body">
-          <section class="share-dialog-section">
-            <ShareSpaceLinkSection
-              canCopySecretLink={hasCopyableCurrentSecret()}
-              shareLinkBusy={joinLinkCopyBusy}
-              shareLinkFeedback={volumeSharingFeedback}
-              onCopyShareLink={copyCurrentJoinLink}
-              onManageStorage={openVolumeShareStoragePanel}
-              showManageStorage={true}
-            />
-          </section>
-        </div>
-      </div>
-    </div>
+    <VolumeShareDialog
+      canCopySecretLink={hasCopyableCurrentSecret()}
+      shareLinkBusy={joinLinkCopyBusy}
+      shareLinkFeedback={volumeSharingFeedback}
+      onCopyShareLink={copyCurrentJoinLink}
+      onManageStorage={openVolumeShareStoragePanel}
+      onClose={closeVolumeShareDialog}
+    />
   {/if}
 
   {#if showJoinVolumeDialog}
@@ -8696,7 +8661,6 @@
   .discovery-toast-title,
   .volume-transition-title,
   .join-dialog-route-title,
-  .share-dialog-empty-title,
   .tm-details-title,
   .tm-details-section-title,
   .tm-details-spec-title,
@@ -10446,60 +10410,6 @@
     color: var(--nb-text-main, rgba(236, 254, 255, 0.95));
   }
 
-  .workspace-mode-bar {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    align-self: stretch;
-    margin: 0;
-    padding: 0.2rem 0.32rem;
-    border-radius: 10px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 70%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, var(--nb-shell-bottom, #f4f4f7));
-    backdrop-filter: blur(12px);
-    flex: 0 0 auto;
-    flex-wrap: wrap;
-  }
-
-  .workspace-mode-primary,
-  .workspace-mode-secondary {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-width: 0;
-    flex-wrap: wrap;
-    font-family: var(--nb-font-body);
-  }
-
-  .workspace-mode-secondary {
-    margin-left: auto;
-    justify-content: flex-end;
-    flex: 1 1 320px;
-    min-width: 0;
-  }
-
-  .workspace-utility-actions {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.45rem;
-    margin-left: auto;
-    flex: 1 1 0;
-    min-width: 0;
-  }
-
-  .workspace-selection-summary {
-    font-size: 0.74rem;
-    font-weight: 460;
-    letter-spacing: 0.02em;
-    color: var(--nb-text-faint, rgba(186, 230, 253, 0.72));
-    white-space: nowrap;
-    flex: 1 1 220px;
-    min-width: 0;
-  }
-
   .workspace-search-strip {
     width: 100%;
     display: flex;
@@ -10533,15 +10443,11 @@
     max-width: 100%;
   }
 
-  .phone-mount-selector,
-  .workspace-pane-select-wrap,
-  .workspace-mobile-action-wrap {
+  .phone-mount-selector {
     display: none;
   }
 
-  .phone-mount-select,
-  .workspace-pane-select,
-  .workspace-mobile-action-select {
+  .phone-mount-select {
     appearance: none;
     width: 100%;
     min-height: 2.35rem;
@@ -10559,41 +10465,6 @@
     background: var(--nb-btn-active-bg, linear-gradient(180deg, rgba(16, 66, 91, 0.92), rgba(10, 44, 66, 0.94)));
     color: var(--nb-btn-active-color, rgba(236, 254, 255, 0.98));
     box-shadow: var(--nb-btn-active-shadow, 0 10px 24px rgba(6, 182, 212, 0.16));
-  }
-
-  .workspace-mode-btn {
-    appearance: none;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 92%, transparent);
-    background: transparent;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.72));
-    border-radius: 999px;
-    min-height: 30px;
-    padding: 0 0.72rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.42rem;
-    font: inherit;
-    font-size: 0.76rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition:
-      color 0.18s ease,
-      border-color 0.18s ease,
-      background-color 0.18s ease,
-      box-shadow 0.18s ease;
-  }
-
-  .workspace-mode-btn:hover {
-    color: var(--nb-btn-hover-color, rgba(224, 242, 254, 0.94));
-    background: var(--nb-btn-bg, rgba(12, 26, 46, 0.9));
-    border-color: var(--nb-btn-border, rgba(96, 165, 250, 0.18));
-  }
-
-  .workspace-mode-btn.active {
-    color: rgba(255, 251, 245, 0.94);
-    background: var(--nb-btn-active-bg, color-mix(in srgb, var(--nb-accent, #ff3b30) 12%, var(--nb-panel-bg, white)));
-    border-color: color-mix(in srgb, var(--nb-accent, #ff3b30) 26%, var(--nb-border-strong, rgba(166, 151, 136, 0.18)));
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.12);
   }
 
   .volume-workspace {
@@ -10975,7 +10846,6 @@
   }
 
   .tm-details-backdrop,
-  .share-dialog-backdrop,
   .join-dialog-backdrop,
   .theme-dialog-backdrop,
   .mount-dialog-backdrop {
@@ -10993,7 +10863,6 @@
   }
 
   .tm-details-backdrop { z-index: 200; }
-  .share-dialog-backdrop { z-index: 220; }
   .join-dialog-backdrop { z-index: 225; }
   .theme-dialog-backdrop { z-index: 230; }
   .mount-dialog-backdrop { z-index: 235; }
@@ -11007,17 +10876,6 @@
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.16)) 60%, transparent);
     border-radius: 20px;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
-  }
-
-  .share-dialog {
-    width: min(760px, 95vw);
-    max-height: 86vh;
-    display: flex;
-    flex-direction: column;
-    background: var(--nb-panel-bg, #ffffff);
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 60%, transparent);
-    border-radius: 20px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.16);
   }
 
   .join-dialog {
@@ -11043,7 +10901,6 @@
   }
 
   .mount-dialog-header,
-  .share-dialog-header,
   .join-dialog-header,
   .theme-dialog-header {
     display: flex;
@@ -11054,11 +10911,6 @@
 
   .mount-dialog-header {
     padding: 1.1rem 1.25rem 0.85rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
-  }
-
-  .share-dialog-header {
-    padding: 1rem 1.2rem 0.8rem;
     border-bottom: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
   }
 
@@ -11073,7 +10925,6 @@
   }
 
   .mount-dialog-head-meta,
-  .share-dialog-head-meta,
   .join-dialog-head-meta,
   .theme-dialog-head-meta {
     display: grid;
@@ -11082,10 +10933,6 @@
 
   .mount-dialog-head-meta {
     gap: 0.38rem;
-  }
-
-  .share-dialog-head-meta {
-    gap: 0.34rem;
   }
 
   .join-dialog-head-meta {
@@ -11098,7 +10945,6 @@
 
   .mount-dialog-eyebrow,
   .theme-dialog-eyebrow,
-  .share-dialog-eyebrow,
   .join-dialog-eyebrow {
     margin: 0;
     font-family: var(--nb-font-body);
@@ -11114,7 +10960,6 @@
 
   .mount-dialog-title,
   .theme-dialog-title,
-  .share-dialog-title,
   .join-dialog-title {
     margin: 0;
     font-family: var(--nb-font-display);
@@ -11125,7 +10970,6 @@
 
   .mount-dialog-subtitle,
   .theme-dialog-subtitle,
-  .share-dialog-subtitle,
   .join-dialog-subtitle {
     margin: 0;
     font-size: 0.84rem;
@@ -11192,7 +11036,6 @@
   }
 
   .mount-dialog-body,
-  .share-dialog-body,
   .join-dialog-body,
   .theme-dialog-body {
     overflow: auto;
@@ -11202,11 +11045,6 @@
   .mount-dialog-body {
     gap: 0.85rem;
     padding: 0.95rem 1.25rem 1.15rem;
-  }
-
-  .share-dialog-body {
-    gap: 0.85rem;
-    padding: 0.85rem 1.2rem 1.1rem;
   }
 
   .join-dialog-body {
@@ -11224,7 +11062,6 @@
   }
 
   .mount-dialog-section,
-  .share-dialog-section,
   .join-dialog-section,
   .theme-dialog-section {
     display: grid;
@@ -11282,14 +11119,6 @@
     border-radius: 18px;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.04));
     background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 97%, rgba(255, 245, 239, 0.9));
-  }
-
-  .share-dialog-section {
-    gap: 0.7rem;
-    padding: 1rem;
-    border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(60, 60, 67, 0.12)) 90%, rgba(0, 0, 0, 0.03));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 98%, rgba(252, 244, 238, 0.86));
   }
 
   .join-dialog-section {
@@ -11558,13 +11387,6 @@
     margin-left: auto;
   }
 
-  .share-dialog-section-title {
-    font-family: var(--nb-font-display);
-    font-size: 0.88rem;
-    font-weight: 600;
-    color: color-mix(in srgb, var(--nb-accent-strong, #5d524a) 28%, var(--nb-text-main, rgba(28, 28, 30, 0.96)));
-  }
-
   .join-dialog-section-title {
     margin: 0;
     font-family: var(--nb-font-display);
@@ -11732,26 +11554,6 @@
 
   .join-dialog-message.error {
     color: rgba(166, 63, 63, 0.94);
-  }
-
-  .share-dialog-empty {
-    display: grid;
-    gap: 0.3rem;
-    padding: 0.9rem 0.95rem;
-    border-radius: 14px;
-    border: 1px dashed color-mix(in srgb, var(--nb-accent, #7c6f64) 22%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 95%, rgba(245, 243, 240, 0.88));
-  }
-
-  .share-dialog-empty-title {
-    margin: 0;
-    font-size: 0.84rem;
-    font-weight: 600;
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.94));
-  }
-
-  .share-dialog-storage-list {
-    gap: 0.8rem;
   }
 
   .tm-details-modal {
@@ -12294,40 +12096,6 @@
   }
 
   .manager-search,
-  .manager-sort,
-  .manager-folder {
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.22)) 88%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
-    color: var(--nb-text-main, rgba(28, 28, 30, 0.98));
-    border-radius: 12px;
-    min-height: 38px;
-    padding: 0 0.8rem;
-    font-size: 0.875rem;
-    font-weight: 470;
-    outline: none;
-  }
-
-  .manager-search:focus,
-  .manager-sort:focus,
-  .manager-folder:focus {
-    border-color: color-mix(in srgb, var(--nb-border-strong, rgba(56, 189, 248, 0.52)) 92%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nb-accent, rgba(14, 165, 233, 0.12)) 22%, transparent);
-  }
-
-  .manager-folder {
-    min-width: 0;
-  }
-
-  .manager-view-switch {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.32rem;
-    padding: 0.22rem;
-    border-radius: 14px;
-    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(56, 189, 248, 0.18)) 90%, transparent);
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 96%, var(--nb-shell-bottom, #f4f4f7));
-  }
-
   .view-toggle {
     width: 34px;
     height: 34px;
@@ -12926,7 +12694,6 @@
     }
 
     .mount-dialog,
-    .share-dialog,
     .join-dialog,
     .create-chooser-modal,
     .identity-manager-modal {
@@ -13081,51 +12848,6 @@
       justify-content: space-between;
     }
 
-    .workspace-mode-bar {
-      align-items: stretch;
-    }
-
-    .workspace-mode-primary {
-      width: 100%;
-    }
-
-    .workspace-pane-select-wrap {
-      display: block;
-      width: 100%;
-    }
-
-    .workspace-mode-primary > .workspace-mode-btn {
-      display: none;
-    }
-
-    .workspace-mode-secondary {
-      margin-left: 0;
-      width: 100%;
-      justify-content: flex-start;
-      align-items: stretch;
-      flex-basis: auto;
-      gap: 0.55rem;
-      flex-wrap: nowrap;
-      overflow-x: auto;
-      padding-bottom: 0.1rem;
-    }
-
-    .workspace-mobile-action-wrap {
-      display: block;
-      width: min(11rem, 45vw);
-      flex: 0 0 auto;
-    }
-
-    .workspace-utility-actions {
-      display: none;
-    }
-
-    .workspace-selection-summary {
-      width: 100%;
-      white-space: normal;
-      overflow-wrap: anywhere;
-    }
-
     .workspace-search-input,
     .workspace-search-sort,
     .workspace-search-paste {
@@ -13143,11 +12865,6 @@
     :global(.manager-btn) span {
       white-space: normal;
       overflow-wrap: anywhere;
-    }
-
-    .manager-view-switch {
-      margin-left: auto;
-      flex: 0 0 auto;
     }
 
     .workspace-search-strip {
@@ -13169,7 +12886,6 @@
     }
 
     .mount-dialog-header,
-    .share-dialog-header,
     .join-dialog-header,
     .create-chooser-head,
     .join-dialog-input-head,
@@ -13278,7 +12994,6 @@
   @media (max-width: 420px) {
     .join-dialog,
     .mount-dialog,
-    .share-dialog,
     .create-chooser-modal,
     .identity-manager-modal {
       width: min(calc(100vw - 0.35rem), 100%);
@@ -13289,7 +13004,6 @@
 
     .join-dialog-backdrop,
     .mount-dialog-backdrop,
-    .share-dialog-backdrop,
     .theme-dialog-backdrop {
       padding: 0.175rem;
       align-items: stretch;
