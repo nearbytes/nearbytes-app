@@ -63,11 +63,9 @@
     display: grid;
     gap: 0.7rem;
     padding: 0.92rem 0.96rem;
-    border-radius: 18px;
-    border: 1px solid color-mix(in srgb, var(--nb-border) 86%, transparent);
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-surface-strong) 95%, transparent), color-mix(in srgb, var(--nb-surface) 94%, transparent)),
-      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent) 9%, transparent), transparent 64%);
+    border-radius: var(--nb-radius-item);
+    border: 1px solid var(--nb-border);
+    background: var(--nb-surface-strong);
   }
 
   .provider-status-card[data-tone='warn'] {
@@ -127,7 +125,7 @@
     height: 7px;
     border-radius: 999px;
     border: 1px solid color-mix(in srgb, var(--nb-border) 88%, transparent);
-    background: color-mix(in srgb, var(--nb-surface-strong) 86%, transparent);
+    background: var(--nb-surface);
   }
 
   .provider-status-progress-bar {
@@ -135,7 +133,7 @@
     inset: 0 auto 0 0;
     width: 0%;
     border-radius: inherit;
-    background: linear-gradient(90deg, var(--nb-accent), color-mix(in srgb, var(--nb-accent-strong) 76%, white 10%));
+    background: var(--nb-accent);
     transition: width 220ms ease;
   }
 

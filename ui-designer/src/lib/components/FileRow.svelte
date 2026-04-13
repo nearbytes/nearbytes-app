@@ -44,7 +44,7 @@
   }
 
   .file-row.active {
-    background: var(--nb-accent-soft);
+    background: color-mix(in srgb, var(--nb-accent) 6%, var(--nb-surface-strong));
     border-color: var(--nb-accent);
   }
 

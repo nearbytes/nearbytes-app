@@ -192,7 +192,7 @@
   .files-toolbar button {
     border-radius: var(--nb-radius-control);
     border: 1px solid var(--nb-border);
-    background: transparent;
+    background: var(--nb-surface-strong);
     color: var(--nb-text-soft);
     cursor: pointer;
   }
@@ -216,7 +216,7 @@
 
   .files-toolbar button.active {
     color: var(--nb-text);
-    background: var(--nb-accent-soft);
+    background: color-mix(in srgb, var(--nb-accent) 8%, var(--nb-surface-strong));
     border-color: var(--nb-accent);
   }
 
@@ -226,7 +226,7 @@
     padding: 0.22rem;
     border-radius: 999px;
     border: 1px solid var(--nb-border);
-    background: color-mix(in srgb, var(--nb-surface-strong) 88%, transparent);
+    background: var(--nb-surface);
   }
 
   .view-switch button {
@@ -247,7 +247,7 @@
     padding: 0 0.8rem;
     border-radius: 999px;
     border: 1px solid var(--nb-border);
-    background: color-mix(in srgb, var(--nb-surface-strong) 92%, transparent);
+    background: var(--nb-surface-strong);
     color: var(--nb-text-soft);
   }
 
@@ -282,7 +282,7 @@
 
   .files-empty {
     border-radius: var(--nb-radius-item);
-    border: 1px dashed var(--nb-border-strong);
+    border: 1px solid var(--nb-border);
     padding: 1rem;
     display: grid;
     gap: 0.3rem;

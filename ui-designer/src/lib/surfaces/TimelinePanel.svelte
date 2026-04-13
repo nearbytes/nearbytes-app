@@ -10,6 +10,10 @@
   const selectedEvent = $derived(
     data.events.find((event) => event.id === ui.selectedEventId) ?? data.events[0] ?? null
   );
+
+  function openEventDetails(eventId?: string): void {
+    handlers?.onAction?.({ type: 'open-timeline-detail', eventId });
+  }
 </script>
 
 <section class="timeline-pane nb-panel-surface">
@@ -18,7 +22,7 @@
       <h3>Recent event stream</h3>
     </div>
     <div class="timeline-actions">
-      <button type="button" class="timeline-icon" aria-label="Inspect selected event" onclick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'timeline-detail' })}>
+      <button type="button" class="timeline-icon" aria-label="Open selected event" onclick={() => openEventDetails(selectedEvent?.id)}>
         <Eye size={16} />
       </button>
       <button type="button" class="timeline-icon" aria-label="Inspect event flow" onclick={() => handlers?.onAction?.({ type: 'open-overlay', overlay: 'event-flow' })}>
@@ -32,17 +36,17 @@
       <EventRow
         event={event}
         active={ui.selectedEventId === event.id}
-        onSelect={() => handlers?.onAction?.({ type: 'select-event', eventId: event.id })}
+        onSelect={() => openEventDetails(event.id)}
       />
     {/each}
   </div>
 
   {#if selectedEvent}
-    <footer class="timeline-footer">
+    <button type="button" class="timeline-footer" onclick={() => openEventDetails(selectedEvent.id)}>
       <span class="timeline-footer-label">Selected</span>
       <strong>{selectedEvent.title}</strong>
       <p>{selectedEvent.transport}</p>
-    </footer>
+    </button>
   {/if}
 </section>
 
@@ -85,6 +89,7 @@
     border: 1px solid var(--nb-border);
     background: transparent;
     color: var(--nb-text-soft);
+    cursor: pointer;
   }
 
   .timeline-pane-body {
@@ -96,10 +101,16 @@
   }
 
   .timeline-footer {
+    width: 100%;
     padding-top: 0.2rem;
     border-top: 1px solid color-mix(in srgb, var(--nb-border) 70%, transparent);
     display: grid;
     gap: 0.2rem;
+    background: transparent;
+    border-inline: 0;
+    border-bottom: 0;
+    cursor: pointer;
+    text-align: left;
   }
 
   .timeline-footer strong,

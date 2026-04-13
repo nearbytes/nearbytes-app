@@ -7,13 +7,11 @@
   background: var(--nb-surface);
   border: 1px solid var(--nb-border);
   color: var(--nb-text);
-  box-shadow:
-    var(--nb-shadow-panel),
-    inset 0 1px 0 color-mix(in srgb, white var(--nb-chrome-contrast-soft), transparent);
+  box-shadow: var(--nb-shadow-panel);
 }
 
 .nb-accent-ring {
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--nb-accent-soft) var(--nb-chrome-contrast-strong), transparent),
-    0 0 0 4px color-mix(in srgb, var(--nb-accent) var(--nb-chrome-contrast-soft), transparent);
+    0 0 0 1px color-mix(in srgb, var(--nb-accent) 18%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--nb-accent-soft) 48%, transparent);
 }

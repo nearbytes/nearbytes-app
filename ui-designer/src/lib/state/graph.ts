@@ -172,7 +172,7 @@ export const GRAPH_EDGES: GraphEdgeDefinition[] = [
   { id: 'edge-chat-focus', from: 'workspace-home', to: 'chat-focus', label: 'setWorkspacePaneMode', detail: 'Enter the chat-dominant layout.' },
   { id: 'edge-preview', from: 'workspace-home', to: 'preview-open', label: 'togglePreviewPane', detail: 'Open the preview pane.' },
   { id: 'edge-timeline', from: 'workspace-home', to: 'timeline-open', label: 'toggleTimelinePanel', detail: 'Open the timeline panel.' },
-  { id: 'edge-timeline-detail', from: 'timeline-open', to: 'timeline-detail-dialog', label: 'selectEvent', detail: 'Open the selected event details.' },
+  { id: 'edge-timeline-detail', from: 'timeline-open', to: 'timeline-detail-dialog', label: 'openTimelineDetail', detail: 'Open the selected event details.' },
   { id: 'edge-join', from: 'workspace-home', to: 'join-dialog', label: 'openJoinDialog', detail: 'Open the join flow overlay.' },
   { id: 'edge-share', from: 'workspace-home', to: 'share-dialog', label: 'openShareDialog', detail: 'Open the share overlay.' },
   { id: 'edge-identity', from: 'workspace-home', to: 'identity-manager', label: 'openIdentityManager', detail: 'Open identity selection and publication.' },

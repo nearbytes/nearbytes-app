@@ -53,73 +53,51 @@
   .file-tile {
     position: relative;
     display: grid;
-    gap: 0.85rem;
+    gap: 0.75rem;
     align-content: start;
     min-height: 15rem;
-    border-radius: clamp(20px, 2vw, 28px);
-    border: 1px solid color-mix(in srgb, var(--nb-border) 84%, transparent);
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-surface-strong) 88%, transparent), color-mix(in srgb, var(--nb-surface) 96%, transparent)),
-      radial-gradient(circle at top right, color-mix(in srgb, var(--nb-accent) 10%, transparent), transparent 56%);
-    padding: 1rem;
+    border-radius: var(--nb-radius-panel);
+    border: 1px solid var(--nb-border);
+    background: var(--nb-surface-strong);
+    padding: 0.9rem;
     color: inherit;
     text-align: left;
     cursor: pointer;
     overflow: hidden;
     transition:
-      transform 180ms ease,
       border-color 180ms ease,
-      box-shadow 180ms ease,
       background 180ms ease;
   }
 
   .file-tile:hover {
-    transform: translateY(-2px);
     border-color: color-mix(in srgb, var(--nb-accent) 30%, var(--nb-border));
-    box-shadow: 0 18px 32px rgba(0, 0, 0, 0.12);
   }
 
   .file-tile.active {
     border-color: color-mix(in srgb, var(--nb-accent) 52%, var(--nb-border));
-    box-shadow: 0 20px 42px color-mix(in srgb, var(--nb-accent) 12%, transparent);
+    background: color-mix(in srgb, var(--nb-accent) 6%, var(--nb-surface-strong));
   }
 
   .file-tile-art {
     position: relative;
     min-height: 6.8rem;
-    border-radius: 22px;
+    border-radius: var(--nb-radius-item);
     display: grid;
     place-items: center;
     overflow: hidden;
-    border: 1px solid color-mix(in srgb, var(--nb-border) 64%, transparent);
-    background: linear-gradient(160deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.03));
+    border: 1px solid var(--nb-border);
+    background: var(--nb-surface);
   }
-
-  .file-tile-halo {
-    position: absolute;
-    inset: auto;
-    width: 8rem;
-    height: 8rem;
-    border-radius: 50%;
-    filter: blur(18px);
-    opacity: 0.85;
-  }
-
-  .accent-cyan .file-tile-halo { background: rgba(72, 208, 255, 0.32); }
-  .accent-amber .file-tile-halo { background: rgba(255, 193, 92, 0.34); }
-  .accent-violet .file-tile-halo { background: rgba(162, 124, 255, 0.34); }
-  .accent-rose .file-tile-halo { background: rgba(255, 110, 155, 0.34); }
 
   .file-tile-icon {
     position: relative;
     z-index: 1;
-    width: 4rem;
-    height: 4rem;
+    width: 3.25rem;
+    height: 3.25rem;
     display: grid;
     place-items: center;
-    border-radius: 18px;
-    background: rgba(255, 255, 255, 0.14);
-    backdrop-filter: blur(12px);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--nb-accent) 8%, var(--nb-surface-strong));
   }
 
   .file-tile-copy,

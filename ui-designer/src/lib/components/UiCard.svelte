@@ -47,9 +47,9 @@
 <style>
   .ui-card {
     border-radius: var(--nb-radius-panel);
-    padding: 1rem;
+    padding: 0.92rem;
     display: grid;
-    gap: 0.9rem;
+    gap: 0.75rem;
     min-height: 0;
   }
 
@@ -62,7 +62,7 @@
   .ui-card-copy,
   .ui-card-body {
     display: grid;
-    gap: 0.35rem;
+    gap: 0.24rem;
     min-height: 0;
   }
 

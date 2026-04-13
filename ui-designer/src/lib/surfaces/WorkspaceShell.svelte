@@ -99,10 +99,10 @@
   .workspace-shell {
     position: relative;
     display: grid;
-    gap: 0.8rem;
-    padding: 1rem;
+    gap: 0.7rem;
+    padding: 0.8rem;
     border-radius: var(--nb-radius-shell);
-    background: var(--nb-shell-top);
+    background: var(--nb-surface-strong);
     border: 1px solid var(--nb-border);
     overflow: hidden;
     min-height: 0;
@@ -111,7 +111,7 @@
 
   .workspace-header {
     border-radius: var(--nb-radius-panel);
-    padding: 0.85rem;
+    padding: 0.72rem 0.78rem;
     display: flex;
     justify-content: space-between;
     gap: 0.85rem;
@@ -125,16 +125,17 @@
 
   .workspace-tools {
     display: flex;
-    gap: 0.55rem;
+    gap: 0.45rem;
   }
 
   .icon-pill {
-    width: 2.4rem;
-    height: 2.4rem;
+    width: 2.2rem;
+    height: 2.2rem;
     border-radius: var(--nb-radius-control);
     border: 1px solid var(--nb-border);
-    background: transparent;
+    background: var(--nb-surface-strong);
     color: var(--nb-text-soft);
+    cursor: pointer;
   }
 
   .workspace-hubs {
@@ -145,7 +146,7 @@
 
   .workspace-body {
     display: grid;
-    gap: 0.85rem;
+    gap: 0.7rem;
     grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
     min-height: 0;
     overflow: hidden;
@@ -165,10 +166,9 @@
 
   .overlay-surface {
     position: absolute;
-    inset: 1rem;
+    inset: 0.8rem;
     z-index: 4;
     border-radius: var(--nb-radius-dialog);
     overflow: hidden;
-    box-shadow: var(--nb-shadow-frame);
   }
 </style>

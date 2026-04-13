@@ -195,6 +195,7 @@ export type SurfaceAction =
   | { type: 'set-file-sort'; sort: FileSort }
   | { type: 'toggle-preview' }
   | { type: 'toggle-timeline' }
+  | { type: 'open-timeline-detail'; eventId?: string }
   | { type: 'open-overlay'; overlay: Exclude<OverlayKind, 'none'> }
   | { type: 'close-overlay' }
   | { type: 'select-file'; fileId: string }

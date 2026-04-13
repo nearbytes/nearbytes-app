@@ -28,31 +28,31 @@
     border-radius: var(--nb-radius-control);
     font: inherit;
     font-size: 0.86rem;
-    padding: 0.72rem 1rem;
+    font-weight: 520;
+    padding: 0.66rem 0.92rem;
     transition:
-      transform 140ms ease,
       border-color 140ms ease,
-      background 140ms ease;
+      background 140ms ease,
+      color 140ms ease;
     cursor: pointer;
   }
 
   .ui-button:hover:not(:disabled) {
-    transform: translateY(-1px);
     border-color: var(--nb-accent);
   }
 
   .ui-button.primary {
-    background: var(--nb-accent);
-    color: #fff;
-    border-color: transparent;
+    background: color-mix(in srgb, var(--nb-accent) 14%, var(--nb-surface-strong));
+    color: var(--nb-accent-strong);
+    border-color: color-mix(in srgb, var(--nb-accent) 22%, var(--nb-border-strong));
   }
 
   .ui-button.secondary {
-    background: color-mix(in srgb, var(--nb-surface-strong) 88%, var(--nb-accent-soft));
+    background: var(--nb-surface-strong);
   }
 
   .ui-button.danger {
-    background: color-mix(in srgb, var(--nb-danger) 14%, var(--nb-surface-strong));
+    background: color-mix(in srgb, var(--nb-danger) 8%, var(--nb-surface-strong));
     color: var(--nb-danger);
   }
 

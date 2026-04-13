@@ -212,9 +212,7 @@
     gap: 1rem;
     height: 100%;
     padding: 1.15rem;
-    background:
-      radial-gradient(circle at top left, color-mix(in srgb, var(--nb-accent) 14%, transparent), transparent 34%),
-      linear-gradient(180deg, color-mix(in srgb, var(--nb-shell-top) 92%, black 6%), color-mix(in srgb, var(--nb-shell-bottom) 96%, black 4%));
+    background: var(--nb-surface);
     color: var(--nb-text);
   }
 
@@ -241,10 +239,9 @@
 
   .ef-stage-shell,
   .ef-rail-card {
-    border-radius: 24px;
-    border: 1px solid color-mix(in srgb, var(--nb-border) 82%, transparent);
-    background: color-mix(in srgb, var(--nb-surface-strong) 82%, transparent);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    border-radius: var(--nb-radius-panel);
+    border: 1px solid var(--nb-border);
+    background: var(--nb-surface-strong);
   }
 
   .ef-stage-shell {
@@ -257,11 +254,9 @@
     width: 100%;
     height: 100%;
     min-height: 26.5rem;
-    border-radius: 22px;
+    border-radius: var(--nb-radius-item);
     overflow: hidden;
-    background:
-      radial-gradient(circle at center, color-mix(in srgb, var(--nb-accent) 10%, transparent), transparent 32%),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
+    background: var(--nb-surface);
   }
 
   .ef-links {
@@ -272,9 +267,9 @@
   }
 
   .ef-links line {
-    stroke: color-mix(in srgb, var(--nb-accent) 20%, var(--nb-border));
+    stroke: color-mix(in srgb, var(--nb-accent) 14%, var(--nb-border));
     stroke-width: 0.8;
-    stroke-dasharray: 2 2;
+    stroke-dasharray: 1.5 3;
   }
 
   .ef-hub,
@@ -292,16 +287,15 @@
     width: 10rem;
     height: 10rem;
     border-radius: 50%;
-    background: radial-gradient(circle, color-mix(in srgb, var(--nb-accent) 26%, transparent), color-mix(in srgb, var(--nb-surface-strong) 84%, transparent));
-    border: 1px solid color-mix(in srgb, var(--nb-accent) 28%, var(--nb-border));
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 24px 48px rgba(0, 0, 0, 0.18);
+    background: var(--nb-surface-strong);
+    border: 1px solid color-mix(in srgb, var(--nb-accent) 18%, var(--nb-border));
   }
 
   .ef-hub-ring {
     position: absolute;
     inset: 10%;
     border-radius: 50%;
-    border: 1px solid color-mix(in srgb, var(--nb-accent) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--nb-accent) 12%, transparent);
     animation: ef-hub-pulse 2.8s ease-in-out infinite;
   }
 
@@ -328,17 +322,16 @@
     width: 8.8rem;
     min-height: 6.9rem;
     padding: 0.8rem 0.7rem;
-    border-radius: 22px;
+    border-radius: var(--nb-radius-item);
     border: 1px solid var(--nb-border);
-    background: color-mix(in srgb, var(--nb-surface-strong) 92%, transparent);
+    background: var(--nb-surface-strong);
     gap: 0.18rem;
-    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+    transition: transform 180ms ease, border-color 180ms ease;
   }
 
   .ef-node.active {
-    transform: translate(-50%, -50%) scale(1.04);
+    transform: translate(-50%, -50%) scale(1.02);
     border-color: color-mix(in srgb, var(--nb-accent) 34%, var(--nb-border));
-    box-shadow: 0 18px 34px color-mix(in srgb, var(--nb-accent) 14%, transparent);
   }
 
   .ef-node.status-attention {
@@ -358,7 +351,7 @@
     font-size: 0.86rem;
     font-weight: 700;
     color: var(--nb-text);
-    background: color-mix(in srgb, var(--nb-accent) 16%, transparent);
+    background: color-mix(in srgb, var(--nb-accent) 10%, var(--nb-surface));
   }
 
   .ef-particle {
@@ -370,7 +363,7 @@
     border-radius: 50%;
     transform: translate(-50%, -50%);
     background: var(--particle);
-    box-shadow: 0 0 18px var(--particle);
+    box-shadow: 0 0 10px var(--particle);
     animation: ef-travel var(--duration) linear forwards;
   }
 
@@ -416,8 +409,8 @@
   .ef-activity-entry {
     padding: 0.72rem 0.78rem;
     border-radius: 16px;
-    border: 1px solid color-mix(in srgb, var(--nb-border) 76%, transparent);
-    background: color-mix(in srgb, var(--nb-surface) 96%, transparent);
+    border: 1px solid var(--nb-border);
+    background: var(--nb-surface);
   }
 
   .ef-activity-entry {
@@ -428,8 +421,7 @@
 
   .ef-activity-entry.active {
     border-color: color-mix(in srgb, var(--nb-accent) 34%, var(--nb-border));
-    transform: translateX(2px);
-    background: color-mix(in srgb, var(--nb-accent-soft) 28%, transparent);
+    background: color-mix(in srgb, var(--nb-accent) 6%, var(--nb-surface));
   }
 
   .ef-activity-entry small {

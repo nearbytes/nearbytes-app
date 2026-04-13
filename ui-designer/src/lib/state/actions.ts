@@ -138,6 +138,18 @@ export function toggleTimelinePanel(state: UiDesignerState): UiDesignerState {
   };
 }
 
+export function openTimelineDetail(state: UiDesignerState, eventId?: string): UiDesignerState {
+  return {
+    ...state,
+    workspace: {
+      ...state.workspace,
+      selectedEventId: eventId ?? state.workspace.selectedEventId,
+      showTimeline: true,
+      overlay: 'timeline-detail',
+    },
+  };
+}
+
 export function openOverlay(
   state: UiDesignerState,
   overlay: Exclude<OverlayKind, 'none'>
@@ -213,6 +225,8 @@ export function applySurfaceAction(state: UiDesignerState, action: SurfaceAction
       return togglePreviewPane(state);
     case 'toggle-timeline':
       return toggleTimelinePanel(state);
+    case 'open-timeline-detail':
+      return openTimelineDetail(state, action.eventId);
     case 'open-overlay':
       return openOverlay(state, action.overlay);
     case 'close-overlay':

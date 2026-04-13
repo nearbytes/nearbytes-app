@@ -69,14 +69,14 @@
     gap: 0.58rem;
     align-content: start;
     padding: 0.9rem 0.96rem;
-    border-radius: 18px;
+    border-radius: var(--nb-radius-item);
     border: 1px solid var(--nb-border);
-    background: color-mix(in srgb, var(--nb-surface-strong) 94%, transparent);
+    background: var(--nb-surface-strong);
   }
 
   .share-card.active {
     border-color: color-mix(in srgb, var(--nb-accent) 24%, var(--nb-border));
-    box-shadow: 0 14px 28px color-mix(in srgb, var(--nb-accent) 10%, transparent);
+    background: color-mix(in srgb, var(--nb-accent) 5%, var(--nb-surface-strong));
   }
 
   .share-card.compact {
@@ -127,13 +127,13 @@
   .tone-good,
   .tone-durable {
     border-color: color-mix(in srgb, var(--nb-success) 26%, var(--nb-border));
-    background: color-mix(in srgb, var(--nb-success) 8%, var(--nb-surface-strong));
+    background: var(--nb-surface);
     color: color-mix(in srgb, var(--nb-success) 74%, var(--nb-text));
   }
 
   .tone-warn {
     border-color: color-mix(in srgb, var(--nb-warning) 32%, var(--nb-border));
-    background: color-mix(in srgb, var(--nb-warning) 8%, var(--nb-surface-strong));
+    background: var(--nb-surface);
     color: color-mix(in srgb, var(--nb-warning) 78%, var(--nb-text));
   }
 

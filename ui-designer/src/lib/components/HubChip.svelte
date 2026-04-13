@@ -28,7 +28,7 @@
     min-width: 11rem;
     border-radius: var(--nb-radius-item);
     border: 1px solid var(--nb-border);
-    background: color-mix(in srgb, var(--nb-surface-strong) 90%, var(--nb-accent-soft));
+    background: var(--nb-surface-strong);
     padding: 0.8rem 0.9rem;
     display: grid;
     gap: 0.55rem;
@@ -38,7 +38,7 @@
 
   .hub-chip.active {
     border-color: var(--nb-accent);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--nb-accent-soft) var(--nb-chrome-contrast-strong), transparent);
+    background: color-mix(in srgb, var(--nb-accent) 5%, var(--nb-surface-strong));
   }
 
   .hub-chip-label {

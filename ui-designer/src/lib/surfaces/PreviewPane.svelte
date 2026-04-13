@@ -76,8 +76,9 @@
     place-items: center;
     border-radius: var(--nb-radius-control);
     border: 1px solid var(--nb-border);
-    background: transparent;
+    background: var(--nb-surface-strong);
     color: var(--nb-text-soft);
+    cursor: pointer;
   }
 
   .preview-pane-body {
@@ -89,13 +90,13 @@
   .preview-slate {
     min-height: 10rem;
     border-radius: var(--nb-radius-item);
-    border: 1px dashed var(--nb-border-strong);
+    border: 1px solid var(--nb-border);
     display: grid;
     place-items: center;
     gap: 0.25rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    background: color-mix(in srgb, var(--nb-surface-strong) 88%, var(--nb-accent-soft));
+    background: var(--nb-surface-strong);
   }
 
   .preview-slate-kind,
