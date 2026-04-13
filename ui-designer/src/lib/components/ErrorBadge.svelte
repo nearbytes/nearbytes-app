@@ -1,6 +1,7 @@
 <script lang="ts">
   import AppDialog from './AppDialog.svelte';
-  import type { ShareCardBadgeTone } from './ShareCard.svelte';
+
+  type ErrorBadgeTone = 'good' | 'warn' | 'muted' | 'durable' | 'replica' | 'off';
 
   const {
     label,
@@ -11,7 +12,7 @@
     label: string;
     description: string;
     title?: string;
-    tone?: ShareCardBadgeTone;
+    tone?: ErrorBadgeTone;
   }>();
 
   let open = $state(false);

@@ -117,7 +117,7 @@
           aria-label={closeLabel}
           onclick={requestClose}
           disabled={closeDisabled}
-        >
+>
           <X size={18} strokeWidth={2} />
         </button>
       </div>
@@ -259,23 +259,17 @@
 
   .app-dialog-close:hover:not(:disabled) {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--nb-accent, #d27a54) 16%, rgba(60, 60, 67, 0.14));
-    background: color-mix(in srgb, var(--nb-panel-bg, #ffffff) 92%, rgba(255, 255, 255, 0.98));
   }
 
   .app-dialog-close:disabled {
-    opacity: 0.54;
+    opacity: 0.5;
     cursor: default;
-  }
-
-  .app-dialog-body,
-  .app-dialog-footer {
-    min-width: 0;
   }
 
   .app-dialog-body {
     display: grid;
     gap: 0.9rem;
+    min-width: 0;
   }
 
   .app-dialog-footer {
@@ -285,24 +279,15 @@
     gap: 0.6rem;
   }
 
-  @media (max-width: 720px) {
+  @media (max-width: 640px) {
     .app-dialog-backdrop {
-      padding: 0.5rem;
+      padding: 0.75rem;
     }
 
     .app-dialog-surface {
-      width: calc(100vw - 1rem);
-      max-height: calc(100vh - 1rem);
-      padding: 0.84rem;
-      border-radius: 18px;
-    }
-
-    .app-dialog-header {
-      grid-template-columns: 1fr;
-    }
-
-    .app-dialog-head-actions {
-      justify-content: space-between;
+      width: min(calc(100vw - 1.5rem), 100%);
+      max-height: calc(100dvh - 1.5rem);
+      border-radius: 20px;
     }
   }
 </style>

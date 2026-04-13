@@ -96,7 +96,7 @@
     wipeStoredConfig,
   } from './lib/host/desktopShell.js';
   import ArmedActionButton from './components/ArmedActionButton.svelte';
-  import AppDialog from './components/AppDialog.svelte';
+  import AppDialog from '../../ui-designer/src/lib/components/AppDialog.svelte';
   import AudioPreview from './components/AudioPreview.svelte';
   import JoinLinkSections from './components/JoinLinkSections.svelte';
   import NearbytesLogo from './components/NearbytesLogo.svelte';

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import AppDialog from './AppDialog.svelte';
+  import AppDialog from '../../../ui-designer/src/lib/components/AppDialog.svelte';
   import ShareSpaceLinkSection from './ShareSpaceLinkSection.svelte';
 
   type ShareLinkFeedback = { tone: 'success' | 'warning'; message: string } | null;

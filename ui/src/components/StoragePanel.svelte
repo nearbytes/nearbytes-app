@@ -62,7 +62,7 @@
     getManagedShareAccessLabel,
   } from '../lib/megaSharePresentation.js';
   import ArmedActionButton from './ArmedActionButton.svelte';
-  import AppDialog from './AppDialog.svelte';
+  import AppDialog from '../../../ui-designer/src/lib/components/AppDialog.svelte';
   import IconToggle from './IconToggle.svelte';
   import ProviderStatusCard from './ProviderStatusCard.svelte';
   import ShareCard from './ShareCard.svelte';

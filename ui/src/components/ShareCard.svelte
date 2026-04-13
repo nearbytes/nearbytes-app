@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ErrorBadge from './ErrorBadge.svelte';
+  import ErrorBadge from '../../../ui-designer/src/lib/components/ErrorBadge.svelte';
   import type { Snippet } from 'svelte';
 
   export type ShareCardBadgeTone = 'good' | 'warn' | 'muted' | 'durable' | 'replica' | 'off';
