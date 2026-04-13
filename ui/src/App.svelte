@@ -106,6 +106,7 @@
   import StatusNotice from './components/StatusNotice.svelte';
   import StoragePanel from './components/StoragePanel.svelte';
   import EventFlowPanel from './components/EventFlowPanel.svelte';
+  import WorkspaceModeBar from './components/WorkspaceModeBar.svelte';
   import VolumeChat from './components/VolumeChat.svelte';
   import VolumeIdentity from './components/VolumeIdentity.svelte';
   import {
@@ -2711,6 +2712,16 @@
     }
     sorted.sort((a, b) => b.createdAt - a.createdAt);
     return sorted;
+  });
+
+  const workspaceSelectionSummary = $derived.by(() => {
+    if (selectedFileNames.length === 0) {
+      return `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`;
+    }
+    if (selectedFileNames.length === 1 && selectedFile) {
+      return `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`;
+    }
+    return `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`;
   });
 
   const activeMount = $derived.by(() => mounts.find((mount) => mount.id === activeMountId) ?? null);
@@ -6699,164 +6710,36 @@
       </section>
       {/if}
 
-      <div class="workspace-mode-bar panel-surface" role="group" aria-label="Hub workspace">
-        <div class="workspace-mode-primary">
-          <label class="workspace-pane-select-wrap" aria-label="Hub workspace mode selector">
-            <span class="sr-only">Workspace mode</span>
-            <select
-              class="workspace-pane-select"
-              value={workspacePaneModeValue(activeMount)}
-              onchange={(event) => applyWorkspacePaneMode((event.currentTarget as HTMLSelectElement).value as 'files' | 'chat' | 'split')}
-            >
-              <option value="files">Files</option>
-              <option value="chat">Chat</option>
-              <option value="split">Files and chat</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            class="workspace-mode-btn"
-            class:active={showFilesWorkspace}
-            aria-pressed={showFilesWorkspace}
-            onclick={() => toggleWorkspacePane('files')}
-          >
-            <FileText size={15} strokeWidth={2} />
-            <span>Files</span>
-          </button>
-          <button
-            type="button"
-            class="workspace-mode-btn"
-            class:active={showChatWorkspace}
-            aria-pressed={showChatWorkspace}
-            onclick={() => toggleWorkspacePane('chat')}
-          >
-            <MessageSquareText size={15} strokeWidth={2} />
-            <span>Chat</span>
-          </button>
-        </div>
-        {#if showFilesWorkspace || activeMount || shareableVolumeId}
-          <div class="workspace-mode-secondary">
-            {#if showFilesWorkspace}
-              <span class="workspace-selection-summary">
-                {selectedFileNames.length === 0
-                  ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · no selection`
-                  : selectedFileNames.length === 1 && selectedFile
-                    ? `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${displayFileName(selectedFile)}`
-                    : `${visibleFiles.length} file${visibleFiles.length === 1 ? '' : 's'} · ${selectedFileNames.length} selected`}
-              </span>
-            {/if}
-            <label class="workspace-mobile-action-wrap" aria-label="Workspace actions selector">
-              <span class="sr-only">Workspace actions</span>
-              <select
-                class="workspace-mobile-action-select"
-                onchange={(event) => {
-                  const target = event.currentTarget as HTMLSelectElement;
-                  const value = target.value;
-                  target.value = '';
-                  if (value) {
-                    handleCompactWorkspaceAction(value);
-                  }
-                }}
-              >
-                <option value="">Actions</option>
-                {#if showFilesWorkspace}
-                  <option value="search">{showSearchWorkspace ? 'Hide search' : 'Show search'}</option>
-                {/if}
-                <option value="storage">{showVolumeStoragePanel ? 'Hide storage' : 'Storage'}</option>
-                <option value="share">Share</option>
-                <option value="timeline">{showTimeMachinePanel ? 'Hide timeline' : 'Timeline'}</option>
-                <option value="flow">{showEventFlowPanel ? 'Hide flow' : 'Flow'}</option>
-                <option value="identities">Identities</option>
-                <option value="locations">Locations</option>
-              </select>
-            </label>
-            <div class="workspace-utility-actions">
-              {#if showFilesWorkspace}
-                <button
-                  type="button"
-                  class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                  class:active={showSearchWorkspace}
-                  onclick={toggleWorkspaceSearch}
-                  title={showSearchWorkspace ? 'Hide file search' : 'Show file search'}
-                >
-                  <Search class="button-icon" size={15} strokeWidth={2} />
-                  <span>Search</span>
-                </button>
-              {/if}
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showVolumeStoragePanel}
-                onclick={toggleVolumeStoragePanel}
-                disabled={!activeMount && !shareableVolumeId}
-                title="Choose storage locations for this hub"
-              >
-                <HardDrive class="button-icon" size={15} strokeWidth={2} />
-                <span>Storage</span>
-              </button>
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showVolumeShareDialog}
-                onclick={openVolumeShareDialog}
-                disabled={!activeMount && !shareableVolumeId}
-                title="Share this hub"
-              >
-                <Link2 class="button-icon" size={15} strokeWidth={2} />
-                <span>Share</span>
-              </button>
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showTimeMachinePanel}
-                onclick={() => {
-                  showTimeMachinePanel = !showTimeMachinePanel;
-                }}
-                title="Show hub timeline"
-              >
-                <History class="button-icon" size={15} strokeWidth={2} />
-                <span>Timeline</span>
-              </button>
-              <button
-                type="button"
-                class="manager-btn workspace-toolbar-btn workspace-toolbar-utility"
-                class:active={showEventFlowPanel}
-                onclick={() => {
-                  showEventFlowPanel = !showEventFlowPanel;
-                }}
-                title="Event flow visualization"
-              >
-                <Activity class="button-icon" size={15} strokeWidth={2} />
-                <span>Flow</span>
-              </button>
-            </div>
-            {#if showFilesWorkspace}
-              <div class="manager-view-switch" role="tablist" aria-label="File browser view">
-                <button
-                  type="button"
-                  class="view-toggle"
-                  class:active={fileManagerViewMode === 'icons'}
-                  onclick={() => (fileManagerViewMode = 'icons')}
-                  aria-pressed={fileManagerViewMode === 'icons'}
-                  title="Icon view"
-                >
-                  <LayoutGrid size={15} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  class="view-toggle"
-                  class:active={fileManagerViewMode === 'details'}
-                  onclick={() => (fileManagerViewMode = 'details')}
-                  aria-pressed={fileManagerViewMode === 'details'}
-                  title="Details view"
-                >
-                  <Rows3 size={15} strokeWidth={2} />
-                </button>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
+      <WorkspaceModeBar
+        paneModeValue={workspacePaneModeValue(activeMount)}
+        {showFilesWorkspace}
+        {showChatWorkspace}
+        selectionSummary={workspaceSelectionSummary}
+        {showSearchWorkspace}
+        {showVolumeStoragePanel}
+        {showVolumeShareDialog}
+        {showTimeMachinePanel}
+        {showEventFlowPanel}
+        storageDisabled={!activeMount && !shareableVolumeId}
+        shareDisabled={!activeMount && !shareableVolumeId}
+        showSecondary={showFilesWorkspace || !!activeMount || !!shareableVolumeId}
+        {fileManagerViewMode}
+        onChangePaneMode={(value) => applyWorkspacePaneMode(value)}
+        onToggleWorkspacePane={(pane) => toggleWorkspacePane(pane)}
+        onCompactAction={(value) => handleCompactWorkspaceAction(value)}
+        onToggleWorkspaceSearch={toggleWorkspaceSearch}
+        onToggleVolumeStoragePanel={toggleVolumeStoragePanel}
+        onOpenVolumeShareDialog={openVolumeShareDialog}
+        onToggleTimeMachinePanel={() => {
+          showTimeMachinePanel = !showTimeMachinePanel;
+        }}
+        onToggleEventFlowPanel={() => {
+          showEventFlowPanel = !showEventFlowPanel;
+        }}
+        onSetFileManagerViewMode={(mode) => {
+          fileManagerViewMode = mode;
+        }}
+      />
 
       {#if showFilesWorkspace && showSearchWorkspace}
         <div class="workspace-search-strip panel-surface" role="group" aria-label="File search and sorting">

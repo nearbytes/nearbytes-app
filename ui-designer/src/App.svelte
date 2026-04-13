@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { Focus, LayoutPanelLeft, PanelRightClose } from 'lucide-svelte';
   import UiButton from './lib/components/UiButton.svelte';
   import UiCard from './lib/components/UiCard.svelte';
   import UiChip from './lib/components/UiChip.svelte';
@@ -75,6 +76,8 @@
   let graphLayoutMode: GraphLayoutMode = $state('planar');
   let selectedGraphNodeId: GraphNodeId | null = $state(null);
   let selectedGraphEdgeId: string | null = $state(null);
+  let sidebarVisible = $state(true);
+  let inspectorVisible = $state(true);
   const moodboard = $derived(MOODBOARD_BY_ID[designerState.moodboardId]);
   const fixtures = $derived(buildFixtures(designerState.fixturePreset));
   const capabilities = $derived(buildCapabilities(designerState.fixturePreset));
@@ -92,6 +95,7 @@
   const selectedEventTitle = $derived(
     fixtures.events.find((event) => event.id === designerState.workspace.selectedEventId)?.title ?? 'No event selected'
   );
+  const uiFocusActive = $derived(!sidebarVisible && !inspectorVisible);
 
   function setTab(tab: DesignerTab) {
     designerStore.update((value) => selectTab(value, tab));
@@ -129,6 +133,42 @@
     designerStore.dispatchSurfaceAction({ type: 'close-overlay' });
   }
 
+  function toggleSidebar() {
+    sidebarVisible = !sidebarVisible;
+  }
+
+  function toggleInspector() {
+    inspectorVisible = !inspectorVisible;
+  }
+
+  function toggleUiFocus() {
+    if (uiFocusActive) {
+      sidebarVisible = true;
+      inspectorVisible = true;
+      return;
+    }
+
+    sidebarVisible = false;
+    inspectorVisible = false;
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent) {
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    ) {
+      return;
+    }
+
+    if (event.key.toLowerCase() === 'f' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      toggleUiFocus();
+    }
+  }
+
   onMount(() => {
     try {
       const storedId = localStorage.getItem(MOODBOARD_STORAGE_KEY);
@@ -138,6 +178,12 @@
     } catch {
       // Ignore storage access errors in restricted browser contexts.
     }
+
+    window.addEventListener('keydown', handleWindowKeydown);
+
+    return () => {
+      window.removeEventListener('keydown', handleWindowKeydown);
+    };
   });
 
   $effect(() => {
@@ -149,8 +195,23 @@
   });
 </script>
 
-<div class="designer-app nb-theme-scope nb-type-body" style={themeStyle}>
-  <aside class="app-sidebar nb-panel-surface">
+<div class:ui-focus={uiFocusActive} class="designer-app nb-theme-scope nb-type-body" style={themeStyle}>
+  <div class="designer-chrome-controls nb-panel-surface">
+    <button type="button" class:active={sidebarVisible} class="chrome-toggle" onclick={toggleSidebar} title={sidebarVisible ? 'Hide left panel' : 'Show left panel'}>
+      <LayoutPanelLeft size={16} />
+      <span>Left panel</span>
+    </button>
+    <button type="button" class:active={inspectorVisible} class="chrome-toggle" onclick={toggleInspector} title={inspectorVisible ? 'Hide right panel' : 'Show right panel'}>
+      <PanelRightClose size={16} />
+      <span>Right panel</span>
+    </button>
+    <button type="button" class:active={uiFocusActive} class="chrome-toggle chrome-toggle-focus" onclick={toggleUiFocus} title="Toggle UI focus (F)">
+      <Focus size={16} />
+      <span>{uiFocusActive ? 'Exit focus' : 'Focus UI'}</span>
+    </button>
+  </div>
+
+  <aside class:hidden={!sidebarVisible} class="app-sidebar nb-panel-surface">
     <div class="sidebar-brand">
       <div class="sidebar-brand-row">
         <h1 class="sidebar-title nb-type-heading">Nearbytes</h1>
@@ -400,7 +461,7 @@
             <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="desktop" />
           </div>
 
-          <aside class="viewport-detail nb-panel-surface">
+          <aside class:hidden={!inspectorVisible} class="viewport-detail nb-panel-surface">
             <div class="viewport-detail-header">
               <p class="viewport-detail-kicker">Designer detail</p>
               <h3>Desktop preview controls</h3>
@@ -480,7 +541,7 @@
             <WorkspaceShell ui={designerState.workspace} data={fixtures} {capabilities} handlers={{ onAction: designerStore.dispatchSurfaceAction }} mode="phone" />
           </div>
 
-          <aside class="viewport-detail nb-panel-surface">
+          <aside class:hidden={!inspectorVisible} class="viewport-detail nb-panel-surface">
             <div class="viewport-detail-header">
               <p class="viewport-detail-kicker">Designer detail</p>
               <h3>Phone preview controls</h3>

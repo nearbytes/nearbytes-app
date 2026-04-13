@@ -195,9 +195,65 @@ textarea {
   max-height: 100vh;
   display: grid;
   grid-template-columns: 21rem minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 1rem;
   padding: 1rem;
   overflow: hidden;
+}
+
+.designer-chrome-controls {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.65rem 0.8rem;
+  border-radius: 999px;
+  backdrop-filter: blur(20px);
+}
+
+.chrome-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  min-height: 2.3rem;
+  padding: 0 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--nb-border);
+  background: color-mix(in srgb, var(--nb-surface-strong) 86%, transparent);
+  color: var(--nb-text-soft);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.chrome-toggle:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--nb-accent) 28%, var(--nb-border));
+  color: var(--nb-text);
+}
+
+.chrome-toggle.active {
+  border-color: color-mix(in srgb, var(--nb-accent) 34%, var(--nb-border));
+  background: color-mix(in srgb, var(--nb-accent-soft) 46%, var(--nb-surface-strong));
+  color: var(--nb-text);
+}
+
+.chrome-toggle-focus {
+  margin-left: auto;
+}
+
+.app-sidebar.hidden,
+.viewport-detail.hidden {
+  display: none;
+}
+
+.designer-app.ui-focus .designer-chrome-controls {
+  background: color-mix(in srgb, var(--nb-surface-strong) 62%, transparent);
 }
 
 .app-sidebar {
@@ -597,6 +653,11 @@ textarea {
   grid-template-columns: minmax(0, 1fr) 21rem;
 }
 
+.viewport-layout:has(.viewport-detail.hidden),
+.viewport-layout-phone:has(.viewport-detail.hidden) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .viewport-detail {
   border-radius: var(--nb-radius-panel);
   padding: 1rem;
@@ -732,6 +793,18 @@ textarea {
 @media (max-width: 980px) {
   .designer-app {
     grid-template-columns: 1fr;
+  }
+
+  .designer-chrome-controls {
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
+
+  .chrome-toggle,
+  .chrome-toggle-focus {
+    flex: 1 1 11rem;
+    justify-content: center;
+    margin-left: 0;
   }
 
   .app-main-header {
