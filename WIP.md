@@ -25,16 +25,16 @@
 	Commit: fb2ecaf
 5. [x] Promote `StatusNotice`, `SecretSeedFields`, and `SharedSecretEditor` into `ui-designer`, then rewire app consumers.
 	Commit: 3db7315
-6. [x] Expand the designer transition contract where needed and add a real-app transition adapter that invokes `ui-designer` transition functions for structural workspace UI state.
-	Commit: 0f3736c
-7. [x] Route the real app's current structural UI transitions through the designer transition adapter for overlays, timeline, event flow, pane/view mode, and related workspace chrome state.
-	Commit: fda45a7
-8. [x] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers through the transition adapter path.
-	Commit: 90a8b47
-9. [x] Promote `WorkspaceModeBar` and `MountRail` into `ui-designer`, then rewire app consumers so toolbar interactions dispatch designer transitions instead of mutating app UI state directly.
-	Commit: 6e5d56f
+6. [ ] Expand the designer transition contract where needed and add a real-app transition adapter that invokes `ui-designer` transition functions for structural workspace UI state.
+	Commit: pending
+7. [ ] Route the real app's current structural UI transitions through the designer transition adapter for overlays, timeline, event flow, pane/view mode, and related workspace chrome state.
+	Commit: pending
+8. [ ] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers through the transition adapter path.
+	Commit: pending
+9. [ ] Promote `WorkspaceModeBar` and `MountRail` into `ui-designer`, then rewire app consumers so toolbar interactions dispatch designer transitions instead of mutating app UI state directly.
+	Commit: pending
 
 ## Progress
 
-- Completed steps: 9 / 9
-- Remaining steps: 0
+- Completed steps: 5 / 9
+- Remaining steps: 4

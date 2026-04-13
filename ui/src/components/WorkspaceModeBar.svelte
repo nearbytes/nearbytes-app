@@ -258,60 +258,98 @@
     cursor: pointer;
   }
 
+  .workspace-pane-select-wrap::after,
+  .workspace-mobile-action-wrap::after {
+    content: '▾';
+    position: absolute;
+    right: 0.8rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.7rem;
+    color: var(--nb-text-faint, rgba(148, 163, 184, 0.9));
+    pointer-events: none;
+  }
+
   .workspace-mode-btn,
   .workspace-toolbar-btn,
   .view-toggle {
-    appearance: none;
     border: 1px solid color-mix(in srgb, var(--nb-border, rgba(148, 163, 184, 0.18)) 88%, rgba(255, 255, 255, 0.06));
-    background: color-mix(in srgb, var(--nb-btn-bg, rgba(12, 22, 41, 0.6)) 92%, rgba(255, 255, 255, 0.02));
-    color: var(--nb-text-main, rgba(226, 232, 240, 0.9));
-    min-height: 34px;
-    padding: 0 0.82rem;
     border-radius: 999px;
+    background: color-mix(in srgb, var(--nb-btn-bg, rgba(12, 22, 41, 0.6)) 92%, rgba(255, 255, 255, 0.02));
+    color: var(--nb-text-main, rgba(226, 232, 240, 0.88));
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.44rem;
+    gap: 0.42rem;
+    min-height: 34px;
+    padding: 0 0.88rem;
     font: inherit;
-    font-size: 0.75rem;
+    font-size: 0.74rem;
     font-weight: 600;
     cursor: pointer;
-    transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
-  }
-
-  .workspace-mode-btn.active,
-  .workspace-toolbar-btn.active,
-  .view-toggle.active {
-    border-color: color-mix(in srgb, var(--nb-accent, rgba(125, 211, 252, 0.7)) 34%, rgba(148, 163, 184, 0.18));
-    background: color-mix(in srgb, var(--nb-accent, rgba(125, 211, 252, 0.7)) 10%, rgba(12, 22, 41, 0.72));
+    transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
   }
 
   .workspace-mode-btn:hover:not(:disabled),
   .workspace-toolbar-btn:hover:not(:disabled),
   .view-toggle:hover:not(:disabled) {
     transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--nb-accent, rgba(125, 211, 252, 0.7)) 34%, var(--nb-border, rgba(148, 163, 184, 0.18)));
+  }
+
+  .workspace-mode-btn.active,
+  .workspace-toolbar-btn.active,
+  .view-toggle.active {
+    border-color: color-mix(in srgb, var(--nb-accent, rgba(125, 211, 252, 0.7)) 42%, var(--nb-border, rgba(148, 163, 184, 0.18)));
+    background: color-mix(in srgb, var(--nb-accent-soft, rgba(14, 165, 233, 0.18)) 62%, var(--nb-btn-bg, rgba(12, 22, 41, 0.6)));
+    box-shadow: 0 8px 20px color-mix(in srgb, var(--nb-accent, rgba(125, 211, 252, 0.7)) 10%, transparent);
+  }
+
+  .workspace-mode-btn:disabled,
+  .workspace-toolbar-btn:disabled,
+  .view-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .workspace-selection-summary {
-    min-width: 0;
-    color: var(--nb-text-soft, rgba(191, 219, 254, 0.82));
-    font-size: 0.74rem;
+    color: var(--nb-text-soft, rgba(191, 219, 254, 0.78));
+    font-size: 0.72rem;
+    line-height: 1.35;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    max-width: 26rem;
   }
 
   .manager-view-switch {
     display: inline-flex;
-    gap: 0.38rem;
+    align-items: center;
+    gap: 0.32rem;
+    padding: 0.18rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--nb-border, rgba(148, 163, 184, 0.18)) 88%, rgba(255, 255, 255, 0.06));
+    background: color-mix(in srgb, var(--nb-panel-bg, rgba(8, 14, 28, 0.7)) 96%, rgba(255, 255, 255, 0.02));
   }
 
   .view-toggle {
-    width: 34px;
-    padding: 0;
+    min-width: 34px;
+    padding-inline: 0.55rem;
   }
 
-  @media (max-width: 900px) {
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  @media (max-width: 920px) {
     .workspace-mode-bar {
       grid-template-columns: 1fr;
     }
@@ -319,11 +357,26 @@
     .workspace-mode-secondary {
       justify-content: flex-start;
     }
+
+    .workspace-selection-summary {
+      max-width: none;
+      width: 100%;
+    }
   }
 
-  @media (max-width: 680px) {
-    .workspace-selection-summary,
-    .workspace-utility-actions {
+  @media (max-width: 640px) {
+    .workspace-utility-actions,
+    .manager-view-switch {
+      display: none;
+    }
+
+    .workspace-mobile-action-wrap {
+      display: inline-flex;
+    }
+  }
+
+  @media (min-width: 641px) {
+    .workspace-mobile-action-wrap {
       display: none;
     }
   }
