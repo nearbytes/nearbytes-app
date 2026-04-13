@@ -759,7 +759,7 @@ textarea {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   height: 100%;
-  overflow: hidden;
+  overflow: auto;
   min-height: 0;
 }
 
