@@ -18,7 +18,8 @@
 <button class:active class="file-row" type="button" onclick={onSelect}>
   <div class="file-row-copy">
     <strong>{file.name}</strong>
-    <span>{file.kind} · {file.sizeLabel}</span>
+    <span>{file.summary}</span>
+    <span>{file.mimeLabel} · {file.sizeLabel} · {file.providers.join(' • ')}</span>
   </div>
   <div class="file-row-meta">
     <UiChip label={file.status} tone={tone} />
@@ -57,6 +58,7 @@
   .file-row-meta span {
     color: var(--nb-text-soft);
     font-size: 0.8rem;
+    line-height: 1.4;
   }
 
   .file-row-meta {

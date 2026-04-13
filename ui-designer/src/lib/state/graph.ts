@@ -86,6 +86,14 @@ export const GRAPH_NODES: GraphNodeDefinition[] = [
     notes: ['Event payloads are fixture/runtime data, not graph state.', 'Structural visibility only.'],
   },
   {
+    id: 'timeline-detail-dialog',
+    label: 'Timeline Detail',
+    detail: 'A single event is expanded in a detail dialog.',
+    layer: 2,
+    row: 13,
+    notes: ['Event selection opens a modal payload inspection surface.', 'Timeline remains visible underneath the detail layer.'],
+  },
+  {
     id: 'join-dialog',
     label: 'Join Dialog',
     detail: 'Join link parse and confirm flow.',
@@ -164,6 +172,7 @@ export const GRAPH_EDGES: GraphEdgeDefinition[] = [
   { id: 'edge-chat-focus', from: 'workspace-home', to: 'chat-focus', label: 'setWorkspacePaneMode', detail: 'Enter the chat-dominant layout.' },
   { id: 'edge-preview', from: 'workspace-home', to: 'preview-open', label: 'togglePreviewPane', detail: 'Open the preview pane.' },
   { id: 'edge-timeline', from: 'workspace-home', to: 'timeline-open', label: 'toggleTimelinePanel', detail: 'Open the timeline panel.' },
+  { id: 'edge-timeline-detail', from: 'timeline-open', to: 'timeline-detail-dialog', label: 'selectEvent', detail: 'Open the selected event details.' },
   { id: 'edge-join', from: 'workspace-home', to: 'join-dialog', label: 'openJoinDialog', detail: 'Open the join flow overlay.' },
   { id: 'edge-share', from: 'workspace-home', to: 'share-dialog', label: 'openShareDialog', detail: 'Open the share overlay.' },
   { id: 'edge-identity', from: 'workspace-home', to: 'identity-manager', label: 'openIdentityManager', detail: 'Open identity selection and publication.' },
@@ -177,6 +186,7 @@ export const GRAPH_EDGES: GraphEdgeDefinition[] = [
   { id: 'edge-close-2', from: 'chat-focus', to: 'workspace-home', label: 'resetPaneMode', detail: 'Return to balanced panes.' },
   { id: 'edge-close-3', from: 'preview-open', to: 'workspace-home', label: 'togglePreviewPane', detail: 'Close the preview pane.' },
   { id: 'edge-close-4', from: 'timeline-open', to: 'workspace-home', label: 'toggleTimelinePanel', detail: 'Close the timeline panel.' },
+  { id: 'edge-close-4b', from: 'timeline-detail-dialog', to: 'timeline-open', label: 'closeOverlay', detail: 'Return from event details to the timeline list.' },
   { id: 'edge-close-5', from: 'join-dialog', to: 'workspace-home', label: 'closeOverlay', detail: 'Dismiss the join overlay.' },
   { id: 'edge-close-6', from: 'share-dialog', to: 'workspace-home', label: 'closeOverlay', detail: 'Dismiss the share overlay.' },
   { id: 'edge-close-7', from: 'identity-manager', to: 'workspace-home', label: 'closeOverlay', detail: 'Dismiss the identity manager.' },
@@ -207,6 +217,7 @@ export function structuralStateKey(workspace: SharedWorkspaceState): GraphNodeId
   if (workspace.overlay === 'storage') return 'storage-panel';
   if (workspace.overlay === 'hub-storage') return 'hub-storage-dialog';
   if (workspace.overlay === 'event-flow') return 'event-flow-panel';
+  if (workspace.overlay === 'timeline-detail') return 'timeline-detail-dialog';
   if (workspace.overlay === 'reset') return 'reset-dialog';
   if (workspace.showPreview) return 'preview-open';
   if (workspace.showTimeline) return 'timeline-open';

@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { Bell, FolderKanban, Search, Share2, Shield, Settings2 } from 'lucide-svelte';
-  import UiDialog from '../components/UiDialog.svelte';
+  import { Bell, Search, Share2, Shield, Settings2 } from 'lucide-svelte';
   import HubChip from '../components/HubChip.svelte';
   import FilesPane from './FilesPane.svelte';
   import ChatPane from './ChatPane.svelte';
   import PreviewPane from './PreviewPane.svelte';
   import TimelinePanel from './TimelinePanel.svelte';
+  import TimelineEventDetailsDialog from './TimelineEventDetailsDialog.svelte';
   import JoinDialog from './JoinDialog.svelte';
   import ShareDialog from './ShareDialog.svelte';
   import IdentityManager from './IdentityManager.svelte';
@@ -13,6 +13,7 @@
   import SourcesPanel from './SourcesPanel.svelte';
   import StoragePanel from './StoragePanel.svelte';
   import HubStorageDialog from './HubStorageDialog.svelte';
+  import EventFlowPanel from './EventFlowPanel.svelte';
   import ResetDialog from './ResetDialog.svelte';
   import type { WorkspaceSurfaceProps } from '../state/types.js';
 
@@ -72,7 +73,7 @@
   {#if ui.overlay === 'join'}
     <JoinDialog onClose={() => handlers?.onAction?.({ type: 'close-overlay' })} />
   {:else if ui.overlay === 'share'}
-    <ShareDialog onClose={() => handlers?.onAction?.({ type: 'close-overlay' })} />
+    <ShareDialog {ui} {data} {capabilities} {handlers} />
   {:else if ui.overlay === 'identity'}
     <IdentityManager {data} onClose={() => handlers?.onAction?.({ type: 'close-overlay' })} />
   {:else if ui.overlay === 'create'}
@@ -84,21 +85,11 @@
   {:else if ui.overlay === 'hub-storage'}
     <HubStorageDialog onClose={() => handlers?.onAction?.({ type: 'close-overlay' })} />
   {:else if ui.overlay === 'event-flow'}
-    <UiDialog title="Event flow" onClose={() => handlers?.onAction?.({ type: 'close-overlay' })}>
-      {#snippet body()}
-        <div class="event-flow-grid">
-          {#if selectedEvent}
-            <strong>{selectedEvent.title}</strong>
-            <p>{selectedEvent.summary}</p>
-            <ul>
-              <li>Source object acknowledged</li>
-              <li>Encrypted block linked</li>
-              <li>Projection visible in current hub shell</li>
-            </ul>
-          {/if}
-        </div>
-      {/snippet}
-    </UiDialog>
+    <div class="overlay-surface nb-panel-surface">
+      <EventFlowPanel {ui} {data} {capabilities} {handlers} />
+    </div>
+  {:else if ui.overlay === 'timeline-detail'}
+    <TimelineEventDetailsDialog {ui} {data} {capabilities} {handlers} />
   {:else if ui.overlay === 'reset'}
     <ResetDialog canReset={capabilities?.destructiveReset} onClose={() => handlers?.onAction?.({ type: 'close-overlay' })} />
   {/if}
@@ -172,20 +163,12 @@
     grid-template-columns: 1fr;
   }
 
-  .event-flow-grid {
-    display: grid;
-    gap: 0.6rem;
-  }
-
-  .event-flow-grid p,
-  .event-flow-grid ul {
-    margin: 0;
-    color: var(--nb-text-soft);
-    font-size: 0.86rem;
-    line-height: 1.45;
-  }
-
-  .event-flow-grid ul {
-    padding-left: 1.15rem;
+  .overlay-surface {
+    position: absolute;
+    inset: 1rem;
+    z-index: 4;
+    border-radius: var(--nb-radius-dialog);
+    overflow: hidden;
+    box-shadow: var(--nb-shadow-frame);
   }
 </style>

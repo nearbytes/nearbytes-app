@@ -59,6 +59,7 @@
     { id: 'storage', label: 'Storage' },
     { id: 'hub-storage', label: 'Hub storage' },
     { id: 'event-flow', label: 'Event flow' },
+    { id: 'timeline-detail', label: 'Timeline detail' },
     { id: 'reset', label: 'Reset' },
   ];
 

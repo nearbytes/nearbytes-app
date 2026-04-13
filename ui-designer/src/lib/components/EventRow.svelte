@@ -11,15 +11,19 @@
     active?: boolean;
     onSelect?: (() => void) | undefined;
   }>();
+
+  const tone = $derived(event.tone === 'attention' ? 'warning' : event.tone === 'syncing' ? 'accent' : 'success');
 </script>
 
 <button class:active class="event-row" type="button" onclick={onSelect}>
   <div class="event-row-copy">
     <strong>{event.title}</strong>
     <span>{event.summary}</span>
+    <span>{event.transport}</span>
   </div>
   <div class="event-row-meta">
     <UiChip label={event.eventType} tone="accent" />
+    <UiChip label={event.tone} tone={tone} />
     <span>{event.at}</span>
   </div>
 </button>
@@ -55,6 +59,7 @@
   .event-row-meta span {
     color: var(--nb-text-soft);
     font-size: 0.8rem;
+    line-height: 1.4;
   }
 
   .event-row-meta {

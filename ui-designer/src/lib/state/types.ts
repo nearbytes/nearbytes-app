@@ -19,6 +19,10 @@ export type FixturePreset = 'populated' | 'empty' | 'warning' | 'capability-limi
 
 export type WorkspacePaneMode = 'balanced' | 'files-focus' | 'chat-focus';
 
+export type FileBrowserView = 'icons' | 'details';
+
+export type FileSort = 'newest' | 'oldest' | 'name' | 'size';
+
 export type OverlayKind =
   | 'none'
   | 'join'
@@ -29,6 +33,7 @@ export type OverlayKind =
   | 'storage'
   | 'hub-storage'
   | 'event-flow'
+  | 'timeline-detail'
   | 'reset';
 
 export type PrimaryPane = 'files' | 'chat';
@@ -39,6 +44,7 @@ export type GraphNodeId =
   | 'chat-focus'
   | 'preview-open'
   | 'timeline-open'
+  | 'timeline-detail-dialog'
   | 'join-dialog'
   | 'share-dialog'
   | 'identity-manager'
@@ -68,8 +74,12 @@ export type FileFixture = {
   id: string;
   name: string;
   kind: 'image' | 'document' | 'audio' | 'archive';
+  accent: 'cyan' | 'amber' | 'violet' | 'rose';
   sizeLabel: string;
   updatedAt: string;
+  mimeLabel: string;
+  summary: string;
+  providers: string[];
   status: 'ready' | 'syncing' | 'warning';
 };
 
@@ -87,6 +97,13 @@ export type EventFixture = {
   summary: string;
   eventType: 'FILE' | 'CHAT' | 'IDENTITY' | 'TRANSPORT';
   at: string;
+  tone: 'stable' | 'syncing' | 'attention';
+  actor: string;
+  transport: string;
+  happenedAt: string;
+  payloadPreview: string;
+  specRefs: string[];
+  outcome: string[];
 };
 
 export type PeerFixture = {
@@ -99,8 +116,26 @@ export type PeerFixture = {
 export type StorageFixture = {
   id: string;
   label: string;
+  provider: string;
   status: 'healthy' | 'watching' | 'attention';
+  pathLabel: string;
+  usageLabel: string;
   reserveLabel: string;
+  mode: 'read-write' | 'read-only';
+};
+
+export type ProviderShareFixture = {
+  id: string;
+  provider: string;
+  title: string;
+  status: 'healthy' | 'syncing' | 'attention';
+  access: 'read-write' | 'read-only';
+  progressPercent: number | null;
+  progressLabel: string;
+  shareCountLabel: string;
+  locationLabel: string;
+  detail: string;
+  attachments: string[];
 };
 
 export type IdentityFixture = {
@@ -117,6 +152,7 @@ export type DesignerFixtures = {
   events: EventFixture[];
   peers: PeerFixture[];
   storageLocations: StorageFixture[];
+  providerShares: ProviderShareFixture[];
   identities: IdentityFixture[];
 };
 
@@ -131,6 +167,9 @@ export type SharedWorkspaceState = {
   activeHubId: string;
   primaryPane: PrimaryPane;
   paneMode: WorkspacePaneMode;
+  fileBrowserView: FileBrowserView;
+  fileSearch: string;
+  fileSort: FileSort;
   overlay: OverlayKind;
   showPreview: boolean;
   showTimeline: boolean;
@@ -151,6 +190,9 @@ export type SurfaceAction =
   | { type: 'select-hub'; hubId: string }
   | { type: 'select-pane'; pane: PrimaryPane }
   | { type: 'set-pane-mode'; paneMode: WorkspacePaneMode }
+  | { type: 'set-file-browser-view'; view: FileBrowserView }
+  | { type: 'set-file-search'; value: string }
+  | { type: 'set-file-sort'; sort: FileSort }
   | { type: 'toggle-preview' }
   | { type: 'toggle-timeline' }
   | { type: 'open-overlay'; overlay: Exclude<OverlayKind, 'none'> }

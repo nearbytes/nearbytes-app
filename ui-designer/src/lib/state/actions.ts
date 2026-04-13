@@ -1,6 +1,8 @@
 import type {
   ComponentFamily,
   DesignerTab,
+  FileBrowserView,
+  FileSort,
   FixturePreset,
   GraphNodeId,
   MoodboardId,
@@ -16,6 +18,9 @@ const DEFAULT_WORKSPACE: SharedWorkspaceState = {
   activeHubId: 'atlas',
   primaryPane: 'files',
   paneMode: 'balanced',
+  fileBrowserView: 'icons',
+  fileSearch: '',
+  fileSort: 'newest',
   overlay: 'none',
   showPreview: false,
   showTimeline: false,
@@ -81,6 +86,36 @@ export function setWorkspacePaneMode(state: UiDesignerState, paneMode: Workspace
   };
 }
 
+export function setFileBrowserView(state: UiDesignerState, view: FileBrowserView): UiDesignerState {
+  return {
+    ...state,
+    workspace: {
+      ...state.workspace,
+      fileBrowserView: view,
+    },
+  };
+}
+
+export function setFileSearch(state: UiDesignerState, value: string): UiDesignerState {
+  return {
+    ...state,
+    workspace: {
+      ...state.workspace,
+      fileSearch: value,
+    },
+  };
+}
+
+export function setFileSort(state: UiDesignerState, sort: FileSort): UiDesignerState {
+  return {
+    ...state,
+    workspace: {
+      ...state.workspace,
+      fileSort: sort,
+    },
+  };
+}
+
 export function togglePreviewPane(state: UiDesignerState): UiDesignerState {
   return {
     ...state,
@@ -98,7 +133,7 @@ export function toggleTimelinePanel(state: UiDesignerState): UiDesignerState {
     workspace: {
       ...state.workspace,
       showTimeline: !state.workspace.showTimeline,
-      overlay: 'none',
+      overlay: state.workspace.showTimeline ? 'none' : state.workspace.overlay === 'timeline-detail' ? 'none' : state.workspace.overlay,
     },
   };
 }
@@ -144,6 +179,7 @@ export function selectEvent(state: UiDesignerState, eventId: string): UiDesigner
       ...state.workspace,
       selectedEventId: eventId,
       showTimeline: true,
+      overlay: 'timeline-detail',
     },
   };
 }
@@ -167,6 +203,12 @@ export function applySurfaceAction(state: UiDesignerState, action: SurfaceAction
       return selectPrimaryPane(state, action.pane);
     case 'set-pane-mode':
       return setWorkspacePaneMode(state, action.paneMode);
+    case 'set-file-browser-view':
+      return setFileBrowserView(state, action.view);
+    case 'set-file-search':
+      return setFileSearch(state, action.value);
+    case 'set-file-sort':
+      return setFileSort(state, action.sort);
     case 'toggle-preview':
       return togglePreviewPane(state);
     case 'toggle-timeline':
@@ -208,6 +250,8 @@ export function setStructuralState(state: UiDesignerState, nodeId: GraphNodeId):
       return { ...base, workspace: { ...base.workspace, showPreview: true } };
     case 'timeline-open':
       return { ...base, workspace: { ...base.workspace, showTimeline: true } };
+    case 'timeline-detail-dialog':
+      return { ...base, workspace: { ...base.workspace, showTimeline: true, overlay: 'timeline-detail' } };
     case 'join-dialog':
       return openOverlay(base, 'join');
     case 'share-dialog':
