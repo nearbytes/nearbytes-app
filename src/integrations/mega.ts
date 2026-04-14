@@ -3292,9 +3292,25 @@ export class MegaTransportAdapter {
       return this.withRecoveredAccountSession(account, async (session) => {
         const nextEntries = { ...manifest.entries };
         const handlePathIndex = buildManifestHandlePathIndex(nextEntries);
+        const shareKeys = this.accountShareKeyCache.get(session.userHandle) ?? new Map<string, Buffer>();
         let appliedCount = 0;
 
+        const directlyAppliedCount = await this.applyRecipientPacketNodes(
+          share,
+          session,
+          rootHandle,
+          actionBatch.packets,
+          nextEntries,
+          handlePathIndex,
+          shareKeys,
+          baseProbeContext,
+        );
+        appliedCount += directlyAppliedCount;
+
         for (const handle of handles) {
+          if (handlePathIndex.has(handle)) {
+            continue;
+          }
           const applied = await this.applyRecipientHandleUpdate(
             share,
             session,
@@ -3433,6 +3449,81 @@ export class MegaTransportAdapter {
       );
     });
     return true;
+  }
+
+  private async applyRecipientPacketNodes(
+    share: ManagedShare,
+    session: MegaSession,
+    rootHandle: string,
+    packets: readonly Record<string, unknown>[],
+    entries: Record<string, ProviderRefreshManifestEntry>,
+    handlePathIndex: Map<string, string>,
+    shareKeys: ReadonlyMap<string, Buffer>,
+    baseProbeContext?: MegaRecipientProbeContext,
+  ): Promise<number> {
+    const packetNodes = collectRecipientImmediatePacketNodes(packets);
+    if (packetNodes.length === 0) {
+      return 0;
+    }
+
+    const usersByHandle = buildMegaUsersByHandleFromActionPackets(packets);
+    const packetNodesByHandle = new Map<string, DecryptedMegaNode>();
+    for (const node of packetNodes) {
+      const decrypted = decryptNodeRecord(node, session, shareKeys, usersByHandle);
+      if (!decrypted) {
+        continue;
+      }
+      packetNodesByHandle.set(decrypted.handle, decrypted);
+    }
+    if (packetNodesByHandle.size === 0) {
+      return 0;
+    }
+
+    const resolvedNodes = [...packetNodesByHandle.values()]
+      .map((node) => ({
+        node,
+        relativePath: resolveRecipientPacketNodePath(node, rootHandle, handlePathIndex, packetNodesByHandle),
+      }))
+      .filter((entry): entry is { node: DecryptedMegaNode; relativePath: string } => Boolean(entry.relativePath))
+      .filter((entry) => isMirrorRelativePath(entry.relativePath) || isMirrorContainerPath(entry.relativePath));
+
+    resolvedNodes.sort((left, right) => {
+      const leftDepth = left.relativePath.split('/').length;
+      const rightDepth = right.relativePath.split('/').length;
+      if (leftDepth !== rightDepth) {
+        return leftDepth - rightDepth;
+      }
+      if (left.node.isFolder !== right.node.isFolder) {
+        return left.node.isFolder ? -1 : 1;
+      }
+      return left.relativePath.localeCompare(right.relativePath);
+    });
+
+    let appliedCount = 0;
+    for (const { node, relativePath } of resolvedNodes) {
+      const probeContext: MegaRecipientProbeContext = {
+        ...baseProbeContext,
+        source: baseProbeContext?.source ?? 'sync',
+        rootHandle,
+        triggerHandle: node.handle,
+        packetReceivedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
+        scsn: baseProbeContext?.scsn,
+        fetchStartedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
+        fetchCompletedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
+      };
+      await this.applyRecipientFetchedNode(
+        share,
+        session,
+        node,
+        relativePath,
+        entries,
+        handlePathIndex,
+        probeContext
+      );
+      appliedCount += 1;
+    }
+
+    return appliedCount;
   }
 
   private async applyRecipientFetchedNode(
@@ -8149,6 +8240,103 @@ function collectRecipientImmediatePacketHandles(
     }
   }
   return handles;
+}
+
+function collectRecipientImmediatePacketNodes(
+  packets: readonly Record<string, unknown>[]
+): MegaNodeRecord[] {
+  const nodesByHandle = new Map<string, MegaNodeRecord>();
+  for (const packet of packets) {
+    const action = typeof packet.a === 'string' ? packet.a.trim() : '';
+    if (action !== 't') {
+      continue;
+    }
+    const tree = packet.t;
+    const fetchedNodes =
+      tree && typeof tree === 'object' && Array.isArray((tree as { f?: unknown }).f)
+        ? (tree as { f: unknown[] }).f
+        : [];
+    for (const node of fetchedNodes) {
+      if (!node || typeof node !== 'object') {
+        continue;
+      }
+      const handle = typeof (node as { h?: unknown }).h === 'string' ? (node as { h: string }).h.trim() : '';
+      if (!handle) {
+        continue;
+      }
+      nodesByHandle.set(handle, node as MegaNodeRecord);
+    }
+  }
+  return [...nodesByHandle.values()];
+}
+
+function buildMegaUsersByHandleFromActionPackets(
+  packets: readonly Record<string, unknown>[]
+): Map<string, MegaUserRecord> {
+  const usersByHandle = new Map<string, MegaUserRecord>();
+  for (const packet of packets) {
+    const tree = packet.t;
+    const users =
+      tree && typeof tree === 'object' && Array.isArray((tree as { u?: unknown }).u)
+        ? (tree as { u: unknown[] }).u
+        : Array.isArray((packet as { u?: unknown }).u)
+          ? ((packet as { u: unknown[] }).u)
+          : [];
+    for (const user of users) {
+      if (!user || typeof user !== 'object') {
+        continue;
+      }
+      const handle = typeof (user as { u?: unknown }).u === 'string' ? (user as { u: string }).u.trim() : '';
+      if (!handle) {
+        continue;
+      }
+      usersByHandle.set(handle, user as MegaUserRecord);
+    }
+  }
+  return usersByHandle;
+}
+
+function resolveRecipientPacketNodePath(
+  node: DecryptedMegaNode,
+  rootHandle: string,
+  handlePathIndex: ReadonlyMap<string, string>,
+  packetNodesByHandle: ReadonlyMap<string, DecryptedMegaNode>,
+  visited = new Set<string>()
+): string | undefined {
+  const existingPath = handlePathIndex.get(node.handle);
+  if (existingPath) {
+    return existingPath;
+  }
+  if (node.parentHandle === rootHandle) {
+    return sanitizePathSegment(node.name);
+  }
+  if (!node.parentHandle || visited.has(node.handle)) {
+    return undefined;
+  }
+
+  const parentPath = handlePathIndex.get(node.parentHandle);
+  if (parentPath) {
+    return normalizeRelativePath(path.join(parentPath, sanitizePathSegment(node.name)));
+  }
+
+  const packetParent = packetNodesByHandle.get(node.parentHandle);
+  if (!packetParent) {
+    return undefined;
+  }
+
+  const nextVisited = new Set(visited);
+  nextVisited.add(node.handle);
+  const resolvedParentPath = resolveRecipientPacketNodePath(
+    packetParent,
+    rootHandle,
+    handlePathIndex,
+    packetNodesByHandle,
+    nextVisited,
+  );
+  if (!resolvedParentPath) {
+    return undefined;
+  }
+  return normalizeRelativePath(path.join(resolvedParentPath, sanitizePathSegment(node.name)));
 }
 
 function extractMegaShareKeysFromActionPackets(
