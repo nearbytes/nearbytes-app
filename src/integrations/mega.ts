@@ -90,6 +90,7 @@ const MEGA_OWNER_SHARE_KEY_HEAL_RETRY_MS = 20_000;
 const MEGA_OWNER_COLLABORATOR_CACHE_MS = 30_000;
 const MEGA_INCOMING_DISCOVERY_CACHE_MS = 5_000;
 const MEGA_CONTACT_INVITES_CACHE_MS = 5_000;
+const MEGA_SESSION_VALIDATION_CACHE_MS = 15_000;
 const MEGA_CREATE_RECOVERY_ATTEMPTS = 7;
 const MEGA_UPLOAD_RECOVERY_ATTEMPTS = 7;
 const MEGA_NODE_APPEAR_ATTEMPTS = 7;
@@ -321,6 +322,7 @@ export class MegaTransportAdapter {
   private readonly accountShareKeyCache = new Map<string, ReadonlyMap<string, Buffer>>();
   private readonly accountIdByUserHandle = new Map<string, string>();
   private readonly accountCloudDriveHandleCache = new Map<string, string>();
+  private readonly accountSessionValidatedAt = new Map<string, number>();
   private readonly accountSessionRefreshTasks = new Map<string, Promise<MegaSession>>();
   private readonly incomingShareDiscoveryCache = new Map<string, { expiresAt: number; offers: IncomingManagedShareOffer[] }>();
   private readonly incomingShareDiscoveryTasks = new Map<string, Promise<IncomingManagedShareOffer[]>>();
@@ -370,6 +372,7 @@ export class MegaTransportAdapter {
     this.accountShareKeyCache.clear();
     this.accountIdByUserHandle.clear();
     this.accountCloudDriveHandleCache.clear();
+    this.accountSessionValidatedAt.clear();
     this.accountSessionRefreshTasks.clear();
     this.incomingShareDiscoveryCache.clear();
     this.incomingShareDiscoveryTasks.clear();
@@ -496,6 +499,7 @@ export class MegaTransportAdapter {
       this.accountIdByUserHandle.delete(secret.userHandle.trim());
       this.accountCloudDriveHandleCache.delete(secret.userHandle.trim());
     }
+    this.accountSessionValidatedAt.delete(account.id);
     await this.runtime.secretStore.delete(secretKey(account.id));
   }
 
@@ -2280,14 +2284,20 @@ export class MegaTransportAdapter {
         this.accountShareKeyCache.set(session.userHandle, persistedShareKeys);
       }
     }
+    const validatedAt = this.accountSessionValidatedAt.get(account.id);
+    if (typeof validatedAt === 'number' && this.runtime.now() - validatedAt < MEGA_SESSION_VALIDATION_CACHE_MS) {
+      return session;
+    }
     try {
       await this.fetchCurrentUser(session, signal);
+      this.accountSessionValidatedAt.set(account.id, this.runtime.now());
       return session;
     } catch (error) {
       if (isMegaSessionInvalid(error)) {
         return this.refreshAccountSessionShared(account, secret, error);
       }
       if (isMegaTemporaryLockError(error)) {
+        this.accountSessionValidatedAt.set(account.id, this.runtime.now());
         this.runtime.logger.warn('MEGA account session validation was temporarily locked; continuing with the cached session.', {
           accountId: account.id,
           code: (error as MegaApiError | undefined)?.code,

@@ -3871,6 +3871,63 @@ describe('MegaTransportAdapter', () => {
     const persistedSecret = await secretStore.get<any>('provider-account:mega:acct-mega-refresh');
     expect(persistedSecret?.sid).toBe('fresh-session');
   });
+
+  it('reuses a recently validated cached MEGA session before rechecking the account', async () => {
+    const secretStore = createMemorySecretStore();
+    const email = 'owner@example.com';
+    const userHandle = 'owner001';
+    const masterKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    let currentTime = 1_000;
+
+    await secretStore.set('provider-account:mega:acct-mega-validated-cache', {
+      email,
+      password: 'secret',
+      sid: 'cached-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      now: () => currentTime,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime);
+    const fetchCurrentUser = vi.fn(async () => ({ u: userHandle, email }));
+    (adapter as any).fetchCurrentUser = fetchCurrentUser;
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-validated-cache',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const firstSession = await (adapter as any).getAccountSession(account);
+    const secondSession = await (adapter as any).getAccountSession(account);
+
+    expect(firstSession.sid).toBe('cached-session');
+    expect(secondSession.sid).toBe('cached-session');
+    expect(fetchCurrentUser).toHaveBeenCalledTimes(1);
+
+    currentTime += 15_001;
+    const thirdSession = await (adapter as any).getAccountSession(account);
+
+    expect(thirdSession.sid).toBe('cached-session');
+    expect(fetchCurrentUser).toHaveBeenCalledTimes(2);
+  });
   
   it('repairs an owner share when its decryptable share key is missing', async () => {
     const secretStore = createMemorySecretStore();
