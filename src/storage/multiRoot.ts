@@ -1526,10 +1526,20 @@ export class MultiRootStorageBackend implements StorageBackend {
         try {
           await fs.rename(sourceAbsolute, destinationAbsolute);
         } catch (error) {
+          if (isFileNotFoundError(error)) {
+            continue;
+          }
           if (!isCrossDeviceError(error)) {
             throw new StorageError(`Failed to collect ${entry.name} into local storage: ${asError(error).message}`, asError(error));
           }
-          await fs.copyFile(sourceAbsolute, destinationAbsolute);
+          try {
+            await fs.copyFile(sourceAbsolute, destinationAbsolute);
+          } catch (copyError) {
+            if (isFileNotFoundError(copyError)) {
+              continue;
+            }
+            throw copyError;
+          }
           await safeUnlink(sourceAbsolute);
         }
       }

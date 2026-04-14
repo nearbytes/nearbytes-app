@@ -1146,7 +1146,7 @@ export class MegaTransportAdapter {
             ownerUploadState,
             undefined
           );
-          await adapter.upload(normalizedPath, localBytes);
+          await adapter.upload(normalizedPath, localBytes, { waitForVisibility: false });
         });
       });
     } catch (error) {
@@ -2420,6 +2420,7 @@ export class MegaTransportAdapter {
     options: {
       readonly allowTransientFullFallback?: boolean;
       readonly expectedRootName?: string;
+      readonly fastPartialFallback?: boolean;
     } = {}
   ): Promise<MegaFetchedTree> {
     const cachedShareKeys = this.accountShareKeyCache.get(session.userHandle);
@@ -2473,6 +2474,7 @@ export class MegaTransportAdapter {
           {
             useCache: false,
             allowTransientFullFallback: options.allowTransientFullFallback,
+            fastPartialFallback: options.fastPartialFallback,
             extraShareKeys: this.accountShareKeyCache.get(session.userHandle),
             expectedRootName: options.expectedRootName,
           },
@@ -2492,9 +2494,12 @@ export class MegaTransportAdapter {
     options: {
       readonly allowTransientFullFallback?: boolean;
       readonly expectedRootName?: string;
+      readonly fastPartialFallback?: boolean;
+      readonly maxAttempts?: number;
     } = {}
   ): Promise<MegaFetchedTree> {
-    for (let attempt = 0; attempt < MEGA_CREATE_RECOVERY_ATTEMPTS; attempt += 1) {
+    const maxAttempts = Math.max(1, options.maxAttempts ?? MEGA_CREATE_RECOVERY_ATTEMPTS);
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         return await this.fetchPartialTreeWithSnapshot(session, rootHandle, signal, options);
       } catch (error) {
@@ -2505,7 +2510,7 @@ export class MegaTransportAdapter {
         ) {
           throw error;
         }
-        if (attempt >= MEGA_CREATE_RECOVERY_ATTEMPTS - 1) {
+        if (attempt >= maxAttempts - 1) {
           throw error;
         }
         await waitForMegaRetry(getMegaRetryDelayMs(error, attempt), signal);
@@ -3374,6 +3379,8 @@ export class MegaTransportAdapter {
     const fetchStartedAt = this.runtime.now();
     const fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
       allowTransientFullFallback: true,
+      fastPartialFallback: true,
+      maxAttempts: 1,
     });
     const fetchCompletedAt = this.runtime.now();
     const baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
@@ -4521,7 +4528,11 @@ class MegaOwnerRemoteAdapter {
     return data;
   }
 
-  async upload(relativePath: string, data: Uint8Array): Promise<void> {
+  async upload(
+    relativePath: string,
+    data: Uint8Array,
+    options: { readonly waitForVisibility?: boolean } = {}
+  ): Promise<void> {
     const normalized = normalizeRelativePath(relativePath);
     const folderSegments = normalized.split('/').slice(0, -1);
     const name = normalized.split('/').at(-1)?.trim() ?? '';
@@ -4572,7 +4583,7 @@ class MegaOwnerRemoteAdapter {
       this.ownerUploadState.shareCrypto,
       this.signal,
       this.ownerUploadState.extraShareKeys,
-      { waitForVisibility: true }
+      { waitForVisibility: options.waitForVisibility }
     );
     this.ownerUploadState.filesByPath.set(normalized, {
       handle: uploaded.handle,
@@ -5088,6 +5099,7 @@ async function fetchMegaDecryptedTree(
   options: {
     readonly useCache?: boolean;
     readonly allowTransientFullFallback?: boolean;
+    readonly fastPartialFallback?: boolean;
     readonly extraShareKeys?: ReadonlyMap<string, Buffer>;
     readonly expectedRootName?: string;
   } = {},
@@ -5097,7 +5109,9 @@ async function fetchMegaDecryptedTree(
   let snapshot: MegaFetchNodesSnapshot;
   if (rootHandle) {
     try {
-      snapshot = await fetchMegaNodesSnapshot(apiClient, session, rootHandle, options, signal);
+      snapshot = options.fastPartialFallback
+        ? parseMegaFetchNodesSnapshot(await requestMegaNodesSnapshot(apiClient, session, rootHandle, options, signal))
+        : await fetchMegaNodesSnapshot(apiClient, session, rootHandle, options, signal);
     } catch (error) {
       const transientPartialFetchFailure =
         isMegaTemporaryLockError(error) || isMegaRateLimitedError(error) || isMegaRetryableTransportError(error);
@@ -8114,15 +8128,19 @@ function collectRecipientImmediatePacketHandles(
         tree && typeof tree === 'object' && Array.isArray((tree as { f?: unknown }).f)
           ? (tree as { f: unknown[] }).f
           : [];
+      const pendingParentHandles: string[] = [];
       for (const node of fetchedNodes) {
         if (!node || typeof node !== 'object') {
           continue;
         }
+        addHandle(typeof (node as { h?: unknown }).h === 'string' ? (node as { h: string }).h : undefined);
         const parentHandle = typeof (node as { p?: unknown }).p === 'string' ? (node as { p: string }).p : undefined;
         if (parentHandle && parentHandle.trim() && parentHandle.trim() !== rootHandle) {
-          addHandle(parentHandle);
+          pendingParentHandles.push(parentHandle);
         }
-        addHandle(typeof (node as { h?: unknown }).h === 'string' ? (node as { h: string }).h : undefined);
+      }
+      for (const parentHandle of pendingParentHandles) {
+        addHandle(parentHandle);
       }
       continue;
     }
