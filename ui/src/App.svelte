@@ -6518,6 +6518,18 @@
               <div class="mounts-actions brand-actions">
                 <button
                   type="button"
+                  class="header-tool-btn phone-create-btn"
+                  aria-label="Add hub"
+                  title="Add hub"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    openCreateChooser();
+                  }}
+                >
+                  <Plus class="button-icon" size={14} strokeWidth={2.2} />
+                </button>
+                <button
+                  type="button"
                   class="header-tool-btn"
                   class:active={showIdentityManager}
                   aria-label="Identities"
@@ -8643,6 +8655,10 @@
   .brand-actions {
     flex: 0 0 auto;
     flex-wrap: wrap;
+  }
+
+  .phone-create-btn {
+    display: none;
   }
 
   .mount-quick-actions {
@@ -12733,6 +12749,10 @@
 
     .mounts-actions.brand-actions {
       flex: 0 0 auto;
+    }
+
+    .phone-create-btn {
+      display: inline-flex;
     }
 
     .mount-quick-actions {

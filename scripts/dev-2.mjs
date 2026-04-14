@@ -24,6 +24,7 @@ import {
   sleep,
   trimOrDefault,
   trimOrNull,
+  waitForDesktopSession,
   waitForExit,
   waitForHealth,
 } from './lib/dev-orchestration.mjs';
@@ -92,6 +93,7 @@ try {
   console.error('[dev-2] clearing dedicated ports', { localPort, remotePort });
   await clearPorts([localPort, remotePort]);
 
+  const localDesktopStartedAt = Date.now();
   console.error('[dev-2] starting local desktop target', { apiPort: localPort, uiPort: localUiPort, home: localHome });
   const localChild = startDesktopInstance({
     name: 'local-desktop',
@@ -111,14 +113,19 @@ try {
   children.push(localChild, remoteChild);
 
   console.error('[dev-2] waiting for both instances to become healthy');
-  await Promise.all([
+  const [, , localDesktopSession] = await Promise.all([
     waitForHealth(localBaseUrl, startupTimeoutMs, localChild, localLogPath),
     waitForHealth(remoteBaseUrl, startupTimeoutMs, remoteChild, remoteLogPath),
+    waitForDesktopSession(path.join(localHome, '.nearbytes', 'desktop-session.json'), localDesktopStartedAt, startupTimeoutMs, localChild),
   ]);
   console.error('[dev-2] desktop and remote targets are healthy');
 
+  const localDesktopHeaders = {
+    'x-nearbytes-runtime-token': localDesktopSession.token,
+  };
+
   console.error('[dev-2] connecting local MEGA account', { email: localEmail, baseUrl: localBaseUrl });
-  const localAccount = await ensureExpectedMegaAccount(localBaseUrl, localEmail);
+  const localAccount = await ensureExpectedMegaAccount(localBaseUrl, localEmail, localDesktopHeaders);
   console.error('[dev-2] connecting remote MEGA account', { email: remoteEmail, baseUrl: remoteBaseUrl });
   const remoteAccount = await ensureExpectedMegaAccount(remoteBaseUrl, remoteEmail);
 
@@ -212,7 +219,7 @@ try {
     }
 
     await Promise.all([
-      removeRecipientMegaShares(localBaseUrl),
+      removeRecipientMegaShares(localBaseUrl, localDesktopHeaders),
       removeRecipientMegaShares(remoteBaseUrl),
     ]);
     console.error('[dev-2] wipe completed');
@@ -308,15 +315,15 @@ function startDesktopInstance({ name, home, port, uiPort, logPath }) {
   return child;
 }
 
-async function ensureExpectedMegaAccount(baseUrl, expectedEmail) {
-  const accountsResponse = await requestJson(baseUrl, 'GET', '/integrations/accounts');
+async function ensureExpectedMegaAccount(baseUrl, expectedEmail, headers = {}) {
+  const accountsResponse = await requestJson(baseUrl, 'GET', '/integrations/accounts', undefined, headers);
   const megaAccounts = (accountsResponse?.accounts ?? []).filter((entry) => normalize(entry.provider) === 'mega');
   const matching = megaAccounts.find((entry) => normalize(entry.email) === normalize(expectedEmail) && entry.state === 'connected');
   if (matching && megaAccounts.length === 1) {
     return matching;
   }
   for (const account of megaAccounts) {
-    await requestJson(baseUrl, 'DELETE', `/integrations/accounts/${encodeURIComponent(account.id)}?mode=reset`);
+    await requestJson(baseUrl, 'DELETE', `/integrations/accounts/${encodeURIComponent(account.id)}?mode=reset`, undefined, headers);
   }
   const response = await requestJson(baseUrl, 'POST', '/integrations/accounts/connect', {
     provider: 'mega',
@@ -327,20 +334,20 @@ async function ensureExpectedMegaAccount(baseUrl, expectedEmail) {
       email: expectedEmail,
       password: megaPassword,
     },
-  });
+  }, headers);
   if (response?.status !== 'connected' || !response.account?.id) {
     throw new Error(`Failed to connect ${expectedEmail} on ${baseUrl}.`);
   }
   return response.account;
 }
 
-async function removeRecipientMegaShares(baseUrl) {
-  const sharesResponse = await requestJson(baseUrl, 'GET', '/integrations/shares?fast=1');
+async function removeRecipientMegaShares(baseUrl, headers = {}) {
+  const sharesResponse = await requestJson(baseUrl, 'GET', '/integrations/shares?fast=1', undefined, headers);
   const recipientShares = (sharesResponse?.shares ?? []).filter(
     (entry) => normalize(entry?.share?.provider) === 'mega' && entry?.share?.role === 'recipient'
   );
   for (const summary of recipientShares) {
-    await requestJson(baseUrl, 'DELETE', `/integrations/shares/${encodeURIComponent(summary.share.id)}?mode=reset`);
+    await requestJson(baseUrl, 'DELETE', `/integrations/shares/${encodeURIComponent(summary.share.id)}?mode=reset`, undefined, headers);
   }
 }
 

@@ -181,6 +181,29 @@ export async function waitForHealth(baseUrl, timeoutMs, child, logPath, headers 
   throw new Error(`Timed out waiting for ${baseUrl}/health. Check ${logPath}.`);
 }
 
+export async function waitForDesktopSession(sessionPath, startedAt, timeoutMs, child) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child && child.exitCode !== null) {
+      throw new Error(`Desktop runtime exited before publishing a desktop session (exit code ${child.exitCode}).`);
+    }
+    const session = await readJsonFile(sessionPath);
+    if (
+      session &&
+      isPositiveInteger(session.pid) &&
+      isPositiveInteger(session.port) &&
+      typeof session.token === 'string' &&
+      session.token.trim().length > 0 &&
+      isPositiveInteger(session.createdAt) &&
+      session.createdAt >= startedAt
+    ) {
+      return session;
+    }
+    await sleep(250);
+  }
+  throw new Error(`Desktop runtime did not publish a session within ${Math.ceil(timeoutMs / 1000)} seconds.`);
+}
+
 export async function requestJson(baseUrl, method, pathName, body, headers = {}) {
   const response = await fetch(`${baseUrl}${pathName}`, {
     method,
@@ -280,6 +303,19 @@ export function createManualTestPaths(home) {
     webSessionPath: path.join(home, '.nearbytes-web-dev.json'),
     localRootPath: path.join(home, 'nearbytes', 'local'),
   };
+}
+
+async function readJsonFile(filePath) {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && value > 0;
 }
 
 export function resolveElectronUserDataDir(home, appName = 'Nearbytes') {
@@ -394,27 +430,6 @@ export function parseWipeMode(argv) {
   return wipeMode;
 }
 
-export async function waitForDesktopSession(sessionPath, timeoutMs, child) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    if (child && child.exitCode !== null) {
-      throw new Error(`Desktop runtime exited before publishing a session (exit code ${child.exitCode}).`);
-    }
-    const session = await readJsonFile(sessionPath);
-    if (
-      session &&
-      typeof session.port === 'number' &&
-      session.port > 0 &&
-      typeof session.token === 'string' &&
-      session.token.trim().length > 0
-    ) {
-      return session;
-    }
-    await sleep(250);
-  }
-  throw new Error(`Desktop runtime did not publish a session within ${Math.ceil(timeoutMs / 1000)} seconds.`);
-}
-
 export function buildCorsOrigin(currentValue, port) {
   const origins = new Set(
     (currentValue ?? '')
@@ -425,15 +440,6 @@ export function buildCorsOrigin(currentValue, port) {
   origins.add(`http://127.0.0.1:${port}`);
   origins.add(`http://localhost:${port}`);
   return Array.from(origins).join(',');
-}
-
-async function readJsonFile(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
 }
 
 function quoteForWindowsCmd(value) {
