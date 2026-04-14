@@ -3305,6 +3305,15 @@ export class MegaTransportAdapter {
         const shareKeys = this.accountShareKeyCache.get(session.userHandle) ?? new Map<string, Buffer>();
         let appliedCount = 0;
 
+        const deletedHandles = await this.applyRecipientDeletionPackets(
+          share,
+          rootHandle,
+          actionBatch.packets,
+          nextEntries,
+          handlePathIndex,
+        );
+        appliedCount += deletedHandles.size;
+
         const directlyAppliedCount = await this.applyRecipientPacketNodes(
           share,
           session,
@@ -3318,6 +3327,9 @@ export class MegaTransportAdapter {
         appliedCount += directlyAppliedCount;
 
         for (const handle of handles) {
+          if (deletedHandles.has(handle)) {
+            continue;
+          }
           if (handlePathIndex.has(handle)) {
             continue;
           }
@@ -3391,6 +3403,42 @@ export class MegaTransportAdapter {
       return runApply();
     }
     return this.withExclusiveShareTask(share.id, runApply);
+  }
+
+  private async applyRecipientDeletionPackets(
+    share: ManagedShare,
+    rootHandle: string,
+    packets: readonly Record<string, unknown>[],
+    entries: Record<string, ProviderRefreshManifestEntry>,
+    handlePathIndex: Map<string, string>,
+  ): Promise<Set<string>> {
+    const deletedHandles = collectRecipientDeletedPacketHandles(packets, rootHandle);
+    if (deletedHandles.length === 0) {
+      return new Set();
+    }
+
+    const appliedHandles = new Set<string>();
+    for (const handle of deletedHandles) {
+      const relativePath = handlePathIndex.get(handle);
+      if (!relativePath) {
+        continue;
+      }
+      const removedPaths = removeManifestEntriesUnderPath(relativePath, entries, handlePathIndex);
+      if (removedPaths.length === 0) {
+        continue;
+      }
+      await fs.rm(path.join(share.localPath, relativePath), { recursive: true, force: true }).catch(() => undefined);
+      appliedHandles.add(handle);
+      debugMegaLog('[MEGA:immediate-apply] removed recipient path from delete action packet.', {
+        shareId: share.id,
+        rootHandle,
+        handle,
+        relativePath,
+        removedPathCount: removedPaths.length,
+      });
+    }
+
+    return appliedHandles;
   }
 
   private async applyRecipientHandleUpdate(
@@ -8280,6 +8328,27 @@ function collectRecipientImmediatePacketNodes(
   return [...nodesByHandle.values()];
 }
 
+function collectRecipientDeletedPacketHandles(
+  packets: readonly Record<string, unknown>[],
+  rootHandle: string
+): string[] {
+  const handles: string[] = [];
+  const seen = new Set<string>();
+  for (const packet of packets) {
+    const action = typeof packet.a === 'string' ? packet.a.trim() : '';
+    if (action !== 'd') {
+      continue;
+    }
+    const handle = getActionPacketString(packet, 'n') ?? getActionPacketString(packet, 'h');
+    if (!handle || handle === rootHandle || seen.has(handle)) {
+      continue;
+    }
+    seen.add(handle);
+    handles.push(handle);
+  }
+  return handles;
+}
+
 function buildMegaUsersByHandleFromActionPackets(
   packets: readonly Record<string, unknown>[]
 ): Map<string, MegaUserRecord> {
@@ -8385,6 +8454,26 @@ function extractMegaShareKeysFromActionPackets(
 function getActionPacketString(packet: Record<string, unknown>, key: string): string | undefined {
   const value = packet[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function removeManifestEntriesUnderPath(
+  relativePath: string,
+  entries: Record<string, ProviderRefreshManifestEntry>,
+  handlePathIndex: Map<string, string>,
+): string[] {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  const removedPaths: string[] = [];
+  for (const [entryPath, entry] of Object.entries(entries)) {
+    if (entryPath !== normalizedPath && !entryPath.startsWith(`${normalizedPath}/`)) {
+      continue;
+    }
+    removedPaths.push(entryPath);
+    delete entries[entryPath];
+    if (typeof entry.handle === 'string' && entry.handle.trim()) {
+      handlePathIndex.delete(entry.handle);
+    }
+  }
+  return removedPaths;
 }
 
 function collectPacketHandlesRecursive(value: unknown, result: Set<string>, key?: string): void {

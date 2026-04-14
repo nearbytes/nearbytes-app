@@ -5759,6 +5759,133 @@ describe('MegaTransportAdapter', () => {
     await adapter.dispose();
   });
 
+  it('applies incoming delete action packets without a follow-up subtree fetch', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const shareHandle = 'cIVQ2bjB';
+    const fileHandle = 'file000010';
+    const secretStore = createMemorySecretStore();
+
+    await secretStore.set('provider-account:mega:acct-mega-direct-delete', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    let subtreeFetchCount = 0;
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof init?.body === 'string') {
+        const payload = JSON.parse(String(init.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            subtreeFetchCount += 1;
+            throw new Error('Unexpected subtree fetch during direct delete apply');
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      throw new Error(`Unexpected request URL: ${String(_input)}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-direct-delete-'));
+    tempDirs.push(localPath);
+    const relativePath = 'blocks/deleted.bin';
+    await fs.mkdir(path.dirname(path.join(localPath, relativePath)), { recursive: true });
+    await fs.writeFile(path.join(localPath, relativePath), Buffer.from('delete-me', 'utf8'));
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-direct-delete',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-direct-delete',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-direct-delete',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const applied = await (adapter as any).tryApplyRecipientActionPackets(
+      share,
+      account,
+      shareHandle,
+      {
+        rootHandle: shareHandle,
+        lastScsn: 'cursor-0',
+        knownHandles: [shareHandle, fileHandle],
+        entries: {
+          [relativePath]: {
+            kind: 'file',
+            fingerprint: 'mega:file:file000010:9',
+            size: 9,
+            handle: fileHandle,
+            parentHandle: shareHandle,
+          },
+        },
+      },
+      {
+        packets: [{ a: 'd', n: fileHandle }],
+        scsn: 'cursor-1',
+      },
+      {
+        source: 'sc',
+        rootHandle: shareHandle,
+        triggerHandle: fileHandle,
+        packetReceivedAt: Date.now(),
+        scsn: 'cursor-1',
+      }
+    );
+
+    expect(applied).toBe(true);
+    expect(await fs.access(path.join(localPath, relativePath)).then(() => true).catch(() => false)).toBe(false);
+    expect(subtreeFetchCount).toBe(0);
+
+    const persistedManifest = await runtime.secretStore.get<any>('provider-share:mega:manifest:share-mega-direct-delete');
+    expect(persistedManifest?.entries ?? {}).toEqual({});
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
   it('mirrors an incoming share when a cached extra share key must be aliased onto the root key owner', async () => {
     const email = 'reader@example.com';
     const userHandle = 'usrhandle01';
