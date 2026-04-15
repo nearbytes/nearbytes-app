@@ -313,6 +313,7 @@ export class MegaTransportAdapter {
   private readonly pendingSyncRetryTimers = new Map<string, NodeJS.Timeout>();
   private readonly shareScsn = new Map<string, string>();
   private readonly shareKnownHandles = new Map<string, string[]>();
+  private readonly shareManifestCache = new Map<string, MegaMirrorManifest>();
   private readonly shareRootHandles = new Map<string, string>();
   private readonly pendingRootDiagnosticAt = new Map<string, number>();
   private readonly uploadProbeHistory = new Map<string, ManagedShareUploadProbe[]>();
@@ -364,6 +365,7 @@ export class MegaTransportAdapter {
     this.collaboratorCache.clear();
     this.shareScsn.clear();
     this.shareKnownHandles.clear();
+    this.shareManifestCache.clear();
     this.shareRootHandles.clear();
     this.uploadProbeHistory.clear();
     this.receiveProbeHistory.clear();
@@ -1470,6 +1472,7 @@ export class MegaTransportAdapter {
     this.collaboratorCache.delete(share.id);
     this.shareScsn.delete(share.id);
     this.shareKnownHandles.delete(share.id);
+    this.shareManifestCache.delete(share.id);
     this.shareRootHandles.delete(share.id);
     this.ownerUploadStates.delete(share.id);
   }
@@ -1653,7 +1656,7 @@ export class MegaTransportAdapter {
         knownHandles: collectTreeHandles(resolved.fetched.tree),
         unsupportedTopLevelNames: listUnsupportedMegaTopLevelEntryNames(topLevelEntryNames),
       };
-      await this.runtime.secretStore.set(mirrorManifestKey(share.id), fetchedManifest);
+      await this.persistManifest(share.id, fetchedManifest);
       this.shareRootHandles.set(share.id, resolved.fetched.tree.root.handle);
       if (fetchedManifest.lastScsn) {
         this.shareScsn.set(share.id, fetchedManifest.lastScsn);
@@ -1676,7 +1679,7 @@ export class MegaTransportAdapter {
         downloaded: refreshResult.downloaded,
       });
       logMegaMirrorRefreshEvents(this.runtime, share.id, manifest.entries, refreshResult);
-      await this.runtime.secretStore.set(mirrorManifestKey(share.id), {
+      await this.persistManifest(share.id, {
         ...fetchedManifest,
         entries: refreshResult.manifest.entries,
       } satisfies MegaMirrorManifest);
@@ -3235,7 +3238,18 @@ export class MegaTransportAdapter {
   }
 
   private async loadManifest(shareId: string): Promise<MegaMirrorManifest> {
-    return (await this.runtime.secretStore.get<MegaMirrorManifest>(mirrorManifestKey(shareId))) ?? { entries: {} };
+    const cached = this.shareManifestCache.get(shareId);
+    if (cached) {
+      return cached;
+    }
+    const manifest = (await this.runtime.secretStore.get<MegaMirrorManifest>(mirrorManifestKey(shareId))) ?? { entries: {} };
+    this.shareManifestCache.set(shareId, manifest);
+    return manifest;
+  }
+
+  private async persistManifest(shareId: string, manifest: MegaMirrorManifest): Promise<void> {
+    this.shareManifestCache.set(shareId, manifest);
+    await this.runtime.secretStore.set(mirrorManifestKey(shareId), manifest);
   }
 
   private async seedPendingRecipientShareCursor(
@@ -3270,7 +3284,7 @@ export class MegaTransportAdapter {
 
   private async updateManifestCursor(shareId: string, scsn: string): Promise<void> {
     const manifest = await this.loadManifest(shareId);
-    await this.runtime.secretStore.set(mirrorManifestKey(shareId), {
+    await this.persistManifest(shareId, {
       ...manifest,
       lastScsn: scsn.trim(),
     } satisfies MegaMirrorManifest);
@@ -3370,7 +3384,7 @@ export class MegaTransportAdapter {
           knownHandles: collectManifestHandles(nextEntries, rootHandle),
           entries: nextEntries,
         };
-        await this.runtime.secretStore.set(mirrorManifestKey(share.id), nextManifest);
+        await this.persistManifest(share.id, nextManifest);
         this.shareRootHandles.set(share.id, rootHandle);
         this.shareKnownHandles.set(share.id, [...(nextManifest.knownHandles ?? [])]);
         if (nextManifest.lastScsn) {

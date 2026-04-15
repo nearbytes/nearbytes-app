@@ -3928,6 +3928,61 @@ describe('MegaTransportAdapter', () => {
     expect(thirdSession.sid).toBe('cached-session');
     expect(fetchCurrentUser).toHaveBeenCalledTimes(2);
   });
+
+  it('reuses a cached MEGA mirror manifest without rereading the secret store', async () => {
+    const baseSecretStore = createMemorySecretStore();
+    const getSpy = vi.fn(baseSecretStore.get.bind(baseSecretStore));
+    const setSpy = vi.fn(baseSecretStore.set.bind(baseSecretStore));
+    const secretStore: ProviderSecretStore = {
+      get: getSpy,
+      set: setSpy,
+      delete: baseSecretStore.delete.bind(baseSecretStore),
+    };
+
+    await secretStore.set('provider-share:mega:manifest:share-mega-manifest-cache', {
+      rootHandle: 'share0001',
+      lastScsn: 'cursor-1',
+      knownHandles: ['share0001', 'file0001'],
+      entries: {
+        'blocks/file.bin': {
+          kind: 'file',
+          fingerprint: 'mega:file:file0001:1',
+          size: 1,
+          handle: 'file0001',
+          parentHandle: 'share0001',
+        },
+      },
+    });
+    getSpy.mockClear();
+    setSpy.mockClear();
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime);
+
+    const firstManifest = await (adapter as any).loadManifest('share-mega-manifest-cache');
+    const secondManifest = await (adapter as any).loadManifest('share-mega-manifest-cache');
+
+    expect(firstManifest).toEqual(secondManifest);
+    expect(getSpy).toHaveBeenCalledTimes(1);
+
+    await (adapter as any).updateManifestCursor('share-mega-manifest-cache', 'cursor-2');
+    expect(setSpy).toHaveBeenCalledTimes(1);
+
+    const thirdManifest = await (adapter as any).loadManifest('share-mega-manifest-cache');
+    expect(thirdManifest.lastScsn).toBe('cursor-2');
+    expect(getSpy).toHaveBeenCalledTimes(1);
+  });
   
   it('repairs an owner share when its decryptable share key is missing', async () => {
     const secretStore = createMemorySecretStore();
