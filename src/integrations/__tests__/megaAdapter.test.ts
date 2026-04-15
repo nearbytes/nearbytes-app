@@ -3934,8 +3934,12 @@ describe('MegaTransportAdapter', () => {
     const getSpy = vi.fn(baseSecretStore.get.bind(baseSecretStore));
     const setSpy = vi.fn(baseSecretStore.set.bind(baseSecretStore));
     const secretStore: ProviderSecretStore = {
-      get: getSpy,
-      set: setSpy,
+      async get<T>(key: string): Promise<T | null> {
+        return (await getSpy(key)) as T | null;
+      },
+      async set<T>(key: string, value: T): Promise<void> {
+        await setSpy(key, value);
+      },
       delete: baseSecretStore.delete.bind(baseSecretStore),
     };
 
