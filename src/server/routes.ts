@@ -31,6 +31,7 @@ import { encodeSecretToken, getSecretFromRequest, validateSecret } from './auth.
 import type { SecretSessionStore } from './secretSessions.js';
 import { VolumeWatchHub } from './volumeWatchHub.js';
 import { SourceWatchHub } from './sourceWatchHub.js';
+import { VolumeEventBus } from './volumeEventBus.js';
 import {
   getStorageDiagnostics,
   getChannelDiagnostics,
@@ -97,6 +98,8 @@ export interface RouteDependencies {
   readonly managedShareService?: ManagedShareService;
   /** Optional LAN sync service for local discovery and peer replication. */
   readonly localNetworkSyncService?: LocalNetworkSyncService;
+  /** Optional semantic volume event bus for provider-originated UI pushes. */
+  readonly volumeEventBus?: VolumeEventBus;
   /** Optional desktop-only UI automation/debugging bridge. */
   readonly uiDebugExecutor?: UiDebugExecutor;
 }
@@ -106,7 +109,8 @@ export interface RouteDependencies {
  */
 export function createRoutes(deps: RouteDependencies): Router {
   const router = Router();
-  const watchHub = new VolumeWatchHub(deps.storage, deps.resolvedStorageDir);
+  const volumeEventBus = deps.volumeEventBus ?? new VolumeEventBus();
+  const watchHub = new VolumeWatchHub(deps.storage, deps.resolvedStorageDir, volumeEventBus);
   const sourceWatchHub = new SourceWatchHub();
   const managedShareService =
     deps.managedShareService ??
@@ -116,6 +120,10 @@ export function createRoutes(deps: RouteDependencies): Router {
           rootsConfigPath: deps.rootsConfigPath,
           readMaintenanceMode: 'background',
           ...deps.integrationOptions,
+          runtime: {
+            ...deps.integrationOptions?.runtime,
+            volumeEvents: deps.integrationOptions?.runtime?.volumeEvents ?? volumeEventBus,
+          },
         })
       : null);
   const upload = multer({
@@ -1006,6 +1014,49 @@ export function createRoutes(deps: RouteDependencies): Router {
         writeSseEvent(res, 'watch-ended', {
           volumeId,
           reason: 'Auto-update is unavailable for the active storage roots.',
+          timestamp: Date.now(),
+        });
+        res.end();
+        subscription.unsubscribe();
+        return;
+      }
+
+      const heartbeatTimer = setInterval(() => {
+        writeSseEvent(res, 'heartbeat', { timestamp: Date.now() });
+      }, 20000);
+
+      req.on('close', () => {
+        clearInterval(heartbeatTimer);
+        subscription.unsubscribe();
+        res.end();
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/watch/volume-events', requireSecret(deps), async (req, res, next) => {
+    try {
+      const secret = res.locals.secret as string;
+      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+
+      const subscription = volumeEventBus.subscribe(
+        volumeId,
+        (event) => writeSseEvent(res, 'volume-event', event),
+      );
+
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      writeSseEvent(res, 'volume-event-ready', subscription.ready);
+
+      if (!subscription.ready.autoUpdate) {
+        writeSseEvent(res, 'watch-ended', {
+          volumeId,
+          reason: 'Semantic runtime volume events are unavailable for the active storage roots.',
           timestamp: Date.now(),
         });
         res.end();

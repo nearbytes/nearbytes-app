@@ -14,6 +14,7 @@ import {
 } from './secretSessions.js';
 import type { ManagedShareService, ManagedShareServiceOptions } from '../integrations/managedShares.js';
 import type { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
+import type { VolumeEventBus } from './volumeEventBus.js';
 import type { UiDebugExecutor } from './uiDebug.js';
 
 /**
@@ -42,6 +43,8 @@ export interface AppDependencies {
   readonly managedShareService?: ManagedShareService;
   /** Optional LAN discovery and sync service. */
   readonly localNetworkSyncService?: LocalNetworkSyncService;
+  /** Optional semantic provider-to-UI event bus. */
+  readonly volumeEventBus?: VolumeEventBus;
   /** Optional desktop-only UI automation/debugging bridge. */
   readonly uiDebugExecutor?: UiDebugExecutor;
 }

@@ -51,6 +51,9 @@ export async function getCompatibilityHost(): Promise<NearbytesHostContract> {
         watchVolume(auth, handlers) {
           return openWatchConnection('/watch/volume', handlers, { auth });
         },
+        watchVolumeEvents(auth, handlers) {
+          return openWatchConnection('/watch/volume-events', handlers, { auth });
+        },
       },
       integrations: {
         listProviderAccounts(options) {

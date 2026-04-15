@@ -3466,6 +3466,7 @@ export class MegaTransportAdapter {
         continue;
       }
       await fs.rm(path.join(share.localPath, relativePath), { recursive: true, force: true }).catch(() => undefined);
+      this.publishReactiveMirrorEvent(relativePath);
       appliedHandles.add(handle);
       debugMegaLog('[MEGA:immediate-apply] removed recipient path from delete action packet.', {
         shareId: share.id,
@@ -3691,6 +3692,7 @@ export class MegaTransportAdapter {
     const localWriteCompletedAt = this.runtime.now();
     await fs.access(targetPath);
     const localVisibleAt = this.runtime.now();
+    this.publishReactiveMirrorEvent(relativePath);
     this.updateManagedShareReceiveProbe(share.id, receiveProbe.id, {
       localWriteCompletedAt,
       localVisibleAt,
@@ -3701,6 +3703,30 @@ export class MegaTransportAdapter {
     });
     entries[relativePath] = nextEntry;
     handlePathIndex.set(node.handle, relativePath);
+  }
+
+  private publishReactiveMirrorEvent(relativePath: string): void {
+    if (!relativePath.startsWith('channels/')) {
+      return;
+    }
+    const match = /^channels\/([^/]+)\/([^/]+)\.bin$/u.exec(relativePath);
+    if (!match) {
+      return;
+    }
+    const [, volumeId, eventHash] = match;
+    this.runtime.volumeEvents?.publish({
+      volumeId,
+      producer: 'mega',
+      kind: 'timeline-advanced',
+      paths: [relativePath],
+      eventHashes: [eventHash],
+      nextCursor: eventHash,
+      invalidate: {
+        files: true,
+        timeline: true,
+        chat: true,
+      },
+    });
   }
 
   private createManagedShareReceiveProbe(

@@ -929,6 +929,30 @@ export interface VolumeWatchError {
   timestamp: number;
 }
 
+export interface VolumeEventReady {
+  volumeId: string;
+  autoUpdate: boolean;
+  mode: 'semantic' | 'none';
+  protocol: 'nb.volume.event.v0.1';
+}
+
+export interface VolumeEvent {
+  p: 'nb.volume.event.v0.1';
+  volumeId: string;
+  sequence: number;
+  producer: 'filesystem' | 'lan' | 'mega';
+  kind: 'filesystem-change' | 'timeline-advanced';
+  timestamp: number;
+  paths?: string[];
+  eventHashes?: string[];
+  nextCursor?: string | null;
+  invalidate: {
+    files: boolean;
+    timeline: boolean;
+    chat: boolean;
+  };
+}
+
 export interface SourceWatchReady {
   autoUpdate: boolean;
   mode: 'filesystem' | 'none';
@@ -950,6 +974,13 @@ export interface SourceWatchError {
 export interface VolumeWatchHandlers {
   onReady?: (event: VolumeWatchReady) => void;
   onUpdate?: (event: VolumeWatchUpdate) => void;
+  onError?: (error: Error | VolumeWatchError) => void;
+  onClose?: () => void;
+}
+
+export interface VolumeEventHandlers {
+  onReady?: (event: VolumeEventReady) => void;
+  onEvent?: (event: VolumeEvent) => void;
   onError?: (error: Error | VolumeWatchError) => void;
   onClose?: () => void;
 }
@@ -1738,6 +1769,46 @@ export function watchVolume(auth: Auth, handlers: VolumeWatchHandlers): VolumeWa
   };
 }
 
+export function watchVolumeEvents(auth: Auth, handlers: VolumeEventHandlers): VolumeWatchConnection {
+  const connectionId = Math.random().toString(36).slice(2, 8);
+  let currentConnection: VolumeWatchConnection | null = null;
+
+  void (async () => {
+    try {
+      uiDebugLog('watchers', `[watch-volume-events:${connectionId}] opening`);
+      const host = await getActiveHost();
+      currentConnection = host.invalidation.watchVolumeEvents(auth, {
+        onMessage(event) {
+          parseVolumeEventMessage(decodeWatchMessageData(event), handlers);
+        },
+        onClose() {
+          uiDebugLog('watchers', `[watch-volume-events:${connectionId}] stream ended`);
+          handlers.onClose?.();
+        },
+        onError(error) {
+          console.warn(`[watch-volume-events:${connectionId}] error`, error.message);
+          handlers.onError?.(error);
+        },
+      });
+      uiDebugLog('watchers', `[watch-volume-events:${connectionId}] opened`);
+    } catch (error) {
+      console.warn(
+        `[watch-volume-events:${connectionId}] error`,
+        error instanceof Error ? error.message : String(error)
+      );
+      handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+      handlers.onClose?.();
+    }
+  })();
+
+  return {
+    close() {
+      uiDebugLog('watchers', `[watch-volume-events:${connectionId}] close requested`);
+      currentConnection?.close();
+    },
+  };
+}
+
 /**
  * Downloads a file by blob hash.
  * Returns the file as a Blob.
@@ -1808,6 +1879,65 @@ function parseWatchMessage(rawMessage: string, handlers: VolumeWatchHandlers): v
       message: errorPayload.message,
       timestamp: errorPayload.timestamp,
     });
+    handlers.onError?.(errorPayload);
+  }
+}
+
+function parseVolumeEventMessage(rawMessage: string, handlers: VolumeEventHandlers): void {
+  const normalized = rawMessage.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  let eventName = 'message';
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(dataLines.join('\n'));
+  } catch {
+    return;
+  }
+
+  if (eventName === 'volume-event-ready') {
+    const ready = payload as VolumeEventReady;
+    void writeMirrorCheckpoint(`watch:volume-events:${ready.volumeId}`, {
+      kind: 'ready',
+      protocol: ready.protocol,
+      autoUpdate: ready.autoUpdate,
+      mode: ready.mode,
+      updatedAt: Date.now(),
+    });
+    handlers.onReady?.(ready);
+    return;
+  }
+  if (eventName === 'volume-event') {
+    const event = payload as VolumeEvent;
+    void writeMirrorCheckpoint(`watch:volume-events:${event.volumeId}`, {
+      kind: 'event',
+      producer: event.producer,
+      eventKind: event.kind,
+      sequence: event.sequence,
+      nextCursor: event.nextCursor ?? null,
+      timestamp: event.timestamp,
+      updatedAt: Date.now(),
+    });
+    handlers.onEvent?.(event);
+    return;
+  }
+  if (eventName === 'watch-error') {
+    const errorPayload = payload as VolumeWatchError;
     handlers.onError?.(errorPayload);
   }
 }

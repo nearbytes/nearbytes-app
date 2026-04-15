@@ -739,6 +739,38 @@ describe('phoneHost', () => {
     });
   });
 
+  it('bridges embedded phone runtime mutations into semantic volume events', async () => {
+    const secret = 'phone-reactive-secret';
+    const host = await getPhoneHost();
+    const messages: string[] = [];
+    const connection = host.invalidation.watchVolumeEvents(
+      { type: 'secret', secret },
+      {
+        onMessage(event) {
+          messages.push(String(event.data));
+        },
+      }
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await host.legacyDesktop.openVolume(secret);
+    await host.legacyDesktop.uploadFile(
+      { type: 'secret', secret },
+      new File(['reactive'], 'reactive.txt', { type: 'text/plain' })
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    connection.close();
+
+    expect(messages[0]).toContain('event: volume-event-ready');
+    expect(messages.some((message) => message.includes('event: volume-event'))).toBe(true);
+    expect(messages.some((message) => message.includes('nb.volume.event.v0.1'))).toBe(true);
+  });
+
   it('replays pending embedded phone authored uploads across reset and resumes with an acknowledged receipt', async () => {
     const secret = 'phone-resume-secret';
     const commitId = await seedEmbeddedPhonePendingUploadCommitForTests(

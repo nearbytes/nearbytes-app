@@ -15,6 +15,7 @@ import { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { StorageError } from '../types/errors.js';
 import { createApp } from './app.js';
+import { VolumeEventBus } from './volumeEventBus.js';
 import type { UiDebugExecutor } from './uiDebug.js';
 
 export interface RuntimeLogger {
@@ -103,15 +104,22 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     logger.warn(`Warning: background storage reconcile failed during startup: ${message}`);
   });
 
+  const volumeEventBus = new VolumeEventBus();
+
   const managedShareService = new ManagedShareService({
     storage,
     rootsConfigPath: loaded.configPath,
     readMaintenanceMode: 'background',
     ...options.integrationOptions,
+    runtime: {
+      ...options.integrationOptions?.runtime,
+      volumeEvents: options.integrationOptions?.runtime?.volumeEvents ?? volumeEventBus,
+    },
   });
   const localNetworkSyncService = isProviderEnabled('local-network')
     ? new LocalNetworkSyncService(storage, {
         storageDir: defaultStorageDir,
+        volumeEvents: volumeEventBus,
       })
     : undefined;
   void managedShareService.warmupBackgroundActivity('runtime startup').catch((error) => {
@@ -134,6 +142,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     integrationOptions: options.integrationOptions,
     managedShareService,
     localNetworkSyncService,
+    volumeEventBus,
     uiDebugExecutor: options.uiDebugExecutor,
   });
 

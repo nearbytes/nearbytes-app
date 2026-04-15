@@ -115,6 +115,7 @@ describe('compatibilityHost', () => {
 
     const sourceConnection = host.invalidation.watchSources({});
     const volumeConnection = host.invalidation.watchVolume({ type: 'token', token: 'abc' }, {});
+    const volumeEventConnection = host.invalidation.watchVolumeEvents({ type: 'token', token: 'abc' }, {});
 
     expect(openHostStream).toHaveBeenCalledWith('/watch/sources', {
       method: 'GET',
@@ -126,9 +127,15 @@ describe('compatibilityHost', () => {
       headers: expect.any(Headers),
       signal: expect.any(AbortSignal),
     });
+    expect(openHostStream).toHaveBeenCalledWith('/watch/volume-events', {
+      method: 'GET',
+      headers: expect.any(Headers),
+      signal: expect.any(AbortSignal),
+    });
 
     sourceConnection.close();
     volumeConnection.close();
+    volumeEventConnection.close();
   });
 
   it('routes LAN peer operations through the shared transport', async () => {

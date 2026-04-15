@@ -30,6 +30,28 @@ export interface IntegrationLogger {
   readonly warn: (...args: unknown[]) => void;
 }
 
+export type IntegrationVolumeEventProducer = 'filesystem' | 'lan' | 'mega';
+export type IntegrationVolumeEventKind = 'filesystem-change' | 'timeline-advanced';
+
+export interface IntegrationVolumeEventInput {
+  readonly volumeId: string;
+  readonly producer: IntegrationVolumeEventProducer;
+  readonly kind: IntegrationVolumeEventKind;
+  readonly timestamp?: number;
+  readonly paths?: readonly string[];
+  readonly eventHashes?: readonly string[];
+  readonly nextCursor?: string | null;
+  readonly invalidate?: {
+    readonly files?: boolean;
+    readonly timeline?: boolean;
+    readonly chat?: boolean;
+  };
+}
+
+export interface IntegrationVolumeEventBridge {
+  publish(event: IntegrationVolumeEventInput): void;
+}
+
 export interface GoogleDriveRuntimeConfig {
   readonly clientId?: string;
   readonly clientSecret?: string;
@@ -65,6 +87,7 @@ export interface IntegrationRuntime {
   readonly openExternalUrl?: (url: string) => Promise<void>;
   readonly now: () => number;
   readonly logger: IntegrationLogger;
+  readonly volumeEvents?: IntegrationVolumeEventBridge;
   readonly google: GoogleDriveRuntimeConfig;
   readonly mega: MegaRuntimeConfig;
   readonly github: GitHubRuntimeConfig;
@@ -76,6 +99,7 @@ export interface IntegrationRuntimeOptions {
   readonly openExternalUrl?: (url: string) => Promise<void>;
   readonly now?: () => number;
   readonly logger?: IntegrationLogger;
+  readonly volumeEvents?: IntegrationVolumeEventBridge;
   readonly google?: Partial<GoogleDriveRuntimeConfig>;
   readonly mega?: Partial<MegaRuntimeConfig>;
   readonly github?: Partial<GitHubRuntimeConfig>;
@@ -98,6 +122,7 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
     openExternalUrl: options.openExternalUrl,
     now: options.now ?? Date.now,
     logger: options.logger ?? console,
+    volumeEvents: options.volumeEvents,
     google: {
       clientId:
         options.google?.clientId?.trim() ||

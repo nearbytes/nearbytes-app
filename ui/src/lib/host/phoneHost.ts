@@ -701,6 +701,74 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
             },
           };
         },
+        watchVolumeEvents(auth, handlers) {
+          const secret = readSecretAuth(auth);
+          if (!secret) {
+            queueMicrotask(() => {
+              handlers.onError?.(createMissingPhoneRuntimeError());
+              handlers.onClose?.();
+            });
+            return createUnsupportedWatchConnection();
+          }
+
+          let unsubscribe: (() => void) | null = null;
+          let closed = false;
+
+          void (async () => {
+            try {
+              const subscription = await embeddedPhoneSubscribeVolumeWatch(secret, (update) => {
+                if (closed) {
+                  return;
+                }
+                const normalizedPath = update.path.replace(/\\/g, '/');
+                const eventMatch = /^channels\/[^/]+\/([^/]+)\.bin$/u.exec(normalizedPath);
+                handlers.onMessage?.(createEmbeddedWatchMessage('volume-event', {
+                  p: 'nb.volume.event.v0.1',
+                  volumeId: update.volumeId,
+                  sequence: update.timestamp,
+                  producer: 'filesystem',
+                  kind: 'filesystem-change',
+                  timestamp: update.timestamp,
+                  paths: [normalizedPath],
+                  eventHashes: eventMatch ? [eventMatch[1]] : undefined,
+                  nextCursor: eventMatch ? eventMatch[1] : undefined,
+                  invalidate: {
+                    files: normalizedPath.startsWith('channels/'),
+                    timeline: normalizedPath.startsWith('channels/'),
+                    chat: normalizedPath.startsWith('channels/'),
+                  },
+                }));
+              });
+              if (closed) {
+                subscription.unsubscribe();
+                return;
+              }
+              unsubscribe = () => {
+                subscription.unsubscribe();
+              };
+              handlers.onMessage?.(createEmbeddedWatchMessage('volume-event-ready', {
+                volumeId: subscription.ready.volumeId,
+                autoUpdate: subscription.ready.autoUpdate,
+                mode: 'semantic',
+                protocol: 'nb.volume.event.v0.1',
+              }));
+            } catch (error) {
+              if (closed) {
+                return;
+              }
+              handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+              handlers.onClose?.();
+            }
+          })();
+
+          return {
+            close() {
+              closed = true;
+              unsubscribe?.();
+              unsubscribe = null;
+            },
+          };
+        },
       },
       integrations,
       lan: {

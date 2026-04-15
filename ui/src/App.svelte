@@ -9,6 +9,7 @@
     type JoinLinkParseResponse,
     listFiles,
     getTimeline,
+    getTimelineDelta,
     getEventDetail,
     getEventStorageLocations,
     getRootsConfig,
@@ -21,7 +22,7 @@
     reconcileDiscoveredSources,
     renameFile,
     watchSources,
-    watchVolume,
+    watchVolumeEvents,
     type Auth,
     type ChatAttachment,
     type FileMetadata,
@@ -38,10 +39,12 @@
     type RootsConfig,
     type VolumeDestinationConfig,
     type VolumeChatState,
+    type VolumeEvent,
   } from './lib/api.js';
   import { resolveActiveHubAuth } from './lib/activeHub.js';
   import { clearCache, getCachedFiles, setCachedFiles } from './lib/cache.js';
   import {
+    importCompatibilityTimelineDelta,
     readMirrorEventDetail,
     readMirrorTimelineSnapshot,
     readMirrorVolumeSnapshot,
@@ -1570,7 +1573,8 @@
   let appReferenceClipboard = $state<AppReferenceClipboard | null>(null);
   let watchConnectionSerial = 0;
   let watchDisconnect: (() => void) | null = null;
-  let autoRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let reactiveSyncInFlight = false;
+  let reactiveSyncPending = false;
   let mountPressReleaseTimer: ReturnType<typeof setTimeout> | null = null;
   let latestSourceDiscovery = $state<ReconcileSourcesResponse | null>(null);
   let latestSourceDiscoveryRunKey = $state('');
@@ -1621,7 +1625,6 @@
   const mountRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const MOUNT_RUNTIME_REFRESH_MS = 15000;
   const ACTIVE_MOUNT_RUNTIME_STALE_MS = 2500;
-  const AUTO_REFRESH_DEBOUNCE_MS = 25;
 
   async function loadThemeRegistryAsset(): Promise<void> {
     try {
@@ -3475,22 +3478,63 @@
       watchDisconnect();
       watchDisconnect = null;
     }
-    if (autoRefreshTimer) {
-      clearTimeout(autoRefreshTimer);
-      autoRefreshTimer = null;
-    }
     autoSyncEnabled = false;
     autoSyncStatus = 'idle';
+    reactiveSyncInFlight = false;
+    reactiveSyncPending = false;
   }
 
-  function scheduleAutoRefresh() {
-    if (autoRefreshTimer) {
+  async function applyReactiveVolumeEvent(event: VolumeEvent, keepPosition = true) {
+    if (!auth || !volumeId || event.volumeId !== volumeId) {
       return;
     }
-    autoRefreshTimer = setTimeout(() => {
-      autoRefreshTimer = null;
-      void refreshFiles();
-    }, AUTO_REFRESH_DEBOUNCE_MS);
+    if (!event.invalidate.files && !event.invalidate.timeline && !event.invalidate.chat) {
+      return;
+    }
+    if (reactiveSyncInFlight) {
+      reactiveSyncPending = true;
+      return;
+    }
+
+    reactiveSyncInFlight = true;
+    const currentAuth = auth;
+    const currentVolumeId = volumeId;
+
+    try {
+      do {
+        reactiveSyncPending = false;
+        const previousLength = timelineEvents.length;
+        const previousPosition = timelinePosition;
+        const wasAtLatest = previousPosition >= previousLength;
+        const cursor = timelineEvents.at(-1)?.eventHash ?? null;
+        const delta = await getTimelineDelta(currentAuth, cursor);
+        const snapshot = await importCompatibilityTimelineDelta(delta);
+        if (volumeId !== currentVolumeId) {
+          break;
+        }
+        fileList = snapshot.files;
+        timelineEvents = snapshot.timeline;
+        const latest = snapshot.timeline.length;
+        if (!keepPosition || wasAtLatest) {
+          timelinePosition = latest;
+        } else {
+          timelinePosition = Math.min(previousPosition, latest);
+        }
+        lastRefresh = Date.now();
+        isOffline = false;
+        errorMessage = '';
+        chatRefreshVersion += 1;
+        await setCachedFiles(currentVolumeId, snapshot.files);
+      } while (reactiveSyncPending);
+    } catch (error) {
+      reactiveSyncPending = false;
+      await refreshFiles();
+      if (error instanceof Error) {
+        console.warn('[volume-events] reactive sync fallback', error.message);
+      }
+    } finally {
+      reactiveSyncInFlight = false;
+    }
   }
 
   $effect(() => {
@@ -3545,7 +3589,7 @@
     }
 
     autoSyncStatus = 'connecting';
-    const connection = watchVolume(currentAuth, {
+    const connection = watchVolumeEvents(currentAuth, {
       onReady: (event) => {
         if (serial !== watchConnectionSerial || event.volumeId !== currentVolumeId) {
           return;
@@ -3553,11 +3597,11 @@
         autoSyncEnabled = event.autoUpdate;
         autoSyncStatus = event.autoUpdate ? 'active' : 'unsupported';
       },
-      onUpdate: (event) => {
+      onEvent: (event) => {
         if (serial !== watchConnectionSerial || event.volumeId !== currentVolumeId) {
           return;
         }
-        scheduleAutoRefresh();
+        void applyReactiveVolumeEvent(event, true);
       },
       onError: () => {
         if (serial !== watchConnectionSerial) {

@@ -4,6 +4,7 @@ import type { RootProvider } from '../config/roots.js';
 import { isMultiRootStorageBackend } from '../storage/multiRoot.js';
 import type { StorageBackend } from '../types/storage.js';
 import { debugServerLog } from './debug.js';
+import type { RuntimeVolumeEventPublisher } from './volumeEventBus.js';
 
 export type VolumeChangeType = 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
 
@@ -57,7 +58,8 @@ export class VolumeWatchHub {
 
   constructor(
     private readonly storage: StorageBackend,
-    private readonly fallbackStorageDir?: string
+    private readonly fallbackStorageDir?: string,
+    private readonly volumeEventPublisher?: RuntimeVolumeEventPublisher,
   ) {}
 
   subscribe(
@@ -122,6 +124,13 @@ export class VolumeWatchHub {
         return;
       }
       const normalizedPath = normalizePath(changedPath);
+      this.volumeEventPublisher?.publish({
+        volumeId,
+        producer: 'filesystem',
+        kind: 'filesystem-change',
+        paths: [toRootRelativePath(target.rootPath, normalizedPath)],
+        invalidate: inferInvalidationFromPath(target, normalizedPath),
+      });
       const publishedPath = target.volumeRoot;
       const nextChange = prioritizeVolumeChange(entry.pendingChanges.get(publishedPath), change);
       entry.pendingChanges.set(publishedPath, nextChange);
@@ -350,4 +359,24 @@ function uniquePaths(values: string[]): string[] {
 
 function uniqueProviders(values: RootProvider[]): RootProvider[] {
   return Array.from(new Set(values));
+}
+
+function toRootRelativePath(rootPath: string, absolutePath: string): string {
+  const relative = path.relative(rootPath, absolutePath).replace(/\\/g, '/');
+  return relative.length > 0 ? relative : '.';
+}
+
+function inferInvalidationFromPath(
+  target: WatchTargetPlan,
+  changedPath: string
+): { files: boolean; timeline: boolean; chat: boolean } {
+  const isChannelChange =
+    changedPath === target.channelRoot ||
+    changedPath === target.volumeRoot ||
+    changedPath.startsWith(`${target.channelRoot}/`);
+  return {
+    files: isChannelChange,
+    timeline: isChannelChange,
+    chat: isChannelChange,
+  };
 }

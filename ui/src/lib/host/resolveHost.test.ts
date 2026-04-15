@@ -16,6 +16,7 @@ const mockedCompatibilityHost = vi.hoisted(() => ({
     invalidation: {
       watchSources: vi.fn(),
       watchVolume: vi.fn(),
+      watchVolumeEvents: vi.fn(),
     },
     integrations: {
       listProviderAccounts: vi.fn(),
@@ -80,6 +81,7 @@ const mockedPhoneHost = vi.hoisted(() => ({
     invalidation: {
       watchSources: vi.fn(),
       watchVolume: vi.fn(),
+      watchVolumeEvents: vi.fn(),
     },
     integrations: {
       listProviderAccounts: vi.fn(),

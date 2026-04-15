@@ -1,6 +1,12 @@
 # Software Engineering Requirements & Practices
 
-This document captures non-negotiable software engineering principles for the Nearbytes codebase. All contributors and AI agents must follow these requirements.
+Document role:
+
+- evergreen engineering constraints
+- review-gate requirements
+- implementation hygiene rules that apply across feature areas
+
+This document is not the complete Nearbytes requirements set. See [requirements/README.md](/Users/vincenzo/data/local/repos/nearbytes-app/requirements/README.md) for the modular requirements library.
 
 ---
 
@@ -49,6 +55,30 @@ This document captures non-negotiable software engineering principles for the Ne
 
 ---
 
+## Architecture Requirements
+
+### [REQ-ARCH-001] Language-Neutral Runtime Boundary
+
+- Shared UI behavior must depend on versioned runtime contracts, not on in-process TypeScript-only implementation details.
+- A backend/runtime feature that only works because the UI and runtime currently share a JavaScript environment is not an acceptable target architecture.
+
+### [REQ-ARCH-002] Provider Reactivity Must Be Push-Driven
+
+- Provider-backed hub data owned by the runtime must reach the UI through push-driven semantic events rather than scheduled UI polling.
+- Legacy invalidation or watcher paths may remain temporarily as compatibility fallbacks, but new work must target the semantic event path as the normative design.
+
+### [REQ-ARCH-003] Shared Producer Path
+
+- Filesystem, LAN, and MEGA must publish hub reactivity through a shared runtime event path.
+- New provider integrations must attach to that shared producer path rather than inventing a provider-specific UI refresh mechanism.
+
+See also:
+
+- [requirements/reactive-provider-ui.md](/Users/vincenzo/data/local/repos/nearbytes-app/requirements/reactive-provider-ui.md)
+- [requirements/shared-ui-and-hosts.md](/Users/vincenzo/data/local/repos/nearbytes-app/requirements/shared-ui-and-hosts.md)
+
+---
+
 ## Review Checklist (before merging UI changes)
 
 - [ ] No "Refresh" buttons for auto-managed data (REQ-UI-001)
@@ -58,4 +88,7 @@ This document captures non-negotiable software engineering principles for the Ne
 - [ ] Primary flows remain usable at iPhone width with no horizontal overflow (REQ-UI-004)
 - [ ] No unused `{@const}` declarations in templates (REQ-CODE-001)
 - [ ] No orphaned CSS selectors (REQ-CODE-002)
+- [ ] Runtime-to-UI behavior uses versioned, language-neutral contracts (REQ-ARCH-001)
+- [ ] Provider-backed hub updates are push-driven rather than discovered by UI polling (REQ-ARCH-002)
+- [ ] Filesystem, LAN, and MEGA use the shared producer path for UI reactivity (REQ-ARCH-003)
 - [ ] Build produces zero errors and zero unused-CSS warnings

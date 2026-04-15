@@ -19,6 +19,7 @@ export interface NearbytesWatchConnection {
 export interface NearbytesInvalidationFamily {
   watchSources(handlers: NearbytesSourceWatchHandlers): NearbytesWatchConnection;
   watchVolume(auth: NearbytesAuth, handlers: NearbytesVolumeWatchHandlers): NearbytesWatchConnection;
+  watchVolumeEvents(auth: NearbytesAuth, handlers: NearbytesVolumeWatchHandlers): NearbytesWatchConnection;
 }
 
 export interface NearbytesLanFamily {

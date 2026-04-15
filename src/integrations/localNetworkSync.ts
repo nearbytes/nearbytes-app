@@ -16,6 +16,7 @@ import type {
   LanTransportStorageCommand,
 } from './lanPeerTransport.js';
 import { listLanLatencyTraces, recordLanLatencyTrace, type LanLatencyTraceEntry } from './lanLatencyTrace.js';
+import type { RuntimeVolumeEventPublisher } from '../server/volumeEventBus.js';
 import { WebRtcDnsSdLanTransport } from './webrtcDnsSdLanTransport.js';
 
 const LAN_SYNC_PROTOCOL = 'nearbytes.lan-sync.v1';
@@ -141,6 +142,7 @@ export class LocalNetworkSyncService {
   private readonly runtimeDir: string;
   private readonly providerQueue: PersistentProviderQueue;
   private readonly peerTransport: LanPeerTransport;
+  private readonly volumeEventPublisher?: RuntimeVolumeEventPublisher;
   private readonly peers = new Map<string, LocalPeerState>();
   private readonly pendingHintTimers = new Map<string, PendingSyncHint>();
   private peerId = '';
@@ -155,12 +157,14 @@ export class LocalNetworkSyncService {
     options?: {
       readonly storageDir?: string;
       readonly peerTransport?: LanPeerTransport;
+      readonly volumeEvents?: RuntimeVolumeEventPublisher;
     }
   ) {
     this.storageHomeDir = resolveStorageHomeDir(options?.storageDir ?? storage.getRootsConfig().sources[0]?.path ?? process.cwd());
     this.runtimeDir = resolveLocalNetworkRuntimeDir(this.storageHomeDir);
     this.providerQueue = new PersistentProviderQueue(storage, this.runtimeDir);
     this.peerTransport = options?.peerTransport ?? new WebRtcDnsSdLanTransport(this.runtimeDir);
+    this.volumeEventPublisher = options?.volumeEvents;
   }
 
   async start(httpPort: number): Promise<void> {
@@ -655,6 +659,7 @@ export class LocalNetworkSyncService {
         throw new Error(validation.detail ?? `Invalid event ${eventHash} from ${peer.label}`);
       }
       await this.storage.writeFileForChannel(`channels/${volumeId}/${eventHash}.bin`, bytes, volumeId);
+      this.publishImportedEvent(volumeId, eventHash, `channels/${volumeId}/${eventHash}.bin`);
       importedEvents += 1;
     }
 
@@ -740,6 +745,7 @@ export class LocalNetworkSyncService {
         throw new Error(validation.detail ?? `Invalid event ${observation.hash} from ${peer.label}`);
       }
       await this.storage.writeFileForChannel(`channels/${volumeId}/${observation.hash}.bin`, bytes, volumeId);
+      this.publishImportedEvent(volumeId, observation.hash, `channels/${volumeId}/${observation.hash}.bin`);
       return { importedEvents: 1, importedBlocks: 0, changedVolumeIds: new Set([volumeId]) };
     }
 
@@ -814,6 +820,7 @@ export class LocalNetworkSyncService {
       throw new Error(validation.detail ?? `Invalid event ${normalizedEventHash} from ${peer.label}`);
     }
     await this.storage.writeFileForChannel(relativePath, bytes, normalizedVolumeId);
+    this.publishImportedEvent(normalizedVolumeId, normalizedEventHash, relativePath);
     let importedBlocks = 0;
     const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(bytes)) as import('../types/events.js').SerializedEvent);
     for (const blockHash of parsed.envelope.blockRefs) {
@@ -909,6 +916,22 @@ export class LocalNetworkSyncService {
       observationId: observation.observationId,
       prevObservationId: observation.prevObservationId,
     };
+  }
+
+  private publishImportedEvent(volumeId: string, eventHash: string, relativePath: string): void {
+    this.volumeEventPublisher?.publish({
+      volumeId,
+      producer: 'lan',
+      kind: 'timeline-advanced',
+      paths: [relativePath],
+      eventHashes: [eventHash],
+      nextCursor: eventHash,
+      invalidate: {
+        files: true,
+        timeline: true,
+        chat: true,
+      },
+    });
   }
 
   private toPeerSnapshot(peer: LocalPeerState): LocalNetworkPeerSnapshot {
