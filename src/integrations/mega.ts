@@ -1588,13 +1588,21 @@ export class MegaTransportAdapter {
             });
             return;
           }
-          if (await this.tryApplyRecipientActionPackets(share, account, rootHandle, manifest, actionBatch, {
-            source: 'sync',
+          if (await this.tryApplyRecipientActionPackets(
+            share,
+            account,
             rootHandle,
-            triggerHandle: rootHandle,
-            packetReceivedAt,
-            scsn: actionBatch.scsn?.trim() || incrementalScsn,
-          })) {
+            manifest,
+            actionBatch,
+            {
+              source: 'sync',
+              rootHandle,
+              triggerHandle: rootHandle,
+              packetReceivedAt,
+              scsn: actionBatch.scsn?.trim() || incrementalScsn,
+            },
+            session,
+          )) {
             return;
           }
         } catch (error) {
@@ -1948,7 +1956,8 @@ export class MegaTransportAdapter {
                     triggerHandle: rootHandle,
                     packetReceivedAt,
                     scsn: actionBatch.scsn?.trim() || scsn,
-                  }
+                  },
+                  session,
                 )
               ) {
                 backoffMs = 0;
@@ -3296,7 +3305,8 @@ export class MegaTransportAdapter {
     rootHandle: string,
     manifest: MegaMirrorManifest,
     actionBatch: MegaActionPacketBatch,
-    baseProbeContext?: MegaRecipientProbeContext
+    baseProbeContext?: MegaRecipientProbeContext,
+    activeSession?: MegaSession,
   ): Promise<boolean> {
     if (share.role !== 'recipient') {
       return false;
@@ -3312,97 +3322,104 @@ export class MegaTransportAdapter {
       return false;
     }
 
-    const applyUpdates = async () => {
-      return this.withRecoveredAccountSession(account, async (session) => {
-        const nextEntries = { ...manifest.entries };
-        const handlePathIndex = buildManifestHandlePathIndex(nextEntries);
-        const shareKeys = this.accountShareKeyCache.get(session.userHandle) ?? new Map<string, Buffer>();
-        let appliedCount = 0;
+    const applyUpdates = async (session: MegaSession) => {
+      const nextEntries = { ...manifest.entries };
+      const handlePathIndex = buildManifestHandlePathIndex(nextEntries);
+      const shareKeys = this.accountShareKeyCache.get(session.userHandle) ?? new Map<string, Buffer>();
+      let appliedCount = 0;
 
-        const deletedHandles = await this.applyRecipientDeletionPackets(
-          share,
-          rootHandle,
-          actionBatch.packets,
-          nextEntries,
-          handlePathIndex,
-        );
-        appliedCount += deletedHandles.size;
+      const deletedHandles = await this.applyRecipientDeletionPackets(
+        share,
+        rootHandle,
+        actionBatch.packets,
+        nextEntries,
+        handlePathIndex,
+      );
+      appliedCount += deletedHandles.size;
 
-        const directlyAppliedCount = await this.applyRecipientPacketNodes(
+      const directlyAppliedCount = await this.applyRecipientPacketNodes(
+        share,
+        session,
+        rootHandle,
+        actionBatch.packets,
+        nextEntries,
+        handlePathIndex,
+        shareKeys,
+        baseProbeContext,
+      );
+      appliedCount += directlyAppliedCount;
+
+      for (const handle of handles) {
+        if (deletedHandles.has(handle)) {
+          continue;
+        }
+        if (handlePathIndex.has(handle)) {
+          continue;
+        }
+        const applied = await this.applyRecipientHandleUpdate(
           share,
           session,
           rootHandle,
-          actionBatch.packets,
+          handle,
           nextEntries,
           handlePathIndex,
-          shareKeys,
-          baseProbeContext,
+          {
+            source: baseProbeContext?.source ?? 'sync',
+            rootHandle,
+            triggerHandle: handle,
+            packetReceivedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
+            scsn: baseProbeContext?.scsn ?? actionBatch.scsn?.trim(),
+          }
         );
-        appliedCount += directlyAppliedCount;
-
-        for (const handle of handles) {
-          if (deletedHandles.has(handle)) {
-            continue;
-          }
-          if (handlePathIndex.has(handle)) {
-            continue;
-          }
-          const applied = await this.applyRecipientHandleUpdate(
-            share,
-            session,
-            rootHandle,
-            handle,
-            nextEntries,
-            handlePathIndex,
-            {
-              source: baseProbeContext?.source ?? 'sync',
-              rootHandle,
-              triggerHandle: handle,
-              packetReceivedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
-              scsn: baseProbeContext?.scsn ?? actionBatch.scsn?.trim(),
-            }
-          );
-          if (!applied) {
-            continue;
-          }
-          appliedCount += 1;
+        if (!applied) {
+          continue;
         }
+        appliedCount += 1;
+      }
 
-        if (appliedCount === 0) {
-          debugMegaLog('[MEGA:immediate-apply] no candidate handle could be applied.', {
-            shareId: share.id,
-            rootHandle,
-            handles,
-          });
-          return false;
-        }
-
-        const nextManifest: MegaMirrorManifest = {
-          ...manifest,
+      if (appliedCount === 0) {
+        debugMegaLog('[MEGA:immediate-apply] no candidate handle could be applied.', {
+          shareId: share.id,
           rootHandle,
-          lastScsn: actionBatch.scsn?.trim() || manifest.lastScsn,
-          knownHandles: collectManifestHandles(nextEntries, rootHandle),
-          entries: nextEntries,
-        };
-        await this.persistManifest(share.id, nextManifest);
-        this.shareRootHandles.set(share.id, rootHandle);
-        this.shareKnownHandles.set(share.id, [...(nextManifest.knownHandles ?? [])]);
-        if (nextManifest.lastScsn) {
-          this.shareScsn.set(share.id, nextManifest.lastScsn);
-        }
-        this.syncStates.set(share.id, {
-          status: 'ready',
-          detail: `MEGA readonly mirror is up to date. Applied ${handles.length} immediate update${handles.length === 1 ? '' : 's'}.`,
-          badges: READONLY_BADGES,
-          lastSyncAt: this.runtime.now(),
+          handles,
         });
-        return true;
+        return false;
+      }
+
+      const nextManifest: MegaMirrorManifest = {
+        ...manifest,
+        rootHandle,
+        lastScsn: actionBatch.scsn?.trim() || manifest.lastScsn,
+        knownHandles: collectManifestHandles(nextEntries, rootHandle),
+        entries: nextEntries,
+      };
+      await this.persistManifest(share.id, nextManifest);
+      this.shareRootHandles.set(share.id, rootHandle);
+      this.shareKnownHandles.set(share.id, [...(nextManifest.knownHandles ?? [])]);
+      if (nextManifest.lastScsn) {
+        this.shareScsn.set(share.id, nextManifest.lastScsn);
+      }
+      this.syncStates.set(share.id, {
+        status: 'ready',
+        detail: `MEGA readonly mirror is up to date. Applied ${handles.length} immediate update${handles.length === 1 ? '' : 's'}.`,
+        badges: READONLY_BADGES,
+        lastSyncAt: this.runtime.now(),
       });
+      return true;
     };
 
     const runApply = async (): Promise<boolean> => {
       try {
-        return await applyUpdates();
+        if (activeSession) {
+          try {
+            return await applyUpdates(activeSession);
+          } catch (error) {
+            if (!isMegaSessionInvalid(error)) {
+              throw error;
+            }
+          }
+        }
+        return await this.withRecoveredAccountSession(account, applyUpdates);
       } catch (error) {
         this.runtime.logger.warn('MEGA immediate readonly apply failed; falling back to mirror refresh.', {
           shareId: share.id,
