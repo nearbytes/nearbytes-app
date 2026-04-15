@@ -882,6 +882,13 @@ export class MegaTransportAdapter {
 
       const resolved = await this.withRecoveredAccountSession(account, async (session) => {
         const snapshot = await this.fetchNodesSnapshot(session);
+        if (!snapshotHasIncomingShareCandidates(snapshot)) {
+          return {
+            session,
+            snapshot,
+            keyManager: undefined,
+          };
+        }
         return {
           session,
           snapshot,
@@ -894,7 +901,7 @@ export class MegaTransportAdapter {
       const { offers, diag } = listIncomingMegaShareOffersWithDiag(
         resolved.snapshot,
         resolved.session,
-        resolved.keyManager.shareKeys,
+        resolved.keyManager?.shareKeys ?? new Map<string, Buffer>(),
         this.provider,
         account.id
       );
@@ -6582,6 +6589,13 @@ function listIncomingMegaShareOffersWithDiag(
     skippedNoDecryptSample,
   };
   return { offers, diag };
+}
+
+function snapshotHasIncomingShareCandidates(snapshot: MegaFetchNodesSnapshot): boolean {
+  return snapshot.nodes.some((node) => {
+    const sharingUser = (node as Record<string, unknown>).su;
+    return typeof sharingUser === 'string' && sharingUser.trim() !== '';
+  });
 }
 
 function createIncomingMegaShareOffer(

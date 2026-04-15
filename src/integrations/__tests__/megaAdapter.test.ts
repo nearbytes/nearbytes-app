@@ -3983,6 +3983,86 @@ describe('MegaTransportAdapter', () => {
     expect(thirdManifest.lastScsn).toBe('cursor-2');
     expect(getSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('skips MEGA key-manager fetches when fetch-nodes shows no incoming share candidates', async () => {
+    const secretStore = createMemorySecretStore();
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    let fetchNodesCount = 0;
+
+    await secretStore.set('provider-account:mega:acct-mega-no-incoming-candidates', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof init?.body !== 'string') {
+        throw new Error(`Unexpected request URL: ${String(_input)}`);
+      }
+      const payload = JSON.parse(String(init.body ?? '[]'))[0] as Record<string, unknown>;
+      switch (payload.a) {
+        case 'ug':
+          return new Response(JSON.stringify([{ u: userHandle, email }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'f':
+          fetchNodesCount += 1;
+          return new Response(JSON.stringify([{
+            f: [
+              {
+                h: 'drive0001',
+                t: 2,
+                p: undefined,
+                a: encodeMegaBase64Url(Buffer.alloc(16, 7)),
+                k: encodeMegaBase64Url(Buffer.alloc(16, 9)),
+              },
+            ],
+            u: [{ u: userHandle, m: email }],
+            sn: 'cursor-1',
+          }]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        case 'uga':
+        case 'pk':
+          throw new Error(`Unexpected MEGA key-manager request: ${JSON.stringify(payload)}`);
+        default:
+          throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+      }
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    const account: ProviderAccount = {
+      id: 'acct-mega-no-incoming-candidates',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect(adapter.listIncomingShares(account)).resolves.toEqual([]);
+    expect(fetchNodesCount).toBe(1);
+  });
   
   it('repairs an owner share when its decryptable share key is missing', async () => {
     const secretStore = createMemorySecretStore();
