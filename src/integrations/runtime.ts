@@ -1,4 +1,10 @@
 import { spawn } from 'child_process';
+import type {
+  RuntimeVolumeEventInput as IntegrationVolumeEventInput,
+  RuntimeVolumeEventKind as IntegrationVolumeEventKind,
+  RuntimeVolumeEventProducer as IntegrationVolumeEventProducer,
+  RuntimeVolumeEventPublisher as IntegrationVolumeEventBridge,
+} from '../runtime/volumeEvents.js';
 
 export interface ProviderSecretStore {
   get<T>(key: string): Promise<T | null>;
@@ -28,28 +34,6 @@ export interface CommandExecutor {
 export interface IntegrationLogger {
   readonly log: (...args: unknown[]) => void;
   readonly warn: (...args: unknown[]) => void;
-}
-
-export type IntegrationVolumeEventProducer = 'filesystem' | 'lan' | 'mega';
-export type IntegrationVolumeEventKind = 'filesystem-change' | 'timeline-advanced';
-
-export interface IntegrationVolumeEventInput {
-  readonly volumeId: string;
-  readonly producer: IntegrationVolumeEventProducer;
-  readonly kind: IntegrationVolumeEventKind;
-  readonly timestamp?: number;
-  readonly paths?: readonly string[];
-  readonly eventHashes?: readonly string[];
-  readonly nextCursor?: string | null;
-  readonly invalidate?: {
-    readonly files?: boolean;
-    readonly timeline?: boolean;
-    readonly chat?: boolean;
-  };
-}
-
-export interface IntegrationVolumeEventBridge {
-  publish(event: IntegrationVolumeEventInput): void;
 }
 
 export interface GoogleDriveRuntimeConfig {

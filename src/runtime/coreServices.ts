@@ -2,6 +2,7 @@ import { createCryptoOperations, type CryptoOperations } from '../crypto/index.j
 import { createChatService, type ChatService } from '../domain/chatService.js';
 import { createFileService, type FileService } from '../domain/fileService.js';
 import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
+import type { RuntimeVolumeEventPublisher } from './volumeEvents.js';
 
 // Shared service bundle per docs/specs/transport/shared-runtime-services-v0.1.md.
 export interface RuntimeCoreServiceOptions {
@@ -9,6 +10,7 @@ export interface RuntimeCoreServiceOptions {
   readonly crypto?: CryptoOperations;
   readonly pathMapper?: ChannelPathMapper;
   readonly now?: () => number;
+  readonly volumeEvents?: RuntimeVolumeEventPublisher;
 }
 
 export interface RuntimeCoreServices {
@@ -16,6 +18,7 @@ export interface RuntimeCoreServices {
   readonly storage: StorageBackend;
   readonly fileService: FileService;
   readonly chatService: ChatService;
+  readonly volumeEvents?: RuntimeVolumeEventPublisher;
 }
 
 export function createRuntimeCoreServices(options: RuntimeCoreServiceOptions): RuntimeCoreServices {
@@ -32,5 +35,6 @@ export function createRuntimeCoreServices(options: RuntimeCoreServiceOptions): R
     storage: options.storage,
     fileService: createFileService(dependencies),
     chatService: createChatService(dependencies),
+    volumeEvents: options.volumeEvents,
   };
 }

@@ -16,7 +16,7 @@ import type {
   LanTransportStorageCommand,
 } from './lanPeerTransport.js';
 import { listLanLatencyTraces, recordLanLatencyTrace, type LanLatencyTraceEntry } from './lanLatencyTrace.js';
-import type { RuntimeVolumeEventPublisher } from '../server/volumeEventBus.js';
+import type { RuntimeVolumeEventPublisher } from '../runtime/volumeEvents.js';
 import { WebRtcDnsSdLanTransport } from './webrtcDnsSdLanTransport.js';
 
 const LAN_SYNC_PROTOCOL = 'nearbytes.lan-sync.v1';

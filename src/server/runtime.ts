@@ -13,7 +13,7 @@ import { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { StorageError } from '../types/errors.js';
 import { createApp } from './app.js';
-import { VolumeEventBus } from './volumeEventBus.js';
+import { VolumeEventBus } from '../runtime/volumeEvents.js';
 import type { UiDebugExecutor } from './uiDebug.js';
 
 export interface RuntimeLogger {
@@ -85,7 +85,11 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
 
   const storage = new MultiRootStorageBackend(loaded.config);
   await resumePendingSourceMoves(storage, loaded.configPath, logger);
-  const runtimeServices = createRuntimeCoreServices({ storage });
+  const volumeEventBus = new VolumeEventBus();
+  const runtimeServices = createRuntimeCoreServices({
+    storage,
+    volumeEvents: volumeEventBus,
+  });
   const primaryMainRoot =
     storage
       .getRootsConfig()
@@ -100,8 +104,6 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     logger.warn(`Warning: background storage reconcile failed during startup: ${message}`);
   });
 
-  const volumeEventBus = new VolumeEventBus();
-
   const managedShareService = new ManagedShareService({
     storage,
     rootsConfigPath: loaded.configPath,
@@ -109,13 +111,13 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     ...options.integrationOptions,
     runtime: {
       ...options.integrationOptions?.runtime,
-      volumeEvents: options.integrationOptions?.runtime?.volumeEvents ?? volumeEventBus,
+      volumeEvents: options.integrationOptions?.runtime?.volumeEvents ?? runtimeServices.volumeEvents,
     },
   });
   const localNetworkSyncService = isProviderEnabled('local-network')
     ? new LocalNetworkSyncService(storage, {
         storageDir: defaultStorageDir,
-        volumeEvents: volumeEventBus,
+        volumeEvents: runtimeServices.volumeEvents,
       })
     : undefined;
   void managedShareService.warmupBackgroundActivity('runtime startup').catch((error) => {
