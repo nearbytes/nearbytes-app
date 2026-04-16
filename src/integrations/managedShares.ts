@@ -147,6 +147,7 @@ export interface ManagedShareServiceOptions {
   readonly storage: ManagedShareStorageHost;
   readonly rootsConfigPath: string;
   readonly integrationStatePath?: string;
+  readonly integrationRuntime?: IntegrationRuntime;
   readonly stateStore?: ManagedShareStateStore;
   readonly rootsConfigStore?: ManagedShareRootsConfigStore;
   readonly fileHost?: ManagedShareFileHost;
@@ -240,14 +241,16 @@ export class ManagedShareService {
   private disposed = false;
 
   constructor(private readonly options: ManagedShareServiceOptions) {
-    this.runtime = createIntegrationRuntime({
-      ...options.runtime,
-      secretStore:
-        options.runtime?.secretStore ??
-        new JsonFileSecretStore({
-          filePath: path.join(path.dirname(options.rootsConfigPath), 'integration-secrets.json'),
-        }),
-    });
+    this.runtime =
+      options.integrationRuntime ??
+      createIntegrationRuntime({
+        ...options.runtime,
+        secretStore:
+          options.runtime?.secretStore ??
+          new JsonFileSecretStore({
+            filePath: path.join(path.dirname(options.rootsConfigPath), 'integration-secrets.json'),
+          }),
+      });
     this.adapters = new Map(
       (options.adapters ?? createDefaultTransportAdapters(this.runtime)).map((adapter) => [adapter.provider, adapter])
     );
