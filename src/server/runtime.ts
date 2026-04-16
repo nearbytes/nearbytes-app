@@ -9,6 +9,8 @@ import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../c
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { ManagedShareService } from '../integrations/managedShares.js';
 import type { ManagedShareServiceOptions } from '../integrations/managedShares.js';
+import { createDefaultTransportAdapters } from '../integrations/adapters.js';
+import { createManagedShareNodeSupport } from '../integrations/managedSharesNodeSupport.js';
 import { createIntegrationRuntime } from '../integrations/runtime.js';
 import { JsonFileSecretStore } from '../integrations/secretStore.js';
 import { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
@@ -106,23 +108,30 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     logger.warn(`Warning: background storage reconcile failed during startup: ${message}`);
   });
 
+  const managedShareRuntime =
+    options.integrationOptions?.integrationRuntime ??
+    createIntegrationRuntime({
+      ...options.integrationOptions?.runtime,
+      secretStore:
+        options.integrationOptions?.runtime?.secretStore ??
+        new JsonFileSecretStore({
+          filePath: path.join(path.dirname(loaded.configPath), 'integration-secrets.json'),
+        }),
+      volumeEvents: options.integrationOptions?.runtime?.volumeEvents ?? runtimeServices.volumeEvents,
+    });
+
   const managedShareService = new ManagedShareService({
     storage,
     rootsConfigPath: loaded.configPath,
+    ...createManagedShareNodeSupport({
+      rootsConfigPath: loaded.configPath,
+      integrationStatePath: options.integrationOptions?.integrationStatePath,
+    }),
     defaultLocalSourcePath: defaultStorageDir,
     readMaintenanceMode: 'background',
     ...options.integrationOptions,
-    integrationRuntime:
-      options.integrationOptions?.integrationRuntime ??
-      createIntegrationRuntime({
-        ...options.integrationOptions?.runtime,
-        secretStore:
-          options.integrationOptions?.runtime?.secretStore ??
-          new JsonFileSecretStore({
-            filePath: path.join(path.dirname(loaded.configPath), 'integration-secrets.json'),
-          }),
-        volumeEvents: options.integrationOptions?.runtime?.volumeEvents ?? runtimeServices.volumeEvents,
-      }),
+    integrationRuntime: managedShareRuntime,
+    adapters: options.integrationOptions?.adapters ?? createDefaultTransportAdapters(managedShareRuntime),
   });
   const localNetworkSyncService = isProviderEnabled('local-network')
     ? new LocalNetworkSyncService(storage, {

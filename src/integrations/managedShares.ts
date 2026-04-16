@@ -1,9 +1,6 @@
-import { promises as fs } from 'fs';
 import path from 'path';
-import { isProviderEnabled } from '../config/appConfig.js';
 import {
   getExplicitVolumePolicy,
-  saveRootsConfig,
   type RootProvider,
   type RootsConfig,
   type SourceConfigEntry,
@@ -19,8 +16,6 @@ import type {
 } from '../storage/multiRoot.js';
 import type { StorageWriteEvent, StorageWriteListener } from '../types/storage.js';
 import {
-  createDefaultTransportAdapters,
-  createProviderCatalog,
   type ManagedShareMirrorEntry,
   type ManagedShareReceiveProbe,
   type ManagedShareRemoteEntryProbe,
@@ -30,9 +25,6 @@ import {
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
 import type { IntegrationRuntime, IntegrationRuntimeOptions } from './runtime.js';
 import {
-  loadIntegrationState,
-  resolveIntegrationStatePath,
-  saveIntegrationState,
   type IntegrationMaintenanceSnapshot,
   type IntegrationStateSnapshot,
 } from './store.js';
@@ -146,6 +138,7 @@ export interface ManagedShareServiceOptions {
   readonly rootsConfigPath: string;
   readonly integrationStatePath?: string;
   readonly integrationRuntime?: IntegrationRuntime;
+  readonly isProviderEnabled?: (provider: string) => boolean;
   readonly stateStore?: ManagedShareStateStore;
   readonly rootsConfigStore?: ManagedShareRootsConfigStore;
   readonly fileHost?: ManagedShareFileHost;
@@ -160,68 +153,10 @@ interface IntegrationReadOptions {
   readonly fast?: boolean;
 }
 
-function createManagedShareFileStateStore(integrationStatePath: string): ManagedShareStateStore {
-  return {
-    async load(): Promise<IntegrationStateSnapshot> {
-      return loadIntegrationState(integrationStatePath);
-    },
-    async save(snapshot: IntegrationStateSnapshot): Promise<void> {
-      await saveIntegrationState(snapshot, integrationStatePath);
-    },
-  };
-}
-
-function createManagedShareFileRootsConfigStore(rootsConfigPath: string): ManagedShareRootsConfigStore {
-  return {
-    async save(config: RootsConfig): Promise<void> {
-      await saveRootsConfig(rootsConfigPath, config);
-    },
-  };
-}
-
-const defaultManagedShareFileHost: ManagedShareFileHost = {
-  async ensureDirectory(targetPath: string): Promise<void> {
-    await fs.mkdir(targetPath, { recursive: true });
-  },
-  async removePath(targetPath: string, options): Promise<void> {
-    await fs.rm(targetPath, {
-      recursive: options?.recursive,
-      force: options?.force,
-    });
-  },
-  async renamePath(sourcePath: string, targetPath: string): Promise<void> {
-    await fs.rename(sourcePath, targetPath);
-  },
-  async copyFile(sourcePath: string, targetPath: string): Promise<void> {
-    await fs.copyFile(sourcePath, targetPath);
-  },
-  async readDirectoryEntries(dirPath: string): Promise<readonly ManagedShareDirectoryEntry[]> {
-    try {
-      return await fs.readdir(dirPath, { withFileTypes: true });
-    } catch (error) {
-      const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
-      if (code === 'ENOENT') {
-        return [];
-      }
-      throw error;
-    }
-  },
-  async statPath(targetPath: string): Promise<ManagedSharePathStats | null> {
-    try {
-      return await fs.stat(targetPath);
-    } catch (error) {
-      const code = error instanceof Error && 'code' in error ? String((error as NodeJS.ErrnoException).code ?? '') : '';
-      if (code === 'ENOENT') {
-        return null;
-      }
-      throw error;
-    }
-  },
-};
-
 export class ManagedShareService {
   private readonly adapters: Map<string, TransportAdapter>;
   private readonly fileHost: ManagedShareFileHost;
+  private readonly isProviderEnabled: (provider: string) => boolean;
   private readonly mirrorRoot: string;
   private readonly runtime: IntegrationRuntime;
   private readonly rootsConfigStore: ManagedShareRootsConfigStore;
@@ -244,19 +179,14 @@ export class ManagedShareService {
       throw new Error('ManagedShareService requires an integrationRuntime.');
     }
     this.runtime = options.integrationRuntime;
-    this.adapters = new Map(
-      (options.adapters ?? createDefaultTransportAdapters(this.runtime)).map((adapter) => [adapter.provider, adapter])
-    );
-    const resolvedIntegrationStatePath = resolveIntegrationStatePath(
-      options.integrationStatePath ?? path.join(path.dirname(options.rootsConfigPath), 'integrations.json')
-    );
-    this.stateStore =
-      options.stateStore ??
-      createManagedShareFileStateStore(resolvedIntegrationStatePath);
-    this.rootsConfigStore =
-      options.rootsConfigStore ??
-      createManagedShareFileRootsConfigStore(options.rootsConfigPath);
-    this.fileHost = options.fileHost ?? defaultManagedShareFileHost;
+    this.isProviderEnabled = options.isProviderEnabled ?? (() => true);
+    this.adapters = new Map((options.adapters ?? []).map((adapter) => [adapter.provider, adapter]));
+    if (!options.stateStore || !options.rootsConfigStore || !options.fileHost) {
+      throw new Error('ManagedShareService requires stateStore, rootsConfigStore, and fileHost.');
+    }
+    this.stateStore = options.stateStore;
+    this.rootsConfigStore = options.rootsConfigStore;
+    this.fileHost = options.fileHost;
     this.mirrorRoot = path.resolve(
       options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig(), options.defaultLocalSourcePath)
     );
@@ -360,12 +290,12 @@ export class ManagedShareService {
       this.scheduleManagedShareSyncs(preparedState);
       const setupStates = await this.getProviderSetupStates();
       const accounts = preparedState.accounts
-        .filter((account) => isProviderEnabled(account.provider))
+        .filter((account) => this.isProviderEnabled(account.provider))
         .map((account) => this.presentationAccount(account));
       return {
         accounts,
-        providers: createProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
-        preferredProviders: preparedState.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+        providers: buildManagedShareProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
+        preferredProviders: preparedState.preferredProviders.filter((provider) => this.isProviderEnabled(provider)),
       };
     }
     if (options.fast !== true) {
@@ -381,12 +311,12 @@ export class ManagedShareService {
           'Provider setup discovery timed out; using the last known provider setup state.'
         );
     const accounts = state.accounts
-      .filter((account) => isProviderEnabled(account.provider))
+      .filter((account) => this.isProviderEnabled(account.provider))
       .map((account) => this.presentationAccount(account));
     return {
       accounts,
-      providers: createProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
-      preferredProviders: state.preferredProviders.filter((provider) => isProviderEnabled(provider)),
+      providers: buildManagedShareProviderCatalog(Array.from(this.adapters.values()), accounts, setupStates),
+      preferredProviders: state.preferredProviders.filter((provider) => this.isProviderEnabled(provider)),
     };
   }
 
@@ -597,7 +527,7 @@ export class ManagedShareService {
       ? FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS
       : FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS;
     const buildSummaries = async (stateSnapshot: IntegrationStateSnapshot): Promise<ManagedShareSummary[]> => {
-      const shares = stateSnapshot.managedShares.filter((share) => isProviderEnabled(share.provider));
+      const shares = stateSnapshot.managedShares.filter((share) => this.isProviderEnabled(share.provider));
       return Promise.all(
         shares.map((share) =>
           this.withSoftTimeout(
@@ -691,7 +621,7 @@ export class ManagedShareService {
     const existingManagedShareKeys = buildManagedShareKeys(preparedState.managedShares);
     const offers = await Promise.all(
       preparedState.accounts
-        .filter((account) => this.canReadIncomingProviderState(account) && isProviderEnabled(account.provider))
+        .filter((account) => this.canReadIncomingProviderState(account) && this.isProviderEnabled(account.provider))
         .map(async (account) => {
           const adapter = this.adapters.get(normalizeProvider(account.provider));
           if (!adapter?.listIncomingShares) {
@@ -793,7 +723,7 @@ export class ManagedShareService {
     }
     const invites = await Promise.all(
       state.accounts
-        .filter((account) => this.canReadIncomingProviderState(account) && isProviderEnabled(account.provider))
+        .filter((account) => this.canReadIncomingProviderState(account) && this.isProviderEnabled(account.provider))
         .map(async (account) => {
           const adapter = this.adapters.get(normalizeProvider(account.provider));
           if (!adapter?.listIncomingContactInvites) {
@@ -1106,7 +1036,7 @@ export class ManagedShareService {
     if (!share) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
-    if (!isProviderEnabled(share.provider)) {
+    if (!this.isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
     if (this.readMaintenanceMode === 'inline') {
@@ -1128,7 +1058,7 @@ export class ManagedShareService {
 
     const state = await this.loadState();
     const share = state.managedShares.find((entry) => entry.id === shareId);
-    if (!share || !isProviderEnabled(share.provider)) {
+    if (!share || !this.isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
 
@@ -1153,7 +1083,7 @@ export class ManagedShareService {
 
     const state = await this.loadState();
     const share = state.managedShares.find((entry) => entry.id === shareId);
-    if (!share || !isProviderEnabled(share.provider)) {
+    if (!share || !this.isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
 
@@ -1173,7 +1103,7 @@ export class ManagedShareService {
   async triggerManagedShareSync(shareId: string): Promise<void> {
     const state = await this.loadState();
     const share = state.managedShares.find((entry) => entry.id === shareId);
-    if (!share || !isProviderEnabled(share.provider)) {
+    if (!share || !this.isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
 
@@ -1205,7 +1135,7 @@ export class ManagedShareService {
       (share) =>
         share.sourceId === event.sourceId &&
         share.role === 'owner' &&
-        isProviderEnabled(share.provider)
+        this.isProviderEnabled(share.provider)
     );
 
     await Promise.all(
@@ -1227,7 +1157,7 @@ export class ManagedShareService {
   ): Promise<ManagedShareUploadProbe[]> {
     const state = await this.loadState();
     const share = state.managedShares.find((entry) => entry.id === shareId);
-    if (!share || !isProviderEnabled(share.provider)) {
+    if (!share || !this.isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
 
@@ -1250,7 +1180,7 @@ export class ManagedShareService {
   ): Promise<ManagedShareReceiveProbe[]> {
     const state = await this.loadState();
     const share = state.managedShares.find((entry) => entry.id === shareId);
-    if (!share || !isProviderEnabled(share.provider)) {
+    if (!share || !this.isProviderEnabled(share.provider)) {
       throw new ManagedShareServiceError(404, 'SHARE_NOT_FOUND', `Managed share not found: ${shareId}`);
     }
 
@@ -1307,7 +1237,7 @@ export class ManagedShareService {
     }> = [];
 
     for (const share of state.managedShares) {
-      if (!isProviderEnabled(share.provider)) {
+      if (!this.isProviderEnabled(share.provider)) {
         continue;
       }
       const adapter = this.adapters.get(normalizeProvider(share.provider));
@@ -4490,6 +4420,48 @@ function buildAttachedShareKeys(config: RootsConfig, shares: readonly ManagedSha
     }
   }
   return keys;
+}
+
+function buildManagedShareProviderCatalog(
+  adapters: readonly TransportAdapter[],
+  accounts: readonly ProviderAccount[],
+  setupStates: ReadonlyMap<string, ProviderSetupState>
+): ProviderCatalogEntry[] {
+  const accountByProvider = new Map<string, ProviderAccount>();
+  for (const account of accounts) {
+    const key = account.provider.trim().toLowerCase();
+    if (!accountByProvider.has(key)) {
+      accountByProvider.set(key, account);
+    }
+  }
+
+  return adapters.map((adapter) => {
+    const account = accountByProvider.get(adapter.provider);
+    const isActiveAccount = account?.state === 'connected' || account?.state === 'attention';
+    return {
+      provider: adapter.provider,
+      label: adapter.label,
+      description: adapter.description,
+      badges: account
+        ? []
+        : adapter.provider === 'gdrive'
+          ? ['OAuth']
+          : adapter.provider === 'mega'
+            ? ['Native']
+            : adapter.provider === 'github'
+              ? ['Device flow']
+              : ['Available'],
+      isConnected: isActiveAccount,
+      connectionState:
+        isActiveAccount ? 'connected' : adapter.supportsAccountConnection ? 'available' : 'setup',
+      accountId: account?.id,
+      setup:
+        setupStates.get(adapter.provider) ?? {
+          status: 'ready',
+          detail: '',
+        },
+    } satisfies ProviderCatalogEntry;
+  });
 }
 
 function buildManagedShareKeys(shares: readonly ManagedShare[]): Set<string> {

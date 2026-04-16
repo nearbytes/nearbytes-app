@@ -20,6 +20,8 @@ import {
   ManagedShareServiceError,
   type ManagedShareServiceOptions,
 } from '../integrations/managedShares.js';
+import { createDefaultTransportAdapters } from '../integrations/adapters.js';
+import { createManagedShareNodeSupport } from '../integrations/managedSharesNodeSupport.js';
 import { createIntegrationRuntime } from '../integrations/runtime.js';
 import { JsonFileSecretStore } from '../integrations/secretStore.js';
 import { clearLanLatencyTraces, recordLanLatencyTrace } from '../integrations/lanLatencyTrace.js';
@@ -114,26 +116,36 @@ export function createRoutes(deps: RouteDependencies): Router {
   const volumeEventBus = deps.volumeEventBus ?? new VolumeEventBus();
   const watchHub = new VolumeWatchHub(deps.storage, deps.resolvedStorageDir, volumeEventBus);
   const sourceWatchHub = new SourceWatchHub();
+  const managedShareRuntime =
+    deps.integrationOptions?.integrationRuntime ??
+    (deps.rootsConfigPath
+      ? createIntegrationRuntime({
+          ...deps.integrationOptions?.runtime,
+          secretStore:
+            deps.integrationOptions?.runtime?.secretStore ??
+            new JsonFileSecretStore({
+              filePath: join(resolve(deps.rootsConfigPath), '..', 'integration-secrets.json'),
+            }),
+          volumeEvents: deps.integrationOptions?.runtime?.volumeEvents ?? volumeEventBus,
+        })
+      : null);
   const managedShareService =
     deps.managedShareService ??
     (deps.rootsConfigPath && isMultiRootStorageBackend(deps.storage)
       ? new ManagedShareService({
           storage: deps.storage,
           rootsConfigPath: deps.rootsConfigPath,
+          ...createManagedShareNodeSupport({
+            rootsConfigPath: deps.rootsConfigPath,
+            integrationStatePath: deps.integrationOptions?.integrationStatePath,
+          }),
           defaultLocalSourcePath: deps.resolvedStorageDir,
           readMaintenanceMode: 'background',
           ...deps.integrationOptions,
-          integrationRuntime:
-            deps.integrationOptions?.integrationRuntime ??
-            createIntegrationRuntime({
-              ...deps.integrationOptions?.runtime,
-              secretStore:
-                deps.integrationOptions?.runtime?.secretStore ??
-                new JsonFileSecretStore({
-                  filePath: join(resolve(deps.rootsConfigPath), '..', 'integration-secrets.json'),
-                }),
-              volumeEvents: deps.integrationOptions?.runtime?.volumeEvents ?? volumeEventBus,
-            }),
+          integrationRuntime: managedShareRuntime ?? undefined,
+          adapters:
+            deps.integrationOptions?.adapters ??
+            (managedShareRuntime ? createDefaultTransportAdapters(managedShareRuntime) : []),
         })
       : null);
   const upload = multer({

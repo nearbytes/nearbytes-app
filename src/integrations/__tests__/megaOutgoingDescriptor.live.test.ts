@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { RootsConfig } from '../../config/roots.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import { ManagedShareService } from '../managedShares.js';
+import { createManagedShareNodeSupport } from '../managedSharesNodeSupport.js';
 import { MegaTransportAdapter } from '../mega.js';
 import { createIntegrationRuntime } from '../runtime.js';
 import { JsonFileSecretStore } from '../secretStore.js';
@@ -182,6 +183,7 @@ async function createPeer(label: 'A' | 'B'): Promise<LivePeer> {
     storage,
     rootsConfigPath,
     integrationStatePath,
+    ...createManagedShareNodeSupport({ rootsConfigPath, integrationStatePath }),
     integrationRuntime: runtime,
     mirrorRoot: mainRoot,
     adapters: [new MegaTransportAdapter(runtime)],

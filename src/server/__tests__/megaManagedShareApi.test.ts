@@ -13,6 +13,7 @@ import { bytesToHex } from '../../utils/encoding.js';
 import type { RootsConfig } from '../../config/roots.js';
 import { MegaTransportAdapter } from '../../integrations/mega.js';
 import { ManagedShareService } from '../../integrations/managedShares.js';
+import { createManagedShareNodeSupport } from '../../integrations/managedSharesNodeSupport.js';
 import { createIntegrationRuntime, type ProviderSecretStore } from '../../integrations/runtime.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import { createApp } from '../app.js';
@@ -409,6 +410,7 @@ describe('MEGA managed share API', () => {
     const managedShareService = new ManagedShareService({
       storage,
       rootsConfigPath,
+      ...createManagedShareNodeSupport({ rootsConfigPath }),
       integrationRuntime: runtime,
       adapters: [new MegaTransportAdapter(runtime, { fetchImpl })],
     });
@@ -620,6 +622,7 @@ describe('MEGA managed share API', () => {
     const managedShareService = new ManagedShareService({
       storage,
       rootsConfigPath,
+      ...createManagedShareNodeSupport({ rootsConfigPath }),
       integrationRuntime: runtime,
       adapters: [new MegaTransportAdapter(runtime, { fetchImpl })],
     });
@@ -813,6 +816,7 @@ describe('MEGA managed share API', () => {
     const managedShareService = new ManagedShareService({
       storage,
       rootsConfigPath,
+      ...createManagedShareNodeSupport({ rootsConfigPath }),
       integrationRuntime: runtime,
       adapters: [new MegaTransportAdapter(runtime, { fetchImpl })],
     });

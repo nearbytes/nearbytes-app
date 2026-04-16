@@ -9,6 +9,7 @@ import {
   ManagedShareService as BaseManagedShareService,
   type ManagedShareServiceOptions,
 } from '../managedShares.js';
+import { createManagedShareNodeSupport } from '../managedSharesNodeSupport.js';
 import {
   createIntegrationRuntime,
   type IntegrationRuntime,
@@ -59,7 +60,12 @@ class ManagedShareService extends BaseManagedShareService {
   constructor(options: ManagedShareTestServiceOptions) {
     super({
       ...options,
+      ...createManagedShareNodeSupport({
+        rootsConfigPath: options.rootsConfigPath,
+        integrationStatePath: options.integrationStatePath,
+      }),
       integrationRuntime: options.integrationRuntime ?? createTestIntegrationRuntime(options.runtime),
+      adapters: options.adapters ?? [new FakeTransportAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.')],
       defaultLocalSourcePath:
         options.defaultLocalSourcePath ?? path.join(path.dirname(options.rootsConfigPath), 'local'),
     });
