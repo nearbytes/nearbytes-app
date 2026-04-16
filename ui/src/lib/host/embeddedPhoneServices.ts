@@ -3,6 +3,13 @@ import { openDB, type IDBPDatabase } from 'idb';
 import { createCryptoOperations } from '../../../../src/crypto/index.js';
 import { createChatService, type ChatService } from '../../../../src/domain/chatService.js';
 import { createFileService, type FileService } from '../../../../src/domain/fileService.js';
+import {
+  createInMemoryPathRecordStore,
+  normalizeStoragePath,
+  PathRecordStorageBackend,
+  type InMemoryPathRecordStore,
+  type StoredPathRecord,
+} from '../../../../src/storage/backend.js';
 import { createSecret, type Secret } from '../../../../src/types/keys.js';
 import { defaultPathMapper, type StorageBackend } from '../../../../src/types/storage.js';
 import type {
@@ -73,21 +80,13 @@ import {
   type LanLatencyTraceEntry,
 } from './lanLatencyTrace.js';
 
-interface StoredPathRecord {
-  path: string;
-  data: Uint8Array;
-  updatedAt: number;
-}
-
 interface EmbeddedPhoneRuntimeServices {
   storage: StorageBackend;
   fileService: FileService;
   chatService: ChatService;
 }
 
-interface InMemoryPathStore {
-  files: Map<string, StoredPathRecord>;
-  directories: Set<string>;
+interface InMemoryPathStore extends InMemoryPathRecordStore {
   settings: Map<string, { key: string; value: string; updatedAt: number }>;
 }
 
@@ -197,8 +196,7 @@ function shouldUseIndexedDb(): boolean {
 function getInMemoryStore(): InMemoryPathStore {
   if (!inMemoryStore) {
     inMemoryStore = {
-      files: new Map(),
-      directories: new Set(),
+      ...createInMemoryPathRecordStore(),
       settings: new Map(),
     };
   }
@@ -225,15 +223,6 @@ async function getIndexedDb(): Promise<IDBPDatabase | null> {
     });
   }
   return dbPromise;
-}
-
-function normalizePath(path: string): string {
-  return path.replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/$/, '').trim();
-}
-
-function normalizeDirectoryPath(path: string): string {
-  const normalized = normalizePath(path);
-  return normalized === '' ? '' : `${normalized}/`;
 }
 
 async function putRecord(path: string, data: Uint8Array): Promise<void> {
@@ -268,7 +257,7 @@ async function deleteRecord(path: string): Promise<void> {
 }
 
 async function putDirectory(path: string): Promise<void> {
-  const normalized = normalizePath(path);
+  const normalized = normalizeStoragePath(path);
   const db = await getIndexedDb();
   if (db) {
     await db.put('directories', { path: normalized, updatedAt: Date.now() });
@@ -278,7 +267,7 @@ async function putDirectory(path: string): Promise<void> {
 }
 
 async function hasDirectory(path: string): Promise<boolean> {
-  const normalized = normalizePath(path);
+  const normalized = normalizeStoragePath(path);
   const db = await getIndexedDb();
   if (db) {
     return Boolean(await db.get('directories', normalized));
@@ -885,67 +874,17 @@ async function emitEmbeddedPhoneVolumeUpdate(
   }
 }
 
-class EmbeddedPhoneStorageBackend implements StorageBackend {
-  async writeFile(path: string, data: Uint8Array): Promise<void> {
-    await putRecord(normalizePath(path), new Uint8Array(data));
-  }
-
-  async readFile(path: string): Promise<Uint8Array> {
-    const record = await getRecord(normalizePath(path));
-    if (!record) {
-      throw new Error(`File not found: ${path}`);
-    }
-    return new Uint8Array(record.data);
-  }
-
-  async listFiles(directory: string): Promise<string[]> {
-    const prefix = normalizeDirectoryPath(directory);
-    const paths = await listStoredPaths();
-    const files = new Set<string>();
-
-    for (const path of paths) {
-      if (prefix !== '' && !path.startsWith(prefix)) {
-        continue;
-      }
-      const remainder = prefix === '' ? path : path.slice(prefix.length);
-      if (remainder === '' || remainder.includes('/')) {
-        continue;
-      }
-      files.add(remainder);
-    }
-
-    return Array.from(files).sort((left, right) => left.localeCompare(right));
-  }
-
-  async createDirectory(_path: string): Promise<void> {
-    await putDirectory(_path);
-  }
-
-  async exists(path: string): Promise<boolean> {
-    const normalized = normalizePath(path);
-    if (normalized === '') {
-      return true;
-    }
-    if (await getRecord(normalized)) {
-      return true;
-    }
-    if (await hasDirectory(normalized)) {
-      return true;
-    }
-    const prefix = `${normalized}/`;
-    const paths = await listStoredPaths();
-    return paths.some((entry) => entry.startsWith(prefix));
-  }
-
-  async deleteFile(path: string): Promise<void> {
-    await deleteRecord(normalizePath(path));
-  }
-}
-
 async function getEmbeddedPhoneRuntimeServices(): Promise<EmbeddedPhoneRuntimeServices> {
   if (!servicesPromise) {
     servicesPromise = Promise.resolve().then(() => {
-      const storage = new EmbeddedPhoneStorageBackend();
+      const storage = new PathRecordStorageBackend({
+        putRecord: async (path, data) => putRecord(path, new Uint8Array(data)),
+        getRecord: async (path) => getRecord(path),
+        deleteRecord: async (path) => deleteRecord(path),
+        putDirectory: async (path) => putDirectory(path),
+        hasDirectory: async (path) => hasDirectory(path),
+        listStoredPaths: async () => listStoredPaths(),
+      });
       const crypto = createCryptoOperations();
       return {
         storage,
@@ -1529,8 +1468,7 @@ export function resetEmbeddedPhoneServicesForTests(): void {
     bootstrappedReads: 0,
   };
   inMemoryStore = {
-    files: new Map(),
-    directories: new Set(),
+    ...createInMemoryPathRecordStore(),
     settings: new Map(),
   };
 }

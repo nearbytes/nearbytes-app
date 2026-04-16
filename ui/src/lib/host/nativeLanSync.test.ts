@@ -3,6 +3,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createCryptoOperations } from '../../../../src/crypto/index.js';
 import { createFileService } from '../../../../src/domain/fileService.js';
 import { deriveKeys } from '../../../../src/crypto/asymmetric.js';
+import {
+  createInMemoryPathRecordStore,
+  createInMemoryPathRecordStoreAdapter,
+  normalizeStoragePath,
+  PathRecordStorageBackend,
+} from '../../../../src/storage/backend.js';
 import { createSecret } from '../../../../src/types/keys.js';
 import type { StorageBackend } from '../../../../src/types/storage.js';
 import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from '../../../../src/storage/integrity.js';
@@ -21,67 +27,37 @@ import {
 } from './nativeLanSync.js';
 
 class MemoryStorageBackend implements StorageBackend {
-  private readonly files = new Map<string, Uint8Array>();
-  private readonly directories = new Set<string>();
+  private readonly store = createInMemoryPathRecordStore();
+  private readonly backend = new PathRecordStorageBackend(createInMemoryPathRecordStoreAdapter(this.store));
 
   async writeFile(path: string, data: Uint8Array): Promise<void> {
-    const normalized = normalizePath(path);
-    this.files.set(normalized, new Uint8Array(data));
-    const lastSlash = normalized.lastIndexOf('/');
-    if (lastSlash >= 0) {
-      this.directories.add(normalized.slice(0, lastSlash));
-    }
+    await this.backend.writeFile(path, data);
   }
 
   async readFile(path: string): Promise<Uint8Array> {
-    const record = this.files.get(normalizePath(path));
-    if (!record) {
-      throw new Error(`File not found: ${path}`);
-    }
-    return new Uint8Array(record);
+    return await this.backend.readFile(path);
   }
 
   async listFiles(directory: string): Promise<string[]> {
-    const normalized = normalizePath(directory);
-    const prefix = normalized.length > 0 ? `${normalized}/` : '';
-    const entries = new Set<string>();
-    for (const filePath of this.files.keys()) {
-      if (prefix && !filePath.startsWith(prefix)) {
-        continue;
-      }
-      const remainder = prefix ? filePath.slice(prefix.length) : filePath;
-      if (!remainder || remainder.includes('/')) {
-        continue;
-      }
-      entries.add(remainder);
-    }
-    return Array.from(entries).sort((left, right) => left.localeCompare(right));
+    return await this.backend.listFiles(directory);
   }
 
   async createDirectory(path: string): Promise<void> {
-    this.directories.add(normalizePath(path));
+    await this.backend.createDirectory(path);
   }
 
   async exists(path: string): Promise<boolean> {
-    const normalized = normalizePath(path);
-    if (this.files.has(normalized) || this.directories.has(normalized)) {
-      return true;
-    }
-    const prefix = `${normalized}/`;
-    for (const filePath of this.files.keys()) {
-      if (filePath.startsWith(prefix)) {
-        return true;
-      }
-    }
-    return false;
+    return await this.backend.exists(path);
   }
 
   async deleteFile(path: string): Promise<void> {
-    this.files.delete(normalizePath(path));
+    await this.backend.deleteFile(path);
   }
 
   listAllPaths(): string[] {
-    return Array.from(this.files.keys()).sort((left, right) => left.localeCompare(right));
+    return Array.from(this.store.files.keys())
+      .map((path) => normalizeStoragePath(path))
+      .sort((left, right) => left.localeCompare(right));
   }
 }
 
@@ -407,10 +383,6 @@ async function deriveVolumeId(secret: string): Promise<string> {
   return Array.from(keys.publicKey)
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('');
-}
-
-function normalizePath(value: string): string {
-  return value.replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/$/, '');
 }
 
 function createObservationId(peerId: string, sequence: number): string {
