@@ -12,10 +12,13 @@ import {
 import { ensureNearbytesMarkers, inspectNearbytesRoot, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
 import { normalizeVolumeId } from '../storage/integrity.js';
-import { MultiRootStorageBackend } from '../storage/multiRoot.js';
-import type { MultiRootRuntimeSnapshot } from '../storage/multiRoot.js';
+import type {
+  MultiRootRuntimeSnapshot,
+  RootConsolidationResult,
+  SourceConflictResolutionResult,
+} from '../storage/multiRoot.js';
 import { getDefaultStorageDir, getDefaultStorageHomeDir, getProviderStorageFolderName, resolveStorageHomeDir } from '../storagePath.js';
-import type { StorageWriteEvent } from '../types/storage.js';
+import type { StorageWriteEvent, StorageWriteListener } from '../types/storage.js';
 import {
   createDefaultTransportAdapters,
   createProviderCatalog,
@@ -94,8 +97,27 @@ export class ManagedShareServiceError extends Error {
   }
 }
 
+export interface ManagedShareStorageHost {
+  getRootsConfig(): RootsConfig;
+  getRuntimeSnapshot(options?: { readonly includeUsage?: boolean }): Promise<MultiRootRuntimeSnapshot>;
+  onWrite(listener: StorageWriteListener): () => void;
+  consolidateRoot(sourceId: string, targetId: string): Promise<{
+    config: RootsConfig;
+    result: RootConsolidationResult;
+  }>;
+  resolveSourceConflicts(options?: {
+    readonly sourceIds?: readonly string[];
+    readonly resetTargets?: boolean;
+    readonly rewriteMarker?: boolean;
+    readonly ensureMarker?: boolean;
+  }): Promise<SourceConflictResolutionResult>;
+  reconcileConfiguredVolumes(): Promise<void>;
+  updateRootsConfig(config: RootsConfig): void;
+  scheduleReconcileConfiguredVolumes(): void;
+}
+
 export interface ManagedShareServiceOptions {
-  readonly storage: MultiRootStorageBackend;
+  readonly storage: ManagedShareStorageHost;
   readonly rootsConfigPath: string;
   readonly integrationStatePath?: string;
   readonly mirrorRoot?: string;
