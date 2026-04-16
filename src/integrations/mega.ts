@@ -344,7 +344,7 @@ export class MegaTransportAdapter {
     private readonly runtime: IntegrationRuntime,
     options: MegaAdapterOptions = {}
   ) {
-    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.fetchImpl = options.fetchImpl ?? this.runtime.fetch;
     this.apiClient = new MegaApiClient({ fetchImpl: this.fetchImpl });
   }
 

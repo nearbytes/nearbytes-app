@@ -69,6 +69,7 @@ export interface GitHubRuntimeConfig {
 export interface IntegrationRuntime {
   readonly secretStore: ProviderSecretStore;
   readonly commandExecutor: CommandExecutor;
+  readonly fetch: typeof fetch;
   readonly openExternalUrl?: (url: string) => Promise<void>;
   readonly createAbortController: () => AbortController;
   readonly scheduler: RuntimeScheduler;
@@ -83,6 +84,7 @@ export interface IntegrationRuntime {
 export interface IntegrationRuntimeOptions {
   readonly secretStore: ProviderSecretStore;
   readonly commandExecutor?: CommandExecutor;
+  readonly fetch?: typeof fetch;
   readonly openExternalUrl?: (url: string) => Promise<void>;
   readonly createAbortController?: () => AbortController;
   readonly scheduler?: RuntimeScheduler;
@@ -108,6 +110,7 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
   return {
     secretStore: options.secretStore,
     commandExecutor: options.commandExecutor ?? new DefaultCommandExecutor(),
+    fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
     openExternalUrl: options.openExternalUrl,
     createAbortController: options.createAbortController ?? (() => new AbortController()),
     scheduler: options.scheduler ?? defaultRuntimeScheduler,
