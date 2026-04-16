@@ -1,4 +1,4 @@
-import path from 'path';
+import { managedShareCurrentWorkingDirectory, managedSharePath as path, managedSharePlatform } from './managedSharePath.js';
 import {
   type RootProvider,
   type RootsConfig,
@@ -4121,7 +4121,7 @@ function findPrimaryLocalSource(config: RootsConfig, excludingSourceId?: string)
 }
 
 function isUnsafeManagedSharePath(targetPath: string): boolean {
-  const currentWorkingDirectory = process.cwd?.();
+  const currentWorkingDirectory = managedShareCurrentWorkingDirectory();
   if (!currentWorkingDirectory || !targetPath.trim()) {
     return false;
   }
@@ -4153,7 +4153,8 @@ function shouldRelocateMegaRecipientShareRoot(currentPath: string, expectedPath:
 
 function normalizeComparablePath(value: string): string {
   const normalized = path.resolve(value).replace(/\\/g, '/').replace(/\/+$/u, '');
-  if (process.platform === 'darwin' || process.platform === 'win32') {
+  const platform = managedSharePlatform();
+  if (platform === 'darwin' || platform === 'win32') {
     return normalized.toLowerCase();
   }
   return normalized;
