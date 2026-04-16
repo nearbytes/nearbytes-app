@@ -1,8 +1,12 @@
 import { openDB, type IDBPDatabase } from 'idb';
 
 import { createCryptoOperations } from '../../../../src/crypto/index.js';
-import { createChatService, type ChatService } from '../../../../src/domain/chatService.js';
-import { createFileService, type FileService } from '../../../../src/domain/fileService.js';
+import type { ChatService } from '../../../../src/domain/chatService.js';
+import type { FileService } from '../../../../src/domain/fileService.js';
+import {
+  createRuntimeCoreServices,
+  type RuntimeCoreServices,
+} from '../../../../src/runtime/coreServices.js';
 import {
   createInMemoryPathRecordStore,
   normalizeStoragePath,
@@ -80,11 +84,7 @@ import {
   type LanLatencyTraceEntry,
 } from './lanLatencyTrace.js';
 
-interface EmbeddedPhoneRuntimeServices {
-  storage: StorageBackend;
-  fileService: FileService;
-  chatService: ChatService;
-}
+interface EmbeddedPhoneRuntimeServices extends RuntimeCoreServices {}
 
 interface InMemoryPathStore extends InMemoryPathRecordStore {
   settings: Map<string, { key: string; value: string; updatedAt: number }>;
@@ -885,12 +885,9 @@ async function getEmbeddedPhoneRuntimeServices(): Promise<EmbeddedPhoneRuntimeSe
         hasDirectory: async (path) => hasDirectory(path),
         listStoredPaths: async () => listStoredPaths(),
       });
-      const crypto = createCryptoOperations();
-      return {
+      return createRuntimeCoreServices({
         storage,
-        fileService: createFileService({ crypto, storage }),
-        chatService: createChatService({ crypto, storage }),
-      } satisfies EmbeddedPhoneRuntimeServices;
+      }) satisfies EmbeddedPhoneRuntimeServices;
     });
   }
   return servicesPromise;

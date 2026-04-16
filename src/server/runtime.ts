@@ -2,10 +2,8 @@ import path from 'path';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import type express from 'express';
-import { createCryptoOperations } from '../crypto/index.js';
 import { isProviderEnabled } from '../config/appConfig.js';
-import { createChatService } from '../domain/chatService.js';
-import { createFileService } from '../domain/fileService.js';
+import { createRuntimeCoreServices } from '../runtime/coreServices.js';
 import { getDefaultStorageDir } from '../storagePath.js';
 import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../config/roots.js';
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
@@ -67,7 +65,6 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
   const maxUploadBytes = options.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES;
   const tokenKey = options.tokenKey;
 
-  const crypto = createCryptoOperations();
   const loaded = await loadOrCreateRootsConfig({
     configPath: options.rootsConfigPath,
     defaultRootPath: defaultStorageDir,
@@ -88,8 +85,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
 
   const storage = new MultiRootStorageBackend(loaded.config);
   await resumePendingSourceMoves(storage, loaded.configPath, logger);
-  const fileService = createFileService({ crypto, storage });
-  const chatService = createChatService({ crypto, storage });
+  const runtimeServices = createRuntimeCoreServices({ storage });
   const primaryMainRoot =
     storage
       .getRootsConfig()
@@ -128,9 +124,9 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
   });
 
   const app = createApp({
-    fileService,
-    chatService,
-    crypto,
+    fileService: runtimeServices.fileService,
+    chatService: runtimeServices.chatService,
+    crypto: runtimeServices.crypto,
     storage,
     tokenKey,
     corsOrigin,
