@@ -17,6 +17,13 @@ Current active design line for the unreleased opaque-event refactor:
 - `transport/storage-commands-v0.1.md`
 - `transport/lan-sync-v0.4.md`
 
+Supporting runtime and provider-port specifications:
+
+- `storage/shared-path-storage-v0.1.md`
+- `transport/mega-runtime-v0.1.md`
+- `transport/phone-mega-port-plan-v0.1.md`
+- `transport/shared-runtime-services-v0.1.md`
+
 Earlier pre-opaque docs remain in-tree only as historical snapshots unless they are explicitly referenced by the active design line.
 
 LAN note:
@@ -31,8 +38,13 @@ LAN note:
 - `identity/`: identity publication, snapshots, and management flows.
 - `references/`: `nb.*` reference payloads and content descriptors.
 - `storage/`: on-disk layout, correctness, reconciliation, and storage integration rules.
-- `transport/`: join links, transport endpoints, transport recipes, and log/transport mappings.
 - `transport/`: join links, transport endpoints, transport recipes, log/transport mappings, and LAN sync.
+
+Directory hygiene rule:
+
+1. keep new specification filenames concise and family-scoped;
+2. prefer one concern per file over omnibus migration notes;
+3. when a migration plan is needed, keep it additive and place it beside the affected family specs.
 
 ## Rule of Thumb
 
