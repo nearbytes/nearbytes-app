@@ -6,7 +6,11 @@ import {
   type VolumeDestinationConfig,
   type VolumePolicyEntry,
 } from '../config/roots.js';
-import { ensureNearbytesMarkers, inspectNearbytesRoot, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
+import type {
+  MarkerEnsureResult,
+  NearbytesRootInspection,
+  NearbytesRootNormalizationResult,
+} from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
 import { normalizeVolumeId } from '../storage/integrity.js';
 import type {
@@ -133,6 +137,18 @@ export interface ManagedShareFileHost {
   statPath(targetPath: string): Promise<ManagedSharePathStats | null>;
 }
 
+export interface ManagedShareRootHost {
+  ensureMarkers(sources: readonly SourceConfigEntry[]): Promise<readonly MarkerEnsureResult[]>;
+  inspectRoot(rootPath: string): Promise<NearbytesRootInspection | null>;
+  normalizeRoot(
+    rootPath: string,
+    options?: {
+      readonly rewriteMarker?: boolean;
+      readonly ensureMarker?: boolean;
+    }
+  ): Promise<NearbytesRootNormalizationResult>;
+}
+
 export interface ManagedShareServiceOptions {
   readonly storage: ManagedShareStorageHost;
   readonly rootsConfigPath: string;
@@ -142,6 +158,7 @@ export interface ManagedShareServiceOptions {
   readonly stateStore?: ManagedShareStateStore;
   readonly rootsConfigStore?: ManagedShareRootsConfigStore;
   readonly fileHost?: ManagedShareFileHost;
+  readonly rootHost?: ManagedShareRootHost;
   readonly defaultLocalSourcePath?: string;
   readonly mirrorRoot?: string;
   readonly adapters?: readonly TransportAdapter[];
@@ -158,6 +175,7 @@ export class ManagedShareService {
   private readonly fileHost: ManagedShareFileHost;
   private readonly isProviderEnabled: (provider: string) => boolean;
   private readonly mirrorRoot: string;
+  private readonly rootHost: ManagedShareRootHost;
   private readonly runtime: IntegrationRuntime;
   private readonly rootsConfigStore: ManagedShareRootsConfigStore;
   private readonly stateStore: ManagedShareStateStore;
@@ -181,12 +199,13 @@ export class ManagedShareService {
     this.runtime = options.integrationRuntime;
     this.isProviderEnabled = options.isProviderEnabled ?? (() => true);
     this.adapters = new Map((options.adapters ?? []).map((adapter) => [adapter.provider, adapter]));
-    if (!options.stateStore || !options.rootsConfigStore || !options.fileHost) {
-      throw new Error('ManagedShareService requires stateStore, rootsConfigStore, and fileHost.');
+    if (!options.stateStore || !options.rootsConfigStore || !options.fileHost || !options.rootHost) {
+      throw new Error('ManagedShareService requires stateStore, rootsConfigStore, fileHost, and rootHost.');
     }
     this.stateStore = options.stateStore;
     this.rootsConfigStore = options.rootsConfigStore;
     this.fileHost = options.fileHost;
+    this.rootHost = options.rootHost;
     this.mirrorRoot = path.resolve(
       options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig(), options.defaultLocalSourcePath)
     );
@@ -1972,7 +1991,7 @@ export class ManagedShareService {
       await copyIfPresent(path.join(source.path, 'blocks'), path.join(localPath, 'blocks'), this.fileHost);
       await copyIfPresent(path.join(source.path, 'channels'), path.join(localPath, 'channels'), this.fileHost);
     }
-    await normalizeNearbytesRoot(localPath, { rewriteMarker: true });
+    await this.rootHost.normalizeRoot(localPath, { rewriteMarker: true });
   }
 
   private shouldRefreshManagedShareMarker(summary: ManagedShareSummary): boolean {
@@ -1983,7 +2002,7 @@ export class ManagedShareService {
     try {
       const { account, adapter, nextShare } = await this.prepareManagedShareForSync(shareId);
       await this.hydrateManagedShareRootFromPeers(nextShare);
-      await normalizeNearbytesRoot(nextShare.localPath, {
+      await this.rootHost.normalizeRoot(nextShare.localPath, {
         rewriteMarker: true,
       });
       if (account && this.canSyncManagedShare(nextShare, account)) {
@@ -3121,7 +3140,7 @@ export class ManagedShareService {
     await this.rootsConfigStore.save(config);
     this.options.storage.updateRootsConfig(config);
     this.options.storage.scheduleReconcileConfiguredVolumes();
-    await ensureNearbytesMarkers(config.sources);
+    await this.rootHost.ensureMarkers(config.sources);
   }
 
   private async ensureDefaultManagedShare(
@@ -3198,9 +3217,9 @@ export class ManagedShareService {
         'owner'
       )
     );
-    const inspection = await inspectNearbytesRoot(localPath);
+    const inspection = await this.rootHost.inspectRoot(localPath);
     await ensureMirrorFolder(localPath, this.fileHost);
-    await normalizeNearbytesRoot(localPath);
+    await this.rootHost.normalizeRoot(localPath);
 
     const shareId = createId('share', 'mega', state.managedShares.length + 1);
     const recoveredShare: ManagedShare = {
@@ -3261,7 +3280,7 @@ export class ManagedShareService {
     const currentLocalPath = path.resolve(share.localPath);
 
     if (normalizeComparablePath(currentLocalPath) !== normalizeComparablePath(expectedLocalPath)) {
-      await relocateMegaOwnerBaseShareRoot(currentLocalPath, expectedLocalPath, providerRoot, this.fileHost);
+      await relocateMegaOwnerBaseShareRoot(currentLocalPath, expectedLocalPath, providerRoot, this.fileHost, this.rootHost);
       const { config: nextConfig, sourceId } = ensureManagedShareSource(
         cloneConfig(this.options.storage.getRootsConfig()),
         {
@@ -3294,7 +3313,7 @@ export class ManagedShareService {
       }
     }
 
-    await normalizeMegaOwnerBaseShareRoot(expectedLocalPath, providerRoot, this.fileHost);
+    await normalizeMegaOwnerBaseShareRoot(expectedLocalPath, providerRoot, this.fileHost, this.rootHost);
     return stateSnapshot;
   }
 
@@ -3395,7 +3414,7 @@ export class ManagedShareService {
     );
     const currentLocalPath = path.resolve(share.localPath);
     if (normalizeComparablePath(currentLocalPath) === normalizeComparablePath(expectedLocalPath)) {
-      await normalizeMegaRecipientShareRoot(expectedLocalPath, providerRoot, this.fileHost);
+      await normalizeMegaRecipientShareRoot(expectedLocalPath, providerRoot, this.fileHost, this.rootHost);
       return stateSnapshot;
     }
 
@@ -3403,7 +3422,7 @@ export class ManagedShareService {
       return stateSnapshot;
     }
 
-    await relocateMegaRecipientShareRoot(currentLocalPath, expectedLocalPath, providerRoot, this.fileHost);
+    await relocateMegaRecipientShareRoot(currentLocalPath, expectedLocalPath, providerRoot, this.fileHost, this.rootHost);
 
     const nextShare: ManagedShare = {
       ...share,
@@ -3832,10 +3851,11 @@ async function relocateMegaOwnerBaseShareRoot(
   sourceRoot: string,
   canonicalRoot: string,
   providerRoot: string,
-  fileHost: ManagedShareFileHost
+  fileHost: ManagedShareFileHost,
+  rootHost: ManagedShareRootHost
 ): Promise<void> {
   await ensureMirrorFolder(canonicalRoot, fileHost);
-  await normalizeNearbytesRoot(canonicalRoot);
+  await rootHost.normalizeRoot(canonicalRoot);
   const entries = await readDirectoryEntries(sourceRoot, fileHost);
   for (const entry of entries) {
     if (entry.name === path.basename(canonicalRoot)) {
@@ -3853,10 +3873,11 @@ async function relocateMegaOwnerBaseShareRoot(
 async function normalizeMegaOwnerBaseShareRoot(
   canonicalRoot: string,
   providerRoot: string,
-  fileHost: ManagedShareFileHost
+  fileHost: ManagedShareFileHost,
+  rootHost: ManagedShareRootHost
 ): Promise<void> {
   await ensureMirrorFolder(canonicalRoot, fileHost);
-  await normalizeNearbytesRoot(canonicalRoot);
+  await rootHost.normalizeRoot(canonicalRoot);
   const entries = await readDirectoryEntries(canonicalRoot, fileHost);
   for (const entry of entries) {
     if (isMegaAllowedCanonicalEntry(entry.name, entry.isDirectory())) {
@@ -3864,7 +3885,7 @@ async function normalizeMegaOwnerBaseShareRoot(
     }
     const entryPath = path.join(canonicalRoot, entry.name);
     if (entry.isDirectory() && isNestedMegaShareRootName(entry.name)) {
-      await drainNestedMegaShareRoot(entryPath, canonicalRoot, providerRoot, fileHost);
+      await drainNestedMegaShareRoot(entryPath, canonicalRoot, providerRoot, fileHost, rootHost);
       continue;
     }
     await moveEntryToMegaDebris(entryPath, providerRoot, `${path.basename(canonicalRoot)} ${entry.name}`, fileHost);
@@ -3875,14 +3896,15 @@ async function relocateMegaRecipientShareRoot(
   sourceRoot: string,
   canonicalRoot: string,
   providerRoot: string,
-  fileHost: ManagedShareFileHost
+  fileHost: ManagedShareFileHost,
+  rootHost: ManagedShareRootHost
 ): Promise<void> {
   if (normalizeComparablePath(sourceRoot) === normalizeComparablePath(canonicalRoot)) {
-    await normalizeMegaRecipientShareRoot(canonicalRoot, providerRoot, fileHost);
+    await normalizeMegaRecipientShareRoot(canonicalRoot, providerRoot, fileHost, rootHost);
     return;
   }
   await ensureMirrorFolder(canonicalRoot, fileHost);
-  await normalizeNearbytesRoot(canonicalRoot);
+  await rootHost.normalizeRoot(canonicalRoot);
   const entries = await readDirectoryEntries(sourceRoot, fileHost);
   for (const entry of entries) {
     const sourcePath = path.join(sourceRoot, entry.name);
@@ -3891,22 +3913,23 @@ async function relocateMegaRecipientShareRoot(
       continue;
     }
     if (entry.isDirectory() && isNestedMegaShareRootName(entry.name)) {
-      await drainNestedMegaShareRoot(sourcePath, canonicalRoot, providerRoot, fileHost);
+      await drainNestedMegaShareRoot(sourcePath, canonicalRoot, providerRoot, fileHost, rootHost);
       continue;
     }
     await moveEntryToMegaDebris(sourcePath, providerRoot, `${path.basename(sourceRoot)} ${entry.name}`, fileHost);
   }
   await fileHost.removePath(sourceRoot, { recursive: true, force: true });
-  await normalizeMegaRecipientShareRoot(canonicalRoot, providerRoot, fileHost);
+  await normalizeMegaRecipientShareRoot(canonicalRoot, providerRoot, fileHost, rootHost);
 }
 
 async function normalizeMegaRecipientShareRoot(
   canonicalRoot: string,
   providerRoot: string,
-  fileHost: ManagedShareFileHost
+  fileHost: ManagedShareFileHost,
+  rootHost: ManagedShareRootHost
 ): Promise<void> {
   await ensureMirrorFolder(canonicalRoot, fileHost);
-  await normalizeNearbytesRoot(canonicalRoot);
+  await rootHost.normalizeRoot(canonicalRoot);
   const entries = await readDirectoryEntries(canonicalRoot, fileHost);
   for (const entry of entries) {
     if (isMegaAllowedCanonicalEntry(entry.name, entry.isDirectory())) {
@@ -3914,7 +3937,7 @@ async function normalizeMegaRecipientShareRoot(
     }
     const entryPath = path.join(canonicalRoot, entry.name);
     if (entry.isDirectory() && isNestedMegaShareRootName(entry.name)) {
-      await drainNestedMegaShareRoot(entryPath, canonicalRoot, providerRoot, fileHost);
+      await drainNestedMegaShareRoot(entryPath, canonicalRoot, providerRoot, fileHost, rootHost);
       continue;
     }
     await moveEntryToMegaDebris(entryPath, providerRoot, `${path.basename(canonicalRoot)} ${entry.name}`, fileHost);
@@ -3925,8 +3948,10 @@ async function drainNestedMegaShareRoot(
   nestedRoot: string,
   canonicalRoot: string,
   providerRoot: string,
-  fileHost: ManagedShareFileHost
+  fileHost: ManagedShareFileHost,
+  rootHost: ManagedShareRootHost
 ): Promise<void> {
+  await rootHost.normalizeRoot(canonicalRoot);
   const nestedBlocks = path.join(nestedRoot, 'blocks');
   const nestedChannels = path.join(nestedRoot, 'channels');
   if (await isDirectoryPath(nestedBlocks, fileHost)) {

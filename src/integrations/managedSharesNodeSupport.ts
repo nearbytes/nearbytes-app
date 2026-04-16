@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import { isProviderEnabled } from '../config/appConfig.js';
 import { saveRootsConfig, type RootsConfig } from '../config/roots.js';
+import { ensureNearbytesMarkers, inspectNearbytesRoot, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
 import {
   loadIntegrationState,
   resolveIntegrationStatePath,
@@ -11,6 +12,7 @@ import type {
   ManagedShareDirectoryEntry,
   ManagedShareFileHost,
   ManagedSharePathStats,
+  ManagedShareRootHost,
   ManagedShareRootsConfigStore,
   ManagedShareStateStore,
 } from './managedShares.js';
@@ -85,6 +87,7 @@ export function createManagedShareNodeSupport(options: ManagedShareNodeSupportOp
   readonly stateStore: ManagedShareStateStore;
   readonly rootsConfigStore: ManagedShareRootsConfigStore;
   readonly fileHost: ManagedShareFileHost;
+  readonly rootHost: ManagedShareRootHost;
 } {
   const integrationStatePath = resolveIntegrationStatePath(options.integrationStatePath);
   return {
@@ -93,5 +96,10 @@ export function createManagedShareNodeSupport(options: ManagedShareNodeSupportOp
     stateStore: createManagedShareNodeStateStore(integrationStatePath),
     rootsConfigStore: createManagedShareNodeRootsConfigStore(options.rootsConfigPath),
     fileHost: managedShareNodeFileHost,
+    rootHost: {
+      ensureMarkers: ensureNearbytesMarkers,
+      inspectRoot: inspectNearbytesRoot,
+      normalizeRoot: normalizeNearbytesRoot,
+    },
   };
 }
