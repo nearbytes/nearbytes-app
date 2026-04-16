@@ -12,6 +12,7 @@ import {
 import {
   readEmbeddedPhoneRuntimeMetricsForTests,
   resetEmbeddedPhoneRuntimeMetricsForTests,
+  seedEmbeddedPhoneIntegrationStateForTests,
   seedEmbeddedPhoneRuntimeHeadForTests,
   seedEmbeddedPhonePendingUploadCommitForTests,
   embeddedPhoneUpdateLanServiceState,
@@ -591,14 +592,71 @@ describe('phoneHost', () => {
   });
 
   it('routes provider and managed-share surfaces through the embedded phone host without falling back to desktop requests', async () => {
+    await seedEmbeddedPhoneIntegrationStateForTests({
+      version: 1,
+      preferredProviders: ['mega'],
+      accounts: [
+        {
+          id: 'acct-mega-phone',
+          provider: 'mega',
+          label: 'MEGA',
+          email: 'phone@example.com',
+          state: 'connected',
+          detail: 'Connected on phone.',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      managedShares: [
+        {
+          id: 'share-mega-phone',
+          provider: 'mega',
+          accountId: 'acct-mega-phone',
+          label: 'Phone Share',
+          role: 'owner',
+          localPath: 'local/mega/phone-share',
+          sourceId: 'src-embedded-phone',
+          syncMode: 'mirror',
+          remoteDescriptor: {
+            remotePath: '/nearbytes',
+            shareName: 'nearbytes',
+          },
+          capabilities: ['mirror', 'read', 'write'],
+          invitationEmails: [],
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      maintenance: undefined,
+    });
+
     const host = await getPhoneHost();
 
-    await expect(host.integrations.listProviderAccounts()).resolves.toEqual({
-      accounts: [],
-      providers: [],
-      preferredProviders: [],
+    await host.objects.requestJson('/config/app/providers/mega', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: true }),
+      headers: new Headers({ 'content-type': 'application/json' }),
     });
-    await expect(host.integrations.listManagedShares()).resolves.toEqual({ shares: [] });
+
+    await expect(host.integrations.listProviderAccounts()).resolves.toMatchObject({
+      accounts: [
+        {
+          id: 'acct-mega-phone',
+          provider: 'mega',
+        },
+      ],
+      preferredProviders: ['mega'],
+    });
+    await expect(host.integrations.listManagedShares()).resolves.toMatchObject({
+      shares: [
+        {
+          share: {
+            id: 'share-mega-phone',
+            provider: 'mega',
+          },
+        },
+      ],
+    });
     await expect(host.integrations.listIncomingManagedShares()).resolves.toEqual({ shares: [] });
     await expect(host.integrations.listIncomingProviderContactInvites()).resolves.toEqual({ invites: [] });
     await expect(host.integrations.connectProviderAccount({ provider: 'mega' })).rejects.toMatchObject({

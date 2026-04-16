@@ -29,8 +29,12 @@ import {
   embeddedPhoneGetTimeline,
   embeddedPhoneImportRecipientReferences,
   embeddedPhoneImportSourceReferences,
+  embeddedPhoneListIncomingManagedShares,
+  embeddedPhoneListIncomingProviderContactInvites,
   embeddedPhoneListChat,
   embeddedPhoneListFiles,
+  embeddedPhoneListManagedShares,
+  embeddedPhoneListProviderAccounts,
   embeddedPhoneOpenVolume,
   embeddedPhonePublishIdentity,
   embeddedPhoneRenameFile,
@@ -101,12 +105,8 @@ function createUnsupportedPhoneIntegrationError(scope: string): HostRequestError
 
 function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['integrations'] {
   return {
-    async listProviderAccounts(): Promise<ProviderAccountsResponse> {
-      return {
-        accounts: [],
-        providers: [],
-        preferredProviders: [],
-      };
+    async listProviderAccounts(options?: { signal?: AbortSignal; fast?: boolean }): Promise<ProviderAccountsResponse> {
+      return embeddedPhoneListProviderAccounts({ fast: options?.fast });
     },
     async connectProviderAccount(): Promise<ConnectProviderAccountResponse> {
       throw createUnsupportedPhoneIntegrationError('Provider sign-in is not available on this device yet.');
@@ -123,14 +123,14 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
     async reconcileProviderManagedShares(): Promise<unknown> {
       throw createUnsupportedPhoneIntegrationError('Provider reconciliation is not available on this device yet.');
     },
-    async listManagedShares(): Promise<ManagedSharesResponse> {
-      return { shares: [] };
+    async listManagedShares(options?: { signal?: AbortSignal; fast?: boolean }): Promise<ManagedSharesResponse> {
+      return embeddedPhoneListManagedShares({ fast: options?.fast });
     },
-    async listIncomingManagedShares(): Promise<IncomingManagedSharesResponse> {
-      return { shares: [] };
+    async listIncomingManagedShares(options?: { signal?: AbortSignal; fast?: boolean }): Promise<IncomingManagedSharesResponse> {
+      return embeddedPhoneListIncomingManagedShares({ fast: options?.fast });
     },
-    async listIncomingProviderContactInvites(): Promise<IncomingProviderContactInvitesResponse> {
-      return { invites: [] };
+    async listIncomingProviderContactInvites(options?: { signal?: AbortSignal; fast?: boolean }): Promise<IncomingProviderContactInvitesResponse> {
+      return embeddedPhoneListIncomingProviderContactInvites({ fast: options?.fast });
     },
     async createManagedShare(): Promise<ManagedShareMutationResponse> {
       throw createUnsupportedPhoneIntegrationError('Managed-share creation is not available on this device yet.');
