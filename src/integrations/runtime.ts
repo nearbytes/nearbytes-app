@@ -5,6 +5,7 @@ import type {
   RuntimeVolumeEventProducer as IntegrationVolumeEventProducer,
   RuntimeVolumeEventPublisher as IntegrationVolumeEventBridge,
 } from '../runtime/volumeEvents.js';
+import { defaultRuntimeScheduler, type RuntimeScheduler } from '../runtime/scheduler.js';
 
 export interface ProviderSecretStore {
   get<T>(key: string): Promise<T | null>;
@@ -69,6 +70,8 @@ export interface IntegrationRuntime {
   readonly secretStore: ProviderSecretStore;
   readonly commandExecutor: CommandExecutor;
   readonly openExternalUrl?: (url: string) => Promise<void>;
+  readonly createAbortController: () => AbortController;
+  readonly scheduler: RuntimeScheduler;
   readonly now: () => number;
   readonly logger: IntegrationLogger;
   readonly volumeEvents?: IntegrationVolumeEventBridge;
@@ -81,6 +84,8 @@ export interface IntegrationRuntimeOptions {
   readonly secretStore: ProviderSecretStore;
   readonly commandExecutor?: CommandExecutor;
   readonly openExternalUrl?: (url: string) => Promise<void>;
+  readonly createAbortController?: () => AbortController;
+  readonly scheduler?: RuntimeScheduler;
   readonly now?: () => number;
   readonly logger?: IntegrationLogger;
   readonly volumeEvents?: IntegrationVolumeEventBridge;
@@ -104,6 +109,8 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
     secretStore: options.secretStore,
     commandExecutor: options.commandExecutor ?? new DefaultCommandExecutor(),
     openExternalUrl: options.openExternalUrl,
+    createAbortController: options.createAbortController ?? (() => new AbortController()),
+    scheduler: options.scheduler ?? defaultRuntimeScheduler,
     now: options.now ?? Date.now,
     logger: options.logger ?? console,
     volumeEvents: options.volumeEvents,

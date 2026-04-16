@@ -67,6 +67,12 @@ import type {
   TransportState,
 } from './types.js';
 import type { IntegrationRuntime } from './runtime.js';
+import {
+  defaultRuntimeScheduler,
+  waitForScheduledDelay,
+  type RuntimeScheduler,
+  type RuntimeTimerHandle,
+} from '../runtime/scheduler.js';
 
 const MEGA_SECRET_PREFIX = 'provider-account:mega:';
 const MEGA_MANIFEST_PREFIX = 'provider-share:mega:manifest:';
@@ -300,7 +306,7 @@ export class MegaTransportAdapter {
   private readonly apiClient: MegaApiClient;
   private readonly fetchImpl: typeof fetch;
   private readonly syncStates = new Map<string, TransportState>();
-  private readonly syncTimers = new Map<string, NodeJS.Timeout>();
+  private readonly syncTimers = new Map<string, RuntimeTimerHandle>();
   private readonly syncControllers = new Map<string, AbortController>();
   private readonly syncTasks = new Map<string, Promise<void>>();
   private readonly refreshWorker = new ProviderRefreshWorker();
@@ -310,7 +316,7 @@ export class MegaTransportAdapter {
   private readonly collaboratorCache = new Map<string, { expiresAt: number; collaborators: ManagedShareCollaborator[] }>();
   private readonly localWatchers = new Map<string, FSWatcher>();
   private readonly scListenerControllers = new Map<string, AbortController>();
-  private readonly pendingSyncRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pendingSyncRetryTimers = new Map<string, RuntimeTimerHandle>();
   private readonly shareScsn = new Map<string, string>();
   private readonly shareKnownHandles = new Map<string, string[]>();
   private readonly shareManifestCache = new Map<string, MegaMirrorManifest>();
@@ -344,11 +350,11 @@ export class MegaTransportAdapter {
 
   async dispose(): Promise<void> {
     for (const timer of this.syncTimers.values()) {
-      clearInterval(timer);
+      timer.cancel();
     }
     this.syncTimers.clear();
     for (const timer of this.pendingSyncRetryTimers.values()) {
-      clearTimeout(timer);
+      timer.cancel();
     }
     this.pendingSyncRetryTimers.clear();
     for (const watcher of this.localWatchers.values()) {
@@ -1450,7 +1456,7 @@ export class MegaTransportAdapter {
   async detachManagedShare(share: ManagedShare, _account: ProviderAccount | null): Promise<void> {
     const timer = this.syncTimers.get(share.id);
     if (timer) {
-      clearInterval(timer);
+      timer.cancel();
       this.syncTimers.delete(share.id);
     }
     const watcher = this.localWatchers.get(share.id);
@@ -1465,7 +1471,7 @@ export class MegaTransportAdapter {
     }
     const pendingRetryTimer = this.pendingSyncRetryTimers.get(share.id);
     if (pendingRetryTimer) {
-      clearTimeout(pendingRetryTimer);
+      pendingRetryTimer.cancel();
       this.pendingSyncRetryTimers.delete(share.id);
     }
     const controller = this.syncControllers.get(share.id);
@@ -1490,7 +1496,11 @@ export class MegaTransportAdapter {
       return existing;
     }
 
-    const syncAbort = createMegaSyncAbortController(this.runtime.mega.syncTimeoutMs);
+    const syncAbort = createMegaSyncAbortController(
+      this.runtime.createAbortController,
+      this.runtime.scheduler,
+      this.runtime.mega.syncTimeoutMs
+    );
     const { controller } = syncAbort;
     this.syncControllers.set(share.id, controller);
 
@@ -1760,7 +1770,7 @@ export class MegaTransportAdapter {
       shareId: share.id,
       intervalMs: this.runtime.mega.syncIntervalMs,
     });
-    const timer = setInterval(() => {
+    const timer = this.runtime.scheduler.setInterval(() => {
       if (isDevLogsEnabled() && this.shouldRefreshDevInventory(account, share)) {
         void this.logDevShareInventoryIfChanged(account, 'change');
       }
@@ -1786,7 +1796,7 @@ export class MegaTransportAdapter {
       }
     );
 
-    let debounceTimer: NodeJS.Timeout | null = null;
+    let debounceTimer: RuntimeTimerHandle | null = null;
     const pendingRelativePaths = new Set<string>();
     let requiresFullSync = false;
     watcher.on('all', (eventName, changedPath) => {
@@ -1804,9 +1814,9 @@ export class MegaTransportAdapter {
         requiresFullSync = true;
       }
       if (debounceTimer) {
-        clearTimeout(debounceTimer);
+        debounceTimer.cancel();
       }
-      debounceTimer = setTimeout(async () => {
+      debounceTimer = this.runtime.scheduler.setTimeout(async () => {
         debounceTimer = null;
         const relativePaths = [...pendingRelativePaths];
         pendingRelativePaths.clear();
@@ -1851,7 +1861,7 @@ export class MegaTransportAdapter {
     if (this.scListenerControllers.has(share.id)) {
       return;
     }
-    const controller = new AbortController();
+    const controller = this.runtime.createAbortController();
     this.scListenerControllers.set(share.id, controller);
     void this.runScChannelLoop(share, account, controller.signal);
     this.runtime.logger.log('SC channel listener started.', {
@@ -1897,12 +1907,12 @@ export class MegaTransportAdapter {
     while (!signal.aborted) {
       try {
         if (backoffMs > 0) {
-          await waitForMegaRetry(backoffMs, signal);
+          await waitForMegaRetry(this.runtime.scheduler, backoffMs, signal);
         }
 
         const scsn = this.shareScsn.get(share.id);
         if (!scsn) {
-          await waitForMegaRetry(5_000, signal);
+          await waitForMegaRetry(this.runtime.scheduler, 5_000, signal);
           continue;
         }
 
@@ -1981,15 +1991,15 @@ export class MegaTransportAdapter {
 
         if (actionBatch.waitUrl) {
           try {
-            const waitController = new AbortController();
+            const waitController = this.runtime.createAbortController();
             const onParentAbort = () => waitController.abort();
             signal.addEventListener('abort', onParentAbort, { once: true });
-            const waitTimeout = setTimeout(() => waitController.abort(), MEGA_SC_LISTEN_TIMEOUT_MS);
+            const waitTimeout = this.runtime.scheduler.setTimeout(() => waitController.abort(), MEGA_SC_LISTEN_TIMEOUT_MS);
             waitTimeout.unref?.();
             try {
               await this.fetchImpl(actionBatch.waitUrl, { method: 'GET', signal: waitController.signal });
             } finally {
-              clearTimeout(waitTimeout);
+              waitTimeout.cancel();
               signal.removeEventListener('abort', onParentAbort);
             }
           } catch {
@@ -2065,12 +2075,12 @@ export class MegaTransportAdapter {
   private schedulePendingSyncRetry(share: ManagedShare, account: ProviderAccount, delayMs = 0): void {
     const existingTimer = this.pendingSyncRetryTimers.get(share.id);
     if (existingTimer) {
-      clearTimeout(existingTimer);
+      existingTimer.cancel();
     }
 
     const cooldownDelayMs = this.getSyncCooldownRemainingMs(share.id);
     const waitMs = Math.max(delayMs, cooldownDelayMs, 100);
-    const timer = setTimeout(() => {
+    const timer = this.runtime.scheduler.setTimeout(() => {
       if (this.pendingSyncRetryTimers.get(share.id) !== timer) {
         return;
       }
@@ -6191,29 +6201,37 @@ async function withMegaApiRetry<T>(operation: () => Promise<T>, signal?: AbortSi
   }
 }
 
-async function waitForMegaRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) {
+async function waitForMegaRetry(
+  schedulerOrDelayMs: RuntimeScheduler | number,
+  delayMsOrSignal?: number | AbortSignal,
+  signal?: AbortSignal
+): Promise<void> {
+  const scheduler =
+    typeof schedulerOrDelayMs === 'number'
+      ? defaultRuntimeScheduler
+      : schedulerOrDelayMs;
+  const delayMs =
+    typeof schedulerOrDelayMs === 'number'
+      ? schedulerOrDelayMs
+      : typeof delayMsOrSignal === 'number'
+        ? delayMsOrSignal
+        : 0;
+  const effectiveSignal =
+    typeof schedulerOrDelayMs === 'number'
+      ? (delayMsOrSignal as AbortSignal | undefined)
+      : signal;
+
+  if (effectiveSignal?.aborted) {
     throw createMegaAbortError();
   }
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, delayMs);
-    timer.unref?.();
-
-    const onAbort = () => {
-      cleanup();
-      reject(createMegaAbortError());
-    };
-
-    const cleanup = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-    };
-
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  try {
+    await waitForScheduledDelay(scheduler, delayMs, effectiveSignal);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw createMegaAbortError();
+    }
+    throw error;
+  }
 }
 
 function createMegaAbortError(): Error {
@@ -6226,18 +6244,22 @@ function isMegaMissingRequestedRootError(error: unknown): boolean {
   return error instanceof Error && error.message === 'MEGA tree did not include the requested root node.';
 }
 
-function createMegaSyncAbortController(timeoutMs: number): {
+function createMegaSyncAbortController(
+  createAbortController: () => AbortController,
+  scheduler: RuntimeScheduler,
+  timeoutMs: number
+): {
   controller: AbortController;
   dispose: () => void;
 } {
-  const controller = new AbortController();
-  let timer: NodeJS.Timeout | null = null;
+  const controller = createAbortController();
+  let timer: RuntimeTimerHandle | null = null;
 
   const scheduleAbort = () => {
     if (timer) {
-      clearTimeout(timer);
+      timer.cancel();
     }
-    timer = setTimeout(() => {
+    timer = scheduler.setTimeout(() => {
       timer = null;
       controller.abort();
     }, timeoutMs);
@@ -6251,7 +6273,7 @@ function createMegaSyncAbortController(timeoutMs: number): {
     controller,
     dispose: () => {
       if (timer) {
-        clearTimeout(timer);
+        timer.cancel();
         timer = null;
       }
       megaSyncActivityTouchers.delete(controller.signal);
