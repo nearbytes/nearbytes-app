@@ -1,10 +1,10 @@
 import path from 'path';
 import {
-  getExplicitVolumePolicy,
   type RootProvider,
   type RootsConfig,
   type SourceConfigEntry,
   type VolumeDestinationConfig,
+  type VolumePolicyEntry,
 } from '../config/roots.js';
 import { ensureNearbytesMarkers, inspectNearbytesRoot, normalizeNearbytesRoot } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
@@ -4241,7 +4241,7 @@ function nextManagedSourceId(config: RootsConfig, provider: string): string {
 
 function ensureVolumeAttachment(config: RootsConfig, volumeId: string, sourceId: string): RootsConfig {
   const normalizedVolumeId = volumeId.trim().toLowerCase();
-  const existingPolicy = getExplicitVolumePolicy(config, normalizedVolumeId);
+  const existingPolicy = getManagedShareExplicitVolumePolicy(config, normalizedVolumeId);
   if (existingPolicy?.destinations.some((destination) => destination.sourceId === sourceId)) {
     return config;
   }
@@ -4281,6 +4281,11 @@ function ensureVolumeAttachment(config: RootsConfig, volumeId: string, sourceId:
         : volume
     ),
   };
+}
+
+function getManagedShareExplicitVolumePolicy(config: RootsConfig, volumeId: string): VolumePolicyEntry | undefined {
+  const normalizedVolumeId = volumeId.trim().toLowerCase();
+  return config.volumes.find((entry) => entry.volumeId === normalizedVolumeId);
 }
 
 function ensureDefaultVolumeDestination(config: RootsConfig, sourceId: string): RootsConfig {
