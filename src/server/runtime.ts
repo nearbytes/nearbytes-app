@@ -9,6 +9,8 @@ import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../c
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { ManagedShareService } from '../integrations/managedShares.js';
 import type { ManagedShareServiceOptions } from '../integrations/managedShares.js';
+import { createIntegrationRuntime } from '../integrations/runtime.js';
+import { JsonFileSecretStore } from '../integrations/secretStore.js';
 import { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { StorageError } from '../types/errors.js';
@@ -107,12 +109,20 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
   const managedShareService = new ManagedShareService({
     storage,
     rootsConfigPath: loaded.configPath,
+    defaultLocalSourcePath: defaultStorageDir,
     readMaintenanceMode: 'background',
     ...options.integrationOptions,
-    runtime: {
-      ...options.integrationOptions?.runtime,
-      volumeEvents: options.integrationOptions?.runtime?.volumeEvents ?? runtimeServices.volumeEvents,
-    },
+    integrationRuntime:
+      options.integrationOptions?.integrationRuntime ??
+      createIntegrationRuntime({
+        ...options.integrationOptions?.runtime,
+        secretStore:
+          options.integrationOptions?.runtime?.secretStore ??
+          new JsonFileSecretStore({
+            filePath: path.join(path.dirname(loaded.configPath), 'integration-secrets.json'),
+          }),
+        volumeEvents: options.integrationOptions?.runtime?.volumeEvents ?? runtimeServices.volumeEvents,
+      }),
   });
   const localNetworkSyncService = isProviderEnabled('local-network')
     ? new LocalNetworkSyncService(storage, {

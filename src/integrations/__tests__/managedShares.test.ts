@@ -5,7 +5,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RootsConfig } from '../../config/roots.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import type { ManagedShareMirrorEntry, TransportAdapter } from '../adapters.js';
-import { ManagedShareService } from '../managedShares.js';
+import {
+  ManagedShareService as BaseManagedShareService,
+  type ManagedShareServiceOptions,
+} from '../managedShares.js';
+import {
+  createIntegrationRuntime,
+  type IntegrationRuntime,
+  type IntegrationRuntimeOptions,
+  type ProviderSecretStore,
+} from '../runtime.js';
 import { loadIntegrationState, saveIntegrationState } from '../store.js';
 import type {
   ConnectProviderAccountInput,
@@ -17,6 +26,45 @@ import type {
   TransportEndpoint,
   TransportState,
 } from '../types.js';
+
+function createMemorySecretStore(): ProviderSecretStore {
+  const entries = new Map<string, unknown>();
+  return {
+    async get<T>(key: string): Promise<T | null> {
+      return (entries.get(key) as T | undefined) ?? null;
+    },
+    async set<T>(key: string, value: T): Promise<void> {
+      entries.set(key, value);
+    },
+    async delete(key: string): Promise<void> {
+      entries.delete(key);
+    },
+  };
+}
+
+function createTestIntegrationRuntime(overrides?: Partial<IntegrationRuntimeOptions>): IntegrationRuntime {
+  return createIntegrationRuntime({
+    secretStore: overrides?.secretStore ?? createMemorySecretStore(),
+    ...overrides,
+  });
+}
+
+type ManagedShareTestServiceOptions = Omit<ManagedShareServiceOptions, 'integrationRuntime' | 'defaultLocalSourcePath'> & {
+  readonly integrationRuntime?: IntegrationRuntime;
+  readonly runtime?: Partial<IntegrationRuntimeOptions>;
+  readonly defaultLocalSourcePath?: string;
+};
+
+class ManagedShareService extends BaseManagedShareService {
+  constructor(options: ManagedShareTestServiceOptions) {
+    super({
+      ...options,
+      integrationRuntime: options.integrationRuntime ?? createTestIntegrationRuntime(options.runtime),
+      defaultLocalSourcePath:
+        options.defaultLocalSourcePath ?? path.join(path.dirname(options.rootsConfigPath), 'local'),
+    });
+  }
+}
 
 class FakeTransportAdapter implements TransportAdapter {
   readonly supportsAccountConnection = true;

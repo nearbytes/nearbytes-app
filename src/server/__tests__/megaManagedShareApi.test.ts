@@ -409,6 +409,7 @@ describe('MEGA managed share API', () => {
     const managedShareService = new ManagedShareService({
       storage,
       rootsConfigPath,
+      integrationRuntime: runtime,
       adapters: [new MegaTransportAdapter(runtime, { fetchImpl })],
     });
     services.push(managedShareService);
@@ -619,6 +620,7 @@ describe('MEGA managed share API', () => {
     const managedShareService = new ManagedShareService({
       storage,
       rootsConfigPath,
+      integrationRuntime: runtime,
       adapters: [new MegaTransportAdapter(runtime, { fetchImpl })],
     });
     services.push(managedShareService);
@@ -811,6 +813,7 @@ describe('MEGA managed share API', () => {
     const managedShareService = new ManagedShareService({
       storage,
       rootsConfigPath,
+      integrationRuntime: runtime,
       adapters: [new MegaTransportAdapter(runtime, { fetchImpl })],
     });
     services.push(managedShareService);

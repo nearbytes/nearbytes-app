@@ -17,7 +17,6 @@ import type {
   RootConsolidationResult,
   SourceConflictResolutionResult,
 } from '../storage/multiRoot.js';
-import { getDefaultStorageDir, getDefaultStorageHomeDir, getProviderStorageFolderName, resolveStorageHomeDir } from '../storagePath.js';
 import type { StorageWriteEvent, StorageWriteListener } from '../types/storage.js';
 import {
   createDefaultTransportAdapters,
@@ -29,8 +28,7 @@ import {
   type TransportAdapter,
 } from './adapters.js';
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
-import { JsonFileSecretStore } from './secretStore.js';
-import { createIntegrationRuntime, type IntegrationRuntime, type IntegrationRuntimeOptions } from './runtime.js';
+import type { IntegrationRuntime, IntegrationRuntimeOptions } from './runtime.js';
 import {
   loadIntegrationState,
   resolveIntegrationStatePath,
@@ -151,6 +149,7 @@ export interface ManagedShareServiceOptions {
   readonly stateStore?: ManagedShareStateStore;
   readonly rootsConfigStore?: ManagedShareRootsConfigStore;
   readonly fileHost?: ManagedShareFileHost;
+  readonly defaultLocalSourcePath?: string;
   readonly mirrorRoot?: string;
   readonly adapters?: readonly TransportAdapter[];
   readonly runtime?: Partial<IntegrationRuntimeOptions>;
@@ -241,16 +240,10 @@ export class ManagedShareService {
   private disposed = false;
 
   constructor(private readonly options: ManagedShareServiceOptions) {
-    this.runtime =
-      options.integrationRuntime ??
-      createIntegrationRuntime({
-        ...options.runtime,
-        secretStore:
-          options.runtime?.secretStore ??
-          new JsonFileSecretStore({
-            filePath: path.join(path.dirname(options.rootsConfigPath), 'integration-secrets.json'),
-          }),
-      });
+    if (!options.integrationRuntime) {
+      throw new Error('ManagedShareService requires an integrationRuntime.');
+    }
+    this.runtime = options.integrationRuntime;
     this.adapters = new Map(
       (options.adapters ?? createDefaultTransportAdapters(this.runtime)).map((adapter) => [adapter.provider, adapter])
     );
@@ -264,7 +257,9 @@ export class ManagedShareService {
       options.rootsConfigStore ??
       createManagedShareFileRootsConfigStore(options.rootsConfigPath);
     this.fileHost = options.fileHost ?? defaultManagedShareFileHost;
-    this.mirrorRoot = path.resolve(options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig()));
+    this.mirrorRoot = path.resolve(
+      options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig(), options.defaultLocalSourcePath)
+    );
     this.readMaintenanceMode = options.readMaintenanceMode ?? 'inline';
     this.stopStorageWriteSubscription = options.storage.onWrite((event) => {
       void this.handleStorageWrite(event).catch((error) => {
@@ -1913,7 +1908,7 @@ export class ManagedShareService {
       return existing;
     }
 
-    const fallbackPath = path.resolve(getDefaultStorageDir());
+    const fallbackPath = path.resolve(this.options.defaultLocalSourcePath ?? this.mirrorRoot);
     const candidate =
       config.sources.find((source) => normalizeComparablePath(source.path) === normalizeComparablePath(fallbackPath)) ??
       null;
@@ -3796,7 +3791,7 @@ function resolveProviderManagedShareRoot(
   remoteDescriptor?: Record<string, unknown>,
   role: ManagedShare['role'] = 'owner'
 ): string {
-  const providerRoot = path.join(managedShareBaseRoot, getProviderStorageFolderName(provider));
+  const providerRoot = path.join(managedShareBaseRoot, getManagedShareProviderStorageFolderName(provider));
   if (provider === 'mega') {
     if (role === 'recipient') {
       const ownerEmail = typeof remoteDescriptor?.ownerEmail === 'string' ? remoteDescriptor.ownerEmail.trim() : '';
@@ -3807,6 +3802,19 @@ function resolveProviderManagedShareRoot(
     return path.join(providerRoot, createManagedShareAccountFolderName(account));
   }
   return providerRoot;
+}
+
+function getManagedShareProviderStorageFolderName(provider: string): string {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === 'github') {
+    return 'git';
+  }
+  return normalized || 'shared';
+}
+
+function resolveManagedShareStorageHomeDir(localStorageDir: string): string {
+  const resolved = path.resolve(localStorageDir);
+  return path.basename(resolved).trim().toLowerCase() === 'local' ? path.dirname(resolved) : resolved;
 }
 
 function createManagedShareAccountFolderName(account: ProviderAccount): string {
@@ -4125,7 +4133,7 @@ async function isDirectoryPath(targetPath: string, fileHost: ManagedShareFileHos
   return Boolean(stats?.isDirectory());
 }
 
-function resolveManagedShareBaseRoot(config: RootsConfig): string {
+function resolveManagedShareBaseRoot(config: RootsConfig, fallbackLocalSourcePath?: string): string {
   const preferredLocalSource =
     config.sources.find(
       (source) => source.enabled && normalizeProvider(source.provider) === 'local' && !isUnsafeManagedSharePath(source.path)
@@ -4133,11 +4141,13 @@ function resolveManagedShareBaseRoot(config: RootsConfig): string {
     config.sources.find(
       (source) => normalizeProvider(source.provider) === 'local' && !isUnsafeManagedSharePath(source.path)
     );
-  const configuredStorageRoot = path.resolve(getDefaultStorageDir());
-  const fallbackBaseRoot = isUnsafeManagedSharePath(configuredStorageRoot)
-    ? getDefaultStorageHomeDir()
-    : resolveStorageHomeDir(configuredStorageRoot);
-  return preferredLocalSource ? resolveStorageHomeDir(preferredLocalSource.path) : fallbackBaseRoot;
+  if (preferredLocalSource) {
+    return resolveManagedShareStorageHomeDir(preferredLocalSource.path);
+  }
+  if (fallbackLocalSourcePath && fallbackLocalSourcePath.trim() !== '') {
+    return resolveManagedShareStorageHomeDir(fallbackLocalSourcePath);
+  }
+  throw new Error('ManagedShareService requires mirrorRoot or defaultLocalSourcePath when no local source is configured.');
 }
 
 function findPrimaryLocalSource(config: RootsConfig, excludingSourceId?: string): SourceConfigEntry | null {

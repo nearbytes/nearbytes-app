@@ -20,6 +20,8 @@ import {
   ManagedShareServiceError,
   type ManagedShareServiceOptions,
 } from '../integrations/managedShares.js';
+import { createIntegrationRuntime } from '../integrations/runtime.js';
+import { JsonFileSecretStore } from '../integrations/secretStore.js';
 import { clearLanLatencyTraces, recordLanLatencyTrace } from '../integrations/lanLatencyTrace.js';
 import type { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { isProviderEnabled } from '../config/appConfig.js';
@@ -118,12 +120,20 @@ export function createRoutes(deps: RouteDependencies): Router {
       ? new ManagedShareService({
           storage: deps.storage,
           rootsConfigPath: deps.rootsConfigPath,
+          defaultLocalSourcePath: deps.resolvedStorageDir,
           readMaintenanceMode: 'background',
           ...deps.integrationOptions,
-          runtime: {
-            ...deps.integrationOptions?.runtime,
-            volumeEvents: deps.integrationOptions?.runtime?.volumeEvents ?? volumeEventBus,
-          },
+          integrationRuntime:
+            deps.integrationOptions?.integrationRuntime ??
+            createIntegrationRuntime({
+              ...deps.integrationOptions?.runtime,
+              secretStore:
+                deps.integrationOptions?.runtime?.secretStore ??
+                new JsonFileSecretStore({
+                  filePath: join(resolve(deps.rootsConfigPath), '..', 'integration-secrets.json'),
+                }),
+              volumeEvents: deps.integrationOptions?.runtime?.volumeEvents ?? volumeEventBus,
+            }),
         })
       : null);
   const upload = multer({

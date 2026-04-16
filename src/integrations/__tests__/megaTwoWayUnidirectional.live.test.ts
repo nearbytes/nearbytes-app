@@ -263,6 +263,7 @@ async function createPeer(label: 'A' | 'B'): Promise<LivePeer> {
     storage,
     rootsConfigPath,
     integrationStatePath,
+    integrationRuntime: runtime,
     mirrorRoot: mainRoot,
     adapters: [new MegaTransportAdapter(runtime)],
     readMaintenanceMode: 'background',
