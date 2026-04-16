@@ -182,6 +182,12 @@ export async function waitForHealth(baseUrl, timeoutMs, child, logPath, headers 
 }
 
 export async function waitForDesktopSession(sessionPath, startedAt, timeoutMs, child) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('waitForDesktopSession timeoutMs must be a positive number.');
+  }
+  if (!Number.isFinite(startedAt) || startedAt <= 0) {
+    throw new Error('waitForDesktopSession startedAt must be a positive timestamp.');
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (child && child.exitCode !== null) {

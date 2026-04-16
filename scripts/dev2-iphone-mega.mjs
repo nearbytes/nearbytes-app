@@ -123,6 +123,7 @@ try {
   });
 
   console.error('[dev2-iphone-mega] starting desktop runtime');
+  const desktopStartedAt = Date.now();
   const desktopChild = startLoggedProcess({
     label: 'desktop',
     command: process.execPath,
@@ -167,7 +168,12 @@ try {
   children.push(phoneBackendChild);
 
   console.error('[dev2-iphone-mega] waiting for desktop runtime and phone backend');
-  const desktopSession = await waitForDesktopSession(desktopPaths.desktopSessionPath, startupTimeoutMs, desktopChild);
+  const desktopSession = await waitForDesktopSession(
+    desktopPaths.desktopSessionPath,
+    desktopStartedAt,
+    startupTimeoutMs,
+    desktopChild
+  );
   const desktopApiUrl = `http://127.0.0.1:${desktopSession.port}`;
   const desktopHeaders = { 'x-nearbytes-runtime-token': desktopSession.token };
   await waitForHealth(desktopApiUrl, startupTimeoutMs, desktopChild, desktopLogPath, desktopHeaders);
