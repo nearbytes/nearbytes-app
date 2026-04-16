@@ -116,10 +116,21 @@ export interface ManagedShareStorageHost {
   scheduleReconcileConfiguredVolumes(): void;
 }
 
+export interface ManagedShareStateStore {
+  load(): Promise<IntegrationStateSnapshot>;
+  save(snapshot: IntegrationStateSnapshot): Promise<void>;
+}
+
+export interface ManagedShareRootsConfigStore {
+  save(config: RootsConfig): Promise<void>;
+}
+
 export interface ManagedShareServiceOptions {
   readonly storage: ManagedShareStorageHost;
   readonly rootsConfigPath: string;
   readonly integrationStatePath?: string;
+  readonly stateStore?: ManagedShareStateStore;
+  readonly rootsConfigStore?: ManagedShareRootsConfigStore;
   readonly mirrorRoot?: string;
   readonly adapters?: readonly TransportAdapter[];
   readonly runtime?: Partial<IntegrationRuntimeOptions>;
@@ -130,11 +141,31 @@ interface IntegrationReadOptions {
   readonly fast?: boolean;
 }
 
+function createManagedShareFileStateStore(integrationStatePath: string): ManagedShareStateStore {
+  return {
+    async load(): Promise<IntegrationStateSnapshot> {
+      return loadIntegrationState(integrationStatePath);
+    },
+    async save(snapshot: IntegrationStateSnapshot): Promise<void> {
+      await saveIntegrationState(snapshot, integrationStatePath);
+    },
+  };
+}
+
+function createManagedShareFileRootsConfigStore(rootsConfigPath: string): ManagedShareRootsConfigStore {
+  return {
+    async save(config: RootsConfig): Promise<void> {
+      await saveRootsConfig(rootsConfigPath, config);
+    },
+  };
+}
+
 export class ManagedShareService {
   private readonly adapters: Map<string, TransportAdapter>;
-  private readonly integrationStatePath: string;
   private readonly mirrorRoot: string;
   private readonly runtime: IntegrationRuntime;
+  private readonly rootsConfigStore: ManagedShareRootsConfigStore;
+  private readonly stateStore: ManagedShareStateStore;
   private readonly readMaintenanceMode: 'background' | 'inline';
   private readonly syncBootstrapTasks = new Map<string, Promise<void>>();
   private readonly incomingReconciliationTasks = new Map<string, Promise<void>>();
@@ -160,9 +191,15 @@ export class ManagedShareService {
     this.adapters = new Map(
       (options.adapters ?? createDefaultTransportAdapters(this.runtime)).map((adapter) => [adapter.provider, adapter])
     );
-    this.integrationStatePath = resolveIntegrationStatePath(
+    const resolvedIntegrationStatePath = resolveIntegrationStatePath(
       options.integrationStatePath ?? path.join(path.dirname(options.rootsConfigPath), 'integrations.json')
     );
+    this.stateStore =
+      options.stateStore ??
+      createManagedShareFileStateStore(resolvedIntegrationStatePath);
+    this.rootsConfigStore =
+      options.rootsConfigStore ??
+      createManagedShareFileRootsConfigStore(options.rootsConfigPath);
     this.mirrorRoot = path.resolve(options.mirrorRoot ?? resolveManagedShareBaseRoot(options.storage.getRootsConfig()));
     this.readMaintenanceMode = options.readMaintenanceMode ?? 'inline';
     this.stopStorageWriteSubscription = options.storage.onWrite((event) => {
@@ -2919,7 +2956,7 @@ export class ManagedShareService {
   }
 
   private async loadState(): Promise<IntegrationStateSnapshot> {
-    return loadIntegrationState(this.integrationStatePath);
+    return this.stateStore.load();
   }
 
   private markCollaboratorLookupCooldown(share: ManagedShare): void {
@@ -3088,11 +3125,11 @@ export class ManagedShareService {
   }
 
   private async saveState(snapshot: IntegrationStateSnapshot): Promise<void> {
-    await saveIntegrationState(snapshot, this.integrationStatePath);
+    await this.stateStore.save(snapshot);
   }
 
   private async persistRootsConfig(config: RootsConfig): Promise<void> {
-    await saveRootsConfig(this.options.rootsConfigPath, config);
+    await this.rootsConfigStore.save(config);
     this.options.storage.updateRootsConfig(config);
     this.options.storage.scheduleReconcileConfiguredVolumes();
     await ensureNearbytesMarkers(config.sources);
