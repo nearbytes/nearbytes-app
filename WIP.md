@@ -1,35 +1,46 @@
 # WIP
 
-## Scope For This Pass
+## Current Status
 
-- Move only presentational UI shells and explicit structural transition surfaces into `ui-designer`.
-- Keep all runtime, network, backend, orchestration, crypto, parsing, bridge, and non-trivial computation in `ui/src`.
-- Explicitly staying in `ui/src` for this pass: `StoragePanel.svelte`, `EventFlowPanel.svelte`, `VolumeChat.svelte`, `JoinLinkSections.svelte`, `NearbytesLogo.svelte`, `AppBrandMark.svelte`, `VolumeIdentity.svelte`, `AudioPreview.svelte`.
+- Phone managed-share reads are now embedded and browser-backed.
+- Implemented phone read surfaces: `listProviderAccounts`, `listManagedShares`, `listIncomingManagedShares`, `listIncomingProviderContactInvites`, `getManagedShareState`.
+- `yarn dev-2` is no longer blocked by the TypeScript build errors from the MEGA live tests/runtime wrapper. It now builds, starts both targets, connects both MEGA accounts, and stops at the expected destructive wipe confirmation prompt.
+- No external helper app is part of the target architecture. Remaining phone work must be delivered through shipped TypeScript plus a real native phone host/plugin bridge.
 
-## Execution Rules
+## What Was Fixed In This Pass
 
-- Do one numbered step at a time.
-- After each step: verify the affected behavior, commit it, record the commit id here, and update the remaining count.
-- A step is not done until the app/designer import path is wired and the most relevant build check has passed.
+1. Routed phone `getManagedShareState` through the embedded managed-share service instead of returning `501`.
+2. Added phone host regression coverage for embedded managed-share state inspection.
+3. Removed duplicate `integrationStatePath` object keys in the MEGA live tests so the repo builds cleanly again.
+4. Removed unused type aliases from `src/integrations/runtime.ts` that were failing the TypeScript build.
 
-## Steps
+## Remaining Work
 
-1. [x] Commit the pending designer palette scroll/layout fix in `ui-designer/src/app.css`.
-	Commit: d9755c7
-2. [x] Promote `AppDialog` and `ErrorBadge` into `ui-designer`, then rewire app consumers to the designer-owned versions.
-	Commit: d302134
-3. [x] Upgrade designer `ShareCard` and `ProviderStatusCard` to the app-safe prop contract, then rewire `StoragePanel` and related consumers to the designer-owned versions.
-	Commit: f634ea4
-4. [x] Promote `ArmedActionButton` and `IconToggle` into `ui-designer`, then rewire app consumers.
-	Commit: fb2ecaf
-5. [ ] Promote `StatusNotice`, `SecretSeedFields`, and `SharedSecretEditor` into `ui-designer`, then rewire app consumers.
-	Commit: pending
-6. [ ] Promote `ShareSpaceLinkSection` and `VolumeShareDialog` into `ui-designer`, then rewire app consumers.
-	Commit: pending
-7. [ ] Promote `WorkspaceModeBar` and `MountRail` into `ui-designer`, then rewire app consumers.
-	Commit: pending
+1. Implement phone-native provider account lifecycle:
+	- `connectProviderAccount`
+	- `disconnectProviderAccount`
+	- `configureProviderSetup`
+	- `installProviderHelper` (API name can stay for compatibility, but the implementation must be native runtime setup rather than an external helper app)
+2. Implement phone-native provider inventory/runtime operations:
+	- `reconcileProviderManagedShares`
+	- `acceptIncomingProviderContactInvite`
+3. Implement phone-native managed-share mutations:
+	- `createManagedShare`
+	- `inviteManagedShare`
+	- `attachManagedShare`
+	- `removeManagedShare`
+	- `acceptManagedShare`
+4. Add the real iOS/native host plugin surface needed to own provider auth/runtime behavior on device. The current checked-in iOS shell is still UI-only.
 
-## Progress
+## Execution Plan
 
-- Completed steps: 4 / 7
-- Remaining steps: 3
+1. Add the missing native phone host/plugin contract for provider auth, session ownership, and runtime actions.
+2. Wire `phoneHost.ts` provider account lifecycle methods to that native bridge.
+3. Wire share mutation and reconciliation methods to the same bridge.
+4. Extend phone host tests for each method as it moves off `501`.
+5. Re-run `CI=1 yarn dev-2` and only continue past the wipe prompt when destructive confirmation is explicitly intended.
+
+## Verification Snapshot
+
+- `CI=1 yarn vitest run ui/src/lib/host/phoneHost.test.ts --reporter=basic` passed.
+- `CI=1 yarn dev-2` reached the manual destructive confirmation prompt after building and launching both targets.
