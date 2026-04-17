@@ -1,8 +1,9 @@
-import { spawn } from 'child_process';
 import type {
   RuntimeVolumeEventPublisher as IntegrationVolumeEventBridge,
 } from '../runtime/volumeEvents.js';
 import { defaultRuntimeScheduler, type RuntimeScheduler } from '../runtime/scheduler.js';
+
+let childProcessModulePromise: Promise<typeof import('child_process')> | null = null;
 
 export interface ProviderSecretStore {
   get<T>(key: string): Promise<T | null>;
@@ -104,6 +105,7 @@ export const DEFAULT_GOOGLE_DESKTOP_CLIENT_ID =
   '381193316033-b1g7h9dovqs5j22fi7obc4jug4o77vmi.apps.googleusercontent.com';
 
 export function createIntegrationRuntime(options: IntegrationRuntimeOptions): IntegrationRuntime {
+  const processEnv = readProcessEnv();
   return {
     secretStore: options.secretStore,
     commandExecutor: options.commandExecutor ?? new DefaultCommandExecutor(),
@@ -117,10 +119,10 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
     google: {
       clientId:
         options.google?.clientId?.trim() ||
-        process.env.NEARBYTES_GOOGLE_CLIENT_ID?.trim() ||
+        processEnv.NEARBYTES_GOOGLE_CLIENT_ID?.trim() ||
         DEFAULT_GOOGLE_DESKTOP_CLIENT_ID,
       clientSecret:
-        options.google?.clientSecret?.trim() || process.env.NEARBYTES_GOOGLE_CLIENT_SECRET?.trim() || undefined,
+        options.google?.clientSecret?.trim() || processEnv.NEARBYTES_GOOGLE_CLIENT_SECRET?.trim() || undefined,
       authorizationBaseUrl:
         options.google?.authorizationBaseUrl?.trim() || 'https://accounts.google.com/o/oauth2/v2/auth',
       tokenUrl: options.google?.tokenUrl?.trim() || 'https://oauth2.googleapis.com/token',
@@ -130,7 +132,7 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
     },
     mega: {
       remoteBasePath: normalizeMegaRemotePath(
-        options.mega?.remoteBasePath?.trim() || process.env.NEARBYTES_MEGA_REMOTE_BASE?.trim() || '/nearbytes'
+        options.mega?.remoteBasePath?.trim() || processEnv.NEARBYTES_MEGA_REMOTE_BASE?.trim() || '/nearbytes'
       ),
       syncIntervalMs: positiveInt(options.mega?.syncIntervalMs, DEFAULT_MEGA_SYNC_INTERVAL_MS),
       syncTimeoutMs: positiveInt(options.mega?.syncTimeoutMs, DEFAULT_MEGA_SYNC_TIMEOUT_MS),
@@ -146,7 +148,7 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
     github: {
       clientId:
         options.github?.clientId?.trim() ||
-        process.env.NEARBYTES_GITHUB_CLIENT_ID?.trim() ||
+        processEnv.NEARBYTES_GITHUB_CLIENT_ID?.trim() ||
         undefined,
       deviceCodeUrl:
         options.github?.deviceCodeUrl?.trim() || 'https://github.com/login/device/code',
@@ -169,11 +171,12 @@ class DefaultCommandExecutor implements CommandExecutor {
 }
 
 export async function runCommandInvocation(invocation: CommandInvocation): Promise<CommandResult> {
+    const { spawn } = await getChildProcessModule();
     return new Promise<CommandResult>((resolve, reject) => {
       const child = spawn(invocation.command, [...(invocation.args ?? [])], {
         cwd: invocation.cwd,
         env: {
-          ...process.env,
+          ...readProcessEnv(),
           ...normalizeEnv(invocation.env),
         },
         stdio: 'pipe',
@@ -227,6 +230,22 @@ export async function runCommandInvocation(invocation: CommandInvocation): Promi
     });
   }
 
+async function getChildProcessModule(): Promise<typeof import('child_process')> {
+  if (!childProcessModulePromise) {
+    childProcessModulePromise = import('node:child_process').catch(() => import('child_process'));
+  }
+  return childProcessModulePromise;
+}
+
+function readProcessEnv(): Record<string, string | undefined> {
+  const runtimeGlobals = globalThis as typeof globalThis & {
+    process?: {
+      env?: Record<string, string | undefined>;
+    };
+  };
+  return runtimeGlobals.process?.env ?? {};
+}
+
 function normalizeEnv(env: Readonly<Record<string, string | undefined>> | undefined): Record<string, string> {
   if (!env) {
     return {};
@@ -248,7 +267,7 @@ function nonNegativeInt(value: number | undefined, fallback: number): number {
 }
 
 function envMegaInviteReflectionTimeoutMs(): number | undefined {
-  const raw = process.env.NEARBYTES_MEGA_INVITE_REFLECTION_TIMEOUT_MS?.trim();
+  const raw = readProcessEnv().NEARBYTES_MEGA_INVITE_REFLECTION_TIMEOUT_MS?.trim();
   if (!raw) {
     return undefined;
   }
@@ -264,9 +283,10 @@ function positiveInt(value: number | undefined, fallback: number): number {
 }
 
 function normalizeMegaRemotePath(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed === '') {
+  const trimmed = value.trim().replace(/\\/g, '/');
+  if (!trimmed) {
     return '/nearbytes';
   }
-  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return normalized.replace(/\/+/g, '/').replace(/\/$/, '') || '/nearbytes';
 }

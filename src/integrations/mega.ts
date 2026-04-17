@@ -1,18 +1,7 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  createHmac,
-  createPrivateKey,
-  createPublicKey,
-  diffieHellman,
-  hkdfSync,
-  randomBytes,
-  webcrypto,
-} from 'crypto';
-import { promises as fs } from 'fs';
-import path from 'path';
-import chokidar, { type FSWatcher } from 'chokidar';
+import { cbc as nobleAesCbc, ctr as nobleAesCtr, ecb as nobleAesEcb, gcm as nobleAesGcm } from '@noble/ciphers/aes.js';
+import { x25519 } from '@noble/curves/ed25519.js';
+import { hkdf } from '@noble/hashes/hkdf.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import {
   buildMegaScChannelUrl,
   buildMegaFetchNodesCommand,
@@ -33,6 +22,7 @@ import {
   normalizeMegaPublicLinkDescriptor,
   resolveMegaPublicLinkTarget,
 } from './megaPublicLink.js';
+import { managedSharePath as path } from './managedSharePath.js';
 import { validateCanonicalStorageFile } from '../storage/integrity.js';
 import { MirrorWorker } from './mirrorWorker.js';
 import type {
@@ -164,10 +154,71 @@ const MEGA_AUTH_RING_RECORD_SIZE = 29;
 const MEGA_SHARE_KEY_RECORD_SIZE = 23;
 const MEGA_SHARE_KEY_FLAG_TRUSTED = 1 << 0;
 const MEGA_SHARE_KEY_FLAG_IN_USE = 1 << 1;
-const MEGA_X25519_PRIVATE_KEY_DER_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
-const MEGA_X25519_PUBLIC_KEY_DER_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
 const MEGA_PAIRWISE_KEY_LABEL = Buffer.from('strongvelope pairwise key\x01', 'latin1');
 const megaSyncActivityTouchers = new WeakMap<AbortSignal, () => void>();
+type MegaNodeCryptoModule = typeof import('node:crypto') | typeof import('crypto');
+let megaNodeCryptoModule: MegaNodeCryptoModule | null = null;
+let megaNodeCryptoModulePromise: Promise<MegaNodeCryptoModule> | null = null;
+let megaNodeFsModulePromise: Promise<typeof import('node:fs/promises') | typeof import('fs/promises')> | null = null;
+let megaChokidarModulePromise: Promise<{ default: { watch(...args: unknown[]): MegaFsWatcher } }> | null = null;
+
+async function ensureMegaNodeCrypto(): Promise<MegaNodeCryptoModule> {
+  if (megaNodeCryptoModule) {
+    return megaNodeCryptoModule;
+  }
+  if (!megaNodeCryptoModulePromise) {
+    megaNodeCryptoModulePromise = import('node:crypto')
+      .catch(() => import('crypto'))
+      .then((module) => {
+        megaNodeCryptoModule = module;
+        return module;
+      });
+  }
+  return megaNodeCryptoModulePromise;
+}
+
+function getMegaNodeCrypto(): MegaNodeCryptoModule {
+  if (megaNodeCryptoModule) {
+    return megaNodeCryptoModule;
+  }
+  throw new Error('MEGA Node crypto is not initialized.');
+}
+
+function randomBytes(size: number): Buffer {
+  if (megaNodeCryptoModule) {
+    return megaNodeCryptoModule.randomBytes(size);
+  }
+  if (globalThis.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(size);
+    globalThis.crypto.getRandomValues(bytes);
+    return Buffer.from(bytes);
+  }
+  return getMegaNodeCrypto().randomBytes(size);
+}
+
+function getMegaWebCrypto(): Crypto {
+  if (globalThis.crypto?.subtle) {
+    return globalThis.crypto;
+  }
+  return getMegaNodeCrypto().webcrypto as Crypto;
+}
+
+async function getMegaNodeFs(): Promise<typeof import('node:fs/promises') | typeof import('fs/promises')> {
+  if (!megaNodeFsModulePromise) {
+    megaNodeFsModulePromise = import('node:fs/promises').catch(() => import('fs/promises'));
+  }
+  return megaNodeFsModulePromise;
+}
+
+async function getMegaChokidar(): Promise<{ default: { watch(...args: unknown[]): MegaFsWatcher } }> {
+  if (!megaChokidarModulePromise) {
+    const moduleName = 'chokidar';
+    megaChokidarModulePromise = import(/* @vite-ignore */ moduleName) as Promise<{
+      default: { watch(...args: unknown[]): MegaFsWatcher };
+    }>;
+  }
+  return megaChokidarModulePromise;
+}
 
 interface MegaShareInviteTarget {
   readonly u: string;
@@ -176,6 +227,11 @@ interface MegaShareInviteTarget {
 
 interface MegaAdapterOptions {
   readonly fetchImpl?: typeof fetch;
+}
+
+interface MegaFsWatcher {
+  close(): Promise<void> | void;
+  on(event: string, listener: (...args: unknown[]) => void): MegaFsWatcher;
 }
 
 interface MegaAccountSecret {
@@ -314,7 +370,7 @@ export class MegaTransportAdapter {
   private readonly devInventoryRefreshedAt = new Map<string, number>();
   private readonly syncRetryCooldowns = new Map<string, number>();
   private readonly collaboratorCache = new Map<string, { expiresAt: number; collaborators: ManagedShareCollaborator[] }>();
-  private readonly localWatchers = new Map<string, FSWatcher>();
+  private readonly localWatchers = new Map<string, MegaFsWatcher>();
   private readonly scListenerControllers = new Map<string, AbortController>();
   private readonly pendingSyncRetryTimers = new Map<string, RuntimeTimerHandle>();
   private readonly shareScsn = new Map<string, string>();
@@ -1152,7 +1208,7 @@ export class MegaTransportAdapter {
     }
 
     const localFilePath = path.join(share.localPath, normalizedPath);
-    const localBytes = new Uint8Array(await fs.readFile(localFilePath));
+    const localBytes = new Uint8Array(await (await getMegaNodeFs()).readFile(localFilePath));
     const uploadStartedAt = this.runtime.now();
     try {
       await this.withExclusiveShareTask(share.id, async () => {
@@ -1398,14 +1454,14 @@ export class MegaTransportAdapter {
       remoteDescriptor: share.remoteDescriptor,
     });
     if (share.role === 'owner') {
-      await fs.mkdir(share.localPath, { recursive: true });
+      await (await getMegaNodeFs()).mkdir(share.localPath, { recursive: true });
       await ensureMegaOwnerLocalStructure(share.localPath);
       void this.logDevShareInventoryIfChanged(account, 'boot');
       const ownerLoopRunning = this.localWatchers.has(share.id);
       if (!ownerLoopRunning) {
         await this.runSyncLoop(share, account);
       }
-      this.startOwnerPushPullSync(share, account);
+      void this.startOwnerPushPullSync(share, account);
       return;
     }
     if (isLegacyMegaLocalMirror(share)) {
@@ -1435,7 +1491,7 @@ export class MegaTransportAdapter {
       throw new Error('Only readonly incoming MEGA shares and local owner roots are supported by the native adapter.');
     }
 
-    await fs.mkdir(share.localPath, { recursive: true });
+    await (await getMegaNodeFs()).mkdir(share.localPath, { recursive: true });
     void this.logDevShareInventoryIfChanged(account, 'boot');
     try {
       await this.runSyncLoop(share, account);
@@ -1782,12 +1838,12 @@ export class MegaTransportAdapter {
     this.syncTimers.set(share.id, timer);
   }
 
-  private startOwnerPushPullSync(share: ManagedShare, account: ProviderAccount): void {
+  private async startOwnerPushPullSync(share: ManagedShare, account: ProviderAccount): Promise<void> {
     if (this.localWatchers.has(share.id)) {
       return;
     }
 
-    const watcher = chokidar.watch(
+    const watcher = (await getMegaChokidar()).default.watch(
       [path.join(share.localPath, 'blocks'), path.join(share.localPath, 'channels')],
       {
         persistent: true,
@@ -2165,7 +2221,7 @@ export class MegaTransportAdapter {
     }
 
     try {
-      await fs.mkdir(share.localPath, { recursive: true });
+      await (await getMegaNodeFs()).mkdir(share.localPath, { recursive: true });
       await ensureMegaOwnerLocalStructure(share.localPath);
       const session = await this.getAccountSession(account, signal);
       console.log('[MEGA:owner-sync] session obtained, resolving remote root.', { remotePath });
@@ -2755,7 +2811,7 @@ export class MegaTransportAdapter {
         return false;
       }
 
-      const pairwiseKey = deriveMegaPairwiseKey(keyManager.privateCu25519, publicCu25519);
+      const pairwiseKey = await deriveMegaPairwiseKey(keyManager.privateCu25519, publicCu25519);
       await this.apiCommand(
         {
           a: 'pk',
@@ -3475,7 +3531,7 @@ export class MegaTransportAdapter {
       if (removedPaths.length === 0) {
         continue;
       }
-      await fs.rm(path.join(share.localPath, relativePath), { recursive: true, force: true }).catch(() => undefined);
+      await (await getMegaNodeFs()).rm(path.join(share.localPath, relativePath), { recursive: true, force: true }).catch(() => undefined);
       this.publishReactiveMirrorEvent(relativePath);
       appliedHandles.add(handle);
       debugMegaLog('[MEGA:immediate-apply] removed recipient path from delete action packet.', {
@@ -3646,12 +3702,12 @@ export class MegaTransportAdapter {
     if (existingPath && existingPath !== relativePath) {
       delete entries[existingPath];
       handlePathIndex.delete(node.handle);
-      await fs.rm(path.join(share.localPath, existingPath), { recursive: true, force: true }).catch(() => undefined);
+      await (await getMegaNodeFs()).rm(path.join(share.localPath, existingPath), { recursive: true, force: true }).catch(() => undefined);
     }
 
     const targetPath = path.join(share.localPath, relativePath);
     if (node.isFolder) {
-      await fs.mkdir(targetPath, { recursive: true });
+      await (await getMegaNodeFs()).mkdir(targetPath, { recursive: true });
       entries[relativePath] = createProviderRefreshManifestEntry(node);
       handlePathIndex.set(node.handle, relativePath);
       return;
@@ -3664,7 +3720,7 @@ export class MegaTransportAdapter {
       existingEntry.fingerprint === nextEntry.fingerprint &&
       existingEntry.handle === nextEntry.handle
     ) {
-      const localFileExists = await fs.access(targetPath).then(() => true).catch(() => false);
+      const localFileExists = await (await getMegaNodeFs()).access(targetPath).then(() => true).catch(() => false);
       if (localFileExists) {
         entries[relativePath] = nextEntry;
         handlePathIndex.set(node.handle, relativePath);
@@ -3697,10 +3753,10 @@ export class MegaTransportAdapter {
       validationCompletedAt: this.runtime.now(),
       localWriteStartedAt: this.runtime.now(),
     });
-    await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    await fs.writeFile(targetPath, remoteBytes);
+    await (await getMegaNodeFs()).mkdir(path.dirname(targetPath), { recursive: true });
+    await (await getMegaNodeFs()).writeFile(targetPath, remoteBytes);
     const localWriteCompletedAt = this.runtime.now();
-    await fs.access(targetPath);
+    await (await getMegaNodeFs()).access(targetPath);
     const localVisibleAt = this.runtime.now();
     this.publishReactiveMirrorEvent(relativePath);
     this.updateManagedShareReceiveProbe(share.id, receiveProbe.id, {
@@ -4547,6 +4603,7 @@ function getMegaShareRemotePath(share: ManagedShare, fallbackPath: string): stri
 }
 
 async function ensureMegaOwnerLocalStructure(localPath: string): Promise<void> {
+  const fs = await getMegaNodeFs();
   await Promise.all([
     fs.mkdir(path.join(localPath, 'blocks'), { recursive: true }),
     fs.mkdir(path.join(localPath, 'channels'), { recursive: true }),
@@ -5800,16 +5857,13 @@ function encryptMegaAttributes(name: string, key: Buffer): string {
   const raw = Buffer.from(`MEGA${JSON.stringify({ n: name })}`, 'utf8');
   const paddedLength = Math.ceil(raw.length / 16) * 16;
   const padded = Buffer.concat([raw, Buffer.alloc(paddedLength - raw.length, 0)]);
-  const cipher = createCipheriv('aes-128-cbc', key.subarray(0, 16), ZERO_IV);
-  cipher.setAutoPadding(false);
-  return encodeMegaBase64Url(Buffer.concat([cipher.update(padded), cipher.final()]));
+  return encodeMegaBase64Url(Buffer.from(nobleAesCbc(key.subarray(0, 16), ZERO_IV, { disablePadding: true }).encrypt(padded)));
 }
 
 function encryptMegaFileContent(data: Buffer, transferKey: Buffer, iv: Buffer): Buffer {
   const counter = Buffer.alloc(16, 0);
   iv.copy(counter, 0);
-  const cipher = createCipheriv('aes-128-ctr', transferKey, counter);
-  return Buffer.concat([cipher.update(data), cipher.final()]);
+  return Buffer.from(nobleAesCtr(transferKey, counter).encrypt(data));
 }
 
 function buildMegaFileNodeKey(transferKey: Buffer, iv: Buffer, metaMac: Buffer): Buffer {
@@ -7080,14 +7134,16 @@ function decryptMegaKeyManagerContainer(container: Buffer, masterKey: Buffer): B
   const encrypted = container.subarray(2 + ivLength);
   const ciphertext = encrypted.subarray(0, encrypted.length - authTagLength);
   const authTag = encrypted.subarray(encrypted.length - authTagLength);
-  const decipher = createDecipheriv('aes-128-gcm', derivedKey, iv);
-  decipher.setAuthTag(authTag);
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return Buffer.from(nobleAesGcm(derivedKey, iv).decrypt(Buffer.concat([ciphertext, authTag])));
 }
 
 function parseMegaPrivateAttributeRecords(container: Buffer, masterKey: Buffer): Map<string, Buffer> {
   const plaintext = decryptMegaPrivateAttributeContainer(container, masterKey);
   return decodeMegaPrivateAttributeRecords(plaintext);
+}
+
+export function decodeMegaPrivateAttributeRecordsForTesting(encodedValue: string, masterKey: Buffer): ReadonlyMap<string, Buffer> {
+  return parseMegaPrivateAttributeRecords(decodeMegaBase64Url(encodedValue), masterKey);
 }
 
 function decryptMegaPrivateAttributeContainer(container: Buffer, masterKey: Buffer): Buffer {
@@ -7109,15 +7165,82 @@ function decryptMegaPrivateAttributeContainer(container: Buffer, masterKey: Buff
   const key = masterKey.subarray(0, 16);
 
   if (parameters.algorithm === 'aes-128-ccm') {
-    const decipher = createDecipheriv('aes-128-ccm', key, nonce, { authTagLength: parameters.authTagSize });
-    decipher.setAuthTag(authTag);
-    decipher.setAAD(Buffer.alloc(0), { plaintextLength: ciphertext.length });
-    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return decryptMegaPrivateAttributeCcm(ciphertext, authTag, key, nonce, parameters.authTagSize);
   }
 
-  const decipher = createDecipheriv('aes-128-gcm', key, nonce);
-  decipher.setAuthTag(authTag);
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return Buffer.from(nobleAesGcm(key, nonce).decrypt(Buffer.concat([ciphertext, authTag])));
+}
+
+function decryptMegaPrivateAttributeCcm(
+  ciphertext: Buffer,
+  authTag: Buffer,
+  key: Buffer,
+  nonce: Buffer,
+  authTagSize: number
+): Buffer {
+  const lengthSize = 15 - nonce.length;
+  if (lengthSize < 2 || lengthSize > 8) {
+    throw new Error('MEGA private attribute CCM nonce is invalid.');
+  }
+
+  const counter0 = buildMegaCcmCounterBlock(nonce, lengthSize, 0);
+  const authMask = encryptAesEcb(counter0, key).subarray(0, authTagSize);
+  const plaintext = Buffer.alloc(ciphertext.length);
+  for (let offset = 0, counter = 1; offset < ciphertext.length; offset += 16, counter += 1) {
+    const keystream = encryptAesEcb(buildMegaCcmCounterBlock(nonce, lengthSize, counter), key);
+    const chunkLength = Math.min(16, ciphertext.length - offset);
+    for (let index = 0; index < chunkLength; index += 1) {
+      plaintext[offset + index] = ciphertext[offset + index]! ^ keystream[index]!;
+    }
+  }
+
+  const expectedTag = computeMegaCcmMac(plaintext, key, nonce, authTagSize, lengthSize);
+  if (!xorBuffers(authTag, authMask).equals(expectedTag)) {
+    throw new Error('MEGA private attribute payload failed authentication.');
+  }
+
+  return plaintext;
+}
+
+function computeMegaCcmMac(
+  plaintext: Buffer,
+  key: Buffer,
+  nonce: Buffer,
+  authTagSize: number,
+  lengthSize: number
+): Buffer {
+  let state = encryptAesEcb(buildMegaCcmB0(plaintext.length, nonce, authTagSize, lengthSize), key);
+  for (let offset = 0; offset < plaintext.length; offset += 16) {
+    const block = Buffer.alloc(16, 0);
+    plaintext.copy(block, 0, offset, Math.min(offset + 16, plaintext.length));
+    state = encryptAesEcb(xorBuffers(state, block), key);
+  }
+  return state.subarray(0, authTagSize);
+}
+
+function buildMegaCcmB0(plaintextLength: number, nonce: Buffer, authTagSize: number, lengthSize: number): Buffer {
+  const flags = (((authTagSize - 2) / 2) << 3) | (lengthSize - 1);
+  return Buffer.concat([Buffer.from([flags]), nonce, encodeMegaCcmLength(plaintextLength, lengthSize)]);
+}
+
+function buildMegaCcmCounterBlock(nonce: Buffer, lengthSize: number, counter: number): Buffer {
+  return Buffer.concat([Buffer.from([lengthSize - 1]), nonce, encodeMegaCcmLength(counter, lengthSize)]);
+}
+
+function encodeMegaCcmLength(value: number, length: number): Buffer {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('MEGA private attribute CCM length is invalid.');
+  }
+  const result = Buffer.alloc(length, 0);
+  let remaining = value;
+  for (let index = length - 1; index >= 0; index -= 1) {
+    result[index] = remaining & 0xff;
+    remaining = Math.floor(remaining / 0x100);
+  }
+  if (remaining !== 0) {
+    throw new Error('MEGA private attribute CCM payload is too large.');
+  }
+  return result;
 }
 
 function decodeMegaPrivateAttributeRecords(value: Buffer): Map<string, Buffer> {
@@ -7149,7 +7272,7 @@ function decodeMegaPrivateAttributeRecords(value: Buffer): Map<string, Buffer> {
 }
 
 function deriveMegaKeyManagerKey(masterKey: Buffer): Buffer {
-  return Buffer.from(hkdfSync('sha256', masterKey, Buffer.alloc(0), Buffer.from([1]), 16));
+  return Buffer.from(hkdf(sha256, masterKey, Buffer.alloc(0), Buffer.from([1]), 16));
 }
 
 function findMegaKeyManagerRecord(
@@ -7296,9 +7419,9 @@ function serializeMegaKeyManagerRecords(records: readonly MegaKeyManagerRecord[]
 
 function encryptMegaKeyManagerContainer(plaintext: Buffer, masterKey: Buffer): Buffer {
   const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-128-gcm', deriveMegaKeyManagerKey(masterKey), iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const authTag = cipher.getAuthTag();
+  const encrypted = Buffer.from(nobleAesGcm(deriveMegaKeyManagerKey(masterKey), iv).encrypt(plaintext));
+  const authTag = encrypted.subarray(encrypted.length - 16);
+  const ciphertext = encrypted.subarray(0, encrypted.length - 16);
   return Buffer.concat([Buffer.from([20, 0]), iv, ciphertext, authTag]);
 }
 
@@ -7648,7 +7771,7 @@ async function resolveMegaKeyManagerShareKeys(
           publicCu25519Length: ownerPublicKey?.length ?? 0,
         });
       } else {
-        const pairwiseKey = deriveMegaPairwiseKey(keyManager.privateCu25519, ownerPublicKey);
+        const pairwiseKey = await deriveMegaPairwiseKey(keyManager.privateCu25519, ownerPublicKey);
         const decryptedShareKey = decryptAesEcb(pendingInShare.encryptedShareKey, pairwiseKey);
         if (decryptedShareKey.length < 16) {
           logger?.warn?.('MEGA pending inshare key decrypted to an invalid length.', {
@@ -7750,7 +7873,7 @@ async function resolveMegaKeyManagerShareKeys(
 }
 
 function fingerprintMegaShareKey(shareKey: Buffer): string {
-  return createHash('sha256').update(shareKey).digest('hex').slice(0, 16);
+  return Buffer.from(sha256(shareKey)).toString('hex').slice(0, 16);
 }
 
 function mergeMegaPendingInShares(
@@ -7866,20 +7989,31 @@ async function fetchMegaUserPublicCu25519(
   }
 }
 
-function deriveMegaPairwiseKey(privateCu25519: Buffer, publicCu25519: Buffer): Buffer {
-  const privateKey = createPrivateKey({
-    key: Buffer.concat([MEGA_X25519_PRIVATE_KEY_DER_PREFIX, privateCu25519]),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  const publicKey = createPublicKey({
-    key: Buffer.concat([MEGA_X25519_PUBLIC_KEY_DER_PREFIX, publicCu25519]),
-    format: 'der',
-    type: 'spki',
-  });
-  const sharedSecret = diffieHellman({ privateKey, publicKey });
-  const step1 = createHmac('sha256', Buffer.alloc(0)).update(sharedSecret).digest();
-  return createHmac('sha256', step1).update(MEGA_PAIRWISE_KEY_LABEL).digest().subarray(0, 16);
+async function deriveMegaPairwiseKey(privateCu25519: Buffer, publicCu25519: Buffer): Promise<Buffer> {
+  const sharedSecret = Buffer.from(x25519.getSharedSecret(privateCu25519, publicCu25519));
+  const step1 = await signMegaHmacSha256(Buffer.alloc(0), sharedSecret);
+  return (await signMegaHmacSha256(step1, MEGA_PAIRWISE_KEY_LABEL)).subarray(0, 16);
+}
+
+async function signMegaHmacSha256(key: Buffer, data: Buffer): Promise<Buffer> {
+  const normalizedKey = key.length > 64 ? await digestMegaSha256(key) : Buffer.from(key);
+  const paddedKey = Buffer.alloc(64, 0);
+  normalizedKey.copy(paddedKey, 0, 0, Math.min(normalizedKey.length, 64));
+  const innerPad = Buffer.alloc(64);
+  const outerPad = Buffer.alloc(64);
+  for (let index = 0; index < 64; index += 1) {
+    innerPad[index] = paddedKey[index] ^ 0x36;
+    outerPad[index] = paddedKey[index] ^ 0x5c;
+  }
+  const innerDigest = await digestMegaSha256(Buffer.concat([innerPad, data]));
+  return digestMegaSha256(Buffer.concat([outerPad, innerDigest]));
+}
+
+async function digestMegaSha256(data: Buffer): Promise<Buffer> {
+  const crypto = globalThis.crypto?.subtle
+    ? getMegaWebCrypto()
+    : ((await ensureMegaNodeCrypto()).webcrypto as Crypto);
+  return Buffer.from(await crypto.subtle.digest('SHA-256', Uint8Array.from(data)));
 }
 
 function resolveTreeRootHandle(nodesByHandle: ReadonlyMap<string, DecryptedMegaNode>): string {
@@ -8181,9 +8315,9 @@ function decryptNodeName(attributes: string | undefined, nodeKey: Buffer): strin
   if (ciphertext.length === 0 || ciphertext.length % 16 !== 0) {
     return null;
   }
-  const decipher = createDecipheriv('aes-128-cbc', deriveAttributeKey(nodeKey), ZERO_IV);
-  decipher.setAutoPadding(false);
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8').replace(/\u0000+$/u, '');
+  const plaintext = Buffer.from(
+    nobleAesCbc(deriveAttributeKey(nodeKey), ZERO_IV, { disablePadding: true }).decrypt(ciphertext)
+  ).toString('utf8').replace(/\u0000+$/u, '');
   if (!plaintext.startsWith('MEGA')) {
     return null;
   }
@@ -8240,8 +8374,7 @@ function decryptFileCiphertext(ciphertext: Buffer, nodeKey: Buffer): Buffer {
   if (nodeKey.length >= 24) {
     nodeKey.copy(iv, 0, 16, 24);
   }
-  const decipher = createDecipheriv('aes-128-ctr', deriveAttributeKey(nodeKey), iv);
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return Buffer.from(nobleAesCtr(deriveAttributeKey(nodeKey), iv).decrypt(ciphertext));
 }
 
 async function visitTree(
@@ -8608,15 +8741,19 @@ function sanitizePathSegment(value: string): string {
 }
 
 function createNodeFingerprint(node: DecryptedMegaNode): string {
-  const hash = createHash('sha256');
-  hash.update(node.handle);
-  hash.update('\n');
-  hash.update(String(node.size));
-  hash.update('\n');
-  hash.update(node.encodedAttributes ?? '');
-  hash.update('\n');
-  hash.update(node.encodedKey ?? '');
-  return hash.digest('hex');
+  return Buffer.from(
+    sha256(
+      Buffer.from(
+        [
+          node.handle,
+          String(node.size),
+          node.encodedAttributes ?? '',
+          node.encodedKey ?? '',
+        ].join('\n'),
+        'utf8'
+      )
+    )
+  ).toString('hex');
 }
 
 function createProviderRefreshManifestEntry(node: DecryptedMegaNode): ProviderRefreshManifestEntry {
@@ -9007,6 +9144,7 @@ function decodeMegaPrivateKey(value: Buffer): MegaPrivateKey {
 
 async function hasUsableMegaMirror(localPath: string): Promise<boolean> {
   try {
+    const fs = await getMegaNodeFs();
     const stats = await fs.stat(localPath);
     if (!stats.isDirectory()) {
       return false;
@@ -9051,13 +9189,14 @@ function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
 async function deriveV2PasswordKey(password: string, saltBase64: string): Promise<{ masterKey: Buffer; authKey: Buffer }> {
   const passwordBytes = new TextEncoder().encode(password);
   const saltBytes = decodeMegaBase64Url(saltBase64);
-  const key = await webcrypto.subtle.importKey('raw', passwordBytes, 'PBKDF2', false, ['deriveBits']);
+  const subtle = getMegaWebCrypto().subtle;
+  const key = await subtle.importKey('raw', passwordBytes, 'PBKDF2', false, ['deriveBits']);
   const derived = Buffer.from(
-    await webcrypto.subtle.deriveBits(
+    await subtle.deriveBits(
       {
         name: 'PBKDF2',
         hash: 'SHA-512',
-        salt: saltBytes,
+        salt: Uint8Array.from(saltBytes),
         iterations: 100000,
       },
       key,
@@ -9116,15 +9255,11 @@ function wordsToBuffer(words: readonly number[]): Buffer {
 }
 
 function encryptAesEcb(value: Buffer, key: Buffer): Buffer {
-  const cipher = createCipheriv('aes-128-ecb', key.subarray(0, 16), null);
-  cipher.setAutoPadding(false);
-  return Buffer.concat([cipher.update(value), cipher.final()]);
+  return Buffer.from(nobleAesEcb(key.subarray(0, 16), { disablePadding: true }).encrypt(value));
 }
 
 function decryptAesEcb(value: Buffer, key: Buffer): Buffer {
-  const decipher = createDecipheriv('aes-128-ecb', key.subarray(0, 16), null);
-  decipher.setAutoPadding(false);
-  return Buffer.concat([decipher.update(value), decipher.final()]);
+  return Buffer.from(nobleAesEcb(key.subarray(0, 16), { disablePadding: true }).decrypt(value));
 }
 
 type MegaPasswordSessionLogger = Pick<IntegrationRuntime['logger'], 'log'> | undefined;

@@ -156,6 +156,28 @@ describe('phoneHost', () => {
     expect(acceptInvite).toHaveBeenCalledWith('mega', 'acct-mega-phone', 'invite-mega-phone');
   });
 
+  it('uses the shared MEGA adapter for phone account connect validation', async () => {
+    const host = await getPhoneHost();
+
+    await host.objects.requestJson('/config/app/providers/mega', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: true }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+
+    await expect(
+      host.integrations.connectProviderAccount({
+        provider: 'mega',
+        label: 'MEGA',
+        preferred: true,
+        credentials: {
+          email: '',
+          password: '',
+        },
+      })
+    ).rejects.toThrow('MEGA needs an email and password.');
+  });
+
   it('serves embedded config requests locally without calling desktop request transport', async () => {
     const host = await getPhoneHost();
 

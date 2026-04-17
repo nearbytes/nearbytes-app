@@ -1,13 +1,20 @@
-import { createDecipheriv } from 'crypto';
-import { promises as fs } from 'fs';
-import path from 'path';
-import { Readable } from 'stream';
-import { pipeline } from 'stream/promises';
+import { Buffer } from 'buffer';
+import { cbc as nobleAesCbc, ctr as nobleAesCtr, ecb as nobleAesEcb } from '@noble/ciphers/aes.js';
 import { parseMegaJsonResponse } from './megaProtocol.js';
+import { managedSharePath as path } from './managedSharePath.js';
 
 const MEGA_PUBLIC_API_URL = 'https://g.api.mega.co.nz/cs';
 const ZERO_IV = Buffer.alloc(16, 0);
 const LEGACY_SIDECAR_DIR = '.nearbytes-sync';
+type MegaPublicLinkFsModule = typeof import('node:fs/promises') | typeof import('fs/promises');
+let megaPublicLinkFsPromise: Promise<MegaPublicLinkFsModule> | null = null;
+
+async function getMegaPublicLinkFs(): Promise<MegaPublicLinkFsModule> {
+  if (!megaPublicLinkFsPromise) {
+    megaPublicLinkFsPromise = import('node:fs/promises').catch(() => import('fs/promises'));
+  }
+  return megaPublicLinkFsPromise;
+}
 
 interface MegaFolderTreeResponse {
   readonly f?: readonly MegaFolderNodeRecord[];
@@ -80,6 +87,7 @@ export async function mirrorMegaPublicLink(options: {
     throw new Error('Global fetch is not available for MEGA public link mirroring.');
   }
 
+  const fs = await getMegaPublicLinkFs();
   await fs.mkdir(options.localPath, { recursive: true });
   await removeLegacyPublicLinkArtifacts(options.localPath);
 
@@ -193,6 +201,7 @@ async function mirrorFolderNode(
     return;
   }
 
+  const fs = await getMegaPublicLinkFs();
   await fs.mkdir(destinationPath, { recursive: true });
   const children = childrenByParent.get(node.handle) ?? [];
   for (const child of children) {
@@ -206,6 +215,7 @@ async function mirrorFolderFileNode(
   node: MegaDecryptedNode,
   destinationPath: string
 ): Promise<void> {
+  const fs = await getMegaPublicLinkFs();
   const existing = await fs.stat(destinationPath).catch(() => null);
   if (existing?.isFile() && existing.size === node.size) {
     return;
@@ -269,6 +279,7 @@ function isInternalSyncNode(name: string): boolean {
 }
 
 async function removeLegacyPublicLinkArtifacts(localPath: string): Promise<void> {
+  const fs = await getMegaPublicLinkFs();
   await fs.rm(path.join(localPath, LEGACY_SIDECAR_DIR), { recursive: true, force: true }).catch(() => undefined);
 }
 
@@ -341,19 +352,22 @@ async function downloadMegaFile(
   destinationPath: string,
   expectedSize: number
 ): Promise<void> {
+  const fs = await getMegaPublicLinkFs();
   await fs.mkdir(path.dirname(destinationPath), { recursive: true });
   const response = await fetchImpl(url);
-  if (!response.ok || !response.body) {
+  if (!response.ok) {
     throw new Error(`MEGA file download failed with HTTP ${response.status}.`);
   }
 
   const tempPath = `${destinationPath}.nearbytes-part`;
-  const decipher = createDecipheriv('aes-128-ctr', deriveContentKey(nodeKey), deriveContentIv(nodeKey));
-  const source = Readable.fromWeb(response.body as never);
-  const sink = (await import('fs')).createWriteStream(tempPath);
 
   try {
-    await pipeline(source, decipher, sink);
+    const streamed = await tryStreamMegaFileDownload(fs, response, nodeKey, tempPath);
+    if (!streamed) {
+      const encrypted = Buffer.from(await response.arrayBuffer());
+      const decrypted = Buffer.from(nobleAesCtr(deriveContentKey(nodeKey), deriveContentIv(nodeKey)).decrypt(encrypted));
+      await fs.writeFile(tempPath, decrypted);
+    }
     if (expectedSize > 0) {
       const stats = await fs.stat(tempPath);
       if (stats.size !== expectedSize) {
@@ -364,6 +378,71 @@ async function downloadMegaFile(
   } catch (error) {
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
     throw error;
+  }
+}
+
+async function tryStreamMegaFileDownload(
+  fs: MegaPublicLinkFsModule,
+  response: Response,
+  nodeKey: Buffer,
+  tempPath: string
+): Promise<boolean> {
+  const body = response.body;
+  if (!body || typeof body.getReader !== 'function' || typeof fs.open !== 'function') {
+    return false;
+  }
+
+  const reader = body.getReader();
+  const fileHandle = await fs.open(tempPath, 'w');
+  const decryptChunk = createMegaCtrChunkDecryptor(nodeKey);
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const decrypted = decryptChunk(value ?? new Uint8Array(0));
+      if (decrypted.length > 0) {
+        await fileHandle.write(decrypted);
+      }
+    }
+    return true;
+  } finally {
+    reader.releaseLock();
+    await fileHandle.close();
+  }
+}
+
+function createMegaCtrChunkDecryptor(nodeKey: Buffer): (chunk: Uint8Array) => Buffer {
+  const key = deriveContentKey(nodeKey);
+  const initialCounter = deriveContentIv(nodeKey);
+  let counter = Buffer.from(initialCounter);
+  let keystream = Buffer.alloc(0);
+  let keystreamOffset = 0;
+
+  return (chunk: Uint8Array): Buffer => {
+    const input = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayLike<number>);
+    const output = Buffer.alloc(input.length);
+    for (let index = 0; index < input.length; index += 1) {
+      if (keystreamOffset >= keystream.length) {
+        keystream = Buffer.from(nobleAesEcb(key.subarray(0, 16), { disablePadding: true }).encrypt(counter));
+        keystreamOffset = 0;
+        incrementMegaCtrCounter(counter);
+      }
+      output[index] = input[index]! ^ keystream[keystreamOffset]!;
+      keystreamOffset += 1;
+    }
+    return output;
+  };
+}
+
+function incrementMegaCtrCounter(counter: Buffer): void {
+  for (let index = counter.length - 1; index >= 0; index -= 1) {
+    counter[index] = (counter[index]! + 1) & 0xff;
+    if (counter[index] !== 0) {
+      return;
+    }
   }
 }
 
@@ -427,15 +506,11 @@ function deriveContentIv(nodeKey: Buffer): Buffer {
 }
 
 function decryptAesEcb(value: Buffer, key: Buffer): Buffer {
-  const decipher = createDecipheriv('aes-128-ecb', key.subarray(0, 16), null);
-  decipher.setAutoPadding(false);
-  return Buffer.concat([decipher.update(value), decipher.final()]);
+  return Buffer.from(nobleAesEcb(key.subarray(0, 16), { disablePadding: true }).decrypt(value));
 }
 
 function decryptAesCbc(value: Buffer, key: Buffer): Buffer {
-  const decipher = createDecipheriv('aes-128-cbc', key.subarray(0, 16), ZERO_IV);
-  decipher.setAutoPadding(false);
-  return Buffer.concat([decipher.update(value), decipher.final()]);
+  return Buffer.from(nobleAesCbc(key.subarray(0, 16), ZERO_IV, { disablePadding: true }).decrypt(value));
 }
 
 function decodeMegaBase64Url(value: string): Buffer {

@@ -19,7 +19,11 @@ import { serializeEvent, serializeEventEnvelope } from '../../storage/serializat
 import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
 import { createSecret } from '../../types/keys.js';
 import { createSignedEvent } from '../../domain/eventEnvelope.js';
-import { MegaTransportAdapter, rebuildMegaSecurityAttributeForE2e } from '../mega.js';
+import {
+  decodeMegaPrivateAttributeRecordsForTesting,
+  MegaTransportAdapter,
+  rebuildMegaSecurityAttributeForE2e,
+} from '../mega.js';
 import { MirrorWorker } from '../mirrorWorker.js';
 import { createIntegrationRuntime, type ProviderSecretStore } from '../runtime.js';
 import type { ManagedShare, ProviderAccount } from '../types.js';
@@ -195,11 +199,30 @@ function encodeMegaPrivateAttributeRecord(name: string, payload: Buffer): Buffer
 }
 
 function encryptMegaPrivateAttribute(records: ReadonlyArray<readonly [string, Buffer]>, masterKey: Buffer): string {
-  const nonce = Buffer.from('102132435465768798a9babb', 'hex');
+  return encryptMegaPrivateAttributeWithMode(records, masterKey, 0x10);
+}
+
+function encryptMegaPrivateAttributeWithMode(
+  records: ReadonlyArray<readonly [string, Buffer]>,
+  masterKey: Buffer,
+  mode: 0x00 | 0x02 | 0x10
+): string {
   const plaintext = Buffer.concat(records.map(([name, payload]) => encodeMegaPrivateAttributeRecord(name, payload)));
-  const cipher = createCipheriv('aes-128-gcm', masterKey.subarray(0, 16), nonce);
+  const parameters = {
+    0x00: { nonce: Buffer.from('102132435465768798a9babb', 'hex'), authTagLength: 16, algorithm: 'aes-128-ccm' },
+    0x02: { nonce: Buffer.from('102132435465768798a9', 'hex'), authTagLength: 8, algorithm: 'aes-128-ccm' },
+    0x10: { nonce: Buffer.from('102132435465768798a9babb', 'hex'), authTagLength: 16, algorithm: 'aes-128-gcm' },
+  } as const satisfies Record<number, { nonce: Buffer; authTagLength: number; algorithm: 'aes-128-ccm' | 'aes-128-gcm' }>;
+  const { nonce, authTagLength, algorithm } = parameters[mode];
+  const cipher =
+    algorithm === 'aes-128-ccm'
+      ? createCipheriv('aes-128-ccm', masterKey.subarray(0, 16), nonce, { authTagLength })
+      : createCipheriv('aes-128-gcm', masterKey.subarray(0, 16), nonce);
+  if (algorithm === 'aes-128-ccm') {
+    cipher.setAAD(Buffer.alloc(0), { plaintextLength: plaintext.length });
+  }
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  return encodeMegaBase64Url(Buffer.concat([Buffer.from([0x10]), nonce, ciphertext, cipher.getAuthTag()]));
+  return encodeMegaBase64Url(Buffer.concat([Buffer.from([mode]), nonce, ciphertext, cipher.getAuthTag()]));
 }
 
 function parseMegaKeyManagerRecords(value: Buffer): Array<{ tag: number; payload: Buffer }> {
@@ -748,6 +771,27 @@ describe('MegaTransportAdapter', () => {
     await expect(secretStore.get('provider-account:mega:acct-mega-bad')).resolves.toMatchObject({
       masterKey: 'broken-master-key',
     });
+  });
+
+  it('decrypts legacy AES-CCM private attributes through the shared parser', () => {
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const expectedKeyring = Buffer.from('legacy-keyring-data', 'utf8');
+    const expectedAuthRing = Buffer.from('legacy-authring-data', 'utf8');
+
+    for (const mode of [0x00, 0x02] as const) {
+      const encoded = encryptMegaPrivateAttributeWithMode(
+        [
+          ['*keyring', expectedKeyring],
+          ['*!authring', expectedAuthRing],
+        ],
+        masterKey,
+        mode
+      );
+
+      const records = decodeMegaPrivateAttributeRecordsForTesting(encoded, masterKey);
+      expect(records.get('*keyring')).toEqual(expectedKeyring);
+      expect(records.get('*!authring')).toEqual(expectedAuthRing);
+    }
   });
 
   it('manages native owner invitations and collaborator inventory', async () => {

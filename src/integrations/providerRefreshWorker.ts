@@ -1,6 +1,15 @@
-import { promises as fs } from 'fs';
-import path from 'path';
+import { managedSharePath as path } from './managedSharePath.js';
 import { validateCanonicalStorageFile } from '../storage/integrity.js';
+
+type ProviderRefreshFsModule = typeof import('node:fs/promises') | typeof import('fs/promises');
+let providerRefreshFsPromise: Promise<ProviderRefreshFsModule> | null = null;
+
+async function getProviderRefreshFs(): Promise<ProviderRefreshFsModule> {
+  if (!providerRefreshFsPromise) {
+    providerRefreshFsPromise = import('node:fs/promises').catch(() => import('fs/promises'));
+  }
+  return providerRefreshFsPromise;
+}
 
 export interface ProviderRefreshRemoteEntry {
   readonly path: string;
@@ -43,6 +52,7 @@ export class ProviderRefreshWorker {
     remote: ProviderRefreshRemoteAdapter,
     previousManifest: ProviderRefreshManifest = { entries: {} }
   ): Promise<ProviderRefreshResult> {
+    const fs = await getProviderRefreshFs();
     const remoteEntries = [...(await remote.list())]
       .map((entry) => ({
         ...entry,
@@ -123,6 +133,7 @@ export class ProviderRefreshWorker {
 }
 
 async function ensureDirectoryPath(targetPath: string): Promise<void> {
+  const fs = await getProviderRefreshFs();
   const stats = await fs.stat(targetPath).catch(() => null);
   if (stats?.isFile()) {
     await fs.rm(targetPath, { recursive: true, force: true });
@@ -135,6 +146,7 @@ async function removeObsoleteEntries(
   previousEntries: Record<string, ProviderRefreshManifestEntry>,
   desiredPaths: ReadonlySet<string>
 ): Promise<string[]> {
+  const fs = await getProviderRefreshFs();
   const obsolete = Object.keys(previousEntries)
     .filter((entry) => !desiredPaths.has(entry))
     .sort((left, right) => right.length - left.length);

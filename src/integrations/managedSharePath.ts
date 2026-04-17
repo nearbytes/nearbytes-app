@@ -104,6 +104,22 @@ function joinPath(...parts: string[]): string {
   return normalizePath(filtered.map((part) => normalizeSlashes(part)).join('/'));
 }
 
+function relativePath(from: string, to: string): string {
+  const fromNormalized = normalizePath(from);
+  const toNormalized = normalizePath(to);
+  const fromParts = normalizeSlashes(fromNormalized).replace(/^\/+/u, '').split('/').filter(Boolean);
+  const toParts = normalizeSlashes(toNormalized).replace(/^\/+/u, '').split('/').filter(Boolean);
+
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+
+  const up = new Array(fromParts.length).fill('..');
+  const result = [...up, ...toParts].join('/');
+  return result || '';
+}
+
 function dirnamePath(value: string): string {
   const normalized = normalizePath(value);
   const { root, rest } = splitRoot(normalized);
@@ -148,6 +164,7 @@ function basenamePosix(value: string): string {
 export const managedSharePath = {
   resolve: resolvePath,
   join: joinPath,
+  relative: relativePath,
   dirname: dirnamePath,
   basename: basenamePath,
   posix: {

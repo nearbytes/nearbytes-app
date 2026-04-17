@@ -169,10 +169,18 @@ describe('Mega public link mirroring', () => {
         throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
       }
       if (url === `https://download.test/${blockFileHandle}`) {
-        return new Response(new Uint8Array(blockCiphertext), { status: 200 });
+        const response = new Response(new Uint8Array(blockCiphertext), { status: 200 });
+        response.arrayBuffer = vi.fn(async () => {
+          throw new Error('desktop public-link downloads should stream instead of buffering block content');
+        });
+        return response;
       }
       if (url === `https://download.test/${channelFileHandle}`) {
-        return new Response(new Uint8Array(channelCiphertext), { status: 200 });
+        const response = new Response(new Uint8Array(channelCiphertext), { status: 200 });
+        response.arrayBuffer = vi.fn(async () => {
+          throw new Error('desktop public-link downloads should stream instead of buffering channel content');
+        });
+        return response;
       }
       throw new Error(`Unexpected fetch URL: ${url}`);
     }) as typeof fetch;

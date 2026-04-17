@@ -1,7 +1,16 @@
-import { promises as fs } from 'fs';
-import path from 'path';
 import type { MirrorRemoteAdapter } from './adapters.js';
+import { managedSharePath as path } from './managedSharePath.js';
 import { validateCanonicalStorageFile } from '../storage/integrity.js';
+
+type MirrorWorkerFsModule = typeof import('node:fs/promises') | typeof import('fs/promises');
+let mirrorWorkerFsPromise: Promise<MirrorWorkerFsModule> | null = null;
+
+async function getMirrorWorkerFs(): Promise<MirrorWorkerFsModule> {
+  if (!mirrorWorkerFsPromise) {
+    mirrorWorkerFsPromise = import('node:fs/promises').catch(() => import('fs/promises'));
+  }
+  return mirrorWorkerFsPromise;
+}
 
 export interface MirrorSyncResult {
   readonly uploaded: string[];
@@ -11,6 +20,7 @@ export interface MirrorSyncResult {
 
 export class MirrorWorker {
   async sync(localRoot: string, remote: MirrorRemoteAdapter): Promise<MirrorSyncResult> {
+    const fs = await getMirrorWorkerFs();
     console.log('[MirrorWorker] sync started.', { localRoot });
     let localEntries = await listMirrorFiles(localRoot);
     debugMirrorLog('[MirrorWorker] local entries found.', { count: localEntries.length, paths: localEntries.map((e) => e.path) });
@@ -141,9 +151,10 @@ function debugMirrorWarn(...args: unknown[]): void {
 }
 
 async function listMirrorFiles(localRoot: string): Promise<Array<{ path: string; size: number }>> {
+  const fs = await getMirrorWorkerFs();
   const result: Array<{ path: string; size: number }> = [];
-  await walk(path.join(localRoot, 'channels'), localRoot, result);
-  await walk(path.join(localRoot, 'blocks'), localRoot, result);
+  await walk(fs, path.join(localRoot, 'channels'), localRoot, result);
+  await walk(fs, path.join(localRoot, 'blocks'), localRoot, result);
   return result.sort(compareMirrorUploadPriority);
 }
 
@@ -160,11 +171,12 @@ function compareMirrorUploadPriority(
 }
 
 async function walk(
+  fs: MirrorWorkerFsModule,
   currentPath: string,
   localRoot: string,
   result: Array<{ path: string; size: number }>
 ): Promise<void> {
-  let entries: import('fs').Dirent[];
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
   try {
     entries = await fs.readdir(currentPath, { withFileTypes: true, encoding: 'utf8' });
   } catch (error) {
@@ -177,7 +189,7 @@ async function walk(
   for (const entry of entries) {
     const entryPath = path.join(currentPath, entry.name);
     if (entry.isDirectory()) {
-      await walk(entryPath, localRoot, result);
+      await walk(fs, entryPath, localRoot, result);
       continue;
     }
     const relativePath = normalizeRelativePath(path.relative(localRoot, entryPath));

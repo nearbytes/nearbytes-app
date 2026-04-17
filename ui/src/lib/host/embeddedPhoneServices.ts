@@ -2,6 +2,7 @@ import { openDB, type IDBPDatabase } from 'idb';
 
 import { createCryptoOperations } from '../../../../src/crypto/index.js';
 import type { TransportAdapter } from '../../../../src/integrations/adapters.js';
+import { MegaTransportAdapter } from '../../../../src/integrations/mega.js';
 import {
   ManagedShareService,
   type ManagedShareFileHost,
@@ -747,14 +748,16 @@ function createEmbeddedPhoneProviderCatalogAdapter(
   };
 }
 
-async function buildEmbeddedPhoneManagedShareAdapters(): Promise<TransportAdapter[]> {
+async function buildEmbeddedPhoneManagedShareAdapters(
+  integrationRuntime: ReturnType<typeof createEmbeddedPhoneManagedShareRuntime>
+): Promise<TransportAdapter[]> {
   const config = await readEmbeddedPhoneAppConfigValue();
   const adapters: TransportAdapter[] = [];
   if (config.features.providers.googleDrive) {
     adapters.push(createEmbeddedPhoneProviderCatalogAdapter('gdrive', 'Google Drive', 'Managed folders backed by Google Drive.'));
   }
   if (config.features.providers.mega) {
-    adapters.push(createEmbeddedPhoneProviderCatalogAdapter('mega', 'MEGA', 'Managed folders backed by MEGA.'));
+    adapters.push(new MegaTransportAdapter(integrationRuntime));
   }
   if (config.features.providers.github) {
     adapters.push(createEmbeddedPhoneProviderCatalogAdapter('github', 'GitHub', 'Managed folders backed by GitHub.'));
@@ -830,10 +833,11 @@ async function getEmbeddedPhoneManagedShareService(): Promise<ManagedShareServic
       const appConfig = await readEmbeddedPhoneAppConfigValue();
       embeddedPhoneAppConfigCache = appConfig;
       const storage = await createEmbeddedPhoneManagedShareStorageHost();
+      const integrationRuntime = createEmbeddedPhoneManagedShareRuntime();
       return new ManagedShareService({
         storage,
         rootsConfigPath: 'embedded-phone:roots',
-        integrationRuntime: createEmbeddedPhoneManagedShareRuntime(),
+        integrationRuntime,
         isProviderEnabled(provider: string): boolean {
           const providers = (embeddedPhoneAppConfigCache ?? createDefaultEmbeddedPhoneAppConfig()).features.providers;
           switch (provider.trim().toLowerCase()) {
@@ -860,7 +864,7 @@ async function getEmbeddedPhoneManagedShareService(): Promise<ManagedShareServic
         rootHost: embeddedPhoneManagedShareRootHost,
         defaultLocalSourcePath: 'local',
         mirrorRoot: 'local',
-        adapters: await buildEmbeddedPhoneManagedShareAdapters(),
+        adapters: await buildEmbeddedPhoneManagedShareAdapters(integrationRuntime),
         readMaintenanceMode: 'background',
       });
     })();
