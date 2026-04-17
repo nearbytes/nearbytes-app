@@ -1,38 +1,45 @@
 # WIP
 
-## Current Status
+## Goal
 
-- Phone provider/share state is now partly embedded and browser-backed.
-- Implemented phone provider/share surfaces: `listProviderAccounts`, `connectProviderAccount`, `disconnectProviderAccount`, `reconcileProviderManagedShares`, `listManagedShares`, `listIncomingManagedShares`, `listIncomingProviderContactInvites`, `getManagedShareState`, `createManagedShare`, `inviteManagedShare`, `attachManagedShare`, `removeManagedShare`, `acceptManagedShare`.
-- `yarn dev-2` is no longer blocked by the TypeScript build errors from the MEGA live tests/runtime wrapper. It now builds, starts both targets, connects both MEGA accounts, and stops at the expected destructive wipe confirmation prompt.
-- No external helper app is part of the target architecture. Remaining phone work must be delivered through shipped TypeScript plus a real native phone host/plugin bridge.
+Ship a self-contained iPhone Nearbytes app that reuses the shared TypeScript managed-share core, owns MEGA connectivity on-device through shipped native code, and does not depend on any desktop proxy, external helper app, or sidecar runtime.
 
-## What Was Fixed In This Pass
+## Current Baseline
 
-1. Routed phone `getManagedShareState` through the embedded managed-share service instead of returning `501`.
-2. Added phone host regression coverage for embedded managed-share state inspection.
-3. Removed duplicate `integrationStatePath` object keys in the MEGA live tests so the repo builds cleanly again.
-4. Removed unused type aliases from `src/integrations/runtime.ts` that were failing the TypeScript build.
+1. The shared TypeScript managed-share core is now importable and usable from the phone host.
+2. The phone host already supports embedded local provider/share state plus several local share mutations.
+3. The iOS shell is not blank: it already has a real Capacitor native plugin surface in `ui/ios/App/CapApp-SPM/Sources/CapApp-SPM/NearbytesLanPlugin.swift` for LAN/runtime signaling.
+4. What remains is not another shared-core rewrite. It is extending the native iPhone bridge so provider auth, provider setup, and MEGA-backed remote operations are owned by the device.
 
-## Remaining Work
+## Finish Plan
 
-1. Implement phone-native provider setup/auth surfaces:
+1. Extend the native iPhone plugin surface beyond LAN so the app can perform provider runtime actions from JS through Capacitor.
+2. Define a native provider bridge contract for:
+	- provider setup state
+	- provider configuration writes
+	- account connect/disconnect
+	- auth session polling/completion
+	- incoming provider contact invite acceptance
+	- remote managed-share inventory reads needed by reconciliation
+3. Wire `ui/src/lib/host/phoneHost.ts` and `ui/src/lib/host/embeddedPhoneServices.ts` to prefer the native bridge for remote/provider-owned actions while preserving the shared TypeScript state model.
+4. Keep purely local state and local-share bookkeeping in the shared TypeScript managed-share service.
+5. Add focused tests for the host/native bridge boundaries and keep the existing phone host suite passing.
+6. Verify desktop/phone dev flows still work, including `dev-2` and the iPhone LAN demo paths where relevant.
+
+## Immediate Steps
+
+1. Inspect the existing native LAN plugin and TS bridge patterns, then mirror that structure for provider/runtime actions.
+2. Add a new native Capacitor plugin dedicated to phone provider/runtime operations instead of overloading the LAN plugin.
+3. Add the matching TypeScript bridge in `ui/src/lib/host`.
+4. Route the remaining phone `501` methods through that bridge:
 	- `configureProviderSetup`
-	- `installProviderHelper` (API name can stay for compatibility, but the implementation must be native runtime setup rather than an external helper app)
-	- real provider-auth session ownership for browser/OAuth/device-flow/native login paths
-2. Implement phone-native provider invite/runtime operations that still require provider-native behavior:
+	- `installProviderHelper`
 	- `acceptIncomingProviderContactInvite`
-	- real incoming-share discovery and remote inventory adoption instead of local-only reconciliation fallbacks
-3. Add the real iOS/native host plugin surface needed to own provider auth/runtime behavior on device. The current checked-in iOS shell is still UI-only.
+5. If the native implementation can expose a real provider setup/auth state now, switch phone provider connect/setup flows from embedded fallback semantics to native-backed semantics.
 
-## Execution Plan
+## Definition Of Done
 
-1. Add the missing native phone host/plugin contract for provider auth, session ownership, provider contact invites, and runtime actions.
-2. Replace the current embedded local account/share fallbacks with native-backed provider operations where remote behavior is required.
-3. Extend phone host tests for each remaining method as it moves off `501`.
-4. Re-run `CI=1 yarn dev-2` and only continue past the wipe prompt when destructive confirmation is explicitly intended.
-
-## Verification Snapshot
-
-- `CI=1 yarn vitest run ui/src/lib/host/phoneHost.test.ts --reporter=basic` passed.
-- `CI=1 yarn dev-2` reached the manual destructive confirmation prompt after building and launching both targets.
+1. The iPhone app can own MEGA setup/auth/connectivity without a desktop runtime.
+2. The shared TypeScript managed-share core remains the source of truth for share state and share bookkeeping.
+3. The remaining phone host provider APIs no longer return `501` because the native bridge supplies the required runtime behavior.
+4. The app architecture stays self-contained: shipped TypeScript plus shipped iOS native code only.
