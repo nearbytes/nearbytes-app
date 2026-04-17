@@ -100,6 +100,11 @@ import {
   recordLanLatencyTrace,
   type LanLatencyTraceEntry,
 } from './lanLatencyTrace.js';
+import {
+  configureNativeProvider,
+  getNativeProviderSetupState,
+  installNativeProvider,
+} from './nativeProviderPlugin.js';
 
 interface EmbeddedPhoneRuntimeServices extends RuntimeCoreServices {}
 
@@ -703,16 +708,34 @@ function createEmbeddedPhoneProviderCatalogAdapter(
   label: string,
   description: string
 ): TransportAdapter {
+  const normalizedProvider = provider.trim().toLowerCase();
   return {
     provider,
     label,
     description,
     supportsAccountConnection: true,
     async getSetupState() {
-      return {
+      return getNativeProviderSetupState(normalizedProvider).catch(() => ({
         status: 'ready',
         detail: `${label} local account state is available on this phone.`,
-      };
+      }));
+    },
+    async configure(input) {
+      if (normalizedProvider === 'mega') {
+        return configureNativeProvider({
+          provider: normalizedProvider,
+          clientId: input.clientId,
+          clientSecret: input.clientSecret,
+        });
+      }
+      return configureNativeProvider({
+        provider: normalizedProvider,
+        clientId: input.clientId,
+        clientSecret: input.clientSecret,
+      });
+    },
+    async install() {
+      return installNativeProvider(normalizedProvider);
     },
     async probe(): Promise<TransportState> {
       return {
@@ -868,6 +891,27 @@ export async function embeddedPhoneConnectProviderAccount(input: {
 }): Promise<ConnectProviderAccountResponse> {
   const service = await getEmbeddedPhoneManagedShareService();
   return service.connectAccount(input);
+}
+
+export async function embeddedPhoneConfigureProviderSetup(
+  provider: string,
+  input: { clientId?: string; clientSecret?: string }
+): Promise<ConfigureProviderResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return {
+    setup: await service.configureProvider({
+      provider,
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+    }),
+  };
+}
+
+export async function embeddedPhoneInstallProviderHelper(provider: string): Promise<ConfigureProviderResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return {
+    setup: await service.installProvider(provider),
+  };
 }
 
 export async function embeddedPhoneDisconnectProviderAccount(accountId: string): Promise<void> {

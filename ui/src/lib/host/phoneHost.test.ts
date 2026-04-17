@@ -672,6 +672,26 @@ describe('phoneHost', () => {
         },
       },
     });
+    await expect(host.integrations.configureProviderSetup('mega', {})).resolves.toMatchObject({
+      setup: {
+        status: 'ready',
+      },
+    });
+    await expect(host.integrations.installProviderHelper('mega')).resolves.toMatchObject({
+      setup: {
+        status: 'ready',
+      },
+    });
+    await expect(host.integrations.configureProviderSetup('github', {
+      clientId: 'github-phone-client-id',
+    })).resolves.toMatchObject({
+      setup: {
+        status: 'ready',
+        config: {
+          clientId: 'github-phone-client-id',
+        },
+      },
+    });
     await expect(host.integrations.inviteManagedShare('share-mega-phone', ['friend@example.com'])).resolves.toMatchObject({
       summary: {
         share: {

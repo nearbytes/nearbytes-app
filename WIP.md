@@ -9,7 +9,17 @@ Ship a self-contained iPhone Nearbytes app that reuses the shared TypeScript man
 1. The shared TypeScript managed-share core is now importable and usable from the phone host.
 2. The phone host already supports embedded local provider/share state plus several local share mutations.
 3. The iOS shell is not blank: it already has a real Capacitor native plugin surface in `ui/ios/App/CapApp-SPM/Sources/CapApp-SPM/NearbytesLanPlugin.swift` for LAN/runtime signaling.
-4. What remains is not another shared-core rewrite. It is extending the native iPhone bridge so provider auth, provider setup, and MEGA-backed remote operations are owned by the device.
+4. There is now also a dedicated native provider bridge surface for provider setup/install semantics through `NearbytesProviderPlugin`.
+5. What remains is not another shared-core rewrite. It is extending the native iPhone bridge so provider auth, provider contact invites, and MEGA-backed remote operations are owned by the device.
+
+## Progress Against Plan
+
+1. Done: added a dedicated native iPhone provider plugin instead of overloading the LAN plugin.
+2. Done: added the matching TypeScript bridge under `ui/src/lib/host/nativeProviderPlugin.ts`.
+3. Done: routed `configureProviderSetup` and `installProviderHelper` through the new bridge.
+4. Done: kept the focused phone host regression suite passing after the bridge work.
+5. Remaining: `acceptIncomingProviderContactInvite` still requires real native/provider runtime behavior.
+6. Remaining: true MEGA auth/session/runtime ownership on iPhone is still not implemented; the current shared MEGA adapter remains Node-bound.
 
 ## Finish Plan
 
@@ -31,11 +41,9 @@ Ship a self-contained iPhone Nearbytes app that reuses the shared TypeScript man
 1. Inspect the existing native LAN plugin and TS bridge patterns, then mirror that structure for provider/runtime actions.
 2. Add a new native Capacitor plugin dedicated to phone provider/runtime operations instead of overloading the LAN plugin.
 3. Add the matching TypeScript bridge in `ui/src/lib/host`.
-4. Route the remaining phone `501` methods through that bridge:
-	- `configureProviderSetup`
-	- `installProviderHelper`
+4. Route the remaining phone `501` method through that bridge:
 	- `acceptIncomingProviderContactInvite`
-5. If the native implementation can expose a real provider setup/auth state now, switch phone provider connect/setup flows from embedded fallback semantics to native-backed semantics.
+5. Replace embedded/local fallback connect semantics with true native-owned provider auth/session flows.
 
 ## Definition Of Done
 

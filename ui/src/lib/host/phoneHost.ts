@@ -12,6 +12,7 @@ import {
   embeddedPhoneAcceptManagedShare,
   embeddedPhoneAttachManagedShare,
   embeddedPhoneConnectProviderAccount,
+  embeddedPhoneConfigureProviderSetup,
   embeddedPhoneCreateManagedShare,
   embeddedPhoneDiscoverSources,
   embeddedPhoneDisconnectProviderAccount,
@@ -23,6 +24,7 @@ import {
   embeddedPhoneHasLocalVolume,
   embeddedPhoneInviteManagedShare,
   embeddedPhoneLanPeersResponse,
+  embeddedPhoneInstallProviderHelper,
   embeddedPhoneReconcileProviderManagedShares,
   embeddedPhoneReconcileSources,
   embeddedPhoneRemoveManagedShare,
@@ -138,11 +140,11 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
     async disconnectProviderAccount(accountId: string): Promise<void> {
       return embeddedPhoneDisconnectProviderAccount(accountId);
     },
-    async configureProviderSetup(): Promise<ConfigureProviderResponse> {
-      throw createUnsupportedPhoneIntegrationError('Provider setup is not available on this device yet.');
+    async configureProviderSetup(provider: string, input: { clientId?: string; clientSecret?: string }): Promise<ConfigureProviderResponse> {
+      return embeddedPhoneConfigureProviderSetup(provider, input);
     },
-    async installProviderHelper(): Promise<ConfigureProviderResponse> {
-      throw createUnsupportedPhoneIntegrationError('Provider helper installation is not available on this device yet.');
+    async installProviderHelper(provider: string): Promise<ConfigureProviderResponse> {
+      return embeddedPhoneInstallProviderHelper(provider);
     },
     async reconcileProviderManagedShares(provider: string): Promise<unknown> {
       return embeddedPhoneReconcileProviderManagedShares(provider);
