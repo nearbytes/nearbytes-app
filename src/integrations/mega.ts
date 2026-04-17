@@ -1,3 +1,4 @@
+import { Buffer } from 'buffer';
 import { cbc as nobleAesCbc, ctr as nobleAesCtr, ecb as nobleAesEcb, gcm as nobleAesGcm } from '@noble/ciphers/aes.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';

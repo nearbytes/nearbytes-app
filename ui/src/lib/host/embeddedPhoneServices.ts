@@ -466,6 +466,39 @@ function createDefaultEmbeddedPhoneAppConfig(): AppConfig {
   };
 }
 
+function parseEmbeddedPhoneProviderOverride(value: unknown): boolean | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return undefined;
+}
+
+function applyEmbeddedPhoneProviderEnvOverrides(config: AppConfig): AppConfig {
+  const mega = parseEmbeddedPhoneProviderOverride(import.meta.env.VITE_NEARBYTES_EMBEDDED_PHONE_MEGA_ENABLED);
+  const localNetwork = parseEmbeddedPhoneProviderOverride(import.meta.env.VITE_NEARBYTES_EMBEDDED_PHONE_LOCAL_NETWORK_ENABLED);
+  if (mega === undefined && localNetwork === undefined) {
+    return config;
+  }
+  return {
+    ...config,
+    features: {
+      ...config.features,
+      providers: {
+        ...config.features.providers,
+        mega: mega ?? config.features.providers.mega,
+        localNetwork: localNetwork ?? config.features.providers.localNetwork,
+      },
+    },
+  };
+}
+
 function cloneEmbeddedPhoneAppConfig(config: AppConfig): AppConfig {
   return {
     version: config.version,
@@ -523,20 +556,20 @@ async function writeEmbeddedPhoneRootsConfigValue(config: RootsConfig): Promise<
 
 async function readEmbeddedPhoneAppConfigValue(): Promise<AppConfig> {
   if (embeddedPhoneAppConfigCache) {
-    return embeddedPhoneAppConfigCache;
+    return applyEmbeddedPhoneProviderEnvOverrides(embeddedPhoneAppConfigCache);
   }
   const stored = await getSetting(PHONE_APP_CONFIG_KEY);
   if (!stored) {
-    const config = createDefaultEmbeddedPhoneAppConfig();
+    const config = applyEmbeddedPhoneProviderEnvOverrides(createDefaultEmbeddedPhoneAppConfig());
     embeddedPhoneAppConfigCache = config;
     return config;
   }
   try {
-    const config = JSON.parse(stored) as AppConfig;
+    const config = applyEmbeddedPhoneProviderEnvOverrides(JSON.parse(stored) as AppConfig);
     embeddedPhoneAppConfigCache = config;
     return config;
   } catch {
-    const config = createDefaultEmbeddedPhoneAppConfig();
+    const config = applyEmbeddedPhoneProviderEnvOverrides(createDefaultEmbeddedPhoneAppConfig());
     embeddedPhoneAppConfigCache = config;
     return config;
   }

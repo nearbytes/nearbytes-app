@@ -125,6 +125,8 @@ try {
       HOME: phoneHome,
       NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
       VITE_NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
+      VITE_NEARBYTES_EMBEDDED_PHONE_MEGA_ENABLED: '0',
+      VITE_NEARBYTES_EMBEDDED_PHONE_LOCAL_NETWORK_ENABLED: '1',
     },
     logPath: phoneUiLogPath,
   });

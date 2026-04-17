@@ -225,6 +225,8 @@ try {
       PORT: String(phoneApiPort),
       NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
       VITE_NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
+      VITE_NEARBYTES_EMBEDDED_PHONE_MEGA_ENABLED: '1',
+      VITE_NEARBYTES_EMBEDDED_PHONE_LOCAL_NETWORK_ENABLED: '0',
       NEARBYTES_INTEGRATIONS_STATE: phonePaths.integrationStatePath,
       NEARBYTES_DESKTOP_SESSION_FILE: phonePaths.desktopSessionPath,
     },
