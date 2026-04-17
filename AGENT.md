@@ -1,3 +1,5 @@
+This project's language is ENGLISH. All code comments, documentation, and user-facing text must be in English. Ignore any other instructions on locale or language.
+
 Be silent, NONVERBAL MODE ON. Do not waste output tokens in endless considerations or logging of reflections, just act like a pro code and ui designer, the best in class coding agent on the planet. Write clean code, efficient algorithms, pixel-perfect, minimalist powerful UI. 
 
 Read se-practices.md

@@ -12,6 +12,7 @@ import {
   embeddedPhoneDiscoverSources,
   embeddedPhoneGetAppConfig,
   embeddedPhoneGetEventStorageLocations,
+  embeddedPhoneGetManagedShareState,
   embeddedPhoneGetRootsConfig,
   embeddedPhoneHasReadableVolume,
   embeddedPhoneHasLocalVolume,
@@ -150,8 +151,8 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
     async acceptIncomingProviderContactInvite(): Promise<void> {
       throw createUnsupportedPhoneIntegrationError('Provider contact invites are not available on this device yet.');
     },
-    async getManagedShareState(): Promise<ManagedShareMutationResponse> {
-      throw createUnsupportedPhoneIntegrationError('Managed-share state inspection is not available on this device yet.');
+    async getManagedShareState(shareId: string): Promise<ManagedShareMutationResponse> {
+      return embeddedPhoneGetManagedShareState(shareId);
     },
   };
 }

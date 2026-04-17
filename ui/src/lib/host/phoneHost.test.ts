@@ -659,6 +659,14 @@ describe('phoneHost', () => {
     });
     await expect(host.integrations.listIncomingManagedShares()).resolves.toEqual({ shares: [] });
     await expect(host.integrations.listIncomingProviderContactInvites()).resolves.toEqual({ invites: [] });
+    await expect(host.integrations.getManagedShareState('share-mega-phone')).resolves.toMatchObject({
+      summary: {
+        share: {
+          id: 'share-mega-phone',
+          provider: 'mega',
+        },
+      },
+    });
     await expect(host.integrations.connectProviderAccount({ provider: 'mega' })).rejects.toMatchObject({
       status: 501,
       message: expect.stringContaining('Phone runtime capability is not implemented in the embedded phone host yet.'),

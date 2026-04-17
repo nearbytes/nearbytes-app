@@ -861,6 +861,13 @@ export async function embeddedPhoneListIncomingProviderContactInvites(
   return service.listIncomingProviderContactInvites({ fast: options.fast });
 }
 
+export async function embeddedPhoneGetManagedShareState(shareId: string): Promise<ManagedShareMutationResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return {
+    summary: await service.getManagedShareState(shareId),
+  };
+}
+
 async function buildEmbeddedPhoneSourceUsageSummary(): Promise<SourceUsageSummary> {
   const records = await listStoredFileRecords();
   const volumeUsages = new Map<string, SourceVolumeUsage>();
