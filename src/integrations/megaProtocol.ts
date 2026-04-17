@@ -1,6 +1,3 @@
-import { createDecipheriv, createCipheriv, subtle } from 'crypto';
-import { release as osRelease } from 'os';
-
 export const MEGA_API_URL = 'https://g.api.mega.co.nz/cs';
 export const MEGA_SC_URL = 'https://g.api.mega.co.nz/sc';
 export const MEGA_MASTER_KEY_BYTES = 16;
@@ -11,6 +8,7 @@ export const MEGA_OFFICIAL_PROTOCOL_VERSION = 2;
 
 const MEGA_OFFICIAL_MEGACMD_VERSION = '2.4.0.0';
 const MEGA_OFFICIAL_MEGACLIENT_VERSION = '10.3.1';
+let megaNodeCryptoModulePromise: Promise<typeof import('crypto')> | null = null;
 
 /**
  * Maximum number of hashcash-challenged retries before giving up.
@@ -220,12 +218,11 @@ export function buildMegaCsUrl(options: {
 }
 
 export function buildMegaOfficialUserAgent(): string {
-  const platformLabel = resolveMegaOfficialPlatformLabel(process.platform);
-  const pointerWidth = process.arch === 'x64' || process.arch === 'arm64' ? '64' : '32';
-  return `MEGAcmd/${MEGA_OFFICIAL_MEGACMD_VERSION} (${platformLabel} ${osRelease()} ${process.arch}) MegaClient/${MEGA_OFFICIAL_MEGACLIENT_VERSION}/${pointerWidth}`;
+  const runtime = readMegaRuntimeInfo();
+  return `MEGAcmd/${MEGA_OFFICIAL_MEGACMD_VERSION} (${runtime.platformLabel} ${runtime.osVersion} ${runtime.arch}) MegaClient/${MEGA_OFFICIAL_MEGACLIENT_VERSION}/${runtime.pointerWidth}`;
 }
 
-function resolveMegaOfficialPlatformLabel(platform: NodeJS.Platform): string {
+function resolveMegaOfficialPlatformLabel(platform: string): string {
   switch (platform) {
     case 'darwin':
       return 'Darwin';
@@ -236,6 +233,37 @@ function resolveMegaOfficialPlatformLabel(platform: NodeJS.Platform): string {
     default:
       return platform;
   }
+}
+
+function readMegaRuntimeInfo(): {
+  platformLabel: string;
+  osVersion: string;
+  arch: string;
+  pointerWidth: '32' | '64';
+} {
+  const runtimeGlobals = globalThis as typeof globalThis & {
+    process?: {
+      platform?: string;
+      arch?: string;
+      versions?: {
+        node?: string;
+      };
+    };
+    navigator?: {
+      platform?: string;
+    };
+  };
+  const runtimeProcess = runtimeGlobals.process;
+  const platform = runtimeProcess?.platform?.trim() || runtimeGlobals.navigator?.platform?.trim() || 'browser';
+  const arch = runtimeProcess?.arch?.trim() || 'web';
+  const pointerWidth: '32' | '64' = arch === 'x64' || arch === 'arm64' ? '64' : '32';
+  const osVersion = runtimeProcess?.versions?.node?.trim() || 'web';
+  return {
+    platformLabel: resolveMegaOfficialPlatformLabel(platform),
+    osVersion,
+    arch,
+    pointerWidth,
+  };
 }
 
 export function buildMegaScChannelUrl(options: {
@@ -339,16 +367,16 @@ export function encodeMegaAccountSessionDumpString(session: MegaAccountSessionDu
   return encodeMegaBase64Url(encodeMegaAccountSessionDump(session));
 }
 
-export function encryptMegaMasterKeyWithSessionKey(masterKey: Buffer, sessionKey: Buffer): Buffer {
+export async function encryptMegaMasterKeyWithSessionKey(masterKey: Buffer, sessionKey: Buffer): Promise<Buffer> {
   validateBufferLength(masterKey, MEGA_MASTER_KEY_BYTES, 'MEGA master key');
   validateBufferLength(sessionKey, MEGA_SESSION_KEY_BYTES, 'MEGA session key');
-  return aes128EcbEncrypt(masterKey, sessionKey);
+  return aes128SingleBlockZeroIvEncrypt(masterKey, sessionKey);
 }
 
-export function decryptMegaMasterKeyWithSessionKey(encryptedMasterKey: Buffer, sessionKey: Buffer): Buffer {
+export async function decryptMegaMasterKeyWithSessionKey(encryptedMasterKey: Buffer, sessionKey: Buffer): Promise<Buffer> {
   validateBufferLength(encryptedMasterKey, MEGA_MASTER_KEY_BYTES, 'MEGA encrypted master key');
   validateBufferLength(sessionKey, MEGA_SESSION_KEY_BYTES, 'MEGA session key');
-  return aes128EcbDecrypt(encryptedMasterKey, sessionKey);
+  return aes128SingleBlockZeroIvDecrypt(encryptedMasterKey, sessionKey);
 }
 
 export function encodeMegaBase64Url(value: Buffer | Uint8Array): string {
@@ -372,16 +400,33 @@ function normalizeSessionId(value: string | Buffer): string {
   return Buffer.isBuffer(value) ? encodeMegaBase64Url(value) : value.trim();
 }
 
-function aes128EcbEncrypt(value: Buffer, key: Buffer): Buffer {
+async function aes128SingleBlockZeroIvEncrypt(value: Buffer, key: Buffer): Promise<Buffer> {
+  const { createCipheriv } = await getMegaNodeCryptoModule();
   const cipher = createCipheriv('aes-128-ecb', key, null);
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(value), cipher.final()]);
 }
 
-function aes128EcbDecrypt(value: Buffer, key: Buffer): Buffer {
+async function aes128SingleBlockZeroIvDecrypt(value: Buffer, key: Buffer): Promise<Buffer> {
+  const { createDecipheriv } = await getMegaNodeCryptoModule();
   const cipher = createDecipheriv('aes-128-ecb', key, null);
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(value), cipher.final()]);
+}
+
+async function getMegaNodeCryptoModule(): Promise<typeof import('crypto')> {
+  if (!megaNodeCryptoModulePromise) {
+    megaNodeCryptoModulePromise = import('node:crypto').catch(() => import('crypto'));
+  }
+  return megaNodeCryptoModulePromise;
+}
+
+function getMegaSubtleCrypto(): SubtleCrypto {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error('Web Crypto subtle API is unavailable for MEGA protocol helpers.');
+  }
+  return subtle;
 }
 
 function validateBufferLength(value: Buffer, expectedLength: number, label: string): void {
@@ -455,7 +500,7 @@ export async function solveMegaHashcashChallenge(challenge: string): Promise<str
 
   // Brute-force the 4-byte nonce.
   for (;;) {
-    const digest = Buffer.from(await subtle.digest('SHA-256', buffer));
+    const digest = Buffer.from(await getMegaSubtleCrypto().digest('SHA-256', buffer));
     if (digest.readUInt32BE(0) <= threshold) {
       return `1:${tokenStr}:${encodeMegaBase64Url(buffer.subarray(0, 4))}`;
     }

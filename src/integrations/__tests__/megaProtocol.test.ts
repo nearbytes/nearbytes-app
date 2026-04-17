@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   MegaApiClient,
+  buildMegaOfficialUserAgent,
   buildMegaCsUrl,
   buildMegaFetchNodesCommand,
   buildMegaScChannelUrl,
@@ -34,11 +35,11 @@ describe('megaProtocol', () => {
     expect(Buffer.compare(decoded.sid, sid)).toBe(0);
   });
 
-  it('encodes and decodes an encrypted account session dump string', () => {
+  it('encodes and decodes an encrypted account session dump string', async () => {
     const masterKey = randomBytes(16);
     const sessionKey = randomBytes(16);
     const sid = randomBytes(43);
-    const encryptedMasterKey = encryptMegaMasterKeyWithSessionKey(masterKey, sessionKey);
+    const encryptedMasterKey = await encryptMegaMasterKeyWithSessionKey(masterKey, sessionKey);
     const encoded = encodeMegaAccountSessionDumpString({
       version: 1,
       encryptedMasterKey,
@@ -52,7 +53,25 @@ describe('megaProtocol', () => {
     }
     expect(Buffer.compare(decoded.sid, sid)).toBe(0);
     expect(Buffer.compare(decoded.encryptedMasterKey, encryptedMasterKey)).toBe(0);
-    expect(Buffer.compare(decryptMegaMasterKeyWithSessionKey(decoded.encryptedMasterKey, sessionKey), masterKey)).toBe(0);
+    expect(Buffer.compare(await decryptMegaMasterKeyWithSessionKey(decoded.encryptedMasterKey, sessionKey), masterKey)).toBe(0);
+  });
+
+  it('builds a MEGA user agent without requiring node process globals', () => {
+    const runtimeGlobals = globalThis as typeof globalThis & { process?: unknown; navigator?: unknown };
+    const originalProcess = runtimeGlobals.process;
+    const originalNavigator = runtimeGlobals.navigator;
+    vi.stubGlobal('process', undefined);
+    vi.stubGlobal('navigator', { platform: 'iPhone' });
+
+    try {
+      const userAgent = buildMegaOfficialUserAgent();
+      expect(userAgent).toContain('MEGAcmd/2.4.0.0');
+      expect(userAgent).toContain('iPhone');
+      expect(userAgent).toContain('web');
+    } finally {
+      vi.stubGlobal('process', originalProcess);
+      vi.stubGlobal('navigator', originalNavigator);
+    }
   });
 
   it('builds the default fetch-nodes command with cache enabled', () => {
