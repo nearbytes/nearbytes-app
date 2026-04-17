@@ -9,6 +9,7 @@ import {
   readMirrorVolumeSnapshot,
 } from '../mirror/browserMirror.js';
 import {
+  embeddedPhoneAcceptIncomingProviderContactInvite,
   embeddedPhoneAcceptManagedShare,
   embeddedPhoneAttachManagedShare,
   embeddedPhoneConnectProviderAccount,
@@ -194,8 +195,12 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
     }): Promise<ManagedShareMutationResponse> {
       return embeddedPhoneAcceptManagedShare(input);
     },
-    async acceptIncomingProviderContactInvite(): Promise<void> {
-      throw createUnsupportedPhoneIntegrationError('Provider contact invites are not available on this device yet.');
+    async acceptIncomingProviderContactInvite(input: {
+      provider: string;
+      accountId: string;
+      inviteId: string;
+    }): Promise<void> {
+      return embeddedPhoneAcceptIncomingProviderContactInvite(input.provider, input.accountId, input.inviteId);
     },
     async getManagedShareState(shareId: string): Promise<ManagedShareMutationResponse> {
       return embeddedPhoneGetManagedShareState(shareId);

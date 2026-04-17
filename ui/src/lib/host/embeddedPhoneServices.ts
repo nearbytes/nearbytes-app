@@ -943,6 +943,15 @@ export async function embeddedPhoneListIncomingProviderContactInvites(
   return service.listIncomingProviderContactInvites({ fast: options.fast });
 }
 
+export async function embeddedPhoneAcceptIncomingProviderContactInvite(
+  provider: string,
+  accountId: string,
+  inviteId: string
+): Promise<void> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  await service.acceptIncomingProviderContactInvite(provider, accountId, inviteId);
+}
+
 export async function embeddedPhoneGetManagedShareState(shareId: string): Promise<ManagedShareMutationResponse> {
   const service = await getEmbeddedPhoneManagedShareService();
   return {

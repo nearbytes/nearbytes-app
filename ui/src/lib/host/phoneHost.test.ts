@@ -141,6 +141,21 @@ describe('phoneHost', () => {
     expect(openHostStream).not.toHaveBeenCalled();
   });
 
+  it('forwards provider contact invite acceptance through the embedded phone service', async () => {
+    const acceptInvite = vi
+      .spyOn(embeddedPhoneServices, 'embeddedPhoneAcceptIncomingProviderContactInvite')
+      .mockResolvedValue(undefined);
+
+    const host = await getPhoneHost();
+    await host.integrations.acceptIncomingProviderContactInvite({
+      provider: 'mega',
+      accountId: 'acct-mega-phone',
+      inviteId: 'invite-mega-phone',
+    });
+
+    expect(acceptInvite).toHaveBeenCalledWith('mega', 'acct-mega-phone', 'invite-mega-phone');
+  });
+
   it('serves embedded config requests locally without calling desktop request transport', async () => {
     const host = await getPhoneHost();
 
