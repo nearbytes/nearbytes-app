@@ -182,7 +182,6 @@ async function createPeer(label: 'A' | 'B'): Promise<LivePeer> {
   const service = new ManagedShareService({
     storage,
     rootsConfigPath,
-    integrationStatePath,
     ...createManagedShareNodeSupport({ rootsConfigPath, integrationStatePath }),
     integrationRuntime: runtime,
     mirrorRoot: mainRoot,

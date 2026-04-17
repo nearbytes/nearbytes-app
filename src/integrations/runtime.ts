@@ -1,8 +1,5 @@
 import { spawn } from 'child_process';
 import type {
-  RuntimeVolumeEventInput as IntegrationVolumeEventInput,
-  RuntimeVolumeEventKind as IntegrationVolumeEventKind,
-  RuntimeVolumeEventProducer as IntegrationVolumeEventProducer,
   RuntimeVolumeEventPublisher as IntegrationVolumeEventBridge,
 } from '../runtime/volumeEvents.js';
 import { defaultRuntimeScheduler, type RuntimeScheduler } from '../runtime/scheduler.js';
