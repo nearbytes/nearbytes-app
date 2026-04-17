@@ -637,6 +637,11 @@ describe('phoneHost', () => {
       body: JSON.stringify({ enabled: true }),
       headers: new Headers({ 'content-type': 'application/json' }),
     });
+    await host.objects.requestJson('/config/app/providers/github', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: true }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
 
     await expect(host.integrations.listProviderAccounts()).resolves.toMatchObject({
       accounts: [
@@ -667,13 +672,109 @@ describe('phoneHost', () => {
         },
       },
     });
-    await expect(host.integrations.connectProviderAccount({ provider: 'mega' })).rejects.toMatchObject({
-      status: 501,
-      message: expect.stringContaining('Phone runtime capability is not implemented in the embedded phone host yet.'),
+    await expect(host.integrations.inviteManagedShare('share-mega-phone', ['friend@example.com'])).resolves.toMatchObject({
+      summary: {
+        share: {
+          id: 'share-mega-phone',
+          invitationEmails: ['friend@example.com'],
+        },
+      },
     });
-    await expect(host.integrations.acceptManagedShare({ provider: 'mega' })).rejects.toMatchObject({
-      status: 501,
-      message: expect.stringContaining('Phone runtime capability is not implemented in the embedded phone host yet.'),
+
+    await expect(host.integrations.attachManagedShare('share-mega-phone', 'vol-phone')).resolves.toMatchObject({
+      summary: {
+        share: {
+          id: 'share-mega-phone',
+        },
+        attachments: [
+          {
+            volumeId: 'vol-phone',
+          },
+        ],
+      },
+    });
+
+    await expect(host.integrations.acceptManagedShare({
+      provider: 'mega',
+      accountId: 'acct-mega-phone',
+      label: 'Incoming Phone Share',
+      remoteDescriptor: {
+        remotePath: '/incoming',
+        ownerEmail: 'owner@example.com',
+      },
+    })).resolves.toMatchObject({
+      summary: {
+        share: {
+          provider: 'mega',
+          accountId: 'acct-mega-phone',
+          role: 'recipient',
+          label: 'Incoming Phone Share',
+        },
+      },
+    });
+
+    await expect(host.integrations.reconcileProviderManagedShares('mega')).resolves.toMatchObject({
+      provider: 'mega',
+      adoptedShares: 0,
+      retiredShares: 0,
+      migratedShares: 0,
+    });
+
+    await host.integrations.removeManagedShare('share-mega-phone');
+    await expect(host.integrations.listManagedShares()).resolves.toMatchObject({
+      shares: [
+        {
+          share: {
+            label: 'Incoming Phone Share',
+            role: 'recipient',
+          },
+        },
+      ],
+    });
+
+    const githubConnectResponse = await host.integrations.connectProviderAccount({
+      provider: 'github',
+      label: 'GitHub',
+      preferred: true,
+    }) as {
+      status: 'connected' | 'pending' | 'failed';
+      account?: { id: string; provider: string; state: string };
+    };
+    expect(githubConnectResponse).toMatchObject({
+      status: 'connected',
+      account: {
+        provider: 'github',
+        state: 'connected',
+      },
+    });
+    expect(githubConnectResponse.account?.id).toBeTruthy();
+
+    await expect(host.integrations.createManagedShare({
+      provider: 'github',
+      accountId: githubConnectResponse.account?.id ?? '',
+      label: 'GitHub Phone Share',
+      remoteDescriptor: {
+        repoOwner: 'nearbytes',
+        repoName: 'phone-share',
+      },
+    })).resolves.toMatchObject({
+      summary: {
+        share: {
+          provider: 'github',
+          accountId: githubConnectResponse.account?.id,
+          label: 'GitHub Phone Share',
+        },
+      },
+    });
+
+    await host.integrations.disconnectProviderAccount(githubConnectResponse.account?.id ?? '');
+    await expect(host.integrations.listProviderAccounts()).resolves.toMatchObject({
+      accounts: [
+        {
+          id: 'acct-mega-phone',
+          provider: 'mega',
+        },
+      ],
     });
     expect(requestHostJson).not.toHaveBeenCalled();
   });

@@ -31,6 +31,7 @@ import type {
   AppConfig,
   AppConfigResponse,
   ChatAttachment,
+  ConnectProviderAccountResponse,
   DiscoverSourcesResponse,
   DurableCommitAck,
   EventDetailResponse,
@@ -45,6 +46,7 @@ import type {
   OpenVolumeResponse,
   PublishIdentityResponse,
   ProviderAccountsResponse,
+  ReconcileProviderManagedSharesResponse,
   ReconcileSourcesResponse,
   ReferenceExportResponse,
   ReferenceImportResponse,
@@ -705,7 +707,13 @@ function createEmbeddedPhoneProviderCatalogAdapter(
     provider,
     label,
     description,
-    supportsAccountConnection: false,
+    supportsAccountConnection: true,
+    async getSetupState() {
+      return {
+        status: 'ready',
+        detail: `${label} local account state is available on this phone.`,
+      };
+    },
     async probe(): Promise<TransportState> {
       return {
         status: 'unsupported',
@@ -842,6 +850,36 @@ export async function embeddedPhoneListProviderAccounts(options: { readonly fast
   return service.listAccounts({ fast: options.fast });
 }
 
+export async function embeddedPhoneConnectProviderAccount(input: {
+  provider: string;
+  mode?: 'login' | 'signup' | 'confirm-signup';
+  label?: string;
+  email?: string;
+  preferred?: boolean;
+  authSessionId?: string;
+  accountId?: string;
+  credentials?: {
+    name?: string;
+    email?: string;
+    password?: string;
+    mfaCode?: string;
+    confirmationLink?: string;
+  };
+}): Promise<ConnectProviderAccountResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return service.connectAccount(input);
+}
+
+export async function embeddedPhoneDisconnectProviderAccount(accountId: string): Promise<void> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  await service.disconnectAccount(accountId);
+}
+
+export async function embeddedPhoneReconcileProviderManagedShares(provider: string): Promise<ReconcileProviderManagedSharesResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return service.reconcileProviderManagedShareInventory(provider);
+}
+
 export async function embeddedPhoneListManagedShares(options: { readonly fast?: boolean } = {}): Promise<ManagedSharesResponse> {
   const service = await getEmbeddedPhoneManagedShareService();
   return service.listManagedShares({ fast: options.fast });
@@ -865,6 +903,63 @@ export async function embeddedPhoneGetManagedShareState(shareId: string): Promis
   const service = await getEmbeddedPhoneManagedShareService();
   return {
     summary: await service.getManagedShareState(shareId),
+  };
+}
+
+export async function embeddedPhoneCreateManagedShare(input: {
+  provider: string;
+  accountId: string;
+  label: string;
+  localPath?: string;
+  role?: 'owner' | 'recipient' | 'link';
+  volumeId?: string;
+  remoteDescriptor?: Record<string, unknown>;
+  capabilities?: string[];
+}): Promise<ManagedShareMutationResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return {
+    summary: await service.createManagedShare(input),
+  };
+}
+
+export async function embeddedPhoneInviteManagedShare(
+  shareId: string,
+  emails: string[],
+  accessLevel?: 'read' | 'read/write' | 'full access'
+): Promise<ManagedShareMutationResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return {
+    summary: await service.inviteManagedShare(shareId, emails, accessLevel),
+  };
+}
+
+export async function embeddedPhoneAttachManagedShare(
+  shareId: string,
+  volumeId: string
+): Promise<ManagedShareMutationResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return {
+    summary: await service.attachManagedShare(shareId, { volumeId }),
+  };
+}
+
+export async function embeddedPhoneRemoveManagedShare(shareId: string): Promise<void> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  await service.removeManagedShare(shareId);
+}
+
+export async function embeddedPhoneAcceptManagedShare(input: {
+  provider: string;
+  accountId: string;
+  label: string;
+  volumeId?: string;
+  localPath?: string;
+  remoteDescriptor?: Record<string, unknown>;
+  capabilities?: string[];
+}): Promise<ManagedShareMutationResponse> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return {
+    summary: await service.acceptManagedShare(input),
   };
 }
 

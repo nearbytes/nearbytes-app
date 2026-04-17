@@ -9,15 +9,23 @@ import {
   readMirrorVolumeSnapshot,
 } from '../mirror/browserMirror.js';
 import {
+  embeddedPhoneAcceptManagedShare,
+  embeddedPhoneAttachManagedShare,
+  embeddedPhoneConnectProviderAccount,
+  embeddedPhoneCreateManagedShare,
   embeddedPhoneDiscoverSources,
+  embeddedPhoneDisconnectProviderAccount,
   embeddedPhoneGetAppConfig,
   embeddedPhoneGetEventStorageLocations,
   embeddedPhoneGetManagedShareState,
   embeddedPhoneGetRootsConfig,
   embeddedPhoneHasReadableVolume,
   embeddedPhoneHasLocalVolume,
+  embeddedPhoneInviteManagedShare,
   embeddedPhoneLanPeersResponse,
+  embeddedPhoneReconcileProviderManagedShares,
   embeddedPhoneReconcileSources,
+  embeddedPhoneRemoveManagedShare,
   embeddedPhoneSubscribeVolumeWatch,
   embeddedPhoneSyncPeer,
   embeddedPhoneUpdateProviderEnabled,
@@ -109,11 +117,26 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
     async listProviderAccounts(options?: { signal?: AbortSignal; fast?: boolean }): Promise<ProviderAccountsResponse> {
       return embeddedPhoneListProviderAccounts({ fast: options?.fast });
     },
-    async connectProviderAccount(): Promise<ConnectProviderAccountResponse> {
-      throw createUnsupportedPhoneIntegrationError('Provider sign-in is not available on this device yet.');
+    async connectProviderAccount(input: {
+      provider: string;
+      mode?: 'login' | 'signup' | 'confirm-signup';
+      label?: string;
+      email?: string;
+      preferred?: boolean;
+      authSessionId?: string;
+      accountId?: string;
+      credentials?: {
+        name?: string;
+        email?: string;
+        password?: string;
+        mfaCode?: string;
+        confirmationLink?: string;
+      };
+    }): Promise<ConnectProviderAccountResponse> {
+      return embeddedPhoneConnectProviderAccount(input);
     },
-    async disconnectProviderAccount(): Promise<void> {
-      throw createUnsupportedPhoneIntegrationError('Provider disconnection is not available on this device yet.');
+    async disconnectProviderAccount(accountId: string): Promise<void> {
+      return embeddedPhoneDisconnectProviderAccount(accountId);
     },
     async configureProviderSetup(): Promise<ConfigureProviderResponse> {
       throw createUnsupportedPhoneIntegrationError('Provider setup is not available on this device yet.');
@@ -121,8 +144,8 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
     async installProviderHelper(): Promise<ConfigureProviderResponse> {
       throw createUnsupportedPhoneIntegrationError('Provider helper installation is not available on this device yet.');
     },
-    async reconcileProviderManagedShares(): Promise<unknown> {
-      throw createUnsupportedPhoneIntegrationError('Provider reconciliation is not available on this device yet.');
+    async reconcileProviderManagedShares(provider: string): Promise<unknown> {
+      return embeddedPhoneReconcileProviderManagedShares(provider);
     },
     async listManagedShares(options?: { signal?: AbortSignal; fast?: boolean }): Promise<ManagedSharesResponse> {
       return embeddedPhoneListManagedShares({ fast: options?.fast });
@@ -133,20 +156,41 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
     async listIncomingProviderContactInvites(options?: { signal?: AbortSignal; fast?: boolean }): Promise<IncomingProviderContactInvitesResponse> {
       return embeddedPhoneListIncomingProviderContactInvites({ fast: options?.fast });
     },
-    async createManagedShare(): Promise<ManagedShareMutationResponse> {
-      throw createUnsupportedPhoneIntegrationError('Managed-share creation is not available on this device yet.');
+    async createManagedShare(input: {
+      provider: string;
+      accountId: string;
+      label: string;
+      localPath?: string;
+      role?: 'owner' | 'recipient' | 'link';
+      volumeId?: string;
+      remoteDescriptor?: Record<string, unknown>;
+      capabilities?: string[];
+    }): Promise<ManagedShareMutationResponse> {
+      return embeddedPhoneCreateManagedShare(input);
     },
-    async inviteManagedShare(): Promise<ManagedShareMutationResponse> {
-      throw createUnsupportedPhoneIntegrationError('Managed-share invites are not available on this device yet.');
+    async inviteManagedShare(
+      shareId: string,
+      emails: string[],
+      accessLevel?: 'read' | 'read/write' | 'full access'
+    ): Promise<ManagedShareMutationResponse> {
+      return embeddedPhoneInviteManagedShare(shareId, emails, accessLevel);
     },
-    async attachManagedShare(): Promise<ManagedShareMutationResponse> {
-      throw createUnsupportedPhoneIntegrationError('Managed-share attachment is not available on this device yet.');
+    async attachManagedShare(shareId: string, volumeId: string): Promise<ManagedShareMutationResponse> {
+      return embeddedPhoneAttachManagedShare(shareId, volumeId);
     },
-    async removeManagedShare(): Promise<void> {
-      throw createUnsupportedPhoneIntegrationError('Managed-share removal is not available on this device yet.');
+    async removeManagedShare(shareId: string): Promise<void> {
+      return embeddedPhoneRemoveManagedShare(shareId);
     },
-    async acceptManagedShare(): Promise<ManagedShareMutationResponse> {
-      throw createUnsupportedPhoneIntegrationError('Incoming managed-share acceptance is not available on this device yet.');
+    async acceptManagedShare(input: {
+      provider: string;
+      accountId: string;
+      label: string;
+      volumeId?: string;
+      localPath?: string;
+      remoteDescriptor?: Record<string, unknown>;
+      capabilities?: string[];
+    }): Promise<ManagedShareMutationResponse> {
+      return embeddedPhoneAcceptManagedShare(input);
     },
     async acceptIncomingProviderContactInvite(): Promise<void> {
       throw createUnsupportedPhoneIntegrationError('Provider contact invites are not available on this device yet.');
