@@ -228,11 +228,16 @@ try {
       VITE_NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
       VITE_NEARBYTES_EMBEDDED_PHONE_MEGA_ENABLED: '1',
       VITE_NEARBYTES_EMBEDDED_PHONE_LOCAL_NETWORK_ENABLED: '0',
+      // The phone shell may bootstrap embedded state from desktop dev files, but it must keep runtime
+      // authority in-process and must not route file/chat/watch behavior through the separate API server.
       VITE_NEARBYTES_EMBEDDED_PHONE_INTEGRATION_STATE_B64: readEmbeddedPhoneBootstrapIntegrationStateBase64(
         phonePaths.integrationStatePath
       ),
       VITE_NEARBYTES_EMBEDDED_PHONE_PROVIDER_SECRETS_B64: readEmbeddedPhoneBootstrapProviderSecretsBase64(
         phonePaths.serverSecretStorePath
+      ),
+      VITE_NEARBYTES_EMBEDDED_PHONE_ROOTS_CONFIG_B64: readEmbeddedPhoneBootstrapRootsConfigBase64(
+        phonePaths.rootsConfigPath
       ),
       NEARBYTES_INTEGRATIONS_STATE: phonePaths.integrationStatePath,
       NEARBYTES_DESKTOP_SESSION_FILE: phonePaths.desktopSessionPath,
@@ -506,7 +511,7 @@ function readEmbeddedPhoneBootstrapIntegrationStateBase64(filePath) {
     version: 1,
     preferredProviders: Array.isArray(parsed?.preferredProviders) ? parsed.preferredProviders : [],
     accounts: Array.isArray(parsed?.accounts) ? parsed.accounts : [],
-    managedShares: [],
+    managedShares: Array.isArray(parsed?.managedShares) ? parsed.managedShares : [],
     maintenance: parsed?.maintenance,
   }), 'utf8').toString('base64');
 }
@@ -524,4 +529,8 @@ function readEmbeddedPhoneBootstrapProviderSecretsBase64(filePath) {
     }
   }
   return Buffer.from(JSON.stringify(normalized), 'utf8').toString('base64');
+}
+
+function readEmbeddedPhoneBootstrapRootsConfigBase64(filePath) {
+  return Buffer.from(readFileSync(filePath, 'utf8'), 'utf8').toString('base64');
 }

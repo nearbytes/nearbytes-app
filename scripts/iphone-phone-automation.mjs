@@ -42,6 +42,9 @@ function parseArgs(args) {
   const parsed = {
     action: '',
     secret: '',
+    shareId: '',
+    path: '',
+    limit: 20,
     identitySecret: '',
     eventHash: '',
     displayName: 'Phone Test5',
@@ -64,6 +67,21 @@ function parseArgs(args) {
     }
     if (arg === '--secret') {
       parsed.secret = next ?? '';
+      index += 1;
+      continue;
+    }
+    if (arg === '--share-id') {
+      parsed.shareId = next ?? '';
+      index += 1;
+      continue;
+    }
+    if (arg === '--path') {
+      parsed.path = next ?? '';
+      index += 1;
+      continue;
+    }
+    if (arg === '--limit') {
+      parsed.limit = Number.parseInt(next ?? '', 10) || parsed.limit;
       index += 1;
       continue;
     }
@@ -122,7 +140,20 @@ function parseArgs(args) {
   if (!parsed.action) {
     throw new Error('--action is required');
   }
-  if (!parsed.secret && parsed.action !== 'get-latency-traces' && parsed.action !== 'clear-latency-traces') {
+  if (
+    !parsed.secret &&
+    parsed.action !== 'get-latency-traces' &&
+    parsed.action !== 'clear-latency-traces' &&
+    parsed.action !== 'list-lan-volume-ids' &&
+    parsed.action !== 'get-lan-volume-inventory' &&
+    parsed.action !== 'list-provider-accounts' &&
+    parsed.action !== 'list-managed-shares' &&
+    parsed.action !== 'get-managed-share-state' &&
+    parsed.action !== 'trigger-managed-share-sync' &&
+    parsed.action !== 'get-managed-share-upload-probes' &&
+    parsed.action !== 'debug-list-mega-owner-mirror-files' &&
+    parsed.action !== 'debug-read-mega-owner-mirror-file'
+  ) {
     throw new Error('--secret is required');
   }
 
@@ -202,6 +233,75 @@ function buildCommand(input) {
     return {
       id,
       action: input.action,
+    };
+  }
+  if (input.action === 'list-lan-volume-ids') {
+    return {
+      id,
+      action: input.action,
+    };
+  }
+  if (input.action === 'get-lan-volume-inventory') {
+    if (!input.path) {
+      throw new Error('--path is required for get-lan-volume-inventory');
+    }
+    return {
+      id,
+      action: input.action,
+      volumeId: input.path,
+    };
+  }
+  if (input.action === 'list-provider-accounts' || input.action === 'list-managed-shares') {
+    return {
+      id,
+      action: input.action,
+    };
+  }
+  if (input.action === 'get-managed-share-state' || input.action === 'trigger-managed-share-sync') {
+    if (!input.shareId) {
+      throw new Error('--share-id is required');
+    }
+    return {
+      id,
+      action: input.action,
+      shareId: input.shareId,
+    };
+  }
+  if (input.action === 'get-managed-share-upload-probes') {
+    if (!input.shareId) {
+      throw new Error('--share-id is required');
+    }
+    return {
+      id,
+      action: input.action,
+      shareId: input.shareId,
+      path: input.path || undefined,
+      limit: input.limit,
+    };
+  }
+  if (input.action === 'debug-list-mega-owner-mirror-files') {
+    if (!input.shareId) {
+      throw new Error('--share-id is required');
+    }
+    return {
+      id,
+      action: input.action,
+      shareId: input.shareId,
+      limit: input.limit,
+    };
+  }
+  if (input.action === 'debug-read-mega-owner-mirror-file') {
+    if (!input.shareId) {
+      throw new Error('--share-id is required');
+    }
+    if (!input.path) {
+      throw new Error('--path is required');
+    }
+    return {
+      id,
+      action: input.action,
+      shareId: input.shareId,
+      path: input.path,
     };
   }
   throw new Error(`Unsupported action: ${input.action}`);

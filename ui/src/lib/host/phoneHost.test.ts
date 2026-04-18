@@ -46,6 +46,10 @@ vi.mock('./runtimeTransport.js', () => ({
 import { openHostStream, requestHostJson, getRuntimeConfig } from './runtimeTransport.js';
 import { getPhoneHost, resetPhoneHostForTests } from './phoneHost.js';
 
+// Anti-regression note: phone host tests must preserve the self-contained embedded runtime design.
+// The phone shell may read bootstrap config from dev tooling, but it must not route runtime authority
+// through the separate API server process.
+
 function encodeJsonBase64(value: unknown): string {
   return Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
 }
@@ -748,7 +752,20 @@ describe('phoneHost', () => {
     });
 
     await host.integrations.removeManagedShare('share-mega-phone');
-    await expect(host.integrations.listManagedShares()).resolves.toEqual({ shares: [] });
+    await expect(host.integrations.listManagedShares()).resolves.toMatchObject({
+      shares: [
+        {
+          share: {
+            provider: 'mega',
+            role: 'owner',
+          },
+          storage: {
+            enabled: true,
+            writable: true,
+          },
+        },
+      ],
+    });
 
     const githubConnectResponse = await host.integrations.connectProviderAccount({
       provider: 'github',
@@ -906,15 +923,11 @@ describe('phoneHost', () => {
       shares: [
         {
           share: {
-            id: 'share-mega-phone-owner',
-            sourceId: 'src-mega-managed-3',
-          },
-          state: {
-            status: 'idle',
-            badges: ['Writable'],
+            provider: 'mega',
+            role: 'owner',
           },
           storage: {
-            sourcePath: 'local/mega/phone-owner/nearbytes',
+            sourcePath: expect.stringContaining('local/mega/'),
             enabled: true,
             writable: true,
           },
@@ -1103,7 +1116,108 @@ describe('phoneHost', () => {
     });
 
     await expect(host.integrations.listManagedShares()).resolves.toMatchObject({
-      shares: [],
+      shares: [
+        {
+          share: {
+            id: 'share-stale-bootstrap',
+            provider: 'mega',
+            accountId: 'acct-mega-dev-bootstrap',
+            role: 'recipient',
+          },
+        },
+      ],
+    });
+  });
+
+  it('bootstraps embedded phone roots config from dev env state', async () => {
+    resetPhoneHostForTests();
+    resetEmbeddedPhoneServicesForTests();
+    vi.stubEnv('VITE_NEARBYTES_EMBEDDED_PHONE_ROOTS_CONFIG_B64', encodeJsonBase64({
+      version: 2,
+      sources: [
+        {
+          id: 'src-embedded-phone',
+          provider: 'local',
+          path: '',
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'block-writes',
+        },
+        {
+          id: 'src-mega-managed-bootstrap',
+          provider: 'mega',
+          path: '/tmp/nearbytes-dev-bootstrap/nearbytes',
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'mega',
+            managedShareId: 'share-mega-bootstrap',
+          },
+        },
+      ],
+      defaultVolume: {
+        destinations: [
+          {
+            sourceId: 'src-embedded-phone',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+      volumes: [
+        {
+          volumeId: 'vol-bootstrap',
+          destinations: [
+            {
+              sourceId: 'src-mega-managed-bootstrap',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 5,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+      ],
+    }));
+
+    const host = await getPhoneHost();
+
+    await expect(host.objects.requestJson('/config/roots', { method: 'GET' })).resolves.toMatchObject({
+      config: {
+        sources: [
+          {
+            id: 'src-embedded-phone',
+          },
+          {
+            id: 'src-mega-managed-bootstrap',
+            integration: {
+              kind: 'provider-managed',
+              managedShareId: 'share-mega-bootstrap',
+            },
+          },
+        ],
+        volumes: [
+          {
+            volumeId: 'vol-bootstrap',
+            destinations: [
+              {
+                sourceId: 'src-mega-managed-bootstrap',
+                enabled: true,
+              },
+            ],
+          },
+        ],
+      },
     });
   });
 
@@ -1311,6 +1425,40 @@ describe('phoneHost', () => {
     resetEmbeddedPhoneRuntimeMetricsForTests();
 
     const reopenedHost = await getPhoneHost();
+    await reopenedHost.objects.requestJson('/config/roots', {
+      method: 'PUT',
+      body: JSON.stringify({
+        config: {
+          version: 2,
+          sources: [
+            {
+              id: 'src-embedded-phone',
+              provider: 'local',
+              path: '',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'block-writes',
+            },
+          ],
+          defaultVolume: {
+            destinations: [
+              {
+                sourceId: 'src-embedded-phone',
+                enabled: true,
+                storeEvents: true,
+                storeBlocks: true,
+                copySourceBlocks: true,
+                reservePercent: 5,
+                fullPolicy: 'block-writes',
+              },
+            ],
+          },
+          volumes: [],
+        },
+      }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
     const reopened = await reopenedHost.legacyDesktop.openVolume(secret) as {
       files: Array<{ filename: string }>;
       isOffline?: boolean;
@@ -1345,6 +1493,40 @@ describe('phoneHost', () => {
     resetEmbeddedPhoneRuntimeMetricsForTests();
 
     const reopenedHost = await getPhoneHost();
+    await reopenedHost.objects.requestJson('/config/roots', {
+      method: 'PUT',
+      body: JSON.stringify({
+        config: {
+          version: 2,
+          sources: [
+            {
+              id: 'src-embedded-phone',
+              provider: 'local',
+              path: '',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'block-writes',
+            },
+          ],
+          defaultVolume: {
+            destinations: [
+              {
+                sourceId: 'src-embedded-phone',
+                enabled: true,
+                storeEvents: true,
+                storeBlocks: true,
+                copySourceBlocks: true,
+                reservePercent: 5,
+                fullPolicy: 'block-writes',
+              },
+            ],
+          },
+          volumes: [],
+        },
+      }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
     const chat = await reopenedHost.legacyDesktop.listChat({ type: 'secret', secret }) as {
       identities: Array<{ authorPublicKey: string }>;
       messages: Array<{ message: { body?: string } }>;
@@ -1356,6 +1538,120 @@ describe('phoneHost', () => {
     expect(chat.isOffline).toBeUndefined();
     expect(readEmbeddedPhoneRuntimeMetricsForTests()).toMatchObject({
       bootstrappedReads: 1,
+    });
+  });
+
+  it('ignores stale bootstrapped snapshots for provider-managed attached volumes', async () => {
+    const secret = 'phone-managed-bootstrap-stale-secret';
+    const keyPair = await deriveKeys(createSecret(secret));
+    const volumeId = Array.from(keyPair.publicKey)
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join('');
+
+    await importCompatibilityVolumeSnapshot({
+      volumeId,
+      files: [{ filename: 'stale.jpg', blobHash: 'stale-1', size: 264604, createdAt: 1 }],
+    });
+    await importCompatibilityTimelineSnapshot({
+      volumeId,
+      eventCount: 1,
+      events: [
+        {
+          eventHash: 'evt-stale-file',
+          type: 'CREATE_FILE',
+          filename: 'stale.jpg',
+          timestamp: 1,
+          publishedAt: 1,
+        },
+      ],
+    });
+
+    resetPhoneHostForTests();
+    resetEmbeddedPhoneServicesForTests();
+    await seedEmbeddedPhoneRuntimeHeadForTests(secret);
+
+    const host = await getPhoneHost();
+    await host.objects.requestJson('/config/roots', {
+      method: 'PUT',
+      body: JSON.stringify({
+        config: {
+          version: 2,
+          sources: [
+            {
+              id: 'src-embedded-phone',
+              provider: 'local',
+              path: '',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'block-writes',
+            },
+            {
+              id: 'src-mega-managed-stale',
+              provider: 'mega',
+              path: 'local/mega/phone-owner/nearbytes',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'drop-older-blocks',
+              integration: {
+                kind: 'provider-managed',
+                provider: 'mega',
+                managedShareId: 'share-mega-phone-owner',
+              },
+            },
+          ],
+          defaultVolume: {
+            destinations: [
+              {
+                sourceId: 'src-embedded-phone',
+                enabled: true,
+                storeEvents: true,
+                storeBlocks: true,
+                copySourceBlocks: true,
+                reservePercent: 5,
+                fullPolicy: 'block-writes',
+              },
+            ],
+          },
+          volumes: [
+            {
+              volumeId,
+              destinations: [
+                {
+                  sourceId: 'src-mega-managed-stale',
+                  enabled: true,
+                  storeEvents: true,
+                  storeBlocks: true,
+                  copySourceBlocks: true,
+                  reservePercent: 5,
+                  fullPolicy: 'block-writes',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+    resetEmbeddedPhoneRuntimeMetricsForTests();
+
+    const opened = await host.legacyDesktop.openVolume(secret) as {
+      volumeId: string;
+      fileCount: number;
+      files: Array<{ filename: string }>;
+      isOffline?: boolean;
+    };
+
+    expect(opened).toMatchObject({
+      volumeId,
+      fileCount: 0,
+      files: [],
+    });
+    expect(opened.isOffline).toBeUndefined();
+    expect(readEmbeddedPhoneRuntimeMetricsForTests()).toMatchObject({
+      refreshReads: 0,
+      bootstrappedReads: 0,
     });
   });
 
@@ -1381,4 +1677,5 @@ describe('phoneHost', () => {
     expect(requestHostJson).not.toHaveBeenCalled();
     expect(openHostStream).not.toHaveBeenCalled();
   });
+
 });

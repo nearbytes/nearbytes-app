@@ -15,18 +15,28 @@ import {
   setNativeAutomationResult,
 } from './nativeLanPlugin.js';
 import {
+  embeddedPhoneDebugListMegaOwnerMirrorFiles,
+  embeddedPhoneDebugReadMegaOwnerMirrorFile,
   embeddedPhoneListManagedShares,
   embeddedPhoneListProviderAccounts,
   embeddedPhoneClearLanLatencyTraces,
+  embeddedPhoneGetManagedShareState,
+  embeddedPhoneGetManagedShareUploadProbes,
   embeddedPhoneGetLanLatencyTraces,
+  embeddedPhoneGetLanVolumeInventory,
+  embeddedPhoneListLanVolumeIds,
   embeddedPhoneListChat,
   embeddedPhoneListFiles,
   embeddedPhoneOpenVolume,
   embeddedPhonePublishIdentity,
   embeddedPhoneSendChatMessage,
+  embeddedPhoneTriggerManagedShareSync,
   embeddedPhoneUploadFile,
 } from './embeddedPhoneServices.js';
 import type { IdentityProfile } from '../api.js';
+
+// Keep automation pointed at the embedded phone runtime. These commands must inspect the same in-process
+// backend/runtime that the phone app uses, not the separate dev API server.
 
 type OpenVolumeCommand = {
   id: string;
@@ -95,6 +105,17 @@ type ClearLatencyTracesCommand = {
   action: 'clear-latency-traces';
 };
 
+type ListLanVolumeIdsCommand = {
+  id: string;
+  action: 'list-lan-volume-ids';
+};
+
+type GetLanVolumeInventoryCommand = {
+  id: string;
+  action: 'get-lan-volume-inventory';
+  volumeId: string;
+};
+
 type ListProviderAccountsCommand = {
   id: string;
   action: 'list-provider-accounts';
@@ -105,6 +126,40 @@ type ListManagedSharesCommand = {
   id: string;
   action: 'list-managed-shares';
   fast?: boolean;
+};
+
+type GetManagedShareStateCommand = {
+  id: string;
+  action: 'get-managed-share-state';
+  shareId: string;
+};
+
+type TriggerManagedShareSyncCommand = {
+  id: string;
+  action: 'trigger-managed-share-sync';
+  shareId: string;
+};
+
+type GetManagedShareUploadProbesCommand = {
+  id: string;
+  action: 'get-managed-share-upload-probes';
+  shareId: string;
+  path?: string;
+  limit?: number;
+};
+
+type DebugListMegaOwnerMirrorFilesCommand = {
+  id: string;
+  action: 'debug-list-mega-owner-mirror-files';
+  shareId: string;
+  limit?: number;
+};
+
+type DebugReadMegaOwnerMirrorFileCommand = {
+  id: string;
+  action: 'debug-read-mega-owner-mirror-file';
+  shareId: string;
+  path: string;
 };
 
 type PhoneAutomationCommand =
@@ -118,8 +173,15 @@ type PhoneAutomationCommand =
   | WaitChatEventCommand
   | GetLatencyTracesCommand
   | ClearLatencyTracesCommand
+  | ListLanVolumeIdsCommand
+  | GetLanVolumeInventoryCommand
   | ListProviderAccountsCommand
-  | ListManagedSharesCommand;
+  | ListManagedSharesCommand
+  | GetManagedShareStateCommand
+  | TriggerManagedShareSyncCommand
+  | GetManagedShareUploadProbesCommand
+  | DebugListMegaOwnerMirrorFilesCommand
+  | DebugReadMegaOwnerMirrorFileCommand;
 
 type PhoneAutomationResult = {
   id: string;
@@ -277,6 +339,15 @@ function normalizePhoneAutomationCommand(value: unknown): PhoneAutomationCommand
     return { id, action };
   }
 
+  if (action === 'list-lan-volume-ids') {
+    return { id, action };
+  }
+
+  if (action === 'get-lan-volume-inventory') {
+    const volumeId = readRequiredString(candidate.volumeId);
+    return volumeId ? { id, action, volumeId } : null;
+  }
+
   if (action === 'list-provider-accounts') {
     return {
       id,
@@ -291,6 +362,50 @@ function normalizePhoneAutomationCommand(value: unknown): PhoneAutomationCommand
       action,
       fast: candidate.fast === true,
     };
+  }
+
+  if (action === 'get-managed-share-state') {
+    const shareId = readRequiredString(candidate.shareId);
+    return shareId ? { id, action, shareId } : null;
+  }
+
+  if (action === 'trigger-managed-share-sync') {
+    const shareId = readRequiredString(candidate.shareId);
+    return shareId ? { id, action, shareId } : null;
+  }
+
+  if (action === 'get-managed-share-upload-probes') {
+    const shareId = readRequiredString(candidate.shareId);
+    const path = readOptionalString(candidate.path) ?? undefined;
+    const limitValue = typeof candidate.limit === 'number' ? candidate.limit : Number(candidate.limit);
+    return shareId
+      ? {
+          id,
+          action,
+          shareId,
+          path,
+          limit: Number.isFinite(limitValue) ? limitValue : undefined,
+        }
+      : null;
+  }
+
+  if (action === 'debug-list-mega-owner-mirror-files') {
+    const shareId = readRequiredString(candidate.shareId);
+    const limitValue = typeof candidate.limit === 'number' ? candidate.limit : Number(candidate.limit);
+    return shareId
+      ? {
+          id,
+          action,
+          shareId,
+          limit: Number.isFinite(limitValue) ? limitValue : undefined,
+        }
+      : null;
+  }
+
+  if (action === 'debug-read-mega-owner-mirror-file') {
+    const shareId = readRequiredString(candidate.shareId);
+    const path = readRequiredString(candidate.path);
+    return shareId && path ? { id, action, shareId, path } : null;
   }
 
   return null;
@@ -334,12 +449,44 @@ async function executePhoneAutomationCommand(command: PhoneAutomationCommand): P
     return { ok: true };
   }
 
+  if (command.action === 'list-lan-volume-ids') {
+    return { volumeIds: await embeddedPhoneListLanVolumeIds() };
+  }
+
+  if (command.action === 'get-lan-volume-inventory') {
+    return embeddedPhoneGetLanVolumeInventory(command.volumeId);
+  }
+
   if (command.action === 'list-provider-accounts') {
     return embeddedPhoneListProviderAccounts({ fast: command.fast });
   }
 
   if (command.action === 'list-managed-shares') {
     return embeddedPhoneListManagedShares({ fast: command.fast });
+  }
+
+  if (command.action === 'get-managed-share-state') {
+    return embeddedPhoneGetManagedShareState(command.shareId);
+  }
+
+  if (command.action === 'trigger-managed-share-sync') {
+    await embeddedPhoneTriggerManagedShareSync(command.shareId);
+    return { ok: true, shareId: command.shareId };
+  }
+
+  if (command.action === 'get-managed-share-upload-probes') {
+    return embeddedPhoneGetManagedShareUploadProbes(command.shareId, {
+      relativePath: command.path,
+      limit: command.limit,
+    });
+  }
+
+  if (command.action === 'debug-list-mega-owner-mirror-files') {
+    return embeddedPhoneDebugListMegaOwnerMirrorFiles(command.shareId, command.limit);
+  }
+
+  if (command.action === 'debug-read-mega-owner-mirror-file') {
+    return embeddedPhoneDebugReadMegaOwnerMirrorFile(command.shareId, command.path);
   }
 
   if (command.action === 'open-volume') {

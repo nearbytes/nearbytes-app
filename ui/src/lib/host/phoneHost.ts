@@ -99,6 +99,9 @@ let hostPromise: Promise<NearbytesHostContract> | null = null;
 const MISSING_PHONE_RUNTIME_MESSAGE =
   'Phone runtime capability is not implemented in the embedded phone host yet.';
 const EMBEDDED_PHONE_MIRROR_MESSAGE = 'Using persisted mirrored data. Runtime unavailable.';
+// Architecture guardrail: the phone host must stay self-contained and use the shared embedded runtime/backend
+// code in this process. The dev API server can help desktop tooling, but the phone shell must not proxy its
+// runtime, file, chat, or watch paths through that external HTTP server.
 
 function createMissingPhoneRuntimeError(): Error {
   return new HostRequestError(501, MISSING_PHONE_RUNTIME_MESSAGE);
@@ -206,6 +209,13 @@ function createUnsupportedPhoneIntegrationsFamily(): NearbytesHostContract['inte
       return embeddedPhoneGetManagedShareState(shareId);
     },
   };
+}
+
+function createPhoneIntegrationsFamily(): NearbytesHostContract['integrations'] {
+  return createUnsupportedPhoneIntegrationsFamily();
+}
+function createPhoneLegacyDesktopFamily(): NearbytesHostContract['legacyDesktop'] {
+  return createUnsupportedLegacyDesktopFamily();
 }
 
 async function deriveVolumeIdFromSecret(secret: string): Promise<string> {
@@ -670,8 +680,8 @@ export async function getPhoneHost(): Promise<NearbytesHostContract> {
   hostPromise = (async () => {
     await getRuntimeConfig();
     const runtimeOwner: NearbytesHostContract['capabilities']['runtimeOwner'] = 'embedded';
-    const integrations = createUnsupportedPhoneIntegrationsFamily();
-    const legacyDesktop = createUnsupportedLegacyDesktopFamily();
+    const integrations = createPhoneIntegrationsFamily();
+    const legacyDesktop = createPhoneLegacyDesktopFamily();
 
     if (hasNativeLanPlugin()) {
       void listNativeLanPeers().catch((error) => {

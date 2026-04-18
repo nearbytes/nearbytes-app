@@ -2234,9 +2234,13 @@ export class MegaTransportAdapter {
         await (await getMegaNodeFs()).mkdir(share.localPath, { recursive: true });
         await ensureMegaOwnerLocalStructure(share.localPath);
       }
-      const session = await this.getAccountSession(account, signal);
+      const session = await this.getAccountSession(account, signal).catch((error) => {
+        throw annotateMegaOwnerSyncPhaseError('Session refresh failed', error);
+      });
       console.log('[MEGA:owner-sync] session obtained, resolving remote root.', { remotePath });
-      const root = await this.ensureOwnerRemoteRoot(session, remotePath, signal);
+      const root = await this.ensureOwnerRemoteRoot(session, remotePath, signal).catch((error) => {
+        throw annotateMegaOwnerSyncPhaseError('Remote root resolution failed', error);
+      });
       console.log('[MEGA:owner-sync] remote root resolved.', {
         rootHandle: root.root.handle,
         rootName: root.root.name,
@@ -2245,7 +2249,9 @@ export class MegaTransportAdapter {
       });
       this.shareRootHandles.set(share.id, root.root.handle);
       const worker = new MirrorWorker();
-      let shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal);
+      let shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal).catch((error) => {
+        throw annotateMegaOwnerSyncPhaseError('Share-key resolution failed', error);
+      });
       console.log('[MEGA:owner-sync] owner share crypto resolved.', {
         shareId: share.id,
         remotePath,
@@ -2268,8 +2274,12 @@ export class MegaTransportAdapter {
           { shareId: share.id, shareHandle: root.root.shareHandle, email: session.email }
         );
       }
-      await this.replayMissingOwnerManagedShareInvitesInline(share, account, session, root, signal);
-      shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal) ?? shareCrypto;
+      await this.replayMissingOwnerManagedShareInvitesInline(share, account, session, root, signal).catch((error) => {
+        throw annotateMegaOwnerSyncPhaseError('Invite replay failed', error);
+      });
+      shareCrypto = await this.resolveOwnerShareCryptoContext(session, root, signal).catch((error) => {
+        throw annotateMegaOwnerSyncPhaseError('Post-invite share-key resolution failed', error);
+      }) ?? shareCrypto;
       if (!shareCrypto && root.root.shareHandle && share.invitationEmails.length > 0) {
         this.runtime.logger.warn(
           'MEGA owner sync: share key is still missing after invite replay — repairing the share.',
@@ -2277,7 +2287,9 @@ export class MegaTransportAdapter {
         );
         shareCrypto = await this.repairOwnerShareKey(session, root, signal);
       }
-      const ownerShareKeyHealResult = await this.healOwnerOutgoingShareKeys(share, session, root, shareCrypto, signal);
+      const ownerShareKeyHealResult = await this.healOwnerOutgoingShareKeys(share, session, root, shareCrypto, signal).catch((error) => {
+        throw annotateMegaOwnerSyncPhaseError('Owner-share key healing failed', error);
+      });
       if (
         ownerShareKeyHealResult &&
         ownerShareKeyHealResult.targetCount > 0 &&
@@ -2285,11 +2297,15 @@ export class MegaTransportAdapter {
       ) {
         this.schedulePendingSyncRetry(share, account, MEGA_OWNER_SHARE_KEY_HEAL_RETRY_MS);
       }
-      await this.healOwnerShareTreeNodeKeys(share, session, root, shareCrypto, signal);
+      await this.healOwnerShareTreeNodeKeys(share, session, root, shareCrypto, signal).catch((error) => {
+        throw annotateMegaOwnerSyncPhaseError('Owner tree-key republish failed', error);
+      });
       const ownerUploadState = buildMegaOwnerUploadState(root, shareCrypto);
       this.ownerUploadStates.set(share.id, ownerUploadState);
       const result = this.runtime.mega.ownerMirrorSource
-        ? await this.syncOwnerShareFromRuntimeSource(share, session, ownerUploadState, signal)
+        ? await this.syncOwnerShareFromRuntimeSource(share, session, ownerUploadState, signal).catch((error) => {
+            throw annotateMegaOwnerSyncPhaseError('Runtime-source upload failed', error);
+          })
         : await worker.sync(
             share.localPath,
             new MegaOwnerRemoteAdapter(
@@ -2299,7 +2315,9 @@ export class MegaTransportAdapter {
               ownerUploadState,
               signal
             )
-          );
+          ).catch((error) => {
+            throw annotateMegaOwnerSyncPhaseError('Mirror-worker sync failed', error);
+          });
       console.log('[MEGA:owner-sync] owner share sync completed.', {
         shareId: share.id,
         uploaded: result.uploaded,
@@ -6014,6 +6032,11 @@ function describeMegaOwnerSyncFailure(error: unknown, remotePath: string): strin
     return `Nearbytes could not refresh the saved MEGA sign-in for the writable owner sync at ${remotePath}. It will retry automatically. ${message}`.trim();
   }
   return `Nearbytes could not sync the writable MEGA owner folder ${remotePath}. ${message}`.trim();
+}
+
+function annotateMegaOwnerSyncPhaseError(phase: string, error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`${phase}: ${message}`);
 }
 
 function normalizeMegaRemoteDisplayPath(value: string): string {
