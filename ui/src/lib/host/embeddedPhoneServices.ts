@@ -2473,6 +2473,27 @@ async function getEmbeddedPhoneProviderManagedSourceIds(volumeId: string): Promi
     .filter((sourceId) => providerManagedSourceIds.has(sourceId));
 }
 
+async function getEmbeddedPhoneManagedShareIdsForVolume(volumeId: string): Promise<string[]> {
+  const config = await readEmbeddedPhoneRootsConfigValue();
+  const managedShareIds = new Set(
+    config.sources
+      .filter((source) => source.integration?.kind === 'provider-managed')
+      .flatMap((source) => {
+        const managedShareId = source.integration?.managedShareId?.trim();
+        if (!managedShareId) {
+          return [];
+        }
+        const attached = config.volumes.some(
+          (volume) =>
+            volume.volumeId.trim().toLowerCase() === volumeId &&
+            volume.destinations.some((destination) => destination.sourceId === source.id)
+        );
+        return attached ? [managedShareId] : [];
+      })
+  );
+  return [...managedShareIds];
+}
+
 async function nudgeEmbeddedPhoneManagedShareSyncForVolume(volumeId: string): Promise<void> {
   const sourceIds = await getEmbeddedPhoneProviderManagedSourceIds(volumeId);
   if (sourceIds.length === 0) {
@@ -2485,7 +2506,22 @@ async function nudgeEmbeddedPhoneManagedShareSyncForVolume(volumeId: string): Pr
   }
   embeddedPhoneManagedShareSyncNudges.set(volumeId, now);
   const service = await getEmbeddedPhoneManagedShareService();
-  await service.listManagedShares({ fast: false });
+  const shareIds = await getEmbeddedPhoneManagedShareIdsForVolume(volumeId);
+  if (shareIds.length === 0) {
+    await service.listManagedShares({ fast: false });
+    return;
+  }
+  await Promise.all(
+    shareIds.map(async (shareId) => {
+      try {
+        await service.triggerManagedShareSync(shareId);
+      } catch {
+        // Keep the phone self-contained and push-driven: fall back to a broad inventory refresh
+        // if a direct share sync cannot be started for this attached managed share.
+        await service.listManagedShares({ fast: false });
+      }
+    })
+  );
 }
 
 async function rememberEmbeddedPhoneOpenedVolume(secret: string): Promise<string> {

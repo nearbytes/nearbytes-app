@@ -2414,7 +2414,9 @@ export class MegaTransportAdapter {
       activePaths.add(relativePath);
       const bytes = await source.readMirrorFile(share, relativePath);
       const existing = ownerUploadState.filesByPath.get(relativePath);
-      if (existing && existing.size === bytes.length) {
+      // Runtime-source owner mirrors can produce new canonical channel events with the same byte length
+      // as older remote files. Do not use a size-only shortcut for channels/* or we can suppress real push sync.
+      if (existing && !relativePath.startsWith('channels/') && existing.size === bytes.length) {
         skipped.push(relativePath);
         continue;
       }
@@ -9835,4 +9837,3 @@ export async function resetMegaSecurityAttributeForE2e(options: {
 }): Promise<void> {
   await rebuildMegaSecurityAttributeForE2e(options);
 }
-
