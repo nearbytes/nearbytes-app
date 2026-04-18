@@ -2624,6 +2624,34 @@ describe('ManagedShareService', () => {
     ).toBe(true);
   });
 
+  it('attaches newly opened volumes to existing MEGA owner shares', async () => {
+    const trackedVolumeId =
+      '0470f0f4b5e8692d7d80af007bb3998a45a28ef86039120c49a093f6d83db1eac6a7cea90d620dc3d2c3095f0247da0ce3f460291eb9dc467cedce958abf38d473';
+    const { localRoot, service } = await createHarness();
+
+    await service.connectAccount({
+      provider: 'mega',
+      accountId: 'acct-mega-1',
+      label: 'MEGA',
+      email: 'owner@example.com',
+      credentials: {
+        email: 'owner@example.com',
+        password: 'secret',
+      },
+    });
+
+    const initialShares = await service.listManagedShares();
+    expect(initialShares.shares).toHaveLength(1);
+    expect(initialShares.shares[0]?.share.role).toBe('owner');
+    expect(initialShares.shares[0]?.attachments).toEqual([]);
+
+    await fs.mkdir(path.join(localRoot, 'channels', trackedVolumeId), { recursive: true });
+    await service.rememberOpenedVolume(trackedVolumeId);
+
+    const nextShares = await service.listManagedShares({ fast: true });
+    expect(nextShares.shares[0]?.attachments.map((attachment) => attachment.volumeId)).toEqual([trackedVolumeId]);
+  });
+
   it('repairs a detached non-canonical MEGA incoming share through repairManagedShare()', async () => {
     const trackedVolumeId =
       '0448eb9656ceaca3817f9375f65320fcf67710ec46f4064635f42733deda447ca5018dc71f949ff8f9e3c8a80346f12fb45060ee9b9a0119d4942b7c3d1ad2df05';

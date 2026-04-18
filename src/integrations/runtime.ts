@@ -45,6 +45,17 @@ export interface GoogleDriveRuntimeConfig {
   readonly syncIntervalMs: number;
 }
 
+export interface MegaOwnerMirrorShareRef {
+  readonly id: string;
+  readonly sourceId?: string;
+  readonly attachments?: readonly { readonly volumeId: string }[];
+}
+
+export interface MegaOwnerMirrorSource {
+  listMirrorFiles(share: MegaOwnerMirrorShareRef): Promise<readonly string[]>;
+  readMirrorFile(share: MegaOwnerMirrorShareRef, relativePath: string): Promise<Uint8Array>;
+}
+
 export interface MegaRuntimeConfig {
   readonly remoteBasePath: string;
   readonly syncIntervalMs: number;
@@ -52,6 +63,7 @@ export interface MegaRuntimeConfig {
   /** After `s2` invites, briefly poll fetch-nodes for collaborator reflection as a best-effort diagnostic. 0 = skip wait. */
   readonly inviteReflectionTimeoutMs: number;
   readonly inviteReflectionPollMs: number;
+  readonly ownerMirrorSource?: MegaOwnerMirrorSource;
 }
 
 export interface GitHubRuntimeConfig {
@@ -144,6 +156,7 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
         250,
         positiveInt(options.mega?.inviteReflectionPollMs, DEFAULT_MEGA_INVITE_REFLECTION_POLL_MS)
       ),
+      ownerMirrorSource: options.mega?.ownerMirrorSource,
     },
     github: {
       clientId:

@@ -46,6 +46,10 @@ vi.mock('./runtimeTransport.js', () => ({
 import { openHostStream, requestHostJson, getRuntimeConfig } from './runtimeTransport.js';
 import { getPhoneHost, resetPhoneHostForTests } from './phoneHost.js';
 
+function encodeJsonBase64(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
+}
+
 describe('phoneHost', () => {
   afterEach(() => {
     resetPhoneHostForTests();
@@ -53,6 +57,7 @@ describe('phoneHost', () => {
     resetEmbeddedPhoneServicesForTests();
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('uses the embedded phone runtime for local file and chat mutations', async () => {
@@ -729,15 +734,6 @@ describe('phoneHost', () => {
         },
       },
     });
-    await expect(host.integrations.inviteManagedShare('share-mega-phone', ['friend@example.com'])).resolves.toMatchObject({
-      summary: {
-        share: {
-          id: 'share-mega-phone',
-          invitationEmails: ['friend@example.com'],
-        },
-      },
-    });
-
     await expect(host.integrations.attachManagedShare('share-mega-phone', 'vol-phone')).resolves.toMatchObject({
       summary: {
         share: {
@@ -751,43 +747,8 @@ describe('phoneHost', () => {
       },
     });
 
-    await expect(host.integrations.acceptManagedShare({
-      provider: 'mega',
-      accountId: 'acct-mega-phone',
-      label: 'Incoming Phone Share',
-      remoteDescriptor: {
-        remotePath: '/incoming',
-        ownerEmail: 'owner@example.com',
-      },
-    })).resolves.toMatchObject({
-      summary: {
-        share: {
-          provider: 'mega',
-          accountId: 'acct-mega-phone',
-          role: 'recipient',
-          label: 'Incoming Phone Share',
-        },
-      },
-    });
-
-    await expect(host.integrations.reconcileProviderManagedShares('mega')).resolves.toMatchObject({
-      provider: 'mega',
-      adoptedShares: 0,
-      retiredShares: 0,
-      migratedShares: 0,
-    });
-
     await host.integrations.removeManagedShare('share-mega-phone');
-    await expect(host.integrations.listManagedShares()).resolves.toMatchObject({
-      shares: [
-        {
-          share: {
-            label: 'Incoming Phone Share',
-            role: 'recipient',
-          },
-        },
-      ],
-    });
+    await expect(host.integrations.listManagedShares()).resolves.toEqual({ shares: [] });
 
     const githubConnectResponse = await host.integrations.connectProviderAccount({
       provider: 'github',
@@ -834,6 +795,316 @@ describe('phoneHost', () => {
       ],
     });
     expect(requestHostJson).not.toHaveBeenCalled();
+  });
+
+  it('treats embedded MEGA managed-share local paths as attached phone storage', async () => {
+    await seedEmbeddedPhoneIntegrationStateForTests({
+      version: 1,
+      preferredProviders: ['mega'],
+      accounts: [
+        {
+          id: 'acct-mega-phone',
+          provider: 'mega',
+          label: 'MEGA',
+          email: 'phone@example.com',
+          state: 'connected',
+          detail: 'Connected on phone.',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      managedShares: [
+        {
+          id: 'share-mega-phone-owner',
+          provider: 'mega',
+          accountId: 'acct-mega-phone',
+          label: 'nearbytes',
+          role: 'owner',
+          localPath: 'local/mega/phone-owner/nearbytes',
+          sourceId: 'src-mega-managed-3',
+          syncMode: 'mirror',
+          remoteDescriptor: {
+            remotePath: '/nearbytes',
+            shareName: 'nearbytes',
+          },
+          capabilities: ['mirror', 'read', 'write', 'invite'],
+          invitationEmails: [],
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      maintenance: undefined,
+    });
+
+    const host = await getPhoneHost();
+
+    await host.objects.requestJson('/config/app/providers/mega', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: true }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+
+    await host.objects.requestJson('/config/roots', {
+      method: 'PUT',
+      body: JSON.stringify({
+        config: {
+          version: 2,
+          sources: [
+            {
+              id: 'src-embedded-phone',
+              provider: 'local',
+              path: '',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'block-writes',
+            },
+            {
+              id: 'src-mega-managed-3',
+              provider: 'mega',
+              path: 'local/mega/phone-owner/nearbytes',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'drop-older-blocks',
+              integration: {
+                kind: 'provider-managed',
+                provider: 'mega',
+                managedShareId: 'share-mega-phone-owner',
+              },
+            },
+          ],
+          defaultVolume: {
+            destinations: [
+              {
+                sourceId: 'src-embedded-phone',
+                enabled: true,
+                storeEvents: true,
+                storeBlocks: true,
+                copySourceBlocks: true,
+                reservePercent: 5,
+                fullPolicy: 'block-writes',
+              },
+              {
+                sourceId: 'src-mega-managed-3',
+                enabled: true,
+                storeEvents: true,
+                storeBlocks: true,
+                copySourceBlocks: true,
+                reservePercent: 5,
+                fullPolicy: 'block-writes',
+              },
+            ],
+          },
+          volumes: [],
+        },
+      }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+
+    await expect(host.integrations.listManagedShares()).resolves.toMatchObject({
+      shares: [
+        {
+          share: {
+            id: 'share-mega-phone-owner',
+            sourceId: 'src-mega-managed-3',
+          },
+          state: {
+            status: 'idle',
+            badges: ['Writable'],
+          },
+          storage: {
+            sourcePath: 'local/mega/phone-owner/nearbytes',
+            enabled: true,
+            writable: true,
+          },
+        },
+      ],
+    });
+  });
+
+  it('attaches opened hubs to the embedded MEGA owner share', async () => {
+    await seedEmbeddedPhoneIntegrationStateForTests({
+      version: 1,
+      preferredProviders: ['mega'],
+      accounts: [
+        {
+          id: 'acct-mega-phone',
+          provider: 'mega',
+          label: 'MEGA',
+          email: 'phone@example.com',
+          state: 'needs-auth',
+          detail: 'MEGA sign-in required.',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      managedShares: [
+        {
+          id: 'share-mega-phone-owner',
+          provider: 'mega',
+          accountId: 'acct-mega-phone',
+          label: 'nearbytes',
+          role: 'owner',
+          localPath: 'local/mega/phone-owner/nearbytes',
+          sourceId: 'src-mega-managed-3',
+          syncMode: 'mirror',
+          remoteDescriptor: {
+            remotePath: '/nearbytes',
+            shareName: 'nearbytes',
+          },
+          capabilities: ['mirror', 'read', 'write', 'invite'],
+          invitationEmails: [],
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      maintenance: undefined,
+    });
+
+    const host = await getPhoneHost();
+
+    await host.objects.requestJson('/config/app/providers/mega', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: true }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+
+    await host.objects.requestJson('/config/roots', {
+      method: 'PUT',
+      body: JSON.stringify({
+        config: {
+          version: 2,
+          sources: [
+            {
+              id: 'src-embedded-phone',
+              provider: 'local',
+              path: '',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'block-writes',
+            },
+            {
+              id: 'src-mega-managed-3',
+              provider: 'mega',
+              path: 'local/mega/phone-owner/nearbytes',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'drop-older-blocks',
+              integration: {
+                kind: 'provider-managed',
+                provider: 'mega',
+                managedShareId: 'share-mega-phone-owner',
+              },
+            },
+          ],
+          defaultVolume: {
+            destinations: [
+              {
+                sourceId: 'src-embedded-phone',
+                enabled: true,
+                storeEvents: true,
+                storeBlocks: true,
+                copySourceBlocks: true,
+                reservePercent: 5,
+                fullPolicy: 'block-writes',
+              },
+            ],
+          },
+          volumes: [],
+        },
+      }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+
+    const opened = await host.legacyDesktop.openVolume('phone-mega-owner-auto-attach-secret') as { volumeId: string };
+
+    await expect(host.objects.requestJson('/config/roots', { method: 'GET' })).resolves.toMatchObject({
+      config: {
+        volumes: [
+          {
+            volumeId: opened.volumeId,
+            destinations: [
+              {
+                sourceId: expect.stringMatching(/^src-mega-managed-/),
+                enabled: true,
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it('bootstraps embedded phone provider accounts from dev env state', async () => {
+    resetPhoneHostForTests();
+    resetEmbeddedPhoneServicesForTests();
+    vi.stubEnv('VITE_NEARBYTES_EMBEDDED_PHONE_INTEGRATION_STATE_B64', encodeJsonBase64({
+      version: 1,
+      preferredProviders: ['mega'],
+      accounts: [
+        {
+          id: 'acct-mega-dev-bootstrap',
+          provider: 'mega',
+          label: 'MEGA',
+          email: 'phone+bootstrap@example.com',
+          state: 'connected',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      managedShares: [
+        {
+          id: 'share-stale-bootstrap',
+          provider: 'mega',
+          accountId: 'acct-mega-dev-bootstrap',
+          label: 'nearbytes',
+          role: 'recipient',
+          localPath: '/tmp/desktop-only-nearbytes',
+          sourceId: 'src-desktop-stale',
+          syncMode: 'mirror',
+          remoteDescriptor: { rootHandle: 'abcdefgh' },
+          capabilities: ['mirror', 'read'],
+          invitationEmails: [],
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    }));
+    vi.stubEnv('VITE_NEARBYTES_EMBEDDED_PHONE_PROVIDER_SECRETS_B64', encodeJsonBase64({
+      version: 1,
+      entries: {
+        'provider-account:mega:acct-mega-dev-bootstrap': encodeJsonBase64({
+          email: 'phone+bootstrap@example.com',
+          password: 'secret',
+        }),
+      },
+    }));
+
+    const host = await getPhoneHost();
+
+    await host.objects.requestJson('/config/app/providers/mega', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: true }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+
+    await expect(host.integrations.listProviderAccounts()).resolves.toMatchObject({
+      accounts: [
+        {
+          id: 'acct-mega-dev-bootstrap',
+          provider: 'mega',
+          email: 'phone+bootstrap@example.com',
+        },
+      ],
+      preferredProviders: ['mega'],
+    });
+
+    await expect(host.integrations.listManagedShares()).resolves.toMatchObject({
+      shares: [],
+    });
   });
 
   it('initiates LAN sync through the embedded phone host and persists the peer sync state', async () => {

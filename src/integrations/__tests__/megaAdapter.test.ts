@@ -4439,6 +4439,211 @@ describe('MegaTransportAdapter', () => {
     expect(uploadCommitCount).toBe(1);
   });
 
+  it('syncs owner shares from a runtime mirror source without requiring a local filesystem mirror', async () => {
+    const secretStore = createMemorySecretStore();
+    const email = 'owner@example.com';
+    const userHandle = 'owner001';
+    const driveHandle = 'root0001';
+    const shareHandle = 'nearbyt0';
+    const blocksHandle = 'blocks01';
+    const channelsHandle = 'chans001';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const driveNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const rootNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const mirrorBytes = Buffer.from('hello-runtime-mirror', 'utf8');
+    const uploadedFiles = new Map<string, { handle: string; size: number; attributes: string; nodeKey: Buffer }>();
+    let uploadReservationCount = 0;
+    let uploadCommitCount = 0;
+
+    await secretStore.set('provider-account:mega:acct-mega-owner-runtime-source', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'pk':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f': {
+            const requestedRoot = typeof payload.n === 'string' ? payload.n : undefined;
+            const nodes = [
+              {
+                h: driveHandle,
+                t: 1,
+                a: encryptAttributes('Cloud Drive', driveNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(driveNodeKey, masterKey)),
+              },
+              {
+                h: shareHandle,
+                p: driveHandle,
+                t: 1,
+                a: encryptAttributes('nearbytes', rootNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(rootNodeKey, masterKey)),
+              },
+              {
+                h: blocksHandle,
+                p: shareHandle,
+                t: 1,
+                a: encryptAttributes('blocks', blocksNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(blocksNodeKey, masterKey)),
+              },
+              {
+                h: channelsHandle,
+                p: shareHandle,
+                t: 1,
+                a: encryptAttributes('channels', channelsNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
+              },
+              ...Array.from(uploadedFiles.entries()).map(([relativePath, entry]) => ({
+                h: entry.handle,
+                p: relativePath.startsWith('channels/') ? channelsHandle : blocksHandle,
+                t: 0,
+                s: entry.size,
+                a: entry.attributes,
+                k: encryptNodeKey(entry.nodeKey, shareKey, shareHandle),
+              })),
+            ];
+            const partialNodes = requestedRoot
+              ? nodes.filter((node) => node.h === requestedRoot || node.p === requestedRoot)
+              : nodes;
+            return new Response(
+              JSON.stringify([
+                {
+                  f: partialNodes,
+                  s: [{ h: shareHandle, u: 'peer00001', r: 0, ts: 1710000000 }],
+                  u: [{ u: 'peer00001', m: 'peer@example.com' }],
+                  sn: 'cursor-1',
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          }
+          case 'u':
+            uploadReservationCount += 1;
+            return new Response(JSON.stringify([{ p: 'https://upload.test/file' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'p': {
+            uploadCommitCount += 1;
+            const nodes = Array.isArray(payload.n) ? payload.n : [];
+            const node = nodes[0] && typeof nodes[0] === 'object' ? (nodes[0] as Record<string, unknown>) : null;
+            const handle = typeof node?.h === 'string' ? node.h : 'uploadtok01';
+            const attributes = typeof node?.a === 'string' ? node.a : '';
+            const parentHandle = typeof payload.t === 'string' ? payload.t : '';
+            const cr = Array.isArray(payload.cr) ? payload.cr : [];
+            const records = Array.isArray(cr[2]) ? cr[2] : [];
+            const encodedShareKeyRecord = typeof records[2] === 'string' ? records[2] : '';
+            const nodeKey = encodedShareKeyRecord
+              ? decryptAesEcb(decodeMegaBase64Url(encodedShareKeyRecord), shareKey)
+              : Buffer.alloc(32);
+            const relativePath = parentHandle === channelsHandle ? 'channels/runtime.bin' : 'blocks/runtime.bin';
+            uploadedFiles.set(relativePath, {
+              handle,
+              size: mirrorBytes.length,
+              attributes,
+              nodeKey,
+            });
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://upload.test/file/0?d=')) {
+        return new Response(Buffer.from('uploadtok01'), { status: 200 });
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    }) as typeof fetch;
+
+    const ownerMirrorSource = {
+      listMirrorFiles: vi.fn(async () => ['blocks/runtime.bin']),
+      readMirrorFile: vi.fn(async () => new Uint8Array(mirrorBytes)),
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+        ownerMirrorSource,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    (adapter as unknown as {
+      accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+    }).accountShareKeyCache.set(userHandle, new Map([[shareHandle, shareKey]]));
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner-runtime-source',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner-runtime-source',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/logical/nearbytes',
+      sourceId: 'src-mega-owner-runtime-source',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await expect((adapter as any).syncOwnerShare(share, account)).resolves.toBeUndefined();
+
+    expect(ownerMirrorSource.listMirrorFiles).toHaveBeenCalledWith(share);
+    expect(ownerMirrorSource.readMirrorFile).toHaveBeenCalledWith(share, 'blocks/runtime.bin');
+    expect(uploadReservationCount).toBe(1);
+    expect(uploadCommitCount).toBe(1);
+    expect(uploadedFiles.has('blocks/runtime.bin')).toBe(true);
+  });
+
   it('waits for an in-flight share sync before running an exclusive share task', async () => {
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),

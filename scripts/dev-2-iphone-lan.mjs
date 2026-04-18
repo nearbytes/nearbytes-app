@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -127,6 +128,13 @@ try {
       VITE_NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
       VITE_NEARBYTES_EMBEDDED_PHONE_MEGA_ENABLED: '0',
       VITE_NEARBYTES_EMBEDDED_PHONE_LOCAL_NETWORK_ENABLED: '1',
+      VITE_NEARBYTES_EMBEDDED_PHONE_INTEGRATION_STATE_B64: encodeJsonBase64({
+        version: 1,
+        preferredProviders: [],
+        accounts: [],
+        managedShares: [],
+      }),
+      VITE_NEARBYTES_EMBEDDED_PHONE_PROVIDER_SECRETS_B64: encodeJsonBase64({}),
     },
     logPath: phoneUiLogPath,
   });
@@ -217,4 +225,8 @@ function writeDevApiDescriptor(dirPath, descriptor) {
 function writeRecordedMobileServerUrl(url) {
   mkdirSync(path.dirname(recordedMobileServerPath), { recursive: true });
   writeFileSync(recordedMobileServerPath, `${JSON.stringify({ url }, null, 2)}\n`, 'utf8');
+}
+
+function encodeJsonBase64(value) {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
 }

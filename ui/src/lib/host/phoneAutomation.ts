@@ -15,6 +15,8 @@ import {
   setNativeAutomationResult,
 } from './nativeLanPlugin.js';
 import {
+  embeddedPhoneListManagedShares,
+  embeddedPhoneListProviderAccounts,
   embeddedPhoneClearLanLatencyTraces,
   embeddedPhoneGetLanLatencyTraces,
   embeddedPhoneListChat,
@@ -93,6 +95,18 @@ type ClearLatencyTracesCommand = {
   action: 'clear-latency-traces';
 };
 
+type ListProviderAccountsCommand = {
+  id: string;
+  action: 'list-provider-accounts';
+  fast?: boolean;
+};
+
+type ListManagedSharesCommand = {
+  id: string;
+  action: 'list-managed-shares';
+  fast?: boolean;
+};
+
 type PhoneAutomationCommand =
   | OpenVolumeCommand
   | UiOpenVolumeCommand
@@ -103,7 +117,9 @@ type PhoneAutomationCommand =
   | ListChatCommand
   | WaitChatEventCommand
   | GetLatencyTracesCommand
-  | ClearLatencyTracesCommand;
+  | ClearLatencyTracesCommand
+  | ListProviderAccountsCommand
+  | ListManagedSharesCommand;
 
 type PhoneAutomationResult = {
   id: string;
@@ -261,6 +277,22 @@ function normalizePhoneAutomationCommand(value: unknown): PhoneAutomationCommand
     return { id, action };
   }
 
+  if (action === 'list-provider-accounts') {
+    return {
+      id,
+      action,
+      fast: candidate.fast === true,
+    };
+  }
+
+  if (action === 'list-managed-shares') {
+    return {
+      id,
+      action,
+      fast: candidate.fast === true,
+    };
+  }
+
   return null;
 }
 
@@ -300,6 +332,14 @@ async function executePhoneAutomationCommand(command: PhoneAutomationCommand): P
   if (command.action === 'clear-latency-traces') {
     embeddedPhoneClearLanLatencyTraces();
     return { ok: true };
+  }
+
+  if (command.action === 'list-provider-accounts') {
+    return embeddedPhoneListProviderAccounts({ fast: command.fast });
+  }
+
+  if (command.action === 'list-managed-shares') {
+    return embeddedPhoneListManagedShares({ fast: command.fast });
   }
 
   if (command.action === 'open-volume') {

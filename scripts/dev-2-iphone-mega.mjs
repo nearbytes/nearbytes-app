@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
+import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -227,6 +228,12 @@ try {
       VITE_NEARBYTES_WEB_DEV_PORT: String(phoneUiPort),
       VITE_NEARBYTES_EMBEDDED_PHONE_MEGA_ENABLED: '1',
       VITE_NEARBYTES_EMBEDDED_PHONE_LOCAL_NETWORK_ENABLED: '0',
+      VITE_NEARBYTES_EMBEDDED_PHONE_INTEGRATION_STATE_B64: readEmbeddedPhoneBootstrapIntegrationStateBase64(
+        phonePaths.integrationStatePath
+      ),
+      VITE_NEARBYTES_EMBEDDED_PHONE_PROVIDER_SECRETS_B64: readEmbeddedPhoneBootstrapProviderSecretsBase64(
+        phonePaths.serverSecretStorePath
+      ),
       NEARBYTES_INTEGRATIONS_STATE: phonePaths.integrationStatePath,
       NEARBYTES_DESKTOP_SESSION_FILE: phonePaths.desktopSessionPath,
     },
@@ -491,4 +498,30 @@ async function loadMegaBootstrapModules() {
     }));
   }
   return megaBootstrapModulesPromise;
+}
+
+function readEmbeddedPhoneBootstrapIntegrationStateBase64(filePath) {
+  const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+  return Buffer.from(JSON.stringify({
+    version: 1,
+    preferredProviders: Array.isArray(parsed?.preferredProviders) ? parsed.preferredProviders : [],
+    accounts: Array.isArray(parsed?.accounts) ? parsed.accounts : [],
+    managedShares: [],
+    maintenance: parsed?.maintenance,
+  }), 'utf8').toString('base64');
+}
+
+function readEmbeddedPhoneBootstrapProviderSecretsBase64(filePath) {
+  const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+  const entries = parsed?.entries;
+  const normalized = {};
+  if (entries && typeof entries === 'object' && !Array.isArray(entries)) {
+    for (const [key, encoded] of Object.entries(entries)) {
+      if (typeof encoded !== 'string' || encoded.trim() === '') {
+        continue;
+      }
+      normalized[key] = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+    }
+  }
+  return Buffer.from(JSON.stringify(normalized), 'utf8').toString('base64');
 }

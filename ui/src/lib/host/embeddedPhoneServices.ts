@@ -11,6 +11,7 @@ import {
   type ManagedShareStateStore,
   type ManagedShareStorageHost,
 } from '../../../../src/integrations/managedShares.js';
+import type { MegaOwnerMirrorSource } from '../../../../src/integrations/runtime.js';
 import type { IntegrationStateSnapshot } from '../../../../src/integrations/store.js';
 import type { ProviderAccount, TransportState } from '../../../../src/integrations/types.js';
 import type { ChatService } from '../../../../src/domain/chatService.js';
@@ -214,6 +215,7 @@ let embeddedPhoneRuntimeMetrics: EmbeddedPhoneRuntimeMetrics = {
 let embeddedPhoneRootsConfigCache: RootsConfig | null = null;
 let embeddedPhoneAppConfigCache: AppConfig | null = null;
 let embeddedPhoneManagedShareServicePromise: Promise<ManagedShareService> | null = null;
+let embeddedPhoneDevBootstrapPromise: Promise<void> | null = null;
 
 const embeddedPhoneVolumeWatchers = new Map<string, Map<number, (update: VolumeWatchUpdate) => void>>();
 
@@ -480,6 +482,56 @@ function parseEmbeddedPhoneProviderOverride(value: unknown): boolean | undefined
   return undefined;
 }
 
+function decodeEmbeddedPhoneDevBootstrap<T>(value: unknown): T | undefined {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return undefined;
+  }
+  try {
+    return JSON.parse(Buffer.from(value, 'base64').toString('utf8')) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeEmbeddedPhoneBootstrapIntegrationState(
+  snapshot: IntegrationStateSnapshot | undefined
+): IntegrationStateSnapshot | undefined {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return undefined;
+  }
+  return {
+    version: 1,
+    preferredProviders: Array.isArray(snapshot.preferredProviders) ? [...snapshot.preferredProviders] : [],
+    accounts: Array.isArray(snapshot.accounts) ? [...snapshot.accounts] : [],
+    managedShares: [],
+    maintenance: snapshot.maintenance,
+  };
+}
+
+function normalizeEmbeddedPhoneBootstrapProviderSecrets(
+  value: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const entries = value.entries;
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+    return value;
+  }
+  const normalized: Record<string, unknown> = {};
+  for (const [key, encoded] of Object.entries(entries)) {
+    if (typeof encoded !== 'string' || encoded.trim() === '') {
+      continue;
+    }
+    try {
+      normalized[key] = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as unknown;
+    } catch {
+      normalized[key] = encoded;
+    }
+  }
+  return normalized;
+}
+
 function applyEmbeddedPhoneProviderEnvOverrides(config: AppConfig): AppConfig {
   const mega = parseEmbeddedPhoneProviderOverride(import.meta.env.VITE_NEARBYTES_EMBEDDED_PHONE_MEGA_ENABLED);
   const localNetwork = parseEmbeddedPhoneProviderOverride(import.meta.env.VITE_NEARBYTES_EMBEDDED_PHONE_LOCAL_NETWORK_ENABLED);
@@ -497,6 +549,31 @@ function applyEmbeddedPhoneProviderEnvOverrides(config: AppConfig): AppConfig {
       },
     },
   };
+}
+
+async function ensureEmbeddedPhoneDevBootstrap(): Promise<void> {
+  if (embeddedPhoneDevBootstrapPromise) {
+    return embeddedPhoneDevBootstrapPromise;
+  }
+  embeddedPhoneDevBootstrapPromise = (async () => {
+    const integrationState = normalizeEmbeddedPhoneBootstrapIntegrationState(
+      decodeEmbeddedPhoneDevBootstrap<IntegrationStateSnapshot>(
+        import.meta.env.VITE_NEARBYTES_EMBEDDED_PHONE_INTEGRATION_STATE_B64
+      )
+    );
+    const providerSecrets = normalizeEmbeddedPhoneBootstrapProviderSecrets(
+      decodeEmbeddedPhoneDevBootstrap<Record<string, unknown>>(
+        import.meta.env.VITE_NEARBYTES_EMBEDDED_PHONE_PROVIDER_SECRETS_B64
+      )
+    );
+    if (integrationState) {
+      await putSetting(PHONE_INTEGRATION_STATE_KEY, JSON.stringify(integrationState));
+    }
+    if (providerSecrets) {
+      await putSetting(PHONE_PROVIDER_SECRETS_KEY, JSON.stringify(providerSecrets));
+    }
+  })();
+  return embeddedPhoneDevBootstrapPromise;
 }
 
 function cloneEmbeddedPhoneAppConfig(config: AppConfig): AppConfig {
@@ -555,6 +632,7 @@ async function writeEmbeddedPhoneRootsConfigValue(config: RootsConfig): Promise<
 }
 
 async function readEmbeddedPhoneAppConfigValue(): Promise<AppConfig> {
+  await ensureEmbeddedPhoneDevBootstrap();
   if (embeddedPhoneAppConfigCache) {
     return applyEmbeddedPhoneProviderEnvOverrides(embeddedPhoneAppConfigCache);
   }
@@ -592,6 +670,7 @@ function createDefaultEmbeddedPhoneIntegrationState(): IntegrationStateSnapshot 
 }
 
 async function readEmbeddedPhoneIntegrationStateValue(): Promise<IntegrationStateSnapshot> {
+  await ensureEmbeddedPhoneDevBootstrap();
   const stored = await getSetting(PHONE_INTEGRATION_STATE_KEY);
   if (!stored) {
     return createDefaultEmbeddedPhoneIntegrationState();
@@ -608,6 +687,7 @@ async function writeEmbeddedPhoneIntegrationStateValue(snapshot: IntegrationStat
 }
 
 async function readEmbeddedPhoneProviderSecretsValue(): Promise<Record<string, unknown>> {
+  await ensureEmbeddedPhoneDevBootstrap();
   const stored = await getSetting(PHONE_PROVIDER_SECRETS_KEY);
   if (!stored) {
     return {};
@@ -664,6 +744,53 @@ const embeddedPhoneManagedShareRootHost: ManagedShareRootHost = {
       rewroteMarker: false,
       removedLegacyMetadata: false,
     };
+  },
+};
+
+async function resolveEmbeddedPhoneAttachedVolumeIds(
+  share: Parameters<MegaOwnerMirrorSource['listMirrorFiles']>[0]
+): Promise<Set<string>> {
+  const fromAttachments = (share.attachments ?? [])
+    .map((attachment) => attachment.volumeId.trim().toLowerCase())
+    .filter((volumeId) => volumeId.length > 0);
+  if (fromAttachments.length > 0) {
+    return new Set(fromAttachments);
+  }
+  if (!share.sourceId) {
+    return new Set();
+  }
+  const config = await readEmbeddedPhoneRootsConfigValue();
+  return new Set(
+    config.volumes
+      .filter((volume) => volume.destinations.some((destination) => destination.sourceId === share.sourceId))
+      .map((volume) => volume.volumeId.trim().toLowerCase())
+      .filter((volumeId) => volumeId.length > 0)
+  );
+}
+
+const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
+  async listMirrorFiles(share): Promise<readonly string[]> {
+    const attachedVolumeIds = await resolveEmbeddedPhoneAttachedVolumeIds(share);
+    const storedPaths = await listStoredPaths();
+    const mirrorPaths = new Set<string>();
+    for (const storedPath of storedPaths) {
+      const normalizedPath = normalizeStoragePath(storedPath);
+      const eventPath = parseCanonicalEventRelativePath(normalizedPath);
+      if (eventPath) {
+        if (attachedVolumeIds.size === 0 || attachedVolumeIds.has(eventPath.volumeId)) {
+          mirrorPaths.add(normalizedPath);
+        }
+        continue;
+      }
+      if (parseCanonicalBlockRelativePath(normalizedPath)) {
+        mirrorPaths.add(normalizedPath);
+      }
+    }
+    return Array.from(mirrorPaths).sort((left, right) => left.localeCompare(right));
+  },
+  async readMirrorFile(_share, relativePath): Promise<Uint8Array> {
+    const { storage } = await getEmbeddedPhoneRuntimeServices();
+    return storage.readFile(normalizeStoragePath(relativePath));
   },
 };
 
@@ -725,6 +852,7 @@ function createEmbeddedPhoneManagedShareRuntime() {
       syncTimeoutMs: 180_000,
       inviteReflectionTimeoutMs: 5_000,
       inviteReflectionPollMs: 1_500,
+      ownerMirrorSource: embeddedPhoneMegaOwnerMirrorSource,
     },
     github: {
       deviceCodeUrl: 'https://github.com/login/device/code',
@@ -1118,6 +1246,17 @@ async function buildEmbeddedPhoneRootsRuntimeSnapshot(
 
   return {
     sources: config.sources.map((source, index) => ({
+      ...(function () {
+        const isPrimaryEmbeddedSource = index === 0;
+        const isLogicalEmbeddedSource = isEmbeddedPhoneLogicalSourcePath(source.path);
+        const exists = isPrimaryEmbeddedSource || isLogicalEmbeddedSource;
+        return {
+          exists,
+          isDirectory: exists,
+          canWrite: exists && source.enabled && source.writable,
+          usage: isPrimaryEmbeddedSource ? usage : createEmptyEmbeddedPhoneUsageSummary(),
+        };
+      })(),
       id: source.id,
       kind: 'source',
       provider: source.provider,
@@ -1126,13 +1265,23 @@ async function buildEmbeddedPhoneRootsRuntimeSnapshot(
       writable: source.writable,
       reservePercent: source.reservePercent,
       opportunisticPolicy: source.opportunisticPolicy,
-      exists: index === 0,
-      isDirectory: index === 0,
-      canWrite: index === 0 && source.enabled && source.writable,
-      usage: index === 0 ? usage : createEmptyEmbeddedPhoneUsageSummary(),
     })) satisfies RootRuntimeStatus[],
     writeFailures: [],
   };
+}
+
+function isEmbeddedPhoneLogicalSourcePath(sourcePath: string): boolean {
+  const normalized = sourcePath.trim();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized.startsWith('/')) {
+    return false;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(normalized)) {
+    return false;
+  }
+  return normalized === 'local' || normalized.startsWith('local/');
 }
 
 export async function embeddedPhoneGetRootsConfig(includeUsage = false): Promise<RootsConfigResponse> {
@@ -1834,9 +1983,17 @@ async function commitEmbeddedPhoneMutation<T extends object>(
   return attachEmbeddedPhoneCommitAck(storedReceipt.result as T, storedReceipt);
 }
 
+async function rememberEmbeddedPhoneOpenedVolume(secret: string): Promise<string> {
+  const volumeId = await deriveVolumeId(secret);
+  embeddedPhoneKnownVolumeSecrets.set(volumeId, secret);
+  const managedShareService = await getEmbeddedPhoneManagedShareService();
+  await managedShareService.rememberOpenedVolume(volumeId);
+  return volumeId;
+}
+
 export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolumeResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
-  embeddedPhoneKnownVolumeSecrets.set(await deriveVolumeId(secret), secret);
+  await rememberEmbeddedPhoneOpenedVolume(secret);
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
     return {
@@ -1855,7 +2012,7 @@ export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolum
 
 export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
-  embeddedPhoneKnownVolumeSecrets.set(await deriveVolumeId(secret), secret);
+  await rememberEmbeddedPhoneOpenedVolume(secret);
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
     return {
@@ -1872,7 +2029,7 @@ export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesR
 
 export async function embeddedPhoneGetTimeline(secret: string): Promise<TimelineResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
-  embeddedPhoneKnownVolumeSecrets.set(await deriveVolumeId(secret), secret);
+  await rememberEmbeddedPhoneOpenedVolume(secret);
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
     return {
@@ -1891,7 +2048,7 @@ export async function embeddedPhoneGetTimeline(secret: string): Promise<Timeline
 
 export async function embeddedPhoneGetEventDetail(secret: string, eventHash: string): Promise<EventDetailResponse> {
   await ensureEmbeddedPhonePendingCommitsDrained();
-  embeddedPhoneKnownVolumeSecrets.set(await deriveVolumeId(secret), secret);
+  await rememberEmbeddedPhoneOpenedVolume(secret);
   const { fileService } = await getEmbeddedPhoneRuntimeServices();
   const detail = await fileService.getEvent(secret, eventHash);
   const response: EventDetailResponse = {
@@ -2031,6 +2188,7 @@ export function resetEmbeddedPhoneServicesForTests(): void {
   embeddedPhoneRootsConfigCache = null;
   embeddedPhoneAppConfigCache = null;
   embeddedPhoneManagedShareServicePromise = null;
+  embeddedPhoneDevBootstrapPromise = null;
   embeddedPhoneVolumeWatchers.clear();
   embeddedPhoneVolumeWatcherId = 1;
   embeddedPhoneCommitSequence = 1;

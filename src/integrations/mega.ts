@@ -1455,10 +1455,12 @@ export class MegaTransportAdapter {
       remoteDescriptor: share.remoteDescriptor,
     });
     if (share.role === 'owner') {
-      await (await getMegaNodeFs()).mkdir(share.localPath, { recursive: true });
-      await ensureMegaOwnerLocalStructure(share.localPath);
+      if (!this.runtime.mega.ownerMirrorSource) {
+        await (await getMegaNodeFs()).mkdir(share.localPath, { recursive: true });
+        await ensureMegaOwnerLocalStructure(share.localPath);
+      }
       void this.logDevShareInventoryIfChanged(account, 'boot');
-      const ownerLoopRunning = this.localWatchers.has(share.id);
+      const ownerLoopRunning = this.localWatchers.has(share.id) || this.syncTimers.has(share.id);
       if (!ownerLoopRunning) {
         await this.runSyncLoop(share, account);
       }
@@ -1840,6 +1842,12 @@ export class MegaTransportAdapter {
   }
 
   private async startOwnerPushPullSync(share: ManagedShare, account: ProviderAccount): Promise<void> {
+    if (this.runtime.mega.ownerMirrorSource) {
+      this.startScChannelListener(share, account);
+      this.startRecurringSyncTimer(share, account);
+      return;
+    }
+
     if (this.localWatchers.has(share.id)) {
       return;
     }
@@ -2222,8 +2230,10 @@ export class MegaTransportAdapter {
     }
 
     try {
-      await (await getMegaNodeFs()).mkdir(share.localPath, { recursive: true });
-      await ensureMegaOwnerLocalStructure(share.localPath);
+      if (!this.runtime.mega.ownerMirrorSource) {
+        await (await getMegaNodeFs()).mkdir(share.localPath, { recursive: true });
+        await ensureMegaOwnerLocalStructure(share.localPath);
+      }
       const session = await this.getAccountSession(account, signal);
       console.log('[MEGA:owner-sync] session obtained, resolving remote root.', { remotePath });
       const root = await this.ensureOwnerRemoteRoot(session, remotePath, signal);
@@ -2278,16 +2288,18 @@ export class MegaTransportAdapter {
       await this.healOwnerShareTreeNodeKeys(share, session, root, shareCrypto, signal);
       const ownerUploadState = buildMegaOwnerUploadState(root, shareCrypto);
       this.ownerUploadStates.set(share.id, ownerUploadState);
-      const result = await worker.sync(
-        share.localPath,
-        new MegaOwnerRemoteAdapter(
-          this.fetchImpl,
-          this.apiClient,
-          session,
-          ownerUploadState,
-          signal
-        )
-      );
+      const result = this.runtime.mega.ownerMirrorSource
+        ? await this.syncOwnerShareFromRuntimeSource(share, session, ownerUploadState, signal)
+        : await worker.sync(
+            share.localPath,
+            new MegaOwnerRemoteAdapter(
+              this.fetchImpl,
+              this.apiClient,
+              session,
+              ownerUploadState,
+              signal
+            )
+          );
       console.log('[MEGA:owner-sync] owner share sync completed.', {
         shareId: share.id,
         uploaded: result.uploaded,
@@ -2349,6 +2361,62 @@ export class MegaTransportAdapter {
       });
       throw error;
     }
+  }
+
+  private async syncOwnerShareFromRuntimeSource(
+    share: ManagedShare,
+    session: MegaSession,
+    ownerUploadState: MegaOwnerUploadState,
+    signal?: AbortSignal
+  ): Promise<MegaOwnerSyncResult> {
+    const source = this.runtime.mega.ownerMirrorSource;
+    if (!source) {
+      return { uploaded: [], downloaded: [], skipped: [] };
+    }
+
+    const adapter = new MegaOwnerRemoteAdapter(
+      this.fetchImpl,
+      this.apiClient,
+      session,
+      ownerUploadState,
+      signal
+    );
+    const uploaded: string[] = [];
+    const skipped: string[] = [];
+    const activePaths = new Set<string>();
+    const mirrorPaths = Array.from(
+      new Set(
+        (await source.listMirrorFiles(share))
+          .map((entry) => normalizeRelativePath(entry))
+          .filter((entry) => entry.length > 0 && isMirrorRelativePath(entry))
+      )
+    ).sort((left, right) => left.localeCompare(right));
+
+    for (const relativePath of mirrorPaths) {
+      activePaths.add(relativePath);
+      const bytes = await source.readMirrorFile(share, relativePath);
+      const existing = ownerUploadState.filesByPath.get(relativePath);
+      if (existing && existing.size === bytes.length) {
+        skipped.push(relativePath);
+        continue;
+      }
+      await adapter.upload(relativePath, bytes, { waitForVisibility: true });
+      uploaded.push(relativePath);
+    }
+
+    for (const [relativePath, file] of Array.from(ownerUploadState.filesByPath.entries())) {
+      if (!isMirrorRelativePath(relativePath) || activePaths.has(relativePath)) {
+        continue;
+      }
+      await deleteMegaNode(this.apiClient, session, file.handle, signal);
+      ownerUploadState.filesByPath.delete(relativePath);
+    }
+
+    return {
+      uploaded,
+      downloaded: [],
+      skipped,
+    };
   }
 
   private async getAccountSession(account: ProviderAccount, signal?: AbortSignal): Promise<MegaSession> {
@@ -4634,6 +4702,12 @@ interface MegaOwnerUploadState {
   readonly extraShareKeys: ReadonlyMap<string, Buffer> | undefined;
   readonly folderHandlesByPath: Map<string, string>;
   readonly filesByPath: Map<string, MegaKnownRemoteFile>;
+}
+
+interface MegaOwnerSyncResult {
+  readonly uploaded: string[];
+  readonly downloaded: string[];
+  readonly skipped: string[];
 }
 
 function createMegaShareCryptoExtraKeys(

@@ -241,7 +241,7 @@ export class ManagedShareService {
     );
   }
 
-  rememberOpenedVolume(volumeId: string): void {
+  async rememberOpenedVolume(volumeId: string): Promise<void> {
     const normalized = normalizeVolumeId(volumeId);
     if (!normalized) {
       return;
@@ -250,6 +250,51 @@ export class ManagedShareService {
     this.recentlyOpenedVolumeIds.delete(normalized);
     this.recentlyOpenedVolumeIds.set(normalized, now);
     this.pruneRememberedOpenedVolumes(now);
+    await this.attachOpenedVolumeToAutoAttachShares(normalized);
+  }
+
+  private async attachOpenedVolumeToAutoAttachShares(volumeId: string): Promise<void> {
+    const state = await this.loadState();
+    let nextConfig = cloneConfig(this.options.storage.getRootsConfig());
+    const sharesToSync: ManagedShare[] = [];
+
+    for (const share of state.managedShares) {
+      if (!shouldAutoAttachTrackedVolumesToManagedShare(share)) {
+        continue;
+      }
+      const sourceId =
+        share.sourceId ?? nextConfig.sources.find((source) => source.integration?.managedShareId === share.id)?.id;
+      if (!sourceId) {
+        continue;
+      }
+      const updatedConfig = ensureVolumeAttachment(nextConfig, volumeId, sourceId);
+      if (updatedConfig === nextConfig) {
+        continue;
+      }
+      nextConfig = updatedConfig;
+      sharesToSync.push(
+        share.sourceId === sourceId
+          ? share
+          : {
+              ...share,
+              sourceId,
+              updatedAt: this.runtime.now(),
+            }
+      );
+    }
+
+    if (sharesToSync.length === 0) {
+      return;
+    }
+
+    await this.persistRootsConfig(nextConfig);
+    for (const share of sharesToSync) {
+      const account = state.accounts.find((entry) => entry.id === share.accountId);
+      if (!account || !this.isOperationalAccount(account)) {
+        continue;
+      }
+      this.scheduleManagedShareSync(share, state);
+    }
   }
 
   async warmupBackgroundActivity(reason = 'startup'): Promise<void> {

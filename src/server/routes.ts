@@ -955,7 +955,7 @@ export function createRoutes(deps: RouteDependencies): Router {
       const { secret } = parseWithSchema(openBodySchema, req.body);
       const validatedSecret = validateSecret(secret);
       const volumeId = await getVolumeId(validatedSecret, deps.crypto, deps.storage);
-      managedShareService?.rememberOpenedVolume(volumeId);
+      await managedShareService?.rememberOpenedVolume(volumeId);
       const files = await deps.fileService.listFiles(validatedSecret);
 
       const response: {
