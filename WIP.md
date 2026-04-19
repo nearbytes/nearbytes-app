@@ -7,236 +7,120 @@ Make the real desktop app and the real phone app sync the same hub state in both
 ## Constraints
 
 1. The phone app must not depend on the separate dev phone API server for runtime correctness.
-2. The transmission chain must be push-authoritative.
-3. Polling must not be required for sync correctness.
-4. Proof must come from the real app surfaces, not only from lower-level probes.
-5. Phone UI/runtime state must survive relaunch: opened hubs, joined chat identity state, and published identity-related UI state.
+2. The sync chain must stay push-authoritative.
+3. Polling must not be required for correctness.
+4. Proof must come from the real desktop and real phone surfaces, not only lower-level probes.
+5. Phone UI/runtime state must survive relaunch.
 
-## Project-Level Instructions
+## Current Truth
 
-1. Keep everything in English, including code comments, docs, and user-facing text.
-2. Read and respect `requirements/se-practices.md`.
-3. Do not solve this by re-enabling periodic full-sync polling.
-4. Preserve the self-contained phone architecture: no regression back to proxying phone runtime duties through the separate dev phone API server.
-5. Prefer targeted validation over full rebuilds unless a full build is strictly needed.
-6. Proof of success must be on the real desktop UI/runtime surface and the real phone UI/runtime surface.
+The current WIP still does not have working bidirectional sync on the real `yarn dev-2-iphone-mega --no-wipe` stack.
 
-## Current Task
+Latest fresh repro on 2026-04-19 using:
 
-Finish the real end-to-end MEGA push sync so the real desktop app and the real phone app stay in sync in both directions without depending on periodic full reconciliation for correctness.
+- desktop API: `http://127.0.0.1:3000`
+- phone API: `http://127.0.0.1:3300`
+- desktop UI: `http://127.0.0.1:5177`
+- phone UI: `http://127.0.0.1:5181`
+- hub secret: `APM26`
+- volume id:
+  `0470f0f4b5e8692d7d80af007bb3998a45a28ef86039120c49a093f6d83db1eac6a7cea90d620dc3d2c3095f0247da0ce3f460291eb9dc467cedce958abf38d473`
 
-At handoff time:
-- `desktop -> phone` is now proven working on the real phone UI.
-- `phone -> desktop` is still broken.
-- Phone retention work is partially fixed in code and tests, but the active blocker is `phone -> desktop`.
+Latest fresh files used:
 
-## What Is Already Proven
+- desktop -> phone: `nearbytes-desktop-sync-1776633206.txt`
+- phone -> desktop: `nearbytes-phone-sync-1776633226.txt`
 
-### 1. Phone retention bug in persisted UI state was fixed
+Observed result after waiting:
 
-Files:
-- `ui/src/lib/host/persistedUiState.ts`
-- `ui/src/lib/host/persistedUiState.test.ts`
+- desktop file appeared on desktop, but not on phone after 6s
+- phone file appeared on phone with durable commit `acknowledged`, but not on desktop after 6s
+- so both fresh directions are still failing on the latest patched stack
 
-Proof:
-- `yarn test ui/src/lib/host/persistedUiState.test.ts` passed earlier.
-- Root cause was partial state saves overwriting the whole saved UI state object.
+What improved relative to the previous repro:
 
-### 2. Desktop launcher env issue was fixed
+- the phone now already sees older desktop-authored files such as `nearbytes-desktop-sync-1776632588.txt`
+- that means the recipient root-handle mismatch patch is doing useful work
+- but it is not sufficient to make fresh bidirectional sync reliable
 
-File:
-- `scripts/run-dev.mjs`
+Phone screenshot from that check:
 
-Fix:
-- strip `ELECTRON_RUN_AS_NODE` from the child env before launching Electron.
+- `/tmp/nearbytes-phone-bidir-check.png`
 
-Why:
-- shell env had `ELECTRON_RUN_AS_NODE=1`, which broke the desktop app launch.
+## Most Relevant Evidence
 
-### 3. Periodic MEGA sync is already OFF by default on phone embedded runtime
+### 1. Desktop owner local-write path still races block availability
 
-File:
-- `ui/src/lib/host/embeddedPhoneServices.ts`
+The latest desktop logs still show:
 
-Current embedded MEGA config:
-- `syncIntervalMs: 0`
+- `Managed share local write handling deferred for channels/.../8f3930b5fabe513ce55500a2212228dbe0fefc73996222597e846292a93f931a.bin: File not found in any root: blocks/2943615584144dde8687019fa3b632bd823ab62e1cb7a2617f605545ca46978e`
+- repeated `Managed share local write retry deferred ... File not found in any root: blocks/294361...`
 
-### 4. Desktop -> phone is now proven on the real phone UI
+Why this matters:
 
-Fresh desktop file created:
-- `nearbytes-desktop-sync-1776582049.txt`
+- `294361...` is the blob hash of `nearbytes-desktop-sync-1776632588.txt`, which the phone now sees eventually
+- the desktop owner path is still trying to publish a channel event before the referenced `blocks/*` object is durably visible in the runtime source
+- the current in-process retry is still not enough under live load
 
-Phone screenshot after the fix:
-- `/tmp/nearbytes-phone-check.png`
+### 2. Phone recipient still degrades into full refreshes and MEGA `-3`
 
-What the screenshot shows:
-- phone UI on hub `APM26`
-- file count `3`
-- visible files include:
-  - `nearbytes-desktop-sync-1776580800.txt`
-  - `signal-2026-04-16-161922_003.jpeg`
-  - `Foto del 17-04-26 alle 09.09 #3.jpg`
+The latest phone logs still contain:
 
-Then after another desktop write:
-- fresh file: `nearbytes-desktop-sync-1776582049.txt`
-- desktop `/open` showed it immediately
-- later phone UI also showed desktop-authored files
-
-### 5. Stale-handle push apply bug was fixed and regression-tested
-
-Files:
-- `src/integrations/mega.ts`
-- `src/integrations/__tests__/megaAdapter.test.ts`
-
-Fix:
-- immediate recipient apply no longer aborts the whole push packet when an extra packet handle fetch fails with MEGA `-9`
-- stale missing handle is skipped instead
-
-Proof:
-- `yarn test src/integrations/__tests__/megaAdapter.test.ts` passed with `51/51`
-
-This matters because earlier the phone recipient log showed:
 - `MEGA immediate readonly apply failed; falling back to mirror refresh.`
+- `MEGA tree did not include the requested root node.`
+- `MEGA partial tree fetch failed; falling back to a full node snapshot.`
+- `Incoming managed share reconciliation failed for mega:acct-mega-dev2-iphone-phone: MEGA API error -3.`
 
-The fix prevents a stale extra handle from forcing that fallback.
+So desktop -> phone still is not reliable on the patched branch.
 
-## What Is Broken Right Now
+### 3. Phone -> desktop still is not proven despite the owner retry work
 
-### Phone -> desktop is still failing
+The latest fresh phone write:
 
-Fresh phone-authored file:
-- `nearbytes-phone-sync-1776582084.txt`
+- `nearbytes-phone-sync-1776633226.txt`
+- phone upload completed with commit status `acknowledged`
+- desktop `/open` still did not list it after 6s
 
-Phone automation upload result:
-- action `upload-file`
-- status `success`
-- durable commit acknowledged
-- created blob hash:
-  - `4007f7e08f01a9466d6746f2000152004a80870f85db326f0bc5d6f13b12bbbb`
+So the owner-side fixes are still incomplete for fresh phone-authored writes too.
 
-Phone UI screenshot after upload:
-- `/tmp/nearbytes-phone-after-upload.png`
+## Relevant Files
 
-What the screenshot shows:
-- phone UI file count `4`
-- visible files include:
-  - `nearbytes-phone-sync-1776582084.txt`
-  - `nearbytes-desktop-sync-1776580800.txt`
-  - `signal-2026-04-16-161922_003.jpeg`
-  - `Foto del 17-04-26 alle 09.09 #3.jpg`
-
-Desktop state after waiting:
-- desktop `/open` still showed only `4` files
-- it did **not** include `nearbytes-phone-sync-1776582084.txt`
-
-So the current truth is:
-- phone has the file
-- desktop does not
-- therefore `phone -> desktop` is still broken
-
-## Key Evidence For The Current Root Cause
-
-The most important log line currently found in `/tmp/nearbytes-run/dev2-iphone-mega.out` is:
-
-- `Managed share local write handling failed for channels/.../f77b4321...bin: MEGA API error -3.`
-
-This happened after the successful phone file upload, on the canonical channel event path for volume:
-- `0470f0f4b5e8692d7d80af007bb3998a45a28ef86039120c49a093f6d83db1eac6a7cea90d620dc3d2c3095f0247da0ce3f460291eb9dc467cedce958abf38d473`
-
-Interpretation:
-- the phone app did create the local canonical event
-- the embedded phone owner-side managed-share local-write publication path tried to push it
-- that push failed with MEGA API `-3`
-- because of that, the new phone event did not reach desktop
-
-This strongly narrows the remaining bug to:
-- phone owner-side immediate local-write publication / retry behavior
-- not phone file creation
-- not desktop recipient apply
-- not provider-managed read projection on the phone
-
-## Most Relevant Code To Continue From
-
-### Local-write publication path
+### Phone owner publication path
 
 - `src/integrations/managedShares.ts`
-  - constructor storage write subscription
-  - `handleStorageWrite(...)`
-
 - `src/integrations/mega.ts`
-  - `handleManagedShareLocalWrite(...)`
-  - `forceManagedShareUpload(...)`
-  - `forceManagedShareRuntimeSourceEventUpload(...)`
-
-### Embedded phone self-contained runtime
-
 - `ui/src/lib/host/embeddedPhoneServices.ts`
 
-### Current push-apply fix already landed
+### Desktop/server owner runtime-source bridge
 
+- `src/server/megaOwnerMirrorSource.ts`
 - `src/integrations/mega.ts`
-  - `applyRecipientHandleUpdate(...)`
 
-## Likely Next Fix
+## Fixes In Progress
 
-The likely missing behavior is:
-- transient MEGA local-write publication failure on phone owner path is currently just logged and dropped
-- there is no authoritative event-driven retry for that failed owner publish
+Current implementation direction:
 
-The next agent should verify this first, then implement the fix.
+1. Treat `File not found: blocks/...` as a transient managed-share local-write failure so the event-scoped retry path runs instead of dropping the push.
+2. Add a short in-process retry when the runtime-source event uploader cannot read a referenced `blocks/*` file immediately after the channel event write.
+3. Preserve `AbortError` identity when owner-sync phase errors are wrapped, so deliberate sync preemption stays transient instead of surfacing as a hard owner-sync failure.
+4. Treat top-level fetched `blocks` and mismatched shared-root names as canonical recipient paths so immediate readonly apply survives recipient handle-namespace mismatch.
 
-Most likely fix direction:
-1. In `ManagedShareService.handleStorageWrite(...)`, do not drop transient owner-side local-write failures.
-2. For transient MEGA errors like `-3` and `-4`, schedule a retry of the same local-write publication path.
-3. Keep this retry push-driven and event-scoped.
-4. Do not re-enable periodic full sweeps as the solution.
-5. After the retry fix, prove `phone -> desktop` with a fresh phone-authored file and desktop real surface.
+What still appears necessary:
 
-## Concrete Repro Procedure
+1. Strengthen owner runtime-source block visibility handling beyond the current short retry window.
+2. Understand why the phone recipient keeps hitting MEGA partial-tree `-3` failures often enough to miss fresh events.
 
-Current live stack that was used:
-- desktop API: `http://127.0.0.1:3000`
-- phone backend dev server: `http://127.0.0.1:3300`
-- desktop UI dev server: `http://127.0.0.1:5177`
-- phone UI dev server: `http://127.0.0.1:5181`
+## Targeted Validation
 
-Hub under test:
-- secret: `APM26`
-- volume id:
-  - `0470f0f4b5e8692d7d80af007bb3998a45a28ef86039120c49a093f6d83db1eac6a7cea90d620dc3d2c3095f0247da0ce3f460291eb9dc467cedce958abf38d473`
+Tests to run after the patch:
 
-Desktop runtime token:
-- `UZDGqy4_KcahrRoBTWMOJG6p77UaqqoPViqMikkH7UI`
+- `yarn test src/integrations/__tests__/managedShares.test.ts`
+- `yarn test src/integrations/__tests__/megaAdapter.test.ts`
 
-### Check desktop file list
+Live validation to rerun after tests:
 
-Use:
-- `curl -s -H 'x-nearbytes-runtime-token: UZDGqy4_KcahrRoBTWMOJG6p77UaqqoPViqMikkH7UI' -H 'content-type: application/json' -d '{"secret":"APM26"}' http://127.0.0.1:3000/open`
-
-### Upload from desktop
-
-Use:
-- `curl -s -H 'x-nearbytes-runtime-token: UZDGqy4_KcahrRoBTWMOJG6p77UaqqoPViqMikkH7UI' -H 'x-nearbytes-secret: APM26' -F "file=@/tmp/somefile.txt;type=text/plain" http://127.0.0.1:3000/upload`
-
-### Upload from phone
-
-Use:
-- `node scripts/iphone-phone-automation.mjs --action upload-file --secret APM26 --filename SOME_NAME.txt --content-base64 BASE64_CONTENT --timeout-ms 60000`
-
-The phone automation upload was working again at handoff time.
-
-### Capture phone UI proof
-
-Use:
-- `xcrun simctl io booted screenshot /tmp/nearbytes-phone.png`
-
-Useful screenshots already captured:
-- `/tmp/nearbytes-phone-check.png`
-- `/tmp/nearbytes-phone-after-upload.png`
-
-## Handoff Priority
-
-Do this in order:
-1. Fix phone owner local-write transient failure handling for MEGA `-3` / `-4`.
-2. Prove `phone -> desktop` with a fresh phone-authored file.
-3. Then verify whether any remaining polling/spam in the sync chain is still required for correctness or only dev plumbing.
+1. Start `yarn dev-2-iphone-mega --no-wipe`
+2. Open hub `APM26` on the phone app
+3. Upload a fresh file from desktop and verify it appears on phone
+4. Upload a fresh file from phone and verify it appears on desktop
+5. Capture a fresh simulator screenshot if the phone surface is correct

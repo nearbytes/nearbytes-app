@@ -39,6 +39,15 @@
 				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
+			<!-- Keep the phone self-contained: MEGA's push waiter returns plain-HTTP w.api URLs for the
+			     SC long-poll stream, and blocking them on iOS breaks real push sync from the embedded runtime. -->
+			<key>w.api.mega.co.nz</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
 			<key>127.0.0.1</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>

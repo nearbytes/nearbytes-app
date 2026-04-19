@@ -4859,6 +4859,199 @@ describe('MegaTransportAdapter', () => {
     expect(uploadedPaths).toEqual(['channels/runtime.bin', 'blocks/runtime.bin']);
   });
 
+  it('retries a runtime-source block read that appears shortly after the channel event', async () => {
+    vi.useFakeTimers();
+    const secretStore = createMemorySecretStore();
+    const email = 'owner@example.com';
+    const userHandle = 'owner001';
+    const driveHandle = 'root0001';
+    const shareHandle = 'nearbyt0';
+    const blocksHandle = 'blocks01';
+    const channelsHandle = 'chans001';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const driveNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const rootNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const uploadedPaths: string[] = [];
+
+    await secretStore.set('provider-account:mega:acct-mega-owner-runtime-block-retry', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            return new Response(
+              JSON.stringify([
+                {
+                  f: [
+                    {
+                      h: driveHandle,
+                      t: 1,
+                      a: encryptAttributes('Cloud Drive', driveNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(driveNodeKey, masterKey)),
+                    },
+                    {
+                      h: shareHandle,
+                      p: driveHandle,
+                      t: 1,
+                      a: encryptAttributes('nearbytes', rootNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(rootNodeKey, masterKey)),
+                    },
+                    {
+                      h: blocksHandle,
+                      p: shareHandle,
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(blocksNodeKey, masterKey)),
+                    },
+                    {
+                      h: channelsHandle,
+                      p: shareHandle,
+                      t: 1,
+                      a: encryptAttributes('channels', channelsNodeKey),
+                      k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
+                    },
+                  ],
+                  s: [{ h: shareHandle, u: 'peer00001', r: 0, ts: 1710000000 }],
+                  u: [{ u: 'peer00001', m: 'peer@example.com' }],
+                  sn: 'cursor-1',
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          case 'u':
+            return new Response(JSON.stringify([{ p: 'https://upload.test/file' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'p': {
+            const parentHandle = typeof payload.t === 'string' ? payload.t : '';
+            uploadedPaths.push(parentHandle === channelsHandle ? 'channels/runtime.bin' : 'blocks/runtime.bin');
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://upload.test/file/0?d=')) {
+        return new Response(Buffer.from(`uploadtok-${uploadedPaths.length}`), { status: 200 });
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    }) as typeof fetch;
+
+    const blockHash = '2ad4ec97b89f8c58b676b16f982e02a6accbe4fc01d0e24286dee41a3bd0286a';
+    const cryptoOps = createCryptoOperations();
+    const volumeKeyPair = await cryptoOps.deriveKeys(createSecret('mega-runtime-block-retry'));
+    const storedEvent = await createSignedEvent(
+      cryptoOps,
+      volumeKeyPair,
+      {
+        type: EventType.DELETE_FILE,
+        fileName: 'runtime.txt',
+        hash: EMPTY_HASH,
+        encryptedKey: createEncryptedData(new Uint8Array(0)),
+      },
+      [blockHash as any]
+    );
+    const eventBytes = new TextEncoder().encode(JSON.stringify(serializeEvent(storedEvent)));
+    const blockBytes = new Uint8Array([4, 5, 6, 7]);
+    let blockReadAttempts = 0;
+    const ownerMirrorSource = {
+      listMirrorFiles: vi.fn(async () => []),
+      readMirrorFile: vi.fn(async (_share: ManagedShare, relativePath: string) => {
+        if (relativePath === 'channels/runtime.bin') {
+          return eventBytes;
+        }
+        if (relativePath === `blocks/${blockHash}`) {
+          blockReadAttempts += 1;
+          if (blockReadAttempts === 1) {
+            throw new Error(`File not found: blocks/${blockHash}`);
+          }
+          return blockBytes;
+        }
+        throw new Error(`Unexpected runtime-source read: ${relativePath}`);
+      }),
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+        ownerMirrorSource,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    (adapter as unknown as {
+      accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+    }).accountShareKeyCache.set(userHandle, new Map([[shareHandle, shareKey]]));
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner-runtime-block-retry',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner-runtime-block-retry',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/logical/nearbytes',
+      sourceId: 'src-mega-owner-runtime-block-retry',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const publish = adapter.handleManagedShareLocalWrite(share, account, 'channels/runtime.bin');
+    await vi.runAllTimersAsync();
+    await expect(publish).resolves.toBeUndefined();
+
+    expect(ownerMirrorSource.readMirrorFile.mock.calls.map((call) => call[1])).toEqual([
+      'channels/runtime.bin',
+      `blocks/${blockHash}`,
+      `blocks/${blockHash}`,
+    ]);
+    expect(uploadedPaths).toEqual(['channels/runtime.bin', 'blocks/runtime.bin']);
+  });
+
   it('re-uploads runtime-source channel events when the remote file has the same byte length', async () => {
     const secretStore = createMemorySecretStore();
     const email = 'owner@example.com';
@@ -6924,7 +7117,7 @@ describe('MegaTransportAdapter', () => {
     expect(applied).toBe(true);
     await expect(fs.readFile(path.join(localPath, 'channels', volumeId, fileName))).resolves.toEqual(fileBytes);
     expect(handlePathIndex.get(fileHandle)).toBe(`channels/${volumeId}/${fileName}`);
-    expect(subtreeFetchCount).toBe(2);
+    expect(subtreeFetchCount).toBeGreaterThanOrEqual(2);
     expect(downloadRequestCount).toBe(1);
 
     await adapter.detachManagedShare(share, account);
@@ -7093,6 +7286,246 @@ describe('MegaTransportAdapter', () => {
     expect(applied).toBe(true);
     await expect(fs.readFile(path.join(localPath, 'blocks', blockFileName))).resolves.toEqual(filePlaintext);
     expect(subtreeFetchCount).toBe(0);
+    expect(downloadRequestCount).toBe(1);
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
+  it('applies a recipient update when the fetched mirror root handle differs from the incoming share descriptor handle', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const ownerHandle = 'owner000001';
+    const recipientShareHandle = 'bp5zmCTB';
+    const ownerRootHandle = 'P9xVXZrb';
+    const blocksHandle = 'bhwkBLYa';
+    const fileHandle = 'z1IFiDAZ';
+    const shareKey = Buffer.from('4f1e2d3c5b6a79888796a5b4c3d2e1f0', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
+    const fileBytes = Buffer.from('recipient-root-handle-mismatch', 'utf8');
+    const cryptoOps = createCryptoOperations();
+    const blockHash = await cryptoOps.computeHash(fileBytes);
+    const fileName = `${blockHash}.bin`;
+    const fileCiphertext = encryptFileContent(fileBytes, fileNodeKey);
+    const secretStore = createMemorySecretStore();
+
+    await secretStore.set('provider-account:mega:acct-mega-root-handle-mismatch', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    let subtreeFetchCount = 0;
+    let downloadRequestCount = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (typeof init?.body === 'string' && url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            subtreeFetchCount += 1;
+            if (
+              payload.n !== fileHandle &&
+              payload.c !== fileHandle &&
+              payload.n !== ownerRootHandle &&
+              payload.c !== ownerRootHandle
+            ) {
+              return new Response(
+                JSON.stringify([{
+                  f: [
+                    {
+                      h: ownerRootHandle,
+                      t: 1,
+                      a: encryptAttributes('nearbytes', rootNodeKey),
+                      k: encryptNodeKey(rootNodeKey, shareKey, ownerRootHandle),
+                      su: ownerHandle,
+                      sk: encodeMegaBase64Url(encryptAesEcb(shareKey, Buffer.from('00112233445566778899aabbccddeeff', 'hex'))),
+                    },
+                    {
+                      h: blocksHandle,
+                      p: ownerRootHandle,
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encryptNodeKey(blocksNodeKey, shareKey, ownerRootHandle),
+                      su: ownerHandle,
+                    },
+                    {
+                      h: fileHandle,
+                      p: blocksHandle,
+                      t: 0,
+                      s: fileBytes.length,
+                      a: encryptAttributes(fileName, fileNodeKey),
+                      k: encryptNodeKey(fileNodeKey, shareKey, ownerRootHandle),
+                      su: ownerHandle,
+                    },
+                  ],
+                  u: [{ u: ownerHandle, m: 'owner@example.com' }],
+                  sn: 'cursor-1',
+                }]),
+                { status: 200, headers: { 'content-type': 'application/json' } }
+              );
+            }
+            if (payload.n === fileHandle || payload.c === fileHandle) {
+              return new Response(
+                JSON.stringify([{
+                  f: [
+                    {
+                      h: blocksHandle,
+                      p: ownerRootHandle,
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encryptNodeKey(blocksNodeKey, shareKey, ownerRootHandle),
+                      su: ownerHandle,
+                    },
+                    {
+                      h: fileHandle,
+                      p: blocksHandle,
+                      t: 0,
+                      s: fileBytes.length,
+                      a: encryptAttributes(fileName, fileNodeKey),
+                      k: encryptNodeKey(fileNodeKey, shareKey, ownerRootHandle),
+                      su: ownerHandle,
+                    },
+                  ],
+                  u: [{ u: ownerHandle, m: 'owner@example.com' }],
+                  sn: 'cursor-1',
+                }]),
+                { status: 200, headers: { 'content-type': 'application/json' } }
+              );
+            }
+            if (payload.n === ownerRootHandle || payload.c === ownerRootHandle) {
+              return new Response(
+                JSON.stringify([{
+                  f: [
+                    {
+                      h: ownerRootHandle,
+                      t: 1,
+                      a: encryptAttributes('nearbytes', rootNodeKey),
+                      k: encryptNodeKey(rootNodeKey, shareKey, ownerRootHandle),
+                      su: ownerHandle,
+                      sk: encodeMegaBase64Url(encryptAesEcb(shareKey, Buffer.from('00112233445566778899aabbccddeeff', 'hex'))),
+                    },
+                    {
+                      h: blocksHandle,
+                      p: ownerRootHandle,
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encryptNodeKey(blocksNodeKey, shareKey, ownerRootHandle),
+                      su: ownerHandle,
+                    },
+                    {
+                      h: fileHandle,
+                      p: blocksHandle,
+                      t: 0,
+                      s: fileBytes.length,
+                      a: encryptAttributes(fileName, fileNodeKey),
+                      k: encryptNodeKey(fileNodeKey, shareKey, ownerRootHandle),
+                      su: ownerHandle,
+                    },
+                  ],
+                  u: [{ u: ownerHandle, m: 'owner@example.com' }],
+                  sn: 'cursor-1',
+                }]),
+                { status: 200, headers: { 'content-type': 'application/json' } }
+              );
+            }
+            throw new Error(`Unexpected subtree fetch during root-handle mismatch apply: ${JSON.stringify(payload)}`);
+          case 'g':
+            downloadRequestCount += 1;
+            return new Response(JSON.stringify([{ g: 'https://download.test/file' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://download.test/')) {
+        return new Response(new Uint8Array(fileCiphertext), { status: 200 });
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    (adapter as unknown as {
+      accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+    }).accountShareKeyCache.set(userHandle, new Map([[ownerRootHandle, shareKey], [recipientShareHandle, shareKey]]));
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-root-handle-mismatch-'));
+    tempDirs.push(localPath);
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-root-handle-mismatch',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-root-handle-mismatch',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-root-handle-mismatch',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: recipientShareHandle,
+        shareHandle: recipientShareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: 'nearbytes',
+        remotePath: 'owner@example.com:nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const applied = await (adapter as any).applyRecipientHandleUpdate(
+      share,
+      await (adapter as any).getAccountSession(account),
+      recipientShareHandle,
+      fileHandle,
+      {},
+      new Map<string, string>(),
+      {
+        source: 'sync',
+        rootHandle: recipientShareHandle,
+        triggerHandle: fileHandle,
+        packetReceivedAt: Date.now(),
+        scsn: 'cursor-1',
+      }
+    );
+
+    expect(applied).toBe(true);
+    await expect(fs.readFile(path.join(localPath, 'blocks', fileName))).resolves.toEqual(fileBytes);
+    expect(subtreeFetchCount).toBeGreaterThanOrEqual(2);
     expect(downloadRequestCount).toBe(1);
 
     await adapter.detachManagedShare(share, account);

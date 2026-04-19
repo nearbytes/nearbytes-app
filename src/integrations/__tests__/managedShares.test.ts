@@ -152,7 +152,7 @@ class RetryLocalWriteMegaAdapter extends FakeTransportAdapter {
     super('mega', 'MEGA', 'Managed folders backed by MEGA.');
   }
 
-  override async handleManagedShareLocalWrite(
+  async handleManagedShareLocalWrite(
     _share: ManagedShare,
     _account: ProviderAccount | null,
     relativePath: string
@@ -163,6 +163,27 @@ class RetryLocalWriteMegaAdapter extends FakeTransportAdapter {
       const error = new Error('MEGA API error -3.') as Error & { code?: number };
       error.code = -3;
       throw error;
+    }
+  }
+}
+
+class RetryMissingBlockLocalWriteMegaAdapter extends FakeTransportAdapter {
+  handleCalls: string[] = [];
+  private failedOnce = false;
+
+  constructor() {
+    super('mega', 'MEGA', 'Managed folders backed by MEGA.');
+  }
+
+  async handleManagedShareLocalWrite(
+    _share: ManagedShare,
+    _account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void> {
+    this.handleCalls.push(relativePath);
+    if (!this.failedOnce) {
+      this.failedOnce = true;
+      throw new Error('File not found: blocks/2ad4ec97b89f8c58b676b16f982e02a6accbe4fc01d0e24286dee41a3bd0286a');
     }
   }
 }
@@ -1707,6 +1728,149 @@ describe('ManagedShareService', () => {
     expect(adapter.handleCalls).toEqual([
       `channels/${volumeId}/retry-event.bin`,
       `channels/${volumeId}/retry-event.bin`,
+    ]);
+  });
+
+  it('retries a transient missing MEGA block read for the same canonical path', async () => {
+    vi.useFakeTimers();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-managed-share-missing-block-retry-'));
+    tempDirs.add(tempDir);
+    const localRoot = path.join(tempDir, 'local-root');
+    const megaRoot = path.join(tempDir, 'mega-root');
+    await fs.mkdir(localRoot, { recursive: true });
+    await fs.mkdir(megaRoot, { recursive: true });
+
+    const volumeId = '0470f0f4b5e8692d7d80af007bb3998a45a28ef86039120c49a093f6d83db1eac6a7cea90d620dc3d2c3095f0247da0ce3f460291eb9dc467cedce958abf38d473';
+    const rootsConfig: RootsConfig = {
+      version: 2,
+      sources: [
+        {
+          id: 'src-local',
+          provider: 'local',
+          path: localRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+        },
+        {
+          id: 'src-mega-owner',
+          provider: 'mega',
+          path: megaRoot,
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'drop-older-blocks',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'mega',
+            managedShareId: 'share-mega-owner-missing-block',
+          },
+        },
+      ],
+      defaultVolume: {
+        destinations: [
+          {
+            sourceId: 'src-local',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+          {
+            sourceId: 'src-mega-owner',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+      volumes: [
+        {
+          volumeId,
+          destinations: [
+            {
+              sourceId: 'src-mega-owner',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 5,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+      ],
+    };
+
+    const rootsConfigPath = path.join(tempDir, 'roots.json');
+    const integrationStatePath = path.join(tempDir, 'integrations.json');
+    await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
+    await saveIntegrationState(
+      {
+        version: 1,
+        preferredProviders: ['mega'],
+        accounts: [
+          {
+            id: 'acct-mega-1',
+            provider: 'mega',
+            label: 'MEGA',
+            email: 'owner@example.com',
+            state: 'connected',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        managedShares: [
+          {
+            id: 'share-mega-owner-missing-block',
+            provider: 'mega',
+            accountId: 'acct-mega-1',
+            label: 'nearbytes',
+            role: 'owner',
+            localPath: megaRoot,
+            sourceId: 'src-mega-owner',
+            syncMode: 'mirror',
+            remoteDescriptor: { remotePath: '/nearbytes' },
+            capabilities: ['mirror', 'read', 'write', 'invite'],
+            invitationEmails: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      integrationStatePath
+    );
+
+    const adapter = new RetryMissingBlockLocalWriteMegaAdapter();
+    const service = new ManagedShareService({
+      storage: new MultiRootStorageBackend(rootsConfig),
+      rootsConfigPath,
+      integrationStatePath,
+      adapters: [adapter],
+      readMaintenanceMode: 'inline',
+    });
+    services.add(service);
+
+    await (service as unknown as {
+      handleStorageWrite(event: { sourceId: string; path: string; size: number; channelKeyHex?: string }): Promise<void>;
+    }).handleStorageWrite({
+      sourceId: 'src-mega-owner',
+      path: `channels/${volumeId}/retry-missing-block-event.bin`,
+      size: 7,
+      channelKeyHex: volumeId,
+    });
+    expect(adapter.handleCalls).toEqual([`channels/${volumeId}/retry-missing-block-event.bin`]);
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(adapter.handleCalls).toEqual([
+      `channels/${volumeId}/retry-missing-block-event.bin`,
+      `channels/${volumeId}/retry-missing-block-event.bin`,
     ]);
   });
 

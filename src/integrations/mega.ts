@@ -83,6 +83,7 @@ const MEGA_RATE_LIMIT_RETRY_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 18_
 const MEGA_TRANSIENT_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 const MEGA_TRANSIENT_SYNC_COOLDOWN_MS = 30_000;
 const MEGA_POST_UPLOAD_SETTLE_MS = 30_000;
+const MEGA_RUNTIME_SOURCE_BLOCK_READ_RETRY_DELAYS_MS = [50, 150, 350] as const;
 const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 75;
 const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
 const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
@@ -1302,6 +1303,30 @@ export class MegaTransportAdapter {
     return new Uint8Array(await (await getMegaNodeFs()).readFile(localFilePath));
   }
 
+  private async readManagedShareUploadBytesWithRetry(
+    share: ManagedShare,
+    relativePath: string
+  ): Promise<Uint8Array> {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await this.readManagedShareUploadBytes(share, relativePath);
+      } catch (error) {
+        if (
+          !this.runtime.mega.ownerMirrorSource ||
+          !relativePath.startsWith('blocks/') ||
+          !isRuntimeSourceMirrorFileMissing(error) ||
+          attempt >= MEGA_RUNTIME_SOURCE_BLOCK_READ_RETRY_DELAYS_MS.length
+        ) {
+          throw error;
+        }
+        const delayMs = MEGA_RUNTIME_SOURCE_BLOCK_READ_RETRY_DELAYS_MS[attempt] ?? 0;
+        attempt += 1;
+        await waitForMegaRetry(this.runtime.scheduler, delayMs);
+      }
+    }
+  }
+
   private async forceManagedShareRuntimeSourceEventUpload(
     share: ManagedShare,
     account: ProviderAccount | null,
@@ -1334,7 +1359,7 @@ export class MegaTransportAdapter {
         );
         await adapter.upload(relativePath, eventBytes, { waitForVisibility: false });
         for (const blockPath of referencedBlockPaths) {
-          const blockBytes = await this.readManagedShareUploadBytes(share, blockPath);
+          const blockBytes = await this.readManagedShareUploadBytesWithRetry(share, blockPath);
           await adapter.upload(blockPath, blockBytes, { waitForVisibility: false });
         }
       });
@@ -2840,7 +2865,8 @@ export class MegaTransportAdapter {
         if (
           !isMegaRetryableApiError(error) &&
           !isMegaRetryableTransportError(error) &&
-          !isMegaEventuallyConsistentMutationError(error)
+          !isMegaEventuallyConsistentMutationError(error) &&
+          !isMegaMissingRequestedRootError(error)
         ) {
           throw error;
         }
@@ -3812,7 +3838,7 @@ export class MegaTransportAdapter {
       fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
         allowTransientFullFallback: true,
         fastPartialFallback: true,
-        maxAttempts: 1,
+        maxAttempts: 3,
       });
     } catch (error) {
       if (isMegaMissingRequestedRootError(error) || (error as MegaApiError | undefined)?.code === -9) {
@@ -3827,12 +3853,17 @@ export class MegaTransportAdapter {
       throw error;
     }
     let fetchCompletedAt = this.runtime.now();
-    let baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
+    let baseRelativePath = resolveRecipientFetchedNodePath(
+      fetched.tree.root,
+      rootHandle,
+      handlePathIndex,
+      resolveMegaRecipientMirrorRootName(share)
+    );
     // Immediate MEGA pushes can surface a new event file before the local recipient manifest has
     // learned the parent volume-folder handle. Refetch from that parent handle so canonical
     // channels/<volumeId>/<event>.bin paths still resolve without waiting for a later full sweep.
     if (
-      (!baseRelativePath || !isMirrorRelativePath(baseRelativePath)) &&
+      (baseRelativePath === undefined || (!isMirrorRelativePath(baseRelativePath) && !isRecipientMirrorContainerPath(baseRelativePath))) &&
       fetched.tree.root.parentHandle &&
       fetched.tree.root.parentHandle !== rootHandle &&
       fetched.tree.root.parentHandle !== handle &&
@@ -3843,7 +3874,7 @@ export class MegaTransportAdapter {
         fetched = await this.fetchPartialTreeWithRetry(session, fetched.tree.root.parentHandle, undefined, {
           allowTransientFullFallback: true,
           fastPartialFallback: true,
-          maxAttempts: 1,
+          maxAttempts: 3,
         });
       } catch (error) {
         if (isMegaMissingRequestedRootError(error) || (error as MegaApiError | undefined)?.code === -9) {
@@ -3859,10 +3890,16 @@ export class MegaTransportAdapter {
         throw error;
       }
       fetchCompletedAt = this.runtime.now();
-      baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
+      baseRelativePath = resolveRecipientFetchedNodePath(
+        fetched.tree.root,
+        rootHandle,
+        handlePathIndex,
+        resolveMegaRecipientMirrorRootName(share)
+      );
     }
-    const isMirrorContainer = baseRelativePath ? isRecipientMirrorContainerPath(baseRelativePath) : false;
-    if (!baseRelativePath || (!isMirrorRelativePath(baseRelativePath) && !isMirrorContainer)) {
+    const isMirrorRoot = baseRelativePath === '';
+    const isMirrorContainer = baseRelativePath !== undefined && isRecipientMirrorContainerPath(baseRelativePath);
+    if (baseRelativePath === undefined || (!isMirrorRoot && !isMirrorRelativePath(baseRelativePath) && !isMirrorContainer)) {
       debugMegaLog('[MEGA:immediate-apply] fetched subtree could not be resolved to a mirror path.', {
         shareId: share.id,
         rootHandle,
@@ -3883,7 +3920,7 @@ export class MegaTransportAdapter {
       fetchCompletedAt,
     };
 
-    if (!isMirrorContainer) {
+    if (!isMirrorContainer && !isMirrorRoot) {
       await this.applyRecipientFetchedNode(
         share,
         session,
@@ -6320,7 +6357,16 @@ function describeMegaOwnerSyncFailure(error: unknown, remotePath: string): strin
 
 function annotateMegaOwnerSyncPhaseError(phase: string, error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(`${phase}: ${message}`);
+  const annotated = new Error(`${phase}: ${message}`);
+  if (error instanceof Error) {
+    annotated.name = error.name;
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'number' || typeof code === 'string') {
+      (annotated as Error & { code?: number | string }).code = code;
+    }
+    (annotated as Error & { cause?: unknown }).cause = error;
+  }
+  return annotated;
 }
 
 function normalizeMegaRemoteDisplayPath(value: string): string {
@@ -9185,8 +9231,16 @@ function collectManifestHandles(entries: Record<string, ProviderRefreshManifestE
 function resolveRecipientFetchedNodePath(
   node: DecryptedMegaNode,
   rootHandle: string,
-  handlePathIndex: ReadonlyMap<string, string>
+  handlePathIndex: ReadonlyMap<string, string>,
+  mirrorRootName?: string
 ): string | undefined {
+  const normalizedMirrorRootName = mirrorRootName?.trim().toLowerCase();
+  if (normalizedMirrorRootName && node.isFolder && node.name.trim().toLowerCase() === normalizedMirrorRootName) {
+    return '';
+  }
+  if (node.isFolder && isMirrorContainerPath(sanitizePathSegment(node.name))) {
+    return sanitizePathSegment(node.name);
+  }
   if (node.parentHandle === rootHandle) {
     return sanitizePathSegment(node.name);
   }
@@ -9206,6 +9260,20 @@ function resolveRecipientFetchedNodePath(
     }
   }
   return handlePathIndex.get(node.handle);
+}
+
+function resolveMegaRecipientMirrorRootName(share: ManagedShare): string | undefined {
+  const explicitShareName = getStringDescriptor(share.remoteDescriptor, 'shareName')?.trim();
+  if (explicitShareName) {
+    return explicitShareName;
+  }
+  const remotePath = getStringDescriptor(share.remoteDescriptor, 'remotePath')?.trim();
+  if (!remotePath) {
+    return undefined;
+  }
+  const normalizedRemotePath = normalizeMegaRemoteDisplayPath(remotePath);
+  const segments = normalizedRemotePath.split('/').filter((segment) => segment.length > 0);
+  return segments.at(-1);
 }
 
 function collectTreeHandles(tree: DecryptedMegaTree): string[] {

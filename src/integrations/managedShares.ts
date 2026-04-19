@@ -3779,7 +3779,11 @@ function isMegaTransientCollaboratorError(error: unknown): boolean {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);
-  return /MEGA API error -3|MEGA API error -4|rate\s*limit|timeout|timed?\s*out|temporar/i.test(message);
+  return (
+    /MEGA API error -3|MEGA API error -4|rate\s*limit|timeout|timed?\s*out|temporar/i.test(message) ||
+    /File not found:\s*blocks\//i.test(message) ||
+    /File not found in any root:\s*blocks\//i.test(message)
+  );
 }
 
 function describeMegaAccountRecovery(message: string): string {
