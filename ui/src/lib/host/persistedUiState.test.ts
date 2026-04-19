@@ -72,4 +72,33 @@ describe('persistedUiState', () => {
     ]);
     expect(state).toEqual({ savedAt: 9, volumeMounts: [{ id: 'one' }] });
   });
+
+  it('merges partial host ui-state saves with the already persisted payload', async () => {
+    const calls: Array<unknown> = [];
+
+    await expect(
+      saveHostPersistedUiState(
+        { savedAt: 20, volumeMounts: [{ id: 'one' }] },
+        {
+          loadUiState: async () => ({
+            savedAt: 10,
+            configuredIdentities: [{ id: 'identity-a' }],
+            activeChatIdentityId: 'identity-a',
+          }),
+          saveUiState: async (nextState) => {
+            calls.push(JSON.parse(JSON.stringify(nextState)));
+          },
+        }
+      )
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual([
+      {
+        volumeMounts: [{ id: 'one' }],
+        configuredIdentities: [{ id: 'identity-a' }],
+        activeChatIdentityId: 'identity-a',
+        savedAt: 20,
+      },
+    ]);
+  });
 });

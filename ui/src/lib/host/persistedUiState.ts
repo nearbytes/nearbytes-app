@@ -68,6 +68,21 @@ export async function saveHostPersistedUiState(
   if (!resolved || typeof resolved.saveUiState !== 'function') {
     return false;
   }
-  await resolved.saveUiState(clonePersistedUiState(normalizePersistedUiState(state)));
+  const normalizedState = normalizePersistedUiState(state);
+  let mergedState = normalizedState;
+  if (typeof resolved.loadUiState === 'function') {
+    try {
+      const explicitUpdates = Object.fromEntries(
+        Object.entries(normalizedState).filter(([, value]) => value !== undefined)
+      ) as PersistedUiState;
+      mergedState = {
+        ...normalizePersistedUiState(await resolved.loadUiState()),
+        ...explicitUpdates,
+      };
+    } catch {
+      mergedState = normalizedState;
+    }
+  }
+  await resolved.saveUiState(clonePersistedUiState(mergedState));
   return true;
 }
