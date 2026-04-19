@@ -1471,14 +1471,14 @@ async function resolveEmbeddedPhoneAttachedVolumeIds(
     return new Set();
   }
   // Keep phone owner publication tied to the volumes actively opened in this runtime instance.
-  // Replaying every historically remembered volume turns phone startup into a giant catch-up sweep
-  // and blocks live phone-to-desktop push behind unrelated archival traffic.
-  const persistedSecrets = await readEmbeddedPhoneKnownVolumeSecrets();
+  // Pulling every historically persisted secret back into the owner mirror turns restart into a
+  // giant archival catch-up sweep and blocks live phone-to-desktop publication behind unrelated
+  // volumes. Persisted secrets are for reopening hubs later, not for eagerly republishing all of
+  // them on every owner sync pass.
   return new Set(
-    new Set([
-      ...Array.from(embeddedPhoneKnownVolumeSecrets.keys()),
-      ...Object.keys(persistedSecrets),
-    ].map((volumeId) => volumeId.trim().toLowerCase()).filter((volumeId) => volumeId.length > 0))
+    Array.from(embeddedPhoneKnownVolumeSecrets.keys())
+      .map((volumeId) => volumeId.trim().toLowerCase())
+      .filter((volumeId) => volumeId.length > 0)
   );
 }
 

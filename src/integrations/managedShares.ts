@@ -29,6 +29,7 @@ import {
 } from './adapters.js';
 import { createPlannerContext, endpointMatchKey, planJoinLink } from './planner.js';
 import type { IntegrationRuntime, IntegrationRuntimeOptions } from './runtime.js';
+import type { RuntimeTimerHandle } from '../runtime/scheduler.js';
 import {
   type IntegrationMaintenanceSnapshot,
   type IntegrationStateSnapshot,
@@ -80,6 +81,7 @@ const GET_MANAGED_SHARE_STATE_ENSURE_SYNC_MIN_INTERVAL_MS = 120_000;
 const FAST_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = 2_000;
 const EXTERNAL_INVENTORY_REFRESH_MIN_INTERVAL_MS = 30_000;
 const FULL_MANAGED_SHARE_SUMMARY_TIMEOUT_MS = FULL_MANAGED_SHARE_TRANSPORT_STATE_TIMEOUT_MS + 1_000;
+const MANAGED_SHARE_LOCAL_WRITE_RETRY_DELAY_MS = 1_500;
 
 export class ManagedShareServiceError extends Error {
   constructor(
@@ -189,6 +191,7 @@ export class ManagedShareService {
   private readonly lastGetManagedShareScheduledSyncAt = new Map<string, number>();
   private readonly recentlyOpenedVolumeIds = new Map<string, number>();
   private readonly stopStorageWriteSubscription: (() => void) | null;
+  private readonly pendingLocalWriteRetryTimers = new Map<string, RuntimeTimerHandle>();
   private maintenanceRequested = false;
   private maintenanceTask: Promise<void> | null = null;
   private disposed = false;
@@ -227,6 +230,10 @@ export class ManagedShareService {
     this.recentlyOpenedVolumeIds.clear();
     this.autoRepairCooldowns.clear();
     this.collaboratorLookupCooldowns.clear();
+    for (const timer of this.pendingLocalWriteRetryTimers.values()) {
+      timer.cancel();
+    }
+    this.pendingLocalWriteRetryTimers.clear();
     this.stopStorageWriteSubscription?.();
     const maintenanceTask = this.maintenanceTask;
     if (maintenanceTask) {
@@ -1251,9 +1258,69 @@ export class ManagedShareService {
         }
 
         const account = state.accounts.find((entry) => entry.id === share.accountId) ?? null;
-        await adapter.handleManagedShareLocalWrite(share, account, normalizedPath);
+        try {
+          await adapter.handleManagedShareLocalWrite(share, account, normalizedPath);
+        } catch (error) {
+          if (normalizeProvider(share.provider) === 'mega' && isMegaTransientCollaboratorError(error)) {
+            this.scheduleManagedShareLocalWriteRetry(share, account, normalizedPath);
+            this.runtime.logger.warn(
+              `Managed share local write handling deferred for ${normalizedPath}: ${error instanceof Error ? error.message : String(error)}`
+            );
+            return;
+          }
+          throw error;
+        }
       })
     );
+  }
+
+  private scheduleManagedShareLocalWriteRetry(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): void {
+    if (this.disposed) {
+      return;
+    }
+    const retryKey = `${share.id}:${relativePath}`;
+    const existing = this.pendingLocalWriteRetryTimers.get(retryKey);
+    if (existing) {
+      existing.cancel();
+      this.pendingLocalWriteRetryTimers.delete(retryKey);
+    }
+    const timer = this.runtime.scheduler.setTimeout(() => {
+      this.pendingLocalWriteRetryTimers.delete(retryKey);
+      void this.retryManagedShareLocalWrite(share, account, relativePath);
+    }, MANAGED_SHARE_LOCAL_WRITE_RETRY_DELAY_MS);
+    timer.unref?.();
+    this.pendingLocalWriteRetryTimers.set(retryKey, timer);
+  }
+
+  private async retryManagedShareLocalWrite(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    const adapter = this.adapters.get(normalizeProvider(share.provider));
+    if (!adapter?.handleManagedShareLocalWrite) {
+      return;
+    }
+    try {
+      await adapter.handleManagedShareLocalWrite(share, account, relativePath);
+    } catch (error) {
+      if (normalizeProvider(share.provider) === 'mega' && isMegaTransientCollaboratorError(error)) {
+        this.scheduleManagedShareLocalWriteRetry(share, account, relativePath);
+        this.runtime.logger.warn(
+          `Managed share local write retry deferred for ${relativePath}: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.logger.warn(`Managed share local write retry failed for ${relativePath}: ${message}`);
+    }
   }
 
   async getManagedShareUploadProbes(
