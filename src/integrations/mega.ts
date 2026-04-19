@@ -3807,11 +3807,25 @@ export class MegaTransportAdapter {
     probeContext: MegaRecipientProbeContext
   ): Promise<boolean> {
     let fetchStartedAt = this.runtime.now();
-    let fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
-      allowTransientFullFallback: true,
-      fastPartialFallback: true,
-      maxAttempts: 1,
-    });
+    let fetched;
+    try {
+      fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
+        allowTransientFullFallback: true,
+        fastPartialFallback: true,
+        maxAttempts: 1,
+      });
+    } catch (error) {
+      if (isMegaMissingRequestedRootError(error) || (error as MegaApiError | undefined)?.code === -9) {
+        debugMegaLog('[MEGA:immediate-apply] skipped stale recipient handle after fetch miss.', {
+          shareId: share.id,
+          rootHandle,
+          handle,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+      throw error;
+    }
     let fetchCompletedAt = this.runtime.now();
     let baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
     // Immediate MEGA pushes can surface a new event file before the local recipient manifest has
@@ -3825,11 +3839,25 @@ export class MegaTransportAdapter {
       !handlePathIndex.has(fetched.tree.root.parentHandle)
     ) {
       fetchStartedAt = this.runtime.now();
-      fetched = await this.fetchPartialTreeWithRetry(session, fetched.tree.root.parentHandle, undefined, {
-        allowTransientFullFallback: true,
-        fastPartialFallback: true,
-        maxAttempts: 1,
-      });
+      try {
+        fetched = await this.fetchPartialTreeWithRetry(session, fetched.tree.root.parentHandle, undefined, {
+          allowTransientFullFallback: true,
+          fastPartialFallback: true,
+          maxAttempts: 1,
+        });
+      } catch (error) {
+        if (isMegaMissingRequestedRootError(error) || (error as MegaApiError | undefined)?.code === -9) {
+          debugMegaLog('[MEGA:immediate-apply] skipped stale recipient parent-handle refetch after fetch miss.', {
+            shareId: share.id,
+            rootHandle,
+            handle,
+            parentHandle: fetched.tree.root.parentHandle,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
+        throw error;
+      }
       fetchCompletedAt = this.runtime.now();
       baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
     }

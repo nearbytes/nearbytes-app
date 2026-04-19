@@ -7099,6 +7099,183 @@ describe('MegaTransportAdapter', () => {
     await adapter.dispose();
   });
 
+  it('keeps immediate recipient apply on the pushed file when an extra packet handle is already missing remotely', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const ownerHandle = 'owner000001';
+    const shareHandle = 'cIVQ2bjB';
+    const staleHandle = 'stale00001';
+    const blocksHandle = 'blocks0001';
+    const fileHandle = 'file000012';
+    const shareKey = Buffer.from('4f1e2d3c5b6a79888796a5b4c3d2e1f0', 'hex');
+    const blocksNodeKey = Buffer.from('51223344556677889900aabbccddeeff', 'hex');
+    const fileNodeKey = Buffer.from('40112233445566778899aabbccddeeff202132435465768798a9babbdcddf0f1', 'hex');
+    const filePlaintext = Buffer.from('push-survives-stale-extra-handle', 'utf8');
+    const cryptoOps = createCryptoOperations();
+    const blockHash = await cryptoOps.computeHash(filePlaintext);
+    const blockFileName = `${blockHash}.bin`;
+    const fileCiphertext = encryptFileContent(filePlaintext, fileNodeKey);
+    const secretStore = createMemorySecretStore();
+
+    await secretStore.set('provider-account:mega:acct-mega-stale-extra-handle', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    let subtreeFetchCount = 0;
+    let downloadRequestCount = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (typeof init?.body === 'string' && url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            subtreeFetchCount += 1;
+            if (payload.n === staleHandle || payload.c === staleHandle) {
+              return new Response(JSON.stringify([-9]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            }
+            throw new Error(`Unexpected subtree fetch during stale-handle immediate apply: ${JSON.stringify(payload)}`);
+          case 'g':
+            downloadRequestCount += 1;
+            return new Response(JSON.stringify([{ g: 'https://download.test/file' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://download.test/')) {
+        return new Response(new Uint8Array(fileCiphertext), { status: 200 });
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    (adapter as unknown as {
+      accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+    }).accountShareKeyCache.set(userHandle, new Map([[shareHandle, shareKey]]));
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-stale-extra-handle-'));
+    tempDirs.push(localPath);
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-stale-extra-handle',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-stale-extra-handle',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-stale-extra-handle',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const applied = await (adapter as any).tryApplyRecipientActionPackets(
+      share,
+      account,
+      shareHandle,
+      {
+        rootHandle: shareHandle,
+        lastScsn: 'cursor-0',
+        knownHandles: [shareHandle],
+        entries: {},
+      },
+      {
+        packets: [
+          {
+            a: 't',
+            t: {
+              f: [
+                {
+                  h: blocksHandle,
+                  p: shareHandle,
+                  t: 1,
+                  a: encryptAttributes('blocks', blocksNodeKey),
+                  k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+                  su: ownerHandle,
+                },
+                {
+                  h: fileHandle,
+                  p: blocksHandle,
+                  t: 0,
+                  s: filePlaintext.length,
+                  a: encryptAttributes(blockFileName, fileNodeKey),
+                  k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+                  g: `http://download.test/${fileHandle}`,
+                  su: ownerHandle,
+                },
+              ],
+              u: [{ u: ownerHandle, m: 'owner@example.com' }],
+            },
+          },
+          {
+            a: 'u',
+            n: staleHandle,
+          },
+        ],
+        scsn: 'cursor-1',
+      },
+      {
+        source: 'sc',
+        rootHandle: shareHandle,
+        triggerHandle: fileHandle,
+        packetReceivedAt: Date.now(),
+        scsn: 'cursor-1',
+      }
+    );
+
+    expect(applied).toBe(true);
+    await expect(fs.readFile(path.join(localPath, 'blocks', blockFileName))).resolves.toEqual(filePlaintext);
+    expect(subtreeFetchCount).toBeGreaterThanOrEqual(1);
+    expect(downloadRequestCount).toBe(1);
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
   it('mirrors an incoming share when a cached extra share key must be aliased onto the root key owner', async () => {
     const email = 'reader@example.com';
     const userHandle = 'usrhandle01';

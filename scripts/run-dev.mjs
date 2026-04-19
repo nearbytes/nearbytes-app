@@ -39,6 +39,7 @@ async function main() {
         }
       : {}),
   };
+  delete childEnv.ELECTRON_RUN_AS_NODE;
 
   let uiChild = null;
   console.log(`[dev-run] starting renderer dev server on ${devUiUrl}`);

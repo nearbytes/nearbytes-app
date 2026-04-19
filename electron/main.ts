@@ -555,7 +555,7 @@ async function wipeStoredConfig(options: WipeStoredConfigOptions = {}): Promise<
   if (state.window && !state.window.isDestroyed()) {
     await state.window.webContents.session.clearStorageData({
       storages: ['localstorage', 'indexdb', 'serviceworkers', 'cachestorage'],
-    }).catch((error) => {
+    }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`Failed to clear desktop browser storage: ${message}`);
     });
