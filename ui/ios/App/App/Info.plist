@@ -30,6 +30,15 @@
 		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
+			<!-- Keep the phone self-contained: the embedded MEGA runtime must be allowed to fetch MEGA's
+			     plain-HTTP userstorage download URLs directly on device instead of routing through a dev server. -->
+			<key>userstorage.mega.co.nz</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
 			<key>127.0.0.1</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>

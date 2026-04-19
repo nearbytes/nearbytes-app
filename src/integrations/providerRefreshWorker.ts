@@ -1,14 +1,60 @@
 import { managedSharePath as path } from './managedSharePath.js';
 import { validateCanonicalStorageFile } from '../storage/integrity.js';
 
-type ProviderRefreshFsModule = typeof import('node:fs/promises') | typeof import('fs/promises');
+interface ProviderRefreshFsStatsLike {
+  isFile(): boolean;
+  isDirectory(): boolean;
+  size: number;
+}
+
+interface ProviderRefreshFsModuleLike {
+  mkdir(targetPath: string, options?: { readonly recursive?: boolean }): Promise<void>;
+  writeFile(targetPath: string, data: Uint8Array): Promise<void>;
+  rm(
+    targetPath: string,
+    options?: {
+      readonly recursive?: boolean;
+      readonly force?: boolean;
+    }
+  ): Promise<void>;
+  stat(targetPath: string): Promise<ProviderRefreshFsStatsLike>;
+}
+
+interface ProviderRefreshGlobalScope {
+  __nearbytesMegaFs?: ProviderRefreshFsModuleLike;
+}
+
+type ProviderRefreshFsModule =
+  | typeof import('node:fs/promises')
+  | typeof import('fs/promises')
+  | ProviderRefreshFsModuleLike;
 let providerRefreshFsPromise: Promise<ProviderRefreshFsModule> | null = null;
 
+function isProviderRefreshFsModuleLike(value: unknown): value is ProviderRefreshFsModule {
+  return typeof (value as { mkdir?: unknown } | null)?.mkdir === 'function';
+}
+
+function getProviderRefreshFsShim(): ProviderRefreshFsModuleLike | null {
+  const shim = (globalThis as typeof globalThis & ProviderRefreshGlobalScope).__nearbytesMegaFs;
+  return isProviderRefreshFsModuleLike(shim) ? shim : null;
+}
+
 async function getProviderRefreshFs(): Promise<ProviderRefreshFsModule> {
+  const shim = getProviderRefreshFsShim();
+  if (shim) {
+    // docs/specs/transport/mega-runtime-v0.1.md and docs/specs/storage-integration-stack-v1.md
+    // require the self-contained phone runtime to materialize provider-managed mirror files in-process,
+    // not through browser-externalized Node fs modules or a separate dev API server.
+    return shim;
+  }
   if (!providerRefreshFsPromise) {
     providerRefreshFsPromise = import('node:fs/promises').catch(() => import('fs/promises'));
   }
-  return providerRefreshFsPromise;
+  const moduleValue = await providerRefreshFsPromise;
+  if (isProviderRefreshFsModuleLike(moduleValue)) {
+    return moduleValue;
+  }
+  throw new Error('Provider refresh filesystem runtime is unavailable.');
 }
 
 export interface ProviderRefreshRemoteEntry {

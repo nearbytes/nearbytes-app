@@ -41,6 +41,7 @@ import {
   getChannelDiagnostics,
 } from './storageDiagnostics.js';
 import type { UiDebugExecutor } from './uiDebug.js';
+import { createStorageBackedMegaOwnerMirrorSource } from './megaOwnerMirrorSource.js';
 import {
   consolidateRootBodySchema,
   consolidateRootParamSchema,
@@ -127,6 +128,16 @@ export function createRoutes(deps: RouteDependencies): Router {
               filePath: join(resolve(deps.rootsConfigPath), '..', 'integration-secrets.json'),
             }),
           volumeEvents: deps.integrationOptions?.runtime?.volumeEvents ?? volumeEventBus,
+          mega: {
+            ...deps.integrationOptions?.runtime?.mega,
+            // Keep desktop/server owner shares on the same canonical channels/* and blocks/* stream
+            // as the self-contained phone runtime so true MEGA push stays symmetric after refactors.
+            ownerMirrorSource:
+              deps.integrationOptions?.runtime?.mega?.ownerMirrorSource ??
+              (isMultiRootStorageBackend(deps.storage)
+                ? createStorageBackedMegaOwnerMirrorSource(deps.storage)
+                : undefined),
+          },
         })
       : null);
   const managedShareService =
@@ -1634,4 +1645,3 @@ function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
   const normalizedTarget = normalizeComparablePath(targetPath);
   return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
 }
-

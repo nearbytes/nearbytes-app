@@ -12,6 +12,7 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
         CAPPluginMethod(name: "getAutomationCommand", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearAutomationCommand", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAutomationResult", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "httpRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "postSignal", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startRuntime", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopRuntime", returnType: CAPPluginReturnPromise),
@@ -148,6 +149,73 @@ public class NearbytesLanPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserD
         }
         writeAutomationFile(value, named: automationResultFileName)
         call.resolve()
+    }
+
+    @objc func httpRequest(_ call: CAPPluginCall) {
+        guard let urlString = call.getString("url")?.trimmingCharacters(in: .whitespacesAndNewlines), !urlString.isEmpty else {
+            call.reject("url is required")
+            return
+        }
+        guard let url = URL(string: urlString) else {
+            call.reject("Invalid URL")
+            return
+        }
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = call.getString("method")?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? "GET"
+
+        if let headers = call.getObject("headers") {
+            for (name, value) in headers {
+                if let stringValue = value as? String {
+                    urlRequest.setValue(stringValue, forHTTPHeaderField: name)
+                } else if let numberValue = value as? NSNumber {
+                    urlRequest.setValue(numberValue.stringValue, forHTTPHeaderField: name)
+                }
+            }
+        }
+
+        if let bodyBase64 = call.getString("bodyBase64"), !bodyBase64.isEmpty {
+            guard let data = Data(base64Encoded: bodyBase64) else {
+                call.reject("bodyBase64 must be valid base64")
+                return
+            }
+            urlRequest.httpBody = data
+        } else if let bodyText = call.getString("bodyText") {
+            urlRequest.httpBody = bodyText.data(using: .utf8)
+        }
+
+        let task = URLSession.shared.dataTask(with: urlRequest) { data, response, error in
+            if let error {
+                call.reject("Native HTTP request failed: \(error.localizedDescription)", nil, error)
+                return
+            }
+            guard let httpResponse = response as? HTTPURLResponse else {
+                call.reject("Native HTTP response was not HTTP")
+                return
+            }
+
+            var responseHeaders: JSObject = [:]
+            for (key, value) in httpResponse.allHeaderFields {
+                guard let headerName = key as? String else {
+                    continue
+                }
+                if let stringValue = value as? String {
+                    responseHeaders[headerName] = stringValue
+                } else if let numberValue = value as? NSNumber {
+                    responseHeaders[headerName] = numberValue.stringValue
+                } else {
+                    responseHeaders[headerName] = String(describing: value)
+                }
+            }
+
+            call.resolve([
+                "status": httpResponse.statusCode,
+                "headers": responseHeaders,
+                "url": httpResponse.url?.absoluteString ?? urlString,
+                "bodyBase64": data?.base64EncodedString() ?? ""
+            ])
+        }
+        task.resume()
     }
 
     @objc func startRuntime(_ call: CAPPluginCall) {

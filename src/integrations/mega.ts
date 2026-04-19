@@ -24,7 +24,7 @@ import {
   resolveMegaPublicLinkTarget,
 } from './megaPublicLink.js';
 import { managedSharePath as path } from './managedSharePath.js';
-import { validateCanonicalStorageFile } from '../storage/integrity.js';
+import { normalizeVolumeId, validateCanonicalStorageFile } from '../storage/integrity.js';
 import { MirrorWorker } from './mirrorWorker.js';
 import type {
   ManagedShareMirrorEntry,
@@ -204,13 +204,6 @@ function getMegaWebCrypto(): Crypto {
   return getMegaNodeCrypto().webcrypto as Crypto;
 }
 
-async function getMegaNodeFs(): Promise<typeof import('node:fs/promises') | typeof import('fs/promises')> {
-  if (!megaNodeFsModulePromise) {
-    megaNodeFsModulePromise = import('node:fs/promises').catch(() => import('fs/promises'));
-  }
-  return megaNodeFsModulePromise;
-}
-
 async function getMegaChokidar(): Promise<{ default: { watch(...args: unknown[]): MegaFsWatcher } }> {
   if (!megaChokidarModulePromise) {
     const moduleName = 'chokidar';
@@ -233,6 +226,59 @@ interface MegaAdapterOptions {
 interface MegaFsWatcher {
   close(): Promise<void> | void;
   on(event: string, listener: (...args: unknown[]) => void): MegaFsWatcher;
+}
+
+interface MegaFsStatsLike {
+  isDirectory(): boolean;
+}
+
+interface MegaFsModuleLike {
+  mkdir(targetPath: string, options?: { readonly recursive?: boolean }): Promise<void>;
+  readFile(targetPath: string): Promise<Uint8Array>;
+  writeFile(targetPath: string, data: Uint8Array): Promise<void>;
+  access(targetPath: string): Promise<void>;
+  rm(
+    targetPath: string,
+    options?: {
+      readonly recursive?: boolean;
+      readonly force?: boolean;
+    }
+  ): Promise<void>;
+  stat(targetPath: string): Promise<MegaFsStatsLike>;
+  readdir(targetPath: string): Promise<string[]>;
+}
+
+interface MegaRuntimeGlobalScope {
+  __nearbytesMegaFs?: MegaFsModuleLike;
+}
+
+function isMegaFsModuleLike(
+  value: unknown
+): value is typeof import('node:fs/promises') | typeof import('fs/promises') | MegaFsModuleLike {
+  return typeof (value as { mkdir?: unknown } | null)?.mkdir === 'function';
+}
+
+function getMegaRuntimeFsShim(): MegaFsModuleLike | null {
+  const shim = (globalThis as typeof globalThis & MegaRuntimeGlobalScope).__nearbytesMegaFs;
+  return isMegaFsModuleLike(shim) ? shim : null;
+}
+
+async function getMegaNodeFs(): Promise<typeof import('node:fs/promises') | typeof import('fs/promises') | MegaFsModuleLike> {
+  if (!megaNodeFsModulePromise) {
+    megaNodeFsModulePromise = import('node:fs/promises').catch(() => import('fs/promises'));
+  }
+  const moduleValue = await megaNodeFsModulePromise;
+  if (isMegaFsModuleLike(moduleValue)) {
+    return moduleValue;
+  }
+  const shim = getMegaRuntimeFsShim();
+  if (shim) {
+    // docs/specs/transport/mega-runtime-v0.1.md and docs/specs/storage-integration-stack-v1.md
+    // require the self-contained phone runtime to materialize the same canonical MEGA files locally
+    // without depending on a separate dev API server or Node-only filesystem modules.
+    return shim;
+  }
+  throw new Error('MEGA filesystem runtime is unavailable.');
 }
 
 interface MegaAccountSecret {
@@ -1208,10 +1254,14 @@ export class MegaTransportAdapter {
       throw new Error('Only channels/* and blocks/* paths can be uploaded to MEGA.');
     }
 
-    const localFilePath = path.join(share.localPath, normalizedPath);
-    const localBytes = new Uint8Array(await (await getMegaNodeFs()).readFile(localFilePath));
+    const localBytes = await this.readManagedShareUploadBytes(share, normalizedPath);
     const uploadStartedAt = this.runtime.now();
     try {
+      if (this.runtime.mega.ownerMirrorSource) {
+        // Runtime-source owner syncs can be draining a long canonical catch-up. Abort that pass so
+        // a fresh local write can publish immediately; the background sync will retry afterward.
+        this.abortShareSyncTask(share.id);
+      }
       await this.withExclusiveShareTask(share.id, async () => {
         await this.withRecoveredAccountSession(account, async (session) => {
           const ownerUploadState = await this.getOwnerUploadState(share, session);
@@ -1237,6 +1287,14 @@ export class MegaTransportAdapter {
       startedAt: uploadStartedAt,
       committedAt: this.runtime.now(),
     });
+  }
+
+  private async readManagedShareUploadBytes(share: ManagedShare, relativePath: string): Promise<Uint8Array> {
+    if (this.runtime.mega.ownerMirrorSource) {
+      return this.runtime.mega.ownerMirrorSource.readMirrorFile(share, relativePath);
+    }
+    const localFilePath = path.join(share.localPath, relativePath);
+    return new Uint8Array(await (await getMegaNodeFs()).readFile(localFilePath));
   }
 
   async handleManagedShareLocalWrite(
@@ -1607,6 +1665,13 @@ export class MegaTransportAdapter {
       if (this.syncTasks.get(shareId) === serializedTask) {
         this.syncTasks.delete(shareId);
       }
+    }
+  }
+
+  private abortShareSyncTask(shareId: string): void {
+    const controller = this.syncControllers.get(shareId);
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
     }
   }
 
@@ -2408,11 +2473,22 @@ export class MegaTransportAdapter {
           .map((entry) => normalizeRelativePath(entry))
           .filter((entry) => entry.length > 0 && isMirrorRelativePath(entry))
       )
-    ).sort((left, right) => left.localeCompare(right));
+    ).sort(compareOwnerMirrorRelativePaths);
 
     for (const relativePath of mirrorPaths) {
+      let bytes: Uint8Array;
+      try {
+        bytes = await source.readMirrorFile(share, relativePath);
+      } catch (error) {
+        if (isRuntimeSourceMirrorFileMissing(error)) {
+          // Runtime-source listings can race with local compaction or replacement. Skip vanished
+          // entries instead of aborting the whole push cycle; the next pass will publish the stable set.
+          skipped.push(relativePath);
+          continue;
+        }
+        throw error;
+      }
       activePaths.add(relativePath);
-      const bytes = await source.readMirrorFile(share, relativePath);
       const existing = ownerUploadState.filesByPath.get(relativePath);
       // Runtime-source owner mirrors can produce new canonical channel events with the same byte length
       // as older remote files. Do not use a size-only shortcut for channels/* or we can suppress real push sync.
@@ -3480,7 +3556,10 @@ export class MegaTransportAdapter {
       handles,
       actions: summarizeActionPacketActions(actionBatch.packets),
     });
-    if (handles.length === 0) {
+    const hasDeletionPackets = actionBatch.packets.some(
+      (packet) => (typeof packet.a === 'string' ? packet.a.trim() : '') === 'd'
+    );
+    if (handles.length === 0 && !hasDeletionPackets) {
       return false;
     }
 
@@ -3652,7 +3731,7 @@ export class MegaTransportAdapter {
     });
     const fetchCompletedAt = this.runtime.now();
     const baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
-    const isMirrorContainer = baseRelativePath ? isMirrorContainerPath(baseRelativePath) : false;
+    const isMirrorContainer = baseRelativePath ? isRecipientMirrorContainerPath(baseRelativePath) : false;
     if (!baseRelativePath || (!isMirrorRelativePath(baseRelativePath) && !isMirrorContainer)) {
       debugMegaLog('[MEGA:immediate-apply] fetched subtree could not be resolved to a mirror path.', {
         shareId: share.id,
@@ -4930,7 +5009,11 @@ class MegaOwnerRemoteAdapter {
       this.signal,
     );
     const existing = this.ownerUploadState.filesByPath.get(normalized);
-    if (existing && existing.size === data.length) {
+    // Keep the self-contained phone runtime authoritative for runtime-source channel events.
+    // Canonical channels/* entries can change without changing byte length, so size-only skips
+    // here would suppress true push sync from phone to MEGA after the runtime source already
+    // decided the path needs uploading.
+    if (existing && !normalized.startsWith('channels/') && existing.size === data.length) {
       debugMegaLog('[MEGA:owner-adapter] upload skipped (already exists on remote).', {
         relativePath: normalized,
         existingHandle: existing.handle,
@@ -4972,8 +5055,41 @@ function isMirrorRelativePath(value: string): boolean {
   return value.startsWith('blocks/') || value.startsWith('channels/');
 }
 
+function compareOwnerMirrorRelativePaths(left: string, right: string): number {
+  const leftIsChannel = left.startsWith('channels/');
+  const rightIsChannel = right.startsWith('channels/');
+  if (leftIsChannel !== rightIsChannel) {
+    // Keep the live event stream ahead of the shared block backlog so push sync stays near-immediate.
+    return leftIsChannel ? -1 : 1;
+  }
+  return left.localeCompare(right);
+}
+
+function isRuntimeSourceMirrorFileMissing(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const code = 'code' in error ? (error as { code?: unknown }).code : undefined;
+  if (code === 'ENOENT') {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return message.startsWith('File not found:') || message.startsWith('File not found in any root:');
+}
+
 function isMirrorContainerPath(value: string): boolean {
   return value === 'blocks' || value === 'channels';
+}
+
+function isRecipientMirrorContainerPath(value: string): boolean {
+  if (isMirrorContainerPath(value)) {
+    return true;
+  }
+  const normalized = normalizeRelativePath(value);
+  if (!normalized.startsWith('channels/')) {
+    return false;
+  }
+  return Boolean(normalizeVolumeId(normalized.slice('channels/'.length)));
 }
 
 function resolveMegaMirrorRelativePath(value: string): string | null {
@@ -6250,18 +6366,26 @@ function isMegaAccessDeniedError(error: unknown): error is MegaApiError {
   return code === -11;
 }
 
+function readProcessEnv(name: string): string | undefined {
+  if (typeof process === 'undefined' || !process?.env) {
+    return undefined;
+  }
+  const value = process.env[name];
+  return typeof value === 'string' ? value : undefined;
+}
+
 function isDevLogsEnabled(): boolean {
-  return (process.env.NODE_ENV ?? '').trim().toLowerCase() === 'development';
+  return (readProcessEnv('NODE_ENV') ?? '').trim().toLowerCase() === 'development';
 }
 
 function debugMegaLog(...args: unknown[]): void {
-  if ((process.env.DEBUG ?? '').trim() !== '') {
+  if ((readProcessEnv('DEBUG') ?? '').trim() !== '') {
     console.log(...args);
   }
 }
 
 function isMegaUploadProbeEnabled(): boolean {
-  return matchesMegaDebugScope(process.env.DEBUG, 'mega');
+  return matchesMegaDebugScope(readProcessEnv('DEBUG'), 'mega');
 }
 
 function matchesMegaDebugScope(rawValue: string | undefined, scope?: string): boolean {
@@ -8619,6 +8743,9 @@ function collectRecipientImmediatePacketHandles(
       }
       continue;
     }
+    if (action === 'd') {
+      continue;
+    }
     for (const handle of collectActionPacketHandles(packet)) {
       addHandle(handle);
     }
@@ -8901,6 +9028,15 @@ function resolveRecipientFetchedNodePath(
     const parentPath = handlePathIndex.get(node.parentHandle);
     if (parentPath) {
       return normalizeRelativePath(path.join(parentPath, sanitizePathSegment(node.name)));
+    }
+  }
+  if (node.isFolder) {
+    const volumeId = normalizeVolumeId(node.name);
+    if (volumeId) {
+      // MEGA recipient pushes frequently surface the per-volume channels/<volumeId> directory
+      // before any child event files. Infer that canonical container path so later file handles
+      // can resolve immediately instead of falling back to a full refresh.
+      return normalizeRelativePath(path.join('channels', volumeId));
     }
   }
   return handlePathIndex.get(node.handle);

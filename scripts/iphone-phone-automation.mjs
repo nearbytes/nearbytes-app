@@ -147,12 +147,16 @@ function parseArgs(args) {
     parsed.action !== 'list-lan-volume-ids' &&
     parsed.action !== 'get-lan-volume-inventory' &&
     parsed.action !== 'list-provider-accounts' &&
+    parsed.action !== 'get-provider-share-inventory-debug' &&
     parsed.action !== 'list-managed-shares' &&
     parsed.action !== 'get-managed-share-state' &&
     parsed.action !== 'trigger-managed-share-sync' &&
     parsed.action !== 'get-managed-share-upload-probes' &&
+    parsed.action !== 'get-managed-share-receive-probes' &&
     parsed.action !== 'debug-list-mega-owner-mirror-files' &&
-    parsed.action !== 'debug-read-mega-owner-mirror-file'
+    parsed.action !== 'debug-read-mega-owner-mirror-file' &&
+    parsed.action !== 'debug-list-stored-paths' &&
+    parsed.action !== 'debug-read-setting'
   ) {
     throw new Error('--secret is required');
   }
@@ -257,6 +261,16 @@ function buildCommand(input) {
       action: input.action,
     };
   }
+  if (input.action === 'get-provider-share-inventory-debug') {
+    if (!input.path) {
+      throw new Error('--path is required for get-provider-share-inventory-debug');
+    }
+    return {
+      id,
+      action: input.action,
+      provider: input.path,
+    };
+  }
   if (input.action === 'get-managed-share-state' || input.action === 'trigger-managed-share-sync') {
     if (!input.shareId) {
       throw new Error('--share-id is required');
@@ -268,6 +282,18 @@ function buildCommand(input) {
     };
   }
   if (input.action === 'get-managed-share-upload-probes') {
+    if (!input.shareId) {
+      throw new Error('--share-id is required');
+    }
+    return {
+      id,
+      action: input.action,
+      shareId: input.shareId,
+      path: input.path || undefined,
+      limit: input.limit,
+    };
+  }
+  if (input.action === 'get-managed-share-receive-probes') {
     if (!input.shareId) {
       throw new Error('--share-id is required');
     }
@@ -301,6 +327,24 @@ function buildCommand(input) {
       id,
       action: input.action,
       shareId: input.shareId,
+      path: input.path,
+    };
+  }
+  if (input.action === 'debug-list-stored-paths') {
+    return {
+      id,
+      action: input.action,
+      path: input.path || undefined,
+      limit: input.limit,
+    };
+  }
+  if (input.action === 'debug-read-setting') {
+    if (!input.path) {
+      throw new Error('--path is required');
+    }
+    return {
+      id,
+      action: input.action,
       path: input.path,
     };
   }

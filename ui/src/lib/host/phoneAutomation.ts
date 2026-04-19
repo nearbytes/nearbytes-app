@@ -16,12 +16,16 @@ import {
 } from './nativeLanPlugin.js';
 import {
   embeddedPhoneDebugListMegaOwnerMirrorFiles,
+  embeddedPhoneDebugListStoredPaths,
+  embeddedPhoneDebugReadSetting,
   embeddedPhoneDebugReadMegaOwnerMirrorFile,
   embeddedPhoneListManagedShares,
   embeddedPhoneListProviderAccounts,
   embeddedPhoneClearLanLatencyTraces,
   embeddedPhoneGetManagedShareState,
+  embeddedPhoneGetManagedShareReceiveProbes,
   embeddedPhoneGetManagedShareUploadProbes,
+  embeddedPhoneGetProviderShareInventoryDebug,
   embeddedPhoneGetLanLatencyTraces,
   embeddedPhoneGetLanVolumeInventory,
   embeddedPhoneListLanVolumeIds,
@@ -122,6 +126,12 @@ type ListProviderAccountsCommand = {
   fast?: boolean;
 };
 
+type GetProviderShareInventoryDebugCommand = {
+  id: string;
+  action: 'get-provider-share-inventory-debug';
+  provider: string;
+};
+
 type ListManagedSharesCommand = {
   id: string;
   action: 'list-managed-shares';
@@ -148,6 +158,14 @@ type GetManagedShareUploadProbesCommand = {
   limit?: number;
 };
 
+type GetManagedShareReceiveProbesCommand = {
+  id: string;
+  action: 'get-managed-share-receive-probes';
+  shareId: string;
+  path?: string;
+  limit?: number;
+};
+
 type DebugListMegaOwnerMirrorFilesCommand = {
   id: string;
   action: 'debug-list-mega-owner-mirror-files';
@@ -159,6 +177,19 @@ type DebugReadMegaOwnerMirrorFileCommand = {
   id: string;
   action: 'debug-read-mega-owner-mirror-file';
   shareId: string;
+  path: string;
+};
+
+type DebugListStoredPathsCommand = {
+  id: string;
+  action: 'debug-list-stored-paths';
+  path?: string;
+  limit?: number;
+};
+
+type DebugReadSettingCommand = {
+  id: string;
+  action: 'debug-read-setting';
   path: string;
 };
 
@@ -176,12 +207,16 @@ type PhoneAutomationCommand =
   | ListLanVolumeIdsCommand
   | GetLanVolumeInventoryCommand
   | ListProviderAccountsCommand
+  | GetProviderShareInventoryDebugCommand
   | ListManagedSharesCommand
   | GetManagedShareStateCommand
   | TriggerManagedShareSyncCommand
   | GetManagedShareUploadProbesCommand
+  | GetManagedShareReceiveProbesCommand
   | DebugListMegaOwnerMirrorFilesCommand
-  | DebugReadMegaOwnerMirrorFileCommand;
+  | DebugReadMegaOwnerMirrorFileCommand
+  | DebugListStoredPathsCommand
+  | DebugReadSettingCommand;
 
 type PhoneAutomationResult = {
   id: string;
@@ -222,6 +257,10 @@ async function runPendingPhoneAutomationCommand(): Promise<boolean> {
   }
 
   const startedAt = Date.now();
+  console.log('[phone-automation] command started.', {
+    id: command.id,
+    action: command.action,
+  });
   try {
     const result = await executePhoneAutomationCommand(command);
     await writePhoneAutomationResult({
@@ -232,6 +271,12 @@ async function runPendingPhoneAutomationCommand(): Promise<boolean> {
       finishedAt: Date.now(),
       result,
     });
+    console.log('[phone-automation] command completed.', {
+      id: command.id,
+      action: command.action,
+      status: 'success',
+      durationMs: Date.now() - startedAt,
+    });
   } catch (error) {
     await writePhoneAutomationResult({
       id: command.id,
@@ -241,6 +286,12 @@ async function runPendingPhoneAutomationCommand(): Promise<boolean> {
       finishedAt: Date.now(),
       message: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
+    });
+    console.warn('[phone-automation] command failed.', {
+      id: command.id,
+      action: command.action,
+      durationMs: Date.now() - startedAt,
+      message: error instanceof Error ? error.message : String(error),
     });
   } finally {
     await clearNativeAutomationCommand();
@@ -356,6 +407,11 @@ function normalizePhoneAutomationCommand(value: unknown): PhoneAutomationCommand
     };
   }
 
+  if (action === 'get-provider-share-inventory-debug') {
+    const provider = readRequiredString(candidate.provider);
+    return provider ? { id, action, provider } : null;
+  }
+
   if (action === 'list-managed-shares') {
     return {
       id,
@@ -389,6 +445,21 @@ function normalizePhoneAutomationCommand(value: unknown): PhoneAutomationCommand
       : null;
   }
 
+  if (action === 'get-managed-share-receive-probes') {
+    const shareId = readRequiredString(candidate.shareId);
+    const path = readOptionalString(candidate.path) ?? undefined;
+    const limitValue = typeof candidate.limit === 'number' ? candidate.limit : Number(candidate.limit);
+    return shareId
+      ? {
+          id,
+          action,
+          shareId,
+          path,
+          limit: Number.isFinite(limitValue) ? limitValue : undefined,
+        }
+      : null;
+  }
+
   if (action === 'debug-list-mega-owner-mirror-files') {
     const shareId = readRequiredString(candidate.shareId);
     const limitValue = typeof candidate.limit === 'number' ? candidate.limit : Number(candidate.limit);
@@ -406,6 +477,22 @@ function normalizePhoneAutomationCommand(value: unknown): PhoneAutomationCommand
     const shareId = readRequiredString(candidate.shareId);
     const path = readRequiredString(candidate.path);
     return shareId && path ? { id, action, shareId, path } : null;
+  }
+
+  if (action === 'debug-list-stored-paths') {
+    const path = readOptionalString(candidate.path) ?? undefined;
+    const limitValue = typeof candidate.limit === 'number' ? candidate.limit : Number(candidate.limit);
+    return {
+      id,
+      action,
+      path,
+      limit: Number.isFinite(limitValue) ? limitValue : undefined,
+    };
+  }
+
+  if (action === 'debug-read-setting') {
+    const path = readRequiredString(candidate.path);
+    return path ? { id, action, path } : null;
   }
 
   return null;
@@ -461,6 +548,10 @@ async function executePhoneAutomationCommand(command: PhoneAutomationCommand): P
     return embeddedPhoneListProviderAccounts({ fast: command.fast });
   }
 
+  if (command.action === 'get-provider-share-inventory-debug') {
+    return embeddedPhoneGetProviderShareInventoryDebug(command.provider);
+  }
+
   if (command.action === 'list-managed-shares') {
     return embeddedPhoneListManagedShares({ fast: command.fast });
   }
@@ -481,12 +572,27 @@ async function executePhoneAutomationCommand(command: PhoneAutomationCommand): P
     });
   }
 
+  if (command.action === 'get-managed-share-receive-probes') {
+    return embeddedPhoneGetManagedShareReceiveProbes(command.shareId, {
+      relativePath: command.path,
+      limit: command.limit,
+    });
+  }
+
   if (command.action === 'debug-list-mega-owner-mirror-files') {
     return embeddedPhoneDebugListMegaOwnerMirrorFiles(command.shareId, command.limit);
   }
 
   if (command.action === 'debug-read-mega-owner-mirror-file') {
     return embeddedPhoneDebugReadMegaOwnerMirrorFile(command.shareId, command.path);
+  }
+
+  if (command.action === 'debug-list-stored-paths') {
+    return embeddedPhoneDebugListStoredPaths(command.path, command.limit);
+  }
+
+  if (command.action === 'debug-read-setting') {
+    return embeddedPhoneDebugReadSetting(command.path);
   }
 
   if (command.action === 'open-volume') {

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSecret } from '../../../../src/types/keys.js';
 import { deriveKeys } from '../../../../src/crypto/asymmetric.js';
+import { createRuntimeCoreServices } from '../../../../src/runtime/coreServices.js';
+import { createInMemoryPathRecordStore, createInMemoryPathRecordStoreAdapter, PathRecordStorageBackend } from '../../../../src/storage/backend.js';
 import {
   importCompatibilityEventDetail,
   importCompatibilityTimelineSnapshot,
@@ -15,6 +17,7 @@ import {
   seedEmbeddedPhoneIntegrationStateForTests,
   seedEmbeddedPhoneRuntimeHeadForTests,
   seedEmbeddedPhonePendingUploadCommitForTests,
+  seedEmbeddedPhoneStoredRecordForTests,
   embeddedPhoneUpdateLanServiceState,
   resetEmbeddedPhoneServicesForTests,
 } from './embeddedPhoneServices.js';
@@ -1653,6 +1656,109 @@ describe('phoneHost', () => {
       refreshReads: 0,
       bootstrappedReads: 0,
     });
+  });
+
+  it('reads attached provider-managed files through the embedded multi-root runtime', async () => {
+    const secret = 'phone-managed-recipient-visible-secret';
+    const keyPair = await deriveKeys(createSecret(secret));
+    const volumeId = Array.from(keyPair.publicKey)
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join('');
+    const store = createInMemoryPathRecordStore();
+    const runtime = createRuntimeCoreServices({
+      storage: new PathRecordStorageBackend(createInMemoryPathRecordStoreAdapter(store)),
+    });
+    await runtime.fileService.addFile(secret, 'recipient-visible.txt', Buffer.from('from provider root'), 'text/plain');
+
+    resetPhoneHostForTests();
+    resetEmbeddedPhoneServicesForTests();
+
+    const host = await getPhoneHost();
+    await host.objects.requestJson('/config/roots', {
+      method: 'PUT',
+      body: JSON.stringify({
+        config: {
+          version: 2,
+          sources: [
+            {
+              id: 'src-embedded-phone',
+              provider: 'local',
+              path: '',
+              enabled: true,
+              writable: true,
+              reservePercent: 5,
+              opportunisticPolicy: 'block-writes',
+            },
+            {
+              id: 'src-mega-managed-recipient',
+              provider: 'mega',
+              path: 'local/provider-managed/mega/share-mega-phone-recipient',
+              enabled: true,
+              writable: false,
+              reservePercent: 5,
+              opportunisticPolicy: 'drop-older-blocks',
+              integration: {
+                kind: 'provider-managed',
+                provider: 'mega',
+                managedShareId: 'share-mega-phone-recipient',
+              },
+            },
+          ],
+          defaultVolume: {
+            destinations: [
+              {
+                sourceId: 'src-embedded-phone',
+                enabled: true,
+                storeEvents: true,
+                storeBlocks: true,
+                copySourceBlocks: true,
+                reservePercent: 5,
+                fullPolicy: 'block-writes',
+              },
+            ],
+          },
+          volumes: [
+            {
+              volumeId,
+              destinations: [
+                {
+                  sourceId: 'src-mega-managed-recipient',
+                  enabled: true,
+                  storeEvents: true,
+                  storeBlocks: true,
+                  copySourceBlocks: true,
+                  reservePercent: 5,
+                  fullPolicy: 'block-writes',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    });
+
+    for (const [path, record] of store.files.entries()) {
+      await seedEmbeddedPhoneStoredRecordForTests(`local/provider-managed/mega/share-mega-phone-recipient/${path}`, record.data);
+    }
+
+    const files = await host.legacyDesktop.listFiles({ type: 'secret', secret }) as {
+      volumeId: string;
+      files: Array<{ filename: string }>;
+    };
+    const timeline = await host.legacyDesktop.getTimeline({ type: 'secret', secret }) as {
+      volumeId: string;
+      eventCount: number;
+    };
+
+    expect(files).toMatchObject({
+      volumeId,
+      files: [{ filename: 'recipient-visible.txt' }],
+    });
+    expect(timeline).toMatchObject({
+      volumeId,
+    });
+    expect(timeline.eventCount).toBeGreaterThan(0);
   });
 
   it('forces embedded ownership even when legacy proxy runtime metadata is injected', async () => {

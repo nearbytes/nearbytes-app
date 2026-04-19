@@ -1,5 +1,6 @@
 import { managedShareCurrentWorkingDirectory, managedSharePath as path, managedSharePlatform } from './managedSharePath.js';
 import {
+  resolveVolumeDestinations,
   type RootProvider,
   type RootsConfig,
   type SourceConfigEntry,
@@ -12,7 +13,7 @@ import type {
   NearbytesRootNormalizationResult,
 } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
-import { normalizeVolumeId } from '../storage/integrity.js';
+import { normalizeVolumeId, parseCanonicalEventRelativePath } from '../storage/integrity.js';
 import type {
   MultiRootRuntimeSnapshot,
   RootConsolidationResult,
@@ -1195,10 +1196,11 @@ export class ManagedShareService {
     }
 
     const state = await this.loadState();
+    const config = this.options.storage.getRootsConfig();
     const matchingShares = state.managedShares.filter(
       (share) =>
-        share.sourceId === event.sourceId &&
         share.role === 'owner' &&
+        shouldForwardCanonicalStorageWriteToManagedShare(share, event, config) &&
         this.isProviderEnabled(share.provider)
     );
 
@@ -3637,6 +3639,30 @@ function normalizeProvider(value: string): string {
 
 function isCanonicalMirrorRelativePath(relativePath: string): boolean {
   return /^blocks\/[^/]+$/u.test(relativePath) || /^channels\/[^/]+\/[^/]+$/u.test(relativePath);
+}
+
+function shouldForwardCanonicalStorageWriteToManagedShare(
+  share: ManagedShare,
+  event: StorageWriteEvent,
+  config: RootsConfig
+): boolean {
+  if (share.sourceId === event.sourceId) {
+    return true;
+  }
+  const sourceId = share.sourceId?.trim();
+  if (!sourceId) {
+    return false;
+  }
+  if (event.path.startsWith('blocks/')) {
+    // Runtime-source owner shares publish the canonical shared block set rather than a private
+    // per-share block tree, so direct block writes must still reach attached owner shares.
+    return true;
+  }
+  const parsedEvent = parseCanonicalEventRelativePath(event.path);
+  if (!parsedEvent) {
+    return false;
+  }
+  return resolveVolumeDestinations(config, parsedEvent.volumeId).some((destination) => destination.sourceId === sourceId);
 }
 
 function isMegaTransientCollaboratorError(error: unknown): boolean {

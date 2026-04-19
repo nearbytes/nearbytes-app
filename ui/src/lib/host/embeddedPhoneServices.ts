@@ -20,6 +20,7 @@ import {
   createRuntimeCoreServices,
   type RuntimeCoreServices,
 } from '../../../../src/runtime/coreServices.js';
+import { resolveVolumeDestinations } from '../../../../src/config/roots.js';
 import {
   createInMemoryPathRecordStore,
   normalizeStoragePath,
@@ -97,20 +98,56 @@ import type {
   LanTransportVolumeInventory,
 } from '../../../../src/integrations/lanPeerTransport.js';
 import {
+  addNativeLanIncomingSignalListener,
+  clearNativeAutomationCommand,
+  completeNativeLanSignalRequest,
+  getNativeAutomationCommand,
   clearLanLatencyTraces,
   listLanLatencyTraces,
   recordLanLatencyTrace,
   type LanLatencyTraceEntry,
 } from './lanLatencyTrace.js';
 import {
-  configureNativeProvider,
-  getNativeProviderSetupState,
-  installNativeProvider,
-} from './nativeProviderPlugin.js';
+  hasNativeLanPlugin,
+  listNativeLanDiscoveredPeers,
+  nativeLanHttpRequest,
+  postNativeLanSignal,
+  setNativeAutomationResult,
+  startNativeLanRuntime,
+  stopNativeLanRuntime,
+} from './nativeLanPlugin.js';
+import { configureNativeProvider, getNativeProviderSetupState, installNativeProvider } from './nativeProviderPlugin.js';
 
 // Architecture guardrail: the phone app is self-contained. It must use the shared embedded runtime/backend
 // implementation in this process for provider-managed storage and push reactivity, not proxy those runtime
 // responsibilities through the separate dev API server.
+
+interface EmbeddedPhoneMegaFsStatsLike {
+  isFile(): boolean;
+  isDirectory(): boolean;
+}
+
+interface EmbeddedPhoneMegaFsShim {
+  mkdir(targetPath: string, options?: { readonly recursive?: boolean }): Promise<void>;
+  readFile(targetPath: string): Promise<Uint8Array>;
+  writeFile(targetPath: string, data: Uint8Array): Promise<void>;
+  access(targetPath: string): Promise<void>;
+  rm(
+    targetPath: string,
+    options?: {
+      readonly recursive?: boolean;
+      readonly force?: boolean;
+    }
+  ): Promise<void>;
+  stat(targetPath: string): Promise<EmbeddedPhoneMegaFsStatsLike>;
+  readdir(targetPath: string): Promise<string[]>;
+}
+
+declare global {
+  interface Window {
+    __nearbytesMegaFs?: EmbeddedPhoneMegaFsShim;
+  }
+}
 
 interface EmbeddedPhoneRuntimeServices extends RuntimeCoreServices {}
 
@@ -135,6 +172,7 @@ const PHONE_INTEGRATION_STATE_KEY = 'phoneIntegrationState';
 const PHONE_PROVIDER_SECRETS_KEY = 'phoneProviderSecrets';
 const EMBEDDED_PHONE_SOURCE_ID = 'src-embedded-phone';
 const embeddedPhoneKnownVolumeSecrets = new Map<string, string>();
+const EMBEDDED_PHONE_CHANNEL_DIRECTORY_REGEX = /^channels\/([a-f0-9]{130})(?:\/|$)/i;
 
 interface EmbeddedPhoneLanRouteState {
   peerId: string;
@@ -369,6 +407,192 @@ async function listStoredDirectories(): Promise<string[]> {
     }
   }
   return Array.from(getInMemoryStore().directories.values()).map((value) => normalizeStoragePath(value));
+}
+
+function resolveEmbeddedPhoneSourceStoragePath(sourcePath: string, relativePath: string): string {
+  const normalizedSourcePath = normalizeStoragePath(sourcePath);
+  const normalizedRelativePath = normalizeStoragePath(relativePath);
+  if (!normalizedSourcePath) {
+    return normalizedRelativePath;
+  }
+  if (!normalizedRelativePath) {
+    return normalizedSourcePath;
+  }
+  return `${normalizedSourcePath}/${normalizedRelativePath}`;
+}
+
+function parseEmbeddedPhoneVolumeIdFromRelativePath(relativePath: string): string | null {
+  const normalizedRelativePath = normalizeStoragePath(relativePath);
+  const eventPath = parseCanonicalEventRelativePath(normalizedRelativePath);
+  if (eventPath) {
+    return eventPath.volumeId;
+  }
+  const match = EMBEDDED_PHONE_CHANNEL_DIRECTORY_REGEX.exec(normalizedRelativePath);
+  return match?.[1]?.trim().toLowerCase() || null;
+}
+
+async function listEmbeddedPhoneSourceFiles(sourcePath: string, directory: string): Promise<string[]> {
+  const prefix = normalizeStoragePath(resolveEmbeddedPhoneSourceStoragePath(sourcePath, directory));
+  const directoryPrefix = prefix ? `${prefix}/` : '';
+  const storedPaths = await listStoredPaths();
+  const files = new Set<string>();
+  for (const storedPath of storedPaths) {
+    const normalizedPath = normalizeStoragePath(storedPath);
+    if (directoryPrefix) {
+      if (!normalizedPath.startsWith(directoryPrefix)) {
+        continue;
+      }
+    } else if (!normalizedPath) {
+      continue;
+    }
+    const remainder = directoryPrefix ? normalizedPath.slice(directoryPrefix.length) : normalizedPath;
+    if (!remainder || remainder.includes('/')) {
+      continue;
+    }
+    files.add(remainder);
+  }
+  return Array.from(files).sort((left, right) => left.localeCompare(right));
+}
+
+async function getEmbeddedPhoneEnabledSources() {
+  const config = await readEmbeddedPhoneRootsConfigValue();
+  return config.sources.filter((source) => source.enabled);
+}
+
+async function getEmbeddedPhoneWritableSourcesForRelativePath(relativePath: string) {
+  const config = await readEmbeddedPhoneRootsConfigValue();
+  const volumeId = parseEmbeddedPhoneVolumeIdFromRelativePath(relativePath);
+  if (!volumeId) {
+    return config.sources.filter((source) => source.enabled && source.writable);
+  }
+  const destinations = resolveEmbeddedPhoneVolumeDestinations(config, volumeId);
+  return destinations
+    .filter((destination) => destination.enabled)
+    .map((destination) => config.sources.find((source) => source.id === destination.sourceId) ?? null)
+    .filter((source): source is RootsConfig['sources'][number] => Boolean(source && source.enabled && source.writable));
+}
+
+function resolveEmbeddedPhoneVolumeDestinations(
+  config: RootsConfig,
+  volumeId: string
+): RootsConfig['defaultVolume']['destinations'] {
+  const normalizedVolumeId = volumeId.trim().toLowerCase();
+  const merged = new Map<string, RootsConfig['defaultVolume']['destinations'][number]>();
+  for (const destination of config.defaultVolume.destinations) {
+    merged.set(destination.sourceId, { ...destination });
+  }
+  const explicit = config.volumes.find((entry) => entry.volumeId.trim().toLowerCase() === normalizedVolumeId);
+  if (explicit) {
+    for (const destination of explicit.destinations) {
+      merged.set(destination.sourceId, { ...destination });
+    }
+  }
+  return Array.from(merged.values());
+}
+
+function createEmbeddedPhoneRuntimeStorage(): StorageBackend {
+  const storage = {
+    async writeFile(relativePath: string, data: Uint8Array): Promise<void> {
+      const targets = await getEmbeddedPhoneWritableSourcesForRelativePath(relativePath);
+      if (targets.length === 0) {
+        throw new Error(`No writable embedded phone sources configured for ${relativePath}`);
+      }
+      await Promise.all(targets.map(async (source) => {
+        const targetPath = resolveEmbeddedPhoneSourceStoragePath(source.path, relativePath);
+        await putDirectory(getEmbeddedPhoneManagedShareDirname(targetPath));
+        await putRecord(targetPath, data);
+      }));
+    },
+    async readFile(relativePath: string): Promise<Uint8Array> {
+      const sources = await getEmbeddedPhoneEnabledSources();
+      for (const source of sources) {
+        const record = await getRecord(resolveEmbeddedPhoneSourceStoragePath(source.path, relativePath));
+        if (record) {
+          return record.data;
+        }
+      }
+      throw new Error(`File not found: ${relativePath}`);
+    },
+    async readValidatedFile(
+      relativePath: string,
+      validate: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }>
+    ): Promise<Uint8Array> {
+      const bytes = await storage.readFile(relativePath);
+      const validation = await validate(bytes);
+      if (!validation.ok) {
+        throw new Error(validation.detail ?? `Validation failed for ${relativePath}`);
+      }
+      return bytes;
+    },
+    async listFiles(directory: string): Promise<string[]> {
+      const sources = await getEmbeddedPhoneEnabledSources();
+      const files = new Set<string>();
+      for (const source of sources) {
+        const listed = await listEmbeddedPhoneSourceFiles(source.path, directory);
+        for (const file of listed) {
+          files.add(file);
+        }
+      }
+      return Array.from(files).sort((left, right) => left.localeCompare(right));
+    },
+    async createDirectory(relativePath: string): Promise<void> {
+      const targets = await getEmbeddedPhoneWritableSourcesForRelativePath(relativePath);
+      if (targets.length === 0) {
+        throw new Error(`No writable embedded phone sources configured for ${relativePath}`);
+      }
+      await Promise.all(targets.map((source) => putDirectory(resolveEmbeddedPhoneSourceStoragePath(source.path, relativePath))));
+    },
+    async exists(relativePath: string): Promise<boolean> {
+      const sources = await getEmbeddedPhoneEnabledSources();
+      for (const source of sources) {
+        const candidatePath = resolveEmbeddedPhoneSourceStoragePath(source.path, relativePath);
+        if ((await getRecord(candidatePath)) || (await hasDirectory(candidatePath))) {
+          return true;
+        }
+        const directoryPrefix = `${normalizeStoragePath(candidatePath)}/`;
+        const storedPaths = await listStoredPaths();
+        if (storedPaths.some((storedPath) => normalizeStoragePath(storedPath).startsWith(directoryPrefix))) {
+          return true;
+        }
+      }
+      return false;
+    },
+    async deleteFile(relativePath: string): Promise<void> {
+      const sources = await getEmbeddedPhoneWritableSourcesForRelativePath(relativePath);
+      await Promise.all(
+        sources.map(async (source) => {
+          await deleteRecord(resolveEmbeddedPhoneSourceStoragePath(source.path, relativePath));
+        })
+      );
+    },
+    async writeFileForChannel(relativePath: string, data: Uint8Array, _channelKeyHex: string): Promise<void> {
+      await storage.writeFile(relativePath, data);
+    },
+    async readValidatedFileForChannel(
+      relativePath: string,
+      _channelKeyHex: string,
+      validate: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }>
+    ): Promise<Uint8Array> {
+      return storage.readValidatedFile(relativePath, validate);
+    },
+    async listFilesAcrossRoots(directory: string): Promise<string[]> {
+      return storage.listFiles(directory);
+    },
+    async existsForChannel(relativePath: string, _channelKeyHex: string): Promise<boolean> {
+      return storage.exists(relativePath);
+    },
+  } satisfies StorageBackend & {
+    writeFileForChannel(path: string, data: Uint8Array, channelKeyHex: string): Promise<void>;
+    readValidatedFile(path: string, validate: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }>): Promise<Uint8Array>;
+    readValidatedFileForChannel(
+      path: string,
+      channelKeyHex: string,
+      validate: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }>
+    ): Promise<Uint8Array>;
+    listFilesAcrossRoots(directory: string): Promise<string[]>;
+    existsForChannel(path: string, channelKeyHex: string): Promise<boolean>;
+  };
+  return storage;
 }
 
 async function listStoredFileRecords(): Promise<StoredPathRecord[]> {
@@ -879,6 +1103,14 @@ function normalizeEmbeddedPhoneManagedSharePath(targetPath: string): string {
   return normalizeStoragePath(targetPath);
 }
 
+function getEmbeddedPhoneManagedShareDirname(targetPath: string): string {
+  const normalized = normalizeEmbeddedPhoneManagedSharePath(targetPath);
+  if (!normalized || !normalized.includes('/')) {
+    return '';
+  }
+  return normalized.slice(0, normalized.lastIndexOf('/'));
+}
+
 function buildEmbeddedPhoneManagedSharePathPrefixes(targetPath: string): string[] {
   const normalized = normalizeEmbeddedPhoneManagedSharePath(targetPath);
   if (!normalized) {
@@ -964,7 +1196,11 @@ async function copyEmbeddedPhoneManagedSharePath(sourcePath: string, targetPath:
   const normalizedTarget = normalizeEmbeddedPhoneManagedSharePath(targetPath);
   const record = await getRecord(normalizedSource);
   if (record) {
-    await Promise.all(buildEmbeddedPhoneManagedSharePathPrefixes(dirname(normalizedTarget)).map((entry) => putDirectory(entry)));
+    await Promise.all(
+      buildEmbeddedPhoneManagedSharePathPrefixes(getEmbeddedPhoneManagedShareDirname(normalizedTarget)).map((entry) =>
+        putDirectory(entry)
+      )
+    );
     await putRecord(normalizedTarget, record.data);
     return;
   }
@@ -987,7 +1223,11 @@ async function copyEmbeddedPhoneManagedSharePath(sourcePath: string, targetPath:
     }
     const suffix = filePath.slice(normalizedSource.length).replace(/^\//, '');
     const nextFilePath = suffix ? `${normalizedTarget}/${suffix}` : normalizedTarget;
-    await Promise.all(buildEmbeddedPhoneManagedSharePathPrefixes(dirname(nextFilePath)).map((entry) => putDirectory(entry)));
+    await Promise.all(
+      buildEmbeddedPhoneManagedSharePathPrefixes(getEmbeddedPhoneManagedShareDirname(nextFilePath)).map((entry) =>
+        putDirectory(entry)
+      )
+    );
     await putRecord(nextFilePath, record.data);
   }
 }
@@ -1052,6 +1292,9 @@ const embeddedPhoneManagedShareFileHost: ManagedShareFileHost = {
     const normalizedTarget = normalizeEmbeddedPhoneManagedSharePath(targetPath);
     if (!normalizedTarget) {
       return {
+        isFile() {
+          return false;
+        },
         isDirectory() {
           return true;
         },
@@ -1059,6 +1302,9 @@ const embeddedPhoneManagedShareFileHost: ManagedShareFileHost = {
     }
     if (await hasDirectory(normalizedTarget)) {
       return {
+        isFile() {
+          return false;
+        },
         isDirectory() {
           return true;
         },
@@ -1066,6 +1312,9 @@ const embeddedPhoneManagedShareFileHost: ManagedShareFileHost = {
     }
     if (await getRecord(normalizedTarget)) {
       return {
+        isFile() {
+          return true;
+        },
         isDirectory() {
           return false;
         },
@@ -1074,6 +1323,9 @@ const embeddedPhoneManagedShareFileHost: ManagedShareFileHost = {
     const entries = await listEmbeddedPhoneManagedShareDirectoryEntries(normalizedTarget);
     if (entries.length > 0) {
       return {
+        isFile() {
+          return false;
+        },
         isDirectory() {
           return true;
         },
@@ -1082,6 +1334,71 @@ const embeddedPhoneManagedShareFileHost: ManagedShareFileHost = {
     return null;
   },
 };
+
+const embeddedPhoneMegaFsShim: EmbeddedPhoneMegaFsShim = {
+  async mkdir(targetPath: string, options?: { readonly recursive?: boolean }): Promise<void> {
+    const normalizedTarget = normalizeEmbeddedPhoneManagedSharePath(targetPath);
+    if (!normalizedTarget) {
+      return;
+    }
+    const directoryTargets = options?.recursive
+      ? buildEmbeddedPhoneManagedSharePathPrefixes(normalizedTarget)
+      : [normalizedTarget];
+    for (const directoryPath of directoryTargets) {
+      await putDirectory(directoryPath);
+    }
+  },
+  async readFile(targetPath: string): Promise<Uint8Array> {
+    const normalizedTarget = normalizeEmbeddedPhoneManagedSharePath(targetPath);
+    const record = await getRecord(normalizedTarget);
+    if (!record) {
+      throw new Error(`File not found: ${targetPath}`);
+    }
+    return new Uint8Array(record.data);
+  },
+  async writeFile(targetPath: string, data: Uint8Array): Promise<void> {
+    const normalizedTarget = normalizeEmbeddedPhoneManagedSharePath(targetPath);
+    await embeddedPhoneMegaFsShim.mkdir(getEmbeddedPhoneManagedShareDirname(normalizedTarget), { recursive: true });
+    await putRecord(normalizedTarget, data);
+  },
+  async access(targetPath: string): Promise<void> {
+    if (await embeddedPhoneManagedSharePathExists(targetPath)) {
+      return;
+    }
+    throw new Error(`Path not found: ${targetPath}`);
+  },
+  async rm(
+    targetPath: string,
+    options?: {
+      readonly recursive?: boolean;
+      readonly force?: boolean;
+    }
+  ): Promise<void> {
+    if (!(await embeddedPhoneManagedSharePathExists(targetPath))) {
+      if (options?.force) {
+        return;
+      }
+      throw new Error(`Path not found: ${targetPath}`);
+    }
+    await removeEmbeddedPhoneManagedSharePath(targetPath, options?.recursive === true);
+  },
+  async stat(targetPath: string): Promise<EmbeddedPhoneMegaFsStatsLike> {
+    const stats = await embeddedPhoneManagedShareFileHost.statPath(targetPath);
+    if (!stats) {
+      throw new Error(`Path not found: ${targetPath}`);
+    }
+    return stats;
+  },
+  async readdir(targetPath: string): Promise<string[]> {
+    const entries = await embeddedPhoneManagedShareFileHost.readDirectoryEntries(targetPath);
+    return entries.map((entry) => entry.name);
+  },
+};
+
+// docs/specs/transport/phone-mega-port-plan-v0.1.md and docs/specs/storage-integration-stack-v1.md:
+// keep the phone self-contained by letting the shared MEGA runtime materialize canonical files directly
+// against the embedded managed-share store instead of falling back to Node fs or a separate dev server.
+globalThis.__nearbytesMegaFs = embeddedPhoneMegaFsShim;
 
 const embeddedPhoneManagedShareRootHost: ManagedShareRootHost = {
   async ensureMarkers() {
@@ -1112,9 +1429,13 @@ async function resolveEmbeddedPhoneAttachedVolumeIds(
     return new Set();
   }
   const config = await readEmbeddedPhoneRootsConfigValue();
+  // Keep the phone self-contained runtime on the same attachment semantics as desktop/server:
+  // defaultVolume destinations stay attached even when explicit per-volume destinations add others.
   return new Set(
     config.volumes
-      .filter((volume) => volume.destinations.some((destination) => destination.sourceId === share.sourceId))
+      .filter((volume) =>
+        resolveVolumeDestinations(config, volume.volumeId).some((destination) => destination.sourceId === share.sourceId)
+      )
       .map((volume) => volume.volumeId.trim().toLowerCase())
       .filter((volumeId) => volumeId.length > 0)
   );
@@ -1141,10 +1462,77 @@ const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
     return Array.from(mirrorPaths).sort((left, right) => left.localeCompare(right));
   },
   async readMirrorFile(_share, relativePath): Promise<Uint8Array> {
+    // The phone owner mirror enumerates canonical files directly from IndexedDB. Read the exact
+    // record first so push sync does not fail just because routed source-prefix lookup differs.
+    const exactRecord = await getRecord(normalizeStoragePath(relativePath));
+    if (exactRecord) {
+      return new Uint8Array(exactRecord.data);
+    }
     const { storage } = await getEmbeddedPhoneRuntimeServices();
     return storage.readFile(normalizeStoragePath(relativePath));
   },
 };
+
+function encodeEmbeddedPhoneBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const value of bytes) {
+    binary += String.fromCharCode(value);
+  }
+  return btoa(binary);
+}
+
+function decodeEmbeddedPhoneBase64(value: string): Uint8Array {
+  if (!value) {
+    return new Uint8Array();
+  }
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+async function embeddedPhoneNativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const request = input instanceof Request ? input : new Request(input, init);
+  const startedAt = Date.now();
+  const headers: Record<string, string> = {};
+  request.headers.forEach((value, key) => {
+    headers[key] = value;
+  });
+  const bodyBuffer = request.method === 'GET' || request.method === 'HEAD' ? null : await request.arrayBuffer();
+  console.log('[embedded-phone-fetch] request started.', {
+    method: request.method,
+    url: request.url,
+    hasBody: bodyBuffer !== null,
+  });
+  try {
+    const nativeResponse = await nativeLanHttpRequest({
+      url: request.url,
+      method: request.method,
+      headers,
+      bodyBase64: bodyBuffer ? encodeEmbeddedPhoneBase64(new Uint8Array(bodyBuffer)) : undefined,
+    });
+    console.log('[embedded-phone-fetch] request completed.', {
+      method: request.method,
+      url: request.url,
+      status: nativeResponse.status,
+      durationMs: Date.now() - startedAt,
+    });
+    return new Response(decodeEmbeddedPhoneBase64(nativeResponse.bodyBase64), {
+      status: nativeResponse.status,
+      headers: nativeResponse.headers,
+    });
+  } catch (error) {
+    console.warn('[embedded-phone-fetch] request failed.', {
+      method: request.method,
+      url: request.url,
+      durationMs: Date.now() - startedAt,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
 
 function createEmbeddedPhoneManagedShareRuntime() {
   return {
@@ -1169,7 +1557,9 @@ function createEmbeddedPhoneManagedShareRuntime() {
         throw new Error('Provider command execution is not available in the embedded phone runtime.');
       },
     },
-    fetch: globalThis.fetch.bind(globalThis),
+    // Keep the phone self-contained: the embedded managed-share runtime must execute the shared
+    // backend/integration code in-process, using native URLSession on device instead of the dev phone API server.
+    fetch: hasNativeLanPlugin() ? embeddedPhoneNativeFetch : globalThis.fetch.bind(globalThis),
     createAbortController: () => new AbortController(),
     scheduler: {
       setTimeout(callback: () => void, delayMs: number) {
@@ -1390,6 +1780,11 @@ export async function embeddedPhoneListProviderAccounts(options: { readonly fast
   return service.listAccounts({ fast: options.fast });
 }
 
+export async function embeddedPhoneGetProviderShareInventoryDebug(provider: string): Promise<unknown> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return service.getProviderShareInventoryDebug(provider);
+}
+
 export async function embeddedPhoneConnectProviderAccount(input: {
   provider: string;
   mode?: 'login' | 'signup' | 'confirm-signup';
@@ -1494,6 +1889,19 @@ export async function embeddedPhoneGetManagedShareUploadProbes(
   };
 }
 
+export async function embeddedPhoneGetManagedShareReceiveProbes(
+  shareId: string,
+  options: { readonly relativePath?: string; readonly limit?: number } = {}
+): Promise<{ probes: unknown[] }> {
+  const service = await getEmbeddedPhoneManagedShareService();
+  return {
+    probes: await service.getManagedShareReceiveProbes(shareId, {
+      relativePath: options.relativePath,
+      limit: options.limit,
+    }),
+  };
+}
+
 export async function embeddedPhoneDebugListMegaOwnerMirrorFiles(
   shareId: string,
   limit = 20
@@ -1517,6 +1925,32 @@ export async function embeddedPhoneDebugReadMegaOwnerMirrorFile(
   return {
     path: normalizeStoragePath(relativePath),
     size: bytes.length,
+  };
+}
+
+export async function embeddedPhoneDebugListStoredPaths(
+  prefix = '',
+  limit = 200
+): Promise<{ prefix: string; count: number; paths: string[] }> {
+  const normalizedPrefix = normalizeStoragePath(prefix);
+  const paths = (await listStoredPaths())
+    .map((entry) => normalizeStoragePath(entry))
+    .filter((entry) => !normalizedPrefix || entry.startsWith(normalizedPrefix))
+    .sort((left, right) => left.localeCompare(right));
+  return {
+    prefix: normalizedPrefix,
+    count: paths.length,
+    paths: paths.slice(0, Math.max(1, Math.min(Math.trunc(limit), 500))),
+  };
+}
+
+export async function embeddedPhoneDebugReadSetting(
+  key: string
+): Promise<{ key: string; value: string | null }> {
+  const normalizedKey = key.trim();
+  return {
+    key: normalizedKey,
+    value: normalizedKey ? await getSetting(normalizedKey) : null,
   };
 }
 
@@ -1994,14 +2428,7 @@ async function emitEmbeddedPhoneVolumeUpdate(
 async function getEmbeddedPhoneRuntimeServices(): Promise<EmbeddedPhoneRuntimeServices> {
   if (!servicesPromise) {
     servicesPromise = Promise.resolve().then(() => {
-      const storage = new PathRecordStorageBackend({
-        putRecord: async (path, data) => putRecord(path, new Uint8Array(data)),
-        getRecord: async (path) => getRecord(path),
-        deleteRecord: async (path) => deleteRecord(path),
-        putDirectory: async (path) => putDirectory(path),
-        hasDirectory: async (path) => hasDirectory(path),
-        listStoredPaths: async () => listStoredPaths(),
-      });
+      const storage = createEmbeddedPhoneRuntimeStorage();
       return createRuntimeCoreServices({
         storage,
       }) satisfies EmbeddedPhoneRuntimeServices;
@@ -2411,16 +2838,17 @@ async function isEmbeddedPhoneProviderManagedVolume(volumeId: string): Promise<b
   );
 }
 
-async function hasEmbeddedPhoneCanonicalVolumeHistory(volumeId: string): Promise<boolean> {
+async function hasEmbeddedPhoneVolumeHistory(volumeId: string): Promise<boolean> {
   const normalizedVolumeId = volumeId.trim().toLowerCase();
   if (!normalizedVolumeId) {
     return false;
   }
-  const storedPaths = await listStoredPaths();
-  return storedPaths.some((storedPath) => {
-    const eventPath = parseCanonicalEventRelativePath(normalizeStoragePath(storedPath));
-    return eventPath?.volumeId === normalizedVolumeId;
-  });
+  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  const eventFiles =
+    'listFilesAcrossRoots' in storage && typeof storage.listFilesAcrossRoots === 'function'
+      ? await storage.listFilesAcrossRoots(`channels/${normalizedVolumeId}`)
+      : await storage.listFiles(`channels/${normalizedVolumeId}`);
+  return eventFiles.length > 0;
 }
 
 async function readUnbackedEmbeddedPhoneProviderManagedState(volumeId: string): Promise<{
@@ -2431,7 +2859,7 @@ async function readUnbackedEmbeddedPhoneProviderManagedState(volumeId: string): 
   if (!(await isEmbeddedPhoneProviderManagedVolume(volumeId))) {
     return null;
   }
-  if (await hasEmbeddedPhoneCanonicalVolumeHistory(volumeId)) {
+  if (await hasEmbeddedPhoneVolumeHistory(volumeId)) {
     return null;
   }
   await deleteEmbeddedPhoneRuntimeHead(volumeId);
@@ -2459,8 +2887,8 @@ async function getEmbeddedPhoneProviderManagedSourceIds(volumeId: string): Promi
   if (!normalizedVolumeId) {
     return [];
   }
-  const volume = config.volumes.find((entry) => entry.volumeId.trim().toLowerCase() === normalizedVolumeId);
-  if (!volume) {
+  const destinations = resolveVolumeDestinations(config, normalizedVolumeId);
+  if (destinations.length === 0) {
     return [];
   }
   const providerManagedSourceIds = new Set(
@@ -2468,13 +2896,17 @@ async function getEmbeddedPhoneProviderManagedSourceIds(volumeId: string): Promi
       .filter((source) => source.integration?.kind === 'provider-managed')
       .map((source) => source.id)
   );
-  return volume.destinations
+  return destinations
     .map((destination) => destination.sourceId)
     .filter((sourceId) => providerManagedSourceIds.has(sourceId));
 }
 
 async function getEmbeddedPhoneManagedShareIdsForVolume(volumeId: string): Promise<string[]> {
   const config = await readEmbeddedPhoneRootsConfigValue();
+  const normalizedVolumeId = volumeId.trim().toLowerCase();
+  const destinationSourceIds = new Set(
+    resolveVolumeDestinations(config, normalizedVolumeId).map((destination) => destination.sourceId)
+  );
   const managedShareIds = new Set(
     config.sources
       .filter((source) => source.integration?.kind === 'provider-managed')
@@ -2483,11 +2915,7 @@ async function getEmbeddedPhoneManagedShareIdsForVolume(volumeId: string): Promi
         if (!managedShareId) {
           return [];
         }
-        const attached = config.volumes.some(
-          (volume) =>
-            volume.volumeId.trim().toLowerCase() === volumeId &&
-            volume.destinations.some((destination) => destination.sourceId === source.id)
-        );
+        const attached = destinationSourceIds.has(source.id);
         return attached ? [managedShareId] : [];
       })
   );
@@ -2753,6 +3181,7 @@ export async function embeddedPhoneSubscribeVolumeWatch(
 }
 
 export function resetEmbeddedPhoneServicesForTests(): void {
+  void embeddedPhoneManagedShareServicePromise?.then((service) => service.dispose()).catch(() => undefined);
   servicesPromise = null;
   dbPromise = null;
   embeddedPhoneKnownVolumeSecrets.clear();
@@ -2772,6 +3201,11 @@ export function resetEmbeddedPhoneServicesForTests(): void {
     ...createInMemoryPathRecordStore(),
     settings: new Map(),
   };
+}
+
+export async function seedEmbeddedPhoneStoredRecordForTests(path: string, data: Uint8Array): Promise<void> {
+  await putDirectory(getEmbeddedPhoneManagedShareDirname(path));
+  await putRecord(path, data);
 }
 
 export async function embeddedPhoneHasLocalVolume(secret: string): Promise<boolean> {

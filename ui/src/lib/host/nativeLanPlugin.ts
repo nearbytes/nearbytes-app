@@ -21,6 +21,18 @@ interface NearbytesLanPlugin {
   getAutomationCommand(): Promise<{ value?: string | null }>;
   clearAutomationCommand(): Promise<void>;
   setAutomationResult(options: { value: string }): Promise<void>;
+  httpRequest(options: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    bodyBase64?: string;
+    bodyText?: string;
+  }): Promise<{
+    status: number;
+    headers?: Record<string, string>;
+    url?: string;
+    bodyBase64?: string;
+  }>;
   postSignal(options: {
     address: string;
     port: number;
@@ -97,6 +109,30 @@ export async function setNativeAutomationResult(value: string): Promise<void> {
     throw new Error('Native LAN runtime is unavailable on this runtime.');
   }
   await nearbytesLanPlugin.setAutomationResult({ value });
+}
+
+export async function nativeLanHttpRequest(options: {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  bodyBase64?: string;
+  bodyText?: string;
+}): Promise<{
+  status: number;
+  headers: Record<string, string>;
+  url: string;
+  bodyBase64: string;
+}> {
+  if (!hasNativeLanPlugin()) {
+    throw new Error('Native LAN runtime is unavailable on this runtime.');
+  }
+  const response = await nearbytesLanPlugin.httpRequest(options);
+  return {
+    status: Number(response.status ?? 0),
+    headers: response.headers ?? {},
+    url: typeof response.url === 'string' ? response.url : options.url,
+    bodyBase64: typeof response.bodyBase64 === 'string' ? response.bodyBase64 : '',
+  };
 }
 
 export async function postNativeLanSignal(

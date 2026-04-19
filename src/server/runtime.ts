@@ -19,6 +19,7 @@ import { StorageError } from '../types/errors.js';
 import { createApp } from './app.js';
 import { VolumeEventBus } from '../runtime/volumeEvents.js';
 import type { UiDebugExecutor } from './uiDebug.js';
+import { createStorageBackedMegaOwnerMirrorSource } from './megaOwnerMirrorSource.js';
 
 export interface RuntimeLogger {
   readonly log: (...args: unknown[]) => void;
@@ -118,6 +119,14 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
           filePath: path.join(path.dirname(loaded.configPath), 'integration-secrets.json'),
         }),
       volumeEvents: options.integrationOptions?.runtime?.volumeEvents ?? runtimeServices.volumeEvents,
+      mega: {
+        ...options.integrationOptions?.runtime?.mega,
+        // Keep desktop/server owner shares on the same canonical channels/* and blocks/* stream
+        // as the self-contained phone runtime so true MEGA push stays symmetric after refactors.
+        ownerMirrorSource:
+          options.integrationOptions?.runtime?.mega?.ownerMirrorSource ??
+          createStorageBackedMegaOwnerMirrorSource(storage),
+      },
     });
 
   const managedShareService = new ManagedShareService({
