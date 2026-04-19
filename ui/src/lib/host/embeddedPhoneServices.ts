@@ -20,7 +20,7 @@ import {
   createRuntimeCoreServices,
   type RuntimeCoreServices,
 } from '../../../../src/runtime/coreServices.js';
-import { resolveVolumeDestinations } from '../../../../src/config/roots.js';
+import { deserializeEvent } from '../../../../src/storage/serialization.js';
 import {
   createInMemoryPathRecordStore,
   normalizeStoragePath,
@@ -29,7 +29,12 @@ import {
   type StoredPathRecord,
 } from '../../../../src/storage/backend.js';
 import { createSecret, type Secret } from '../../../../src/types/keys.js';
-import { defaultPathMapper, type StorageBackend } from '../../../../src/types/storage.js';
+import {
+  defaultPathMapper,
+  type StorageBackend,
+  type StorageWriteEvent,
+  type StorageWriteListener,
+} from '../../../../src/types/storage.js';
 import type {
   AppConfig,
   AppConfigResponse,
@@ -263,6 +268,17 @@ let embeddedPhoneDevBootstrapPromise: Promise<void> | null = null;
 
 const embeddedPhoneVolumeWatchers = new Map<string, Map<number, (update: VolumeWatchUpdate) => void>>();
 const embeddedPhoneManagedShareSyncNudges = new Map<string, number>();
+const embeddedPhoneStorageWriteListeners = new Set<StorageWriteListener>();
+
+function emitEmbeddedPhoneStorageWrite(event: StorageWriteEvent): void {
+  for (const listener of embeddedPhoneStorageWriteListeners) {
+    try {
+      listener(event);
+    } catch {
+      // Keep durable embedded phone writes authoritative even if an observer fails.
+    }
+  }
+}
 
 function shouldUseIndexedDb(): boolean {
   return typeof indexedDB !== 'undefined';
@@ -476,6 +492,8 @@ function resolveEmbeddedPhoneVolumeDestinations(
   config: RootsConfig,
   volumeId: string
 ): RootsConfig['defaultVolume']['destinations'] {
+  // Keep the phone bundle self-contained: importing the Node-oriented roots module here
+  // regresses mobile builds by dragging fs/os/path into the browser runtime.
   const normalizedVolumeId = volumeId.trim().toLowerCase();
   const merged = new Map<string, RootsConfig['defaultVolume']['destinations'][number]>();
   for (const destination of config.defaultVolume.destinations) {
@@ -497,10 +515,16 @@ function createEmbeddedPhoneRuntimeStorage(): StorageBackend {
       if (targets.length === 0) {
         throw new Error(`No writable embedded phone sources configured for ${relativePath}`);
       }
+      const normalizedRelativePath = normalizeStoragePath(relativePath);
       await Promise.all(targets.map(async (source) => {
         const targetPath = resolveEmbeddedPhoneSourceStoragePath(source.path, relativePath);
         await putDirectory(getEmbeddedPhoneManagedShareDirname(targetPath));
         await putRecord(targetPath, data);
+        emitEmbeddedPhoneStorageWrite({
+          sourceId: source.id,
+          path: normalizedRelativePath,
+          size: data.length,
+        });
       }));
     },
     async readFile(relativePath: string): Promise<Uint8Array> {
@@ -1429,33 +1453,63 @@ async function resolveEmbeddedPhoneAttachedVolumeIds(
     return new Set();
   }
   const config = await readEmbeddedPhoneRootsConfigValue();
-  // Keep the phone self-contained runtime on the same attachment semantics as desktop/server:
-  // defaultVolume destinations stay attached even when explicit per-volume destinations add others.
-  return new Set(
-    config.volumes
-      .filter((volume) =>
-        resolveVolumeDestinations(config, volume.volumeId).some((destination) => destination.sourceId === share.sourceId)
+  const explicitMatches = config.volumes
+    .filter((volume) =>
+      resolveEmbeddedPhoneVolumeDestinations(config, volume.volumeId).some(
+        (destination) => destination.sourceId === share.sourceId
       )
-      .map((volume) => volume.volumeId.trim().toLowerCase())
-      .filter((volumeId) => volumeId.length > 0)
+    )
+    .map((volume) => volume.volumeId.trim().toLowerCase())
+    .filter((volumeId) => volumeId.length > 0);
+  if (explicitMatches.length > 0) {
+    return new Set(explicitMatches);
+  }
+  const attachedByDefault = config.defaultVolume.destinations.some(
+    (destination) => destination.sourceId === share.sourceId && destination.enabled
+  );
+  if (!attachedByDefault) {
+    return new Set();
+  }
+  // Keep phone owner publication tied to the volumes actively opened in this runtime instance.
+  // Replaying every historically remembered volume turns phone startup into a giant catch-up sweep
+  // and blocks live phone-to-desktop push behind unrelated archival traffic.
+  const persistedSecrets = await readEmbeddedPhoneKnownVolumeSecrets();
+  return new Set(
+    new Set([
+      ...Array.from(embeddedPhoneKnownVolumeSecrets.keys()),
+      ...Object.keys(persistedSecrets),
+    ].map((volumeId) => volumeId.trim().toLowerCase()).filter((volumeId) => volumeId.length > 0))
   );
 }
 
 const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
   async listMirrorFiles(share): Promise<readonly string[]> {
     const attachedVolumeIds = await resolveEmbeddedPhoneAttachedVolumeIds(share);
-    const storedPaths = await listStoredPaths();
+    const { storage } = await getEmbeddedPhoneRuntimeServices();
     const mirrorPaths = new Set<string>();
-    for (const storedPath of storedPaths) {
-      const normalizedPath = normalizeStoragePath(storedPath);
-      const eventPath = parseCanonicalEventRelativePath(normalizedPath);
-      if (eventPath) {
-        if (attachedVolumeIds.size === 0 || attachedVolumeIds.has(eventPath.volumeId)) {
-          mirrorPaths.add(normalizedPath);
+    const referencedBlockPaths = new Set<string>();
+    for (const volumeId of attachedVolumeIds) {
+      const eventFiles =
+        'listFilesAcrossRoots' in storage && typeof storage.listFilesAcrossRoots === 'function'
+          ? await storage.listFilesAcrossRoots(`channels/${volumeId}`)
+          : await storage.listFiles(`channels/${volumeId}`);
+      for (const fileName of eventFiles) {
+        const normalizedPath = normalizeStoragePath(`channels/${volumeId}/${fileName}`);
+        mirrorPaths.add(normalizedPath);
+        try {
+          const bytes = await storage.readFile(normalizedPath);
+          const serialized = JSON.parse(new TextDecoder().decode(bytes)) as import('../../../../src/types/events.js').SerializedEvent;
+          const parsed = deserializeEvent(serialized);
+          for (const blockHash of parsed.envelope.blockRefs) {
+            referencedBlockPaths.add(`blocks/${blockHash}`);
+          }
+        } catch {
+          // Skip malformed historical records instead of blocking current live publication.
         }
-        continue;
       }
-      if (parseCanonicalBlockRelativePath(normalizedPath)) {
+    }
+    for (const normalizedPath of referencedBlockPaths) {
+      if (await storage.exists(normalizedPath)) {
         mirrorPaths.add(normalizedPath);
       }
     }
@@ -1590,7 +1644,9 @@ function createEmbeddedPhoneManagedShareRuntime() {
     },
     mega: {
       remoteBasePath: '/nearbytes',
-      syncIntervalMs: 300_000,
+      // Keep periodic MEGA sweeps off by default. The phone path should rely on push and explicit
+      // recovery, not a background polling loop.
+      syncIntervalMs: 0,
       syncTimeoutMs: 180_000,
       inviteReflectionTimeoutMs: 5_000,
       inviteReflectionPollMs: 1_500,
@@ -1681,8 +1737,11 @@ async function createEmbeddedPhoneManagedShareStorageHost(): Promise<ManagedShar
         options?.includeUsage === true
       );
     },
-    onWrite() {
-      return () => {};
+    onWrite(listener: StorageWriteListener) {
+      embeddedPhoneStorageWriteListeners.add(listener);
+      return () => {
+        embeddedPhoneStorageWriteListeners.delete(listener);
+      };
     },
     async consolidateRoot() {
       return {
@@ -2799,6 +2858,10 @@ async function commitEmbeddedPhoneMutation<T extends object>(
   secret: string,
   payload: Record<string, unknown>
 ): Promise<T & { commit: DurableCommitAck }> {
+  // Keep the embedded phone managed-share observer attached before the mutation writes canonical
+  // channels/* and blocks/* records, otherwise the first post-launch phone write misses the direct
+  // MEGA owner push path and falls back to a slower reconciliation sync.
+  await getEmbeddedPhoneManagedShareService();
   const commit = await enqueueEmbeddedPhoneCommit(kind, secret, payload);
   const receipts = await readEmbeddedPhoneCommitReceipts();
   if (!receipts[commit.id]) {
@@ -2887,7 +2950,7 @@ async function getEmbeddedPhoneProviderManagedSourceIds(volumeId: string): Promi
   if (!normalizedVolumeId) {
     return [];
   }
-  const destinations = resolveVolumeDestinations(config, normalizedVolumeId);
+  const destinations = resolveEmbeddedPhoneVolumeDestinations(config, normalizedVolumeId);
   if (destinations.length === 0) {
     return [];
   }
@@ -2905,7 +2968,7 @@ async function getEmbeddedPhoneManagedShareIdsForVolume(volumeId: string): Promi
   const config = await readEmbeddedPhoneRootsConfigValue();
   const normalizedVolumeId = volumeId.trim().toLowerCase();
   const destinationSourceIds = new Set(
-    resolveVolumeDestinations(config, normalizedVolumeId).map((destination) => destination.sourceId)
+    resolveEmbeddedPhoneVolumeDestinations(config, normalizedVolumeId).map((destination) => destination.sourceId)
   );
   const managedShareIds = new Set(
     config.sources

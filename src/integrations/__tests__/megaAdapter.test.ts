@@ -6712,6 +6712,225 @@ describe('MegaTransportAdapter', () => {
     await adapter.dispose();
   });
 
+  it('refetches an unknown recipient parent folder so a pushed file handle can resolve immediately', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const ownerHandle = 'owner000001';
+    const shareHandle = 'cIVQ2bjB';
+    const channelsHandle = 'channels001';
+    const volumeHandle = 'volume0001';
+    const fileHandle = 'file000012';
+    const shareKey = Buffer.from('4f1e2d3c5b6a79888796a5b4c3d2e1f0', 'hex');
+    const volumeNodeKey = Buffer.from('71223344556677889900aabbccddeeff', 'hex');
+    const fileNodeKey = Buffer.from('40112233445566778899aabbccddeeff202132435465768798a9babbdcddf0f1', 'hex');
+    const cryptoOps = createCryptoOperations();
+    const volumeKeyPair = await cryptoOps.deriveKeys(createSecret('mega-recipient-parent-refetch'));
+    const volumeId = volumeIdFromPublicKey(volumeKeyPair.publicKey);
+    const eventPayload = {
+      type: EventType.DELETE_FILE,
+      fileName: 'parent-refetch.txt',
+      hash: EMPTY_HASH,
+      encryptedKey: createEncryptedData(new Uint8Array(0)),
+    };
+    const storedEvent = await createSignedEvent(cryptoOps, volumeKeyPair, eventPayload, []);
+    const eventHash = await cryptoOps.computeHash(serializeEventEnvelope(storedEvent.envelope));
+    const fileBytes = Buffer.from(JSON.stringify(serializeEvent(storedEvent)), 'utf8');
+    const fileName = `${eventHash}.bin`;
+    const fileCiphertext = encryptFileContent(fileBytes, fileNodeKey);
+    const secretStore = createMemorySecretStore();
+
+    await secretStore.set('provider-account:mega:acct-mega-parent-refetch', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    let subtreeFetchCount = 0;
+    let downloadRequestCount = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (typeof init?.body === 'string' && url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'uga':
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'g':
+            downloadRequestCount += 1;
+            return new Response(JSON.stringify([{ g: 'https://download.test/file' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f': {
+            subtreeFetchCount += 1;
+            if (payload.n === fileHandle) {
+              return new Response(
+                JSON.stringify([
+                  {
+                    f: [
+                      {
+                        h: fileHandle,
+                        p: volumeHandle,
+                        t: 0,
+                        s: fileBytes.length,
+                        a: encryptAttributes(fileName, fileNodeKey),
+                        k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+                        su: ownerHandle,
+                      },
+                    ],
+                    u: [{ u: ownerHandle, m: 'owner@example.com' }],
+                    sn: 'cursor-1',
+                  },
+                ]),
+                {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                }
+              );
+            }
+            if (payload.n === volumeHandle) {
+              return new Response(
+                JSON.stringify([
+                  {
+                    f: [
+                      {
+                        h: volumeHandle,
+                        p: channelsHandle,
+                        t: 1,
+                        a: encryptAttributes(volumeId, volumeNodeKey),
+                        k: encryptNodeKey(volumeNodeKey, shareKey, shareHandle),
+                        su: ownerHandle,
+                      },
+                      {
+                        h: fileHandle,
+                        p: volumeHandle,
+                        t: 0,
+                        s: fileBytes.length,
+                        a: encryptAttributes(fileName, fileNodeKey),
+                        k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+                        su: ownerHandle,
+                      },
+                    ],
+                    u: [{ u: ownerHandle, m: 'owner@example.com' }],
+                    sn: 'cursor-1',
+                  },
+                ]),
+                {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                }
+              );
+            }
+            throw new Error(`Unexpected partial fetch handle: ${String(payload.n)}`);
+          }
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url === 'https://download.test/file') {
+        return new Response(new Uint8Array(fileCiphertext), { status: 200 });
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    (adapter as unknown as {
+      accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+    }).accountShareKeyCache.set(userHandle, new Map([[shareHandle, shareKey]]));
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-parent-refetch-'));
+    tempDirs.push(localPath);
+    await fs.mkdir(path.join(localPath, 'channels'), { recursive: true });
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-parent-refetch',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-parent-refetch',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-parent-refetch',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const entries = {
+      channels: {
+        kind: 'folder',
+        fingerprint: `mega:folder:${channelsHandle}`,
+        handle: channelsHandle,
+        parentHandle: shareHandle,
+      },
+    };
+    const handlePathIndex = new Map<string, string>([[channelsHandle, 'channels']]);
+    const session = await (adapter as any).getAccountSession(account);
+
+    const applied = await (adapter as any).applyRecipientHandleUpdate(
+      share,
+      session,
+      shareHandle,
+      fileHandle,
+      entries,
+      handlePathIndex,
+      {
+        source: 'sync',
+        rootHandle: shareHandle,
+        triggerHandle: fileHandle,
+        packetReceivedAt: Date.now(),
+        scsn: 'cursor-1',
+      }
+    );
+
+    expect(applied).toBe(true);
+    await expect(fs.readFile(path.join(localPath, 'channels', volumeId, fileName))).resolves.toEqual(fileBytes);
+    expect(handlePathIndex.get(fileHandle)).toBe(`channels/${volumeId}/${fileName}`);
+    expect(subtreeFetchCount).toBe(2);
+    expect(downloadRequestCount).toBe(1);
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
   it('ignores deleted handles when a mixed delete plus tree packet can be applied immediately', async () => {
     const email = 'reader@example.com';
     const userHandle = 'usrhandle01';

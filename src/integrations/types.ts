@@ -104,6 +104,7 @@ export interface ManagedShare {
   readonly sourceId?: string;
   readonly syncMode: 'mirror';
   readonly remoteDescriptor: Record<string, unknown>;
+  readonly openedVolumeIds?: string[];
   readonly capabilities: string[];
   readonly invitationEmails: string[];
   readonly createdAt: number;

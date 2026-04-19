@@ -58,6 +58,7 @@ export interface MegaOwnerMirrorSource {
 
 export interface MegaRuntimeConfig {
   readonly remoteBasePath: string;
+  /** 0 disables the recurring reconciliation timer. */
   readonly syncIntervalMs: number;
   readonly syncTimeoutMs: number;
   /** After `s2` invites, briefly poll fetch-nodes for collaborator reflection as a best-effort diagnostic. 0 = skip wait. */
@@ -146,7 +147,7 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
       remoteBasePath: normalizeMegaRemotePath(
         options.mega?.remoteBasePath?.trim() || processEnv.NEARBYTES_MEGA_REMOTE_BASE?.trim() || '/nearbytes'
       ),
-      syncIntervalMs: positiveInt(options.mega?.syncIntervalMs, DEFAULT_MEGA_SYNC_INTERVAL_MS),
+      syncIntervalMs: resolveMegaSyncIntervalMs(options.mega?.syncIntervalMs, processEnv),
       syncTimeoutMs: positiveInt(options.mega?.syncTimeoutMs, DEFAULT_MEGA_SYNC_TIMEOUT_MS),
       inviteReflectionTimeoutMs: nonNegativeInt(
         options.mega?.inviteReflectionTimeoutMs,
@@ -175,6 +176,27 @@ export function createIntegrationRuntime(options: IntegrationRuntimeOptions): In
       syncIntervalMs: positiveInt(options.github?.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS),
     },
   };
+}
+
+function resolveMegaSyncIntervalMs(
+  explicitValue: number | undefined,
+  processEnv: Readonly<Record<string, string | undefined>>
+): number {
+  if (Number.isFinite(explicitValue) && explicitValue !== undefined) {
+    return Math.max(0, Math.trunc(explicitValue));
+  }
+  const mode = processEnv.NEARBYTES_MEGA_PERIODIC_SYNC?.trim().toUpperCase();
+  if (!mode || mode === 'OFF' || mode === '0' || mode === 'FALSE') {
+    return 0;
+  }
+  if (mode === 'ON' || mode === '1' || mode === 'TRUE') {
+    return DEFAULT_MEGA_SYNC_INTERVAL_MS;
+  }
+  const parsed = Number.parseInt(mode, 10);
+  if (Number.isFinite(parsed)) {
+    return Math.max(0, parsed);
+  }
+  return 0;
 }
 
 class DefaultCommandExecutor implements CommandExecutor {

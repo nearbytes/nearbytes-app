@@ -44,6 +44,7 @@ const managedShareSchema = z.object({
   sourceId: z.string().trim().optional(),
   syncMode: z.literal('mirror'),
   remoteDescriptor: z.record(z.string(), z.unknown()),
+  openedVolumeIds: z.array(z.string().trim().min(1)).default([]),
   capabilities: z.array(z.string().trim().min(1)).default([]),
   invitationEmails: z.array(z.string().trim().min(1)).default([]),
   createdAt: z.number().int().nonnegative(),
@@ -91,6 +92,7 @@ export async function loadIntegrationState(customPath?: string): Promise<Integra
       managedShares: parsed.managedShares.map((share) => ({
         ...share,
         sourceId: share.sourceId || undefined,
+        openedVolumeIds: uniqueStrings(share.openedVolumeIds),
         capabilities: uniqueStrings(share.capabilities),
         invitationEmails: uniqueStrings(share.invitationEmails),
         remoteDescriptor: share.remoteDescriptor as Record<string, unknown>,

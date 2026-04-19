@@ -24,7 +24,12 @@ import {
   resolveMegaPublicLinkTarget,
 } from './megaPublicLink.js';
 import { managedSharePath as path } from './managedSharePath.js';
-import { normalizeVolumeId, validateCanonicalStorageFile } from '../storage/integrity.js';
+import {
+  normalizeVolumeId,
+  parseCanonicalEventRelativePath,
+  validateCanonicalStorageFile,
+} from '../storage/integrity.js';
+import { deserializeEvent } from '../storage/serialization.js';
 import { MirrorWorker } from './mirrorWorker.js';
 import type {
   ManagedShareMirrorEntry,
@@ -1297,6 +1302,53 @@ export class MegaTransportAdapter {
     return new Uint8Array(await (await getMegaNodeFs()).readFile(localFilePath));
   }
 
+  private async forceManagedShareRuntimeSourceEventUpload(
+    share: ManagedShare,
+    account: ProviderAccount | null,
+    relativePath: string
+  ): Promise<void> {
+    if (!account) {
+      throw new Error('Reconnect MEGA to upload to the remote share.');
+    }
+    const eventBytes = await this.readManagedShareUploadBytes(share, relativePath);
+    const uploadStartedAt = this.runtime.now();
+    let referencedBlockPaths: string[] = [];
+    try {
+      const serialized = JSON.parse(Buffer.from(eventBytes).toString('utf8')) as import('../types/events.js').SerializedEvent;
+      const parsed = deserializeEvent(serialized);
+      referencedBlockPaths = parsed.envelope.blockRefs.map((blockHash: string) => `blocks/${blockHash}`);
+    } catch {
+      // Keep live publication moving even if an older event record cannot be parsed here.
+    }
+
+    this.abortShareSyncTask(share.id);
+    await this.withExclusiveShareTask(share.id, async () => {
+      await this.withRecoveredAccountSession(account, async (session) => {
+        const ownerUploadState = await this.getOwnerUploadState(share, session);
+        const adapter = new MegaOwnerRemoteAdapter(
+          this.fetchImpl,
+          this.apiClient,
+          session,
+          ownerUploadState,
+          undefined
+        );
+        await adapter.upload(relativePath, eventBytes, { waitForVisibility: false });
+        for (const blockPath of referencedBlockPaths) {
+          const blockBytes = await this.readManagedShareUploadBytes(share, blockPath);
+          await adapter.upload(blockPath, blockBytes, { waitForVisibility: false });
+        }
+      });
+    });
+    this.scheduleManagedShareUploadProbe({
+      share,
+      account,
+      relativePath,
+      localSize: eventBytes.length,
+      startedAt: uploadStartedAt,
+      committedAt: this.runtime.now(),
+    });
+  }
+
   async handleManagedShareLocalWrite(
     share: ManagedShare,
     account: ProviderAccount | null,
@@ -1305,6 +1357,20 @@ export class MegaTransportAdapter {
     const normalizedPath = normalizeRelativePath(relativePath);
     if (!isMirrorRelativePath(normalizedPath)) {
       return;
+    }
+
+    if (this.runtime.mega.ownerMirrorSource) {
+      if (normalizedPath.startsWith('blocks/')) {
+        // Runtime-source owner writes materialize blocks before the channel event that references
+        // them. Uploading the block first stalls the live event push behind blob transfer latency.
+        // Publish the channel event first and stream its referenced blocks from that event upload.
+        return;
+      }
+      if (normalizedPath.startsWith('channels/')) {
+        this.suppressWatcherPath(share.id, normalizedPath);
+        await this.forceManagedShareRuntimeSourceEventUpload(share, account, normalizedPath);
+        return;
+      }
     }
 
     this.suppressWatcherPath(share.id, normalizedPath);
@@ -1886,6 +1952,14 @@ export class MegaTransportAdapter {
 
   private startRecurringSyncTimer(share: ManagedShare, account: ProviderAccount): void {
     if (this.syncTimers.has(share.id)) {
+      return;
+    }
+    if (this.runtime.mega.syncIntervalMs <= 0) {
+      this.runtime.logger.log('Provider recurring sync timer disabled.', {
+        provider: this.provider,
+        accountId: account.id,
+        shareId: share.id,
+      });
       return;
     }
     this.runtime.logger.log('Provider recurring sync timer started.', {
@@ -3590,32 +3664,41 @@ export class MegaTransportAdapter {
       );
       appliedCount += directlyAppliedCount;
 
-      for (const handle of handles) {
-        if (deletedHandles.has(handle)) {
-          continue;
-        }
-        if (handlePathIndex.has(handle)) {
-          continue;
-        }
-        const applied = await this.applyRecipientHandleUpdate(
-          share,
-          session,
-          rootHandle,
-          handle,
-          nextEntries,
-          handlePathIndex,
-          {
-            source: baseProbeContext?.source ?? 'sync',
-            rootHandle,
-            triggerHandle: handle,
-            packetReceivedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
-            scsn: baseProbeContext?.scsn ?? actionBatch.scsn?.trim(),
+      let pendingHandles = handles.filter((handle) => !deletedHandles.has(handle));
+      while (pendingHandles.length > 0) {
+        let progressedThisPass = false;
+        const deferredHandles: string[] = [];
+        for (const handle of pendingHandles) {
+          if (handlePathIndex.has(handle)) {
+            progressedThisPass = true;
+            continue;
           }
-        );
-        if (!applied) {
-          continue;
+          const applied = await this.applyRecipientHandleUpdate(
+            share,
+            session,
+            rootHandle,
+            handle,
+            nextEntries,
+            handlePathIndex,
+            {
+              source: baseProbeContext?.source ?? 'sync',
+              rootHandle,
+              triggerHandle: handle,
+              packetReceivedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
+              scsn: baseProbeContext?.scsn ?? actionBatch.scsn?.trim(),
+            }
+          );
+          if (!applied) {
+            deferredHandles.push(handle);
+            continue;
+          }
+          appliedCount += 1;
+          progressedThisPass = true;
         }
-        appliedCount += 1;
+        if (!progressedThisPass) {
+          break;
+        }
+        pendingHandles = deferredHandles;
       }
 
       if (appliedCount === 0) {
@@ -3723,14 +3806,33 @@ export class MegaTransportAdapter {
     handlePathIndex: Map<string, string>,
     probeContext: MegaRecipientProbeContext
   ): Promise<boolean> {
-    const fetchStartedAt = this.runtime.now();
-    const fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
+    let fetchStartedAt = this.runtime.now();
+    let fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
       allowTransientFullFallback: true,
       fastPartialFallback: true,
       maxAttempts: 1,
     });
-    const fetchCompletedAt = this.runtime.now();
-    const baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
+    let fetchCompletedAt = this.runtime.now();
+    let baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
+    // Immediate MEGA pushes can surface a new event file before the local recipient manifest has
+    // learned the parent volume-folder handle. Refetch from that parent handle so canonical
+    // channels/<volumeId>/<event>.bin paths still resolve without waiting for a later full sweep.
+    if (
+      (!baseRelativePath || !isMirrorRelativePath(baseRelativePath)) &&
+      fetched.tree.root.parentHandle &&
+      fetched.tree.root.parentHandle !== rootHandle &&
+      fetched.tree.root.parentHandle !== handle &&
+      !handlePathIndex.has(fetched.tree.root.parentHandle)
+    ) {
+      fetchStartedAt = this.runtime.now();
+      fetched = await this.fetchPartialTreeWithRetry(session, fetched.tree.root.parentHandle, undefined, {
+        allowTransientFullFallback: true,
+        fastPartialFallback: true,
+        maxAttempts: 1,
+      });
+      fetchCompletedAt = this.runtime.now();
+      baseRelativePath = resolveRecipientFetchedNodePath(fetched.tree.root, rootHandle, handlePathIndex);
+    }
     const isMirrorContainer = baseRelativePath ? isRecipientMirrorContainerPath(baseRelativePath) : false;
     if (!baseRelativePath || (!isMirrorRelativePath(baseRelativePath) && !isMirrorContainer)) {
       debugMegaLog('[MEGA:immediate-apply] fetched subtree could not be resolved to a mirror path.', {
@@ -3866,6 +3968,9 @@ export class MegaTransportAdapter {
     handlePathIndex: Map<string, string>,
     probeContext: MegaRecipientProbeContext
   ): Promise<void> {
+    if (!shouldApplyRecipientMirrorPath(share, relativePath)) {
+      return;
+    }
     const existingPath = handlePathIndex.get(node.handle);
     if (existingPath && existingPath !== relativePath) {
       delete entries[existingPath];
@@ -3883,11 +3988,7 @@ export class MegaTransportAdapter {
 
     const nextEntry = createProviderRefreshManifestEntry(node);
     const existingEntry = entries[relativePath];
-    if (
-      existingEntry?.kind === 'file' &&
-      existingEntry.fingerprint === nextEntry.fingerprint &&
-      existingEntry.handle === nextEntry.handle
-    ) {
+    if (existingEntry?.kind === 'file' && existingEntry.fingerprint === nextEntry.fingerprint) {
       const localFileExists = await (await getMegaNodeFs()).access(targetPath).then(() => true).catch(() => false);
       if (localFileExists) {
         entries[relativePath] = nextEntry;
@@ -5092,6 +5193,34 @@ function isRecipientMirrorContainerPath(value: string): boolean {
   return Boolean(normalizeVolumeId(normalized.slice('channels/'.length)));
 }
 
+function shouldApplyRecipientMirrorPath(share: ManagedShare, relativePath: string): boolean {
+  if (share.role !== 'recipient') {
+    return true;
+  }
+  const openedVolumeIds = (share.openedVolumeIds ?? [])
+    .map((volumeId) => normalizeVolumeId(volumeId) ?? '')
+    .filter((volumeId) => volumeId.length > 0);
+  if (openedVolumeIds.length === 0) {
+    return true;
+  }
+  const normalized = normalizeRelativePath(relativePath);
+  if (normalized === 'channels') {
+    return true;
+  }
+  if (normalized.startsWith('blocks/')) {
+    return false;
+  }
+  const eventPath = parseCanonicalEventRelativePath(normalized);
+  if (eventPath) {
+    return openedVolumeIds.includes(eventPath.volumeId);
+  }
+  if (normalized.startsWith('channels/')) {
+    const volumeId = normalizeVolumeId(normalized.slice('channels/'.length));
+    return volumeId ? openedVolumeIds.includes(volumeId) : false;
+  }
+  return true;
+}
+
 function resolveMegaMirrorRelativePath(value: string): string | null {
   const normalized = normalizeRelativePath(value);
   if (!normalized) {
@@ -6011,6 +6140,12 @@ async function deleteMegaNode(
         { a: 'd', i: createMegaMutationRequestId(), n: nodeHandle },
         { sessionId: session.sid, signal }
       );
+      // Runtime-source owner sync treats remote pruning as a reconcile step, not a hard invariant.
+      // If MEGA already dropped the node, accept that as the desired end state instead of aborting
+      // phone/desktop push publication with a stale-handle -9.
+      if (response === -9) {
+        return;
+      }
       if (typeof response === 'number' && response !== 0) {
         const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
         error.code = response;
@@ -6018,6 +6153,9 @@ async function deleteMegaNode(
       }
       return;
     } catch (error) {
+      if ((error as MegaApiError | undefined)?.code === -9) {
+        return;
+      }
       if (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) {
         throw error;
       }

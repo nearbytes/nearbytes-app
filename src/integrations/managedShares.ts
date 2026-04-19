@@ -6,7 +6,7 @@ import {
   type SourceConfigEntry,
   type VolumeDestinationConfig,
   type VolumePolicyEntry,
-} from '../config/roots.js';
+} from '../config/rootsShared.js';
 import type {
   MarkerEnsureResult,
   NearbytesRootInspection,
@@ -251,7 +251,46 @@ export class ManagedShareService {
     this.recentlyOpenedVolumeIds.delete(normalized);
     this.recentlyOpenedVolumeIds.set(normalized, now);
     this.pruneRememberedOpenedVolumes(now);
+    await this.rememberOpenedVolumeOnAttachedShares(normalized, now);
     await this.attachOpenedVolumeToAutoAttachShares(normalized);
+  }
+
+  private async rememberOpenedVolumeOnAttachedShares(volumeId: string, now: number): Promise<void> {
+    const state = await this.loadState();
+    const config = this.options.storage.getRootsConfig();
+    let changed = false;
+    const managedShares = state.managedShares.map((share) => {
+      const sourceId = share.sourceId ?? config.sources.find((source) => source.integration?.managedShareId === share.id)?.id;
+      if (!sourceId) {
+        return share;
+      }
+      const attached = resolveVolumeDestinations(config, volumeId).some((destination) => destination.sourceId === sourceId);
+      if (!attached) {
+        return share;
+      }
+      const openedVolumeIds = [
+        volumeId,
+        ...(share.openedVolumeIds ?? [])
+          .map((entry) => normalizeVolumeId(entry))
+          .filter((entry): entry is string => Boolean(entry) && entry !== volumeId),
+      ].slice(0, 1);
+      if (openedVolumeIds.length === (share.openedVolumeIds ?? []).length &&
+          openedVolumeIds.every((entry, index) => entry === (share.openedVolumeIds ?? [])[index])) {
+        return share;
+      }
+      changed = true;
+      return {
+        ...share,
+        openedVolumeIds,
+        updatedAt: Math.max(share.updatedAt, now),
+      };
+    });
+    if (changed) {
+      await this.saveState({
+        ...state,
+        managedShares,
+      });
+    }
   }
 
   private async attachOpenedVolumeToAutoAttachShares(volumeId: string): Promise<void> {

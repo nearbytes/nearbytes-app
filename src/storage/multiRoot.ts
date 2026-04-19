@@ -6,7 +6,7 @@ import {
   type RootsConfig,
   type SourceConfigEntry,
   type VolumeDestinationConfig,
-} from '../config/roots.js';
+} from '../config/rootsShared.js';
 import {
   ensureNearbytesMarker,
   inspectNearbytesRoot,
