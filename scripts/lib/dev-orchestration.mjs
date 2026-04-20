@@ -338,44 +338,56 @@ function resolveElectronAppDataDir(home) {
   return path.join(home, '.config');
 }
 
-export function seedManualTestConfig({ home, rootsConfigPath, appConfigPath, localRootPath, providers }) {
+export function seedManualTestConfig({
+  home,
+  rootsConfigPath,
+  appConfigPath,
+  integrationStatePath,
+  localRootPath,
+  providers,
+  preserveExistingRoots = false,
+}) {
   const nearbytesDir = path.join(home, '.nearbytes');
   const sourceId = 'src-default';
   mkdirSync(nearbytesDir, { recursive: true });
   mkdirSync(localRootPath, { recursive: true });
 
-  writeFileSync(
-    rootsConfigPath,
-    `${JSON.stringify({
-      version: 2,
-      sources: [
-        {
-          id: sourceId,
-          provider: 'local',
-          path: localRootPath,
-          enabled: true,
-          writable: true,
-          reservePercent: 5,
-          opportunisticPolicy: 'block-writes',
-        },
-      ],
-      defaultVolume: {
-        destinations: [
+  if (!(preserveExistingRoots && existsSync(rootsConfigPath))) {
+    writeFileSync(
+      rootsConfigPath,
+      `${JSON.stringify({
+        version: 2,
+        sources: [
           {
-            sourceId,
+            id: sourceId,
+            provider: 'local',
+            path: localRootPath,
             enabled: true,
-            storeEvents: true,
-            storeBlocks: true,
-            copySourceBlocks: true,
+            writable: true,
             reservePercent: 5,
-            fullPolicy: 'block-writes',
+            opportunisticPolicy: 'block-writes',
           },
         ],
-      },
-      volumes: [],
-    }, null, 2)}\n`,
-    'utf8'
-  );
+        defaultVolume: {
+          destinations: [
+            {
+              sourceId,
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 5,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+        volumes: [],
+      }, null, 2)}\n`,
+      'utf8'
+    );
+  } else {
+    repairManagedShareSourcesFromState({ rootsConfigPath, integrationStatePath });
+  }
 
   writeFileSync(
     appConfigPath,
@@ -392,6 +404,92 @@ export function seedManualTestConfig({ home, rootsConfigPath, appConfigPath, loc
           appMetrics: false,
         },
       },
+    }, null, 2)}\n`,
+    'utf8'
+  );
+}
+
+function repairManagedShareSourcesFromState({ rootsConfigPath, integrationStatePath }) {
+  if (!integrationStatePath || !existsSync(rootsConfigPath) || !existsSync(integrationStatePath)) {
+    return;
+  }
+
+  let rootsConfig;
+  let integrationState;
+  try {
+    rootsConfig = JSON.parse(readFileSync(rootsConfigPath, 'utf8'));
+    integrationState = JSON.parse(readFileSync(integrationStatePath, 'utf8'));
+  } catch {
+    return;
+  }
+
+  if (!Array.isArray(rootsConfig?.sources) || !Array.isArray(integrationState?.managedShares)) {
+    return;
+  }
+
+  let changed = false;
+  const nextSources = [...rootsConfig.sources];
+  for (const share of integrationState.managedShares) {
+    const shareId = trimOrNull(share?.id);
+    const sourceId = trimOrNull(share?.sourceId);
+    const provider = trimOrNull(share?.provider);
+    const localPath = trimOrNull(share?.localPath);
+    if (!shareId || !sourceId || !provider || !localPath) {
+      continue;
+    }
+
+    const existingIndex = nextSources.findIndex((source) => {
+      const managedShareId = trimOrNull(source?.integration?.managedShareId);
+      if (managedShareId && normalize(managedShareId) === normalize(shareId)) {
+        return true;
+      }
+      if (trimOrNull(source?.id) && normalize(source.id) === normalize(sourceId)) {
+        return true;
+      }
+      if (trimOrNull(source?.path)) {
+        return normalize(path.resolve(source.path)) === normalize(path.resolve(localPath));
+      }
+      return false;
+    });
+
+    const nextSource = {
+      id: sourceId,
+      provider,
+      path: localPath,
+      enabled: nextSources[existingIndex]?.enabled ?? true,
+      writable: share?.role === 'owner',
+      reservePercent: nextSources[existingIndex]?.reservePercent ?? 5,
+      opportunisticPolicy: nextSources[existingIndex]?.opportunisticPolicy ?? 'block-writes',
+      integration: {
+        kind: 'provider-managed',
+        provider,
+        managedShareId: shareId,
+      },
+    };
+
+    if (existingIndex >= 0) {
+      const previous = JSON.stringify(nextSources[existingIndex]);
+      const replacement = JSON.stringify(nextSource);
+      if (previous !== replacement) {
+        nextSources[existingIndex] = nextSource;
+        changed = true;
+      }
+      continue;
+    }
+
+    nextSources.push(nextSource);
+    changed = true;
+  }
+
+  if (!changed) {
+    return;
+  }
+
+  writeFileSync(
+    rootsConfigPath,
+    `${JSON.stringify({
+      ...rootsConfig,
+      sources: nextSources,
     }, null, 2)}\n`,
     'utf8'
   );

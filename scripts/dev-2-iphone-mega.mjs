@@ -95,10 +95,12 @@ try {
   seedManualTestConfig({
     ...desktopPaths,
     providers: { mega: true, localNetwork: false },
+    preserveExistingRoots: !shouldWipe,
   });
   seedManualTestConfig({
     ...phonePaths,
     providers: { mega: true, localNetwork: false },
+    preserveExistingRoots: !shouldWipe,
   });
 
   console.error('[dev-2-iphone-mega] building project');

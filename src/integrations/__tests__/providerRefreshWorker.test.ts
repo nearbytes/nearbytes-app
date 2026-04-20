@@ -168,4 +168,31 @@ describe('ProviderRefreshWorker', () => {
     });
     await expect(fs.readFile(path.join(localRoot, invalidPath), 'utf8')).rejects.toThrow();
   });
+
+  it('reports progress while processing a refresh', async () => {
+    const worker = new ProviderRefreshWorker();
+    const localRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-provider-refresh-'));
+    tempDirs.push(localRoot);
+
+    const block = await createStoredBlock('progress-data');
+    let progressCount = 0;
+    const remote = new FakeReadonlyRemote(
+      [
+        { path: 'blocks', kind: 'folder', fingerprint: 'folder-blocks' },
+        { path: `blocks/${block.hash}.bin`, kind: 'file', fingerprint: 'block-v1', size: block.bytes.byteLength },
+      ],
+      {
+        [`blocks/${block.hash}.bin`]: 'progress-data',
+      }
+    );
+
+    const result = await worker.refresh(localRoot, remote, { entries: {} }, {
+      onProgress: () => {
+        progressCount += 1;
+      },
+    });
+
+    expect(result.downloaded).toEqual([`blocks/${block.hash}.bin`]);
+    expect(progressCount).toBeGreaterThan(0);
+  });
 });

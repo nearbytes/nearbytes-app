@@ -92,13 +92,19 @@ export interface ProviderRefreshResult {
   readonly manifest: ProviderRefreshManifest;
 }
 
+export interface ProviderRefreshOptions {
+  readonly onProgress?: () => void;
+}
+
 export class ProviderRefreshWorker {
   async refresh(
     localRoot: string,
     remote: ProviderRefreshRemoteAdapter,
-    previousManifest: ProviderRefreshManifest = { entries: {} }
+    previousManifest: ProviderRefreshManifest = { entries: {} },
+    options: ProviderRefreshOptions = {}
   ): Promise<ProviderRefreshResult> {
     const fs = await getProviderRefreshFs();
+    options.onProgress?.();
     const remoteEntries = [...(await remote.list())]
       .map((entry) => ({
         ...entry,
@@ -117,6 +123,7 @@ export class ProviderRefreshWorker {
     await fs.mkdir(localRoot, { recursive: true });
 
     for (const entry of remoteEntries) {
+      options.onProgress?.();
       desiredPaths.add(entry.path);
       nextEntries.set(entry.path, {
         fingerprint: entry.fingerprint,
@@ -147,6 +154,7 @@ export class ProviderRefreshWorker {
       if (stats?.isDirectory()) {
         await fs.rm(targetPath, { recursive: true, force: true });
       }
+      options.onProgress?.();
       const remoteBytes = await remote.download(entry.path);
       const remoteValidation = await validateCanonicalStorageFile(entry.path, remoteBytes);
       if (!remoteValidation.ok) {
@@ -160,6 +168,7 @@ export class ProviderRefreshWorker {
       }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.writeFile(targetPath, remoteBytes);
+      options.onProgress?.();
       downloaded.push(entry.path);
     }
 

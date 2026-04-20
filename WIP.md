@@ -1,10 +1,16 @@
-THE REMAINING FAILURE IS DESKTOP TO PHONE, IT HAS BEEN SO FOR ONE DAY, AND THE TASK IS TO FIX THAT, NOT REPORT THAT AGAIN TO THE USER. IF THAT IS NOT FIXED; CONTINUE WORKING ON IT.
+THE TASK IS STILL TO FIX THE REAL MEGA BIDIRECTIONAL FAILURE, NOT TO RE-REPORT THAT IT FAILS. IF FRESH LIVE WRITES DO NOT PROPAGATE, CONTINUE DEBUGGING.
+
+# HANDOVER PROMPT
+
+Continue debugging the real `yarn dev-2-iphone-mega --no-wipe` MEGA bidirectional sync failure on the `Test4` hub. Do not treat the no-wipe roots regression as the remaining issue; that part is fixed enough for live repro again. Current live truth: `POST /open` works on both desktop and phone, both homes retain `src-mega-managed-3`, but fresh writes still fail in both directions even after explicit recipient triggers and 90 seconds of polling. Latest hard evidence: desktop upload `nearbytes-desktop-live-poll-1776693181.txt` with blob hash `e2c0f983bca16c5b1c8bae588a4112f3646c0ab5019a6ede17bd335582c2c4eb` never appeared on phone within 90s; phone upload `nearbytes-phone-live-poll-1776693277.txt` with blob hash `78473cb296eea030a59c5104029781879527f1a820c97658036781a43a1ad966` never appeared on desktop within 90s. During that proof, desktop share `share-mega-2-e9bfdd` reported state `ready` with `MEGA_OWNER_SYNC_RETRYING`, desktop recipient `share-mega-1-749d88` reported `syncing`, phone logs showed repeated `MEGA partial tree fetch failed; falling back to a full node snapshot` and `MEGA partial tree decryption missed the requested root`, and both upload-probe / receive-probe debug endpoints were empty. The next agent should trace why fresh uploads are not entering the tracked probe path and determine whether the missing step is owner publication, SC event visibility, or recipient refresh ingestion.
 
 # WIP
 
 ## Goal
 
 Make the real desktop app and the real phone app sync the same hub state in both directions over push, with the phone app remaining self-contained and without periodic reconciliation being required for correctness.
+
+Immediate task: fix the remaining real MEGA fresh-write propagation failure on the `Test4` stack. Do not stop at proving that the stack starts or that `open` works again.
 
 ## Constraints
 
@@ -16,133 +22,180 @@ Make the real desktop app and the real phone app sync the same hub state in both
 
 ## Current Truth
 
-The current WIP still does not have working bidirectional sync on the real `yarn dev-2-iphone-mega --no-wipe` stack.
+The no-wipe runtime-state blocker is fixed enough to resume live repro, but the real bidirectional sync task is still not done.
 
-Latest fresh repro on 2026-04-19 using:
+What is fixed now:
+
+- `yarn dev-2-iphone-mega --no-wipe` no longer destroys the owner managed source on startup.
+- both current homes retain `src-mega-managed-3` in `.nearbytes/roots.json`
+- both desktop and phone can `POST /open` for `Test4` again
+- the dev launcher now preserves existing `roots.json` on `--no-wipe` and repairs missing provider-managed source entries from `.nearbytes/integrations.json` before startup
+
+What is still broken now:
+
+- fresh desktop writes still do not appear on phone
+- fresh phone writes still do not appear on desktop
+- this still fails after explicit recipient triggers
+- this still fails after 90 seconds of polling on both directions
+
+Current live stack details from the latest repro on 2026-04-20:
 
 - desktop API: `http://127.0.0.1:3000`
 - phone API: `http://127.0.0.1:3300`
 - desktop UI: `http://127.0.0.1:5177`
 - phone UI: `http://127.0.0.1:5181`
-- hub secret: `APM26`
-- volume id:
-  `0470f0f4b5e8692d7d80af007bb3998a45a28ef86039120c49a093f6d83db1eac6a7cea90d620dc3d2c3095f0247da0ce3f460291eb9dc467cedce958abf38d473`
+- volume secret: `Test4`
+- volume id: `0489eac69beb82ec9eb88b45d7ce29d5cce350f01c6f85922e23750841fa86944aceefcf9326aa4363e349d73049c9a126ce36cdd14407b6c1fe33d6288ed03101`
+- desktop owner share: `share-mega-2-e9bfdd`
+- desktop recipient share: `share-mega-1-749d88`
+- phone owner share: `share-mega-2-f3adfb`
+- phone recipient share: `share-mega-1-046172`
 
-Latest fresh files used:
+Latest direct desktop -> phone proof result:
 
-- desktop -> phone: `nearbytes-desktop-sync-1776633206.txt`
-- phone -> desktop: `nearbytes-phone-sync-1776633226.txt`
+- fresh file: `nearbytes-desktop-live-1776693055.txt`
+- blob hash: `354e0c2eaecc50ee2edbcccb66589b099692ece70499656ecc5c72a880795b9e`
+- desktop upload returned `created` successfully
+- phone trigger returned `{"ok":true,"shareId":"share-mega-1-046172"}`
+- phone file list count was `23`
+- `phoneFilePresent` was `false`
 
-Observed result after waiting:
+Latest stronger desktop -> phone proof with bounded polling:
 
-- desktop file appeared on desktop, but not on phone after 6s
-- phone file appeared on phone with durable commit `acknowledged`, but not on desktop after 6s
-- so both fresh directions are still failing on the latest patched stack
+- fresh file: `nearbytes-desktop-live-poll-1776693181.txt`
+- blob hash: `e2c0f983bca16c5b1c8bae588a4112f3646c0ab5019a6ede17bd335582c2c4eb`
+- polling duration: `90s`
+- result: file never appeared on phone
+- phone file count stayed at `24` for every poll sample
 
-What improved relative to the previous repro:
+Latest stronger phone -> desktop proof with bounded polling:
 
-- the phone now already sees older desktop-authored files such as `nearbytes-desktop-sync-1776632588.txt`
-- that means the recipient root-handle mismatch patch is doing useful work
-- but it is not sufficient to make fresh bidirectional sync reliable
+- fresh file: `nearbytes-phone-live-poll-1776693277.txt`
+- blob hash: `78473cb296eea030a59c5104029781879527f1a820c97658036781a43a1ad966`
+- polling duration: `90s`
+- result: file never appeared on desktop
+- desktop file count stayed at `24` for every poll sample
 
-Code progress after the follow-up pass on 2026-04-19:
+So the issue is no longer just desktop -> phone. Fresh writes are currently not proving in either direction on the live stack.
 
-- widened the runtime-source `blocks/*` read retry window during channel-event publication so owner pushes tolerate slower canonical block visibility before deferring the event
-- fixed the recipient partial-tree helper so `fastPartialFallback` actually reaches `fetchMegaDecryptedTree`, which restores the intended immediate full-snapshot fallback on transient MEGA `-3` subtree fetches instead of entering the normal lock-retry backoff loop first
-- narrowed recipient immediate-apply back toward the `c88596927acce79f1a508c6291e8cc34535c3de8` behavior by removing generic subtree retries for `MEGA tree did not include the requested root node.` and by using single-attempt subtree fetches in the immediate-apply path
-- added regressions covering the longer runtime-source block-read delay, the fast recipient partial-fetch fallback path, and stale missing-root recipient handles that must not be retried through the generic subtree loop
-- `yarn vitest run src/integrations/__tests__/managedShares.test.ts` passed (`56/56`)
-- `yarn vitest run src/integrations/__tests__/megaAdapter.test.ts` passed (`55/55`)
+## What Changed In Code
 
-What is still not proven:
+Work already landed in the repo during this debugging pass:
 
-- live `yarn dev-2-iphone-mega --no-wipe` validation has not been rerun after these patches yet
-- end-to-end desktop <-> phone fresh-write proof is still outstanding until that live check passes
+- runtime-source owner sync now uploads event-referenced `blocks/*.bin` before publishing `channels/*`
+- runtime-source owner sync no longer does per-file remote visibility waits during a sweep
+- post-upload MEGA `-3` refresh failures no longer abort the whole owner sync after files were already pushed
+- owner local-write uploads now go through the per-account sync serializer
+- incoming MEGA share discovery now also goes through the same per-account serializer
+- explicit recipient trigger launch is detached and retries once after an aborted in-flight attempt
+- large MEGA manifests are kept in memory instead of being forced into durable secret storage
+- refresh worker now supports progress callbacks to keep long MEGA readonly refreshes alive
+- no-wipe startup now preserves existing `roots.json`
+- no-wipe startup repairs missing provider-managed sources from `.nearbytes/integrations.json`
 
-Latest root cause isolated after the live rerun on 2026-04-20:
+Validated test status seen during this pass:
 
-- the owner runtime-source event upload path was deriving referenced block uploads as `blocks/<hash>` instead of canonical `blocks/<hash>.bin`
-- that exactly matched the live desktop and phone failures logged as `File not found in any root: blocks/<hash>` during fresh owner-side publication
-- this is a separate lower-layer bug from the earlier owner-volume republishing leak; the leak fix still appears to hold
+- `yarn vitest run src/integrations/__tests__/megaAdapter.test.ts` passed
+- earlier managed-share / mega unit coverage added in this pass was passing when run
 
-Phone screenshot from that check:
+## Most Relevant Live Evidence
 
-- `/tmp/nearbytes-phone-bidir-check.png`
+### 1. No-wipe roots regression is no longer the active blocker
 
-## Most Relevant Evidence
+Current roots state before the latest repro:
 
-### 1. Desktop owner local-write path still races block availability
+- desktop `.nearbytes/roots.json` contained `src-default`, `src-mega-managed-2`, and `src-mega-managed-3`
+- phone `.nearbytes/roots.json` contained `src-default`, `src-mega-managed-2`, and `src-mega-managed-3`
+- desktop default destinations also included `src-mega-managed-3`
+- `POST /open` on both desktop and phone returned `ok`
 
-The latest desktop logs still show:
+This means the session is past the earlier `Unknown destination sourceId: src-mega-managed-3` failure mode.
 
-- `Managed share local write handling deferred for channels/.../8f3930b5fabe513ce55500a2212228dbe0fefc73996222597e846292a93f931a.bin: File not found in any root: blocks/2943615584144dde8687019fa3b632bd823ab62e1cb7a2617f605545ca46978e`
-- repeated `Managed share local write retry deferred ... File not found in any root: blocks/294361...`
+### 2. Fresh writes still do not surface on the opposite side even after triggers and 90s polling
 
-Why this matters:
+The strongest current proof is the 90s poll run in both directions:
 
-- `294361...` is the blob hash of `nearbytes-desktop-sync-1776632588.txt`, which the phone now sees eventually
-- the desktop owner path is still trying to publish a channel event before the referenced `blocks/*` object is durably visible in the runtime source
-- the current in-process retry is still not enough under live load
+- desktop -> phone: `nearbytes-desktop-live-poll-1776693181.txt` never appeared on phone
+- phone -> desktop: `nearbytes-phone-live-poll-1776693277.txt` never appeared on desktop
+- both sides stayed stuck at the same file count throughout the poll window
 
-### 2. Phone recipient still degrades into full refreshes and MEGA `-3`
+That means the system is not just delayed; it is failing to converge under the tested conditions.
 
-The latest phone logs still contain:
+### 3. Current share runtime states still indicate MEGA-side churn instead of clean propagation
 
-- `MEGA immediate readonly apply failed; falling back to mirror refresh.`
-- `MEGA tree did not include the requested root node.`
-- `MEGA partial tree fetch failed; falling back to a full node snapshot.`
-- `Incoming managed share reconciliation failed for mega:acct-mega-dev2-iphone-phone: MEGA API error -3.`
+Desktop share states after the failed proof:
 
-So desktop -> phone still is not reliable on the patched branch.
+- recipient `share-mega-1-749d88`: `syncing`, detail `Refreshing the MEGA readonly mirror.`
+- owner `share-mega-2-e9bfdd`: `ready`, detail `MEGA temporarily asked Nearbytes to retry owner sync. The local writable mirror stays available and the next sync cycle will retry automatically.`
+- owner diagnostic code: `MEGA_OWNER_SYNC_RETRYING`
 
-### 3. Phone -> desktop still is not proven despite the owner retry work
+This suggests owner publication is not landing cleanly enough to produce observable convergence.
 
-The latest fresh phone write:
+### 4. Phone logs still show repeated partial-tree fallback churn
 
-- `nearbytes-phone-sync-1776633226.txt`
-- phone upload completed with commit status `acknowledged`
-- desktop `/open` still did not list it after 6s
+Recent phone backend log patterns during the failed proof window:
 
-So the owner-side fixes are still incomplete for fresh phone-authored writes too.
+- repeated `MEGA sc channel event received`
+- repeated `MEGA partial tree fetch failed; falling back to a full node snapshot`
+- repeated `MEGA partial tree decryption missed the requested root; falling back to a full node snapshot`
+
+This strongly suggests the phone recipient refresh path remains unstable under current live conditions.
+
+### 5. Probe endpoints are still empty for the failed proof window
+
+Observed during this pass:
+
+- desktop `__debug/integrations/shares/share-mega-2-e9bfdd/upload-probes` returned `{"probes":[]}`
+- phone `__debug/integrations/shares/share-mega-1-046172/receive-probes` returned `{"probes":[]}`
+
+Interpretation:
+
+- either the fresh writes are not entering the tracked MEGA publication / receipt path at all
+- or the wrong share/path is being exercised and the current probe plumbing is not observing the live path that actually matters
+
+### 6. Recent filename-specific log searches were not useful
+
+Searching desktop and phone logs for the failed proof filenames and blob hashes did not return direct hits for the fresh files. That means filename search is not currently enough to prove where the path dies.
+
+## Current Best Hypotheses
+
+1. The live write path is still bypassing or missing the code path that records upload probes and/or receive probes.
+2. Owner publication may still be getting stuck in retry scheduling before the fresh event becomes recipient-visible.
+3. Recipient refresh may be seeing SC events but failing to materialize the new content due to the repeated partial-tree fallback / wrong-root behavior.
+4. Since both directions now fail, there may be a shared missing step in fresh event publication or fresh event ingestion rather than a one-sided desktop-only bug.
 
 ## Relevant Files
 
-### Phone owner publication path
+Primary code under suspicion:
 
+- `src/integrations/mega.ts`
 - `src/integrations/managedShares.ts`
-- `src/integrations/mega.ts`
-- `ui/src/lib/host/embeddedPhoneServices.ts`
-
-### Desktop/server owner runtime-source bridge
-
 - `src/server/megaOwnerMirrorSource.ts`
-- `src/integrations/mega.ts`
+- `ui/src/lib/host/embeddedPhoneServices.ts`
+- `src/integrations/providerRefreshWorker.ts`
+- `scripts/dev-2-iphone-mega.mjs`
+- `scripts/lib/dev-orchestration.mjs`
 
-## Fixes In Progress
+Routes and debug plumbing already consulted:
 
-Current implementation direction:
+- `src/server/routes.ts`
 
-1. Treat `File not found: blocks/...` as a transient managed-share local-write failure so the event-scoped retry path runs instead of dropping the push.
-2. Add a short in-process retry when the runtime-source event uploader cannot read a referenced `blocks/*` file immediately after the channel event write.
-3. Preserve `AbortError` identity when owner-sync phase errors are wrapped, so deliberate sync preemption stays transient instead of surfacing as a hard owner-sync failure.
-4. Treat top-level fetched `blocks` and mismatched shared-root names as canonical recipient paths so immediate readonly apply survives recipient handle-namespace mismatch.
+## Concrete Next Steps
 
-What still appears necessary:
+1. Trace the exact live path for one fresh failed file from upload to MEGA publish attempt to recipient refresh attempt. Do not rely only on filename grep.
+2. Instrument or inspect where upload probes are supposed to be written and why they stayed empty for `share-mega-2-e9bfdd`.
+3. Instrument or inspect where receive probes are supposed to be written and why they stayed empty for `share-mega-1-046172`.
+4. Determine whether the owner `MEGA_OWNER_SYNC_RETRYING` state corresponds to failed upload reservation, failed upload commit, failed post-upload refresh, or a later retry scheduler event.
+5. Determine whether phone-side repeated partial-tree fallback is failing before content ingestion or after seeing the new remote state.
+6. Once one direction is understood, rerun the same live `Test4` proof immediately rather than relying on historical assumptions.
 
-1. Strengthen owner runtime-source block visibility handling beyond the current short retry window.
-2. Understand why the phone recipient keeps hitting MEGA partial-tree `-3` failures often enough to miss fresh events.
+## Live Validation Recipe
 
-## Targeted Validation
-
-Tests to run after the patch:
-
-- `yarn test src/integrations/__tests__/managedShares.test.ts`
-- `yarn test src/integrations/__tests__/megaAdapter.test.ts`
-
-Live validation to rerun after tests:
+Use the real stack only:
 
 1. Start `yarn dev-2-iphone-mega --no-wipe`
-2. Open hub `APM26` on the phone app
-3. Upload a fresh file from desktop and verify it appears on phone
-4. Upload a fresh file from phone and verify it appears on desktop
-5. Capture a fresh simulator screenshot if the phone surface is correct
+2. Confirm both desktop and phone can `POST /open` for `Test4`
+3. Upload a fresh file from desktop and poll phone for up to 90s
+4. Upload a fresh file from phone and poll desktop for up to 90s
+5. Inspect share states and logs immediately after each failed proof
+6. Do not claim progress as completion unless a fresh live file appears on the opposite device
