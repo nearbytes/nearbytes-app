@@ -409,7 +409,7 @@ export function seedManualTestConfig({
   );
 }
 
-function repairManagedShareSourcesFromState({ rootsConfigPath, integrationStatePath }) {
+export function repairManagedShareSourcesFromState({ rootsConfigPath, integrationStatePath }) {
   if (!integrationStatePath || !existsSync(rootsConfigPath) || !existsSync(integrationStatePath)) {
     return;
   }

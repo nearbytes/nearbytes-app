@@ -1482,6 +1482,24 @@ async function resolveEmbeddedPhoneAttachedVolumeIds(
   );
 }
 
+function normalizeEmbeddedPhoneReferencedBlockPath(blockRef: string): string | null {
+  const normalizedBlockRef = blockRef.trim().toLowerCase().replace(/\.bin$/u, '');
+  if (!normalizedBlockRef) {
+    return null;
+  }
+  const relativePath = normalizeStoragePath(`blocks/${normalizedBlockRef}.bin`);
+  return parseCanonicalBlockRelativePath(relativePath) ? relativePath : null;
+}
+
+async function embeddedPhoneMirrorPathExists(path: string): Promise<boolean> {
+  const normalizedPath = normalizeStoragePath(path);
+  if (await getRecord(normalizedPath)) {
+    return true;
+  }
+  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  return storage.exists(normalizedPath);
+}
+
 const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
   async listMirrorFiles(share): Promise<readonly string[]> {
     const attachedVolumeIds = await resolveEmbeddedPhoneAttachedVolumeIds(share);
@@ -1501,7 +1519,10 @@ const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
           const serialized = JSON.parse(new TextDecoder().decode(bytes)) as import('../../../../src/types/events.js').SerializedEvent;
           const parsed = deserializeEvent(serialized);
           for (const blockHash of parsed.envelope.blockRefs) {
-            referencedBlockPaths.add(`blocks/${blockHash}`);
+            const referencedBlockPath = normalizeEmbeddedPhoneReferencedBlockPath(blockHash);
+            if (referencedBlockPath) {
+              referencedBlockPaths.add(referencedBlockPath);
+            }
           }
         } catch {
           // Skip malformed historical records instead of blocking current live publication.
@@ -1509,7 +1530,7 @@ const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
       }
     }
     for (const normalizedPath of referencedBlockPaths) {
-      if (await storage.exists(normalizedPath)) {
+      if (await embeddedPhoneMirrorPathExists(normalizedPath)) {
         mirrorPaths.add(normalizedPath);
       }
     }
@@ -1547,9 +1568,71 @@ function decodeEmbeddedPhoneBase64(value: string): Uint8Array {
   return bytes;
 }
 
+function normalizeEmbeddedPhoneNativeFetchUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' && parsed.hostname === 'w.api.mega.co.nz') {
+      parsed.protocol = 'https:';
+      return parsed.toString();
+    }
+  } catch {
+    return url;
+  }
+  return url;
+}
+
+export function embeddedPhoneNormalizeNativeFetchUrlForTests(url: string): string {
+  return normalizeEmbeddedPhoneNativeFetchUrl(url);
+}
+
+function shouldUseEmbeddedPhoneNativeFetchBridge(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'w.api.mega.co.nz') {
+      return false;
+    }
+  } catch {
+    return true;
+  }
+  return true;
+}
+
+export function embeddedPhoneShouldUseNativeFetchBridgeForTests(url: string): boolean {
+  return shouldUseEmbeddedPhoneNativeFetchBridge(url);
+}
+
 async function embeddedPhoneNativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const request = input instanceof Request ? input : new Request(input, init);
   const startedAt = Date.now();
+  const nativeUrl = normalizeEmbeddedPhoneNativeFetchUrl(request.url);
+  if (!shouldUseEmbeddedPhoneNativeFetchBridge(nativeUrl)) {
+    console.log('[embedded-phone-fetch] request started.', {
+      method: request.method,
+      url: nativeUrl,
+      hasBody: request.method !== 'GET' && request.method !== 'HEAD',
+      transport: 'web-fetch',
+    });
+    try {
+      const response = await globalThis.fetch(new Request(nativeUrl, request));
+      console.log('[embedded-phone-fetch] request completed.', {
+        method: request.method,
+        url: nativeUrl,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        transport: 'web-fetch',
+      });
+      return response;
+    } catch (error) {
+      console.warn('[embedded-phone-fetch] request failed.', {
+        method: request.method,
+        url: nativeUrl,
+        durationMs: Date.now() - startedAt,
+        message: error instanceof Error ? error.message : String(error),
+        transport: 'web-fetch',
+      });
+      throw error;
+    }
+  }
   const headers: Record<string, string> = {};
   request.headers.forEach((value, key) => {
     headers[key] = value;
@@ -1557,19 +1640,19 @@ async function embeddedPhoneNativeFetch(input: RequestInfo | URL, init?: Request
   const bodyBuffer = request.method === 'GET' || request.method === 'HEAD' ? null : await request.arrayBuffer();
   console.log('[embedded-phone-fetch] request started.', {
     method: request.method,
-    url: request.url,
+    url: nativeUrl,
     hasBody: bodyBuffer !== null,
   });
   try {
     const nativeResponse = await nativeLanHttpRequest({
-      url: request.url,
+      url: nativeUrl,
       method: request.method,
       headers,
       bodyBase64: bodyBuffer ? encodeEmbeddedPhoneBase64(new Uint8Array(bodyBuffer)) : undefined,
     });
     console.log('[embedded-phone-fetch] request completed.', {
       method: request.method,
-      url: request.url,
+      url: nativeUrl,
       status: nativeResponse.status,
       durationMs: Date.now() - startedAt,
     });
@@ -1580,7 +1663,7 @@ async function embeddedPhoneNativeFetch(input: RequestInfo | URL, init?: Request
   } catch (error) {
     console.warn('[embedded-phone-fetch] request failed.', {
       method: request.method,
-      url: request.url,
+      url: nativeUrl,
       durationMs: Date.now() - startedAt,
       message: error instanceof Error ? error.message : String(error),
     });
@@ -3028,7 +3111,7 @@ export async function embeddedPhoneOpenVolume(secret: string): Promise<OpenVolum
   await ensureEmbeddedPhonePendingCommitsDrained();
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
-    void rememberEmbeddedPhoneOpenedVolume(secret).catch(() => undefined);
+    await rememberEmbeddedPhoneOpenedVolume(secret);
     return {
       volumeId: bootstrapped.volumeId,
       fileCount: bootstrapped.files.length,
@@ -3056,7 +3139,7 @@ export async function embeddedPhoneListFiles(secret: string): Promise<ListFilesR
   await ensureEmbeddedPhonePendingCommitsDrained();
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
-    void rememberEmbeddedPhoneOpenedVolume(secret).catch(() => undefined);
+    await rememberEmbeddedPhoneOpenedVolume(secret);
     return {
       volumeId: bootstrapped.volumeId,
       files: bootstrapped.files,
@@ -3081,7 +3164,7 @@ export async function embeddedPhoneGetTimeline(secret: string): Promise<Timeline
   await ensureEmbeddedPhonePendingCommitsDrained();
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
-    void rememberEmbeddedPhoneOpenedVolume(secret).catch(() => undefined);
+    await rememberEmbeddedPhoneOpenedVolume(secret);
     return {
       volumeId: bootstrapped.volumeId,
       eventCount: bootstrapped.timeline.length,
@@ -3183,7 +3266,7 @@ export async function embeddedPhoneListChat(secret: string): Promise<VolumeChatS
   await ensureEmbeddedPhonePendingCommitsDrained();
   const bootstrapped = await readBootstrappedEmbeddedPhoneMirror(secret);
   if (bootstrapped) {
-    void rememberEmbeddedPhoneOpenedVolume(secret).catch(() => undefined);
+    await rememberEmbeddedPhoneOpenedVolume(secret);
     return buildEmbeddedPhoneChatStateFromTimeline(bootstrapped.timeline);
   }
   await rememberEmbeddedPhoneOpenedVolume(secret);

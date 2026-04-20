@@ -16,6 +16,7 @@ import {
   loadDotEnvIfPresent,
   normalize,
   parseWipeMode,
+  repairManagedShareSourcesFromState,
   repoRoot,
   requestJson,
   seedManualTestConfig,
@@ -297,6 +298,14 @@ try {
     }));
     await removeRecipientMegaShares(desktopApiUrl, desktopHeaders);
     await removeRecipientMegaShares(phoneApiUrl);
+    repairManagedShareSourcesFromState({
+      rootsConfigPath: desktopPaths.rootsConfigPath,
+      integrationStatePath: desktopPaths.integrationStatePath,
+    });
+    repairManagedShareSourcesFromState({
+      rootsConfigPath: phonePaths.rootsConfigPath,
+      integrationStatePath: phonePaths.integrationStatePath,
+    });
     console.error('[dev-2-iphone-mega] wipe completed');
   } else {
     console.error('[dev-2-iphone-mega] wipe skipped by user; continuing with connected instances');

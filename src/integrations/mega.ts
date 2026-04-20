@@ -1376,7 +1376,7 @@ export class MegaTransportAdapter {
           );
           for (const blockPath of referencedBlockPaths) {
             const blockBytes = await this.readManagedShareUploadBytesWithRetry(share, blockPath);
-            await adapter.upload(blockPath, blockBytes, { waitForVisibility: false });
+            await adapter.upload(blockPath, blockBytes, { waitForVisibility: true });
           }
           await adapter.upload(relativePath, eventBytes, { waitForVisibility: false });
         });
@@ -1892,15 +1892,6 @@ export class MegaTransportAdapter {
             await this.updateManifestCursor(share.id, actionBatch.scsn);
             this.shareScsn.set(share.id, actionBatch.scsn);
           }
-          if (!touchesShare) {
-            this.syncStates.set(share.id, {
-              status: 'ready',
-              detail: 'MEGA readonly mirror is up to date.',
-              badges: READONLY_BADGES,
-              lastSyncAt: this.runtime.now(),
-            });
-            return;
-          }
           if (await this.tryApplyRecipientActionPackets(
             share,
             account,
@@ -1916,6 +1907,15 @@ export class MegaTransportAdapter {
             },
             session,
           )) {
+            return;
+          }
+          if (!touchesShare) {
+            this.syncStates.set(share.id, {
+              status: 'ready',
+              detail: 'MEGA readonly mirror is up to date.',
+              badges: READONLY_BADGES,
+              lastSyncAt: this.runtime.now(),
+            });
             return;
           }
         } catch (error) {
@@ -2747,7 +2747,11 @@ export class MegaTransportAdapter {
       )
     ).sort(compareOwnerMirrorRelativePaths);
 
-    const syncRuntimeSourcePath = async (relativePath: string, bytes?: Uint8Array): Promise<void> => {
+    const syncRuntimeSourcePath = async (
+      relativePath: string,
+      bytes?: Uint8Array,
+      options: { readonly waitForVisibility?: boolean } = {}
+    ): Promise<void> => {
       if (syncedPaths.has(relativePath)) {
         activePaths.add(relativePath);
         return;
@@ -2781,7 +2785,7 @@ export class MegaTransportAdapter {
         syncedPaths.add(relativePath);
         return;
       }
-      await adapter.upload(relativePath, fileBytes, { waitForVisibility: false });
+      await adapter.upload(relativePath, fileBytes, { waitForVisibility: options.waitForVisibility === true });
       uploaded.push(relativePath);
       syncedPaths.add(relativePath);
       remoteStateNeedsRefresh = true;
@@ -2809,7 +2813,8 @@ export class MegaTransportAdapter {
         let deferredChannelUpload = false;
         for (const blockPath of referencedBlockPaths) {
           try {
-            await syncRuntimeSourcePath(blockPath);
+            const blockBytes = await this.readManagedShareUploadBytesWithRetry(share, blockPath);
+            await syncRuntimeSourcePath(blockPath, blockBytes, { waitForVisibility: true });
           } catch (error) {
             if (isRuntimeSourceMirrorFileMissing(error)) {
               skipped.push(relativePath);
@@ -2889,12 +2894,7 @@ export class MegaTransportAdapter {
 
     const session = deserializeSession(secret, account.email ?? account.label);
     this.accountIdByUserHandle.set(session.userHandle, account.id);
-    if (!this.accountShareKeyCache.has(session.userHandle)) {
-      const persistedShareKeys = decodePersistedMegaShareKeys(secret.shareKeys);
-      if (persistedShareKeys.size > 0) {
-        this.accountShareKeyCache.set(session.userHandle, persistedShareKeys);
-      }
-    }
+    await this.loadPersistedShareKeysForSession(session);
     const validatedAt = this.accountSessionValidatedAt.get(account.id);
     if (typeof validatedAt === 'number' && this.runtime.now() - validatedAt < MEGA_SESSION_VALIDATION_CACHE_MS) {
       return session;
@@ -2933,6 +2933,41 @@ export class MegaTransportAdapter {
       }
       throw error;
     }
+  }
+
+  private async loadPersistedShareKeysForSession(
+    session: MegaSession,
+    options: {
+      readonly forceReload?: boolean;
+    } = {}
+  ): Promise<ReadonlyMap<string, Buffer> | undefined> {
+    const userHandle = session.userHandle.trim();
+    if (!userHandle) {
+      return undefined;
+    }
+
+    const cachedShareKeys = this.accountShareKeyCache.get(userHandle);
+    if (!options.forceReload && cachedShareKeys && cachedShareKeys.size > 0) {
+      return cachedShareKeys;
+    }
+
+    const accountId = this.accountIdByUserHandle.get(userHandle);
+    if (!accountId) {
+      return cachedShareKeys;
+    }
+
+    const secret = await this.runtime.secretStore.get<MegaAccountSecret>(secretKey(accountId));
+    if (!isStoredMegaAccountSecret(secret)) {
+      return cachedShareKeys;
+    }
+
+    const persistedShareKeys = decodePersistedMegaShareKeys(secret.shareKeys);
+    if (persistedShareKeys.size === 0) {
+      return cachedShareKeys;
+    }
+
+    this.accountShareKeyCache.set(userHandle, persistedShareKeys);
+    return persistedShareKeys;
   }
 
   private async refreshAccountSessionShared(
@@ -3943,16 +3978,16 @@ export class MegaTransportAdapter {
       const shareKeys = this.accountShareKeyCache.get(session.userHandle) ?? new Map<string, Buffer>();
       let appliedCount = 0;
 
-      const deletedHandles = await this.applyRecipientDeletionPackets(
+      const deletionResult = await this.applyRecipientDeletionPackets(
         share,
         rootHandle,
         actionBatch.packets,
         nextEntries,
         handlePathIndex,
       );
-      appliedCount += deletedHandles.size;
+      appliedCount += deletionResult.deletedHandles.size;
 
-      const directlyAppliedCount = await this.applyRecipientPacketNodes(
+      const directlyAppliedResult = await this.applyRecipientPacketNodes(
         share,
         session,
         rootHandle,
@@ -3962,9 +3997,10 @@ export class MegaTransportAdapter {
         shareKeys,
         baseProbeContext,
       );
-      appliedCount += directlyAppliedCount;
+      appliedCount += directlyAppliedResult.appliedCount;
+      let contentApplied = deletionResult.contentApplied || directlyAppliedResult.contentApplied;
 
-      let pendingHandles = handles.filter((handle) => !deletedHandles.has(handle));
+      let pendingHandles = handles.filter((handle) => !deletionResult.deletedHandles.has(handle));
       while (pendingHandles.length > 0) {
         let progressedThisPass = false;
         const deferredHandles: string[] = [];
@@ -3988,11 +4024,12 @@ export class MegaTransportAdapter {
               scsn: baseProbeContext?.scsn ?? actionBatch.scsn?.trim(),
             }
           );
-          if (!applied) {
+          if (!applied.applied) {
             deferredHandles.push(handle);
             continue;
           }
           appliedCount += 1;
+          contentApplied ||= applied.contentApplied;
           progressedThisPass = true;
         }
         if (!progressedThisPass) {
@@ -4003,6 +4040,14 @@ export class MegaTransportAdapter {
 
       if (appliedCount === 0) {
         debugMegaLog('[MEGA:immediate-apply] no candidate handle could be applied.', {
+          shareId: share.id,
+          rootHandle,
+          handles,
+        });
+        return false;
+      }
+      if (!contentApplied) {
+        debugMegaLog('[MEGA:immediate-apply] only container updates were applied; falling back to full sync.', {
           shareId: share.id,
           rootHandle,
           handles,
@@ -4066,13 +4111,14 @@ export class MegaTransportAdapter {
     packets: readonly Record<string, unknown>[],
     entries: Record<string, ProviderRefreshManifestEntry>,
     handlePathIndex: Map<string, string>,
-  ): Promise<Set<string>> {
+  ): Promise<{ deletedHandles: Set<string>; contentApplied: boolean }> {
     const deletedHandles = collectRecipientDeletedPacketHandles(packets, rootHandle);
     if (deletedHandles.length === 0) {
-      return new Set();
+      return { deletedHandles: new Set(), contentApplied: false };
     }
 
     const appliedHandles = new Set<string>();
+    let contentApplied = false;
     for (const handle of deletedHandles) {
       const relativePath = handlePathIndex.get(handle);
       if (!relativePath) {
@@ -4085,6 +4131,9 @@ export class MegaTransportAdapter {
       await (await getMegaNodeFs()).rm(path.join(share.localPath, relativePath), { recursive: true, force: true }).catch(() => undefined);
       this.publishReactiveMirrorEvent(relativePath);
       appliedHandles.add(handle);
+      if (!isRecipientMirrorContainerPath(relativePath)) {
+        contentApplied = true;
+      }
       debugMegaLog('[MEGA:immediate-apply] removed recipient path from delete action packet.', {
         shareId: share.id,
         rootHandle,
@@ -4094,7 +4143,7 @@ export class MegaTransportAdapter {
       });
     }
 
-    return appliedHandles;
+    return { deletedHandles: appliedHandles, contentApplied };
   }
 
   private async applyRecipientHandleUpdate(
@@ -4105,7 +4154,7 @@ export class MegaTransportAdapter {
     entries: Record<string, ProviderRefreshManifestEntry>,
     handlePathIndex: Map<string, string>,
     probeContext: MegaRecipientProbeContext
-  ): Promise<boolean> {
+  ): Promise<{ applied: boolean; contentApplied: boolean }> {
     let fetchStartedAt = this.runtime.now();
     let fetched;
     try {
@@ -4122,7 +4171,7 @@ export class MegaTransportAdapter {
           handle,
           message: error instanceof Error ? error.message : String(error),
         });
-        return false;
+        return { applied: false, contentApplied: false };
       }
       throw error;
     }
@@ -4134,7 +4183,7 @@ export class MegaTransportAdapter {
         handle,
         fetchedRootHandle: fetched.tree.root.handle,
       });
-      return false;
+      return { applied: false, contentApplied: false };
     }
     let baseRelativePath = resolveRecipientFetchedNodePath(
       fetched.tree.root,
@@ -4168,7 +4217,7 @@ export class MegaTransportAdapter {
             parentHandle: fetched.tree.root.parentHandle,
             message: error instanceof Error ? error.message : String(error),
           });
-          return false;
+          return { applied: false, contentApplied: false };
         }
         throw error;
       }
@@ -4194,7 +4243,7 @@ export class MegaTransportAdapter {
         knownParentPath: fetched.tree.root.parentHandle ? handlePathIndex.get(fetched.tree.root.parentHandle) : undefined,
         knownHandlePath: handlePathIndex.get(fetched.tree.root.handle),
       });
-      return false;
+      return { applied: false, contentApplied: false };
     }
 
     const resolvedProbeContext: MegaRecipientProbeContext = {
@@ -4202,9 +4251,10 @@ export class MegaTransportAdapter {
       fetchStartedAt,
       fetchCompletedAt,
     };
+    let contentApplied = false;
 
     if (!isMirrorContainer && !isMirrorRoot) {
-      await this.applyRecipientFetchedNode(
+      contentApplied = await this.applyRecipientFetchedNode(
         share,
         session,
         fetched.tree.root,
@@ -4219,7 +4269,7 @@ export class MegaTransportAdapter {
       if (!isMirrorRelativePath(fullRelativePath)) {
         return;
       }
-      await this.applyRecipientFetchedNode(
+      contentApplied = (await this.applyRecipientFetchedNode(
         share,
         session,
         node,
@@ -4227,9 +4277,9 @@ export class MegaTransportAdapter {
         entries,
         handlePathIndex,
         resolvedProbeContext
-      );
+      )) || contentApplied;
     });
-    return true;
+    return { applied: true, contentApplied };
   }
 
   private async applyRecipientPacketNodes(
@@ -4241,10 +4291,10 @@ export class MegaTransportAdapter {
     handlePathIndex: Map<string, string>,
     shareKeys: ReadonlyMap<string, Buffer>,
     baseProbeContext?: MegaRecipientProbeContext,
-  ): Promise<number> {
+  ): Promise<{ appliedCount: number; contentApplied: boolean }> {
     const packetNodes = collectRecipientImmediatePacketNodes(packets);
     if (packetNodes.length === 0) {
-      return 0;
+      return { appliedCount: 0, contentApplied: false };
     }
 
     const usersByHandle = buildMegaUsersByHandleFromActionPackets(packets);
@@ -4257,7 +4307,7 @@ export class MegaTransportAdapter {
       packetNodesByHandle.set(decrypted.handle, decrypted);
     }
     if (packetNodesByHandle.size === 0) {
-      return 0;
+      return { appliedCount: 0, contentApplied: false };
     }
 
     const resolvedNodes = [...packetNodesByHandle.values()]
@@ -4281,6 +4331,7 @@ export class MegaTransportAdapter {
     });
 
     let appliedCount = 0;
+    let contentApplied = false;
     for (const { node, relativePath } of resolvedNodes) {
       const probeContext: MegaRecipientProbeContext = {
         ...baseProbeContext,
@@ -4292,7 +4343,7 @@ export class MegaTransportAdapter {
         fetchStartedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
         fetchCompletedAt: baseProbeContext?.packetReceivedAt ?? this.runtime.now(),
       };
-      await this.applyRecipientFetchedNode(
+      contentApplied = (await this.applyRecipientFetchedNode(
         share,
         session,
         node,
@@ -4300,11 +4351,11 @@ export class MegaTransportAdapter {
         entries,
         handlePathIndex,
         probeContext
-      );
+      )) || contentApplied;
       appliedCount += 1;
     }
 
-    return appliedCount;
+    return { appliedCount, contentApplied };
   }
 
   private async applyRecipientFetchedNode(
@@ -4315,9 +4366,9 @@ export class MegaTransportAdapter {
     entries: Record<string, ProviderRefreshManifestEntry>,
     handlePathIndex: Map<string, string>,
     probeContext: MegaRecipientProbeContext
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!shouldApplyRecipientMirrorPath(share, relativePath)) {
-      return;
+      return false;
     }
     const existingPath = handlePathIndex.get(node.handle);
     if (existingPath && existingPath !== relativePath) {
@@ -4331,7 +4382,7 @@ export class MegaTransportAdapter {
       await (await getMegaNodeFs()).mkdir(targetPath, { recursive: true });
       entries[relativePath] = createProviderRefreshManifestEntry(node);
       handlePathIndex.set(node.handle, relativePath);
-      return;
+      return false;
     }
 
     const nextEntry = createProviderRefreshManifestEntry(node);
@@ -4341,7 +4392,7 @@ export class MegaTransportAdapter {
       if (localFileExists) {
         entries[relativePath] = nextEntry;
         handlePathIndex.set(node.handle, relativePath);
-        return;
+        return true;
       }
     }
 
@@ -4386,6 +4437,7 @@ export class MegaTransportAdapter {
     });
     entries[relativePath] = nextEntry;
     handlePathIndex.set(node.handle, relativePath);
+    return true;
   }
 
   private publishReactiveMirrorEvent(relativePath: string): void {
@@ -4820,6 +4872,16 @@ export class MegaTransportAdapter {
     if (cachedShareKeys) {
       for (const handle of shareHandleCandidates) {
         const shareKey = cachedShareKeys.get(handle);
+        if (shareKey) {
+          return { shareHandle: handle, shareKey: Buffer.from(shareKey) };
+        }
+      }
+    }
+
+    const persistedShareKeys = await this.loadPersistedShareKeysForSession(session, { forceReload: true });
+    if (persistedShareKeys) {
+      for (const handle of shareHandleCandidates) {
+        const shareKey = persistedShareKeys.get(handle);
         if (shareKey) {
           return { shareHandle: handle, shareKey: Buffer.from(shareKey) };
         }

@@ -3364,7 +3364,12 @@ describe('MegaTransportAdapter', () => {
               headers: { 'content-type': 'application/json' },
             });
           case 'f': {
-            const requestedRoot = typeof payload.n === 'string' ? payload.n : undefined;
+            const requestedRoot =
+              typeof payload.n === 'string'
+                ? payload.n
+                : typeof payload.c === 'string'
+                  ? payload.c
+                  : undefined;
             const rootNodes = [
               {
                 h: shareHandle,
@@ -3758,7 +3763,7 @@ describe('MegaTransportAdapter', () => {
             });
           case 'f': {
             const requestedRoot = typeof payload.n === 'string' ? payload.n : undefined;
-            const nodes = [
+            const nodes: Array<Record<string, unknown>> = [
               {
                 h: driveHandle,
                 t: 1,
@@ -3849,6 +3854,82 @@ describe('MegaTransportAdapter', () => {
     expect(shareCrypto?.shareHandle).toBe(shareHandle);
     expect(shareCrypto?.shareKey).toEqual(shareKey);
   });
+
+    it('reloads persisted owner share keys when the in-memory cache misses', async () => {
+      const secretStore = createMemorySecretStore();
+      const email = 'owner-persisted@example.com';
+      const userHandle = 'ownrps001';
+      const shareHandle = 'cIVQ2bjB';
+      const shareKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+      const masterKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+
+      await secretStore.set('provider-account:mega:acct-mega-owner-persisted', {
+        email,
+        password: 'secret',
+        sid: 'sid-owner-persisted',
+        masterKey: encodeMegaBase64Url(masterKey),
+        userHandle,
+        accountVersion: 2,
+        shareKeys: {
+          [shareHandle]: encodeMegaBase64Url(shareKey),
+        },
+      });
+
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/cs?id=')) {
+          const body = typeof init?.body === 'string' ? JSON.parse(init.body) : [];
+          const payload = Array.isArray(body) ? body[0] : body;
+          switch (payload.a) {
+            case 'ug':
+              return new Response(JSON.stringify([{ u: userHandle, email }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            default:
+              throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+          }
+        }
+        throw new Error(`Unexpected request URL: ${url}`);
+      }) as typeof fetch;
+
+      const runtime = createIntegrationRuntime({
+        secretStore,
+        mega: {
+          remoteBasePath: '/nearbytes',
+          syncIntervalMs: 60_000,
+        },
+        logger: {
+          log() {},
+          warn() {},
+        },
+      });
+      const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+      const adapterInternal = adapter as unknown as {
+        getAccountSession(account: ProviderAccount): Promise<unknown>;
+        resolveOwnerShareCryptoContext(session: unknown, root: unknown): Promise<{ shareHandle: string; shareKey: Buffer } | undefined>;
+        accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+      };
+
+      const account: ProviderAccount = {
+        id: 'acct-mega-owner-persisted',
+        provider: 'mega',
+        label: 'MEGA',
+        email,
+        state: 'connected',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      const session = await adapterInternal.getAccountSession(account);
+      const root = { root: { handle: shareHandle, shareHandle } };
+      adapterInternal.accountShareKeyCache.delete(userHandle);
+
+      const shareCrypto = await adapterInternal.resolveOwnerShareCryptoContext(session, root);
+
+      expect(shareCrypto?.shareHandle).toBe(shareHandle);
+      expect(shareCrypto?.shareKey).toEqual(shareKey);
+      expect(adapterInternal.accountShareKeyCache.get(userHandle)?.get(shareHandle)).toEqual(shareKey);
+    });
   
   it('deduplicates concurrent automatic MEGA session refresh attempts', async () => {
     const secretStore = createMemorySecretStore();
@@ -4324,7 +4405,7 @@ describe('MegaTransportAdapter', () => {
           case 'f': {
             treeFetchCount += 1;
             const requestedRoot = typeof payload.n === 'string' ? payload.n : undefined;
-            const nodes = [
+            const nodes: Array<Record<string, unknown>> = [
               {
                 h: driveHandle,
                 t: 1,
@@ -4532,7 +4613,7 @@ describe('MegaTransportAdapter', () => {
             });
           case 'f': {
             const requestedRoot = typeof payload.n === 'string' ? payload.n : undefined;
-            const nodes = [
+            const nodes: Array<Record<string, unknown>> = [
               {
                 h: driveHandle,
                 t: 1,
@@ -4917,6 +4998,10 @@ describe('MegaTransportAdapter', () => {
     const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
     const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
     const uploadedPaths: string[] = [];
+    const uploadedFiles = new Map<
+      string,
+      { handle: string; parentHandle: string; size: number; attributes: string; nodeKey: Buffer }
+    >();
 
     await secretStore.set('provider-account:mega:acct-mega-owner-runtime-event-deps', {
       email,
@@ -4971,6 +5056,14 @@ describe('MegaTransportAdapter', () => {
                       a: encryptAttributes('channels', channelsNodeKey),
                       k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
                     },
+                    ...Array.from(uploadedFiles.values()).map((entry) => ({
+                      h: entry.handle,
+                      p: entry.parentHandle,
+                      t: 0,
+                      s: entry.size,
+                      a: entry.attributes,
+                      k: encryptNodeKey(entry.nodeKey, shareKey, shareHandle),
+                    })),
                   ],
                   s: [{ h: shareHandle, u: 'peer00001', r: 0, ts: 1710000000 }],
                   u: [{ u: 'peer00001', m: 'peer@example.com' }],
@@ -4989,7 +5082,30 @@ describe('MegaTransportAdapter', () => {
             });
           case 'p': {
             const parentHandle = typeof payload.t === 'string' ? payload.t : '';
+            const nodes = Array.isArray(payload.n) ? payload.n : [];
+            const node = nodes[0] && typeof nodes[0] === 'object' ? (nodes[0] as Record<string, unknown>) : null;
+            const handle = typeof node?.h === 'string' ? node.h : `uploadtok-${uploadedPaths.length}`;
+            const attributes = typeof node?.a === 'string' ? node.a : '';
+            const cr = Array.isArray(payload.cr) ? payload.cr : [];
+            const records = Array.isArray(cr[2]) ? cr[2] : [];
+            const encodedShareKeyRecord = typeof records[2] === 'string' ? records[2] : '';
+            const nodeKey = encodedShareKeyRecord
+              ? decryptAesEcb(decodeMegaBase64Url(encodedShareKeyRecord), shareKey)
+              : Buffer.alloc(32);
+            const relativePath =
+              parentHandle === channelsHandle
+                ? 'channels/runtime.bin'
+                : uploadedPaths.length === 0
+                  ? `blocks/${blockHash}.bin`
+                  : 'blocks/runtime.bin';
             uploadedPaths.push(parentHandle === channelsHandle ? 'channels/runtime.bin' : 'blocks/runtime.bin');
+            uploadedFiles.set(relativePath, {
+              handle,
+              parentHandle,
+              size: relativePath === 'channels/runtime.bin' ? eventBytes.length : blockBytes.length,
+              attributes,
+              nodeKey,
+            });
             return new Response(JSON.stringify([{}]), {
               status: 200,
               headers: { 'content-type': 'application/json' },
@@ -5087,6 +5203,264 @@ describe('MegaTransportAdapter', () => {
       'blocks/runtime.bin',
     ]);
     expect(uploadedPaths).toEqual(['blocks/runtime.bin', 'channels/runtime.bin', 'blocks/runtime.bin']);
+  });
+
+  it('waits for referenced runtime-source blocks to become visible before publishing a channel event', async () => {
+    vi.useFakeTimers();
+    const secretStore = createMemorySecretStore();
+    const email = 'owner@example.com';
+    const userHandle = 'owner001';
+    const driveHandle = 'root0001';
+    const shareHandle = 'nearbyt0';
+    const blocksHandle = 'blocks01';
+    const channelsHandle = 'chans001';
+    const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const shareKey = Buffer.from('0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'hex');
+    const driveNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const rootNodeKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+    const channelsNodeKey = Buffer.from('2233445566778899aabbccddeeff0011', 'hex');
+    const uploadedPaths: string[] = [];
+    const visibleBlockPaths = new Set<string>();
+    const visibleChannelPaths = new Set<string>();
+    const uploadedFiles = new Map<
+      string,
+      { handle: string; parentHandle: string; size: number; attributes: string; encryptedNodeKey: string }
+    >();
+    let blockVisibilityPolls = 0;
+
+    await secretStore.set('provider-account:mega:acct-mega-owner-runtime-block-visibility', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(masterKey),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    const blockHash = '38cc41f2bdd578c2fe3c50bbefaedc86dcf8fbb4a9839458a28f67f6d350bb1a';
+    const cryptoOps = createCryptoOperations();
+    const volumeKeyPair = await cryptoOps.deriveKeys(createSecret('mega-runtime-owner-block-visibility'));
+    const storedEvent = await createSignedEvent(
+      cryptoOps,
+      volumeKeyPair,
+      {
+        type: EventType.CREATE_FILE,
+        fileName: 'patched-embedded-phone-proof.txt',
+        hash: blockHash as any,
+        encryptedKey: createEncryptedData(new Uint8Array([1, 2, 3])),
+        contentType: 'b',
+        size: 30,
+        mimeType: 'text/plain',
+        createdAt: 1776717155573,
+      },
+      [blockHash as any]
+    );
+    const eventBytes = new TextEncoder().encode(JSON.stringify(serializeEvent(storedEvent)));
+    const blockBytes = new Uint8Array([4, 5, 6, 7]);
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://g.api.mega.co.nz/cs?')) {
+        const payload = JSON.parse(String(init?.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f': {
+            const requestedRoot = typeof payload.n === 'string' ? payload.n : undefined;
+            if (requestedRoot === blocksHandle) {
+              blockVisibilityPolls += 1;
+              if (blockVisibilityPolls >= 2) {
+                visibleBlockPaths.add(`blocks/${blockHash}.bin`);
+              }
+            }
+            const nodes: Array<Record<string, unknown>> = [
+              {
+                h: driveHandle,
+                p: '',
+                t: 2,
+                a: encryptAttributes('Cloud Drive', driveNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(driveNodeKey, masterKey)),
+              },
+              {
+                h: shareHandle,
+                p: driveHandle,
+                t: 1,
+                a: encryptAttributes('nearbytes', rootNodeKey),
+                k: `${userHandle}:${encodeMegaBase64Url(encryptAesEcb(rootNodeKey, masterKey))}`,
+                su: 'peer00001',
+              },
+              {
+                h: blocksHandle,
+                p: shareHandle,
+                t: 1,
+                a: encryptAttributes('blocks', blocksNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(blocksNodeKey, masterKey)),
+              },
+              {
+                h: channelsHandle,
+                p: shareHandle,
+                t: 1,
+                a: encryptAttributes('channels', channelsNodeKey),
+                k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
+              },
+            ];
+            if (visibleBlockPaths.has(`blocks/${blockHash}.bin`)) {
+              const uploadedBlock = uploadedFiles.get(`blocks/${blockHash}.bin`);
+              if (uploadedBlock) {
+                nodes.push({
+                  h: uploadedBlock.handle,
+                  p: uploadedBlock.parentHandle,
+                  t: 0,
+                  s: uploadedBlock.size,
+                  a: uploadedBlock.attributes,
+                  k: uploadedBlock.encryptedNodeKey,
+                });
+              }
+            }
+            if (visibleChannelPaths.has('channels/runtime.bin')) {
+              const uploadedChannel = uploadedFiles.get('channels/runtime.bin');
+              if (uploadedChannel) {
+                nodes.push({
+                  h: uploadedChannel.handle,
+                  p: uploadedChannel.parentHandle,
+                  t: 0,
+                  s: uploadedChannel.size,
+                  a: uploadedChannel.attributes,
+                  k: uploadedChannel.encryptedNodeKey,
+                });
+              }
+            }
+            const partialNodes = requestedRoot
+              ? nodes.filter((node) => node.h === requestedRoot || node.p === requestedRoot)
+              : nodes;
+            return new Response(
+              JSON.stringify([
+                {
+                  f: partialNodes,
+                  s: [{ h: shareHandle, u: 'peer00001', r: 0, ts: 1710000000 }],
+                  u: [{ u: 'peer00001', m: 'peer@example.com' }],
+                  sn: 'cursor-1',
+                },
+              ]),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }
+            );
+          }
+          case 'u':
+            return new Response(JSON.stringify([{ p: 'https://upload.test/file' }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'p': {
+            const parentHandle = typeof payload.t === 'string' ? payload.t : '';
+            const nodes = Array.isArray(payload.n) ? payload.n : [];
+            const node = nodes[0] && typeof nodes[0] === 'object' ? (nodes[0] as Record<string, unknown>) : null;
+            const handle = typeof node?.h === 'string' ? node.h : `uploadtok-${uploadedPaths.length}`;
+            const attributes = typeof node?.a === 'string' ? node.a : '';
+            const encryptedNodeKey = typeof node?.k === 'string' ? node.k : '';
+            const relativePath = parentHandle === channelsHandle ? 'channels/runtime.bin' : `blocks/${blockHash}.bin`;
+            if (parentHandle === channelsHandle && !visibleBlockPaths.has(`blocks/${blockHash}.bin`)) {
+              throw new Error('Channel event published before referenced block became visible.');
+            }
+            if (parentHandle === channelsHandle) {
+              visibleChannelPaths.add('channels/runtime.bin');
+              uploadedPaths.push('channels/runtime.bin');
+            } else {
+              uploadedPaths.push('blocks/runtime.bin');
+            }
+            uploadedFiles.set(relativePath, {
+              handle,
+              parentHandle,
+              size: relativePath === 'channels/runtime.bin' ? eventBytes.length : blockBytes.length,
+              attributes,
+              encryptedNodeKey,
+            });
+            return new Response(JSON.stringify([{}]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      if (url.startsWith('https://upload.test/file/0?d=')) {
+        return new Response(Buffer.from(`uploadtok-${uploadedPaths.length}`), { status: 200 });
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    }) as typeof fetch;
+
+    const ownerMirrorSource = {
+      listMirrorFiles: vi.fn(async () => [`blocks/${blockHash}.bin`, 'channels/runtime.bin']),
+      readMirrorFile: vi.fn(async (_share: ManagedShare, relativePath: string) => {
+        if (relativePath === 'channels/runtime.bin') {
+          return eventBytes;
+        }
+        if (relativePath === `blocks/${blockHash}.bin`) {
+          return blockBytes;
+        }
+        throw new Error(`Unexpected runtime-source read: ${relativePath}`);
+      }),
+    };
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+        ownerMirrorSource,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    (adapter as unknown as {
+      accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+    }).accountShareKeyCache.set(userHandle, new Map([[shareHandle, shareKey]]));
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-owner-runtime-block-visibility',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-owner-runtime-block-visibility',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'owner',
+      localPath: '/logical/nearbytes',
+      sourceId: 'src-mega-owner-runtime-block-visibility',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        remotePath: '/nearbytes',
+        shareName: 'nearbytes',
+      },
+      capabilities: ['mirror', 'read', 'write', 'invite'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const syncPromise = (adapter as any).syncOwnerShare(share, account);
+    await vi.runAllTimersAsync();
+    await expect(syncPromise).resolves.toBeUndefined();
+
+    expect(blockVisibilityPolls).toBeGreaterThanOrEqual(2);
+    expect(uploadedPaths).toEqual(['blocks/runtime.bin', 'channels/runtime.bin']);
+    vi.useRealTimers();
   });
 
   it('refreshes the owner root before recreating an existing runtime-source channel volume folder', async () => {
@@ -5355,6 +5729,18 @@ describe('MegaTransportAdapter', () => {
                       a: encryptAttributes('channels', channelsNodeKey),
                       k: encodeMegaBase64Url(encryptAesEcb(channelsNodeKey, masterKey)),
                     },
+                    ...(uploadedBlockVisible && uploadedBlockNode
+                      ? [
+                          {
+                            h: uploadedBlockNode.handle,
+                            p: uploadedBlockNode.parentHandle,
+                            t: 0,
+                            s: uploadedBlockNode.size,
+                            a: uploadedBlockNode.attributes,
+                            k: uploadedBlockNode.encryptedNodeKey,
+                          },
+                        ]
+                      : []),
                   ],
                   s: [{ h: shareHandle, u: 'peer00001', r: 0, ts: 1710000000 }],
                   u: [{ u: 'peer00001', m: 'peer@example.com' }],
@@ -5373,6 +5759,18 @@ describe('MegaTransportAdapter', () => {
             });
           case 'p': {
             const parentHandle = typeof payload.t === 'string' ? payload.t : '';
+            if (parentHandle === blocksHandle) {
+              uploadedBlockVisible = true;
+              const nodes = Array.isArray(payload.n) ? payload.n : [];
+              const node = nodes[0] && typeof nodes[0] === 'object' ? (nodes[0] as Record<string, unknown>) : null;
+              uploadedBlockNode = {
+                handle: typeof node?.h === 'string' ? node.h : 'uploadedblk',
+                parentHandle,
+                size: blockBytes.length,
+                attributes: typeof node?.a === 'string' ? node.a : '',
+                encryptedNodeKey: typeof node?.k === 'string' ? node.k : '',
+              };
+            }
             uploadedPaths.push(parentHandle === channelsHandle ? 'channels/runtime.bin' : 'blocks/runtime.bin');
             return new Response(JSON.stringify([{}]), {
               status: 200,
@@ -5406,6 +5804,10 @@ describe('MegaTransportAdapter', () => {
     const eventBytes = new TextEncoder().encode(JSON.stringify(serializeEvent(storedEvent)));
     const blockBytes = new Uint8Array([4, 5, 6, 7]);
     let blockReadAttempts = 0;
+    let uploadedBlockVisible = false;
+    let uploadedBlockNode:
+      | { handle: string; parentHandle: string; size: number; attributes: string; encryptedNodeKey: string }
+      | undefined;
     const ownerMirrorSource = {
       listMirrorFiles: vi.fn(async () => []),
       readMirrorFile: vi.fn(async (_share: ManagedShare, relativePath: string) => {
@@ -5600,12 +6002,13 @@ describe('MegaTransportAdapter', () => {
               }
             );
           }
-          case 'u':
+          case 'u': {
             uploadReservationCount += 1;
             return new Response(JSON.stringify([{ p: 'https://upload.test/file' }]), {
               status: 200,
               headers: { 'content-type': 'application/json' },
             });
+          }
           case 'd':
             uploadedFiles.delete('channels/runtime.bin');
             return new Response(JSON.stringify([0]), {
@@ -6228,6 +6631,108 @@ describe('MegaTransportAdapter', () => {
     ]);
 
     expect(result).toBe('resolved');
+  });
+
+  it('tries recipient immediate-apply before skipping an incremental batch as unrelated', async () => {
+    const runtime = createIntegrationRuntime({
+      secretStore: createMemorySecretStore(),
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl: vi.fn() as typeof fetch });
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-recipient-incremental-apply',
+      provider: 'mega',
+      label: 'MEGA',
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const recipientShare: ManagedShare = {
+      id: 'share-mega-recipient-incremental-apply',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'nearbytes',
+      role: 'recipient',
+      localPath: '/tmp/mega-recipient-incremental-apply',
+      sourceId: 'src-mega-recipient-incremental-apply',
+      syncMode: 'mirror',
+      remoteDescriptor: { remotePath: 'owner@example.com:nearbytes', shareHandle: 'root0005', rootHandle: 'root0005' },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const session = {
+      sid: 'sid',
+      masterKey: Buffer.alloc(16, 1),
+      userHandle: 'user0001',
+      email: 'reader@example.com',
+    };
+
+    vi.spyOn(adapter as unknown as {
+      getAccountSession: (account: ProviderAccount, signal?: AbortSignal) => Promise<unknown>;
+    }, 'getAccountSession').mockResolvedValue(session);
+    vi.spyOn(adapter as unknown as {
+      resolveIncomingShareDescriptor: (
+        account: ProviderAccount,
+        descriptor: Record<string, unknown>,
+        options?: { forceRefresh?: boolean }
+      ) => Promise<Record<string, unknown>>;
+    }, 'resolveIncomingShareDescriptor').mockResolvedValue(recipientShare.remoteDescriptor);
+    vi.spyOn(adapter as unknown as {
+      loadManifest: (shareId: string) => Promise<unknown>;
+    }, 'loadManifest').mockResolvedValue({
+      rootHandle: 'root0005',
+      lastScsn: 'cursor-0',
+      entries: {},
+      knownHandles: [],
+      unsupportedTopLevelNames: [],
+    });
+    vi.spyOn(adapter as unknown as {
+      fetchActionPackets: (session: unknown, scsn: string, signal?: AbortSignal) => Promise<unknown>;
+    }, 'fetchActionPackets').mockResolvedValue({
+      scsn: 'cursor-1',
+      packets: [
+        {
+          a: 'u',
+          n: 'freshnode1',
+          h: 'freshnode1',
+          p: 'blocks0005',
+        },
+      ],
+    });
+    vi.spyOn(adapter as unknown as {
+      rememberActionPacketShareKeys: (session: unknown, packets: Record<string, unknown>[]) => Promise<number>;
+    }, 'rememberActionPacketShareKeys').mockResolvedValue(0);
+    vi.spyOn(adapter as unknown as {
+      updateManifestCursor: (shareId: string, scsn: string) => Promise<void>;
+    }, 'updateManifestCursor').mockResolvedValue();
+    const tryApplyRecipientActionPackets = vi.spyOn(adapter as unknown as {
+      tryApplyRecipientActionPackets: (
+        share: ManagedShare,
+        account: ProviderAccount,
+        rootHandle: string,
+        manifest: unknown,
+        actionBatch: unknown,
+        baseProbeContext?: unknown,
+        activeSession?: unknown,
+      ) => Promise<boolean>;
+    }, 'tryApplyRecipientActionPackets').mockResolvedValue(true);
+    const fetchPartialTreeWithSnapshot = vi.spyOn(adapter as unknown as {
+      fetchPartialTreeWithSnapshot: (session: unknown, rootHandle: string, signal?: AbortSignal) => Promise<unknown>;
+    }, 'fetchPartialTreeWithSnapshot');
+
+    await expect((adapter as unknown as {
+      syncShare: (share: ManagedShare, account: ProviderAccount, signal?: AbortSignal) => Promise<void>;
+    }).syncShare(recipientShare, account)).resolves.toBeUndefined();
+
+    expect(tryApplyRecipientActionPackets).toHaveBeenCalledTimes(1);
+    expect(fetchPartialTreeWithSnapshot).not.toHaveBeenCalled();
   });
 
   it('derives the authenticated sid from csid responses using MEGA-compatible encoding', async () => {
@@ -8028,7 +8533,7 @@ describe('MegaTransportAdapter', () => {
       }
     );
 
-    expect(applied).toBe(true);
+    expect(applied).toMatchObject({ applied: true, contentApplied: true });
     await expect(fs.readFile(path.join(localPath, 'channels', volumeId, fileName))).resolves.toEqual(fileBytes);
     expect(handlePathIndex.get(fileHandle)).toBe(`channels/${volumeId}/${fileName}`);
     expect(subtreeFetchCount).toBeGreaterThanOrEqual(2);
@@ -8437,7 +8942,7 @@ describe('MegaTransportAdapter', () => {
       }
     );
 
-    expect(applied).toBe(true);
+    expect(applied).toMatchObject({ applied: true, contentApplied: true });
     await expect(fs.readFile(path.join(localPath, 'blocks', fileName))).resolves.toEqual(fileBytes);
     expect(subtreeFetchCount).toBeGreaterThanOrEqual(2);
     expect(downloadRequestCount).toBe(1);
@@ -8754,7 +9259,7 @@ describe('MegaTransportAdapter', () => {
       await Promise.resolve();
 
       expect(vi.getTimerCount()).toBe(baselineTimerCount);
-      await expect(appliedPromise).resolves.toBe(true);
+      await expect(appliedPromise).resolves.toMatchObject({ applied: true, contentApplied: true });
       await expect(fs.readFile(path.join(localPath, 'blocks', fileName))).resolves.toEqual(fileBytes);
       expect(partialFetchCount).toBe(1);
       expect(fullFetchCount).toBeGreaterThanOrEqual(1);
@@ -8929,7 +9434,7 @@ describe('MegaTransportAdapter', () => {
       }
     );
 
-    expect(applied).toBe(false);
+    expect(applied).toMatchObject({ applied: false, contentApplied: false });
     expect(subtreeFetchCount).toBe(1);
 
     await adapter.detachManagedShare(share, account);
