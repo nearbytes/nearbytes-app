@@ -93,7 +93,7 @@ describe('createStorageBackedMegaOwnerMirrorSource', () => {
     )).resolves.toEqual(new Uint8Array([4, 5, 6]));
   });
 
-  it('treats default-volume owner destinations as attached even when the explicit volume policy omits them', async () => {
+  it('does not treat a recipient-managed volume as owner-attached through default-volume fallback', async () => {
     const storage = new MultiRootStorageBackend({
       ...STORAGE_CONFIG,
       sources: [
@@ -148,6 +148,73 @@ describe('createStorageBackedMegaOwnerMirrorSource', () => {
           destinations: [
             {
               sourceId: 'mega-recipient',
+              enabled: true,
+              storeEvents: true,
+              storeBlocks: true,
+              copySourceBlocks: true,
+              reservePercent: 5,
+              fullPolicy: 'block-writes',
+            },
+          ],
+        },
+      ],
+    });
+    const source = createStorageBackedMegaOwnerMirrorSource(storage);
+    const attachedVolumeId =
+      '041f3c3d23a0c9f2b013c83cd27c8417b42316160487d5556ab9820c4aa517e729fa78172e149ab57933f0a95e0d0b804bf9bc8e4ec12430c75e2d95f9b026f1e9';
+    const attachedEventHash = '841b1af5d9cf1245d6c2ff43eea3ea6835a36006c950fe2ba399b774d6afdf7d';
+
+    await storage.writeFile(`channels/${attachedVolumeId}/${attachedEventHash}.bin`, new Uint8Array([4, 5, 6]));
+
+    const files = await source.listMirrorFiles({
+      id: 'share-mega-owner',
+      sourceId: 'mega-owner',
+    });
+
+    expect(files).not.toContain(`channels/${attachedVolumeId}/${attachedEventHash}.bin`);
+  });
+
+  it('still treats default-volume owner destinations as attached when the explicit volume policy is local-only', async () => {
+    const storage = new MultiRootStorageBackend({
+      ...STORAGE_CONFIG,
+      sources: [
+        ...STORAGE_CONFIG.sources,
+        {
+          id: 'mega-owner',
+          provider: 'mega',
+          path: '/tmp/nearbytes-test-storage-owner',
+          enabled: true,
+          writable: true,
+          reservePercent: 5,
+          opportunisticPolicy: 'block-writes',
+          integration: {
+            kind: 'provider-managed',
+            provider: 'mega',
+            managedShareId: 'share-mega-owner',
+          },
+        },
+      ],
+      defaultVolume: {
+        destinations: [
+          ...STORAGE_CONFIG.defaultVolume.destinations,
+          {
+            sourceId: 'mega-owner',
+            enabled: true,
+            storeEvents: true,
+            storeBlocks: true,
+            copySourceBlocks: true,
+            reservePercent: 5,
+            fullPolicy: 'block-writes',
+          },
+        ],
+      },
+      volumes: [
+        {
+          volumeId:
+            '041f3c3d23a0c9f2b013c83cd27c8417b42316160487d5556ab9820c4aa517e729fa78172e149ab57933f0a95e0d0b804bf9bc8e4ec12430c75e2d95f9b026f1e9',
+          destinations: [
+            {
+              sourceId: 'local-main',
               enabled: true,
               storeEvents: true,
               storeBlocks: true,

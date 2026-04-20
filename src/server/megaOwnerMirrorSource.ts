@@ -4,6 +4,32 @@ import { normalizeStoragePath } from '../storage/pathRecord.js';
 import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from '../storage/integrity.js';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 
+function isExplicitlyClaimedByOtherProviderManagedSource(
+  storage: MultiRootStorageBackend,
+  volumeId: string,
+  shareSourceId: string
+): boolean {
+  const config = storage.getRootsConfig();
+  const volume = config.volumes.find((entry) => entry.volumeId.trim().toLowerCase() === volumeId);
+  if (!volume || volume.destinations.length === 0) {
+    return false;
+  }
+
+  const sourceById = new Map(config.sources.map((source) => [source.id, source]));
+  const explicitProviderManagedSourceIds = volume.destinations
+    .map((destination) => sourceById.get(destination.sourceId))
+    .filter((source): source is NonNullable<typeof source> => Boolean(source?.integration?.kind === 'provider-managed'))
+    .map((source) => source.id);
+
+  if (explicitProviderManagedSourceIds.length === 0) {
+    return false;
+  }
+  if (explicitProviderManagedSourceIds.includes(shareSourceId)) {
+    return false;
+  }
+  return true;
+}
+
 async function resolveAttachedVolumeIds(
   storage: MultiRootStorageBackend,
   share: MegaOwnerMirrorShareRef
@@ -17,15 +43,17 @@ async function resolveAttachedVolumeIds(
   if (!share.sourceId) {
     return new Set();
   }
+  const shareSourceId = share.sourceId;
   const config = storage.getRootsConfig();
-  // Keep the desktop/server owner mirror aligned with the canonical merged destination model from
-  // docs/specs/storage-integration-stack-v1.md: explicit volume destinations add to defaultVolume
-  // destinations, they do not replace them. Owner shares published via defaultVolume must still
-  // emit channels/* and blocks/* for attached volumes.
+  // Keep the owner runtime source aligned with merged default-volume routing for ordinary local
+  // volumes, but do not republish channels for a volume once that volume is explicitly claimed by
+  // another provider-managed share. Otherwise an adopted recipient volume can be echoed back out
+  // through the base owner publication path.
   return new Set(
     config.volumes
       .filter((volume) =>
-        resolveVolumeDestinations(config, volume.volumeId).some((destination) => destination.sourceId === share.sourceId)
+        resolveVolumeDestinations(config, volume.volumeId).some((destination) => destination.sourceId === shareSourceId) &&
+        !isExplicitlyClaimedByOtherProviderManagedSource(storage, volume.volumeId.trim().toLowerCase(), shareSourceId)
       )
       .map((volume) => volume.volumeId.trim().toLowerCase())
       .filter((volumeId) => volumeId.length > 0)

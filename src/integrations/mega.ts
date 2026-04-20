@@ -83,7 +83,7 @@ const MEGA_RATE_LIMIT_RETRY_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 18_
 const MEGA_TRANSIENT_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 const MEGA_TRANSIENT_SYNC_COOLDOWN_MS = 30_000;
 const MEGA_POST_UPLOAD_SETTLE_MS = 30_000;
-const MEGA_RUNTIME_SOURCE_BLOCK_READ_RETRY_DELAYS_MS = [50, 150, 350] as const;
+const MEGA_RUNTIME_SOURCE_BLOCK_READ_RETRY_DELAYS_MS = [75, 150, 300, 600, 1_200, 2_400, 4_000] as const;
 const MEGA_LOCAL_WATCH_DEBOUNCE_MS = 75;
 const MEGA_SC_LISTEN_TIMEOUT_MS = 90_000;
 const MEGA_DEV_INVENTORY_REFRESH_MIN_INTERVAL_MS = 60_000;
@@ -1341,7 +1341,7 @@ export class MegaTransportAdapter {
     try {
       const serialized = JSON.parse(Buffer.from(eventBytes).toString('utf8')) as import('../types/events.js').SerializedEvent;
       const parsed = deserializeEvent(serialized);
-      referencedBlockPaths = parsed.envelope.blockRefs.map((blockHash: string) => `blocks/${blockHash}`);
+      referencedBlockPaths = parsed.envelope.blockRefs.map((blockHash: string) => `blocks/${blockHash}.bin`);
     } catch {
       // Keep live publication moving even if an older event record cannot be parsed here.
     }
@@ -2792,6 +2792,7 @@ export class MegaTransportAdapter {
         {
           useCache: false,
           allowTransientFullFallback: options.allowTransientFullFallback,
+          fastPartialFallback: options.fastPartialFallback,
           extraShareKeys: cachedShareKeys,
           expectedRootName: options.expectedRootName,
         },
@@ -2809,6 +2810,7 @@ export class MegaTransportAdapter {
         {
           useCache: false,
           allowTransientFullFallback: options.allowTransientFullFallback,
+          fastPartialFallback: options.fastPartialFallback,
           extraShareKeys: this.accountShareKeyCache.get(session.userHandle),
           expectedRootName: options.expectedRootName,
         },
@@ -2865,8 +2867,7 @@ export class MegaTransportAdapter {
         if (
           !isMegaRetryableApiError(error) &&
           !isMegaRetryableTransportError(error) &&
-          !isMegaEventuallyConsistentMutationError(error) &&
-          !isMegaMissingRequestedRootError(error)
+          !isMegaEventuallyConsistentMutationError(error)
         ) {
           throw error;
         }
@@ -3838,7 +3839,7 @@ export class MegaTransportAdapter {
       fetched = await this.fetchPartialTreeWithRetry(session, handle, undefined, {
         allowTransientFullFallback: true,
         fastPartialFallback: true,
-        maxAttempts: 3,
+        maxAttempts: 1,
       });
     } catch (error) {
       if (isMegaMissingRequestedRootError(error) || (error as MegaApiError | undefined)?.code === -9) {
@@ -3874,7 +3875,7 @@ export class MegaTransportAdapter {
         fetched = await this.fetchPartialTreeWithRetry(session, fetched.tree.root.parentHandle, undefined, {
           allowTransientFullFallback: true,
           fastPartialFallback: true,
-          maxAttempts: 3,
+          maxAttempts: 1,
         });
       } catch (error) {
         if (isMegaMissingRequestedRootError(error) || (error as MegaApiError | undefined)?.code === -9) {

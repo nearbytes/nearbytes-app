@@ -4984,10 +4984,10 @@ describe('MegaTransportAdapter', () => {
         if (relativePath === 'channels/runtime.bin') {
           return eventBytes;
         }
-        if (relativePath === `blocks/${blockHash}`) {
+        if (relativePath === `blocks/${blockHash}.bin`) {
           blockReadAttempts += 1;
-          if (blockReadAttempts === 1) {
-            throw new Error(`File not found: blocks/${blockHash}`);
+          if (blockReadAttempts <= 4) {
+            throw new Error(`File not found: blocks/${blockHash}.bin`);
           }
           return blockBytes;
         }
@@ -5046,8 +5046,11 @@ describe('MegaTransportAdapter', () => {
 
     expect(ownerMirrorSource.readMirrorFile.mock.calls.map((call) => call[1])).toEqual([
       'channels/runtime.bin',
-      `blocks/${blockHash}`,
-      `blocks/${blockHash}`,
+      `blocks/${blockHash}.bin`,
+      `blocks/${blockHash}.bin`,
+      `blocks/${blockHash}.bin`,
+      `blocks/${blockHash}.bin`,
+      `blocks/${blockHash}.bin`,
     ]);
     expect(uploadedPaths).toEqual(['channels/runtime.bin', 'blocks/runtime.bin']);
   });
@@ -7527,6 +7530,370 @@ describe('MegaTransportAdapter', () => {
     await expect(fs.readFile(path.join(localPath, 'blocks', fileName))).resolves.toEqual(fileBytes);
     expect(subtreeFetchCount).toBeGreaterThanOrEqual(2);
     expect(downloadRequestCount).toBe(1);
+
+    await adapter.detachManagedShare(share, account);
+    await adapter.dispose();
+  });
+
+  it('falls back from a transient recipient partial fetch without waiting for MEGA lock retries', async () => {
+    vi.useFakeTimers();
+    try {
+      const email = 'reader@example.com';
+      const userHandle = 'usrhandle01';
+      const ownerHandle = 'owner000001';
+      const shareHandle = 'cIVQ2bjB';
+      const blocksHandle = 'blocks0001';
+      const fileHandle = 'file000099';
+      const masterKey = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+      const shareKey = Buffer.from('4f1e2d3c5b6a79888796a5b4c3d2e1f0', 'hex');
+      const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+      const blocksNodeKey = Buffer.from('11223344556677889900aabbccddeeff', 'hex');
+      const fileNodeKey = Buffer.from('00112233445566778899aabbccddeeff102132435465768798a9babbdcddf0f1', 'hex');
+      const fileBytes = Buffer.from('fast-partial-fallback', 'utf8');
+      const cryptoOps = createCryptoOperations();
+      const blockHash = await cryptoOps.computeHash(fileBytes);
+      const fileName = `${blockHash}.bin`;
+      const fileCiphertext = encryptFileContent(fileBytes, fileNodeKey);
+      const secretStore = createMemorySecretStore();
+
+      await secretStore.set('provider-account:mega:acct-mega-fast-partial-fallback', {
+        email,
+        password: 'secret',
+        sid: 'helper-session',
+        masterKey: encodeMegaBase64Url(masterKey),
+        userHandle,
+        accountVersion: 2,
+      });
+
+      let partialFetchCount = 0;
+      let fullFetchCount = 0;
+      let downloadRequestCount = 0;
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (typeof init?.body === 'string' && url.startsWith('https://g.api.mega.co.nz/cs')) {
+          const payload = JSON.parse(String(init.body ?? '[]'))[0] as Record<string, unknown>;
+          switch (payload.a) {
+            case 'ug':
+              return new Response(JSON.stringify([{ u: userHandle, email }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            case 'uga':
+              return new Response(JSON.stringify([{}]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            case 'pk':
+              return new Response(JSON.stringify([-9]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            case 'f':
+              if (payload.n === fileHandle || payload.c === fileHandle) {
+                partialFetchCount += 1;
+                return new Response(JSON.stringify([-3]), {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                });
+              }
+              fullFetchCount += 1;
+              return new Response(
+                JSON.stringify([{
+                  f: [
+                    {
+                      h: shareHandle,
+                      p: 'incoming001',
+                      t: 1,
+                      a: encryptAttributes('nearbytes', rootNodeKey),
+                      k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+                      su: ownerHandle,
+                      sk: encodeMegaBase64Url(encryptAesEcb(shareKey, masterKey)),
+                    },
+                    {
+                      h: blocksHandle,
+                      p: shareHandle,
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+                      su: ownerHandle,
+                    },
+                    {
+                      h: fileHandle,
+                      p: blocksHandle,
+                      t: 0,
+                      s: fileBytes.length,
+                      a: encryptAttributes(fileName, fileNodeKey),
+                      k: encryptNodeKey(fileNodeKey, shareKey, shareHandle),
+                      g: `http://download.test/${fileHandle}`,
+                      su: ownerHandle,
+                    },
+                  ],
+                  u: [{ u: ownerHandle, m: 'owner@example.com' }],
+                  sn: 'cursor-1',
+                }]),
+                { status: 200, headers: { 'content-type': 'application/json' } }
+              );
+            case 'g':
+              downloadRequestCount += 1;
+              return new Response(JSON.stringify([{ g: 'https://download.test/file' }]), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              });
+            default:
+              throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+          }
+        }
+        if (url.startsWith('https://download.test/')) {
+          return new Response(new Uint8Array(fileCiphertext), { status: 200 });
+        }
+        throw new Error(`Unexpected request URL: ${url}`);
+      }) as typeof fetch;
+
+      const runtime = createIntegrationRuntime({
+        secretStore,
+        mega: {
+          remoteBasePath: '/nearbytes',
+          syncIntervalMs: 60_000,
+        },
+        logger: {
+          log() {},
+          warn() {},
+        },
+      });
+
+      const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+      const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-fast-partial-fallback-'));
+      tempDirs.push(localPath);
+      const account: ProviderAccount = {
+        id: 'acct-mega-fast-partial-fallback',
+        provider: 'mega',
+        label: 'MEGA',
+        email,
+        state: 'connected',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      const share: ManagedShare = {
+        id: 'share-mega-fast-partial-fallback',
+        provider: 'mega',
+        accountId: account.id,
+        label: 'nearbytes',
+        role: 'recipient',
+        localPath,
+        sourceId: 'src-mega-fast-partial-fallback',
+        syncMode: 'mirror',
+        remoteDescriptor: {
+          rootHandle: shareHandle,
+          shareHandle,
+          ownerEmail: 'owner@example.com',
+          shareName: 'nearbytes',
+        },
+        capabilities: ['mirror', 'read', 'accept'],
+        invitationEmails: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      const baselineTimerCount = vi.getTimerCount();
+      const appliedPromise = (adapter as any)
+        .applyRecipientHandleUpdate(
+          share,
+          await (adapter as any).getAccountSession(account),
+          shareHandle,
+          fileHandle,
+          {},
+          new Map<string, string>(),
+          {
+            source: 'sync',
+            rootHandle: shareHandle,
+            triggerHandle: fileHandle,
+            packetReceivedAt: Date.now(),
+            scsn: 'cursor-1',
+          }
+        );
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(vi.getTimerCount()).toBe(baselineTimerCount);
+      await expect(appliedPromise).resolves.toBe(true);
+      await expect(fs.readFile(path.join(localPath, 'blocks', fileName))).resolves.toEqual(fileBytes);
+      expect(partialFetchCount).toBe(1);
+      expect(fullFetchCount).toBeGreaterThanOrEqual(1);
+      expect(downloadRequestCount).toBe(1);
+
+      await adapter.detachManagedShare(share, account);
+      await adapter.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips a stale recipient handle after one missing-root subtree fetch', async () => {
+    const email = 'reader@example.com';
+    const userHandle = 'usrhandle01';
+    const ownerHandle = 'owner000001';
+    const shareHandle = 'cIVQ2bjB';
+    const staleHandle = 'stale00002';
+    const blocksHandle = 'blocks0002';
+    const shareKey = Buffer.from('4f1e2d3c5b6a79888796a5b4c3d2e1f0', 'hex');
+    const rootNodeKey = Buffer.from('102132435465768798a9babbdcddf0f1', 'hex');
+    const blocksNodeKey = Buffer.from('51223344556677889900aabbccddeeff', 'hex');
+    const secretStore = createMemorySecretStore();
+
+    await secretStore.set('provider-account:mega:acct-mega-missing-root-stale-handle', {
+      email,
+      password: 'secret',
+      sid: 'helper-session',
+      masterKey: encodeMegaBase64Url(Buffer.from('00112233445566778899aabbccddeeff', 'hex')),
+      userHandle,
+      accountVersion: 2,
+    });
+
+    let subtreeFetchCount = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (typeof init?.body === 'string' && url.startsWith('https://g.api.mega.co.nz/cs')) {
+        const payload = JSON.parse(String(init.body ?? '[]'))[0] as Record<string, unknown>;
+        switch (payload.a) {
+          case 'ug':
+            return new Response(JSON.stringify([{ u: userHandle, email }]), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          case 'f':
+            if (payload.n === staleHandle || payload.c === staleHandle) {
+              subtreeFetchCount += 1;
+              return new Response(
+                JSON.stringify([{
+                  f: [
+                    {
+                      h: shareHandle,
+                      p: 'incoming001',
+                      t: 1,
+                      a: encryptAttributes('Team Space', rootNodeKey),
+                      k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+                      su: ownerHandle,
+                    },
+                    {
+                      h: blocksHandle,
+                      p: shareHandle,
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+                      su: ownerHandle,
+                    },
+                  ],
+                  u: [{ u: ownerHandle, m: 'owner@example.com' }],
+                  sn: 'cursor-1',
+                }]),
+                { status: 200, headers: { 'content-type': 'application/json' } }
+              );
+            }
+            if (payload.c === 1 || payload.r === 1) {
+              return new Response(
+                JSON.stringify([{
+                  f: [
+                    {
+                      h: shareHandle,
+                      p: 'incoming001',
+                      t: 1,
+                      a: encryptAttributes('Team Space', rootNodeKey),
+                      k: encryptNodeKey(rootNodeKey, shareKey, shareHandle),
+                      su: ownerHandle,
+                    },
+                    {
+                      h: blocksHandle,
+                      p: shareHandle,
+                      t: 1,
+                      a: encryptAttributes('blocks', blocksNodeKey),
+                      k: encryptNodeKey(blocksNodeKey, shareKey, shareHandle),
+                      su: ownerHandle,
+                    },
+                  ],
+                  u: [{ u: ownerHandle, m: 'owner@example.com' }],
+                  sn: 'cursor-1',
+                }]),
+                { status: 200, headers: { 'content-type': 'application/json' } }
+              );
+            }
+            throw new Error(`Unexpected subtree fetch during missing-root immediate apply: ${JSON.stringify(payload)}`);
+          default:
+            throw new Error(`Unexpected MEGA API payload: ${JSON.stringify(payload)}`);
+        }
+      }
+      throw new Error(`Unexpected request URL: ${url}`);
+    }) as typeof fetch;
+
+    const runtime = createIntegrationRuntime({
+      secretStore,
+      mega: {
+        remoteBasePath: '/nearbytes',
+        syncIntervalMs: 60_000,
+      },
+      logger: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    const adapter = new MegaTransportAdapter(runtime, { fetchImpl });
+    (adapter as unknown as {
+      accountShareKeyCache: Map<string, ReadonlyMap<string, Buffer>>;
+    }).accountShareKeyCache.set(userHandle, new Map([[shareHandle, shareKey]]));
+
+    const localPath = await fs.mkdtemp(path.join(os.tmpdir(), 'nearbytes-mega-missing-root-stale-handle-'));
+    tempDirs.push(localPath);
+
+    const account: ProviderAccount = {
+      id: 'acct-mega-missing-root-stale-handle',
+      provider: 'mega',
+      label: 'MEGA',
+      email,
+      state: 'connected',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const share: ManagedShare = {
+      id: 'share-mega-missing-root-stale-handle',
+      provider: 'mega',
+      accountId: account.id,
+      label: 'Team Space',
+      role: 'recipient',
+      localPath,
+      sourceId: 'src-mega-missing-root-stale-handle',
+      syncMode: 'mirror',
+      remoteDescriptor: {
+        rootHandle: shareHandle,
+        shareHandle,
+        ownerEmail: 'owner@example.com',
+        shareName: 'Team Space',
+      },
+      capabilities: ['mirror', 'read', 'accept'],
+      invitationEmails: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const applied = await (adapter as any).applyRecipientHandleUpdate(
+      share,
+      await (adapter as any).getAccountSession(account),
+      shareHandle,
+      staleHandle,
+      {},
+      new Map<string, string>(),
+      {
+        source: 'sc',
+        rootHandle: shareHandle,
+        triggerHandle: staleHandle,
+        packetReceivedAt: Date.now(),
+        scsn: 'cursor-1',
+      }
+    );
+
+    expect(applied).toBe(false);
+    expect(subtreeFetchCount).toBe(1);
 
     await adapter.detachManagedShare(share, account);
     await adapter.dispose();

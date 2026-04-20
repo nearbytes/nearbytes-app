@@ -1,3 +1,5 @@
+THE REMAINING FAILURE IS DESKTOP TO PHONE, IT HAS BEEN SO FOR ONE DAY, AND THE TASK IS TO FIX THAT, NOT REPORT THAT AGAIN TO THE USER. IF THAT IS NOT FIXED; CONTINUE WORKING ON IT.
+
 # WIP
 
 ## Goal
@@ -42,6 +44,26 @@ What improved relative to the previous repro:
 - the phone now already sees older desktop-authored files such as `nearbytes-desktop-sync-1776632588.txt`
 - that means the recipient root-handle mismatch patch is doing useful work
 - but it is not sufficient to make fresh bidirectional sync reliable
+
+Code progress after the follow-up pass on 2026-04-19:
+
+- widened the runtime-source `blocks/*` read retry window during channel-event publication so owner pushes tolerate slower canonical block visibility before deferring the event
+- fixed the recipient partial-tree helper so `fastPartialFallback` actually reaches `fetchMegaDecryptedTree`, which restores the intended immediate full-snapshot fallback on transient MEGA `-3` subtree fetches instead of entering the normal lock-retry backoff loop first
+- narrowed recipient immediate-apply back toward the `c88596927acce79f1a508c6291e8cc34535c3de8` behavior by removing generic subtree retries for `MEGA tree did not include the requested root node.` and by using single-attempt subtree fetches in the immediate-apply path
+- added regressions covering the longer runtime-source block-read delay, the fast recipient partial-fetch fallback path, and stale missing-root recipient handles that must not be retried through the generic subtree loop
+- `yarn vitest run src/integrations/__tests__/managedShares.test.ts` passed (`56/56`)
+- `yarn vitest run src/integrations/__tests__/megaAdapter.test.ts` passed (`55/55`)
+
+What is still not proven:
+
+- live `yarn dev-2-iphone-mega --no-wipe` validation has not been rerun after these patches yet
+- end-to-end desktop <-> phone fresh-write proof is still outstanding until that live check passes
+
+Latest root cause isolated after the live rerun on 2026-04-20:
+
+- the owner runtime-source event upload path was deriving referenced block uploads as `blocks/<hash>` instead of canonical `blocks/<hash>.bin`
+- that exactly matched the live desktop and phone failures logged as `File not found in any root: blocks/<hash>` during fresh owner-side publication
+- this is a separate lower-layer bug from the earlier owner-volume republishing leak; the leak fix still appears to hold
 
 Phone screenshot from that check:
 
