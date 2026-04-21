@@ -5,6 +5,8 @@ const yarnCommand = process.platform === 'win32' ? 'yarn.cmd' : 'yarn';
 const args = [
   'vitest',
   'run',
+  '--config',
+  'vitest.live.config.ts',
   'src/integrations/__tests__/megaLayer1.live.test.ts',
   ...process.argv.slice(2),
 ];
