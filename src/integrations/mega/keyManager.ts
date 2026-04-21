@@ -17,10 +17,6 @@ import {
   MEGA_KEY_MANAGER_SHARE_KEYS_TAG,
   MEGA_KEY_MANAGER_VERSION_TAG,
   MEGA_KEY_MANAGER_WARNINGS_TAG,
-  MEGA_PRIVATE_ATTRIBUTE_AUTH_RING_CU25519,
-  MEGA_PRIVATE_ATTRIBUTE_AUTH_RING_ED25519,
-  MEGA_PRIVATE_ATTRIBUTE_KEYRING,
-  MEGA_RECOVERY_KEY_MANAGER_TAGS,
   type MegaApiError,
   type MegaKeyManagerRecord,
   type MegaKeyManagerRecoveryPayload,
@@ -37,7 +33,6 @@ import {
   decryptAesEcb,
   decryptMegaKeyManagerContainer,
   deriveMegaPairwiseKey,
-  encodeMegaKeyManagerPrivateRsaFromLogin,
   encryptMegaKeyManagerContainer,
   parseMegaPrivateAttributeRecords,
 } from './crypto.js';
@@ -48,7 +43,6 @@ import {
   MEGA_SHARE_KEY_RECORD_SIZE,
 } from './adapterConstants.js';
 import type {
-  DecryptedMegaNode,
   MegaIncomingShareDiscoveryDiag,
   MegaKeyManagerState,
   MegaPendingInShareRecord,

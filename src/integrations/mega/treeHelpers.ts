@@ -2,7 +2,7 @@ import { Buffer } from 'buffer';
 import { cbc as nobleAesCbc, ctr as nobleAesCtr } from '@noble/ciphers/aes.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { MegaApiError, MegaSession } from './core.js';
-import { decryptAesEcb, encryptAesEcb } from './crypto.js';
+import { encryptAesEcb } from './crypto.js';
 import {
   buildMegaFetchNodesCommand,
   decodeMegaBase64Url,
@@ -48,7 +48,6 @@ import {
   decryptNodeRecord,
   decryptShareKey,
   describeMegaSpecialNodeName,
-  deriveAttributeKey,
   deriveShareHandle,
   downloadAuthenticatedMegaFileContent,
   fingerprintMegaShareKey,
