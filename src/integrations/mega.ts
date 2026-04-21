@@ -1,8 +1,78 @@
 import { Buffer } from 'buffer';
-import { cbc as nobleAesCbc, ctr as nobleAesCtr, ecb as nobleAesEcb, gcm as nobleAesGcm } from '@noble/ciphers/aes.js';
-import { x25519 } from '@noble/curves/ed25519.js';
-import { hkdf } from '@noble/hashes/hkdf.js';
+import { cbc as nobleAesCbc, ctr as nobleAesCtr } from '@noble/ciphers/aes.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import {
+  MEGA_AUTH_METHOD_SEEN,
+  MEGA_AUTH_RING_RECORD_SIZE,
+  MEGA_KEY_MANAGER_ATTR_TAG,
+  MEGA_KEY_MANAGER_AUTH_RING_CU25519_TAG,
+  MEGA_KEY_MANAGER_AUTH_RING_ED25519_TAG,
+  MEGA_KEY_MANAGER_BACKUPS_TAG,
+  MEGA_KEY_MANAGER_CREATION_TIME_TAG,
+  MEGA_KEY_MANAGER_GENERATION_TAG,
+  MEGA_KEY_MANAGER_IDENTITY_TAG,
+  MEGA_KEY_MANAGER_PENDING_INSHARES_TAG,
+  MEGA_KEY_MANAGER_PENDING_OUTSHARES_TAG,
+  MEGA_KEY_MANAGER_PRIVATE_CU25519_TAG,
+  MEGA_KEY_MANAGER_PRIVATE_ED25519_TAG,
+  MEGA_KEY_MANAGER_PRIVATE_RSA_TAG,
+  MEGA_KEY_MANAGER_SHARE_KEYS_TAG,
+  MEGA_KEY_MANAGER_VERSION_TAG,
+  MEGA_KEY_MANAGER_WARNINGS_TAG,
+  MEGA_PRIVATE_ATTRIBUTE_AUTH_RING_CU25519,
+  MEGA_PRIVATE_ATTRIBUTE_AUTH_RING_ED25519,
+  MEGA_PRIVATE_ATTRIBUTE_KEYRING,
+  MEGA_RECONNECT_REQUIRED_MESSAGE,
+  MEGA_RECOVERY_KEY_MANAGER_TAGS,
+  type MegaAccountSecret,
+  type MegaApiError,
+  type MegaFsWatcher,
+  type MegaKeyManagerRecord,
+  type MegaKeyManagerRecoveryPayload,
+  type MegaSession,
+} from './mega/core.js';
+import {
+  createMegaPasswordSession,
+  decodePersistedMegaShareKeys,
+  deserializeSession,
+  encodePersistedMegaShareKeys,
+  extractMegaReusableCredentials,
+  isStoredMegaAccountSecret,
+  megaApiCommandStandalone,
+} from './mega/auth.js';
+import {
+  decryptAesEcb,
+  decryptMegaKeyManagerContainer,
+  deriveMegaPairwiseKey,
+  encodeMegaKeyManagerPrivateRsaFromLogin,
+  encryptAesEcb,
+  encryptMegaKeyManagerContainer,
+  parseMegaPrivateAttributeRecords,
+  rsaRawDecryptMpi,
+} from './mega/crypto.js';
+import {
+  createMegaReconnectRequiredError,
+  createMegaSyncAbortController,
+  debugMegaLog,
+  getMegaApiErrorCode,
+  getMegaRetryDelayMs,
+  isDevLogsEnabled,
+  isMegaAccessDeniedError,
+  isMegaEventuallyConsistentMutationError,
+  isMegaMissingRequestedRootError,
+  isMegaRateLimitedError,
+  isMegaRetryableApiError,
+  isMegaRetryableTransportError,
+  isMegaSessionInvalid,
+  isMegaTemporaryLockError,
+  isMegaTransientSyncError,
+  isMegaUploadProbeEnabled,
+  normalizeMegaConnectError,
+  touchMegaSyncActivity,
+  waitForMegaRetry,
+  withMegaApiRetry,
+} from './mega/errors.js';
+import { getMegaChokidar, getMegaNodeFs, randomBytes } from './mega/runtime.js';
 import {
   buildMegaScChannelUrl,
   buildMegaFetchNodesCommand,
@@ -64,23 +134,16 @@ import type {
 } from './types.js';
 import type { IntegrationRuntime } from './runtime.js';
 import {
-  defaultRuntimeScheduler,
-  waitForScheduledDelay,
-  type RuntimeScheduler,
   type RuntimeTimerHandle,
 } from '../runtime/scheduler.js';
 
+export { decodeMegaPrivateAttributeRecordsForTesting } from './mega/crypto.js';
+
 const MEGA_SECRET_PREFIX = 'provider-account:mega:';
 const MEGA_MANIFEST_PREFIX = 'provider-share:mega:manifest:';
-const MEGA_RECONNECT_REQUIRED_MESSAGE =
-  'Nearbytes could not refresh the saved MEGA sign-in. It will keep retrying automatically. If MEGA asked you to unlock the account or change the password first, finish that on mega.io. Update the saved sign-in in Nearbytes only if the stored credentials no longer work.';
 const ZERO_IV = Buffer.alloc(16, 0);
 const READONLY_BADGES = ['Readonly'];
 const MEGA_SYNC_TIMEOUT_CODE = 'MEGA_SYNC_TIMEOUT';
-const MEGA_RETRYABLE_API_ERROR_CODES = new Set([-3, -4]);
-const MEGA_LOCK_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
-const MEGA_RATE_LIMIT_RETRY_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 18_000] as const;
-const MEGA_TRANSIENT_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 const MEGA_TRANSIENT_SYNC_COOLDOWN_MS = 30_000;
 const MEGA_POST_UPLOAD_SETTLE_MS = 30_000;
 const MEGA_RECIPIENT_PRIORITY_WINDOW_MS = 15_000;
@@ -111,116 +174,9 @@ const MEGA_SHARE_ACCESS_LEVEL_READ_WRITE = 1;
 const MEGA_SHARE_ACCESS_LEVEL_FULL = 2;
 /** Placeholder `u` for share targets who are not yet contacts (see MegaClient::EXPORTEDLINK in meganz/sdk). */
 const MEGA_SHARE_INVITE_NON_CONTACT_USER = 'EXP';
-const MEGA_KEY_MANAGER_VERSION_TAG = 1;
-const MEGA_KEY_MANAGER_CREATION_TIME_TAG = 2;
-const MEGA_KEY_MANAGER_IDENTITY_TAG = 3;
-const MEGA_KEY_MANAGER_GENERATION_TAG = 4;
-const MEGA_KEY_MANAGER_ATTR_TAG = 5;
-const MEGA_KEY_MANAGER_PRIVATE_ED25519_TAG = 16;
-const MEGA_KEY_MANAGER_PRIVATE_CU25519_TAG = 17;
-const MEGA_KEY_MANAGER_PRIVATE_RSA_TAG = 18;
-const MEGA_KEY_MANAGER_AUTH_RING_ED25519_TAG = 32;
-const MEGA_KEY_MANAGER_AUTH_RING_CU25519_TAG = 33;
-const MEGA_KEY_MANAGER_SHARE_KEYS_TAG = 48;
-const MEGA_KEY_MANAGER_PENDING_OUTSHARES_TAG = 64;
-const MEGA_KEY_MANAGER_PENDING_INSHARES_TAG = 65;
-const MEGA_KEY_MANAGER_BACKUPS_TAG = 80;
-const MEGA_KEY_MANAGER_WARNINGS_TAG = 96;
-const MEGA_PRIVATE_ATTRIBUTE_KEYRING = '*keyring';
-const MEGA_PRIVATE_ATTRIBUTE_AUTH_RING_ED25519 = '*!authring';
-const MEGA_PRIVATE_ATTRIBUTE_AUTH_RING_CU25519 = '*!authCu255';
-const MEGA_PRIVATE_ATTRIBUTE_ENCRYPTION_PARAMETERS: Record<
-  number,
-  { readonly nonceSize: number; readonly authTagSize: number; readonly algorithm: 'aes-128-ccm' | 'aes-128-gcm' }
-> = {
-  0x00: { nonceSize: 12, authTagSize: 16, algorithm: 'aes-128-ccm' },
-  0x01: { nonceSize: 10, authTagSize: 16, algorithm: 'aes-128-ccm' },
-  0x02: { nonceSize: 10, authTagSize: 8, algorithm: 'aes-128-ccm' },
-  0x03: { nonceSize: 12, authTagSize: 16, algorithm: 'aes-128-ccm' },
-  0x04: { nonceSize: 10, authTagSize: 8, algorithm: 'aes-128-ccm' },
-  0x10: { nonceSize: 12, authTagSize: 16, algorithm: 'aes-128-gcm' },
-  0x11: { nonceSize: 10, authTagSize: 8, algorithm: 'aes-128-gcm' },
-};
-const MEGA_RECOVERY_KEY_MANAGER_TAGS = new Set<number>([
-  MEGA_KEY_MANAGER_VERSION_TAG,
-  MEGA_KEY_MANAGER_CREATION_TIME_TAG,
-  MEGA_KEY_MANAGER_IDENTITY_TAG,
-  MEGA_KEY_MANAGER_GENERATION_TAG,
-  MEGA_KEY_MANAGER_ATTR_TAG,
-  MEGA_KEY_MANAGER_PRIVATE_ED25519_TAG,
-  MEGA_KEY_MANAGER_PRIVATE_CU25519_TAG,
-  MEGA_KEY_MANAGER_PRIVATE_RSA_TAG,
-  MEGA_KEY_MANAGER_AUTH_RING_ED25519_TAG,
-  MEGA_KEY_MANAGER_AUTH_RING_CU25519_TAG,
-  MEGA_KEY_MANAGER_SHARE_KEYS_TAG,
-  MEGA_KEY_MANAGER_PENDING_OUTSHARES_TAG,
-  MEGA_KEY_MANAGER_PENDING_INSHARES_TAG,
-  MEGA_KEY_MANAGER_BACKUPS_TAG,
-  MEGA_KEY_MANAGER_WARNINGS_TAG,
-]);
-const MEGA_AUTH_METHOD_SEEN = 0;
-const MEGA_AUTH_RING_RECORD_SIZE = 29;
 const MEGA_SHARE_KEY_RECORD_SIZE = 23;
 const MEGA_SHARE_KEY_FLAG_TRUSTED = 1 << 0;
 const MEGA_SHARE_KEY_FLAG_IN_USE = 1 << 1;
-const MEGA_PAIRWISE_KEY_LABEL = Buffer.from('strongvelope pairwise key\x01', 'latin1');
-const megaSyncActivityTouchers = new WeakMap<AbortSignal, () => void>();
-type MegaNodeCryptoModule = typeof import('node:crypto') | typeof import('crypto');
-let megaNodeCryptoModule: MegaNodeCryptoModule | null = null;
-let megaNodeCryptoModulePromise: Promise<MegaNodeCryptoModule> | null = null;
-let megaNodeFsModulePromise: Promise<typeof import('node:fs/promises') | typeof import('fs/promises')> | null = null;
-let megaChokidarModulePromise: Promise<{ default: { watch(...args: unknown[]): MegaFsWatcher } }> | null = null;
-
-async function ensureMegaNodeCrypto(): Promise<MegaNodeCryptoModule> {
-  if (megaNodeCryptoModule) {
-    return megaNodeCryptoModule;
-  }
-  if (!megaNodeCryptoModulePromise) {
-    megaNodeCryptoModulePromise = import('node:crypto')
-      .catch(() => import('crypto'))
-      .then((module) => {
-        megaNodeCryptoModule = module;
-        return module;
-      });
-  }
-  return megaNodeCryptoModulePromise;
-}
-
-function getMegaNodeCrypto(): MegaNodeCryptoModule {
-  if (megaNodeCryptoModule) {
-    return megaNodeCryptoModule;
-  }
-  throw new Error('MEGA Node crypto is not initialized.');
-}
-
-function randomBytes(size: number): Buffer {
-  if (megaNodeCryptoModule) {
-    return megaNodeCryptoModule.randomBytes(size);
-  }
-  if (globalThis.crypto?.getRandomValues) {
-    const bytes = new Uint8Array(size);
-    globalThis.crypto.getRandomValues(bytes);
-    return Buffer.from(bytes);
-  }
-  return getMegaNodeCrypto().randomBytes(size);
-}
-
-function getMegaWebCrypto(): Crypto {
-  if (globalThis.crypto?.subtle) {
-    return globalThis.crypto;
-  }
-  return getMegaNodeCrypto().webcrypto as Crypto;
-}
-
-async function getMegaChokidar(): Promise<{ default: { watch(...args: unknown[]): MegaFsWatcher } }> {
-  if (!megaChokidarModulePromise) {
-    const moduleName = 'chokidar';
-    megaChokidarModulePromise = import(/* @vite-ignore */ moduleName) as Promise<{
-      default: { watch(...args: unknown[]): MegaFsWatcher };
-    }>;
-  }
-  return megaChokidarModulePromise;
-}
 
 interface MegaShareInviteTarget {
   readonly u: string;
@@ -229,90 +185,6 @@ interface MegaShareInviteTarget {
 
 interface MegaAdapterOptions {
   readonly fetchImpl?: typeof fetch;
-}
-
-interface MegaFsWatcher {
-  close(): Promise<void> | void;
-  on(event: string, listener: (...args: unknown[]) => void): MegaFsWatcher;
-}
-
-interface MegaFsStatsLike {
-  isDirectory(): boolean;
-}
-
-interface MegaFsModuleLike {
-  mkdir(targetPath: string, options?: { readonly recursive?: boolean }): Promise<void>;
-  readFile(targetPath: string): Promise<Uint8Array>;
-  writeFile(targetPath: string, data: Uint8Array): Promise<void>;
-  access(targetPath: string): Promise<void>;
-  rm(
-    targetPath: string,
-    options?: {
-      readonly recursive?: boolean;
-      readonly force?: boolean;
-    }
-  ): Promise<void>;
-  stat(targetPath: string): Promise<MegaFsStatsLike>;
-  readdir(targetPath: string): Promise<string[]>;
-}
-
-interface MegaRuntimeGlobalScope {
-  __nearbytesMegaFs?: MegaFsModuleLike;
-}
-
-function isMegaFsModuleLike(
-  value: unknown
-): value is typeof import('node:fs/promises') | typeof import('fs/promises') | MegaFsModuleLike {
-  return typeof (value as { mkdir?: unknown } | null)?.mkdir === 'function';
-}
-
-function getMegaRuntimeFsShim(): MegaFsModuleLike | null {
-  const shim = (globalThis as typeof globalThis & MegaRuntimeGlobalScope).__nearbytesMegaFs;
-  return isMegaFsModuleLike(shim) ? shim : null;
-}
-
-async function getMegaNodeFs(): Promise<typeof import('node:fs/promises') | typeof import('fs/promises') | MegaFsModuleLike> {
-  if (!megaNodeFsModulePromise) {
-    megaNodeFsModulePromise = import('node:fs/promises').catch(() => import('fs/promises'));
-  }
-  const moduleValue = await megaNodeFsModulePromise;
-  if (isMegaFsModuleLike(moduleValue)) {
-    return moduleValue;
-  }
-  const shim = getMegaRuntimeFsShim();
-  if (shim) {
-    // docs/specs/transport/mega-runtime-v0.1.md and docs/specs/storage-integration-stack-v1.md
-    // require the self-contained phone runtime to materialize the same canonical MEGA files locally
-    // without depending on a separate dev API server or Node-only filesystem modules.
-    return shim;
-  }
-  throw new Error('MEGA filesystem runtime is unavailable.');
-}
-
-interface MegaAccountSecret {
-  readonly email: string;
-  readonly password?: string;
-  readonly mfaCode?: string;
-  readonly sid: string;
-  readonly masterKey: string;
-  readonly encryptedPrivateKey?: string;
-  readonly userHandle: string;
-  readonly accountVersion: number;
-  readonly accountSalt?: string;
-  readonly shareKeys?: Record<string, string>;
-}
-
-interface MegaSession {
-  readonly email: string;
-  readonly password?: string;
-  readonly mfaCode?: string;
-  readonly sid: string;
-  readonly masterKey: Buffer;
-  readonly encryptedPrivateKey?: string;
-  readonly privateKey?: MegaPrivateKey;
-  readonly userHandle: string;
-  readonly accountVersion: number;
-  readonly accountSalt?: string;
 }
 
 interface MegaMirrorManifest {
@@ -366,11 +238,6 @@ interface MegaDecryptTreeOptions {
   readonly expectedRootName?: string;
 }
 
-interface MegaKeyManagerRecord {
-  readonly tag: number;
-  readonly payload: Buffer;
-}
-
 interface MegaKeyManagerState {
   readonly shareKeys: ReadonlyMap<string, Buffer>;
   readonly pendingInShares: ReadonlyMap<string, MegaPendingInShareRecord>;
@@ -379,33 +246,9 @@ interface MegaKeyManagerState {
   readonly records: readonly MegaKeyManagerRecord[];
 }
 
-interface MegaKeyManagerRecoveryPayload {
-  readonly version: number;
-  readonly creationTime: Buffer;
-  readonly identity: Buffer;
-  readonly generation: number;
-  readonly attr: Buffer;
-  readonly privateEd25519: Buffer;
-  readonly privateCu25519: Buffer;
-  readonly privateRsa: Buffer;
-  readonly authRingEd25519: Buffer;
-  readonly authRingCu25519: Buffer;
-  readonly otherRecords: readonly MegaKeyManagerRecord[];
-}
-
 interface MegaPendingInShareRecord {
   readonly ownerHandle: string;
   readonly encryptedShareKey: Buffer;
-}
-
-interface MegaApiError extends Error {
-  code: number;
-}
-
-interface MegaPrivateKey {
-  readonly modulus: bigint;
-  readonly privateExponent: bigint;
-  readonly modulusLength: number;
 }
 
 export class MegaTransportAdapter {
@@ -6836,99 +6679,6 @@ function mapIncomingMegaContactInvite(
   };
 }
 
-function deserializeSession(secret: MegaAccountSecret, fallbackEmail = ''): MegaSession {
-  const masterKey = decodeMegaBase64Url(secret.masterKey);
-  const encryptedPrivateKey = typeof secret.encryptedPrivateKey === 'string' && secret.encryptedPrivateKey.trim() !== ''
-    ? secret.encryptedPrivateKey.trim()
-    : undefined;
-  return {
-    email: typeof secret.email === 'string' && secret.email.trim() !== '' ? secret.email : fallbackEmail,
-    password: secret.password,
-    mfaCode: secret.mfaCode,
-    sid: secret.sid,
-    masterKey,
-    encryptedPrivateKey,
-    privateKey: encryptedPrivateKey
-      ? decodeMegaPrivateKey(decryptMegaPrivateKey(decodeMegaBase64Url(encryptedPrivateKey), masterKey))
-      : undefined,
-    userHandle: secret.userHandle,
-    accountVersion: secret.accountVersion,
-    accountSalt: secret.accountSalt,
-  };
-}
-
-function encodePersistedMegaShareKeys(shareKeys: ReadonlyMap<string, Buffer> | undefined): Record<string, string> | undefined {
-  if (!shareKeys || shareKeys.size === 0) {
-    return undefined;
-  }
-  const encoded: Record<string, string> = {};
-  for (const [handleRaw, shareKey] of shareKeys.entries()) {
-    const handle = handleRaw.trim();
-    if (!handle || shareKey.length === 0) {
-      continue;
-    }
-    encoded[handle] = encodeMegaBase64Url(Buffer.from(shareKey));
-  }
-  return Object.keys(encoded).length > 0 ? encoded : undefined;
-}
-
-function decodePersistedMegaShareKeys(value: unknown): ReadonlyMap<string, Buffer> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return new Map();
-  }
-  const decoded = new Map<string, Buffer>();
-  for (const [handleRaw, shareKeyRaw] of Object.entries(value)) {
-    const handle = handleRaw.trim();
-    const encodedShareKey = typeof shareKeyRaw === 'string' ? shareKeyRaw.trim() : '';
-    if (!handle || !encodedShareKey) {
-      continue;
-    }
-    try {
-      const shareKey = decodeMegaBase64Url(encodedShareKey);
-      if (shareKey.length === 16) {
-        decoded.set(handle, shareKey);
-      }
-    } catch {
-      // Ignore malformed persisted share-key entries.
-    }
-  }
-  return decoded;
-}
-
-function isStoredMegaAccountSecret(secret: unknown): secret is MegaAccountSecret {
-  if (!secret || typeof secret !== 'object') {
-    return false;
-  }
-  const candidate = secret as Partial<MegaAccountSecret>;
-  return (
-    typeof candidate.sid === 'string' &&
-    candidate.sid.trim() !== '' &&
-    typeof candidate.masterKey === 'string' &&
-    candidate.masterKey.trim() !== '' &&
-    typeof candidate.userHandle === 'string' &&
-    candidate.userHandle.trim() !== '' &&
-    typeof candidate.accountVersion === 'number' &&
-    Number.isFinite(candidate.accountVersion)
-  );
-}
-
-function extractMegaReusableCredentials(
-  secret: unknown,
-  fallbackEmail = ''
-): { email: string; password: string; mfaCode?: string } | null {
-  if (!secret || typeof secret !== 'object') {
-    return null;
-  }
-  const candidate = secret as Partial<MegaAccountSecret>;
-  const email = (typeof candidate.email === 'string' && candidate.email.trim() !== '' ? candidate.email : fallbackEmail).trim();
-  const password = typeof candidate.password === 'string' ? candidate.password : '';
-  const mfaCode = typeof candidate.mfaCode === 'string' && candidate.mfaCode.trim() !== '' ? candidate.mfaCode.trim() : undefined;
-  if (!email || !password) {
-    return null;
-  }
-  return { email, password, mfaCode };
-}
-
 function acceptedShareCapabilities(descriptor: Record<string, unknown>): string[] {
   return megaAccessLevelAllowsWrites(getStringDescriptor(descriptor, 'accessLevel'))
     ? ['mirror', 'read', 'write', 'accept']
@@ -6967,265 +6717,6 @@ function incomingShareMatches(candidate: Record<string, unknown>, target: Record
 function buildOwnerShareHealCooldownKey(shareId: string, shareHandle: string | undefined): string {
   const normalizedHandle = typeof shareHandle === 'string' ? shareHandle.trim().toLowerCase() : '';
   return normalizedHandle ? `${shareId}:${normalizedHandle}` : shareId;
-}
-
-function getMegaApiErrorCode(error: unknown): number | null {
-  const direct = typeof (error as MegaApiError | undefined)?.code === 'number' ? (error as MegaApiError).code : null;
-  if (direct !== null && Number.isFinite(direct)) {
-    return Math.trunc(direct);
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  const match = message.match(/MEGA API error\s+(-?\d+)/i);
-  return match ? Number.parseInt(match[1]!, 10) : null;
-}
-
-function isMegaSessionInvalid(error: unknown): boolean {
-  const code = getMegaApiErrorCode(error);
-  if (code === -15) {
-    return true;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return /MEGA API error -15|session|auth|login/i.test(message);
-}
-
-function isMegaRetryableApiError(error: unknown): error is MegaApiError {
-  const code = getMegaApiErrorCode(error);
-  return code !== null && MEGA_RETRYABLE_API_ERROR_CODES.has(code);
-}
-
-function isMegaTemporaryLockError(error: unknown): boolean {
-  const code = getMegaApiErrorCode(error);
-  return code === -3;
-}
-
-function normalizeMegaConnectError(error: unknown, email: string): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/HTTP 402\b/i.test(message)) {
-    return new Error(
-      `MEGA refused login for ${email} (HTTP 402). Verify the account on mega.io (captcha, security check, account lock, or temporary service restriction), then retry in Nearbytes.`
-    );
-  }
-  return error instanceof Error ? error : new Error(message);
-}
-
-function isMegaTransientSyncError(error: unknown): boolean {
-  return isMegaTemporaryLockError(error) || isMegaRateLimitedError(error) || isMegaRetryableTransportError(error);
-}
-
-function isMegaAccessDeniedError(error: unknown): error is MegaApiError {
-  const code = getMegaApiErrorCode(error);
-  return code === -11;
-}
-
-function readProcessEnv(name: string): string | undefined {
-  if (typeof process === 'undefined' || !process?.env) {
-    return undefined;
-  }
-  const value = process.env[name];
-  return typeof value === 'string' ? value : undefined;
-}
-
-function isDevLogsEnabled(): boolean {
-  return (readProcessEnv('NODE_ENV') ?? '').trim().toLowerCase() === 'development';
-}
-
-function debugMegaLog(...args: unknown[]): void {
-  if ((readProcessEnv('DEBUG') ?? '').trim() !== '') {
-    console.log(...args);
-  }
-}
-
-function isMegaUploadProbeEnabled(): boolean {
-  return matchesMegaDebugScope(readProcessEnv('DEBUG'), 'mega');
-}
-
-function matchesMegaDebugScope(rawValue: string | undefined, scope?: string): boolean {
-  const value = rawValue?.trim();
-  if (!value) {
-    return false;
-  }
-  const normalizedScope = scope?.trim().toLowerCase();
-  return value
-    .split(',')
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean)
-    .some((token) => {
-      if (token === '1' || token === 'true' || token === '*') {
-        return true;
-      }
-      if (!normalizedScope) {
-        return false;
-      }
-      return token === normalizedScope || token === `nearbytes:${normalizedScope}`;
-    });
-}
-
-function getMegaHttpStatus(error: unknown): number | null {
-  const status = typeof (error as { status?: unknown } | undefined)?.status === 'number'
-    ? Number((error as { status: number }).status)
-    : null;
-  if (status !== null && Number.isFinite(status)) {
-    return Math.trunc(status);
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  const match = message.match(/HTTP\s+(\d{3})/i);
-  return match ? Number.parseInt(match[1]!, 10) : null;
-}
-
-function isMegaRateLimitedError(error: unknown): boolean {
-  const apiCode = getMegaApiErrorCode(error);
-  const httpStatus = getMegaHttpStatus(error);
-  return apiCode === -4 || httpStatus === 429;
-}
-
-function getMegaRetryDelayMs(error: unknown, attempt: number): number {
-  const apiCode = getMegaApiErrorCode(error);
-  const httpStatus = getMegaHttpStatus(error);
-  const delays =
-    apiCode === -3
-      ? MEGA_LOCK_RETRY_DELAYS_MS
-      : isMegaRateLimitedError(error) || httpStatus === 503
-        ? MEGA_RATE_LIMIT_RETRY_DELAYS_MS
-        : MEGA_TRANSIENT_RETRY_DELAYS_MS;
-  return delays[Math.min(attempt, delays.length - 1)]!;
-}
-
-function isMegaRetryableTransportError(error: unknown): boolean {
-  const httpStatus = getMegaHttpStatus(error);
-  if (httpStatus === 429 || httpStatus === 408 || (httpStatus !== null && httpStatus >= 500)) {
-    return true;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    /fetch failed/i.test(message) ||
-    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|network/i.test(message) ||
-    /EAI_AGAIN|ENOTFOUND|socket hang up/i.test(message)
-  );
-}
-
-function isMegaEventuallyConsistentMutationError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /did not make the created folder (globally )?visible|did not make the uploaded file (globally )?visible/i.test(
-    message
-  );
-}
-
-async function withMegaApiRetry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  let attempt = 0;
-  while (true) {
-    try {
-      touchMegaSyncActivity(signal);
-      return await operation();
-    } catch (error) {
-      if (
-        (!isMegaRetryableApiError(error) && !isMegaRetryableTransportError(error)) ||
-        attempt >= Math.max(MEGA_LOCK_RETRY_DELAYS_MS.length, MEGA_RATE_LIMIT_RETRY_DELAYS_MS.length, MEGA_TRANSIENT_RETRY_DELAYS_MS.length)
-      ) {
-        throw error;
-      }
-      const delayMs = getMegaRetryDelayMs(error, attempt);
-      attempt += 1;
-      await waitForMegaRetry(delayMs, signal);
-    }
-  }
-}
-
-async function waitForMegaRetry(
-  schedulerOrDelayMs: RuntimeScheduler | number,
-  delayMsOrSignal?: number | AbortSignal,
-  signal?: AbortSignal
-): Promise<void> {
-  const scheduler =
-    typeof schedulerOrDelayMs === 'number'
-      ? defaultRuntimeScheduler
-      : schedulerOrDelayMs;
-  const delayMs =
-    typeof schedulerOrDelayMs === 'number'
-      ? schedulerOrDelayMs
-      : typeof delayMsOrSignal === 'number'
-        ? delayMsOrSignal
-        : 0;
-  const effectiveSignal =
-    typeof schedulerOrDelayMs === 'number'
-      ? (delayMsOrSignal as AbortSignal | undefined)
-      : signal;
-
-  if (effectiveSignal?.aborted) {
-    throw createMegaAbortError();
-  }
-  try {
-    await waitForScheduledDelay(scheduler, delayMs, effectiveSignal);
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw createMegaAbortError();
-    }
-    throw error;
-  }
-}
-
-function createMegaAbortError(): Error {
-  const error = new Error('This operation was aborted.');
-  error.name = 'AbortError';
-  return error;
-}
-
-function isMegaMissingRequestedRootError(error: unknown): boolean {
-  return error instanceof Error && error.message === 'MEGA tree did not include the requested root node.';
-}
-
-function createMegaSyncAbortController(
-  createAbortController: () => AbortController,
-  scheduler: RuntimeScheduler,
-  timeoutMs: number
-): {
-  controller: AbortController;
-  dispose: () => void;
-} {
-  const controller = createAbortController();
-  let timer: RuntimeTimerHandle | null = null;
-
-  const scheduleAbort = () => {
-    if (timer) {
-      timer.cancel();
-    }
-    timer = scheduler.setTimeout(() => {
-      timer = null;
-      controller.abort();
-    }, timeoutMs);
-    timer.unref?.();
-  };
-
-  scheduleAbort();
-  megaSyncActivityTouchers.set(controller.signal, scheduleAbort);
-
-  return {
-    controller,
-    dispose: () => {
-      if (timer) {
-        timer.cancel();
-        timer = null;
-      }
-      megaSyncActivityTouchers.delete(controller.signal);
-    },
-  };
-}
-
-function touchMegaSyncActivity(signal?: AbortSignal): void {
-  if (!signal || signal.aborted) {
-    return;
-  }
-  megaSyncActivityTouchers.get(signal)?.();
-}
-
-function createMegaReconnectRequiredError(error: unknown): Error {
-  const reason =
-    error == null
-      ? ''
-      : error instanceof Error
-        ? error.message.trim()
-        : String(error).trim();
-  const suffix = reason ? ` ${reason}` : '';
-  return new Error(`${MEGA_RECONNECT_REQUIRED_MESSAGE}${suffix}`);
 }
 
 function isLegacyMegaLocalMirror(share: ManagedShare): boolean {
@@ -7993,162 +7484,6 @@ function* iterateMegaKeyManagerRecords(value: Buffer): Generator<{ tag: number; 
   }
 }
 
-function decryptMegaKeyManagerContainer(container: Buffer, masterKey: Buffer): Buffer {
-  if (container.length <= 14 || container[0] !== 20) {
-    throw new Error('MEGA key-manager container is invalid.');
-  }
-
-  const ivLength = 12;
-  const authTagLength = 16;
-  if (container.length <= 2 + ivLength + authTagLength) {
-    throw new Error('MEGA key-manager container is truncated.');
-  }
-
-  const derivedKey = deriveMegaKeyManagerKey(masterKey);
-  const iv = container.subarray(2, 2 + ivLength);
-  const encrypted = container.subarray(2 + ivLength);
-  const ciphertext = encrypted.subarray(0, encrypted.length - authTagLength);
-  const authTag = encrypted.subarray(encrypted.length - authTagLength);
-  return Buffer.from(nobleAesGcm(derivedKey, iv).decrypt(Buffer.concat([ciphertext, authTag])));
-}
-
-function parseMegaPrivateAttributeRecords(container: Buffer, masterKey: Buffer): Map<string, Buffer> {
-  const plaintext = decryptMegaPrivateAttributeContainer(container, masterKey);
-  return decodeMegaPrivateAttributeRecords(plaintext);
-}
-
-export function decodeMegaPrivateAttributeRecordsForTesting(encodedValue: string, masterKey: Buffer): ReadonlyMap<string, Buffer> {
-  return parseMegaPrivateAttributeRecords(decodeMegaBase64Url(encodedValue), masterKey);
-}
-
-function decryptMegaPrivateAttributeContainer(container: Buffer, masterKey: Buffer): Buffer {
-  const mode = container[0];
-  const parameters = mode === undefined ? undefined : MEGA_PRIVATE_ATTRIBUTE_ENCRYPTION_PARAMETERS[mode];
-  if (!parameters) {
-    throw new Error('MEGA private attribute encryption mode is unsupported.');
-  }
-
-  const minLength = 1 + parameters.nonceSize + parameters.authTagSize;
-  if (container.length < minLength) {
-    throw new Error('MEGA private attribute payload is truncated.');
-  }
-
-  const nonce = container.subarray(1, 1 + parameters.nonceSize);
-  const encrypted = container.subarray(1 + parameters.nonceSize);
-  const ciphertext = encrypted.subarray(0, encrypted.length - parameters.authTagSize);
-  const authTag = encrypted.subarray(encrypted.length - parameters.authTagSize);
-  const key = masterKey.subarray(0, 16);
-
-  if (parameters.algorithm === 'aes-128-ccm') {
-    return decryptMegaPrivateAttributeCcm(ciphertext, authTag, key, nonce, parameters.authTagSize);
-  }
-
-  return Buffer.from(nobleAesGcm(key, nonce).decrypt(Buffer.concat([ciphertext, authTag])));
-}
-
-function decryptMegaPrivateAttributeCcm(
-  ciphertext: Buffer,
-  authTag: Buffer,
-  key: Buffer,
-  nonce: Buffer,
-  authTagSize: number
-): Buffer {
-  const lengthSize = 15 - nonce.length;
-  if (lengthSize < 2 || lengthSize > 8) {
-    throw new Error('MEGA private attribute CCM nonce is invalid.');
-  }
-
-  const counter0 = buildMegaCcmCounterBlock(nonce, lengthSize, 0);
-  const authMask = encryptAesEcb(counter0, key).subarray(0, authTagSize);
-  const plaintext = Buffer.alloc(ciphertext.length);
-  for (let offset = 0, counter = 1; offset < ciphertext.length; offset += 16, counter += 1) {
-    const keystream = encryptAesEcb(buildMegaCcmCounterBlock(nonce, lengthSize, counter), key);
-    const chunkLength = Math.min(16, ciphertext.length - offset);
-    for (let index = 0; index < chunkLength; index += 1) {
-      plaintext[offset + index] = ciphertext[offset + index]! ^ keystream[index]!;
-    }
-  }
-
-  const expectedTag = computeMegaCcmMac(plaintext, key, nonce, authTagSize, lengthSize);
-  if (!xorBuffers(authTag, authMask).equals(expectedTag)) {
-    throw new Error('MEGA private attribute payload failed authentication.');
-  }
-
-  return plaintext;
-}
-
-function computeMegaCcmMac(
-  plaintext: Buffer,
-  key: Buffer,
-  nonce: Buffer,
-  authTagSize: number,
-  lengthSize: number
-): Buffer {
-  let state = encryptAesEcb(buildMegaCcmB0(plaintext.length, nonce, authTagSize, lengthSize), key);
-  for (let offset = 0; offset < plaintext.length; offset += 16) {
-    const block = Buffer.alloc(16, 0);
-    plaintext.copy(block, 0, offset, Math.min(offset + 16, plaintext.length));
-    state = encryptAesEcb(xorBuffers(state, block), key);
-  }
-  return state.subarray(0, authTagSize);
-}
-
-function buildMegaCcmB0(plaintextLength: number, nonce: Buffer, authTagSize: number, lengthSize: number): Buffer {
-  const flags = (((authTagSize - 2) / 2) << 3) | (lengthSize - 1);
-  return Buffer.concat([Buffer.from([flags]), nonce, encodeMegaCcmLength(plaintextLength, lengthSize)]);
-}
-
-function buildMegaCcmCounterBlock(nonce: Buffer, lengthSize: number, counter: number): Buffer {
-  return Buffer.concat([Buffer.from([lengthSize - 1]), nonce, encodeMegaCcmLength(counter, lengthSize)]);
-}
-
-function encodeMegaCcmLength(value: number, length: number): Buffer {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error('MEGA private attribute CCM length is invalid.');
-  }
-  const result = Buffer.alloc(length, 0);
-  let remaining = value;
-  for (let index = length - 1; index >= 0; index -= 1) {
-    result[index] = remaining & 0xff;
-    remaining = Math.floor(remaining / 0x100);
-  }
-  if (remaining !== 0) {
-    throw new Error('MEGA private attribute CCM payload is too large.');
-  }
-  return result;
-}
-
-function decodeMegaPrivateAttributeRecords(value: Buffer): Map<string, Buffer> {
-  const records = new Map<string, Buffer>();
-  if ((value[0] ?? 0) === 0 && value.length > 65_538) {
-    records.set('', Buffer.from(value.subarray(3)));
-    return records;
-  }
-
-  let offset = 0;
-  while (offset < value.length) {
-    const keyEnd = value.indexOf(0, offset);
-    if (keyEnd < 0 || keyEnd + 3 > value.length) {
-      throw new Error('MEGA private attribute TLV payload is malformed.');
-    }
-    const key = value.toString('ascii', offset, keyEnd);
-    let payloadLength = value.readUInt16BE(keyEnd + 1);
-    offset = keyEnd + 3;
-    if (payloadLength === 0xffff) {
-      payloadLength = value.length - offset;
-    }
-    if (offset + payloadLength > value.length) {
-      throw new Error('MEGA private attribute TLV payload is malformed.');
-    }
-    records.set(key, Buffer.from(value.subarray(offset, offset + payloadLength)));
-    offset += payloadLength;
-  }
-  return records;
-}
-
-function deriveMegaKeyManagerKey(masterKey: Buffer): Buffer {
-  return Buffer.from(hkdf(sha256, masterKey, Buffer.alloc(0), Buffer.from([1]), 16));
-}
 
 function findMegaKeyManagerRecord(
   records: readonly MegaKeyManagerRecord[],
@@ -8290,14 +7625,6 @@ function serializeMegaKeyManagerRecords(records: readonly MegaKeyManagerRecord[]
     chunks.push(buildMegaKeyManagerRecordHeader(record.tag, record.payload.length), Buffer.from(record.payload));
   }
   return Buffer.concat(chunks);
-}
-
-function encryptMegaKeyManagerContainer(plaintext: Buffer, masterKey: Buffer): Buffer {
-  const iv = randomBytes(12);
-  const encrypted = Buffer.from(nobleAesGcm(deriveMegaKeyManagerKey(masterKey), iv).encrypt(plaintext));
-  const authTag = encrypted.subarray(encrypted.length - 16);
-  const ciphertext = encrypted.subarray(0, encrypted.length - 16);
-  return Buffer.concat([Buffer.from([20, 0]), iv, ciphertext, authTag]);
 }
 
 function buildMegaRecoveryKeyManagerContainer(payload: MegaKeyManagerRecoveryPayload, masterKey: Buffer): Buffer {
@@ -8864,32 +8191,6 @@ async function fetchMegaUserPublicCu25519(
   }
 }
 
-async function deriveMegaPairwiseKey(privateCu25519: Buffer, publicCu25519: Buffer): Promise<Buffer> {
-  const sharedSecret = Buffer.from(x25519.getSharedSecret(privateCu25519, publicCu25519));
-  const step1 = await signMegaHmacSha256(Buffer.alloc(0), sharedSecret);
-  return (await signMegaHmacSha256(step1, MEGA_PAIRWISE_KEY_LABEL)).subarray(0, 16);
-}
-
-async function signMegaHmacSha256(key: Buffer, data: Buffer): Promise<Buffer> {
-  const normalizedKey = key.length > 64 ? await digestMegaSha256(key) : Buffer.from(key);
-  const paddedKey = Buffer.alloc(64, 0);
-  normalizedKey.copy(paddedKey, 0, 0, Math.min(normalizedKey.length, 64));
-  const innerPad = Buffer.alloc(64);
-  const outerPad = Buffer.alloc(64);
-  for (let index = 0; index < 64; index += 1) {
-    innerPad[index] = paddedKey[index] ^ 0x36;
-    outerPad[index] = paddedKey[index] ^ 0x5c;
-  }
-  const innerDigest = await digestMegaSha256(Buffer.concat([innerPad, data]));
-  return digestMegaSha256(Buffer.concat([outerPad, innerDigest]));
-}
-
-async function digestMegaSha256(data: Buffer): Promise<Buffer> {
-  const crypto = globalThis.crypto?.subtle
-    ? getMegaWebCrypto()
-    : ((await ensureMegaNodeCrypto()).webcrypto as Crypto);
-  return Buffer.from(await crypto.subtle.digest('SHA-256', Uint8Array.from(data)));
-}
 
 function resolveTreeRootHandle(nodesByHandle: ReadonlyMap<string, DecryptedMegaNode>): string {
   for (const node of nodesByHandle.values()) {
@@ -9958,102 +9259,6 @@ function describeMegaSyncFailure(
   };
 }
 
-function validateTemporarySessionId(sessionId: string, masterKey: Buffer): void {
-  const raw = decodeMegaBase64Url(sessionId);
-  if (raw.length < 32) {
-    throw new Error('MEGA temporary session id is invalid.');
-  }
-  const left = raw.subarray(0, 16);
-  const right = raw.subarray(16, 32);
-  if (!encryptAesEcb(left, masterKey).equals(right)) {
-    throw new Error('MEGA temporary session id verification failed.');
-  }
-}
-
-function decryptMegaPrivateKey(encryptedPrivateKey: Buffer, masterKey: Buffer): Buffer {
-  if (encryptedPrivateKey.length === 0 || encryptedPrivateKey.length % 16 !== 0) {
-    throw new Error('MEGA private key payload is invalid.');
-  }
-  return decryptAesEcb(encryptedPrivateKey, masterKey);
-}
-
-function encodeMegaKeyManagerPrivateRsaFromLogin(encryptedPrivateKey: string | undefined, masterKey: Buffer): Buffer {
-  if (!encryptedPrivateKey) {
-    throw new Error('MEGA login response is missing the RSA private key required to rebuild ^!keys.');
-  }
-  const decryptedPrivateKey = decryptMegaPrivateKey(decodeMegaBase64Url(encryptedPrivateKey), masterKey);
-  return extractMegaPrivateKeyComponents(decryptedPrivateKey, 3);
-}
-
-function extractMegaPrivateKeyComponents(value: Buffer, componentCount: number): Buffer {
-  let offset = 0;
-  for (let index = 0; index < componentCount; index += 1) {
-    if (offset + 2 > value.length) {
-      throw new Error('MEGA private key blob is truncated.');
-    }
-    const bitLength = ((value[offset] ?? 0) << 8) + (value[offset + 1] ?? 0);
-    const byteLength = Math.ceil(bitLength / 8);
-    const nextOffset = offset + 2 + byteLength;
-    if (nextOffset > value.length) {
-      throw new Error('MEGA private key blob is malformed.');
-    }
-    offset = nextOffset;
-  }
-  return Buffer.from(value.subarray(0, offset));
-}
-
-function decryptSessionIdFromCsid(ciphertext: Buffer, privateKey: MegaPrivateKey, userHandle: string): string {
-  const cleartext = rsaRawDecryptMpi(ciphertext, privateKey);
-  if (cleartext.length !== 255) {
-    throw new Error(`MEGA session id length is invalid: ${cleartext.length}.`);
-  }
-  const sid = encodeMegaBase64Url(cleartext.subarray(0, 43));
-  const embeddedUserHandle = cleartext.subarray(16, 27).toString('latin1');
-  if (embeddedUserHandle !== userHandle) {
-    throw new Error('MEGA session id user-handle validation failed.');
-  }
-  return sid;
-}
-
-function rsaRawDecryptMpi(ciphertext: Buffer, privateKey: MegaPrivateKey): Buffer {
-  if (ciphertext.length < 2) {
-    throw new Error('MEGA RSA ciphertext is invalid.');
-  }
-  const bitLength = ((ciphertext[0] ?? 0) << 8) + (ciphertext[1] ?? 0);
-  const byteLength = Math.ceil(bitLength / 8);
-  const payload = ciphertext.subarray(2, 2 + byteLength);
-  const decrypted = modPow(bytesToBigInt(payload), privateKey.privateExponent, privateKey.modulus);
-  let result = bigIntToBuffer(decrypted, privateKey.modulusLength);
-  if (result[1] !== 0) {
-    result = Buffer.concat([Buffer.from([0]), result]);
-  }
-  return result.subarray(2);
-}
-
-function decodeMegaPrivateKey(value: Buffer): MegaPrivateKey {
-  const parts: bigint[] = [];
-  let offset = 0;
-  for (let index = 0; index < 4; index += 1) {
-    if (offset + 2 > value.length) {
-      throw new Error('MEGA private key blob is truncated.');
-    }
-    const bitLength = ((value[offset] ?? 0) << 8) + (value[offset + 1] ?? 0);
-    const byteLength = Math.ceil(bitLength / 8);
-    offset += 2;
-    if (offset + byteLength > value.length) {
-      throw new Error('MEGA private key blob is malformed.');
-    }
-    parts.push(bytesToBigInt(value.subarray(offset, offset + byteLength)));
-    offset += byteLength;
-  }
-  const [q, p, d] = parts;
-  return {
-    modulus: p * q,
-    privateExponent: d,
-    modulusLength: bufferLengthForBigInt(p * q),
-  };
-}
-
 async function hasUsableMegaMirror(localPath: string): Promise<boolean> {
   try {
     const fs = await getMegaNodeFs();
@@ -10066,137 +9271,6 @@ async function hasUsableMegaMirror(localPath: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function bytesToBigInt(value: Buffer): bigint {
-  const hex = value.toString('hex');
-  return hex ? BigInt(`0x${hex}`) : 0n;
-}
-
-function bigIntToBuffer(value: bigint, length: number): Buffer {
-  return Buffer.from(value.toString(16).padStart(length * 2, '0'), 'hex');
-}
-
-function bufferLengthForBigInt(value: bigint): number {
-  return Math.ceil(value.toString(16).length / 2);
-}
-
-function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
-  if (modulus === 1n) {
-    return 0n;
-  }
-  let result = 1n;
-  let currentBase = base % modulus;
-  let currentExponent = exponent;
-  while (currentExponent > 0n) {
-    if ((currentExponent & 1n) === 1n) {
-      result = (result * currentBase) % modulus;
-    }
-    currentExponent >>= 1n;
-    currentBase = (currentBase * currentBase) % modulus;
-  }
-  return result;
-}
-
-async function deriveV2PasswordKey(password: string, saltBase64: string): Promise<{ masterKey: Buffer; authKey: Buffer }> {
-  const passwordBytes = new TextEncoder().encode(password);
-  const saltBytes = decodeMegaBase64Url(saltBase64);
-  const subtle = getMegaWebCrypto().subtle;
-  const key = await subtle.importKey('raw', passwordBytes, 'PBKDF2', false, ['deriveBits']);
-  const derived = Buffer.from(
-    await subtle.deriveBits(
-      {
-        name: 'PBKDF2',
-        hash: 'SHA-512',
-        salt: Uint8Array.from(saltBytes),
-        iterations: 100000,
-      },
-      key,
-      256
-    )
-  );
-  return {
-    masterKey: derived.subarray(0, 16),
-    authKey: derived.subarray(16, 32),
-  };
-}
-
-function prepareV1PasswordKey(password: string): Buffer {
-  const words = strToA32(Buffer.from(password, 'utf8'));
-  const keys: Buffer[] = [];
-  for (let index = 0; index < words.length; index += 4) {
-    keys.push(wordsToBuffer([words[index] ?? 0, words[index + 1] ?? 0, words[index + 2] ?? 0, words[index + 3] ?? 0]));
-  }
-
-  let pkey = wordsToBuffer([0x93c467e3, 0x7db0c7a4, 0xd1be3f81, 0x0152cb56]);
-  for (let round = 0; round < 65536; round += 1) {
-    for (const key of keys) {
-      pkey = encryptAesEcb(pkey, key);
-    }
-  }
-  return pkey;
-}
-
-function stringHash(email: string, passwordKey: Buffer): string {
-  const words = strToA32(Buffer.from(email, 'utf8'));
-  const hash = [0, 0, 0, 0];
-  for (let index = 0; index < words.length; index += 1) {
-    hash[index & 3] = (hash[index & 3] ?? 0) ^ (words[index] ?? 0);
-  }
-  let state = wordsToBuffer(hash);
-  for (let round = 0; round < 16384; round += 1) {
-    state = encryptAesEcb(state, passwordKey);
-  }
-  return encodeMegaBase64Url(Buffer.concat([state.subarray(0, 4), state.subarray(8, 12)]));
-}
-
-function strToA32(value: Buffer): number[] {
-  const words = new Array<number>((value.length + 3) >> 2).fill(0);
-  for (let index = 0; index < value.length; index += 1) {
-    words[index >> 2] |= (value[index] ?? 0) << (24 - (index & 3) * 8);
-  }
-  return words;
-}
-
-function wordsToBuffer(words: readonly number[]): Buffer {
-  const buffer = Buffer.alloc(words.length * 4);
-  for (let index = 0; index < words.length; index += 1) {
-    buffer.writeUInt32BE((words[index] ?? 0) >>> 0, index * 4);
-  }
-  return buffer;
-}
-
-function encryptAesEcb(value: Buffer, key: Buffer): Buffer {
-  return Buffer.from(nobleAesEcb(key.subarray(0, 16), { disablePadding: true }).encrypt(value));
-}
-
-function decryptAesEcb(value: Buffer, key: Buffer): Buffer {
-  return Buffer.from(nobleAesEcb(key.subarray(0, 16), { disablePadding: true }).decrypt(value));
-}
-
-type MegaPasswordSessionLogger = Pick<IntegrationRuntime['logger'], 'log'> | undefined;
-
-async function megaApiCommandStandalone<T = Record<string, unknown>>(
-  apiClient: MegaApiClient,
-  command: Record<string, unknown>,
-  session?: MegaSession,
-  signal?: AbortSignal
-): Promise<T> {
-  return withMegaApiRetry(async () => {
-    const response = await apiClient.requestSingle<T | number>(command, {
-      sessionId: session?.sid,
-      signal,
-    });
-    if (typeof response === 'number') {
-      if (response === 0) {
-        return response as T;
-      }
-      const error = new Error(`MEGA API error ${response}.`) as MegaApiError;
-      error.code = response;
-      throw error;
-    }
-    return response;
-  }, signal);
 }
 
 async function clearMegaRubbishBin(
@@ -10312,90 +9386,6 @@ async function rebuildMegaSecurityAttribute(
     throw new Error('MEGA ^!keys rebuild could not be verified.');
   }
   return { generation: verifiedGeneration };
-}
-
-async function createMegaPasswordSession(
-  apiClient: MegaApiClient,
-  logger: MegaPasswordSessionLogger,
-  email: string,
-  password: string,
-  mfaCode?: string
-): Promise<MegaSession> {
-  const trimmedEmail = email.trim();
-  const prelogin = await megaApiCommandStandalone<{ v?: number; s?: string }>(apiClient, { a: 'us0', user: trimmedEmail });
-  const version = Number(prelogin.v ?? 1) || 1;
-
-  let passwordKey: Buffer;
-  let uh: string;
-  let accountSalt: string | undefined;
-
-  if (version > 1) {
-    const salt = String(prelogin.s ?? '').trim();
-    if (!salt) {
-      throw new Error('MEGA did not return an authentication salt for this account.');
-    }
-    const derived = await deriveV2PasswordKey(password, salt);
-    passwordKey = derived.masterKey;
-    uh = encodeMegaBase64Url(derived.authKey);
-    accountSalt = salt;
-  } else {
-    passwordKey = prepareV1PasswordKey(password);
-    uh = stringHash(trimmedEmail.toLowerCase(), passwordKey);
-  }
-
-  const response = await megaApiCommandStandalone<Record<string, unknown>>(apiClient, {
-    a: 'us',
-    user: trimmedEmail,
-    uh,
-    ...(mfaCode ? { mfa: mfaCode } : {}),
-  });
-
-  logger?.log('MEGA login response received.', {
-    email: trimmedEmail,
-    hasTsid: typeof response.tsid === 'string' && response.tsid.trim().length > 0,
-    hasCsid: typeof response.csid === 'string' && response.csid.trim().length > 0,
-    hasPrivk: typeof response.privk === 'string' && response.privk.trim().length > 0,
-    hasSek: typeof response.sek === 'string' && response.sek.trim().length > 0,
-  });
-
-  const encryptedMasterKey = decodeMegaBase64Url(assertString(response.k, 'MEGA login response is missing the encrypted master key.'));
-  const masterKey = decryptAesEcb(encryptedMasterKey, passwordKey);
-  const userHandle = assertString(response.u, 'MEGA login response is missing the user handle.');
-
-  const encryptedPrivateKey = typeof response.privk === 'string' && response.privk.trim() ? response.privk.trim() : undefined;
-  const privateKey = encryptedPrivateKey
-    ? decodeMegaPrivateKey(decryptMegaPrivateKey(decodeMegaBase64Url(encryptedPrivateKey), masterKey))
-    : undefined;
-
-  let sid = typeof response.tsid === 'string' ? response.tsid.trim() : '';
-  if (sid) {
-    logger?.log('Using temporary MEGA session identifier from login response.', {
-      email: trimmedEmail,
-    });
-    validateTemporarySessionId(sid, masterKey);
-  } else {
-    if (!privateKey) {
-      throw new Error('MEGA login response is missing the private key.');
-    }
-    const sidCiphertext = decodeMegaBase64Url(assertString(response.csid, 'MEGA login response is missing the session id.'));
-    sid = decryptSessionIdFromCsid(sidCiphertext, privateKey, userHandle);
-    logger?.log('Using RSA-backed MEGA session identifier from login response.', {
-      email: trimmedEmail,
-    });
-  }
-
-  return {
-    email: trimmedEmail,
-    password,
-    mfaCode,
-    sid,
-    masterKey,
-    encryptedPrivateKey,
-    privateKey,
-    userHandle,
-    accountVersion: version,
-    accountSalt,
-  };
 }
 
 function resolveRubbishBinHandle(snapshot: MegaFetchNodesSnapshot): string | undefined {
