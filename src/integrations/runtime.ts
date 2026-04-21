@@ -54,6 +54,8 @@ export interface MegaOwnerMirrorShareRef {
 export interface MegaOwnerMirrorSource {
   listMirrorFiles(share: MegaOwnerMirrorShareRef): Promise<readonly string[]>;
   readMirrorFile(share: MegaOwnerMirrorShareRef, relativePath: string): Promise<Uint8Array>;
+  /** Subscribe to file writes. Returns an unsubscribe function. */
+  onWrite?: (listener: (relativePath: string) => void) => () => void;
 }
 
 export interface MegaRuntimeConfig {

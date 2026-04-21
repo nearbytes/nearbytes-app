@@ -268,6 +268,7 @@ export class MegaTransportAdapter {
   private readonly syncRetryCooldowns = new Map<string, number>();
   private readonly collaboratorCache = new Map<string, { expiresAt: number; collaborators: ManagedShareCollaborator[] }>();
   private readonly localWatchers = new Map<string, MegaFsWatcher>();
+  private readonly mirrorSourceUnsubscribers = new Map<string, () => void>();
   private readonly scListenerControllers = new Map<string, AbortController>();
   private readonly pendingSyncRetryTimers = new Map<string, RuntimeTimerHandle>();
   private readonly shareScsn = new Map<string, string>();
@@ -314,6 +315,10 @@ export class MegaTransportAdapter {
       void watcher.close();
     }
     this.localWatchers.clear();
+    for (const unsubscribe of this.mirrorSourceUnsubscribers.values()) {
+      unsubscribe();
+    }
+    this.mirrorSourceUnsubscribers.clear();
     for (const controller of this.scListenerControllers.values()) {
       controller.abort();
     }
@@ -1465,7 +1470,7 @@ export class MegaTransportAdapter {
         await ensureMegaOwnerLocalStructure(share.localPath);
       }
       void this.logDevShareInventoryIfChanged(account, 'boot');
-      const ownerLoopRunning = this.localWatchers.has(share.id) || this.syncTimers.has(share.id);
+      const ownerLoopRunning = this.localWatchers.has(share.id) || this.syncTimers.has(share.id) || this.mirrorSourceUnsubscribers.has(share.id);
       if (!ownerLoopRunning) {
         await this.runSyncLoop(share, account);
       }
@@ -1563,6 +1568,8 @@ export class MegaTransportAdapter {
       void watcher.close();
       this.localWatchers.delete(share.id);
     }
+    this.mirrorSourceUnsubscribers.get(share.id)?.();
+    this.mirrorSourceUnsubscribers.delete(share.id);
     const scController = this.scListenerControllers.get(share.id);
     if (scController) {
       scController.abort();
@@ -1938,6 +1945,58 @@ export class MegaTransportAdapter {
     if (this.runtime.mega.ownerMirrorSource) {
       this.startScChannelListener(share, account);
       this.startRecurringSyncTimer(share, account);
+
+      const { onWrite } = this.runtime.mega.ownerMirrorSource;
+      if (onWrite && !this.mirrorSourceUnsubscribers.has(share.id)) {
+        let debounceTimer: RuntimeTimerHandle | null = null;
+        const pendingPaths = new Set<string>();
+        let requiresFullSync = false;
+
+        const unsubscribe = onWrite((relativePath) => {
+          if (
+            relativePath.length > 0 &&
+            isMirrorRelativePath(relativePath) &&
+            !this.shouldSuppressWatcherPath(share.id, relativePath)
+          ) {
+            pendingPaths.add(relativePath);
+          } else {
+            requiresFullSync = true;
+          }
+          if (debounceTimer) {
+            debounceTimer.cancel();
+          }
+          debounceTimer = this.runtime.scheduler.setTimeout(async () => {
+            debounceTimer = null;
+            const paths = [...pendingPaths];
+            pendingPaths.clear();
+            const runFullSync = requiresFullSync || paths.length === 0;
+            requiresFullSync = false;
+            if (runFullSync) {
+              this.requestSyncLoop(share, account).catch((error) => {
+                this.runtime.logger.warn('MEGA mirror-source push sync failed.', error);
+              });
+              return;
+            }
+            try {
+              for (const p of paths) {
+                await this.forceManagedShareUpload(share, account, p);
+              }
+            } catch (error) {
+              this.runtime.logger.warn('MEGA mirror-source per-path push failed; falling back to full sync.', error);
+              this.requestSyncLoop(share, account).catch((syncError) => {
+                this.runtime.logger.warn('MEGA mirror-source push sync failed.', syncError);
+              });
+            }
+          }, MEGA_LOCAL_WATCH_DEBOUNCE_MS);
+        });
+
+        this.mirrorSourceUnsubscribers.set(share.id, unsubscribe);
+        this.runtime.logger.log('MEGA mirror-source write subscription started.', {
+          provider: this.provider,
+          accountId: account.id,
+          shareId: share.id,
+        });
+      }
       return;
     }
 

@@ -99,5 +99,11 @@ export function createStorageBackedMegaOwnerMirrorSource(
     async readMirrorFile(_share, relativePath): Promise<Uint8Array> {
       return storage.readFile(normalizeStoragePath(relativePath));
     },
+
+    onWrite(listener) {
+      return storage.onWrite((event) => {
+        listener(normalizeStoragePath(event.path));
+      });
+    },
   };
 }
