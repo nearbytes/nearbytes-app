@@ -5,7 +5,7 @@ import {
   decryptAesEcb,
   encryptAesEcb,
 } from '../mega/crypto.js';
-import { encodeMegaBase64Url } from '../megaProtocol.js';
+import { encodeMegaBase64Url } from '../mega/protocol.js';
 
 function encodeMegaPrivateAttributeRecord(name: string, payload: Buffer): Buffer {
   if (payload.length > 0xffff) {

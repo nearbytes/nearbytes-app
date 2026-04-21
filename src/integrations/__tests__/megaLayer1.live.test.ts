@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MegaApiClient } from '../megaProtocol.js';
+import { MegaApiClient } from '../mega/protocol.js';
 import { createMegaPasswordSession } from '../mega/auth.js';
 import { loadMegaLiveEnv } from '../mega/liveTestEnv.js';
 

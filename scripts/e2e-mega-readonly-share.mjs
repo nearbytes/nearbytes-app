@@ -141,18 +141,20 @@ async function createPeer(label) {
   const mainRoot = path.join(base, 'main-root');
   const rootsConfigPath = path.join(base, 'roots.json');
   const integrationStatePath = path.join(base, 'integrations.json');
+  const secretsPath = path.join(base, 'integration-secrets.json');
   await mkdir(mainRoot, { recursive: true });
   await writeFile(rootsConfigPath, `${JSON.stringify(createRootsConfig(mainRoot), null, 2)}\n`, 'utf8');
 
   const { MultiRootStorageBackend } = await import('../dist/storage/multiRoot.js');
   const { ManagedShareService } = await import('../dist/integrations/managedShares.js');
+  const { createManagedShareNodeSupport } = await import('../dist/integrations/managedSharesNodeSupport.js');
   const { MegaTransportAdapter } = await import('../dist/integrations/mega.js');
   const { createIntegrationRuntime } = await import('../dist/integrations/runtime.js');
   const { JsonFileSecretStore } = await import('../dist/integrations/secretStore.js');
 
   const storage = new MultiRootStorageBackend(createRootsConfig(mainRoot));
   const runtime = createIntegrationRuntime({
-    secretStore: new JsonFileSecretStore({ filePath: path.join(base, 'integration-secrets.json') }),
+    secretStore: new JsonFileSecretStore({ filePath: secretsPath }),
     mega: { remoteBasePath, syncIntervalMs: SYNC_INTERVAL_MS, syncTimeoutMs: SYNC_TIMEOUT_MS },
     logger: {
       log: (...args) => console.error(`[ro-share][${label}]`, ...args),
@@ -160,7 +162,11 @@ async function createPeer(label) {
     },
   });
   const service = new ManagedShareService({
-    storage, rootsConfigPath, integrationStatePath,
+    storage,
+    rootsConfigPath,
+    ...createManagedShareNodeSupport({ rootsConfigPath, integrationStatePath }),
+    integrationRuntime: runtime,
+    mirrorRoot: mainRoot,
     adapters: [new MegaTransportAdapter(runtime)],
     readMaintenanceMode: 'background',
   });
@@ -232,19 +238,107 @@ async function acceptMegaContactInvites(service, label) {
   }
 }
 
+function normalizeIdentity(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function readDescriptorString(descriptor, key) {
+  const value = descriptor?.[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function matchesRecipientShare(summary, ownerEmail, shareName) {
+  return summary.share.provider === 'mega'
+    && summary.share.role === 'recipient'
+    && normalizeIdentity(summary.share.remoteDescriptor?.ownerEmail) === normalizeIdentity(ownerEmail)
+    && normalizeIdentity(summary.share.remoteDescriptor?.shareName ?? summary.share.label) === normalizeIdentity(shareName);
+}
+
+async function findExistingRecipientShare(service, ownerEmail, shareName) {
+  const shares = await service.listManagedShares({ fast: true });
+  return shares.shares.find((summary) => matchesRecipientShare(summary, ownerEmail, shareName));
+}
+
+async function getOrCreateRecipientShare(service, accountId, descriptor, requestedMirrorDir) {
+  const existing = await findExistingRecipientShare(service, descriptor.ownerEmail, descriptor.shareName);
+  if (existing) {
+    return {
+      shareId: existing.share.id,
+      localPath: existing.share.localPath,
+      reused: true,
+    };
+  }
+
+  await mkdir(requestedMirrorDir, { recursive: true });
+  const accepted = await service.acceptManagedShare({
+    provider: 'mega',
+    accountId,
+    label: descriptor.shareName,
+    localPath: requestedMirrorDir,
+    remoteDescriptor: descriptor,
+  });
+
+  const rebound = await findExistingRecipientShare(service, descriptor.ownerEmail, descriptor.shareName);
+  if (rebound) {
+    return {
+      shareId: rebound.share.id,
+      localPath: rebound.share.localPath,
+      reused: rebound.share.id !== accepted.share.id,
+    };
+  }
+
+  return {
+    shareId: accepted.share.id,
+    localPath: accepted.share.localPath,
+    reused: false,
+  };
+}
+
 async function waitIncomingOffer(service, ownerEmail, shareName, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
+  let seenOffers = [];
   while (Date.now() < deadline) {
+    const existing = await findExistingRecipientShare(service, ownerEmail, shareName);
+    if (existing?.share?.remoteDescriptor) {
+      const existingAccessLevel = readDescriptorString(existing.share.remoteDescriptor, 'accessLevel');
+      return {
+        remotePath: readDescriptorString(existing.share.remoteDescriptor, 'remotePath') ?? `${ownerEmail}:${shareName}`,
+        shareName: readDescriptorString(existing.share.remoteDescriptor, 'shareName') ?? shareName,
+        ownerEmail: readDescriptorString(existing.share.remoteDescriptor, 'ownerEmail') ?? ownerEmail,
+        accessLevel:
+          existingAccessLevel === 'read' ||
+          existingAccessLevel === 'read/write' ||
+          existingAccessLevel === 'full access'
+            ? existingAccessLevel
+            : INVITE_ACCESS_LEVEL,
+        shareHandle: readDescriptorString(existing.share.remoteDescriptor, 'shareHandle'),
+        rootHandle: readDescriptorString(existing.share.remoteDescriptor, 'rootHandle'),
+      };
+    }
     const { shares } = await service.listIncomingManagedShares();
+    seenOffers = shares
+      .filter((offer) => offer.provider === 'mega')
+      .map((offer) => `${normalizeIdentity(offer.remoteDescriptor?.ownerEmail)}:${normalizeIdentity(offer.remoteDescriptor?.shareName ?? offer.label)}`);
     const match = shares.find((o) =>
       o.provider === 'mega' &&
-      o.remoteDescriptor?.ownerEmail === ownerEmail &&
-      o.remoteDescriptor?.shareName === shareName
+      normalizeIdentity(o.remoteDescriptor?.ownerEmail) === normalizeIdentity(ownerEmail) &&
+      normalizeIdentity(o.remoteDescriptor?.shareName ?? o.label) === normalizeIdentity(shareName)
     );
-    if (match?.remoteDescriptor) return match.remoteDescriptor;
+    if (match) {
+      return {
+        remotePath: readDescriptorString(match.remoteDescriptor, 'remotePath') ?? `${ownerEmail}:${shareName}`,
+        shareName: readDescriptorString(match.remoteDescriptor, 'shareName') ?? shareName,
+        ownerEmail: readDescriptorString(match.remoteDescriptor, 'ownerEmail') ?? ownerEmail,
+        accessLevel: INVITE_ACCESS_LEVEL,
+        shareHandle: readDescriptorString(match.remoteDescriptor, 'shareHandle'),
+        rootHandle: readDescriptorString(match.remoteDescriptor, 'rootHandle'),
+      };
+    }
     await sleep(2_000);
   }
-  throw new Error(`No incoming MEGA share offer for ${ownerEmail}:${shareName} within ${timeoutMs}ms`);
+  throw new Error(
+    `No incoming MEGA share offer for ${ownerEmail}:${shareName} within ${timeoutMs}ms${seenOffers.length > 0 ? ` (seen offers: ${seenOffers.join(', ')})` : ''}`
+  );
 }
 
 async function waitMirrorFile(filePath, expectedBytes, timeoutMs) {
@@ -338,21 +432,15 @@ async function main() {
     console.error('[ro-share]    incoming descriptor:', descriptor);
     const bOwnerShare = await pickOwnerShare(peerB.integrationStatePath);
     const mirrorDir = await mkdtemp(path.join(tmpdir(), 'nb-ro-mirror-'));
-    const accepted = await withTimeout('accept share B←A', CONNECT_TIMEOUT_MS, () =>
-      peerB.service.acceptManagedShare({
-        provider: 'mega',
-        accountId: bOwnerShare.accountId,
-        label: remoteShareName,
-        localPath: mirrorDir,
-        remoteDescriptor: descriptor,
-      })
+    const recipient = await withTimeout('accept share B←A', CONNECT_TIMEOUT_MS, () =>
+      getOrCreateRecipientShare(peerB.service, bOwnerShare.accountId, descriptor, mirrorDir)
     );
-    console.error(`[ro-share]    accepted share ${accepted.share.id}, mirror: ${mirrorDir}`);
+    console.error(`[ro-share]    accepted share ${recipient.shareId}, mirror: ${recipient.localPath}${recipient.reused ? ' (reused)' : ''}`);
 
     // ── 6. Wait for B mirror to be ready and verify file-1 ──
     console.error('[ro-share] 7/8 wait mirror ready + verify file-1…');
-    await waitShareReady(peerB.service, accepted.share.id, 'recipientB', RECIPIENT_READY_TIMEOUT_MS);
-    await waitMirrorFile(path.join(mirrorDir, rel1), payload1, MIRROR_FILE_TIMEOUT_MS);
+    await waitShareReady(peerB.service, recipient.shareId, 'recipientB', RECIPIENT_READY_TIMEOUT_MS);
+    await waitMirrorFile(path.join(recipient.localPath, rel1), payload1, MIRROR_FILE_TIMEOUT_MS);
     console.error(`[ro-share]    ✓ file-1 mirrored to B`);
 
     // ── 7. Upload a second file as owner A, verify B picks it up (real-time) ──
@@ -364,7 +452,7 @@ async function main() {
       peerA.service.forceManagedShareUpload(ownerShare.id, rel2)
     );
     console.error(`[ro-share]    uploaded ${rel2}`);
-    await waitMirrorFile(path.join(mirrorDir, rel2), payload2, MIRROR_FILE_TIMEOUT_MS);
+    await waitMirrorFile(path.join(recipient.localPath, rel2), payload2, MIRROR_FILE_TIMEOUT_MS);
     console.error(`[ro-share]    ✓ file-2 mirrored to B`);
 
     console.error(`[ro-share] ✓ ${INVITE_ACCESS_LEVEL.toUpperCase()} SHARE SYNC OK — owner uploads, recipient mirrors in real-time.`);

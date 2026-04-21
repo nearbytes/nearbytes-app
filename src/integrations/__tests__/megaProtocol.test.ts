@@ -14,7 +14,7 @@ import {
   encryptMegaMasterKeyWithSessionKey,
   encodeMegaBase64Url,
   parseMegaFetchNodesSnapshot,
-} from '../megaProtocol.js';
+} from '../mega/protocol.js';
 
 describe('megaProtocol', () => {
   it('round-trips an unencrypted account session dump', () => {

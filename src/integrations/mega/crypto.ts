@@ -9,7 +9,7 @@ import {
   type MegaPrivateKey,
 } from './core.js';
 import { ensureMegaNodeCrypto, getMegaWebCrypto, randomBytes } from './runtime.js';
-import { decodeMegaBase64Url, encodeMegaBase64Url } from '../megaProtocol.js';
+import { decodeMegaBase64Url, encodeMegaBase64Url } from './protocol.js';
 
 export function xorBuffers(left: Buffer, right: Buffer): Buffer {
   const result = Buffer.alloc(Math.min(left.length, right.length));

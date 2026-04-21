@@ -1,7 +1,7 @@
 import { Buffer } from 'buffer';
 import { cbc as nobleAesCbc, ctr as nobleAesCtr, ecb as nobleAesEcb } from '@noble/ciphers/aes.js';
-import { parseMegaJsonResponse } from './megaProtocol.js';
-import { managedSharePath as path } from './managedSharePath.js';
+import { parseMegaJsonResponse } from './protocol.js';
+import { managedSharePath as path } from '../managedSharePath.js';
 
 const MEGA_PUBLIC_API_URL = 'https://g.api.mega.co.nz/cs';
 const ZERO_IV = Buffer.alloc(16, 0);

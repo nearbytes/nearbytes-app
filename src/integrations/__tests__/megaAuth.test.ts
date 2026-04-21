@@ -6,7 +6,7 @@ import {
   extractMegaReusableCredentials,
   isStoredMegaAccountSecret,
 } from '../mega/auth.js';
-import { encodeMegaBase64Url } from '../megaProtocol.js';
+import { encodeMegaBase64Url } from '../mega/protocol.js';
 
 describe('mega/auth', () => {
   it('round-trips persisted share keys and ignores malformed entries', () => {

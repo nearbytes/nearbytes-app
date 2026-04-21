@@ -1,5 +1,5 @@
 import { Buffer } from 'buffer';
-import { MegaApiClient, decodeMegaBase64Url, encodeMegaBase64Url } from '../megaProtocol.js';
+import { MegaApiClient, decodeMegaBase64Url, encodeMegaBase64Url } from './protocol.js';
 import type { MegaAccountSecret, MegaApiError, MegaPrivateKey, MegaSession } from './core.js';
 import {
   decodeMegaPrivateKey,

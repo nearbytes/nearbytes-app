@@ -21,6 +21,7 @@ Supporting runtime and provider-port specifications:
 
 - `storage/shared-path-storage-v0.1.md`
 - `transport/mega-runtime-v0.1.md`
+- `transport/mega-layer-stack-v0.1.md`
 - `transport/phone-mega-port-plan-v0.1.md`
 - `transport/shared-runtime-services-v0.1.md`
 
