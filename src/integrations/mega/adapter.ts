@@ -236,7 +236,6 @@ const {
   MEGA_PENDING_ROOT_DIAGNOSTIC_MIN_INTERVAL_MS,
   MEGA_POST_UPLOAD_SETTLE_MS,
   MEGA_PUT_NODES_PLACEHOLDER_HANDLE,
-  MEGA_RECIPIENT_PRIORITY_WINDOW_MS,
   MEGA_RUNTIME_SOURCE_BLOCK_READ_RETRY_DELAYS_MS,
   MEGA_SC_LISTEN_TIMEOUT_MS,
   MEGA_SHARE_INVITE_NON_CONTACT_USER,
@@ -263,7 +262,6 @@ export class MegaTransportAdapter {
   private readonly syncTasks = new Map<string, Promise<void>>();
   private readonly accountSyncTasks = new Map<string, Promise<unknown>>();
   private readonly activeAccountSyncs = new Map<string, { shareId: string; role: ManagedShare['role'] }>();
-  private readonly accountRecipientPriorityUntil = new Map<string, number>();
   private readonly refreshWorker = new ProviderRefreshWorker();
   private readonly devInventorySignatures = new Map<string, string>();
   private readonly devInventoryRefreshedAt = new Map<string, number>();
@@ -2254,27 +2252,15 @@ export class MegaTransportAdapter {
   }
 
   private async requestSyncLoop(share: ManagedShare, account: ProviderAccount): Promise<void> {
-    if (share.role === 'recipient') {
-      this.markRecipientPriority(account.id);
-    }
-
-    const recipientPriorityDelayMs = this.getRecipientPriorityDelayMs(account.id);
-    if (share.role === 'owner' && recipientPriorityDelayMs > 0) {
-      this.runtime.logger.log('MEGA owner sync deferred while recipient sync is prioritized on the same account.', {
-        accountId: account.id,
-        ownerShareId: share.id,
-        delayMs: recipientPriorityDelayMs,
-      });
-      this.schedulePendingSyncRetry(share, account, recipientPriorityDelayMs);
-      return;
-    }
-
     const cooldownDelayMs = this.getSyncCooldownRemainingMs(share.id);
     if (cooldownDelayMs > 0) {
       this.schedulePendingSyncRetry(share, account, cooldownDelayMs);
       return;
     }
 
+    // Abort a running owner sync when a recipient sync arrives so incoming
+    // changes land immediately. The aborted owner sync will be retried via
+    // withAccountSyncTask serialization once the recipient sync completes.
     this.prioritizeRecipientSync(share, account);
 
     const existing = this.syncTasks.get(share.id);
@@ -2290,7 +2276,6 @@ export class MegaTransportAdapter {
     if (share.role !== 'recipient') {
       return;
     }
-    this.markRecipientPriority(account.id);
     const activeAccountSync = this.activeAccountSyncs.get(account.id);
     if (!activeAccountSync || activeAccountSync.shareId === share.id || activeAccountSync.role !== 'owner') {
       return;
@@ -2307,7 +2292,6 @@ export class MegaTransportAdapter {
     if (share.role !== 'owner' || !account) {
       return;
     }
-    this.accountRecipientPriorityUntil.delete(account.id);
     const activeAccountSync = this.activeAccountSyncs.get(account.id);
     if (!activeAccountSync || activeAccountSync.shareId === share.id || activeAccountSync.role !== 'recipient') {
       return;
@@ -2318,23 +2302,6 @@ export class MegaTransportAdapter {
       recipientShareId: activeAccountSync.shareId,
     });
     this.abortShareSyncTask(activeAccountSync.shareId);
-  }
-
-  private markRecipientPriority(accountId: string, durationMs = MEGA_RECIPIENT_PRIORITY_WINDOW_MS): void {
-    this.accountRecipientPriorityUntil.set(accountId, Date.now() + durationMs);
-  }
-
-  private getRecipientPriorityDelayMs(accountId: string): number {
-    const until = this.accountRecipientPriorityUntil.get(accountId);
-    if (!until) {
-      return 0;
-    }
-    const remainingMs = until - Date.now();
-    if (remainingMs <= 0) {
-      this.accountRecipientPriorityUntil.delete(accountId);
-      return 0;
-    }
-    return remainingMs;
   }
 
   private async logDevShareInventoryIfChanged(account: ProviderAccount, reason: 'boot' | 'change'): Promise<void> {
