@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { promises as fs } from 'fs';
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { FilesystemStorageBackend } from '../../storage/filesystem.js';
-import { ChannelStorage } from '../../storage/channel.js';
+import { FilesystemStorageBackend } from 'nearbytes-storage';
+import { ChannelStorage } from 'nearbytes-storage';
 import { setupChannel, storeData, retrieveData } from '../../domain/operations.js';
 import { createSecret } from 'nearbytes-crypto';
 

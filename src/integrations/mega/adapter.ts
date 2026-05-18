@@ -58,7 +58,7 @@ import { managedSharePath as path } from '../managedSharePath.js';
 import {
   parseCanonicalEventRelativePath,
   validateCanonicalStorageFile,
-} from '../../storage/integrity.js';
+} from 'nearbytes-storage';
 import { MirrorWorker } from '../mirrorWorker.js';
 import type {
   ManagedShareMirrorEntry,

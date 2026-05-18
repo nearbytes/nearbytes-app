@@ -7,7 +7,7 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from '../../domain/fileService.js';
-import { FilesystemStorageBackend } from '../../storage/filesystem.js';
+import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { createApp } from '../app.js';
 
 const SECRET_OPEN = 'nearbytes-open-secret';

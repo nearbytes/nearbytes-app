@@ -6,7 +6,7 @@ import { createCryptoOperations } from 'nearbytes-crypto';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
-import { serializeEvent, serializeEventEnvelope } from '../../storage/serialization.js';
+import { serializeEvent, serializeEventEnvelope } from 'nearbytes-storage';
 import { GoogleDriveTransportAdapter } from '../googleDrive.js';
 import {
   DEFAULT_GOOGLE_DESKTOP_CLIENT_ID,

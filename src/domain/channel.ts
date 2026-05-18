@@ -17,7 +17,7 @@ export class Channel {
    */
   static async create(
     secret: Secret,
-    crypto: import('../crypto/index.js').CryptoOperations,
+    crypto: import('nearbytes-crypto').CryptoOperations,
     storage: StorageBackend,
     pathMapper: ChannelPathMapper = defaultPathMapper
   ): Promise<Channel> {

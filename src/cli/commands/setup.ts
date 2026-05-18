@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { FilesystemStorageBackend } from '../../storage/filesystem.js';
+import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { setupChannel } from '../../domain/operations.js';
 import { green, red } from '../output/colors.js';
 import { validateSecret } from '../validation.js';

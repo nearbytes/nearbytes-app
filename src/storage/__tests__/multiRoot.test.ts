@@ -8,7 +8,7 @@ import { NEARBYTES_MARKER_FILE } from '../../config/sourceDiscovery.js';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { createEncryptedData, EMPTY_HASH, EventType, type EventPayload, type Hash } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
-import { serializeEvent, serializeEventEnvelope } from '../serialization.js';
+import { serializeEvent, serializeEventEnvelope } from 'nearbytes-storage';
 import { MultiRootStorageBackend, type MultiRootRuntimeSnapshot } from '../multiRoot.js';
 import { createSignedEvent } from '../../domain/eventEnvelope.js';
 

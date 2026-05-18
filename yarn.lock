@@ -7511,19 +7511,19 @@ __metadata:
 
 "nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-crypto%40workspace%3A.":
   version: 0.1.0
-  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=76dbfd&locator=nearbytes-crypto%40workspace%3A."
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=229978&locator=nearbytes-crypto%40workspace%3A."
   dependencies:
     "@noble/curves": "npm:^1.9.7"
-  checksum: 10c0/72edc887f93f54ed912bcee670301712e53c2c0feb305cd81e51b3966e328e74f33d54c99228f3c58c106ca1441d4a75b1258cb467d990e1df27403b2caefd9f
+  checksum: 10c0/c7b475eaa1ec3fb46a19777eb262cdc1db25dbe3e0dbc0f483f08cb486d9ab7876af886c2d6a2a01ac2f6710f63b2682f45b5e6e2c596f016243b6ebdda942ed
   languageName: node
   linkType: hard
 
-"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3D7d0b63%26locator%3Dnearbytes-crypto%2540workspace%253A.":
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3D516fe7%26locator%3Dnearbytes-crypto%2540workspace%253A.":
   version: 0.1.0
-  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=76dbfd&locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3D7d0b63%26locator%3Dnearbytes-crypto%2540workspace%253A."
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=229978&locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3D516fe7%26locator%3Dnearbytes-crypto%2540workspace%253A."
   dependencies:
     "@noble/curves": "npm:^1.9.7"
-  checksum: 10c0/72edc887f93f54ed912bcee670301712e53c2c0feb305cd81e51b3966e328e74f33d54c99228f3c58c106ca1441d4a75b1258cb467d990e1df27403b2caefd9f
+  checksum: 10c0/c7b475eaa1ec3fb46a19777eb262cdc1db25dbe3e0dbc0f483f08cb486d9ab7876af886c2d6a2a01ac2f6710f63b2682f45b5e6e2c596f016243b6ebdda942ed
   languageName: node
   linkType: hard
 
@@ -7571,10 +7571,10 @@ __metadata:
 
 "nearbytes-storage@file:../nearbytes-storage::locator=nearbytes-crypto%40workspace%3A.":
   version: 0.1.0
-  resolution: "nearbytes-storage@file:../nearbytes-storage#../nearbytes-storage::hash=7d0b63&locator=nearbytes-crypto%40workspace%3A."
+  resolution: "nearbytes-storage@file:../nearbytes-storage#../nearbytes-storage::hash=516fe7&locator=nearbytes-crypto%40workspace%3A."
   dependencies:
     nearbytes-crypto: "file:../nearbytes-crypto"
-  checksum: 10c0/dbba229c6c36acbf0c4f196a44e96989e2b891f50d6d3b66bb7f8a9891195464a69a166fbb52718f0e6abf1ea4ed52d62a119251742c5fc936106a68bc581610
+  checksum: 10c0/f76a779fad7bc9f4542b8b9db743c653f9a9fa5838bd66706ddcac889e25e357e74d70c3abecec1f26701325d596ab876684216423c616074f86689460105b48
   languageName: node
   linkType: hard
 

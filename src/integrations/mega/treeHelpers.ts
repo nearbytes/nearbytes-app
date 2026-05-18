@@ -79,8 +79,8 @@ import {
   normalizeMegaRemoteDisplayPath,
   xorBuffers,
 } from './shareHelpers.js';
-import { deserializeEvent } from '../../storage/serialization.js';
-import { normalizeVolumeId, parseCanonicalEventRelativePath } from '../../storage/integrity.js';
+import { deserializeEvent } from 'nearbytes-storage';
+import { normalizeVolumeId, parseCanonicalEventRelativePath } from 'nearbytes-storage';
 import type { SerializedEvent } from 'nearbytes-crypto';
 import type { MirrorRemoteEntry } from '../adapters.js';
 import { managedSharePath as path } from '../managedSharePath.js';

@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { FilesystemStorageBackend } from '../../storage/filesystem.js';
-import { ChannelStorage } from '../../storage/channel.js';
+import { FilesystemStorageBackend } from 'nearbytes-storage';
+import { ChannelStorage } from 'nearbytes-storage';
 import { openVolume, materializeVolume, listFiles } from '../../domain/volume.js';
 import { green, red, yellow } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
