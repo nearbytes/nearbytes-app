@@ -13,13 +13,13 @@ import type {
   NearbytesRootNormalizationResult,
 } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
-import { normalizeVolumeId, parseCanonicalEventRelativePath } from '../storage/integrity.js';
+import { normalizeVolumeId, parseCanonicalEventRelativePath } from 'nearbytes-storage';
 import type {
   MultiRootRuntimeSnapshot,
   RootConsolidationResult,
   SourceConflictResolutionResult,
 } from '../storage/multiRoot.js';
-import type { StorageWriteEvent, StorageWriteListener } from '../types/storage.js';
+import type { StorageWriteEvent, StorageWriteListener } from 'nearbytes-storage';
 import {
   type ManagedShareMirrorEntry,
   type ManagedShareReceiveProbe,

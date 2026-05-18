@@ -14,18 +14,18 @@ import {
   normalizeNearbytesRoot,
   NEARBYTES_IGNORED_ROOT_FILES,
 } from '../config/sourceDiscovery.js';
-import { type SerializedEvent } from '../types/events.js';
-import { StorageError } from '../types/errors.js';
-import type { StorageBackend, StorageWriteEvent, StorageWriteListener } from '../types/storage.js';
-import { FilesystemStorageBackend } from './filesystem.js';
+import { type SerializedEvent } from 'nearbytes-crypto';
+import { StorageError } from 'nearbytes-crypto';
+import type { StorageBackend, StorageWriteEvent, StorageWriteListener } from 'nearbytes-storage';
+import { FilesystemStorageBackend } from 'nearbytes-storage';
 import {
   normalizeVolumeId,
   parseCanonicalEventRelativePath,
   validateBlockBytes,
   validateEventBytes,
   type IntegrityValidationResult,
-} from './integrity.js';
-import { deserializeEvent } from './serialization.js';
+} from 'nearbytes-storage';
+import { deserializeEvent } from 'nearbytes-storage';
 
 const CHANNEL_PATH_REGEX = /^channels\/([a-f0-9]{130})(?:\/|$)/i;
 const BLOCK_PATH_REGEX = /^blocks\/([a-f0-9]{64})(?:\.bin)?$/i;

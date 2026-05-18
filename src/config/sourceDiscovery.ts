@@ -2,7 +2,7 @@ import { promises as fs, type Dirent, type Stats } from 'fs';
 import os from 'os';
 import path from 'path';
 import type { RootProvider, SourceConfigEntry } from './roots.js';
-import { normalizeVolumeId } from '../storage/integrity.js';
+import { normalizeVolumeId } from 'nearbytes-storage';
 
 export interface DiscoveredNearbytesSource {
   readonly provider: RootProvider;

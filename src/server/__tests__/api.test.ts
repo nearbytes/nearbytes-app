@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
-import { createCryptoOperations } from '../../crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from '../../domain/fileService.js';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';

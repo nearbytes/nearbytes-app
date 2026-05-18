@@ -1,14 +1,14 @@
-import type { Secret } from '../types/keys.js';
-import type { FileMetadata, FileSystemState, Volume } from '../types/volume.js';
-import type { Hash } from '../types/events.js';
-import type { CryptoOperations } from '../crypto/index.js';
-import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
-import { ChannelStorage } from '../storage/channel.js';
-import { defaultPathMapper } from '../types/storage.js';
+import type { Secret } from 'nearbytes-crypto';
+import type { FileMetadata, FileSystemState, Volume } from 'nearbytes-storage';
+import type { Hash } from 'nearbytes-crypto';
+import type { CryptoOperations } from 'nearbytes-crypto';
+import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
+import { ChannelStorage } from 'nearbytes-storage';
+import { defaultPathMapper } from 'nearbytes-storage';
 import { openVolume, materializeVolume, getFile, listFiles, loadEventLog } from '../domain/volume.js';
 import { storeData, deleteFile, retrieveData } from '../domain/operations.js';
-import { bytesToHex } from '../utils/encoding.js';
-import type { EventLogEntry } from '../types/volume.js';
+import { bytesToHex } from 'nearbytes-crypto';
+import type { EventLogEntry } from 'nearbytes-storage';
 
 /**
  * Result of opening a volume

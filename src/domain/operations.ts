@@ -1,14 +1,14 @@
-import type { Secret, PublicKey } from '../types/keys.js';
-import type { Hash, EventPayload } from '../types/events.js';
-import { EventType } from '../types/events.js';
-import type { CryptoOperations } from '../crypto/index.js';
-import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
-import { ChannelStorage } from '../storage/channel.js';
-import { defaultPathMapper } from '../types/storage.js';
-import { createEncryptedData } from '../types/events.js';
-import { createSymmetricKey } from '../types/keys.js';
-import { computeHash } from '../crypto/hash.js';
-import { serializeEventEnvelope } from '../storage/serialization.js';
+import type { Secret, PublicKey } from 'nearbytes-crypto';
+import type { Hash, EventPayload } from 'nearbytes-crypto';
+import { EventType } from 'nearbytes-crypto';
+import type { CryptoOperations } from 'nearbytes-crypto';
+import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
+import { ChannelStorage } from 'nearbytes-storage';
+import { defaultPathMapper } from 'nearbytes-storage';
+import { createEncryptedData } from 'nearbytes-crypto';
+import { createSymmetricKey } from 'nearbytes-crypto';
+import { computeHash } from 'nearbytes-crypto';
+import { serializeEventEnvelope } from 'nearbytes-storage';
 import { createSignedEvent, hydrateSignedEvent } from './eventEnvelope.js';
 
 /**

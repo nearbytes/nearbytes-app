@@ -1,8 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { MulterError } from 'multer';
-import { ValidationError, StorageError } from '../types/errors.js';
-import { DecryptionError } from '../crypto/errors.js';
+import { ValidationError, StorageError } from 'nearbytes-crypto';
+import { DecryptionError } from 'nearbytes-crypto';
 
 /**
  * Error codes returned by the API.

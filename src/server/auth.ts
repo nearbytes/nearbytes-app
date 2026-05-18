@@ -1,8 +1,8 @@
 import type { Request } from 'express';
-import type { Secret } from '../types/keys.js';
-import { createSecret } from '../types/keys.js';
+import type { Secret } from 'nearbytes-crypto';
+import { createSecret } from 'nearbytes-crypto';
 import { ApiError } from './errors.js';
-import { base64ToBytes, base64UrlToBytes, hexToBytes } from '../utils/encoding.js';
+import { base64ToBytes, base64UrlToBytes, hexToBytes } from 'nearbytes-crypto';
 import type { SecretSessionStore } from './secretSessions.js';
 
 const AES_GCM_IV_LENGTH = 12;

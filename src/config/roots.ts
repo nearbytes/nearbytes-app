@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { z } from 'zod';
-import { normalizeVolumeId } from '../storage/integrity.js';
+import { normalizeVolumeId } from 'nearbytes-storage';
 
 export type RootProvider = 'local' | 'dropbox' | 'mega' | 'gdrive' | 'icloud' | 'onedrive';
 export type StorageFullPolicy = 'block-writes' | 'drop-older-blocks';

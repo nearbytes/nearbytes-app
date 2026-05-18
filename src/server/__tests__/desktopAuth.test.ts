@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createCryptoOperations } from '../../crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from '../../domain/fileService.js';
 import { type RootsConfig } from '../../config/roots.js';

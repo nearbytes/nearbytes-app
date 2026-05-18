@@ -1,9 +1,9 @@
-import type { CryptoOperations } from '../crypto/index.js';
-import type { EncryptedData, Hash } from '../types/events.js';
-import { createEncryptedData } from '../types/events.js';
-import type { PrivateKey, PublicKey, SymmetricKey } from '../types/keys.js';
-import { createPublicKey, createSymmetricKey } from '../types/keys.js';
-import { bytesToHex, bytesToBase64Url, base64UrlToBytes, hexToBytes } from '../utils/encoding.js';
+import type { CryptoOperations } from 'nearbytes-crypto';
+import type { EncryptedData, Hash } from 'nearbytes-crypto';
+import { createEncryptedData } from 'nearbytes-crypto';
+import type { PrivateKey, PublicKey, SymmetricKey } from 'nearbytes-crypto';
+import { createPublicKey, createSymmetricKey } from 'nearbytes-crypto';
+import { bytesToHex, bytesToBase64Url, base64UrlToBytes, hexToBytes } from 'nearbytes-crypto';
 import type { ContentDescriptor } from './fileReferenceCodec.js';
 import { canonicalJsonBytes } from './fileReferenceCodec.js';
 

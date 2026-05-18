@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { promises as fs } from 'fs';
-import { createCryptoOperations } from '../../crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';
 import { ChannelStorage } from '../../storage/channel.js';
 import { setupChannel, storeData, retrieveData } from '../../domain/operations.js';
-import { createSecret } from '../../types/keys.js';
+import { createSecret } from 'nearbytes-crypto';
 
 const TEST_DATA_DIR = './test-data';
 

@@ -1,11 +1,11 @@
 import type { Command } from 'commander';
-import { createCryptoOperations } from '../../crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';
 import { ChannelStorage } from '../../storage/channel.js';
 import { setupChannel } from '../../domain/operations.js';
 import { red } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
-import { getDefaultStorageDir } from '../../storagePath.js';
+import { getDefaultStorageDir } from 'nearbytes-storage';
 import {
   formatEventsAsJson,
   formatEventsAsTable,

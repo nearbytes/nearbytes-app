@@ -1,5 +1,5 @@
-import type { DecryptedEvent, Hash } from '../types/events.js';
-import type { PublicKey } from '../types/keys.js';
+import type { DecryptedEvent, Hash } from 'nearbytes-crypto';
+import type { PublicKey } from 'nearbytes-crypto';
 
 /**
  * Event domain model
@@ -22,7 +22,7 @@ export class Event {
   /**
    * Gets the encrypted key from the event payload
    */
-  get encryptedKey(): import('../types/events.js').EncryptedData {
+  get encryptedKey(): import('nearbytes-crypto').EncryptedData {
     return this.signedEvent.payload.encryptedKey;
   }
 }

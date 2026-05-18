@@ -1,7 +1,7 @@
-import { createCryptoOperations, type CryptoOperations } from '../crypto/index.js';
+import { createCryptoOperations, type CryptoOperations } from 'nearbytes-crypto';
 import { createChatService, type ChatService } from '../domain/chatService.js';
 import { createFileService, type FileService } from '../domain/fileService.js';
-import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
+import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
 import type { RuntimeVolumeEventPublisher } from './volumeEvents.js';
 
 // Shared service bundle per docs/specs/transport/shared-runtime-services-v0.1.md.

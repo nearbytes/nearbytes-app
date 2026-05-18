@@ -81,7 +81,7 @@ import {
 } from './shareHelpers.js';
 import { deserializeEvent } from '../../storage/serialization.js';
 import { normalizeVolumeId, parseCanonicalEventRelativePath } from '../../storage/integrity.js';
-import type { SerializedEvent } from '../../types/events.js';
+import type { SerializedEvent } from 'nearbytes-crypto';
 import type { MirrorRemoteEntry } from '../adapters.js';
 import { managedSharePath as path } from '../managedSharePath.js';
 import type { ManagedShare } from '../types.js';

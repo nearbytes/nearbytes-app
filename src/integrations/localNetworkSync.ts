@@ -3,9 +3,9 @@ import os from 'os';
 import path from 'path';
 import { promises as fs } from 'fs';
 import { MultiRootStorageBackend, type VolumeSyncInventory } from '../storage/multiRoot.js';
-import { normalizeHash, normalizeVolumeId, validateBlockBytes, validateEventBytes } from '../storage/integrity.js';
-import { deserializeEvent } from '../storage/serialization.js';
-import { getDefaultRuntimeHomeDir, resolveStorageHomeDir } from '../storagePath.js';
+import { normalizeHash, normalizeVolumeId, validateBlockBytes, validateEventBytes } from 'nearbytes-storage';
+import { deserializeEvent } from 'nearbytes-storage';
+import { getDefaultRuntimeHomeDir, resolveStorageHomeDir } from 'nearbytes-storage';
 import { PersistentProviderQueue, type ProviderQueueObservationPage } from './providerQueue.js';
 import type { ProviderQueueObservation } from './types.js';
 import type {
@@ -822,7 +822,7 @@ export class LocalNetworkSyncService {
     await this.storage.writeFileForChannel(relativePath, bytes, normalizedVolumeId);
     this.publishImportedEvent(normalizedVolumeId, normalizedEventHash, relativePath);
     let importedBlocks = 0;
-    const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(bytes)) as import('../types/events.js').SerializedEvent);
+    const parsed = deserializeEvent(JSON.parse(new TextDecoder().decode(bytes)) as import('nearbytes-crypto').SerializedEvent);
     for (const blockHash of parsed.envelope.blockRefs) {
       importedBlocks += await this.importBlockFromStorageCommand(peer, blockHash).then((result) => result.importedBlocks);
     }

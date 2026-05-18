@@ -1,6 +1,6 @@
 import { red, yellow } from './output/colors.js';
-import { ValidationError } from '../types/errors.js';
-import { StorageError } from '../types/errors.js';
+import { ValidationError } from 'nearbytes-crypto';
+import { StorageError } from 'nearbytes-crypto';
 
 /**
  * Handles errors in CLI commands

@@ -1,4 +1,4 @@
-import { base64UrlToBytes, bytesToBase64Url, hexToBytes } from '../utils/encoding.js';
+import { base64UrlToBytes, bytesToBase64Url, hexToBytes } from 'nearbytes-crypto';
 
 export type FileContentType = 'b' | 'm';
 

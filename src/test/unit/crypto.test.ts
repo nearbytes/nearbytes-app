@@ -1,7 +1,7 @@
 import { createECDH, randomBytes } from 'crypto';
 import { describe, it, expect } from 'vitest';
-import { createCryptoOperations } from '../../crypto/index.js';
-import { createSecret } from '../../types/keys.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
+import { createSecret } from 'nearbytes-crypto';
 
 describe('CryptoOperations', () => {
   const crypto = createCryptoOperations();

@@ -1,5 +1,5 @@
-import { base64UrlToBytes } from '../utils/encoding.js';
-import { normalizeVolumeId } from '../storage/integrity.js';
+import { base64UrlToBytes } from 'nearbytes-crypto';
+import { normalizeVolumeId } from 'nearbytes-storage';
 import { canonicalJsonString } from './fileReferenceCodec.js';
 import type {
   JoinLink,

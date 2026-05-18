@@ -11,7 +11,7 @@ import {
   type VolumePolicyEntry,
 } from './roots.js';
 import { discoverNearbytesRoots } from './sourceDiscovery.js';
-import { normalizeVolumeId } from '../storage/integrity.js';
+import { normalizeVolumeId } from 'nearbytes-storage';
 
 export type DiscoveryAction =
   | 'added-source'

@@ -1,14 +1,14 @@
-import type { CryptoOperations } from '../crypto/index.js';
-import type { DecryptedEvent, EventPayload, Hash, SignedEvent } from '../types/events.js';
-import { EVENT_ENVELOPE_VERSION, createEncryptedData } from '../types/events.js';
-import type { KeyPair, PrivateKey, PublicKey } from '../types/keys.js';
-import { bytesToHex } from '../utils/encoding.js';
+import type { CryptoOperations } from 'nearbytes-crypto';
+import type { DecryptedEvent, EventPayload, Hash, SignedEvent } from 'nearbytes-crypto';
+import { EVENT_ENVELOPE_VERSION, createEncryptedData } from 'nearbytes-crypto';
+import type { KeyPair, PrivateKey, PublicKey } from 'nearbytes-crypto';
+import { bytesToHex } from 'nearbytes-crypto';
 import {
   deserializeInnerEventPayload,
   serializeEventEnvelope,
   serializeInnerEventPayload,
   withDecryptedPayload,
-} from '../storage/serialization.js';
+} from 'nearbytes-storage';
 
 export async function createSignedEvent(
   crypto: CryptoOperations,

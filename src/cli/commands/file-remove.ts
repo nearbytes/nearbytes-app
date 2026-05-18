@@ -1,13 +1,13 @@
 import type { Command } from 'commander';
-import { createCryptoOperations } from '../../crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';
 import { ChannelStorage } from '../../storage/channel.js';
 import { openVolume, materializeVolume, getFile } from '../../domain/volume.js';
 import { deleteFile } from '../../domain/operations.js';
 import { green, red, yellow } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
-import { defaultPathMapper } from '../../types/storage.js';
-import { getDefaultStorageDir } from '../../storagePath.js';
+import { defaultPathMapper } from 'nearbytes-storage';
+import { getDefaultStorageDir } from 'nearbytes-storage';
 
 export interface FileRemoveOptions {
   name: string;

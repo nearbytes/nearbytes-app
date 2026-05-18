@@ -1,13 +1,13 @@
 import type { Command } from 'commander';
 import { readFile } from 'fs/promises';
 import { basename } from 'path';
-import { createCryptoOperations } from '../../crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from '../../storage/filesystem.js';
 import { ChannelStorage } from '../../storage/channel.js';
 import { storeData } from '../../domain/operations.js';
 import { green, red } from '../output/colors.js';
 import { validateSecret, validateFilePath } from '../validation.js';
-import { getDefaultStorageDir } from '../../storagePath.js';
+import { getDefaultStorageDir } from 'nearbytes-storage';
 
 export interface StoreOptions {
   file: string;

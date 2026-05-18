@@ -7509,6 +7509,24 @@ __metadata:
   languageName: node
   linkType: hard
 
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-crypto%40workspace%3A.":
+  version: 0.1.0
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=76dbfd&locator=nearbytes-crypto%40workspace%3A."
+  dependencies:
+    "@noble/curves": "npm:^1.9.7"
+  checksum: 10c0/72edc887f93f54ed912bcee670301712e53c2c0feb305cd81e51b3966e328e74f33d54c99228f3c58c106ca1441d4a75b1258cb467d990e1df27403b2caefd9f
+  languageName: node
+  linkType: hard
+
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3D7d0b63%26locator%3Dnearbytes-crypto%2540workspace%253A.":
+  version: 0.1.0
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=76dbfd&locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3D7d0b63%26locator%3Dnearbytes-crypto%2540workspace%253A."
+  dependencies:
+    "@noble/curves": "npm:^1.9.7"
+  checksum: 10c0/72edc887f93f54ed912bcee670301712e53c2c0feb305cd81e51b3966e328e74f33d54c99228f3c58c106ca1441d4a75b1258cb467d990e1df27403b2caefd9f
+  languageName: node
+  linkType: hard
+
 "nearbytes-crypto@workspace:.":
   version: 0.0.0-use.local
   resolution: "nearbytes-crypto@workspace:."
@@ -7537,6 +7555,8 @@ __metadata:
     eslint: "npm:^8.54.0"
     express: "npm:^4.22.1"
     multer: "npm:^2.0.2"
+    nearbytes-crypto: "file:../nearbytes-crypto"
+    nearbytes-storage: "file:../nearbytes-storage"
     prettier: "npm:^3.1.0"
     supertest: "npm:^7.2.2"
     typescript: "npm:^5.3.2"
@@ -7548,6 +7568,15 @@ __metadata:
     nearbytes: ./dist/cli/index.js
   languageName: unknown
   linkType: soft
+
+"nearbytes-storage@file:../nearbytes-storage::locator=nearbytes-crypto%40workspace%3A.":
+  version: 0.1.0
+  resolution: "nearbytes-storage@file:../nearbytes-storage#../nearbytes-storage::hash=7d0b63&locator=nearbytes-crypto%40workspace%3A."
+  dependencies:
+    nearbytes-crypto: "file:../nearbytes-crypto"
+  checksum: 10c0/dbba229c6c36acbf0c4f196a44e96989e2b891f50d6d3b66bb7f8a9891195464a69a166fbb52718f0e6abf1ea4ed52d62a119251742c5fc936106a68bc581610
+  languageName: node
+  linkType: hard
 
 "nearbytes-ui-designer@workspace:ui-designer":
   version: 0.0.0-use.local

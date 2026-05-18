@@ -1,17 +1,17 @@
-import type { KeyPair, Secret } from '../types/keys.js';
-import { createSecret } from '../types/keys.js';
-import type { CryptoOperations } from '../crypto/index.js';
-import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
-import type { EventPayload, Hash, EncryptedData, SerializedEvent } from '../types/events.js';
-import { createEncryptedData, EMPTY_HASH, EventType, createHash } from '../types/events.js';
-import { DecryptionError } from '../crypto/errors.js';
-import { ChannelStorage } from '../storage/channel.js';
-import { validateBlockBytes } from '../storage/integrity.js';
-import { defaultPathMapper } from '../types/storage.js';
-import { serializeEvent, serializeEventEnvelope, serializeInnerEventPayloadJson } from '../storage/serialization.js';
+import type { KeyPair, Secret } from 'nearbytes-crypto';
+import { createSecret } from 'nearbytes-crypto';
+import type { CryptoOperations } from 'nearbytes-crypto';
+import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
+import type { EventPayload, Hash, EncryptedData, SerializedEvent } from 'nearbytes-crypto';
+import { createEncryptedData, EMPTY_HASH, EventType, createHash } from 'nearbytes-crypto';
+import { DecryptionError } from 'nearbytes-crypto';
+import { ChannelStorage } from 'nearbytes-storage';
+import { validateBlockBytes } from 'nearbytes-storage';
+import { defaultPathMapper } from 'nearbytes-storage';
+import { serializeEvent, serializeEventEnvelope, serializeInnerEventPayloadJson } from 'nearbytes-storage';
 import { openVolume, loadEventLog, verifyEventLog } from './volume.js';
 import type { FileMetadata } from './fileEvents.js';
-import type { EventLogEntry } from '../types/volume.js';
+import type { EventLogEntry } from 'nearbytes-storage';
 import {
   parseChatMessageJson,
   parseIdentityRecordJson,

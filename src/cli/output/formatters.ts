@@ -1,4 +1,4 @@
-import type { Hash } from '../../types/events.js';
+import type { Hash } from 'nearbytes-crypto';
 
 export type OutputFormat = 'json' | 'table' | 'plain';
 

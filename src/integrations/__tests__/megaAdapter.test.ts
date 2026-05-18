@@ -13,11 +13,11 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCryptoOperations } from '../../crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { serializeEvent, serializeEventEnvelope } from '../../storage/serialization.js';
-import { createEncryptedData, EMPTY_HASH, EventType } from '../../types/events.js';
-import { createSecret } from '../../types/keys.js';
+import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
+import { createSecret } from 'nearbytes-crypto';
 import { createSignedEvent } from '../../domain/eventEnvelope.js';
 import {
   decodeMegaPrivateAttributeRecordsForTesting,

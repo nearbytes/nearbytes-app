@@ -1,6 +1,6 @@
-import { createSecret } from '../types/keys.js';
-import { createHash as createHashType } from '../types/events.js';
-import { ValidationError } from '../types/errors.js';
+import { createSecret } from 'nearbytes-crypto';
+import { createHash as createHashType } from 'nearbytes-crypto';
+import { ValidationError } from 'nearbytes-crypto';
 import { readFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname } from 'path';
@@ -8,7 +8,7 @@ import { dirname } from 'path';
 /**
  * Validates a secret string
  */
-export function validateSecret(secret: string): import('../types/keys.js').Secret {
+export function validateSecret(secret: string): import('nearbytes-crypto').Secret {
   try {
     return createSecret(secret);
   } catch (error) {
@@ -21,7 +21,7 @@ export function validateSecret(secret: string): import('../types/keys.js').Secre
 /**
  * Validates a hash string
  */
-export function validateHash(hash: string): import('../types/events.js').Hash {
+export function validateHash(hash: string): import('nearbytes-crypto').Hash {
   try {
     return createHashType(hash);
   } catch (error) {

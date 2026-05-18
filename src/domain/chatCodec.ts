@@ -1,8 +1,8 @@
-import type { CryptoOperations } from '../crypto/index.js';
-import type { KeyPair, PublicKey } from '../types/keys.js';
-import { createPublicKey } from '../types/keys.js';
-import { createHash, createSignature } from '../types/events.js';
-import { base64UrlToBytes, bytesToBase64Url, bytesToHex, hexToBytes } from '../utils/encoding.js';
+import type { CryptoOperations } from 'nearbytes-crypto';
+import type { KeyPair, PublicKey } from 'nearbytes-crypto';
+import { createPublicKey } from 'nearbytes-crypto';
+import { createHash, createSignature } from 'nearbytes-crypto';
+import { base64UrlToBytes, bytesToBase64Url, bytesToHex, hexToBytes } from 'nearbytes-crypto';
 import {
   canonicalJsonBytes,
   canonicalJsonString,

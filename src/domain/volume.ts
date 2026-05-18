@@ -1,12 +1,12 @@
-import type { Secret } from '../types/keys.js';
-import { EventType } from '../types/events.js';
-import type { CryptoOperations } from '../crypto/index.js';
-import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
-import type { Volume, FileSystemState, FileMetadata, EventLogEntry } from '../types/volume.js';
-import { createVolume } from '../types/volume.js';
-import { ChannelStorage } from '../storage/channel.js';
-import { defaultPathMapper } from '../types/storage.js';
-import { serializeEventEnvelope } from '../storage/serialization.js';
+import type { Secret } from 'nearbytes-crypto';
+import { EventType } from 'nearbytes-crypto';
+import type { CryptoOperations } from 'nearbytes-crypto';
+import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
+import type { Volume, FileSystemState, FileMetadata, EventLogEntry } from 'nearbytes-storage';
+import { createVolume } from 'nearbytes-storage';
+import { ChannelStorage } from 'nearbytes-storage';
+import { defaultPathMapper } from 'nearbytes-storage';
+import { serializeEventEnvelope } from 'nearbytes-storage';
 import { eventEnvelopePublicKeyMatches, hydrateSignedEvent } from './eventEnvelope.js';
 
 /**

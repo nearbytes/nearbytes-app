@@ -3,11 +3,11 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RootsConfig } from '../../config/roots.js';
-import { createCryptoOperations } from '../../crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { createFileService } from '../../domain/fileService.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import type { VolumeSyncInventory } from '../../storage/multiRoot.js';
-import { createSecret } from '../../types/keys.js';
+import { createSecret } from 'nearbytes-crypto';
 import { type LanPeerTransport, type LanPeerTransportCallbacks, type LanPeerTransportResponse, type LanTransportDiscoveredPeer, type LanTransportRpcRequest } from '../lanPeerTransport.js';
 import { LocalNetworkSyncService } from '../localNetworkSync.js';
 

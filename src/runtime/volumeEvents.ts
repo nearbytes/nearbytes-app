@@ -1,4 +1,4 @@
-import { normalizeVolumeId } from '../storage/integrity.js';
+import { normalizeVolumeId } from 'nearbytes-storage';
 
 // Shared semantic event path per docs/specs/transport/runtime-volume-events-v0.1.md.
 export type RuntimeVolumeEventProducer = 'filesystem' | 'lan' | 'mega';

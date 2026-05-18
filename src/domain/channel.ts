@@ -1,6 +1,6 @@
-import type { PublicKey, Secret } from '../types/keys.js';
-import type { StorageBackend, ChannelPathMapper } from '../types/storage.js';
-import { defaultPathMapper } from '../types/storage.js';
+import type { PublicKey, Secret } from 'nearbytes-crypto';
+import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
+import { defaultPathMapper } from 'nearbytes-storage';
 
 /**
  * Channel domain model

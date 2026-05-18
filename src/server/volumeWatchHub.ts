@@ -2,7 +2,7 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'path';
 import type { RootProvider } from '../config/roots.js';
 import { isMultiRootStorageBackend } from '../storage/multiRoot.js';
-import type { StorageBackend } from '../types/storage.js';
+import type { StorageBackend } from 'nearbytes-storage';
 import { debugServerLog } from './debug.js';
 import type { RuntimeVolumeEventPublisher } from './volumeEventBus.js';
 

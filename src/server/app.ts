@@ -2,10 +2,10 @@ import express, { type RequestHandler } from 'express';
 import cors from 'cors';
 import path from 'path';
 import { existsSync } from 'fs';
-import type { CryptoOperations } from '../crypto/index.js';
+import type { CryptoOperations } from 'nearbytes-crypto';
 import type { ChatService } from '../domain/chatService.js';
 import type { FileService } from '../domain/fileService.js';
-import type { StorageBackend } from '../types/storage.js';
+import type { StorageBackend } from 'nearbytes-storage';
 import { createRoutes } from './routes.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 import {
