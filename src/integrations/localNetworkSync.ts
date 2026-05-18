@@ -5,7 +5,7 @@ import { promises as fs } from 'fs';
 import { MultiRootStorageBackend, type VolumeSyncInventory } from '../storage/multiRoot.js';
 import { normalizeHash, normalizeVolumeId, validateBlockBytes, validateEventBytes } from 'nearbytes-storage';
 import { deserializeEvent } from 'nearbytes-storage';
-import { getDefaultRuntimeHomeDir, resolveStorageHomeDir } from 'nearbytes-storage';
+import { getDefaultRuntimeHomeDir, resolveStorageHomeDir } from '../storagePath.js';
 import { PersistentProviderQueue, type ProviderQueueObservationPage } from './providerQueue.js';
 import type { ProviderQueueObservation } from './types.js';
 import type {

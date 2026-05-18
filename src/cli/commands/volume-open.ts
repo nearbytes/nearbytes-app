@@ -6,7 +6,7 @@ import { openVolume, materializeVolume } from '../../domain/volume.js';
 import { green, red, yellow } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
 import { defaultPathMapper } from 'nearbytes-storage';
-import { getDefaultStorageDir } from 'nearbytes-storage';
+import { getDefaultStorageDir } from '../../storagePath.js';
 
 export interface VolumeOpenOptions {
   secret: string;

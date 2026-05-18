@@ -4,7 +4,7 @@ import type { Server } from 'http';
 import type express from 'express';
 import { isProviderEnabled } from '../config/appConfig.js';
 import { createRuntimeCoreServices } from '../runtime/coreServices.js';
-import { getDefaultStorageDir } from 'nearbytes-storage';
+import { getDefaultStorageDir } from '../storagePath.js';
 import { loadOrCreateRootsConfig, saveRootsConfig, type RootsConfig } from '../config/roots.js';
 import { ensureNearbytesMarkers } from '../config/sourceDiscovery.js';
 import { ManagedShareService } from '../integrations/managedShares.js';

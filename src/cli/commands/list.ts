@@ -5,7 +5,7 @@ import { ChannelStorage } from 'nearbytes-storage';
 import { setupChannel } from '../../domain/operations.js';
 import { red } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
-import { getDefaultStorageDir } from 'nearbytes-storage';
+import { getDefaultStorageDir } from '../../storagePath.js';
 import {
   formatEventsAsJson,
   formatEventsAsTable,

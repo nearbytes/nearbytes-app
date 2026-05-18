@@ -9,7 +9,7 @@ import { storeData } from '../../domain/operations.js';
 import { green, red } from '../output/colors.js';
 import { validateSecret, validateFilePath } from '../validation.js';
 import { defaultPathMapper } from 'nearbytes-storage';
-import { getDefaultStorageDir } from 'nearbytes-storage';
+import { getDefaultStorageDir } from '../../storagePath.js';
 
 export interface FileAddOptions {
   path: string;

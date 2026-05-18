@@ -4,7 +4,7 @@ import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { setupChannel } from '../../domain/operations.js';
 import { green, red } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
-import { getDefaultStorageDir } from 'nearbytes-storage';
+import { getDefaultStorageDir } from '../../storagePath.js';
 
 export interface SetupOptions {
   secret: string;
