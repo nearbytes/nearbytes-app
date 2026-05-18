@@ -23,6 +23,8 @@
     "buffer": "^6.0.3",
     "idb": "^8.0.0",
     "lucide-svelte": "^0.577.0",
+    "nearbytes-crypto": "file:../../nearbytes-crypto",
+    "nearbytes-storage": "file:../../nearbytes-storage",
     "svelte": "^5.0.0"
   },
   "devDependencies": {

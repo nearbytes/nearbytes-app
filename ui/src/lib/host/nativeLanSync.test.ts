@@ -1,17 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createCryptoOperations } from '../../../../src/crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import { createFileService } from '../../../../src/domain/fileService.js';
-import { deriveKeys } from '../../../../src/crypto/asymmetric.js';
+import { deriveKeys } from 'nearbytes-crypto';
 import {
   createInMemoryPathRecordStore,
   createInMemoryPathRecordStoreAdapter,
   normalizeStoragePath,
   PathRecordStorageBackend,
-} from '../../../../src/storage/backend.js';
-import { createSecret } from '../../../../src/types/keys.js';
-import type { StorageBackend } from '../../../../src/types/storage.js';
-import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from '../../../../src/storage/integrity.js';
+} from 'nearbytes-storage';
+import { createSecret } from 'nearbytes-crypto';
+import type { StorageBackend } from 'nearbytes-storage';
+import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-storage';
 import type { LanTransportRpcRequest } from '../../../../src/integrations/lanPeerTransport.js';
 import type { ProviderQueueObservation } from '../../../../src/integrations/types.js';
 import {

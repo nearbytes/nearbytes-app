@@ -1,7 +1,7 @@
 import { getRuntimeConfig, HostRequestError } from './runtimeTransport.js';
-import { createSecret } from '../../../../src/types/keys.js';
-import { deriveKeys } from '../../../../src/crypto/asymmetric.js';
-import { bytesToHex } from '../../../../src/utils/encoding.js';
+import { createSecret } from 'nearbytes-crypto';
+import { deriveKeys } from 'nearbytes-crypto';
+import { bytesToHex } from 'nearbytes-crypto';
 import {
   readMirrorEventDetail,
   readMirrorLocalNetworkPeers,

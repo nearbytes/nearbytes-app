@@ -1,6 +1,6 @@
 import { openDB, type IDBPDatabase } from 'idb';
 
-import { createCryptoOperations } from '../../../../src/crypto/index.js';
+import { createCryptoOperations } from 'nearbytes-crypto';
 import type { TransportAdapter } from '../../../../src/integrations/adapters.js';
 import { MegaTransportAdapter } from '../../../../src/integrations/mega.js';
 import {
@@ -20,21 +20,21 @@ import {
   createRuntimeCoreServices,
   type RuntimeCoreServices,
 } from '../../../../src/runtime/coreServices.js';
-import { deserializeEvent } from '../../../../src/storage/serialization.js';
+import { deserializeEvent } from 'nearbytes-storage';
 import {
   createInMemoryPathRecordStore,
   normalizeStoragePath,
   PathRecordStorageBackend,
   type InMemoryPathRecordStore,
   type StoredPathRecord,
-} from '../../../../src/storage/backend.js';
-import { createSecret, type Secret } from '../../../../src/types/keys.js';
+} from 'nearbytes-storage';
+import { createSecret, type Secret } from 'nearbytes-crypto';
 import {
   defaultPathMapper,
   type StorageBackend,
   type StorageWriteEvent,
   type StorageWriteListener,
-} from '../../../../src/types/storage.js';
+} from 'nearbytes-storage';
 import type {
   AppConfig,
   AppConfigResponse,
@@ -94,7 +94,7 @@ import {
   parseCanonicalEventRelativePath,
   validateBlockBytes,
   validateEventBytes,
-} from '../../../../src/storage/integrity.js';
+} from 'nearbytes-storage';
 import type {
   LanTransportHello,
   LanTransportObservationPage,
@@ -1516,7 +1516,7 @@ const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
         mirrorPaths.add(normalizedPath);
         try {
           const bytes = await storage.readFile(normalizedPath);
-          const serialized = JSON.parse(new TextDecoder().decode(bytes)) as import('../../../../src/types/events.js').SerializedEvent;
+          const serialized = JSON.parse(new TextDecoder().decode(bytes)) as import('nearbytes-crypto').SerializedEvent;
           const parsed = deserializeEvent(serialized);
           for (const blockHash of parsed.envelope.blockRefs) {
             const referencedBlockPath = normalizeEmbeddedPhoneReferencedBlockPath(blockHash);

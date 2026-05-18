@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSecret } from '../../../../src/types/keys.js';
-import { deriveKeys } from '../../../../src/crypto/asymmetric.js';
+import { createSecret } from 'nearbytes-crypto';
+import { deriveKeys } from 'nearbytes-crypto';
 import { createRuntimeCoreServices } from '../../../../src/runtime/coreServices.js';
-import { createInMemoryPathRecordStore, createInMemoryPathRecordStoreAdapter, PathRecordStorageBackend } from '../../../../src/storage/backend.js';
+import { createInMemoryPathRecordStore, createInMemoryPathRecordStoreAdapter, PathRecordStorageBackend } from 'nearbytes-storage';
 import {
   importCompatibilityEventDetail,
   importCompatibilityTimelineSnapshot,

@@ -15,7 +15,7 @@ import { APP_CONFIG } from '../src/config/appConfig.js';
 import { resolveDefaultRootsConfigPath } from '../src/config/roots.js';
 import type { CommandExecutor } from '../src/integrations/runtime.js';
 import { resolveIntegrationStatePath } from '../src/integrations/store.js';
-import { getDefaultStorageDir } from '../src/storagePath.js';
+import { getDefaultStorageDir } from 'nearbytes-storage';
 import type { UiDebugAction, UiDebugActionResult, UiDebugExecutor, UiDebugRunRequest, UiDebugRunResponse } from '../src/server/uiDebug.js';
 
 interface RuntimeHandle {

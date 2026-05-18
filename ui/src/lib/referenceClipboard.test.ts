@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bytesToBase64Url } from '../../../src/utils/encoding.js';
+import { bytesToBase64Url } from 'nearbytes-crypto';
 import {
   parseNearbytesClipboardPayload,
   RECIPIENT_BUNDLE_MIME,

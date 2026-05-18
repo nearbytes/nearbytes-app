@@ -1,5 +1,5 @@
-import { deserializeEvent } from '../../../../src/storage/serialization.js';
-import type { SerializedEvent } from '../../../../src/types/events.js';
+import { deserializeEvent } from 'nearbytes-storage';
+import type { SerializedEvent } from 'nearbytes-crypto';
 import { buildLanDiscoveryTxtRecord } from '../../../../src/integrations/lanTransportProfile.js';
 import type {
   LanTransportDiscoveredPeer,
