@@ -1222,7 +1222,7 @@ export class MegaTransportAdapter {
             const blockBytes = await this.readManagedShareUploadBytesWithRetry(share, blockPath);
             await adapter.upload(blockPath, blockBytes, { waitForVisibility: true });
           }
-          await adapter.upload(relativePath, eventBytes, { waitForVisibility: false });
+          await adapter.upload(relativePath, eventBytes, { waitForVisibility: true });
         });
       });
     });
@@ -1253,6 +1253,11 @@ export class MegaTransportAdapter {
         return;
       }
       if (normalizedPath.startsWith('channels/')) {
+        this.runtime.logger.log('MEGA storage-write handler: uploading channel event via mirror source.', {
+          shareId: share.id,
+          normalizedPath,
+          hasAccount: Boolean(account),
+        });
         this.suppressWatcherPath(share.id, normalizedPath);
         await this.forceManagedShareRuntimeSourceEventUpload(share, account, normalizedPath);
         return;
@@ -1958,9 +1963,23 @@ export class MegaTransportAdapter {
             isMirrorRelativePath(relativePath) &&
             !this.shouldSuppressWatcherPath(share.id, relativePath)
           ) {
-            pendingPaths.add(relativePath);
+            // Block writes are handled implicitly by forceManagedShareRuntimeSourceEventUpload
+            // when the corresponding channel event fires; don't queue them separately.
+            if (!relativePath.startsWith('blocks/')) {
+              pendingPaths.add(relativePath);
+              this.runtime.logger.log('MEGA mirror-source write queued for upload.', {
+                shareId: share.id,
+                relativePath,
+              });
+            }
           } else {
             requiresFullSync = true;
+            this.runtime.logger.log('MEGA mirror-source write triggered full sync fallback.', {
+              shareId: share.id,
+              relativePath,
+              isMirrorPath: isMirrorRelativePath(relativePath),
+              suppressed: this.shouldSuppressWatcherPath(share.id, relativePath),
+            });
           }
           if (debounceTimer) {
             debounceTimer.cancel();
@@ -1972,15 +1991,26 @@ export class MegaTransportAdapter {
             const runFullSync = requiresFullSync || paths.length === 0;
             requiresFullSync = false;
             if (runFullSync) {
+              this.runtime.logger.log('MEGA mirror-source debounce: running full sync.', { shareId: share.id, paths });
               this.requestSyncLoop(share, account).catch((error) => {
                 this.runtime.logger.warn('MEGA mirror-source push sync failed.', error);
               });
               return;
             }
+            this.runtime.logger.log('MEGA mirror-source debounce: uploading channel paths.', { shareId: share.id, paths });
             try {
-              for (const p of paths) {
-                await this.forceManagedShareUpload(share, account, p);
+              const channelPaths = paths.filter((p) => p.startsWith('channels/'));
+              if (channelPaths.length === 0) {
+                // Only block writes (no event); full sync will pick them up.
+                this.requestSyncLoop(share, account).catch((syncError) => {
+                  this.runtime.logger.warn('MEGA mirror-source push sync failed.', syncError);
+                });
+                return;
               }
+              for (const p of channelPaths) {
+                await this.forceManagedShareRuntimeSourceEventUpload(share, account, p);
+              }
+              this.runtime.logger.log('MEGA mirror-source per-path upload completed.', { shareId: share.id, channelPaths });
             } catch (error) {
               this.runtime.logger.warn('MEGA mirror-source per-path push failed; falling back to full sync.', error);
               this.requestSyncLoop(share, account).catch((syncError) => {
@@ -2698,7 +2728,9 @@ export class MegaTransportAdapter {
           continue;
         }
       }
-      await syncRuntimeSourcePath(relativePath, bytes);
+      await syncRuntimeSourcePath(relativePath, bytes, {
+        waitForVisibility: relativePath.startsWith('channels/') ? true : undefined,
+      });
     }
 
     for (const [relativePath, file] of Array.from(ownerUploadState.filesByPath.entries())) {

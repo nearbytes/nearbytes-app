@@ -21,16 +21,10 @@
         return;
       }
 
-      const hasHttpOrigin = window.location.protocol === 'http:' || window.location.protocol === 'https:';
       const existingConfig = targetWindow.nearbytesRuntimeConfig || {};
       targetWindow.nearbytesRuntimeConfig = {
         ...existingConfig,
-        apiBaseUrl:
-          typeof existingConfig.apiBaseUrl === 'string'
-            ? existingConfig.apiBaseUrl
-            : hasHttpOrigin
-              ? window.location.origin
-              : '',
+        apiBaseUrl: '',
         isDesktop: false,
         runtimeHostKind: 'phone',
         runtimeOwner: 'embedded',

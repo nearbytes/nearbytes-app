@@ -7,8 +7,15 @@ import {
 } from './runtimeTransport.js';
 
 describe('runtimeTransport', () => {
+  const originalWindow = globalThis.window;
+
   afterEach(() => {
     resetRuntimeConfigCacheForTests();
+    if (originalWindow === undefined) {
+      Reflect.deleteProperty(globalThis, 'window');
+    } else {
+      globalThis.window = originalWindow;
+    }
   });
 
   it('uses the same-origin desktop proxy only for desktop on the configured dev port', () => {
@@ -102,13 +109,37 @@ describe('runtimeTransport', () => {
       getRuntimeConfig({
         injectedConfig: {
           apiBaseUrl: 'https://nearbytes.test',
+          desktopToken: 'desktop-token-should-be-ignored',
           runtimeHostKind: 'phone',
           runtimeOwner: 'desktop-proxy',
           runtimeTokenHeader: 'x-nearbytes-runtime-token',
         },
       })
     ).resolves.toEqual({
-      apiBaseUrl: 'https://nearbytes.test',
+      apiBaseUrl: '',
+      desktopToken: '',
+      isDesktop: false,
+      runtimeTokenHeader: 'x-nearbytes-runtime-token',
+      runtimeHostKind: 'phone',
+      runtimeOwner: 'embedded',
+    });
+  });
+
+  it('drops bridge host transport fields for phone runtimes', async () => {
+    await expect(
+      getRuntimeConfig({
+        bridge: {
+          getRuntimeConfig: async () => ({
+            apiBaseUrl: 'http://127.0.0.1:3000',
+            desktopToken: 'abc123',
+            isDesktop: false,
+            runtimeHostKind: 'phone',
+            runtimeOwner: 'desktop-proxy',
+          }),
+        },
+      })
+    ).resolves.toEqual({
+      apiBaseUrl: '',
       desktopToken: '',
       isDesktop: false,
       runtimeTokenHeader: 'x-nearbytes-runtime-token',
@@ -126,6 +157,44 @@ describe('runtimeTransport', () => {
         },
       })
     ).resolves.toEqual({
+      apiBaseUrl: '',
+      desktopToken: '',
+      isDesktop: false,
+      runtimeTokenHeader: 'x-nearbytes-runtime-token',
+      runtimeHostKind: 'phone',
+      runtimeOwner: 'embedded',
+    });
+  });
+
+  it('defaults native runtimes without injected config to embedded phone hosting', async () => {
+    globalThis.window = {
+      Capacitor: {
+        isNativePlatform: () => true,
+      },
+    } as Window;
+
+    await expect(getRuntimeConfig({ bridge: null })).resolves.toEqual({
+      apiBaseUrl: '',
+      desktopToken: '',
+      isDesktop: false,
+      runtimeTokenHeader: 'x-nearbytes-runtime-token',
+      runtimeHostKind: 'phone',
+      runtimeOwner: 'embedded',
+    });
+  });
+
+  it('forces injected native runtimes to embedded phone hosting even with desktop-style fields', async () => {
+    globalThis.window = {
+      Capacitor: {
+        isNativePlatform: () => true,
+      },
+      nearbytesRuntimeConfig: {
+        apiBaseUrl: 'https://nearbytes.test',
+        desktopToken: 'abc123',
+      },
+    } as unknown as Window;
+
+    await expect(getRuntimeConfig({ bridge: null })).resolves.toEqual({
       apiBaseUrl: '',
       desktopToken: '',
       isDesktop: false,

@@ -11,6 +11,14 @@ interface NearbytesRuntimeWindow extends Window {
   };
 }
 
+function isNativePhoneRuntimeWindow(targetWindow: NearbytesRuntimeWindow | undefined): boolean {
+  if (!targetWindow) {
+    return false;
+  }
+  const capacitor = targetWindow.Capacitor;
+  return !!capacitor && (typeof capacitor.isNativePlatform !== 'function' || capacitor.isNativePlatform());
+}
+
 const WEB_RUNTIME_CONFIG: DesktopRuntimeConfig = {
   apiBaseUrl: '',
   desktopToken: '',
@@ -62,9 +70,10 @@ function normalizeRuntimeOwner(
 function normalizePartialRuntimeConfig(config: Partial<DesktopRuntimeConfig>): DesktopRuntimeConfig {
   const isDesktop = config.isDesktop === true;
   const runtimeHostKind = normalizeRuntimeHostKind(config.runtimeHostKind, isDesktop);
+  const isPhoneRuntime = runtimeHostKind === 'phone';
   return {
-    apiBaseUrl: typeof config.apiBaseUrl === 'string' ? config.apiBaseUrl : '',
-    desktopToken: typeof config.desktopToken === 'string' ? config.desktopToken : '',
+    apiBaseUrl: isPhoneRuntime ? '' : typeof config.apiBaseUrl === 'string' ? config.apiBaseUrl : '',
+    desktopToken: isPhoneRuntime ? '' : typeof config.desktopToken === 'string' ? config.desktopToken : '',
     isDesktop,
     runtimeTokenHeader: normalizeRuntimeTokenHeader(config.runtimeTokenHeader),
     runtimeHostKind,
@@ -76,7 +85,9 @@ function readInjectedRuntimeConfig(): DesktopRuntimeConfig | null {
   if (typeof window === 'undefined') {
     return null;
   }
-  const injected = (window as NearbytesRuntimeWindow).nearbytesRuntimeConfig;
+  const runtimeWindow = window as NearbytesRuntimeWindow;
+  const injected = runtimeWindow.nearbytesRuntimeConfig;
+  const isNativePhoneRuntime = isNativePhoneRuntimeWindow(runtimeWindow);
   if (
     !injected ||
     !(
@@ -94,7 +105,7 @@ function readInjectedRuntimeConfig(): DesktopRuntimeConfig | null {
     desktopToken: typeof injected.desktopToken === 'string' ? injected.desktopToken : '',
     isDesktop: injected.isDesktop === true,
     runtimeTokenHeader: injected.runtimeTokenHeader,
-    runtimeHostKind: injected.runtimeHostKind,
+    runtimeHostKind: isNativePhoneRuntime ? 'phone' : injected.runtimeHostKind,
     runtimeOwner: injected.runtimeOwner,
   });
 }
@@ -175,6 +186,13 @@ export async function getRuntimeConfig(options: {
       const injectedWindowConfig = readInjectedRuntimeConfig();
       if (injectedWindowConfig) {
         return injectedWindowConfig;
+      }
+      if (typeof window !== 'undefined' && isNativePhoneRuntimeWindow(window as NearbytesRuntimeWindow)) {
+        return normalizePartialRuntimeConfig({
+          isDesktop: false,
+          runtimeHostKind: 'phone',
+          runtimeOwner: 'embedded',
+        });
       }
       return WEB_RUNTIME_CONFIG;
     }

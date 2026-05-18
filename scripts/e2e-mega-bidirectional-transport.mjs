@@ -267,6 +267,7 @@ async function createPeerTransport(peerLabel) {
   const { MegaTransportAdapter } = await import('../dist/integrations/mega.js');
   const { createIntegrationRuntime } = await import('../dist/integrations/runtime.js');
   const { JsonFileSecretStore } = await import('../dist/integrations/secretStore.js');
+  const { createManagedShareNodeSupport } = await import('../dist/integrations/managedSharesNodeSupport.js');
 
   const storage = new MultiRootStorageBackend(createRootsConfig(mainRoot));
   const runtime = createIntegrationRuntime({
@@ -282,10 +283,11 @@ async function createPeerTransport(peerLabel) {
       warn: (...args) => console.error(`[mega-bidir][${peerLabel}] WARN`, ...args),
     },
   });
+  const nodeSupport = createManagedShareNodeSupport({ rootsConfigPath, integrationStatePath });
   const service = new ManagedShareService({
     storage,
-    rootsConfigPath,
-    integrationStatePath,
+    ...nodeSupport,
+    integrationRuntime: runtime,
     adapters: [new MegaTransportAdapter(runtime)],
     readMaintenanceMode: 'background',
   });

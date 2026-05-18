@@ -52,6 +52,8 @@ loadDotEnvIfPresent(path.join(__dirname, '..', '.env.e2e'));
 
 const localBaseUrl = trimOrDefault(process.env.NEARBYTES_E2E_LOCAL_BASE_URL, 'http://127.0.0.1:3000');
 const remoteBaseUrlOverride = trimOrNull(process.env.NEARBYTES_E2E_REMOTE_BASE_URL);
+const localRuntimeToken = trimOrNull(process.env.NEARBYTES_E2E_LOCAL_RUNTIME_TOKEN);
+const remoteRuntimeToken = trimOrNull(process.env.NEARBYTES_E2E_REMOTE_RUNTIME_TOKEN);
 const remoteSshHost = trimOrDefault(process.env.NEARBYTES_E2E_REMOTE_SSH, 'pc-ciancia');
 const remoteTargetPort = readPositiveIntEnv('NEARBYTES_E2E_REMOTE_TARGET_PORT', 3000);
 const localLabel = trimOrDefault(process.env.NEARBYTES_E2E_LOCAL_LABEL, 'local');
@@ -104,8 +106,8 @@ process.on('SIGTERM', () => {
 
 try {
   const remoteBaseUrl = remoteBaseUrlOverride ?? await startRemoteTunnel();
-  const localHost = createHost(localLabel, localBaseUrl, localMegaEmail);
-  const remoteHost = createHost(remoteLabel, remoteBaseUrl, remoteMegaEmail);
+  const localHost = createHost(localLabel, localBaseUrl, localMegaEmail, localRuntimeToken);
+  const remoteHost = createHost(remoteLabel, remoteBaseUrl, remoteMegaEmail, remoteRuntimeToken);
 
   await Promise.all([assertHealthy(localHost), assertHealthy(remoteHost)]);
 
@@ -186,16 +188,55 @@ function readMegaInviteAccessLevelEnv(name, fallback) {
   throw new Error(`${name} must be one of: read, read/write, full access.`);
 }
 
-function createHost(label, baseUrl, megaEmail) {
+function createHost(label, baseUrl, megaEmail, runtimeToken = null) {
+  const defaultHeaders = {};
+  if (runtimeToken) {
+    defaultHeaders['x-nearbytes-runtime-token'] = runtimeToken;
+  }
   return {
     label,
     baseUrl: baseUrl.replace(/\/+$/u, ''),
     megaEmail: megaEmail.trim().toLowerCase(),
+    defaultHeaders,
   };
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetriableFetchError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const causeCode = (
+    error &&
+    typeof error === 'object' &&
+    'cause' in error &&
+    error.cause &&
+    typeof error.cause === 'object' &&
+    'code' in error.cause
+  )
+    ? String(error.cause.code)
+    : '';
+  return /fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|UND_ERR/u.test(message)
+    || /ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT/u.test(causeCode);
+}
+
+async function fetchWithRetry(url, init, label) {
+  const maxAttempts = 5;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      if (!isRetriableFetchError(error) || attempt >= maxAttempts) {
+        break;
+      }
+      const delayMs = Math.min(4_000, 250 * (2 ** (attempt - 1)));
+      await sleep(delayMs);
+    }
+  }
+  throw new Error(`${label} transport failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 function sha256Hex(bytes) {
@@ -315,6 +356,7 @@ async function assertHealthy(host) {
 
 async function requestJson(host, method, pathName, body, extraHeaders = {}) {
   const headers = {
+    ...(host.defaultHeaders ?? {}),
     ...extraHeaders,
   };
   let payload;
@@ -327,11 +369,11 @@ async function requestJson(host, method, pathName, body, extraHeaders = {}) {
     }
   }
 
-  const response = await fetch(`${host.baseUrl}${pathName}`, {
+  const response = await fetchWithRetry(`${host.baseUrl}${pathName}`, {
     method,
     headers,
     body: payload,
-  });
+  }, `${host.label}: ${method} ${pathName}`);
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`${host.label}: ${method} ${pathName} failed with ${response.status}: ${formatErrorBody(text)}`);
@@ -347,12 +389,13 @@ async function requestJson(host, method, pathName, body, extraHeaders = {}) {
 }
 
 async function requestBytes(host, method, pathName, secret) {
-  const response = await fetch(`${host.baseUrl}${pathName}`, {
+  const response = await fetchWithRetry(`${host.baseUrl}${pathName}`, {
     method,
     headers: {
+      ...(host.defaultHeaders ?? {}),
       'x-nearbytes-secret': secret,
     },
-  });
+  }, `${host.label}: ${method} ${pathName}`);
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`${host.label}: ${method} ${pathName} failed with ${response.status}: ${formatErrorBody(text)}`);
@@ -496,6 +539,48 @@ async function waitForShareReady(host, shareId, timeoutMs) {
   throw new Error(`${host.label}: share ${shareId} did not become ready within ${timeoutMs}ms (last status: ${lastStatus}).`);
 }
 
+function isManagedShareNotFoundError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /failed with 404:/u.test(message);
+}
+
+async function waitForRecipientShareReady(host, initialShareId, expectedDescriptor, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let currentShareId = initialShareId;
+  let lastStatus = 'missing';
+  while (Date.now() < deadline) {
+    try {
+      const response = await getManagedShareState(host, currentShareId);
+      const status = response?.summary?.state?.status;
+      if (typeof status === 'string') {
+        lastStatus = status;
+        if (status === 'ready') {
+          return {
+            shareId: currentShareId,
+            summary: response.summary,
+          };
+        }
+      }
+    } catch (error) {
+      if (!isManagedShareNotFoundError(error)) {
+        throw error;
+      }
+      const replacement = await findExistingRecipientShare(host, expectedDescriptor.ownerEmail, expectedDescriptor.shareName);
+      const replacementId = typeof replacement?.share?.id === 'string' ? replacement.share.id : '';
+      if (replacementId && replacementId !== currentShareId) {
+        console.error('[mega-crosshost] recipient share id changed, following replacement.', {
+          host: host.label,
+          previousShareId: currentShareId,
+          nextShareId: replacementId,
+        });
+        currentShareId = replacementId;
+      }
+    }
+    await sleep(1_500);
+  }
+  throw new Error(`${host.label}: recipient share ${currentShareId} did not become ready within ${timeoutMs}ms (last status: ${lastStatus}).`);
+}
+
 async function openHub(host) {
   return await requestJson(host, 'POST', '/open', { secret: hubSecret });
 }
@@ -515,7 +600,7 @@ async function acceptAllMegaContactInvites(host) {
 
 function isMegaTransientLockError(error) {
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return /MEGA API error -3\b/u.test(message);
+  return /MEGA API error -(3|11)\b/u.test(message);
 }
 
 async function inviteManagedShareWithRetry(host, shareId, targetEmails, accessLevel) {
@@ -533,7 +618,7 @@ async function inviteManagedShareWithRetry(host, shareId, targetEmails, accessLe
         throw error;
       }
       const delay = Math.min(25_000, 2_000 + attempt * 2_000);
-      console.error('[mega-crosshost] invite hit MEGA -3, retrying.', { host: host.label, shareId, attempt: attempt + 1, delayMs: delay });
+      console.error('[mega-crosshost] invite hit transient MEGA lock, retrying.', { host: host.label, shareId, attempt: attempt + 1, delayMs: delay });
       await sleep(delay);
     }
   }
@@ -639,13 +724,14 @@ async function uploadFile(host, secret, filename, bytes) {
   const form = new FormData();
   form.append('file', new Blob([bytes], { type: 'application/octet-stream' }), filename);
   form.append('filename', filename);
-  const response = await fetch(`${host.baseUrl}/upload`, {
+  const response = await fetchWithRetry(`${host.baseUrl}/upload`, {
     method: 'POST',
     headers: {
+      ...(host.defaultHeaders ?? {}),
       'x-nearbytes-secret': secret,
     },
     body: form,
-  });
+  }, `${host.label}: POST /upload`);
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`${host.label}: upload failed with ${response.status}: ${formatErrorBody(text)}`);
@@ -655,13 +741,36 @@ async function uploadFile(host, secret, filename, bytes) {
   return parsed;
 }
 
+function getUploadedBlockPath(uploadResponse) {
+  const blobHash = String(uploadResponse?.created?.blobHash ?? '').trim().toLowerCase();
+  if (!/^[a-f0-9]{32,}$/u.test(blobHash)) {
+    throw new Error(`Upload response missing valid blob hash: ${JSON.stringify(uploadResponse)}`);
+  }
+  return `blocks/${blobHash}.bin`;
+}
+
+async function forceSharePushPath(host, shareId, relativePath) {
+  await requestJson(host, 'POST', `/integrations/shares/${encodeURIComponent(shareId)}/push-path`, {
+    path: relativePath,
+  });
+  console.error('[mega-crosshost] forced owner push-path.', { host: host.label, shareId, relativePath });
+}
+
+async function triggerShareSyncNow(host, shareId, quiet = false) {
+  await requestJson(host, 'POST', `/integrations/shares/${encodeURIComponent(shareId)}/sync`, {});
+  if (!quiet) {
+    console.error('[mega-crosshost] triggered recipient sync.', { host: host.label, shareId });
+  }
+}
+
 async function listFiles(host, secret) {
-  const response = await fetch(`${host.baseUrl}/files`, {
+  const response = await fetchWithRetry(`${host.baseUrl}/files`, {
     method: 'GET',
     headers: {
+      ...(host.defaultHeaders ?? {}),
       'x-nearbytes-secret': secret,
     },
-  });
+  }, `${host.label}: GET /files`);
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`${host.label}: list files failed with ${response.status}: ${formatErrorBody(text)}`);
@@ -669,19 +778,134 @@ async function listFiles(host, secret) {
   return JSON.parse(text);
 }
 
-async function waitForFileBytes(host, secret, filename, expectedBytes, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+function parseSseEventBlock(block) {
+  let event = 'message';
+  const dataLines = [];
+  for (const rawLine of block.split('\n')) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(':')) {
+      continue;
+    }
+    if (line.startsWith('event:')) {
+      event = line.slice('event:'.length).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice('data:'.length).trimStart());
+    }
+  }
+  const dataText = dataLines.join('\n');
+  let data = null;
+  if (dataText) {
+    try {
+      data = JSON.parse(dataText);
+    } catch {
+      data = dataText;
+    }
+  }
+  return { event, data };
+}
+
+async function waitForFileBytes(host, secret, filename, expectedBytes, timeoutMs, onPushSync = null) {
+  const checkFile = async () => {
     const listing = await listFiles(host, secret);
     const file = (listing?.files ?? []).find((entry) => entry.filename === filename);
-    if (file?.blobHash) {
-      const bytes = await requestBytes(host, 'GET', `/file/${encodeURIComponent(file.blobHash)}`, secret);
-      if (Buffer.compare(bytes, expectedBytes) === 0) {
-        return file;
+    if (!file?.blobHash) {
+      return null;
+    }
+    const bytes = await requestBytes(host, 'GET', `/file/${encodeURIComponent(file.blobHash)}`, secret);
+    if (Buffer.compare(bytes, expectedBytes) !== 0) {
+      return null;
+    }
+    return file;
+  };
+
+  const immediate = await checkFile();
+  if (immediate) {
+    return immediate;
+  }
+
+  if (typeof onPushSync === 'function') {
+    try {
+      await onPushSync();
+    } catch {
+      // Sync trigger can be transient; continue with event-driven wait.
+    }
+  }
+
+  const controller = new AbortController();
+  let reader = null;
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const secondCheck = await checkFile();
+    if (secondCheck) {
+      return secondCheck;
+    }
+
+    const response = await fetchWithRetry(`${host.baseUrl}/watch/volume-events`, {
+      method: 'GET',
+      headers: {
+        ...(host.defaultHeaders ?? {}),
+        'x-nearbytes-secret': secret,
+      },
+      signal: controller.signal,
+    }, `${host.label}: GET /watch/volume-events`);
+    if (!response.ok || !response.body) {
+      const text = await response.text();
+      throw new Error(`${host.label}: watch stream failed with ${response.status}: ${formatErrorBody(text)}`);
+    }
+
+    reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      while (true) {
+        const sep = buffer.indexOf('\n\n');
+        if (sep < 0) {
+          break;
+        }
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const parsed = parseSseEventBlock(block);
+        if (parsed.event === 'watch-ended') {
+          throw new Error(`${host.label}: watch stream ended: ${JSON.stringify(parsed.data)}`);
+        }
+        if (parsed.event === 'watch-error') {
+          throw new Error(`${host.label}: watch stream error: ${JSON.stringify(parsed.data)}`);
+        }
+        if (parsed.event === 'volume-event' || parsed.event === 'volume-update' || parsed.event === 'volume-event-ready') {
+          if (typeof onPushSync === 'function') {
+            try {
+              await onPushSync();
+            } catch {
+              // Keep processing subsequent events.
+            }
+          }
+          const file = await checkFile();
+          if (file) {
+            return file;
+          }
+        }
       }
     }
-    await sleep(2_000);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`${host.label}: file ${filename} did not arrive with matching bytes within ${timeoutMs}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+    controller.abort();
+    if (reader) {
+      await reader.cancel().catch(() => {});
+    }
   }
+
   throw new Error(`${host.label}: file ${filename} did not arrive with matching bytes within ${timeoutMs}ms.`);
 }
 
@@ -771,20 +995,40 @@ async function runIteration(iteration, localHost, remoteHost, localAccountId, re
     ensureRecipientShareAttached(localHost, localAccountId, volumeId, remoteDescriptor),
   ]);
 
-  await Promise.all([
-    waitForShareReady(remoteHost, remoteRecipient.share.id, RECIPIENT_READY_TIMEOUT_MS),
-    waitForShareReady(localHost, localRecipient.share.id, RECIPIENT_READY_TIMEOUT_MS),
+  const [readyRemoteRecipient, readyLocalRecipient] = await Promise.all([
+    waitForRecipientShareReady(remoteHost, remoteRecipient.share.id, localDescriptor, RECIPIENT_READY_TIMEOUT_MS),
+    waitForRecipientShareReady(localHost, localRecipient.share.id, remoteDescriptor, RECIPIENT_READY_TIMEOUT_MS),
   ]);
 
   const localToRemoteName = `e2e-${iteration}-local-to-remote-${Date.now()}.bin`;
   const localToRemoteBytes = buildPayload(`iteration=${iteration} direction=local->remote origin=${localHost.label}`);
-  await uploadFile(localHost, hubSecret, localToRemoteName, localToRemoteBytes);
-  await waitForFileBytes(remoteHost, hubSecret, localToRemoteName, localToRemoteBytes, FILE_TIMEOUT_MS);
+  const localUpload = await uploadFile(localHost, hubSecret, localToRemoteName, localToRemoteBytes);
+  const localUploadPath = getUploadedBlockPath(localUpload);
+  await forceSharePushPath(localHost, localOwner.share.id, localUploadPath);
+  await triggerShareSyncNow(remoteHost, readyRemoteRecipient.shareId);
+  await waitForFileBytes(
+    remoteHost,
+    hubSecret,
+    localToRemoteName,
+    localToRemoteBytes,
+    FILE_TIMEOUT_MS,
+    async () => triggerShareSyncNow(remoteHost, readyRemoteRecipient.shareId, true)
+  );
 
   const remoteToLocalName = `e2e-${iteration}-remote-to-local-${Date.now()}.bin`;
   const remoteToLocalBytes = buildPayload(`iteration=${iteration} direction=remote->local origin=${remoteHost.label}`);
-  await uploadFile(remoteHost, hubSecret, remoteToLocalName, remoteToLocalBytes);
-  await waitForFileBytes(localHost, hubSecret, remoteToLocalName, remoteToLocalBytes, FILE_TIMEOUT_MS);
+  const remoteUpload = await uploadFile(remoteHost, hubSecret, remoteToLocalName, remoteToLocalBytes);
+  const remoteUploadPath = getUploadedBlockPath(remoteUpload);
+  await forceSharePushPath(remoteHost, remoteOwner.share.id, remoteUploadPath);
+  await triggerShareSyncNow(localHost, readyLocalRecipient.shareId);
+  await waitForFileBytes(
+    localHost,
+    hubSecret,
+    remoteToLocalName,
+    remoteToLocalBytes,
+    FILE_TIMEOUT_MS,
+    async () => triggerShareSyncNow(localHost, readyLocalRecipient.shareId, true)
+  );
 
   console.error('[mega-crosshost] iteration complete.', {
     iteration,
