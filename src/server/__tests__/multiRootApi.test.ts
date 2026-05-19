@@ -7,12 +7,14 @@ import type { Response } from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { createChatService } from '../../domain/chatService.js';
-import { createFileService } from '../../domain/fileService.js';
+import { createFileService } from 'nearbytes-files';
 import { createSecret } from 'nearbytes-crypto';
 import { bytesToHex } from 'nearbytes-crypto';
 import { type RootsConfig } from '../../config/roots.js';
 import type { TransportAdapter } from '../../integrations/adapters.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
+import { defaultPathMapper } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { createApp } from '../app.js';
 
 const SECRET = 'nearbytes-multi-root-secret';
@@ -400,7 +402,7 @@ describe('Nearbytes API (multi-root)', () => {
     await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
 
     const storage = new MultiRootStorageBackend(rootsConfig);
-    const fileService = createFileService({ crypto, storage });
+    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
     const chatService = createChatService({ crypto, storage });
 
     app = createApp({

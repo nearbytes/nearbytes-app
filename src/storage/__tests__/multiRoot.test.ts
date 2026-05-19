@@ -5,12 +5,12 @@ import { join } from 'path';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { type RootsConfig } from '../../config/roots.js';
 import { NEARBYTES_MARKER_FILE } from '../../config/sourceDiscovery.js';
-import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
+import { volumeIdFromPublicKey } from 'nearbytes-files';
 import { createEncryptedData, EMPTY_HASH, EventType, type EventPayload, type Hash } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
 import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
 import { MultiRootStorageBackend, type MultiRootRuntimeSnapshot } from '../multiRoot.js';
-import { createSignedEvent } from '../../domain/eventEnvelope.js';
+import { createSignedEvent } from 'nearbytes-log';
 
 function bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);

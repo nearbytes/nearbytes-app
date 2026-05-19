@@ -6,8 +6,9 @@ import request from 'supertest';
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { createChatService } from '../../domain/chatService.js';
-import { createFileService } from '../../domain/fileService.js';
-import { FilesystemStorageBackend } from 'nearbytes-storage';
+import { createFileService } from 'nearbytes-files';
+import { FilesystemStorageBackend, defaultPathMapper } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { createApp } from '../app.js';
 
 const SECRET_OPEN = 'nearbytes-open-secret';
@@ -33,7 +34,7 @@ describe('Nearbytes API', () => {
 
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(tempDir);
-    const fileService = createFileService({ crypto, storage });
+    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
     const chatService = createChatService({ crypto, storage });
 
     app = createApp({

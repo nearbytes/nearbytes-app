@@ -4,7 +4,7 @@ import path from 'path';
 import { existsSync } from 'fs';
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { ChatService } from '../domain/chatService.js';
-import type { FileService } from '../domain/fileService.js';
+import type { FileService } from 'nearbytes-files';
 import type { StorageBackend } from 'nearbytes-storage';
 import { createRoutes } from './routes.js';
 import { errorHandler, notFoundHandler } from './errors.js';

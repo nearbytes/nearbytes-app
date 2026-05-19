@@ -9,8 +9,8 @@ import { defaultPathMapper } from 'nearbytes-storage';
 import { createLog } from 'nearbytes-log';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { createChatService } from '../chatService.js';
-import { createFileService } from '../fileService.js';
-import { hydrateSignedEvent } from '../eventEnvelope.js';
+import { createFileService } from 'nearbytes-files';
+import { hydrateSignedEvent } from 'nearbytes-log';
 
 const START_TIME = 1800000000000;
 
@@ -112,7 +112,7 @@ async function createTestServices(startTime: number): Promise<{
 
   return {
     chatService: createChatService({ crypto, storage, now }),
-    fileService: createFileService({ crypto, storage, now }),
+    fileService: createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage, now }),
     crypto,
     storage,
     cleanup: async () => {

@@ -5,9 +5,11 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { createChatService } from '../../domain/chatService.js';
-import { createFileService } from '../../domain/fileService.js';
+import { createFileService } from 'nearbytes-files';
 import { type RootsConfig } from '../../config/roots.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
+import { defaultPathMapper } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { createApp } from '../app.js';
 
 describe('Desktop API token enforcement', () => {
@@ -60,7 +62,7 @@ describe('Desktop API token enforcement', () => {
 
     const storage = new MultiRootStorageBackend(rootsConfig);
     const crypto = createCryptoOperations();
-    const fileService = createFileService({ crypto, storage });
+    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
     const chatService = createChatService({ crypto, storage });
     app = createApp({
       fileService,

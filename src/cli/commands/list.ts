@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { createLog } from 'nearbytes-log';
-import { setupChannel } from '../../domain/operations.js';
+import { setupChannel } from 'nearbytes-files';
 import { red } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
 import { getDefaultStorageDir } from '../../storagePath.js';

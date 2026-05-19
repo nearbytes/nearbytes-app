@@ -11,9 +11,9 @@ import { discoverNearbytesSources, ensureNearbytesMarkers } from '../config/sour
 import { reconcileDiscoveredSources } from '../config/sourceReconcile.js';
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { ChatService } from '../domain/chatService.js';
-import type { FileService } from '../domain/fileService.js';
+import type { FileService } from 'nearbytes-files';
 import type { StorageBackend } from 'nearbytes-storage';
-import { openVolume } from '../domain/volume.js';
+import { openVolume } from 'nearbytes-files';
 import { joinLinkSpaceToSecretString } from '../domain/joinLinkCodec.js';
 import {
   ManagedShareService,

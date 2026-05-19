@@ -5,10 +5,10 @@ import type { CryptoOperations } from 'nearbytes-crypto';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
 import { createLog, type Log } from 'nearbytes-log';
 import { defaultPathMapper } from 'nearbytes-storage';
-import { openVolume, materializeVolume, getFile, listFiles, loadEventLog } from '../domain/volume.js';
-import { storeData, deleteFile, retrieveData } from '../domain/operations.js';
+import { openVolume, materializeVolume, getFile, listFiles, loadEventLog } from 'nearbytes-files';
+import { storeData, deleteFile, retrieveData } from 'nearbytes-files';
 import { bytesToHex } from 'nearbytes-crypto';
-import type { EventLogEntry } from '../domain/types.js';
+import type { EventLogEntry } from 'nearbytes-log';
 
 /**
  * Result of opening a volume

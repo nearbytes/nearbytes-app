@@ -3,14 +3,14 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
+import { volumeIdFromPublicKey } from 'nearbytes-files';
 import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
 import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
 import { GitHubTransportAdapter } from '../github.js';
 import { createIntegrationRuntime, type ProviderSecretStore } from '../runtime.js';
 import type { ManagedShare } from '../types.js';
-import { createSignedEvent } from '../../domain/eventEnvelope.js';
+import { createSignedEvent } from 'nearbytes-log';
 
 function createMemorySecretStore(): ProviderSecretStore {
   const entries = new Map<string, unknown>();

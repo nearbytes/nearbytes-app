@@ -7517,6 +7517,7 @@ __metadata:
     express: "npm:^4.22.1"
     multer: "npm:^2.0.2"
     nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
+    nearbytes-files: "nearbytes/nearbytes-files#main"
     nearbytes-log: "nearbytes/nearbytes-log#main"
     nearbytes-storage: "nearbytes/nearbytes-storage#main"
     prettier: "npm:^3.1.0"
@@ -7531,23 +7532,34 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"nearbytes-files@nearbytes/nearbytes-files#main":
+  version: 0.1.0
+  resolution: "nearbytes-files@https://github.com/nearbytes/nearbytes-files.git#commit=b9fb0f44881bb1cfcaea72d96d89a3c27ceb4716"
+  dependencies:
+    nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
+    nearbytes-log: "nearbytes/nearbytes-log#main"
+    nearbytes-storage: "nearbytes/nearbytes-storage#main"
+  checksum: 10c0/97579cd7b4e21e2112db5da5a720838795233be450a0460531a91d1132f42e732253b2fb6f602267fd5114136eb362e5989782f54e8addeee6f6214c04bb568d
+  languageName: node
+  linkType: hard
+
 "nearbytes-log@file:../../nearbytes-log::locator=nearbytes-ui%40workspace%3Aui":
   version: 0.1.0
-  resolution: "nearbytes-log@file:../../nearbytes-log#../../nearbytes-log::hash=7a9126&locator=nearbytes-ui%40workspace%3Aui"
+  resolution: "nearbytes-log@file:../../nearbytes-log#../../nearbytes-log::hash=ff6260&locator=nearbytes-ui%40workspace%3Aui"
   dependencies:
     nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
     nearbytes-storage: "nearbytes/nearbytes-storage#main"
-  checksum: 10c0/34ed428bbc22d24e1fb23f4b7734597fc0129aa80723cf690e1578cd81b48a124b1f192e045a0d8e4d2fa2660f6d6d4a513da558461a59d968d8e6c23e329f99
+  checksum: 10c0/62ed79c3a3516544dada2a9084c24a106a5c32ece727509b467936589c2716f277d927411507cd3024ab0492ca0adfb2fae027862449b349d9d0b58c6795b2ae
   languageName: node
   linkType: hard
 
 "nearbytes-log@nearbytes/nearbytes-log#main":
   version: 0.1.0
-  resolution: "nearbytes-log@https://github.com/nearbytes/nearbytes-log.git#commit=7e634ed773b659e5256d74ab9c77e3189f5748ee"
+  resolution: "nearbytes-log@https://github.com/nearbytes/nearbytes-log.git#commit=18e11bb827b773c04070a626e7e96c487cefb815"
   dependencies:
     nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
     nearbytes-storage: "nearbytes/nearbytes-storage#main"
-  checksum: 10c0/958412b63cce3458caeb554070310f39c7ee61a02904535b6bc735028989b286a0665cb825fb31a99e64bf5121fd21dc2335b27485168cfe722349bdc52ede35
+  checksum: 10c0/049f93c925d4c9db06f01408c257d426fda1736c6e5b1ef45c9bb86a73b78b82ee80ceac2d64a10d8e0e3498a510c2a40df7431e5be6eaa4b92156df071e88a6
   languageName: node
   linkType: hard
 

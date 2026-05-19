@@ -4,7 +4,9 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RootsConfig } from '../../config/roots.js';
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { createFileService } from '../../domain/fileService.js';
+import { createFileService } from 'nearbytes-files';
+import { createLog } from 'nearbytes-log';
+import { defaultPathMapper } from 'nearbytes-storage';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import type { VolumeSyncInventory } from '../../storage/multiRoot.js';
 import { createSecret } from 'nearbytes-crypto';
@@ -338,7 +340,7 @@ async function createLanHarness(prefix: string, secretValue: string, peerId: str
   const keys = await crypto.deriveKeys(secret);
   const volumeId = Buffer.from(keys.publicKey).toString('hex');
   const storage = new MultiRootStorageBackend(createConfig(storageDir, volumeId));
-  const fileService = createFileService({ crypto, storage });
+  const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
   const transport = new FakeLanPeerTransport();
   const lanService = new LocalNetworkSyncService(storage, {
     storageDir,

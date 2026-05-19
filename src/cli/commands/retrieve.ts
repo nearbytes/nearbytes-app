@@ -3,7 +3,7 @@ import { writeFile } from 'fs/promises';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { createLog } from 'nearbytes-log';
-import { retrieveData } from '../../domain/operations.js';
+import { retrieveData } from 'nearbytes-files';
 import { green, red } from '../output/colors.js';
 import { validateSecret, validateHash, validateOutputPath } from '../validation.js';
 import { getDefaultStorageDir } from '../../storagePath.js';

@@ -4,13 +4,13 @@ import { createSecret } from 'nearbytes-crypto';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
 import type { EventPayload } from 'nearbytes-crypto';
 import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
-import type { EventLogEntry } from './types.js';
+import type { EventLogEntry } from 'nearbytes-log';
 import { defaultPathMapper } from 'nearbytes-storage';
 import { createLog, type Log } from 'nearbytes-log';
 import { serializeEventEnvelope } from 'nearbytes-log';
-import { loadEventLog, openVolume, verifyEventLog } from './volume.js';
-import { volumeIdFromPublicKey } from './fileCrypto.js';
-import { createSignedEvent, hydrateSignedEvent } from './eventEnvelope.js';
+import { createSignedEvent, hydrateSignedEvent } from 'nearbytes-log';
+import { loadEventLog, openVolume, verifyEventLog } from 'nearbytes-files';
+import { volumeIdFromPublicKey } from 'nearbytes-files';
 import {
   createChatMessage,
   createIdentityRecord,
@@ -28,7 +28,7 @@ import {
   type ChatMessage,
   type IdentityProfile,
   type IdentityRecord,
-} from './chatCodec.js';
+} from 'nearbytes-files';
 
 export interface PublishedIdentity {
   readonly eventHash: string;

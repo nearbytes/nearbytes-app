@@ -1,6 +1,6 @@
 import { base64UrlToBytes } from 'nearbytes-crypto';
 import { normalizeVolumeId } from 'nearbytes-log';
-import { canonicalJsonString } from './fileReferenceCodec.js';
+import { canonicalJsonString } from 'nearbytes-files';
 import type {
   JoinLink,
   JoinLinkAttachment,

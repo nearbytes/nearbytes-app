@@ -1,7 +1,9 @@
 import { createCryptoOperations, type CryptoOperations } from 'nearbytes-crypto';
 import { createChatService, type ChatService } from '../domain/chatService.js';
-import { createFileService, type FileService } from '../domain/fileService.js';
+import { createFileService, type FileService } from 'nearbytes-files';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
+import { defaultPathMapper } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import type { RuntimeVolumeEventPublisher } from './volumeEvents.js';
 
 // Shared service bundle per docs/specs/transport/shared-runtime-services-v0.1.md.
@@ -23,10 +25,13 @@ export interface RuntimeCoreServices {
 
 export function createRuntimeCoreServices(options: RuntimeCoreServiceOptions): RuntimeCoreServices {
   const crypto = options.crypto ?? createCryptoOperations();
+  const pathMapper = options.pathMapper ?? defaultPathMapper;
+  const log = createLog(options.storage, pathMapper);
   const dependencies = {
+    log,
     crypto,
     storage: options.storage,
-    pathMapper: options.pathMapper,
+    pathMapper,
     now: options.now,
   };
 
@@ -34,7 +39,7 @@ export function createRuntimeCoreServices(options: RuntimeCoreServiceOptions): R
     crypto,
     storage: options.storage,
     fileService: createFileService(dependencies),
-    chatService: createChatService(dependencies),
+    chatService: createChatService({ ...dependencies }),
     volumeEvents: options.volumeEvents,
   };
 }

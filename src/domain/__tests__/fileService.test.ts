@@ -4,18 +4,18 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import type { RootsConfig } from '../../config/roots.js';
-import { storeData } from '../../domain/operations.js';
+import { storeData } from 'nearbytes-files';
 import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
 import { createLog } from 'nearbytes-log';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
-import { loadEventLog, openVolume } from '../../domain/volume.js';
+import { loadEventLog, openVolume } from 'nearbytes-files';
 import { createEncryptedData, createSignature, EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
 import { defaultPathMapper } from 'nearbytes-storage';
-import { createFileService } from '../fileService.js';
-import { createSignedEvent } from '../eventEnvelope.js';
-import { hydrateSignedEvent } from '../eventEnvelope.js';
+import { createFileService } from 'nearbytes-files';
+import { createSignedEvent } from 'nearbytes-log';
+import { hydrateSignedEvent } from 'nearbytes-log';
 
 const START_TIME = 1700000000000;
 
@@ -136,9 +136,11 @@ describe('FileService', () => {
     await service.addFile('test:secret:four', 'b.txt', Buffer.from('beta'));
     await service.deleteFile('test:secret:four', 'a.txt');
 
+    const reconstructedStorage = new FilesystemStorageBackend(dir);
     const reconstructed = createFileService({
+      log: createLog(reconstructedStorage, defaultPathMapper),
       crypto: createCryptoOperations(),
-      storage: new FilesystemStorageBackend(dir),
+      storage: reconstructedStorage,
       now: () => START_TIME,
     });
 
@@ -423,7 +425,7 @@ describe('FileService', () => {
     const storage = new MultiRootStorageBackend(
       createMultiRootConfig(mainRoot, backupRoot, [destinationVolumeId])
     );
-    const service = createFileService({ crypto, storage, now });
+    const service = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage, now });
 
     const created = await service.addFile(sourceSecret, 'share.txt', Buffer.from('shared payload'));
     const exported = await service.exportSourceReferences(sourceSecret, ['share.txt']);
@@ -492,7 +494,7 @@ async function createTestService(startTime: number): Promise<{
   const storage = new FilesystemStorageBackend(dir);
   const crypto = createCryptoOperations();
   const now = createNow(startTime);
-  const service = createFileService({ crypto, storage, now });
+  const service = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage, now });
 
   return {
     service,

@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { createLog } from 'nearbytes-log';
-import { setupChannel, storeData, retrieveData } from '../../domain/operations.js';
+import { setupChannel, storeData, retrieveData } from 'nearbytes-files';
 import { createSecret } from 'nearbytes-crypto';
 
 const TEST_DATA_DIR = './test-data';
