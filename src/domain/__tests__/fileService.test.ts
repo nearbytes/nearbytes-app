@@ -140,7 +140,6 @@ describe('FileService', () => {
     const reconstructed = createFileService({
       log: createLog(reconstructedStorage, defaultPathMapper),
       crypto: createCryptoOperations(),
-      storage: reconstructedStorage,
       now: () => START_TIME,
     });
 
@@ -165,8 +164,8 @@ describe('FileService', () => {
     await cleanup();
   });
 
-  it('computes and persists snapshots on demand', async () => {
-    const { service, dir, cleanup } = await createTestService(START_TIME);
+  it('computes snapshots on demand', async () => {
+    const { service, cleanup } = await createTestService(START_TIME);
     const secret = 'test:secret:snapshot';
 
     await service.addFile(secret, 'snap.txt', Buffer.from('snap'));
@@ -176,19 +175,6 @@ describe('FileService', () => {
     expect(summary.fileCount).toBe(1);
     expect(summary.generatedAt).toBe(START_TIME + 1000);
     expect(summary.lastEventHash).toMatch(/^[0-9a-f]{64}$/);
-
-    const keyPair = await createCryptoOperations().deriveKeys(createSecret(secret));
-    const channelPath = defaultPathMapper(keyPair.publicKey);
-    const snapshotPath = join(dir, channelPath, 'snapshot.latest.json');
-    const snapshotRaw = await readFile(snapshotPath, 'utf8');
-    const snapshot = JSON.parse(snapshotRaw) as {
-      version: number;
-      files: { filename: string }[];
-    };
-
-    expect(snapshot.version).toBe(1);
-    expect(snapshot.files).toHaveLength(1);
-    expect(snapshot.files[0].filename).toBe('snap.txt');
 
     await cleanup();
   });
@@ -425,7 +411,7 @@ describe('FileService', () => {
     const storage = new MultiRootStorageBackend(
       createMultiRootConfig(mainRoot, backupRoot, [destinationVolumeId])
     );
-    const service = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage, now });
+    const service = createFileService({ log: createLog(storage, defaultPathMapper), crypto, now });
 
     const created = await service.addFile(sourceSecret, 'share.txt', Buffer.from('shared payload'));
     const exported = await service.exportSourceReferences(sourceSecret, ['share.txt']);
@@ -494,7 +480,7 @@ async function createTestService(startTime: number): Promise<{
   const storage = new FilesystemStorageBackend(dir);
   const crypto = createCryptoOperations();
   const now = createNow(startTime);
-  const service = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage, now });
+  const service = createFileService({ log: createLog(storage, defaultPathMapper), crypto, now });
 
   return {
     service,
@@ -518,14 +504,13 @@ async function loadEntries(dir: string, secret: string) {
   const crypto = createCryptoOperations();
   const storage = new FilesystemStorageBackend(dir);
   const channelStorage = createLog(storage, defaultPathMapper);
-  const volume = await openVolume(createSecret(secret), crypto, storage, defaultPathMapper);
+  const volume = await openVolume(createSecret(secret), crypto);
   return loadEventLog(volume, channelStorage, crypto);
 }
 
-async function getVolumeId(dir: string, secret: string): Promise<string> {
+async function getVolumeId(_dir: string, secret: string): Promise<string> {
   const crypto = createCryptoOperations();
-  const storage = new FilesystemStorageBackend(dir);
-  const volume = await openVolume(createSecret(secret), crypto, storage, defaultPathMapper);
+  const volume = await openVolume(createSecret(secret), crypto);
   return Buffer.from(volume.publicKey).toString('hex');
 }
 
@@ -540,7 +525,7 @@ async function appendLegacyVolumeKeyFile(
   const storage = new FilesystemStorageBackend(dir);
   const channelStorage = createLog(storage, defaultPathMapper);
   const normalizedSecret = createSecret(secret);
-  const volume = await openVolume(normalizedSecret, crypto, storage, defaultPathMapper);
+  const volume = await openVolume(normalizedSecret, crypto);
   const keyPair = await crypto.deriveKeys(normalizedSecret);
   const symmetricKey = await crypto.deriveSymKey(keyPair.privateKey);
   const encryptedData = await crypto.encryptSym(data, symmetricKey);

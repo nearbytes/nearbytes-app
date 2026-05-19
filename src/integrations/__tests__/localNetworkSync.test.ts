@@ -340,7 +340,7 @@ async function createLanHarness(prefix: string, secretValue: string, peerId: str
   const keys = await crypto.deriveKeys(secret);
   const volumeId = Buffer.from(keys.publicKey).toString('hex');
   const storage = new MultiRootStorageBackend(createConfig(storageDir, volumeId));
-  const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
+  const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
   const transport = new FakeLanPeerTransport();
   const lanService = new LocalNetworkSyncService(storage, {
     storageDir,

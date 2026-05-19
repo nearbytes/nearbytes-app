@@ -1,11 +1,10 @@
 import type { Command } from 'commander';
-import { createCryptoOperations } from 'nearbytes-crypto';
-import { FilesystemStorageBackend } from 'nearbytes-storage';
+import { createCryptoOperations, bytesToHex } from 'nearbytes-crypto';
+import { FilesystemStorageBackend, defaultPathMapper } from 'nearbytes-storage';
 import { createLog } from 'nearbytes-log';
 import { openVolume, materializeVolume } from 'nearbytes-files';
 import { green, red, yellow } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
-import { defaultPathMapper } from 'nearbytes-storage';
 import { getDefaultStorageDir } from '../../storagePath.js';
 
 export interface VolumeOpenOptions {
@@ -28,15 +27,14 @@ export async function handleVolumeOpen(options: VolumeOpenOptions): Promise<void
     const channelStorage = createLog(storage, defaultPathMapper);
 
     // Open volume
-    const volume = await openVolume(secret, crypto, storage);
+    const volume = await openVolume(secret, crypto);
 
     // Materialize file system state
     const fileSystemState = await materializeVolume(volume, channelStorage, crypto);
 
     // Output result
     console.log(green('✓ Volume opened successfully'));
-    console.log(`Public Key: ${Buffer.from(volume.publicKey).toString('hex')}`);
-    console.log(`Volume Path: ${volume.path}`);
+    console.log(`Public Key: ${bytesToHex(volume.publicKey)}`);
     console.log(`Files: ${fileSystemState.files.size}`);
 
     if (fileSystemState.files.size > 0) {

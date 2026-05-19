@@ -34,7 +34,7 @@ describe('Nearbytes API', () => {
 
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(tempDir);
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
+    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
     const chatService = createChatService({ crypto, storage });
 
     app = createApp({

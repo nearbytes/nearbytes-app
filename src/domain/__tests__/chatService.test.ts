@@ -112,7 +112,7 @@ async function createTestServices(startTime: number): Promise<{
 
   return {
     chatService: createChatService({ crypto, storage, now }),
-    fileService: createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage, now }),
+    fileService: createFileService({ log: createLog(storage, defaultPathMapper), crypto, now }),
     crypto,
     storage,
     cleanup: async () => {

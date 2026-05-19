@@ -7433,7 +7433,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nanoid@npm:^3.3.11":
+"nanoid@npm:^3.3.12":
   version: 3.3.12
   resolution: "nanoid@npm:3.3.12"
   bin:
@@ -7525,12 +7525,11 @@ __metadata:
 
 "nearbytes-files@nearbytes/nearbytes-files#main":
   version: 0.1.0
-  resolution: "nearbytes-files@https://github.com/nearbytes/nearbytes-files.git#commit=b9fb0f44881bb1cfcaea72d96d89a3c27ceb4716"
+  resolution: "nearbytes-files@https://github.com/nearbytes/nearbytes-files.git#commit=70b09f2acfbc8fdd8a1cd269d07647c413b0e2a6"
   dependencies:
     nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
     nearbytes-log: "nearbytes/nearbytes-log#main"
-    nearbytes-storage: "nearbytes/nearbytes-storage#main"
-  checksum: 10c0/97579cd7b4e21e2112db5da5a720838795233be450a0460531a91d1132f42e732253b2fb6f602267fd5114136eb362e5989782f54e8addeee6f6214c04bb568d
+  checksum: 10c0/444fc23477f2ddca372c39e775dbd539367c281e5a4de4abf6431eb6aca7524f5b69bb458b0dffb44e57f42f533573c688e2e475d3b09a0496b9184deaac454c
   languageName: node
   linkType: hard
 
@@ -7546,10 +7545,10 @@ __metadata:
 
 "nearbytes-storage@nearbytes/nearbytes-storage#main":
   version: 0.1.0
-  resolution: "nearbytes-storage@https://github.com/nearbytes/nearbytes-storage.git#commit=9faed1d1174f0d79f3dbc5e1735f814418bacebd"
+  resolution: "nearbytes-storage@https://github.com/nearbytes/nearbytes-storage.git#commit=cf1167111aff83713e7a0a9af404e5f41f71e106"
   dependencies:
     nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
-  checksum: 10c0/86b5ea656ac02f6e1799cee0d9207eeddac4c2a5d9b9e1f5bb14acdf28c89471910651b59622465f8e0145f1a125af45ed37c4941a6ed41586d59c1d8b227367
+  checksum: 10c0/61f6e2dffeb77ef1843900472b88d08eaa79ef766159384bb1932475502a1d9cf40a41503578044c65b4c3281e318252926b731e62dba7db1301f092b4113e6c
   languageName: node
   linkType: hard
 
@@ -8103,13 +8102,13 @@ __metadata:
   linkType: hard
 
 "postcss@npm:^8.4.43, postcss@npm:^8.5.3":
-  version: 8.5.14
-  resolution: "postcss@npm:8.5.14"
+  version: 8.5.15
+  resolution: "postcss@npm:8.5.15"
   dependencies:
-    nanoid: "npm:^3.3.11"
+    nanoid: "npm:^3.3.12"
     picocolors: "npm:^1.1.1"
     source-map-js: "npm:^1.2.1"
-  checksum: 10c0/48138207cf5ef5581be1bfe2cb65ccfe0ac75e43888ba045afc8ed6043d7b56aeb3b9a9fe5b353ff554be943cd0cc15d826ccb991525159175971e5ee8ab0237
+  checksum: 10c0/7f2e63ae22fbe43aace1bf652bd99da4e90737c64194d49e51ddc9cd0f9e51ff2861a7d734379b494deffa03a880a5c65eec70bc29ee9ebaa7136dde3eee8f31
   languageName: node
   linkType: hard
 

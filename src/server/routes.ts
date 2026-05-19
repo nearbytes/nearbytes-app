@@ -1451,9 +1451,9 @@ function asyncHandler(handler: AsyncHandler): RequestHandler {
 async function getVolumeId(
   secret: string,
   crypto: CryptoOperations,
-  storage: StorageBackend
+  _storage: StorageBackend
 ): Promise<string> {
-  const volume = await openVolume(validateSecret(secret), crypto, storage);
+  const volume = await openVolume(validateSecret(secret), crypto);
   return bytesToHex(volume.publicKey);
 }
 

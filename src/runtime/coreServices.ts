@@ -27,19 +27,17 @@ export function createRuntimeCoreServices(options: RuntimeCoreServiceOptions): R
   const crypto = options.crypto ?? createCryptoOperations();
   const pathMapper = options.pathMapper ?? defaultPathMapper;
   const log = createLog(options.storage, pathMapper);
-  const dependencies = {
+  const fileDependencies = {
     log,
     crypto,
-    storage: options.storage,
-    pathMapper,
     now: options.now,
   };
 
   return {
     crypto,
     storage: options.storage,
-    fileService: createFileService(dependencies),
-    chatService: createChatService({ ...dependencies }),
+    fileService: createFileService(fileDependencies),
+    chatService: createChatService({ crypto, storage: options.storage, pathMapper, now: options.now }),
     volumeEvents: options.volumeEvents,
   };
 }

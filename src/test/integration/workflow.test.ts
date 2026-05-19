@@ -29,7 +29,7 @@ describe('Nearbytes Workflow', () => {
     );
 
     // 1. Setup channel
-    const { publicKey } = await setupChannel(secret, crypto, storage);
+    const { publicKey } = await setupChannel(secret, crypto);
     expect(publicKey.length).toBeGreaterThan(0);
 
     // 2. Store data
@@ -53,7 +53,7 @@ describe('Nearbytes Workflow', () => {
         .join('')
     );
 
-    await setupChannel(secret, crypto, storage);
+    await setupChannel(secret, crypto);
 
     // Store multiple events
     const data1 = new TextEncoder().encode('First message');

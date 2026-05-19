@@ -97,16 +97,14 @@ export function createChatService(dependencies: ChatServiceDependencies): ChatSe
 
   return {
     listChat: async (secret) =>
-      listChatWithDeps(secret, dependencies.crypto, dependencies.storage, channelStorage, pathMapper),
+      listChatWithDeps(secret, dependencies.crypto, channelStorage),
     publishIdentity: async (volumeSecret, identitySecret, profile) =>
       publishIdentityWithDeps(
         volumeSecret,
         identitySecret,
         profile,
         dependencies.crypto,
-        dependencies.storage,
         channelStorage,
-        pathMapper,
         now
       ),
     sendMessage: async (volumeSecret, identitySecret, input) =>
@@ -115,9 +113,7 @@ export function createChatService(dependencies: ChatServiceDependencies): ChatSe
         identitySecret,
         input,
         dependencies.crypto,
-        dependencies.storage,
         channelStorage,
-        pathMapper,
         now
       ),
   };
@@ -126,11 +122,9 @@ export function createChatService(dependencies: ChatServiceDependencies): ChatSe
 async function listChatWithDeps(
   secret: string,
   crypto: CryptoOperations,
-  storage: StorageBackend,
-  channelStorage: Log,
-  pathMapper: ChannelPathMapper
+  channelStorage: Log
 ): Promise<VolumeChatState> {
-  const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
+  const volume = await openVolume(normalizeSecret(secret), crypto);
   const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
 
@@ -146,14 +140,12 @@ async function publishIdentityWithDeps(
   identitySecret: string,
   profile: IdentityProfile,
   crypto: CryptoOperations,
-  storage: StorageBackend,
   channelStorage: Log,
-  pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<PublishedIdentity> {
   const normalizedVolumeSecret = normalizeSecret(volumeSecret);
   const normalizedIdentitySecret = normalizeSecret(identitySecret);
-  const volume = await openVolume(normalizedVolumeSecret, crypto, storage, pathMapper);
+  const volume = await openVolume(normalizedVolumeSecret, crypto);
   const volumeEntries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(volumeEntries, volume, crypto);
 
@@ -184,14 +176,12 @@ async function sendMessageWithDeps(
   identitySecret: string,
   input: { body?: string; attachment?: unknown },
   crypto: CryptoOperations,
-  storage: StorageBackend,
   channelStorage: Log,
-  pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<PublishedChatMessage> {
   const normalizedVolumeSecret = normalizeSecret(volumeSecret);
   const normalizedIdentitySecret = normalizeSecret(identitySecret);
-  const volume = await openVolume(normalizedVolumeSecret, crypto, storage, pathMapper);
+  const volume = await openVolume(normalizedVolumeSecret, crypto);
   const volumeEntries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(volumeEntries, volume, crypto);
 

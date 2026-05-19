@@ -1,12 +1,11 @@
 import type { Command } from 'commander';
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { FilesystemStorageBackend } from 'nearbytes-storage';
+import { FilesystemStorageBackend, defaultPathMapper } from 'nearbytes-storage';
 import { createLog } from 'nearbytes-log';
 import { openVolume, materializeVolume, getFile } from 'nearbytes-files';
 import { deleteFile } from 'nearbytes-files';
 import { green, red, yellow } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
-import { defaultPathMapper } from 'nearbytes-storage';
 import { getDefaultStorageDir } from '../../storagePath.js';
 
 export interface FileRemoveOptions {
@@ -34,7 +33,7 @@ export async function handleFileRemove(options: FileRemoveOptions): Promise<void
     const channelStorage = createLog(storage, defaultPathMapper);
 
     // Open volume
-    const volume = await openVolume(secret, crypto, storage);
+    const volume = await openVolume(secret, crypto);
 
     // Check if file exists
     const fileSystemState = await materializeVolume(volume, channelStorage, crypto);

@@ -1,6 +1,5 @@
 import type { Command } from 'commander';
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { setupChannel } from 'nearbytes-files';
 import { green, red } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
@@ -19,17 +18,15 @@ export async function handleSetup(options: SetupOptions): Promise<void> {
     // Validate secret
     const secret = validateSecret(options.secret);
 
-    // Initialize crypto and storage
+    // Initialize crypto
     const crypto = createCryptoOperations();
-    const storage = new FilesystemStorageBackend(options.dataDir ?? getDefaultStorageDir());
 
-    // Setup channel
-    const result = await setupChannel(secret, crypto, storage);
+    // Setup channel (derives keys)
+    const result = await setupChannel(secret, crypto);
 
     // Output result
     console.log(green('✓ Channel initialized successfully'));
     console.log(`Public Key: ${Buffer.from(result.publicKey).toString('hex')}`);
-    console.log(`Channel Path: ${result.channelPath}`);
   } catch (error) {
     console.error(red(`✗ Error: ${error instanceof Error ? error.message : 'unknown error'}`));
     process.exit(1);

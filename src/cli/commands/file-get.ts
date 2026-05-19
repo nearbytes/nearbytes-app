@@ -1,13 +1,12 @@
 import type { Command } from 'commander';
 import { writeFile } from 'fs/promises';
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { FilesystemStorageBackend } from 'nearbytes-storage';
+import { FilesystemStorageBackend, defaultPathMapper } from 'nearbytes-storage';
 import { createLog } from 'nearbytes-log';
 import { openVolume, materializeVolume, getFile } from 'nearbytes-files';
 import { retrieveData } from 'nearbytes-files';
 import { green, red } from '../output/colors.js';
 import { validateSecret, validateOutputPath } from '../validation.js';
-import { defaultPathMapper } from 'nearbytes-storage';
 import { getDefaultStorageDir } from '../../storagePath.js';
 
 export interface FileGetOptions {
@@ -36,7 +35,7 @@ export async function handleFileGet(options: FileGetOptions): Promise<void> {
     const channelStorage = createLog(storage, defaultPathMapper);
 
     // Open volume
-    const volume = await openVolume(secret, crypto, storage);
+    const volume = await openVolume(secret, crypto);
 
     // Materialize file system state
     const fileSystemState = await materializeVolume(volume, channelStorage, crypto);

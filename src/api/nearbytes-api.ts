@@ -1,5 +1,5 @@
 import type { Secret } from 'nearbytes-crypto';
-import type { FileMetadata, FileSystemState, Volume } from 'nearbytes-storage';
+import type { VolumeFileMetadata, VolumeFileSystemState, Volume } from 'nearbytes-files';
 import type { Hash } from 'nearbytes-crypto';
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
@@ -15,7 +15,7 @@ import type { EventLogEntry } from 'nearbytes-log';
  */
 export interface OpenVolumeResult {
   readonly volume: Volume;
-  readonly fileSystemState: FileSystemState;
+  readonly fileSystemState: VolumeFileSystemState;
   readonly publicKeyHex: string;
   readonly fileCount: number;
 }
@@ -64,15 +64,13 @@ export interface GetFileResult {
 export class NearbytesAPI {
   private readonly channelStorage: Log;
   private readonly crypto: CryptoOperations;
-  private readonly storage: StorageBackend;
 
   constructor(
     crypto: CryptoOperations,
     storage: StorageBackend,
-    private readonly pathMapper: ChannelPathMapper = defaultPathMapper
+    pathMapper: ChannelPathMapper = defaultPathMapper
   ) {
     this.crypto = crypto;
-    this.storage = storage;
     this.channelStorage = createLog(storage, pathMapper);
   }
 
@@ -84,8 +82,8 @@ export class NearbytesAPI {
    * @throws Error if volume cannot be opened or event log verification fails
    */
   async openVolume(secret: Secret): Promise<OpenVolumeResult> {
-    // Open volume (creates if needed)
-    const volume = await openVolume(secret, this.crypto, this.storage, this.pathMapper);
+    // Open volume (derives keys)
+    const volume = await openVolume(secret, this.crypto);
 
     // Materialize file system state
     const fileSystemState = await materializeVolume(volume, this.channelStorage, this.crypto);
@@ -108,7 +106,7 @@ export class NearbytesAPI {
    * @returns Array of file metadata, sorted by name
    * @throws Error if volume cannot be opened
    */
-  async listFiles(secret: Secret): Promise<FileMetadata[]> {
+  async listFiles(secret: Secret): Promise<VolumeFileMetadata[]> {
     const volume = await this.getVolume(secret);
     const fileSystemState = await materializeVolume(volume, this.channelStorage, this.crypto);
     return listFiles(fileSystemState);
@@ -229,6 +227,6 @@ export class NearbytesAPI {
    * Internal helper method
    */
   private async getVolume(secret: Secret): Promise<Volume> {
-    return await openVolume(secret, this.crypto, this.storage, this.pathMapper);
+    return await openVolume(secret, this.crypto);
   }
 }

@@ -6,6 +6,7 @@ import { setupChannel } from 'nearbytes-files';
 import { red } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
 import { getDefaultStorageDir } from '../../storagePath.js';
+import { bytesToHex } from 'nearbytes-crypto';
 import {
   formatEventsAsJson,
   formatEventsAsTable,
@@ -31,14 +32,10 @@ export async function handleList(options: ListOptions): Promise<void> {
     // Initialize crypto and storage
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(options.dataDir ?? getDefaultStorageDir());
-    const channelStorage = createLog(storage, (pubKey) =>
-      Array.from(pubKey)
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('')
-    );
+    const channelStorage = createLog(storage, (pubKey) => bytesToHex(pubKey));
 
     // Get channel public key
-    const { publicKey } = await setupChannel(secret, crypto, storage);
+    const { publicKey } = await setupChannel(secret, crypto);
 
     // List events
     const events = await channelStorage.events.listEvents(publicKey);

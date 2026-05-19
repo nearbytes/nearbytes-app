@@ -396,7 +396,7 @@ describe('MEGA managed share API', () => {
     await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
 
     const storage = new MultiRootStorageBackend(rootsConfig);
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
+    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
     const chatService = createChatService({ crypto, storage });
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
@@ -608,7 +608,7 @@ describe('MEGA managed share API', () => {
 
     const storage = new MultiRootStorageBackend(rootsConfig);
     const crypto = createCryptoOperations();
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
+    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
     const chatService = createChatService({ crypto, storage });
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
@@ -802,7 +802,7 @@ describe('MEGA managed share API', () => {
 
     const storage = new MultiRootStorageBackend(rootsConfig);
     const crypto = createCryptoOperations();
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto, storage });
+    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
     const chatService = createChatService({ crypto, storage });
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),

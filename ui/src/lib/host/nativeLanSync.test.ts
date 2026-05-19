@@ -246,7 +246,7 @@ async function createRemoteHarness(secret: string, peerId: string): Promise<{
   const storage = new MemoryStorageBackend();
   const crypto = createCryptoOperations();
   const log = createLog(storage);
-  const fileService = createFileService({ crypto, storage, log });
+  const fileService = createFileService({ crypto, log });
   const volumeId = await deriveVolumeId(secret);
   const observations: ProviderQueueObservation[] = [];
   let previousPaths = new Set<string>();
