@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCryptoOperations } from 'nearbytes-crypto';
-import { createFileService } from '../../../../src/domain/fileService.js';
+import { createFileService } from 'nearbytes-files';
 import { deriveKeys } from 'nearbytes-crypto';
+import { createLog } from 'nearbytes-log';
 import { createInMemoryPathRecordStore, createInMemoryPathRecordStoreAdapter, normalizeStoragePath, PathRecordStorageBackend } from 'nearbytes-storage';
 import { createSecret } from 'nearbytes-crypto';
 import type { StorageBackend } from 'nearbytes-storage';
@@ -244,7 +245,8 @@ async function createRemoteHarness(secret: string, peerId: string): Promise<{
 }> {
   const storage = new MemoryStorageBackend();
   const crypto = createCryptoOperations();
-  const fileService = createFileService({ crypto, storage });
+  const log = createLog(storage);
+  const fileService = createFileService({ crypto, storage, log });
   const volumeId = await deriveVolumeId(secret);
   const observations: ProviderQueueObservation[] = [];
   let previousPaths = new Set<string>();

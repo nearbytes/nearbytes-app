@@ -7470,15 +7470,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nearbytes-crypto@file:../../nearbytes-crypto::locator=nearbytes-ui%40workspace%3Aui":
-  version: 0.1.0
-  resolution: "nearbytes-crypto@file:../../nearbytes-crypto#../../nearbytes-crypto::hash=d54199&locator=nearbytes-ui%40workspace%3Aui"
-  dependencies:
-    "@noble/curves": "npm:^1.9.7"
-  checksum: 10c0/9f6216272548642f46659cc22ad3eb58b9b271767823d70fba7611e15b9392465142b33e560f0dc8ceb2f88e3a3ef21268b36e614143806f92a276de1afdc476
-  languageName: node
-  linkType: hard
-
 "nearbytes-crypto@nearbytes/nearbytes-crypto#main":
   version: 0.1.0
   resolution: "nearbytes-crypto@https://github.com/nearbytes/nearbytes-crypto.git#commit=a95dcf96ee257cee855d0a8ed1d694dab070fc9d"
@@ -7543,16 +7534,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nearbytes-log@file:../../nearbytes-log::locator=nearbytes-ui%40workspace%3Aui":
-  version: 0.1.0
-  resolution: "nearbytes-log@file:../../nearbytes-log#../../nearbytes-log::hash=ff6260&locator=nearbytes-ui%40workspace%3Aui"
-  dependencies:
-    nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
-    nearbytes-storage: "nearbytes/nearbytes-storage#main"
-  checksum: 10c0/62ed79c3a3516544dada2a9084c24a106a5c32ece727509b467936589c2716f277d927411507cd3024ab0492ca0adfb2fae027862449b349d9d0b58c6795b2ae
-  languageName: node
-  linkType: hard
-
 "nearbytes-log@nearbytes/nearbytes-log#main":
   version: 0.1.0
   resolution: "nearbytes-log@https://github.com/nearbytes/nearbytes-log.git#commit=18e11bb827b773c04070a626e7e96c487cefb815"
@@ -7560,15 +7541,6 @@ __metadata:
     nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
     nearbytes-storage: "nearbytes/nearbytes-storage#main"
   checksum: 10c0/049f93c925d4c9db06f01408c257d426fda1736c6e5b1ef45c9bb86a73b78b82ee80ceac2d64a10d8e0e3498a510c2a40df7431e5be6eaa4b92156df071e88a6
-  languageName: node
-  linkType: hard
-
-"nearbytes-storage@file:../../nearbytes-storage::locator=nearbytes-ui%40workspace%3Aui":
-  version: 0.1.0
-  resolution: "nearbytes-storage@file:../../nearbytes-storage#../../nearbytes-storage::hash=2f3f21&locator=nearbytes-ui%40workspace%3Aui"
-  dependencies:
-    nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
-  checksum: 10c0/839c279059b74f7ebcb33a4aa4ae067cc90397f687c6ced79fc979d87f59c968a2d32863c5021e2ceda08904ae8a87396d160d4e30ad694121aceaece6224e29
   languageName: node
   linkType: hard
 
@@ -7608,9 +7580,10 @@ __metadata:
     buffer: "npm:^6.0.3"
     idb: "npm:^8.0.0"
     lucide-svelte: "npm:^0.577.0"
-    nearbytes-crypto: "file:../../nearbytes-crypto"
-    nearbytes-log: "file:../../nearbytes-log"
-    nearbytes-storage: "file:../../nearbytes-storage"
+    nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
+    nearbytes-files: "nearbytes/nearbytes-files#main"
+    nearbytes-log: "nearbytes/nearbytes-log#main"
+    nearbytes-storage: "nearbytes/nearbytes-storage#main"
     svelte: "npm:^5.0.0"
     typescript: "npm:^5.3.2"
     vite: "npm:^6.0.0"

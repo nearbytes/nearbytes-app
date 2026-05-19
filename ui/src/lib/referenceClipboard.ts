@@ -2,7 +2,7 @@ import type { RecipientReferenceBundle, SourceReferenceBundle } from './api.js';
 import {
   parseRecipientReferenceJson,
   parseSourceReferenceJson,
-} from '../../../src/domain/fileReferenceCodec.js';
+} from 'nearbytes-files';
 
 export type NearbytesClipboardPayload =
   | { kind: 'source'; bundle: SourceReferenceBundle }
