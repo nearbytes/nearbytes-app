@@ -88,9 +88,9 @@
     "electron-updater": "^6.6.2",
     "express": "^4.22.1",
     "multer": "^2.0.2",
-    "nearbytes-crypto": "file:../nearbytes-crypto",
-    "nearbytes-log": "file:../nearbytes-log",
-    "nearbytes-storage": "file:../nearbytes-storage",
+    "nearbytes-crypto": "nearbytes/nearbytes-crypto#main",
+    "nearbytes-log": "nearbytes/nearbytes-log#main",
+    "nearbytes-storage": "nearbytes/nearbytes-storage#main",
     "werift": "^0.22.9",
     "zod": "^4.3.6"
   },
