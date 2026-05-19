@@ -1,6 +1,6 @@
 import type { MirrorRemoteAdapter } from './adapters.js';
 import { managedSharePath as path } from './managedSharePath.js';
-import { validateCanonicalStorageFile } from 'nearbytes-storage';
+import { validateCanonicalStorageFile } from 'nearbytes-log';
 
 type MirrorWorkerFsModule = typeof import('node:fs/promises') | typeof import('fs/promises');
 let mirrorWorkerFsPromise: Promise<MirrorWorkerFsModule> | null = null;

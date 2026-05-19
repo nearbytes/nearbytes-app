@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { promises as fs } from 'fs';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { setupChannel, storeData, retrieveData } from '../../domain/operations.js';
 import { createSecret } from 'nearbytes-crypto';
 
@@ -22,7 +22,7 @@ describe('Nearbytes Workflow', () => {
     const secret = createSecret('test:channel:password');
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(TEST_DATA_DIR);
-    const channelStorage = new ChannelStorage(storage, (pubKey) =>
+    const channelStorage = createLog(storage, (pubKey) =>
       Array.from(pubKey)
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('')
@@ -47,7 +47,7 @@ describe('Nearbytes Workflow', () => {
     const secret = createSecret('test:channel:password');
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(TEST_DATA_DIR);
-    const channelStorage = new ChannelStorage(storage, (pubKey) =>
+    const channelStorage = createLog(storage, (pubKey) =>
       Array.from(pubKey)
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('')

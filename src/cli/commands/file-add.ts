@@ -3,7 +3,7 @@ import { readFile } from 'fs/promises';
 import { basename } from 'path';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { openVolume } from '../../domain/volume.js';
 import { storeData } from '../../domain/operations.js';
 import { green, red } from '../output/colors.js';
@@ -41,7 +41,7 @@ export async function handleFileAdd(options: FileAddOptions): Promise<void> {
     // Initialize crypto and storage
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(options.dataDir ?? getDefaultStorageDir());
-    const channelStorage = new ChannelStorage(storage, defaultPathMapper);
+    const channelStorage = createLog(storage, defaultPathMapper);
 
     // Open volume (ensures it exists)
     await openVolume(secret, crypto, storage);

@@ -3,7 +3,7 @@ import { readFile } from 'fs/promises';
 import { basename } from 'path';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { storeData } from '../../domain/operations.js';
 import { green, red } from '../output/colors.js';
 import { validateSecret, validateFilePath } from '../validation.js';
@@ -31,7 +31,7 @@ export async function handleStore(options: StoreOptions): Promise<void> {
     // Initialize crypto and storage
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(options.dataDir ?? getDefaultStorageDir());
-    const channelStorage = new ChannelStorage(storage, (pubKey) =>
+    const channelStorage = createLog(storage, (pubKey) =>
       Array.from(pubKey)
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('')

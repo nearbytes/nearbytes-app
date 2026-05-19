@@ -18,14 +18,8 @@ import { type SerializedEvent } from 'nearbytes-crypto';
 import { StorageError } from 'nearbytes-crypto';
 import type { StorageBackend, StorageWriteEvent, StorageWriteListener } from 'nearbytes-storage';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
-import {
-  normalizeVolumeId,
-  parseCanonicalEventRelativePath,
-  validateBlockBytes,
-  validateEventBytes,
-  type IntegrityValidationResult,
-} from 'nearbytes-storage';
-import { deserializeEvent } from 'nearbytes-storage';
+import { normalizeVolumeId, parseCanonicalEventRelativePath, validateBlockBytes, validateEventBytes, type IntegrityValidationResult } from 'nearbytes-log';
+import { deserializeEvent } from 'nearbytes-log';
 
 const CHANNEL_PATH_REGEX = /^channels\/([a-f0-9]{130})(?:\/|$)/i;
 const BLOCK_PATH_REGEX = /^blocks\/([a-f0-9]{64})(?:\.bin)?$/i;

@@ -5,8 +5,8 @@ import { join } from 'path';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import type { RootsConfig } from '../../config/roots.js';
 import { storeData } from '../../domain/operations.js';
-import { serializeEvent, serializeEventEnvelope } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
+import { createLog } from 'nearbytes-log';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
 import { loadEventLog, openVolume } from '../../domain/volume.js';
@@ -52,15 +52,15 @@ describe('FileService', () => {
     const keyPair = await crypto.deriveKeys(secret);
     const volumeId = Buffer.from(keyPair.publicKey).toString('hex');
     const storage = new MultiRootStorageBackend(createMultiRootConfig(mainRoot, backupRoot, [volumeId]));
-    const channelStorage = new ChannelStorage(storage, defaultPathMapper);
+    const channelStorage = createLog(storage, defaultPathMapper);
     const backupStorage = new FilesystemStorageBackend(backupRoot);
-    const backupChannelStorage = new ChannelStorage(backupStorage, defaultPathMapper);
+    const backupChannelStorage = createLog(backupStorage, defaultPathMapper);
 
     const plaintext = Buffer.from('validated payload');
     const symmetricKey = await crypto.deriveSymKey(keyPair.privateKey);
     const encryptedData = await crypto.encryptSym(plaintext, symmetricKey);
     const blobHash = await crypto.computeHash(encryptedData);
-    await backupChannelStorage.storeEncryptedData(blobHash, encryptedData, false, keyPair.publicKey);
+    await backupChannelStorage.blocks.store(blobHash, encryptedData, false, keyPair.publicKey);
 
     const payload = {
       type: EventType.CREATE_FILE,
@@ -72,7 +72,7 @@ describe('FileService', () => {
     } as const;
     const storedEvent = await createSignedEvent(crypto, keyPair, payload, [blobHash]);
     const eventHash = await crypto.computeHash(serializeEventEnvelope(storedEvent.envelope));
-    await backupChannelStorage.storeEvent(keyPair.publicKey, storedEvent);
+    await backupChannelStorage.events.storeEvent(keyPair.publicKey, storedEvent);
 
     const channelPath = defaultPathMapper(keyPair.publicKey);
     await mkdir(join(mainRoot, 'blocks'), { recursive: true });
@@ -84,11 +84,11 @@ describe('FileService', () => {
       'utf8'
     );
 
-    await expect(channelStorage.retrieveEncryptedData(blobHash, keyPair.publicKey)).resolves.toEqual(encryptedData);
+    await expect(channelStorage.blocks.retrieve(blobHash, keyPair.publicKey)).resolves.toEqual(encryptedData);
     const repairedEvent = await hydrateSignedEvent(
       crypto,
       keyPair.privateKey,
-      await channelStorage.retrieveEvent(keyPair.publicKey, eventHash)
+      await channelStorage.events.retrieveEvent(keyPair.publicKey, eventHash)
     );
     expect(repairedEvent.payload.fileName).toBe('validated.txt');
 
@@ -324,7 +324,7 @@ describe('FileService', () => {
     const secret = 'test:secret:legacy';
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(dir);
-    const channelStorage = new ChannelStorage(storage, defaultPathMapper);
+    const channelStorage = createLog(storage, defaultPathMapper);
 
     await storeData(
       new Uint8Array(Buffer.from('legacy-file')),
@@ -515,7 +515,7 @@ function createNow(start: number): () => number {
 async function loadEntries(dir: string, secret: string) {
   const crypto = createCryptoOperations();
   const storage = new FilesystemStorageBackend(dir);
-  const channelStorage = new ChannelStorage(storage, defaultPathMapper);
+  const channelStorage = createLog(storage, defaultPathMapper);
   const volume = await openVolume(createSecret(secret), crypto, storage, defaultPathMapper);
   return loadEventLog(volume, channelStorage, crypto);
 }
@@ -536,14 +536,14 @@ async function appendLegacyVolumeKeyFile(
 ): Promise<void> {
   const crypto = createCryptoOperations();
   const storage = new FilesystemStorageBackend(dir);
-  const channelStorage = new ChannelStorage(storage, defaultPathMapper);
+  const channelStorage = createLog(storage, defaultPathMapper);
   const normalizedSecret = createSecret(secret);
   const volume = await openVolume(normalizedSecret, crypto, storage, defaultPathMapper);
   const keyPair = await crypto.deriveKeys(normalizedSecret);
   const symmetricKey = await crypto.deriveSymKey(keyPair.privateKey);
   const encryptedData = await crypto.encryptSym(data, symmetricKey);
   const blobHash = await crypto.computeHash(encryptedData);
-  await channelStorage.storeEncryptedData(blobHash, encryptedData, true, keyPair.publicKey);
+  await channelStorage.blocks.store(blobHash, encryptedData, true, keyPair.publicKey);
 
   const payload = {
     type: EventType.CREATE_FILE,
@@ -554,7 +554,7 @@ async function appendLegacyVolumeKeyFile(
     createdAt,
   } as const;
   const storedEvent = await createSignedEvent(crypto, keyPair, payload, [payload.hash]);
-  await channelStorage.storeEvent(volume.publicKey, storedEvent);
+  await channelStorage.events.storeEvent(volume.publicKey, storedEvent);
 }
 
 function createMultiRootConfig(mainRoot: string, backupRoot: string, volumeIds: readonly string[]): RootsConfig {

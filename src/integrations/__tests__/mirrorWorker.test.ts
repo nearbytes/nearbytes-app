@@ -6,7 +6,7 @@ import { createCryptoOperations } from 'nearbytes-crypto';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
 import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
-import { serializeEvent, serializeEventEnvelope } from 'nearbytes-storage';
+import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
 import { MirrorWorker } from '../mirrorWorker.js';
 import type { MirrorRemoteAdapter, MirrorRemoteEntry } from '../adapters.js';
 import { createSignedEvent } from '../../domain/eventEnvelope.js';

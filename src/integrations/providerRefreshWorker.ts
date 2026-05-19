@@ -1,5 +1,5 @@
 import { managedSharePath as path } from './managedSharePath.js';
-import { validateCanonicalStorageFile } from 'nearbytes-storage';
+import { validateCanonicalStorageFile } from 'nearbytes-log';
 
 interface ProviderRefreshFsStatsLike {
   isFile(): boolean;

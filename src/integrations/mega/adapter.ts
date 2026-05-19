@@ -55,10 +55,7 @@ import {
   resolveMegaPublicLinkTarget,
 } from './publicLink.js';
 import { managedSharePath as path } from '../managedSharePath.js';
-import {
-  parseCanonicalEventRelativePath,
-  validateCanonicalStorageFile,
-} from 'nearbytes-storage';
+import { parseCanonicalEventRelativePath, validateCanonicalStorageFile } from 'nearbytes-log';
 import { MirrorWorker } from '../mirrorWorker.js';
 import type {
   ManagedShareMirrorEntry,
@@ -2952,7 +2949,6 @@ export class MegaTransportAdapter {
     this.incomingContactInviteTasks.delete(accountId);
   }
 
-
   private async loginWithPassword(email: string, password: string, mfaCode?: string): Promise<MegaSession> {
     return createMegaPasswordSession(this.apiClient, this.runtime.logger, email, password, mfaCode);
   }
@@ -2960,7 +2956,6 @@ export class MegaTransportAdapter {
   private async fetchCurrentUser(session: MegaSession, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.apiCommand<Record<string, unknown>>({ a: 'ug' }, session, signal);
   }
-
 
   private async fetchNodesSnapshot(session: MegaSession, signal?: AbortSignal): Promise<MegaFetchNodesSnapshot> {
     const snapshot = await fetchMegaNodesSnapshot(this.apiClient, session, undefined, { useCache: false }, signal);

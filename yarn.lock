@@ -7511,37 +7511,73 @@ __metadata:
 
 "nearbytes-crypto@file:../../nearbytes-crypto::locator=nearbytes-ui%40workspace%3Aui":
   version: 0.1.0
-  resolution: "nearbytes-crypto@file:../../nearbytes-crypto#../../nearbytes-crypto::hash=229978&locator=nearbytes-ui%40workspace%3Aui"
+  resolution: "nearbytes-crypto@file:../../nearbytes-crypto#../../nearbytes-crypto::hash=c46c3d&locator=nearbytes-ui%40workspace%3Aui"
   dependencies:
     "@noble/curves": "npm:^1.9.7"
-  checksum: 10c0/c7b475eaa1ec3fb46a19777eb262cdc1db25dbe3e0dbc0f483f08cb486d9ab7876af886c2d6a2a01ac2f6710f63b2682f45b5e6e2c596f016243b6ebdda942ed
+  checksum: 10c0/a1b146e0c54071bd59140b5fe6fe80b9a89222e035f5176e8cb4a972f86403eae7c50835a9ccb19bfdde002ea29453377268e7e774597b2a5cae78c31f2e3b7e
   languageName: node
   linkType: hard
 
 "nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-crypto%40workspace%3A.":
   version: 0.1.0
-  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=229978&locator=nearbytes-crypto%40workspace%3A."
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=c46c3d&locator=nearbytes-crypto%40workspace%3A."
   dependencies:
     "@noble/curves": "npm:^1.9.7"
-  checksum: 10c0/c7b475eaa1ec3fb46a19777eb262cdc1db25dbe3e0dbc0f483f08cb486d9ab7876af886c2d6a2a01ac2f6710f63b2682f45b5e6e2c596f016243b6ebdda942ed
+  checksum: 10c0/a1b146e0c54071bd59140b5fe6fe80b9a89222e035f5176e8cb4a972f86403eae7c50835a9ccb19bfdde002ea29453377268e7e774597b2a5cae78c31f2e3b7e
   languageName: node
   linkType: hard
 
-"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2F..%2Fnearbytes-storage%23..%2F..%2Fnearbytes-storage%3A%3Ahash%3Da66472%26locator%3Dnearbytes-ui%2540workspace%253Aui":
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-log%40file%3A..%2F..%2Fnearbytes-log%23..%2F..%2Fnearbytes-log%3A%3Ahash%3D39ff4b%26locator%3Dnearbytes-ui%2540workspace%253Aui":
   version: 0.1.0
-  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=229978&locator=nearbytes-storage%40file%3A..%2F..%2Fnearbytes-storage%23..%2F..%2Fnearbytes-storage%3A%3Ahash%3Da66472%26locator%3Dnearbytes-ui%2540workspace%253Aui"
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=c46c3d&locator=nearbytes-log%40file%3A..%2F..%2Fnearbytes-log%23..%2F..%2Fnearbytes-log%3A%3Ahash%3D39ff4b%26locator%3Dnearbytes-ui%2540workspace%253Aui"
   dependencies:
     "@noble/curves": "npm:^1.9.7"
-  checksum: 10c0/c7b475eaa1ec3fb46a19777eb262cdc1db25dbe3e0dbc0f483f08cb486d9ab7876af886c2d6a2a01ac2f6710f63b2682f45b5e6e2c596f016243b6ebdda942ed
+  checksum: 10c0/a1b146e0c54071bd59140b5fe6fe80b9a89222e035f5176e8cb4a972f86403eae7c50835a9ccb19bfdde002ea29453377268e7e774597b2a5cae78c31f2e3b7e
   languageName: node
   linkType: hard
 
-"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3Da66472%26locator%3Dnearbytes-crypto%2540workspace%253A.":
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-log%40file%3A..%2Fnearbytes-log%23..%2Fnearbytes-log%3A%3Ahash%3D39ff4b%26locator%3Dnearbytes-crypto%2540workspace%253A.":
   version: 0.1.0
-  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=229978&locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3Da66472%26locator%3Dnearbytes-crypto%2540workspace%253A."
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=c46c3d&locator=nearbytes-log%40file%3A..%2Fnearbytes-log%23..%2Fnearbytes-log%3A%3Ahash%3D39ff4b%26locator%3Dnearbytes-crypto%2540workspace%253A."
   dependencies:
     "@noble/curves": "npm:^1.9.7"
-  checksum: 10c0/c7b475eaa1ec3fb46a19777eb262cdc1db25dbe3e0dbc0f483f08cb486d9ab7876af886c2d6a2a01ac2f6710f63b2682f45b5e6e2c596f016243b6ebdda942ed
+  checksum: 10c0/a1b146e0c54071bd59140b5fe6fe80b9a89222e035f5176e8cb4a972f86403eae7c50835a9ccb19bfdde002ea29453377268e7e774597b2a5cae78c31f2e3b7e
+  languageName: node
+  linkType: hard
+
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2F..%2Fnearbytes-storage%23..%2F..%2Fnearbytes-storage%3A%3Ahash%3Dd2351e%26locator%3Dnearbytes-ui%2540workspace%253Aui":
+  version: 0.1.0
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=c46c3d&locator=nearbytes-storage%40file%3A..%2F..%2Fnearbytes-storage%23..%2F..%2Fnearbytes-storage%3A%3Ahash%3Dd2351e%26locator%3Dnearbytes-ui%2540workspace%253Aui"
+  dependencies:
+    "@noble/curves": "npm:^1.9.7"
+  checksum: 10c0/a1b146e0c54071bd59140b5fe6fe80b9a89222e035f5176e8cb4a972f86403eae7c50835a9ccb19bfdde002ea29453377268e7e774597b2a5cae78c31f2e3b7e
+  languageName: node
+  linkType: hard
+
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3Dd2351e%26locator%3Dnearbytes-crypto%2540workspace%253A.":
+  version: 0.1.0
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=c46c3d&locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3Dd2351e%26locator%3Dnearbytes-crypto%2540workspace%253A."
+  dependencies:
+    "@noble/curves": "npm:^1.9.7"
+  checksum: 10c0/a1b146e0c54071bd59140b5fe6fe80b9a89222e035f5176e8cb4a972f86403eae7c50835a9ccb19bfdde002ea29453377268e7e774597b2a5cae78c31f2e3b7e
+  languageName: node
+  linkType: hard
+
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3Dd2351e%26locator%3Dnearbytes-log%2540file%253A..%252F..%252Fnearbytes-log%2523..%252F..%252Fnearbytes-log%253A%253Ahash%253D39ff4b%2526locator%253Dnearbytes-ui%252540workspace%25253Aui":
+  version: 0.1.0
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=c46c3d&locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3Dd2351e%26locator%3Dnearbytes-log%2540file%253A..%252F..%252Fnearbytes-log%2523..%252F..%252Fnearbytes-log%253A%253Ahash%253D39ff4b%2526locator%253Dnearbytes-ui%252540workspace%25253Aui"
+  dependencies:
+    "@noble/curves": "npm:^1.9.7"
+  checksum: 10c0/a1b146e0c54071bd59140b5fe6fe80b9a89222e035f5176e8cb4a972f86403eae7c50835a9ccb19bfdde002ea29453377268e7e774597b2a5cae78c31f2e3b7e
+  languageName: node
+  linkType: hard
+
+"nearbytes-crypto@file:../nearbytes-crypto::locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3Dd2351e%26locator%3Dnearbytes-log%2540file%253A..%252Fnearbytes-log%2523..%252Fnearbytes-log%253A%253Ahash%253D39ff4b%2526locator%253Dnearbytes-crypto%252540workspace%25253A.":
+  version: 0.1.0
+  resolution: "nearbytes-crypto@file:../nearbytes-crypto#../nearbytes-crypto::hash=c46c3d&locator=nearbytes-storage%40file%3A..%2Fnearbytes-storage%23..%2Fnearbytes-storage%3A%3Ahash%3Dd2351e%26locator%3Dnearbytes-log%2540file%253A..%252Fnearbytes-log%2523..%252Fnearbytes-log%253A%253Ahash%253D39ff4b%2526locator%253Dnearbytes-crypto%252540workspace%25253A."
+  dependencies:
+    "@noble/curves": "npm:^1.9.7"
+  checksum: 10c0/a1b146e0c54071bd59140b5fe6fe80b9a89222e035f5176e8cb4a972f86403eae7c50835a9ccb19bfdde002ea29453377268e7e774597b2a5cae78c31f2e3b7e
   languageName: node
   linkType: hard
 
@@ -7574,6 +7610,7 @@ __metadata:
     express: "npm:^4.22.1"
     multer: "npm:^2.0.2"
     nearbytes-crypto: "file:../nearbytes-crypto"
+    nearbytes-log: "file:../nearbytes-log"
     nearbytes-storage: "file:../nearbytes-storage"
     prettier: "npm:^3.1.0"
     supertest: "npm:^7.2.2"
@@ -7587,21 +7624,59 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"nearbytes-storage@file:../../nearbytes-storage::locator=nearbytes-ui%40workspace%3Aui":
+"nearbytes-log@file:../../nearbytes-log::locator=nearbytes-ui%40workspace%3Aui":
   version: 0.1.0
-  resolution: "nearbytes-storage@file:../../nearbytes-storage#../../nearbytes-storage::hash=a66472&locator=nearbytes-ui%40workspace%3Aui"
+  resolution: "nearbytes-log@file:../../nearbytes-log#../../nearbytes-log::hash=39ff4b&locator=nearbytes-ui%40workspace%3Aui"
   dependencies:
     nearbytes-crypto: "file:../nearbytes-crypto"
-  checksum: 10c0/7a1e28f525969b2771ddc28e63ac3e6d6bc2f497f813c0c5ac690d76d88fddcb9caff24b7db118051f3b3b822047a1c5e50ceacc6eb32fe93668f06b16eecd07
+    nearbytes-storage: "file:../nearbytes-storage"
+  checksum: 10c0/bb91665ed41d3fb0df790f2e3cf77a926a793ee7f6b45fc5cdf1868f402b64c67491436517c460c8c3a48dd93934169687808b5274e1c8992ed4a7b5b8a29b24
+  languageName: node
+  linkType: hard
+
+"nearbytes-log@file:../nearbytes-log::locator=nearbytes-crypto%40workspace%3A.":
+  version: 0.1.0
+  resolution: "nearbytes-log@file:../nearbytes-log#../nearbytes-log::hash=39ff4b&locator=nearbytes-crypto%40workspace%3A."
+  dependencies:
+    nearbytes-crypto: "file:../nearbytes-crypto"
+    nearbytes-storage: "file:../nearbytes-storage"
+  checksum: 10c0/bb91665ed41d3fb0df790f2e3cf77a926a793ee7f6b45fc5cdf1868f402b64c67491436517c460c8c3a48dd93934169687808b5274e1c8992ed4a7b5b8a29b24
+  languageName: node
+  linkType: hard
+
+"nearbytes-storage@file:../../nearbytes-storage::locator=nearbytes-ui%40workspace%3Aui":
+  version: 0.1.0
+  resolution: "nearbytes-storage@file:../../nearbytes-storage#../../nearbytes-storage::hash=d2351e&locator=nearbytes-ui%40workspace%3Aui"
+  dependencies:
+    nearbytes-crypto: "file:../nearbytes-crypto"
+  checksum: 10c0/698d168ce5d75acbd3f44c101cb226c05812da8b78a1102f04d6454ac152a51d6967a318aa62f3e548a522a2bb9f2d952beb101c00c807a0695e88411767bd00
   languageName: node
   linkType: hard
 
 "nearbytes-storage@file:../nearbytes-storage::locator=nearbytes-crypto%40workspace%3A.":
   version: 0.1.0
-  resolution: "nearbytes-storage@file:../nearbytes-storage#../nearbytes-storage::hash=a66472&locator=nearbytes-crypto%40workspace%3A."
+  resolution: "nearbytes-storage@file:../nearbytes-storage#../nearbytes-storage::hash=d2351e&locator=nearbytes-crypto%40workspace%3A."
   dependencies:
     nearbytes-crypto: "file:../nearbytes-crypto"
-  checksum: 10c0/7a1e28f525969b2771ddc28e63ac3e6d6bc2f497f813c0c5ac690d76d88fddcb9caff24b7db118051f3b3b822047a1c5e50ceacc6eb32fe93668f06b16eecd07
+  checksum: 10c0/698d168ce5d75acbd3f44c101cb226c05812da8b78a1102f04d6454ac152a51d6967a318aa62f3e548a522a2bb9f2d952beb101c00c807a0695e88411767bd00
+  languageName: node
+  linkType: hard
+
+"nearbytes-storage@file:../nearbytes-storage::locator=nearbytes-log%40file%3A..%2F..%2Fnearbytes-log%23..%2F..%2Fnearbytes-log%3A%3Ahash%3D39ff4b%26locator%3Dnearbytes-ui%2540workspace%253Aui":
+  version: 0.1.0
+  resolution: "nearbytes-storage@file:../nearbytes-storage#../nearbytes-storage::hash=d2351e&locator=nearbytes-log%40file%3A..%2F..%2Fnearbytes-log%23..%2F..%2Fnearbytes-log%3A%3Ahash%3D39ff4b%26locator%3Dnearbytes-ui%2540workspace%253Aui"
+  dependencies:
+    nearbytes-crypto: "file:../nearbytes-crypto"
+  checksum: 10c0/698d168ce5d75acbd3f44c101cb226c05812da8b78a1102f04d6454ac152a51d6967a318aa62f3e548a522a2bb9f2d952beb101c00c807a0695e88411767bd00
+  languageName: node
+  linkType: hard
+
+"nearbytes-storage@file:../nearbytes-storage::locator=nearbytes-log%40file%3A..%2Fnearbytes-log%23..%2Fnearbytes-log%3A%3Ahash%3D39ff4b%26locator%3Dnearbytes-crypto%2540workspace%253A.":
+  version: 0.1.0
+  resolution: "nearbytes-storage@file:../nearbytes-storage#../nearbytes-storage::hash=d2351e&locator=nearbytes-log%40file%3A..%2Fnearbytes-log%23..%2Fnearbytes-log%3A%3Ahash%3D39ff4b%26locator%3Dnearbytes-crypto%2540workspace%253A."
+  dependencies:
+    nearbytes-crypto: "file:../nearbytes-crypto"
+  checksum: 10c0/698d168ce5d75acbd3f44c101cb226c05812da8b78a1102f04d6454ac152a51d6967a318aa62f3e548a522a2bb9f2d952beb101c00c807a0695e88411767bd00
   languageName: node
   linkType: hard
 
@@ -7633,6 +7708,7 @@ __metadata:
     idb: "npm:^8.0.0"
     lucide-svelte: "npm:^0.577.0"
     nearbytes-crypto: "file:../../nearbytes-crypto"
+    nearbytes-log: "file:../../nearbytes-log"
     nearbytes-storage: "file:../../nearbytes-storage"
     svelte: "npm:^5.0.0"
     typescript: "npm:^5.3.2"

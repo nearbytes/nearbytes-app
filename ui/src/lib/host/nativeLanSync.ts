@@ -1,4 +1,4 @@
-import { deserializeEvent } from 'nearbytes-storage';
+import { deserializeEvent } from 'nearbytes-log';
 import type { SerializedEvent } from 'nearbytes-crypto';
 import { buildLanDiscoveryTxtRecord } from '../../../../src/integrations/lanTransportProfile.js';
 import type {

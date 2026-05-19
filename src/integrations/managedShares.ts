@@ -13,7 +13,7 @@ import type {
   NearbytesRootNormalizationResult,
 } from '../config/sourceDiscovery.js';
 import { joinLinkSpaceToSecretString, parseJoinLink, parseJoinLinkJson } from '../domain/joinLinkCodec.js';
-import { normalizeVolumeId, parseCanonicalEventRelativePath } from 'nearbytes-storage';
+import { normalizeVolumeId, parseCanonicalEventRelativePath } from 'nearbytes-log';
 import type {
   MultiRootRuntimeSnapshot,
   RootConsolidationResult,

@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { setupChannel } from '../../domain/operations.js';
 import { red } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
@@ -31,7 +31,7 @@ export async function handleList(options: ListOptions): Promise<void> {
     // Initialize crypto and storage
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(options.dataDir ?? getDefaultStorageDir());
-    const channelStorage = new ChannelStorage(storage, (pubKey) =>
+    const channelStorage = createLog(storage, (pubKey) =>
       Array.from(pubKey)
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('')
@@ -41,7 +41,7 @@ export async function handleList(options: ListOptions): Promise<void> {
     const { publicKey } = await setupChannel(secret, crypto, storage);
 
     // List events
-    const events = await channelStorage.listEvents(publicKey);
+    const events = await channelStorage.events.listEvents(publicKey);
 
     // Format and output
     let output: string;

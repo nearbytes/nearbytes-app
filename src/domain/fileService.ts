@@ -5,13 +5,13 @@ import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
 import type { EventPayload, Hash, EncryptedData, SerializedEvent } from 'nearbytes-crypto';
 import { createEncryptedData, EMPTY_HASH, EventType, createHash } from 'nearbytes-crypto';
 import { DecryptionError } from 'nearbytes-crypto';
-import { ChannelStorage } from 'nearbytes-storage';
-import { validateBlockBytes } from 'nearbytes-storage';
+import { createLog, type Log } from 'nearbytes-log';
+import { validateBlockBytes } from 'nearbytes-log';
 import { defaultPathMapper } from 'nearbytes-storage';
-import { serializeEvent, serializeEventEnvelope, serializeInnerEventPayloadJson } from 'nearbytes-storage';
+import { serializeEvent, serializeEventEnvelope, serializeInnerEventPayloadJson } from 'nearbytes-log';
 import { openVolume, loadEventLog, verifyEventLog } from './volume.js';
 import type { FileMetadata } from './fileEvents.js';
-import type { EventLogEntry } from 'nearbytes-storage';
+import type { EventLogEntry } from './types.js';
 import {
   parseChatMessageJson,
   parseIdentityRecordJson,
@@ -214,7 +214,7 @@ interface StoredTimelineRow {
  */
 export function createFileService(dependencies: FileServiceDependencies): FileService {
   const pathMapper = dependencies.pathMapper ?? defaultPathMapper;
-  const channelStorage = new ChannelStorage(dependencies.storage, pathMapper);
+  const channelStorage = createLog(dependencies.storage, pathMapper);
   const now = dependencies.now ?? (() => Date.now());
 
   return {
@@ -355,7 +355,7 @@ async function addFileWithDeps(
   mimeType: string | undefined,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<FileMetadata> {
@@ -365,7 +365,7 @@ async function addFileWithDeps(
 
   const keyPair = await crypto.deriveKeys(normalizedSecret);
   const encrypted = await encryptFileForVolume(crypto, keyPair.privateKey, data);
-  await channelStorage.storeEncryptedData(
+  await channelStorage.blocks.store(
     encrypted.blobHash,
     encrypted.encryptedData,
     true,
@@ -398,7 +398,7 @@ async function deleteFileWithDeps(
   filename: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<void> {
@@ -418,7 +418,7 @@ async function renameFolderWithDeps(
   merge: boolean,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<RenameFolderSummary> {
@@ -503,7 +503,7 @@ async function renameFileWithDeps(
   toName: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<RenameFileSummary> {
@@ -543,7 +543,7 @@ async function listFilesWithDeps(
   secret: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper
 ): Promise<FileMetadata[]> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
@@ -557,7 +557,7 @@ async function getFileWithDeps(
   blobHash: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper
 ): Promise<Buffer> {
   const normalizedSecret = normalizeSecret(secret);
@@ -571,7 +571,7 @@ async function getFileWithDeps(
   }
 
   const keyPair = await crypto.deriveKeys(normalizedSecret);
-  const encryptedData = await channelStorage.retrieveEncryptedData(blobHash as Hash, keyPair.publicKey);
+  const encryptedData = await channelStorage.blocks.retrieve(blobHash as Hash, keyPair.publicKey);
   const plaintext = await decryptFileForVolume(
     crypto,
     keyPair.privateKey,
@@ -585,7 +585,7 @@ async function computeSnapshotWithDeps(
   secret: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<SnapshotSummary> {
@@ -617,7 +617,7 @@ async function getTimelineWithDeps(
   secret: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper
 ): Promise<TimelineEvent[]> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
@@ -631,7 +631,7 @@ async function getTimelineDeltaWithDeps(
   afterEventHash: string | null | undefined,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper
 ): Promise<TimelineDelta> {
   // docs/specs/application/hash-cursor-refresh-v0.1.md
@@ -693,13 +693,13 @@ async function getEventWithDeps(
   eventHash: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper
 ): Promise<EventDetail> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
   const hash = createHash(eventHash);
   const keyPair = await crypto.deriveKeys(volume.secret);
-  const signedEvent = await channelStorage.retrieveEvent(keyPair.publicKey, hash);
+  const signedEvent = await channelStorage.events.retrieveEvent(keyPair.publicKey, hash);
   const payloadBytes = serializeEventEnvelope(signedEvent.envelope);
   const isValid = await crypto.verifyPU(payloadBytes, signedEvent.signature, volume.publicKey);
   if (!isValid) {
@@ -719,7 +719,7 @@ async function exportSourceReferencesWithDeps(
   filenames: string[],
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<ReferenceExportResult<SourceReferenceBundle>> {
@@ -783,7 +783,7 @@ async function importSourceReferencesWithDeps(
   sourceSecret: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<SourceImportResult> {
@@ -820,7 +820,7 @@ async function exportRecipientReferencesWithDeps(
   recipientVolumeId: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<ReferenceExportResult<RecipientReferenceBundle>> {
@@ -902,7 +902,7 @@ async function importRecipientReferencesWithDeps(
   bundleValue: unknown,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<RecipientImportResult> {
@@ -1244,7 +1244,7 @@ function buildTimelineRows(entries: EventLogEntry[]): StoredTimelineRow[] {
 
 async function loadVolumeFiles(
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   volume: Awaited<ReturnType<typeof openVolume>>
 ): Promise<{ entries: EventLogEntry[]; files: StoredFileRecord[] }> {
   const entries = await loadEventLog(volume, channelStorage, crypto);
@@ -1260,7 +1260,7 @@ async function upgradeLegacyFilesForExport(
   files: readonly StoredFileRecord[],
   keyPair: KeyPair,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   now: () => number
 ): Promise<number> {
   const fileMap = new Map(files.map((file) => [file.filename, file]));
@@ -1277,10 +1277,10 @@ async function upgradeLegacyFilesForExport(
       continue;
     }
 
-    const encryptedData = await channelStorage.retrieveEncryptedData(file.blobHash as Hash, keyPair.publicKey);
+    const encryptedData = await channelStorage.blocks.retrieve(file.blobHash as Hash, keyPair.publicKey);
     const plaintext = await decryptFileForVolume(crypto, keyPair.privateKey, encryptedData, file.encryptedKey);
     const encrypted = await encryptFileForVolume(crypto, keyPair.privateKey, plaintext);
-    await channelStorage.storeEncryptedData(
+    await channelStorage.blocks.store(
       encrypted.blobHash,
       encrypted.encryptedData,
       true,
@@ -1311,7 +1311,7 @@ async function importSourceBundleItems(
   sourceKeyPair: KeyPair,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   now: () => number
 ): Promise<FileMetadata[]> {
   const takenNames = new Set(existingFiles.map((file) => file.filename));
@@ -1357,7 +1357,7 @@ async function importSourceBundleItems(
 
 async function ensureDestinationBlockAvailable(
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   blobHash: string,
   destinationPublicKey: KeyPair['publicKey']
 ): Promise<void> {
@@ -1367,7 +1367,7 @@ async function ensureDestinationBlockAvailable(
   if (!validation.ok) {
     throw new Error(validation.detail ?? `Invalid block data for ${blobHash}`);
   }
-  await channelStorage.storeEncryptedData(blobHash as Hash, encryptedData as EncryptedData, false, destinationPublicKey);
+  await channelStorage.blocks.store(blobHash as Hash, encryptedData as EncryptedData, false, destinationPublicKey);
 }
 
 function nextCreateTimestamp(entries: readonly EventLogEntry[], fallbackNow: number): number {
@@ -1471,7 +1471,7 @@ function normalizeFolderPath(folder: string): string {
 }
 
 async function appendCreateEvent(
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   crypto: CryptoOperations,
   keyPair: KeyPair,
   input: {
@@ -1495,11 +1495,11 @@ async function appendCreateEvent(
     createdAt: input.createdAt,
   };
   const event = await createSignedEvent(crypto, keyPair, payload, [input.blobHash as Hash]);
-  await channelStorage.storeEvent(keyPair.publicKey, event);
+  await channelStorage.events.storeEvent(keyPair.publicKey, event);
 }
 
 async function appendDeleteEvent(
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   crypto: CryptoOperations,
   keyPair: KeyPair,
   filename: string,
@@ -1513,11 +1513,11 @@ async function appendDeleteEvent(
     deletedAt,
   };
   const event = await createSignedEvent(crypto, keyPair, payload, []);
-  await channelStorage.storeEvent(keyPair.publicKey, event);
+  await channelStorage.events.storeEvent(keyPair.publicKey, event);
 }
 
 async function appendRenameEvent(
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   crypto: CryptoOperations,
   keyPair: KeyPair,
   fromName: string,
@@ -1533,7 +1533,7 @@ async function appendRenameEvent(
     renamedAt,
   };
   const event = await createSignedEvent(crypto, keyPair, payload, []);
-  await channelStorage.storeEvent(keyPair.publicKey, event);
+  await channelStorage.events.storeEvent(keyPair.publicKey, event);
 }
 
 function normalizeSecret(secret: string): Secret {

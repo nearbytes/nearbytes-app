@@ -89,6 +89,7 @@
     "express": "^4.22.1",
     "multer": "^2.0.2",
     "nearbytes-crypto": "file:../nearbytes-crypto",
+    "nearbytes-log": "file:../nearbytes-log",
     "nearbytes-storage": "file:../nearbytes-storage",
     "werift": "^0.22.9",
     "zod": "^4.3.6"

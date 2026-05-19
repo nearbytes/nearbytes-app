@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { openVolume, materializeVolume } from '../../domain/volume.js';
 import { green, red, yellow } from '../output/colors.js';
 import { validateSecret } from '../validation.js';
@@ -25,7 +25,7 @@ export async function handleVolumeOpen(options: VolumeOpenOptions): Promise<void
     // Initialize crypto and storage
     const crypto = createCryptoOperations();
     const storage = new FilesystemStorageBackend(options.dataDir ?? getDefaultStorageDir());
-    const channelStorage = new ChannelStorage(storage, defaultPathMapper);
+    const channelStorage = createLog(storage, defaultPathMapper);
 
     // Open volume
     const volume = await openVolume(secret, crypto, storage);

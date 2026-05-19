@@ -1,7 +1,7 @@
 import { resolveVolumeDestinations } from '../config/roots.js';
 import type { MegaOwnerMirrorShareRef, MegaOwnerMirrorSource } from '../integrations/runtime.js';
 import { normalizeStoragePath } from 'nearbytes-storage';
-import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-storage';
+import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-log';
 import { MultiRootStorageBackend } from '../storage/multiRoot.js';
 
 function isExplicitlyClaimedByOtherProviderManagedSource(

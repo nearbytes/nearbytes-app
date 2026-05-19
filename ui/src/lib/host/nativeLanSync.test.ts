@@ -3,15 +3,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { createFileService } from '../../../../src/domain/fileService.js';
 import { deriveKeys } from 'nearbytes-crypto';
-import {
-  createInMemoryPathRecordStore,
-  createInMemoryPathRecordStoreAdapter,
-  normalizeStoragePath,
-  PathRecordStorageBackend,
-} from 'nearbytes-storage';
+import { createInMemoryPathRecordStore, createInMemoryPathRecordStoreAdapter, normalizeStoragePath, PathRecordStorageBackend } from 'nearbytes-storage';
 import { createSecret } from 'nearbytes-crypto';
 import type { StorageBackend } from 'nearbytes-storage';
-import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-storage';
+import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-log';
 import type { LanTransportRpcRequest } from '../../../../src/integrations/lanPeerTransport.js';
 import type { ProviderQueueObservation } from '../../../../src/integrations/types.js';
 import {

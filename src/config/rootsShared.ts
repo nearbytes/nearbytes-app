@@ -1,4 +1,4 @@
-import { normalizeVolumeId } from 'nearbytes-storage';
+import { normalizeVolumeId } from 'nearbytes-log';
 
 export type RootProvider = 'local' | 'dropbox' | 'mega' | 'gdrive' | 'icloud' | 'onedrive';
 export type StorageFullPolicy = 'block-writes' | 'drop-older-blocks';

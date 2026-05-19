@@ -4,10 +4,10 @@ import { createSecret } from 'nearbytes-crypto';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
 import type { EventPayload } from 'nearbytes-crypto';
 import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
-import type { EventLogEntry } from 'nearbytes-storage';
+import type { EventLogEntry } from './types.js';
 import { defaultPathMapper } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
-import { serializeEventEnvelope } from 'nearbytes-storage';
+import { createLog, type Log } from 'nearbytes-log';
+import { serializeEventEnvelope } from 'nearbytes-log';
 import { loadEventLog, openVolume, verifyEventLog } from './volume.js';
 import { volumeIdFromPublicKey } from './fileCrypto.js';
 import { createSignedEvent, hydrateSignedEvent } from './eventEnvelope.js';
@@ -92,7 +92,7 @@ interface ChatTimelineRow {
 
 export function createChatService(dependencies: ChatServiceDependencies): ChatService {
   const pathMapper = dependencies.pathMapper ?? defaultPathMapper;
-  const channelStorage = new ChannelStorage(dependencies.storage, pathMapper);
+  const channelStorage = createLog(dependencies.storage, pathMapper);
   const now = dependencies.now ?? (() => Date.now());
 
   return {
@@ -127,7 +127,7 @@ async function listChatWithDeps(
   secret: string,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper
 ): Promise<VolumeChatState> {
   const volume = await openVolume(normalizeSecret(secret), crypto, storage, pathMapper);
@@ -147,7 +147,7 @@ async function publishIdentityWithDeps(
   profile: IdentityProfile,
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<PublishedIdentity> {
@@ -185,7 +185,7 @@ async function sendMessageWithDeps(
   input: { body?: string; attachment?: unknown },
   crypto: CryptoOperations,
   storage: StorageBackend,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   pathMapper: ChannelPathMapper,
   now: () => number
 ): Promise<PublishedChatMessage> {
@@ -242,7 +242,7 @@ async function ensureCanonicalIdentityRecord(
   identityKeyPair: KeyPair,
   profile: IdentityProfile,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   now: () => number
 ): Promise<IdentityChannelRecord> {
   const identityEntries = await loadVerifiedChannelEntries(identityKeyPair, crypto, channelStorage);
@@ -271,7 +271,7 @@ async function ensureCanonicalIdentityRecord(
 async function getLatestIdentityChannelRecord(
   identityKeyPair: KeyPair,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage
+  channelStorage: Log
 ): Promise<IdentityChannelRecord | null> {
   const entries = await loadVerifiedChannelEntries(identityKeyPair, crypto, channelStorage);
   return getLatestIdentityChannelRecordFromEntries(entries, crypto);
@@ -318,7 +318,7 @@ async function ensureIdentityVisibleInVolume(
   identityKeyPair: KeyPair,
   canonicalIdentity: IdentityChannelRecord,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   now: () => number
 ): Promise<ResolvedPublishedIdentity> {
   if (publicKeysEqual(volumeKeyPair.publicKey, identityKeyPair.publicKey)) {
@@ -492,7 +492,7 @@ function stripResolvedIdentity(identity: ResolvedPublishedIdentity): PublishedId
 }
 
 async function appendAppRecord(
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   crypto: CryptoOperations,
   channelKeyPair: KeyPair,
   input: {
@@ -513,7 +513,7 @@ async function appendAppRecord(
     publishedAt: input.publishedAt,
   };
   const event = await createSignedEvent(crypto, channelKeyPair, payload, []);
-  return channelStorage.storeEvent(channelKeyPair.publicKey, event);
+  return channelStorage.events.storeEvent(channelKeyPair.publicKey, event);
 }
 
 function extractChatRows(entries: readonly EventLogEntry[]): ChatTimelineRow[] {
@@ -596,13 +596,13 @@ function extractChatRows(entries: readonly EventLogEntry[]): ChatTimelineRow[] {
 async function loadVerifiedChannelEntries(
   keyPair: KeyPair,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage
+  channelStorage: Log
 ): Promise<EventLogEntry[]> {
-  const eventHashes = await channelStorage.listEvents(keyPair.publicKey);
+  const eventHashes = await channelStorage.events.listEvents(keyPair.publicKey);
   const entries: EventLogEntry[] = [];
 
   for (const eventHash of eventHashes) {
-    const signedEvent = await channelStorage.retrieveEvent(keyPair.publicKey, eventHash);
+    const signedEvent = await channelStorage.events.retrieveEvent(keyPair.publicKey, eventHash);
     const payloadBytes = serializeEventEnvelope(signedEvent.envelope);
     const isValid = await crypto.verifyPU(payloadBytes, signedEvent.signature, keyPair.publicKey);
     if (!isValid) {

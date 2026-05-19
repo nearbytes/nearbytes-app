@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ApiError } from './errors.js';
-import { VOLUME_ID_HEX_REGEX } from 'nearbytes-storage';
+import { VOLUME_ID_HEX_REGEX } from 'nearbytes-log';
 
 export const openBodySchema = z.object({
   secret: z.string().min(1, 'Secret is required'),

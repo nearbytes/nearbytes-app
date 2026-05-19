@@ -6,7 +6,7 @@ import { createCryptoOperations } from 'nearbytes-crypto';
 import { EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
 import { defaultPathMapper } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { createLog } from 'nearbytes-log';
 import { FilesystemStorageBackend } from 'nearbytes-storage';
 import { createChatService } from '../chatService.js';
 import { createFileService } from '../fileService.js';
@@ -35,11 +35,11 @@ describe('ChatService', () => {
     expect(chat.messages).toHaveLength(1);
     expect(chat.messages[0].message.body).toBe('hello from nearbytes chat');
 
-    const channelStorage = new ChannelStorage(storage, defaultPathMapper);
+    const channelStorage = createLog(storage, defaultPathMapper);
     const volumeKeyPair = await crypto.deriveKeys(createSecret(volumeSecret));
     const identityKeyPair = await crypto.deriveKeys(createSecret(identitySecret));
-    const identityEventHashes = await channelStorage.listEvents(identityKeyPair.publicKey);
-    const volumeEventHashes = await channelStorage.listEvents(volumeKeyPair.publicKey);
+    const identityEventHashes = await channelStorage.events.listEvents(identityKeyPair.publicKey);
+    const volumeEventHashes = await channelStorage.events.listEvents(volumeKeyPair.publicKey);
 
     expect(identityEventHashes).toHaveLength(1);
     expect(volumeEventHashes).toHaveLength(2);
@@ -47,13 +47,13 @@ describe('ChatService', () => {
     const identityEvent = await hydrateSignedEvent(
       crypto,
       identityKeyPair.privateKey,
-      await channelStorage.retrieveEvent(identityKeyPair.publicKey, identityEventHashes[0])
+      await channelStorage.events.retrieveEvent(identityKeyPair.publicKey, identityEventHashes[0])
     );
     expect(identityEvent.payload.type).toBe(EventType.APP_RECORD);
     expect(identityEvent.payload.protocol).toBe('nb.identity.record.v1');
 
     const volumeEvents = await Promise.all(
-      volumeEventHashes.map((eventHash) => channelStorage.retrieveEvent(volumeKeyPair.publicKey, eventHash))
+      volumeEventHashes.map((eventHash) => channelStorage.events.retrieveEvent(volumeKeyPair.publicKey, eventHash))
     ).then((events) => Promise.all(events.map((event) => hydrateSignedEvent(crypto, volumeKeyPair.privateKey, event))));
     const volumeProtocols = volumeEvents
       .map((event) => event.payload.protocol)

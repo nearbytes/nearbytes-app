@@ -3,12 +3,12 @@ import type { FileMetadata, FileSystemState, Volume } from 'nearbytes-storage';
 import type { Hash } from 'nearbytes-crypto';
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { createLog, type Log } from 'nearbytes-log';
 import { defaultPathMapper } from 'nearbytes-storage';
 import { openVolume, materializeVolume, getFile, listFiles, loadEventLog } from '../domain/volume.js';
 import { storeData, deleteFile, retrieveData } from '../domain/operations.js';
 import { bytesToHex } from 'nearbytes-crypto';
-import type { EventLogEntry } from 'nearbytes-storage';
+import type { EventLogEntry } from '../domain/types.js';
 
 /**
  * Result of opening a volume
@@ -62,7 +62,7 @@ export interface GetFileResult {
  * - Throws errors (doesn't exit)
  */
 export class NearbytesAPI {
-  private readonly channelStorage: ChannelStorage;
+  private readonly channelStorage: Log;
   private readonly crypto: CryptoOperations;
   private readonly storage: StorageBackend;
 
@@ -73,7 +73,7 @@ export class NearbytesAPI {
   ) {
     this.crypto = crypto;
     this.storage = storage;
-    this.channelStorage = new ChannelStorage(storage, pathMapper);
+    this.channelStorage = createLog(storage, pathMapper);
   }
 
   /**

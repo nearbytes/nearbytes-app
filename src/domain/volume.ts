@@ -2,11 +2,12 @@ import type { Secret } from 'nearbytes-crypto';
 import { EventType } from 'nearbytes-crypto';
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
-import type { Volume, FileSystemState, FileMetadata, EventLogEntry } from 'nearbytes-storage';
+import type { Volume, FileSystemState, FileMetadata } from 'nearbytes-storage';
+import type { EventLogEntry } from './types.js';
 import { createVolume } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { type Log } from 'nearbytes-log';
 import { defaultPathMapper } from 'nearbytes-storage';
-import { serializeEventEnvelope } from 'nearbytes-storage';
+import { serializeEventEnvelope } from 'nearbytes-log';
 import { eventEnvelopePublicKeyMatches, hydrateSignedEvent } from './eventEnvelope.js';
 
 /**
@@ -50,18 +51,18 @@ export async function openVolume(
  */
 export async function loadEventLog(
   volume: Volume,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   crypto: CryptoOperations
 ): Promise<EventLogEntry[]> {
   const keyPair = await crypto.deriveKeys(volume.secret);
   // List all event hashes
-  const eventHashes = await channelStorage.listEvents(keyPair.publicKey);
+  const eventHashes = await channelStorage.events.listEvents(keyPair.publicKey);
 
   // Load all events
   const entries: EventLogEntry[] = [];
   for (const eventHash of eventHashes) {
     try {
-      const signedEvent = await channelStorage.retrieveEvent(keyPair.publicKey, eventHash);
+      const signedEvent = await channelStorage.events.retrieveEvent(keyPair.publicKey, eventHash);
       if (!eventEnvelopePublicKeyMatches(signedEvent, keyPair.publicKey)) {
         continue;
       }
@@ -173,12 +174,11 @@ export function replayEvents(entries: EventLogEntry[]): FileSystemState {
  */
 export async function materializeVolume(
   volume: Volume,
-  channelStorage: ChannelStorage,
+  channelStorage: Log,
   crypto: CryptoOperations
 ): Promise<FileSystemState> {
   // 1. Load all events
   const entries = await loadEventLog(volume, channelStorage, crypto);
-
 
   // 2. Verify all event signatures
   await verifyEventLog(entries, volume, crypto);

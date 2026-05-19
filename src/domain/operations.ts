@@ -3,12 +3,12 @@ import type { Hash, EventPayload } from 'nearbytes-crypto';
 import { EventType } from 'nearbytes-crypto';
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
-import { ChannelStorage } from 'nearbytes-storage';
+import { type Log } from 'nearbytes-log';
 import { defaultPathMapper } from 'nearbytes-storage';
 import { createEncryptedData } from 'nearbytes-crypto';
 import { createSymmetricKey } from 'nearbytes-crypto';
 import { computeHash } from 'nearbytes-crypto';
-import { serializeEventEnvelope } from 'nearbytes-storage';
+import { serializeEventEnvelope } from 'nearbytes-log';
 import { createSignedEvent, hydrateSignedEvent } from './eventEnvelope.js';
 
 /**
@@ -52,7 +52,7 @@ export async function storeData(
   fileName: string,
   secret: Secret,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage
+  channelStorage: Log
 ): Promise<{ eventHash: Hash; dataHash: Hash }> {
   // 1. Derive keys from secret
   const keyPair = await crypto.deriveKeys(secret);
@@ -67,7 +67,7 @@ export async function storeData(
   const dataHash = await computeHash(encryptedData);
 
   // 5. Store encrypted data
-  await channelStorage.storeEncryptedData(dataHash, encryptedData, false, keyPair.publicKey);
+  await channelStorage.blocks.store(dataHash, encryptedData, false, keyPair.publicKey);
 
   // 6. Derive symmetric key for encrypting the data encryption key
   const keyEncryptionKey = await crypto.deriveSymKey(keyPair.privateKey);
@@ -84,7 +84,7 @@ export async function storeData(
   };
 
   const signedEvent = await createSignedEvent(crypto, keyPair, payload, [dataHash]);
-  const eventHash = await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
+  const eventHash = await channelStorage.events.storeEvent(keyPair.publicKey, signedEvent);
 
   return { eventHash, dataHash };
 }
@@ -101,13 +101,13 @@ export async function retrieveData(
   eventHash: Hash,
   secret: Secret,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage
+  channelStorage: Log
 ): Promise<Uint8Array> {
   // 1. Derive keys from secret
   const keyPair = await crypto.deriveKeys(secret);
 
   // 2. Retrieve signed event
-  const signedEvent = await channelStorage.retrieveEvent(keyPair.publicKey, eventHash);
+  const signedEvent = await channelStorage.events.retrieveEvent(keyPair.publicKey, eventHash);
 
   const payloadBytes = serializeEventEnvelope(signedEvent.envelope);
   const isValid = await crypto.verifyPU(payloadBytes, signedEvent.signature, keyPair.publicKey);
@@ -126,7 +126,7 @@ export async function retrieveData(
   const symmetricKey = createSymmetricKey(symmetricKeyBytes);
 
   // 6. Retrieve encrypted data
-  const encryptedData = await channelStorage.retrieveEncryptedData(
+  const encryptedData = await channelStorage.blocks.retrieve(
     decryptedEvent.payload.hash,
     keyPair.publicKey
   );
@@ -152,7 +152,7 @@ export async function storeDataDeduplicated(
   fileName: string,
   secret: Secret,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage
+  channelStorage: Log
 ): Promise<{ eventHash: Hash; dataHash: Hash; wasDeduplicated: boolean }> {
   // 1. Derive keys from secret
   const keyPair = await crypto.deriveKeys(secret);
@@ -167,10 +167,10 @@ export async function storeDataDeduplicated(
   const dataHash = await computeHash(encryptedData);
 
   // 5. Check if data already exists
-  const dataExists = await channelStorage.hasEncryptedData(dataHash, keyPair.publicKey);
+  const dataExists = await channelStorage.blocks.has(dataHash, keyPair.publicKey);
 
   // 6. Store encrypted data (skip if already exists)
-  await channelStorage.storeEncryptedData(dataHash, encryptedData, true, keyPair.publicKey);
+  await channelStorage.blocks.store(dataHash, encryptedData, true, keyPair.publicKey);
 
   // 7. Derive symmetric key for encrypting the data encryption key
   const keyEncryptionKey = await crypto.deriveSymKey(keyPair.privateKey);
@@ -187,7 +187,7 @@ export async function storeDataDeduplicated(
   };
 
   const signedEvent = await createSignedEvent(crypto, keyPair, payload, [dataHash]);
-  const eventHash = await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
+  const eventHash = await channelStorage.events.storeEvent(keyPair.publicKey, signedEvent);
 
   return { eventHash, dataHash, wasDeduplicated: dataExists };
 }
@@ -204,7 +204,7 @@ export async function deleteFile(
   fileName: string,
   secret: Secret,
   crypto: CryptoOperations,
-  channelStorage: ChannelStorage
+  channelStorage: Log
 ): Promise<{ eventHash: Hash }> {
   // 1. Derive keys from secret
   const keyPair = await crypto.deriveKeys(secret);
@@ -222,7 +222,7 @@ export async function deleteFile(
   };
 
   const signedEvent = await createSignedEvent(crypto, keyPair, payload, []);
-  const eventHash = await channelStorage.storeEvent(keyPair.publicKey, signedEvent);
+  const eventHash = await channelStorage.events.storeEvent(keyPair.publicKey, signedEvent);
 
   return { eventHash };
 }

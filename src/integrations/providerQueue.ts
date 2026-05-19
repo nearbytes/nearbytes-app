@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { MultiRootStorageBackend } from '../storage/multiRoot.js';
-import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-storage';
+import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-log';
 import type { StorageWriteEvent } from 'nearbytes-storage';
 import { writeFileAtomicallyWithRenameFallback } from '../utils/atomicWrite.js';
 import type {

@@ -20,21 +20,10 @@ import {
   createRuntimeCoreServices,
   type RuntimeCoreServices,
 } from '../../../../src/runtime/coreServices.js';
-import { deserializeEvent } from 'nearbytes-storage';
-import {
-  createInMemoryPathRecordStore,
-  normalizeStoragePath,
-  PathRecordStorageBackend,
-  type InMemoryPathRecordStore,
-  type StoredPathRecord,
-} from 'nearbytes-storage';
+import { deserializeEvent } from 'nearbytes-log';
+import { createInMemoryPathRecordStore, normalizeStoragePath, PathRecordStorageBackend, type InMemoryPathRecordStore, type StoredPathRecord } from 'nearbytes-storage';
 import { createSecret, type Secret } from 'nearbytes-crypto';
-import {
-  defaultPathMapper,
-  type StorageBackend,
-  type StorageWriteEvent,
-  type StorageWriteListener,
-} from 'nearbytes-storage';
+import { defaultPathMapper, type StorageBackend, type StorageWriteEvent, type StorageWriteListener } from 'nearbytes-storage';
 import type {
   AppConfig,
   AppConfigResponse,
@@ -89,12 +78,7 @@ import {
   readMirrorVolumeSnapshot,
   writeMirrorCheckpoint,
 } from '../mirror/browserMirror.js';
-import {
-  parseCanonicalBlockRelativePath,
-  parseCanonicalEventRelativePath,
-  validateBlockBytes,
-  validateEventBytes,
-} from 'nearbytes-storage';
+import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath, validateBlockBytes, validateEventBytes } from 'nearbytes-log';
 import type {
   LanTransportHello,
   LanTransportObservationPage,

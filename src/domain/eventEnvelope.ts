@@ -3,12 +3,7 @@ import type { DecryptedEvent, EventPayload, Hash, SignedEvent } from 'nearbytes-
 import { EVENT_ENVELOPE_VERSION, createEncryptedData } from 'nearbytes-crypto';
 import type { KeyPair, PrivateKey, PublicKey } from 'nearbytes-crypto';
 import { bytesToHex } from 'nearbytes-crypto';
-import {
-  deserializeInnerEventPayload,
-  serializeEventEnvelope,
-  serializeInnerEventPayload,
-  withDecryptedPayload,
-} from 'nearbytes-storage';
+import { deserializeInnerEventPayload, serializeEventEnvelope, serializeInnerEventPayload } from 'nearbytes-log';
 
 export async function createSignedEvent(
   crypto: CryptoOperations,
@@ -47,7 +42,8 @@ export async function hydrateSignedEvent(
   privateKey: PrivateKey,
   event: SignedEvent
 ): Promise<DecryptedEvent> {
-  return withDecryptedPayload(event, await decryptSignedEventPayload(crypto, privateKey, event));
+  const payload = await decryptSignedEventPayload(crypto, privateKey, event);
+  return { ...event, payload };
 }
 
 export function eventEnvelopePublicKeyMatches(event: SignedEvent, publicKey: PublicKey): boolean {

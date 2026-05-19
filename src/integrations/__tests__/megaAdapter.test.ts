@@ -15,7 +15,7 @@ import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { volumeIdFromPublicKey } from '../../domain/fileCrypto.js';
-import { serializeEvent, serializeEventEnvelope } from 'nearbytes-storage';
+import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
 import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
 import { createSignedEvent } from '../../domain/eventEnvelope.js';
