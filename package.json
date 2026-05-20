@@ -91,6 +91,7 @@
     "nearbytes-crypto": "nearbytes/nearbytes-crypto#main",
     "nearbytes-files": "nearbytes/nearbytes-files#main",
     "nearbytes-log": "nearbytes/nearbytes-log#main",
+    "nearbytes-skeleton": "nearbytes/nearbytes-skeleton#main",
     "nearbytes-storage": "nearbytes/nearbytes-storage#main",
     "werift": "^0.22.9",
     "zod": "^4.3.6"

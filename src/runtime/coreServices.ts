@@ -1,9 +1,8 @@
-import { createCryptoOperations, type CryptoOperations } from 'nearbytes-crypto';
+import { createSkeleton } from 'nearbytes-skeleton';
+import type { CryptoOperations } from 'nearbytes-crypto';
 import { createChatService, type ChatService } from '../domain/chatService.js';
 import { createFileService, type FileService } from 'nearbytes-files';
 import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
-import { defaultPathMapper } from 'nearbytes-storage';
-import { createLog } from 'nearbytes-log';
 import type { RuntimeVolumeEventPublisher } from './volumeEvents.js';
 
 // Shared service bundle per docs/specs/transport/shared-runtime-services-v0.1.md.
@@ -24,20 +23,24 @@ export interface RuntimeCoreServices {
 }
 
 export function createRuntimeCoreServices(options: RuntimeCoreServiceOptions): RuntimeCoreServices {
-  const crypto = options.crypto ?? createCryptoOperations();
-  const pathMapper = options.pathMapper ?? defaultPathMapper;
-  const log = createLog(options.storage, pathMapper);
-  const fileDependencies = {
-    log,
-    crypto,
-    now: options.now,
-  };
+  // The skeleton provides the canonical crypto + log wiring.
+  // It is environment-neutral: same call would work in a browser with an
+  // IndexedDB backend.  App-level services (fileService, chatService) are
+  // layered on top here, in the messy app layer where they belong.
+  const skeleton = createSkeleton(options.storage);
+  const crypto = options.crypto ?? skeleton.crypto;
+  const log = skeleton.log;
 
   return {
     crypto,
     storage: options.storage,
-    fileService: createFileService(fileDependencies),
-    chatService: createChatService({ crypto, storage: options.storage, pathMapper, now: options.now }),
+    fileService: createFileService({ log, crypto, now: options.now }),
+    chatService: createChatService({
+      crypto,
+      storage: options.storage,
+      pathMapper: options.pathMapper,
+      now: options.now,
+    }),
     volumeEvents: options.volumeEvents,
   };
 }
