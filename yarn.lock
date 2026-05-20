@@ -7545,10 +7545,10 @@ __metadata:
 
 "nearbytes-storage@nearbytes/nearbytes-storage#main":
   version: 0.1.0
-  resolution: "nearbytes-storage@https://github.com/nearbytes/nearbytes-storage.git#commit=cf1167111aff83713e7a0a9af404e5f41f71e106"
+  resolution: "nearbytes-storage@https://github.com/nearbytes/nearbytes-storage.git#commit=e2ad420df5310e388f8bd4f105486cb98983f237"
   dependencies:
     nearbytes-crypto: "nearbytes/nearbytes-crypto#main"
-  checksum: 10c0/61f6e2dffeb77ef1843900472b88d08eaa79ef766159384bb1932475502a1d9cf40a41503578044c65b4c3281e318252926b731e62dba7db1301f092b4113e6c
+  checksum: 10c0/35dbb728389793770bac9bd4d0cb2c6805601db0101b6e22e8ab01f5b92703959268d1ec51379fbfe8698dcd57b277862e6ded6be97987a0285091128cca8dc3
   languageName: node
   linkType: hard
 
