@@ -15,7 +15,6 @@ import {
   createChatMessage,
   createIdentityRecord,
   createIdentitySnapshot,
-  parseChatAttachmentValue,
   parseChatMessageJson,
   parseIdentityRecordJson,
   parseIdentitySnapshotJson,
@@ -66,7 +65,7 @@ export interface ChatService {
   sendMessage(
     volumeSecret: string,
     identitySecret: string,
-    input: { body?: string; attachment?: unknown }
+    input: { body: string }
   ): Promise<PublishedChatMessage>;
 }
 
@@ -174,7 +173,7 @@ async function publishIdentityWithDeps(
 async function sendMessageWithDeps(
   volumeSecret: string,
   identitySecret: string,
-  input: { body?: string; attachment?: unknown },
+  input: { body: string },
   crypto: CryptoOperations,
   channelStorage: Log,
   now: () => number
@@ -207,10 +206,8 @@ async function sendMessageWithDeps(
     canonicalIdentity.publishedAt + 1,
     visibleIdentity.publishedAt + 1
   );
-  const attachment = input.attachment === undefined ? undefined : parseChatAttachmentValue(input.attachment);
   const message = await createChatMessage(crypto, identityKeyPair, {
     body: input.body,
-    attachment,
     timestamp: publishedAt,
   });
   const eventHash = await appendAppRecord(channelStorage, crypto, volumeKeyPair, {

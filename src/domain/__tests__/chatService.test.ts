@@ -66,33 +66,22 @@ describe('ChatService', () => {
     await cleanup();
   });
 
-  it('carries source-bound file references as chat attachments', async () => {
-    const { chatService, fileService, cleanup } = await createTestServices(START_TIME);
+  it('sends a plain text chat message', async () => {
+    const { chatService, cleanup } = await createTestServices(START_TIME);
     const volumeSecret = 'chat:test:attachments';
     const identitySecret = 'chat:test:attachment-identity';
 
     await chatService.publishIdentity(volumeSecret, identitySecret, {
       displayName: 'Grace',
     });
-    await fileService.addFile(volumeSecret, 'notes/todo.txt', Buffer.from('todo body'), 'text/plain');
-    const exported = await fileService.exportSourceReferences(volumeSecret, ['notes/todo.txt']);
-    const item = exported.bundle.items[0];
-
     await chatService.sendMessage(volumeSecret, identitySecret, {
-      attachment: {
-        kind: 'nb.src.ref.v1',
-        name: item.name,
-        mime: item.mime,
-        createdAt: item.createdAt,
-        ref: item.ref,
-      },
+      body: 'hello from the test',
     });
 
     const chat = await chatService.listChat(volumeSecret);
 
     expect(chat.messages).toHaveLength(1);
-    expect(chat.messages[0].message.attachment?.name).toBe('notes/todo.txt');
-    expect(chat.messages[0].message.attachment?.ref.s).toBe(exported.bundle.s);
+    expect(chat.messages[0].message.body).toBe('hello from the test');
 
     await cleanup();
   });

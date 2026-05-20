@@ -69,7 +69,7 @@ export interface NearbytesLegacyDesktopFamily {
   importRecipientReferences(auth: NearbytesAuth, bundle: unknown): Promise<unknown>;
   listChat(auth: NearbytesAuth): Promise<unknown>;
   publishIdentity(auth: NearbytesAuth, identitySecret: string, profile: unknown): Promise<unknown>;
-  sendChatMessage(auth: NearbytesAuth, identitySecret: string, input: { body?: string; attachment?: unknown }): Promise<unknown>;
+  sendChatMessage(auth: NearbytesAuth, identitySecret: string, input: { body: string }): Promise<unknown>;
 }
 
 export interface NearbytesObjectFamily {

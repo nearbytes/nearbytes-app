@@ -82,20 +82,11 @@ export interface IdentityRecord {
   sig: string;
 }
 
-export interface ChatAttachment {
-  kind: 'nb.src.ref.v1';
-  name: string;
-  mime?: string;
-  createdAt?: number;
-  ref: SourceFileReference;
-}
-
 export interface ChatMessage {
   p: 'nb.chat.message.v1';
   k: string;
   ts: number;
-  body?: string;
-  attachment?: ChatAttachment;
+  body: string;
   sig: string;
 }
 
@@ -1306,7 +1297,7 @@ export async function publishIdentity(
 export async function sendChatMessage(
   auth: Auth,
   identitySecret: string,
-  input: { body?: string; attachment?: ChatAttachment }
+  input: { body: string }
 ): Promise<SendChatMessageResponse> {
   const host = await getActiveHost();
   return host.legacyDesktop.sendChatMessage(auth, identitySecret, input) as Promise<SendChatMessageResponse>;

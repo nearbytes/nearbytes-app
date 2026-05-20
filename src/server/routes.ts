@@ -1266,9 +1266,9 @@ export function createRoutes(deps: RouteDependencies): Router {
     '/chat/messages',
     requireSecret(deps),
     asyncHandler(async (req, res) => {
-      const { identitySecret, body, attachment } = parseWithSchema(sendChatMessageBodySchema, req.body);
+      const { identitySecret, body } = parseWithSchema(sendChatMessageBodySchema, req.body);
       const secret = res.locals.secret as string;
-      const sent = await deps.chatService.sendMessage(secret, identitySecret, { body, attachment });
+      const sent = await deps.chatService.sendMessage(secret, identitySecret, { body });
       recordLanLatencyTrace(sent.eventHash, 'desktop.outgoing.chat.sent');
       res.json({ sent });
     })

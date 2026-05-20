@@ -488,27 +488,12 @@ describe('Nearbytes API', () => {
       .attach('file', Buffer.from('chat attachment'), 'chat.txt')
       .expect(200);
 
-    const exportRes = await request(app)
-      .post('/references/source/export')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ filenames: ['chat.txt'] })
-      .expect(200);
-
-    const item = exportRes.body.bundle.items[0];
-
     const messageRes = await request(app)
       .post('/chat/messages')
       .set('Authorization', `Bearer ${token}`)
       .send({
         identitySecret,
         body: 'hello',
-        attachment: {
-          kind: 'nb.src.ref.v1',
-          name: item.name,
-          mime: item.mime,
-          createdAt: item.createdAt,
-          ref: item.ref,
-        },
       })
       .expect(200);
 
@@ -521,7 +506,7 @@ describe('Nearbytes API', () => {
 
     expect(chatRes.body.identities).toHaveLength(1);
     expect(chatRes.body.messages).toHaveLength(1);
-    expect(chatRes.body.messages[0].message.attachment.name).toBe('chat.txt');
+    expect(chatRes.body.messages[0].message.body).toBe('hello');
 
     const timelineRes = await request(app)
       .get('/timeline')

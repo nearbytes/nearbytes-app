@@ -5,7 +5,6 @@
     publishIdentity,
     sendChatMessage,
     type Auth,
-    type ChatAttachment,
     type IdentityProfile,
     type VolumeChatState,
   } from '../lib/api.js';
@@ -13,15 +12,8 @@
     buildIdentitySecret,
     type ConfiguredIdentity,
   } from '../lib/chatIdentities.js';
-  import { NEARBYTES_DRAG_TYPE } from '../lib/nearbytesDrag.js';
-  import {
-    createChatAttachmentFromSourceBundle,
-    exportSourceReferenceBundleFromDrag,
-    parseSourceReferenceBundleText,
-  } from '../lib/nearbytesReferenceTransfer.js';
   import {
     MessageSquareText,
-    Paperclip,
     Send,
     X,
   } from 'lucide-svelte';
@@ -36,7 +28,6 @@
     identityNeedsPublish = false,
     onOpenIdentityManager = undefined,
     onEnsureIdentityPublished = undefined,
-    onPreviewAttachment = undefined,
     onChatMutated = undefined,
     externalRefreshVersion = 0,
   } = $props<{
@@ -48,18 +39,15 @@
     identityNeedsPublish?: boolean;
     onOpenIdentityManager?: (() => void) | undefined;
     onEnsureIdentityPublished?: ((identity: ConfiguredIdentity) => Promise<boolean>) | undefined;
-    onPreviewAttachment?: ((attachment: ChatAttachment) => void) | undefined;
     onChatMutated?: (() => Promise<void> | void) | undefined;
     externalRefreshVersion?: number;
   }>();
 
   let chatState = $state<VolumeChatState>({ identities: [], messages: [] });
   let draftBody = $state('');
-  let pendingAttachment = $state<ChatAttachment | null>(null);
   let loading = $state(false);
   let sending = $state(false);
   let errorMessage = $state('');
-  let dragActive = $state(false);
   let selectedProfilePublicKey = $state('');
   let requestedVolumeId = '';
   let appliedExternalRefreshVersion = -1;
@@ -181,7 +169,7 @@
       return;
     }
     const body = draftBody.trim();
-    if (body === '' && !pendingAttachment) {
+    if (body === '') {
       return;
     }
 
@@ -198,11 +186,9 @@
         }
       }
       await sendChatMessage(auth, buildIdentitySecret(activeIdentity), {
-        body: body === '' ? undefined : body,
-        attachment: pendingAttachment ?? undefined,
+        body,
       });
       draftBody = '';
-      pendingAttachment = null;
       void refreshChat();
       void onChatMutated?.();
     } catch (error) {
@@ -248,73 +234,6 @@
     }
     await publishIdentity(auth, buildIdentitySecret(identity), profile);
     return true;
-  }
-
-  async function handleDrop(event: DragEvent) {
-    event.preventDefault();
-    dragActive = false;
-    if (readonlyMode) {
-      return;
-    }
-    if (!event.dataTransfer || !event.dataTransfer.types.includes(NEARBYTES_DRAG_TYPE)) {
-      return;
-    }
-    try {
-      event.stopPropagation();
-      if (!auth) {
-        return;
-      }
-      errorMessage = '';
-      const bundle = await exportSourceReferenceBundleFromDrag(
-        auth,
-        event.dataTransfer.getData(NEARBYTES_DRAG_TYPE)
-      );
-      const { attachment, truncated } = createChatAttachmentFromSourceBundle(bundle);
-      pendingAttachment = attachment;
-      if (truncated) {
-        errorMessage =
-          'Attached the first dragged file. Chat messages currently support one file reference at a time.';
-      }
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : 'Failed to attach dragged file';
-    }
-  }
-
-  function attachSourceReferenceFromClipboardText(payloadText: string): boolean {
-    const bundle = parseSourceReferenceBundleText(payloadText);
-    if (!bundle) {
-      return false;
-    }
-    try {
-      const { attachment, truncated } = createChatAttachmentFromSourceBundle(bundle);
-      pendingAttachment = attachment;
-      errorMessage = truncated
-        ? `Attached ${attachment.name}. Chat messages currently support one file reference at a time.`
-        : '';
-      return true;
-    } catch (error) {
-      errorMessage =
-        error instanceof Error ? error.message : 'Clipboard does not contain any Nearbytes file references.';
-      return true;
-    }
-  }
-
-  function handleComposerPaste(event: ClipboardEvent) {
-    if (readonlyMode) {
-      return;
-    }
-    const payloadText = event.clipboardData?.getData('text/plain') ?? '';
-    if (!attachSourceReferenceFromClipboardText(payloadText)) {
-      return;
-    }
-    event.preventDefault();
-  }
-
-  async function openAttachment(attachment: ChatAttachment) {
-    if (onPreviewAttachment) {
-      onPreviewAttachment(attachment);
-      return;
-    }
   }
 
   function senderLabel(publicKey: string): string {
@@ -503,17 +422,6 @@
               {#if entry.message.body}
                 <p class="chat-message-body">{entry.message.body}</p>
               {/if}
-              {#if entry.message.attachment}
-                <button
-                  type="button"
-                  class="chat-attachment"
-                  ondblclick={() => void openAttachment(entry.message.attachment!)}
-                  title="Double-click to preview attachment"
-                >
-                  <Paperclip size={13} strokeWidth={2} />
-                  <span>{entry.message.attachment.name}</span>
-                </button>
-              {/if}
             </div>
           </article>
         {/each}
@@ -522,28 +430,8 @@
 
     <section
       class="chat-composer"
-      class:drag-active={dragActive}
       role="group"
       aria-label="Chat composer"
-      onpaste={handleComposerPaste}
-      ondragenter={(event) => {
-        if (event.dataTransfer?.types.includes(NEARBYTES_DRAG_TYPE)) {
-          event.preventDefault();
-          dragActive = true;
-        }
-      }}
-      ondragover={(event) => {
-        if (event.dataTransfer?.types.includes(NEARBYTES_DRAG_TYPE)) {
-          event.preventDefault();
-          dragActive = true;
-        }
-      }}
-      ondragleave={(event) => {
-        if (event.currentTarget === event.target) {
-          dragActive = false;
-        }
-      }}
-      ondrop={(event) => void handleDrop(event)}
     >
       <div class="chat-composer-head">
         <p class="chat-composer-meta">
@@ -561,17 +449,7 @@
         disabled={!auth || readonlyMode || !activeIdentity}
         onkeydown={handleComposerKeydown}
       ></textarea>
-      {#if pendingAttachment}
-        <div class="chat-pending-attachment">
-          <Paperclip size={13} strokeWidth={2} />
-          <span>{pendingAttachment.name}</span>
-          <button type="button" class="chat-icon-btn compact" onclick={() => (pendingAttachment = null)} aria-label="Remove attachment">
-            <X size={14} strokeWidth={2} />
-          </button>
-        </div>
-      {/if}
       <div class="chat-composer-actions">
-        <p class="chat-drop-hint">Drag or paste a Nearbytes file reference.</p>
         <button
           type="button"
           class="chat-primary-btn"
@@ -581,7 +459,7 @@
             !activeIdentity ||
             readonlyMode ||
             sending ||
-            (!draftBody.trim() && !pendingAttachment)
+            !draftBody.trim()
           }
         >
           <Send size={13} strokeWidth={2} />
@@ -637,9 +515,7 @@
   }
 
   .chat-title-wrap,
-  .chat-header-actions,
-  .chat-pending-attachment,
-  .chat-attachment {
+  .chat-header-actions {
     display: inline-flex;
     align-items: center;
     gap: 0.55rem;
@@ -685,8 +561,7 @@
 
   .chat-primary-btn,
   .chat-secondary-btn,
-  .chat-icon-btn,
-  .chat-attachment {
+  .chat-icon-btn {
     appearance: none;
     border: 1px solid var(--chat-border);
     background: var(--chat-button-bg);
@@ -702,8 +577,7 @@
 
   .chat-primary-btn:hover:not(:disabled),
   .chat-secondary-btn:hover:not(:disabled),
-  .chat-icon-btn:hover:not(:disabled),
-  .chat-attachment:hover {
+  .chat-icon-btn:hover:not(:disabled) {
     border-color: var(--chat-border-strong);
     background: var(--chat-button-hover);
   }
@@ -828,11 +702,6 @@
     overflow: visible;
   }
 
-  .chat-composer.drag-active {
-    border-color: color-mix(in srgb, var(--chat-accent) 92%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-accent) 34%, transparent);
-  }
-
   .chat-textarea,
   .chat-composer textarea {
     width: 100%;
@@ -849,40 +718,6 @@
     resize: vertical;
   }
 
-  .chat-drop-hint {
-    color: var(--chat-text-faint);
-    font-size: 0.74rem;
-  }
-
-  .chat-pending-attachment {
-    min-width: 0;
-    padding: 0.44rem 0.65rem;
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--chat-button-bg) 94%, transparent);
-    border: 1px solid color-mix(in srgb, var(--chat-border) 84%, transparent);
-    justify-content: space-between;
-    font-size: 0.82rem;
-  }
-
-  .chat-attachment {
-    min-width: 0;
-    max-width: min(100%, 16rem);
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    justify-content: flex-start;
-    border-radius: 12px;
-  }
-
-  .chat-attachment span,
-  .chat-pending-attachment span {
-    min-width: 0;
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .chat-composer-meta {
     color: var(--chat-text-soft);
     font-size: 0.74rem;
@@ -890,10 +725,6 @@
 
   .chat-composer-actions {
     align-items: center;
-  }
-
-  .chat-composer-actions .chat-drop-hint {
-    margin-right: auto;
   }
 
   .chat-profile-popover {
@@ -1011,10 +842,6 @@
 
     .chat-composer {
       padding: 0.7rem 0.75rem 0.8rem;
-    }
-
-    .chat-composer-actions .chat-drop-hint {
-      margin-right: 0;
     }
 
     .chat-profile-popover {

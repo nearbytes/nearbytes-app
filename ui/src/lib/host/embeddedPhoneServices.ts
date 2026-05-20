@@ -27,7 +27,6 @@ import { defaultPathMapper, type StorageBackend, type StorageWriteEvent, type St
 import type {
   AppConfig,
   AppConfigResponse,
-  ChatAttachment,
   ConnectProviderAccountResponse,
   DiscoverSourcesResponse,
   DurableCommitAck,
@@ -2828,7 +2827,7 @@ async function performEmbeddedPhonePublishIdentity(
 
 async function performEmbeddedPhoneSendChatMessage(
   secret: string,
-  payload: { identitySecret: string; input: { body?: string; attachment?: ChatAttachment } }
+  payload: { identitySecret: string; input: { body: string } }
 ): Promise<SendChatMessageResponse> {
   const { chatService } = await getEmbeddedPhoneRuntimeServices();
   const sent = await chatService.sendMessage(secret, payload.identitySecret, payload.input);
@@ -2878,7 +2877,7 @@ async function executeEmbeddedPhoneCommit(
     case 'send-chat-message':
       result = await performEmbeddedPhoneSendChatMessage(
         commit.secret,
-        commit.payload as { identitySecret: string; input: { body?: string; attachment?: ChatAttachment } }
+        commit.payload as { identitySecret: string; input: { body: string } }
       );
       break;
     default:
@@ -3272,7 +3271,7 @@ export async function embeddedPhonePublishIdentity(
 export async function embeddedPhoneSendChatMessage(
   secret: string,
   identitySecret: string,
-  input: { body?: string; attachment?: ChatAttachment }
+  input: { body: string }
 ): Promise<SendChatMessageResponse> {
   return commitEmbeddedPhoneMutation<SendChatMessageResponse>('send-chat-message', secret, {
     identitySecret,

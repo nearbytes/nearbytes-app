@@ -63,7 +63,6 @@ import {
 } from './nativeLanSync.js';
 import { hasNativeLanPlugin } from './nativeLanPlugin.js';
 import type {
-  ChatAttachment,
   EventDetailResponse,
   IdentityProfile,
   ConfigureProviderResponse,
@@ -610,7 +609,7 @@ function createUnsupportedLegacyDesktopFamily(): NearbytesHostContract['legacyDe
       if (!secret) {
         return createMissingPhoneRuntimeRequest();
       }
-      const result = await embeddedPhoneSendChatMessage(secret, identitySecret, input as { body?: string; attachment?: ChatAttachment });
+      const result = await embeddedPhoneSendChatMessage(secret, identitySecret, input as { body: string });
       enqueuePhoneLanEventMutation(secret, result.sent.eventHash);
       return result;
     },

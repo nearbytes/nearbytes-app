@@ -24,7 +24,6 @@
     watchSources,
     watchVolumeEvents,
     type Auth,
-    type ChatAttachment,
     type FileMetadata,
     type JoinLink,
     type SerializedEvent,
@@ -4774,14 +4773,30 @@
 
   function previewSourceReference(reference: EventReference) {
     if (reference.kind !== 'source') return;
-    const attachment: ChatAttachment = {
-      kind: 'nb.src.ref.v1',
-      name: reference.name ?? 'Reference',
-      mime: reference.mime,
-      createdAt: reference.createdAt,
-      ref: reference.ref as SourceFileReference,
+    const ref = reference.ref as SourceFileReference;
+    const name = reference.name ?? 'Reference';
+    const existingFile =
+      visibleFiles.find((file) => file.filename === name && file.blobHash === ref.c.h) ??
+      visibleFiles.find((file) => file.blobHash === ref.c.h) ??
+      null;
+    if (existingFile) {
+      openPreviewPane(existingFile);
+      return;
+    }
+    if (activeMount && !activeMount.showFilesPane) {
+      updateActiveMountWorkspace({
+        showFilesPane: true,
+        showChatPane: activeMount.showChatPane,
+      });
+    }
+    previewFileOverride = {
+      filename: name,
+      blobHash: ref.c.h,
+      size: ref.c.z,
+      mimeType: reference.mime ?? '',
+      createdAt: reference.createdAt ?? Date.now(),
     };
-    previewChatAttachment(attachment);
+    showPreviewPane = true;
   }
 
   function closeTimelineDetails() {
@@ -5193,32 +5208,6 @@
     showPreviewPane = false;
   }
 
-  function previewChatAttachment(attachment: ChatAttachment) {
-    const existingFile =
-      visibleFiles.find((file) => file.filename === attachment.name && file.blobHash === attachment.ref.c.h) ??
-      visibleFiles.find((file) => file.blobHash === attachment.ref.c.h) ??
-      null;
-    if (existingFile) {
-      openPreviewPane(existingFile);
-      return;
-    }
-
-    if (activeMount && !activeMount.showFilesPane) {
-      updateActiveMountWorkspace({
-        showFilesPane: true,
-        showChatPane: activeMount.showChatPane,
-      });
-    }
-
-    previewFileOverride = {
-      filename: attachment.name,
-      blobHash: attachment.ref.c.h,
-      size: attachment.ref.c.z,
-      mimeType: attachment.mime ?? '',
-      createdAt: attachment.createdAt ?? Date.now(),
-    };
-    showPreviewPane = true;
-  }
 
   function updateActiveMountWorkspace(
     patch: Partial<Pick<VolumeMount, 'showFilesPane' | 'showChatPane' | 'showSearchPane' | 'workspaceSplit'>>
@@ -7110,7 +7099,6 @@
                   announceSuccess: false,
                   openManagerOnError: false,
                 })) !== null}
-              onPreviewAttachment={previewChatAttachment}
               onChatMutated={handleChatMutated}
               externalRefreshVersion={chatRefreshVersion}
             />

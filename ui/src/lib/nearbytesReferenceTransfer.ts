@@ -2,7 +2,6 @@ import {
   exportSourceReferences,
   importSourceReferences,
   type Auth,
-  type ChatAttachment,
   type ReferenceImportResponse,
   type SourceReferenceBundle,
 } from './api.js';
@@ -24,25 +23,6 @@ export async function exportSourceReferenceBundleFromDrag(
   }
   const exported = await exportSourceReferences(auth, payload.filenames);
   return exported.bundle;
-}
-
-export function createChatAttachmentFromSourceBundle(
-  bundle: SourceReferenceBundle
-): { attachment: ChatAttachment; truncated: boolean } {
-  const [firstItem] = bundle.items;
-  if (!firstItem) {
-    throw new Error('Nearbytes file reference is empty.');
-  }
-  return {
-    attachment: {
-      kind: 'nb.src.ref.v1',
-      name: firstItem.name,
-      mime: firstItem.mime,
-      createdAt: firstItem.createdAt,
-      ref: firstItem.ref,
-    },
-    truncated: bundle.items.length > 1,
-  };
 }
 
 export async function importMountedSourceReferenceBundle(

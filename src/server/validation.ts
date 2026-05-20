@@ -57,8 +57,7 @@ export const publishIdentityBodySchema = z.object({
 
 export const sendChatMessageBodySchema = z.object({
   identitySecret: z.string().min(1, 'Identity secret is required'),
-  body: z.string().optional(),
-  attachment: z.unknown().optional(),
+  body: z.string().min(1, 'Chat message body is required'),
 });
 
 export const consolidateRootParamSchema = z.object({

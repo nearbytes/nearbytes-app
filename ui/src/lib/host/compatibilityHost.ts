@@ -283,7 +283,6 @@ export async function getCompatibilityHost(): Promise<NearbytesHostContract> {
             body: JSON.stringify({
               identitySecret,
               body: input.body,
-              attachment: input.attachment,
             }),
           });
         },
