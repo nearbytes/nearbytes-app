@@ -16,8 +16,8 @@ import {
 } from '../config/sourceDiscovery.js';
 import { type SerializedEvent } from 'nearbytes-crypto';
 import { StorageError } from 'nearbytes-crypto';
-import type { StorageBackend, StorageWriteEvent, StorageWriteListener } from 'nearbytes-storage';
-import { FilesystemStorageBackend } from 'nearbytes-storage';
+import { createFilesystemIo, type LogIo } from 'nearbytes-log';
+import type { StorageWriteEvent, StorageWriteListener } from './writeEvents.js';
 import { normalizeVolumeId, parseCanonicalEventRelativePath, validateBlockBytes, validateEventBytes, type IntegrityValidationResult } from 'nearbytes-log';
 import { deserializeEvent } from 'nearbytes-log';
 
@@ -186,7 +186,7 @@ export interface SourceConflictResolutionResult {
 
 interface RootState {
   readonly config: SourceConfigEntry;
-  readonly backend: FilesystemStorageBackend;
+  readonly io: LogIo;
 }
 
 interface VolumeDestinationTarget {
@@ -203,7 +203,7 @@ interface CapacityProbe {
  * Meta-level storage router for multi-root block/event storage.
  * Routes writes by channel key and merges reads across roots.
  */
-export class MultiRootStorageBackend implements StorageBackend {
+export class MultiRootStorageBackend {
   private config: RootsConfig;
   private rootStates: RootState[];
   private readonly writeListeners = new Set<StorageWriteListener>();
@@ -723,7 +723,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     const files = new Set<string>();
     for (const state of this.getEnabledRootStates()) {
       try {
-        const listed = await state.backend.listFiles(directory);
+        const listed = await state.io.listFiles(directory);
         for (const file of listed) {
           files.add(file);
         }
@@ -760,7 +760,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     const prioritized = this.prioritizeRootsForChannel(normalizedChannel);
     for (const state of prioritized) {
       try {
-        if (await state.backend.exists(relativePath)) {
+        if (await state.io.exists(relativePath)) {
           return true;
         }
       } catch {
@@ -816,7 +816,7 @@ export class MultiRootStorageBackend implements StorageBackend {
   async exists(relativePath: string): Promise<boolean> {
     for (const state of this.getEnabledRootStates()) {
       try {
-        if (await state.backend.exists(relativePath)) {
+        if (await state.io.exists(relativePath)) {
           return true;
         }
       } catch {
@@ -831,7 +831,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     await Promise.all(
       writable.map(async (state) => {
         try {
-          await state.backend.deleteFile(relativePath);
+          await state.io.deleteFile(relativePath);
         } catch {
           // Keep idempotent and best effort.
         }
@@ -909,7 +909,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     let lastError: Error | undefined;
     for (const state of states) {
       try {
-        return await state.backend.readFile(relativePath);
+        return await state.io.readFile(relativePath);
       } catch (error) {
         if (isFileNotFoundError(error)) {
           continue;
@@ -932,12 +932,12 @@ export class MultiRootStorageBackend implements StorageBackend {
     let lastError: Error | undefined;
     for (const state of states) {
       try {
-        const data = await state.backend.readFile(relativePath);
+        const data = await state.io.readFile(relativePath);
         const result = await validate(data);
         if (result.ok) {
           return data;
         }
-        await state.backend.deleteFile(relativePath).catch(() => undefined);
+        await state.io.deleteFile(relativePath).catch(() => undefined);
         lastError = new StorageError(
           `Rejected invalid copy of ${relativePath} from ${state.config.id}${result.detail ? `: ${result.detail}` : ''}`
         );
@@ -1125,7 +1125,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     await Promise.all(
       targets.map(async (state) => {
         try {
-          await state.backend.createDirectory(relativePath);
+          await state.io.createDirectory(relativePath);
           successCount += 1;
         } catch (error) {
           failures.push(asError(error));
@@ -1207,7 +1207,7 @@ export class MultiRootStorageBackend implements StorageBackend {
       targets.map(async (state) => {
         try {
           await ensureNearbytesMarker(state.config.path);
-          await state.backend.writeFile(relativePath, data);
+          await state.io.writeFile(relativePath, data);
           this.lastWriteFailures.delete(state.config.id);
           this.emitWriteEvent({
             sourceId: state.config.id,
@@ -1239,7 +1239,7 @@ export class MultiRootStorageBackend implements StorageBackend {
         try {
           await this.prepareDestinationWrite(target, data.byteLength, channelKeyHex);
           await ensureNearbytesMarker(target.state.config.path);
-          await target.state.backend.writeFile(relativePath, data);
+          await target.state.io.writeFile(relativePath, data);
           this.lastWriteFailures.delete(target.state.config.id);
           this.emitWriteEvent({
             sourceId: target.state.config.id,
@@ -1383,7 +1383,7 @@ export class MultiRootStorageBackend implements StorageBackend {
           continue;
         }
         try {
-          if (await target.state.backend.exists(relativePath)) {
+          if (await target.state.io.exists(relativePath)) {
             continue;
           }
         } catch {
@@ -1403,7 +1403,7 @@ export class MultiRootStorageBackend implements StorageBackend {
 
         try {
           await this.prepareDestinationWrite(target, data.byteLength, volumeId);
-          await target.state.backend.writeFile(relativePath, data);
+          await target.state.io.writeFile(relativePath, data);
           this.lastWriteFailures.delete(target.state.config.id);
         } catch (error) {
           this.lastWriteFailures.set(
@@ -1427,7 +1427,7 @@ export class MultiRootStorageBackend implements StorageBackend {
       for (const hash of referencedHashes) {
         const relativePath = `blocks/${hash}.bin`;
         try {
-          if (await target.state.backend.exists(relativePath)) {
+          if (await target.state.io.exists(relativePath)) {
             continue;
           }
         } catch {
@@ -1447,7 +1447,7 @@ export class MultiRootStorageBackend implements StorageBackend {
 
         try {
           await this.prepareDestinationWrite(target, data.byteLength, volumeId);
-          await target.state.backend.writeFile(relativePath, data);
+          await target.state.io.writeFile(relativePath, data);
           this.lastWriteFailures.delete(target.state.config.id);
         } catch (error) {
           this.lastWriteFailures.set(
@@ -1922,7 +1922,7 @@ export class MultiRootStorageBackend implements StorageBackend {
   private buildRootStates(config: RootsConfig): RootState[] {
     return config.sources.map((source) => ({
       config: source,
-      backend: new FilesystemStorageBackend(source.path),
+      io: createFilesystemIo(source.path),
     }));
   }
 
@@ -1938,7 +1938,7 @@ export class MultiRootStorageBackend implements StorageBackend {
     const files = new Set<string>();
     for (const state of states) {
       try {
-        const listed = await state.backend.listFiles(directory);
+        const listed = await state.io.listFiles(directory);
         for (const file of listed) {
           files.add(file);
         }
@@ -2166,9 +2166,12 @@ async function removeEmptyDirectories(rootPath: string): Promise<void> {
   }
 }
 
-export function isMultiRootStorageBackend(storage: StorageBackend): storage is MultiRootStorageBackend {
-  return storage instanceof MultiRootStorageBackend;
+export function isMultiRootStorage(value: unknown): value is MultiRootStorageBackend {
+  return value instanceof MultiRootStorageBackend;
 }
+
+/** @deprecated Use `isMultiRootStorage`. */
+export const isMultiRootStorageBackend = isMultiRootStorage;
 
 function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '');

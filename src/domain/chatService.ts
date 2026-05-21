@@ -1,15 +1,11 @@
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { KeyPair, PublicKey, Secret } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
-import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
 import type { EventPayload } from 'nearbytes-crypto';
-import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
-import type { EventLogEntry } from 'nearbytes-log';
-import { defaultPathMapper } from 'nearbytes-storage';
-import { createLog, type Log } from 'nearbytes-log';
+import { EventType } from 'nearbytes-crypto';
+import type { EventLogEntry, Log, ChannelPathMapper } from 'nearbytes-log';
 import { serializeEventEnvelope } from 'nearbytes-log';
-import { createSignedEvent, hydrateSignedEvent } from 'nearbytes-log';
-import { loadEventLog, openVolume, verifyEventLog } from 'nearbytes-files';
+import { createSignedEvent, hydrateSignedEvent, loadEventLog, openChannel, verifyEventLog } from 'nearbytes-log';
 import { volumeIdFromPublicKey } from 'nearbytes-files';
 import {
   createChatMessage,
@@ -50,7 +46,7 @@ export interface VolumeChatState {
 
 export interface ChatServiceDependencies {
   readonly crypto: CryptoOperations;
-  readonly storage: StorageBackend;
+  readonly log: Log;
   readonly pathMapper?: ChannelPathMapper;
   readonly now?: () => number;
 }
@@ -90,8 +86,7 @@ interface ChatTimelineRow {
 }
 
 export function createChatService(dependencies: ChatServiceDependencies): ChatService {
-  const pathMapper = dependencies.pathMapper ?? defaultPathMapper;
-  const channelStorage = createLog(dependencies.storage, pathMapper);
+  const channelStorage = dependencies.log;
   const now = dependencies.now ?? (() => Date.now());
 
   return {
@@ -123,7 +118,7 @@ async function listChatWithDeps(
   crypto: CryptoOperations,
   channelStorage: Log
 ): Promise<VolumeChatState> {
-  const volume = await openVolume(normalizeSecret(secret), crypto);
+  const volume = await openChannel(normalizeSecret(secret), crypto);
   const entries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(entries, volume, crypto);
 
@@ -144,7 +139,7 @@ async function publishIdentityWithDeps(
 ): Promise<PublishedIdentity> {
   const normalizedVolumeSecret = normalizeSecret(volumeSecret);
   const normalizedIdentitySecret = normalizeSecret(identitySecret);
-  const volume = await openVolume(normalizedVolumeSecret, crypto);
+  const volume = await openChannel(normalizedVolumeSecret, crypto);
   const volumeEntries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(volumeEntries, volume, crypto);
 
@@ -180,7 +175,7 @@ async function sendMessageWithDeps(
 ): Promise<PublishedChatMessage> {
   const normalizedVolumeSecret = normalizeSecret(volumeSecret);
   const normalizedIdentitySecret = normalizeSecret(identitySecret);
-  const volume = await openVolume(normalizedVolumeSecret, crypto);
+  const volume = await openChannel(normalizedVolumeSecret, crypto);
   const volumeEntries = await loadEventLog(volume, channelStorage, crypto);
   await verifyEventLog(volumeEntries, volume, crypto);
 
@@ -491,9 +486,6 @@ async function appendAppRecord(
 ): Promise<string> {
   const payload: EventPayload = {
     type: EventType.APP_RECORD,
-    fileName: '',
-    hash: EMPTY_HASH,
-    encryptedKey: createEncryptedData(new Uint8Array(0)),
     authorPublicKey: input.authorPublicKey,
     protocol: input.protocol,
     record: input.record,
@@ -508,6 +500,13 @@ function extractChatRows(entries: readonly EventLogEntry[]): ChatTimelineRow[] {
 
   for (const entry of entries) {
     const payload = entry.signedEvent.payload;
+    if (
+      payload.type !== EventType.DECLARE_IDENTITY &&
+      payload.type !== EventType.CHAT_MESSAGE &&
+      payload.type !== EventType.APP_RECORD
+    ) {
+      continue;
+    }
     if (!payload.authorPublicKey || payload.publishedAt === undefined) {
       continue;
     }
@@ -628,6 +627,23 @@ function comparePublished(
   return 0;
 }
 
+function payloadTimestamp(payload: EventPayload): number {
+  switch (payload.type) {
+    case EventType.CREATE_FILE:
+      return payload.createdAt;
+    case EventType.DELETE_FILE:
+      return payload.deletedAt;
+    case EventType.RENAME_FILE:
+      return payload.renamedAt;
+    case EventType.APP_RECORD:
+    case EventType.CHAT_MESSAGE:
+    case EventType.DECLARE_IDENTITY:
+      return payload.publishedAt ?? 0;
+    default:
+      return 0;
+  }
+}
+
 function nextPublishedTimestamp(
   entries: readonly { signedEvent: { payload: EventPayload } }[],
   fallbackNow: number
@@ -635,12 +651,7 @@ function nextPublishedTimestamp(
   let maxTimestamp = 0;
   for (const entry of entries) {
     const payload = entry.signedEvent.payload;
-    const value =
-      payload.createdAt ??
-      payload.deletedAt ??
-      payload.renamedAt ??
-      payload.publishedAt ??
-      0;
+    const value = payloadTimestamp(payload);
     if (value > maxTimestamp) {
       maxTimestamp = value;
     }

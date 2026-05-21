@@ -3,10 +3,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { createFileService } from 'nearbytes-files';
 import { deriveKeys } from 'nearbytes-crypto';
-import { createLog } from 'nearbytes-log';
-import { createInMemoryPathRecordStore, createInMemoryPathRecordStoreAdapter, normalizeStoragePath, PathRecordStorageBackend } from 'nearbytes-storage';
+import { createInMemoryLog, createMemoryStore, type Log, type MemoryStore } from 'nearbytes-log';
 import { createSecret } from 'nearbytes-crypto';
-import type { StorageBackend } from 'nearbytes-storage';
+import { normalizeStoragePath } from '../../../../src/storage/pathUtils.js';
 import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-log';
 import type { LanTransportRpcRequest } from '../../../../src/integrations/lanPeerTransport.js';
 import type { ProviderQueueObservation } from '../../../../src/integrations/types.js';
@@ -22,38 +21,22 @@ import {
   syncLanPeerInventoryWithClient,
 } from './nativeLanSync.js';
 
-class MemoryStorageBackend implements StorageBackend {
-  private readonly store = createInMemoryPathRecordStore();
-  private readonly backend = new PathRecordStorageBackend(createInMemoryPathRecordStoreAdapter(this.store));
+class MemoryLogHarness {
+  readonly store: MemoryStore = createMemoryStore();
+  readonly log: Log = createInMemoryLog({ store: this.store });
 
-  async writeFile(path: string, data: Uint8Array): Promise<void> {
-    await this.backend.writeFile(path, data);
+  listAllPaths(): string[] {
+    return [...this.store.listPaths()]
+      .map((path) => normalizeStoragePath(path))
+      .sort((left, right) => left.localeCompare(right));
   }
 
   async readFile(path: string): Promise<Uint8Array> {
-    return await this.backend.readFile(path);
-  }
-
-  async listFiles(directory: string): Promise<string[]> {
-    return await this.backend.listFiles(directory);
-  }
-
-  async createDirectory(path: string): Promise<void> {
-    await this.backend.createDirectory(path);
-  }
-
-  async exists(path: string): Promise<boolean> {
-    return await this.backend.exists(path);
-  }
-
-  async deleteFile(path: string): Promise<void> {
-    await this.backend.deleteFile(path);
-  }
-
-  listAllPaths(): string[] {
-    return Array.from(this.store.files.keys())
-      .map((path) => normalizeStoragePath(path))
-      .sort((left, right) => left.localeCompare(right));
+    const data = this.store.get(normalizeStoragePath(path));
+    if (!data) {
+      throw new Error(`File not found: ${path}`);
+    }
+    return data;
   }
 }
 
@@ -243,9 +226,9 @@ async function createRemoteHarness(secret: string, peerId: string): Promise<{
     requestBytes(request: LanTransportRpcRequest): Promise<Uint8Array>;
   };
 }> {
-  const storage = new MemoryStorageBackend();
+  const harness = new MemoryLogHarness();
   const crypto = createCryptoOperations();
-  const log = createLog(storage);
+  const log = harness.log;
   const fileService = createFileService({ crypto, log });
   const volumeId = await deriveVolumeId(secret);
   const observations: ProviderQueueObservation[] = [];
@@ -253,7 +236,7 @@ async function createRemoteHarness(secret: string, peerId: string): Promise<{
   let observationSequence = 0;
 
   const appendObservationsForNewPaths = () => {
-    const currentPaths = new Set(storage.listAllPaths());
+    const currentPaths = new Set(harness.listAllPaths());
     const createdPaths = Array.from(currentPaths)
       .filter((path) => !previousPaths.has(path))
       .sort((left, right) => left.localeCompare(right));
@@ -329,7 +312,7 @@ async function createRemoteHarness(secret: string, peerId: string): Promise<{
             } as T;
           }
           case 'inventory':
-            return readInventory(storage, request.volumeId) as T;
+            return readInventory(harness, request.volumeId) as T;
           default:
             throw new Error(`Unsupported JSON request in test: ${request.action}`);
         }
@@ -337,9 +320,9 @@ async function createRemoteHarness(secret: string, peerId: string): Promise<{
       async requestBytes(request: LanTransportRpcRequest): Promise<Uint8Array> {
         switch (request.action) {
           case 'event':
-            return await storage.readFile(`channels/${request.volumeId}/${request.eventHash}.bin`);
+            return await harness.readFile(`channels/${request.volumeId}/${request.eventHash}.bin`);
           case 'block':
-            return await storage.readFile(`blocks/${request.blockHash}.bin`);
+            return await harness.readFile(`blocks/${request.blockHash}.bin`);
           default:
             throw new Error(`Unsupported byte request in test: ${request.action}`);
         }
@@ -348,7 +331,7 @@ async function createRemoteHarness(secret: string, peerId: string): Promise<{
   };
 }
 
-function readInventory(storage: MemoryStorageBackend, volumeId: string): {
+function readInventory(storage: MemoryLogHarness, volumeId: string): {
   volumeId: string;
   generatedAt: number;
   eventHashes: string[];

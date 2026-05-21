@@ -1,8 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'path';
 import type { RootProvider } from '../config/roots.js';
-import { isMultiRootStorageBackend } from '../storage/multiRoot.js';
-import type { StorageBackend } from 'nearbytes-storage';
+import type { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { debugServerLog } from './debug.js';
 import type { RuntimeVolumeEventPublisher } from './volumeEventBus.js';
 
@@ -57,7 +56,7 @@ export class VolumeWatchHub {
   private readonly entries = new Map<string, WatchEntry>();
 
   constructor(
-    private readonly storage: StorageBackend,
+    private readonly multiRoot: MultiRootStorageBackend,
     private readonly fallbackStorageDir?: string,
     private readonly volumeEventPublisher?: RuntimeVolumeEventPublisher,
   ) {}
@@ -236,24 +235,24 @@ export class VolumeWatchHub {
       };
     }
 
-    if (isMultiRootStorageBackend(this.storage)) {
-      const activeSources = this.storage
-        .getRootsConfig()
-        .sources.filter((source) => source.enabled);
-      const providers = uniqueProviders(activeSources.map((source) => source.provider));
-      const targets = uniqueTargetPlans(
-        activeSources.map((source) => ({
-          rootPath: source.path,
-          channelRoot: path.join(source.path, 'channels'),
-          volumeRoot: path.join(source.path, 'channels', normalizedVolumeId),
-        }))
-      );
+    const activeSources = this.multiRoot
+      .getRootsConfig()
+      .sources.filter((source) => source.enabled);
+    const providers = uniqueProviders(activeSources.map((source) => source.provider));
+    const targets = uniqueTargetPlans(
+      activeSources.map((source) => ({
+        rootPath: source.path,
+        channelRoot: path.join(source.path, 'channels'),
+        volumeRoot: path.join(source.path, 'channels', normalizedVolumeId),
+      })),
+    );
 
+    if (targets.length > 0) {
       return {
         ready: {
           volumeId: normalizedVolumeId,
-          autoUpdate: targets.length > 0,
-          mode: targets.length > 0 ? 'filesystem' : 'none',
+          autoUpdate: true,
+          mode: 'filesystem',
           providers,
         },
         targets,

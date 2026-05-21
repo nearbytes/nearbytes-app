@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSecret } from 'nearbytes-crypto';
 import { deriveKeys } from 'nearbytes-crypto';
 import { createRuntimeCoreServices } from '../../../../src/runtime/coreServices.js';
-import { createInMemoryPathRecordStore, createInMemoryPathRecordStoreAdapter, PathRecordStorageBackend } from 'nearbytes-storage';
+import { createInMemoryLog, createMemoryStore } from 'nearbytes-log';
 import {
   importCompatibilityEventDetail,
   importCompatibilityTimelineSnapshot,
@@ -1664,9 +1664,8 @@ describe('phoneHost', () => {
     const volumeId = Array.from(keyPair.publicKey)
       .map((value) => value.toString(16).padStart(2, '0'))
       .join('');
-    const store = createInMemoryPathRecordStore();
     const runtime = createRuntimeCoreServices({
-      storage: new PathRecordStorageBackend(createInMemoryPathRecordStoreAdapter(store)),
+      log: createInMemoryLog({ store: createMemoryStore() }),
     });
     await runtime.fileService.addFile(secret, 'recipient-visible.txt', Buffer.from('from provider root'), 'text/plain');
 

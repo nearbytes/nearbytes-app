@@ -5,9 +5,7 @@ import { join } from 'path';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
-import { defaultPathMapper } from 'nearbytes-storage';
-import { createLog } from 'nearbytes-log';
-import { FilesystemStorageBackend } from 'nearbytes-storage';
+import { createFilesystemLog } from 'nearbytes-log';
 import { createChatService } from '../chatService.js';
 import { createFileService } from 'nearbytes-files';
 import { hydrateSignedEvent } from 'nearbytes-log';
@@ -16,7 +14,7 @@ const START_TIME = 1800000000000;
 
 describe('ChatService', () => {
   it('publishes canonical identity records to the identity channel and snapshots/messages to the volume log', async () => {
-    const { chatService, crypto, storage, cleanup } = await createTestServices(START_TIME);
+    const { chatService, crypto, log, cleanup } = await createTestServices(START_TIME);
     const volumeSecret = 'chat:test:volume';
     const identitySecret = 'chat:test:identity';
 
@@ -35,7 +33,7 @@ describe('ChatService', () => {
     expect(chat.messages).toHaveLength(1);
     expect(chat.messages[0].message.body).toBe('hello from nearbytes chat');
 
-    const channelStorage = createLog(storage, defaultPathMapper);
+    const channelStorage = log;
     const volumeKeyPair = await crypto.deriveKeys(createSecret(volumeSecret));
     const identityKeyPair = await crypto.deriveKeys(createSecret(identitySecret));
     const identityEventHashes = await channelStorage.events.listEvents(identityKeyPair.publicKey);
@@ -50,13 +48,18 @@ describe('ChatService', () => {
       await channelStorage.events.retrieveEvent(identityKeyPair.publicKey, identityEventHashes[0])
     );
     expect(identityEvent.payload.type).toBe(EventType.APP_RECORD);
-    expect(identityEvent.payload.protocol).toBe('nb.identity.record.v1');
+    expect(identityEvent.payload.type).toBe(EventType.APP_RECORD);
+    if (identityEvent.payload.type === EventType.APP_RECORD) {
+      expect(identityEvent.payload.protocol).toBe('nb.identity.record.v1');
+    }
 
     const volumeEvents = await Promise.all(
       volumeEventHashes.map((eventHash) => channelStorage.events.retrieveEvent(volumeKeyPair.publicKey, eventHash))
     ).then((events) => Promise.all(events.map((event) => hydrateSignedEvent(crypto, volumeKeyPair.privateKey, event))));
     const volumeProtocols = volumeEvents
-      .map((event) => event.payload.protocol)
+      .map((event) =>
+        event.payload.type === EventType.APP_RECORD ? event.payload.protocol : undefined
+      )
       .filter((value): value is string => typeof value === 'string')
       .sort();
 
@@ -91,19 +94,19 @@ async function createTestServices(startTime: number): Promise<{
   chatService: ReturnType<typeof createChatService>;
   fileService: ReturnType<typeof createFileService>;
   crypto: ReturnType<typeof createCryptoOperations>;
-  storage: FilesystemStorageBackend;
+  log: import('nearbytes-log').Log;
   cleanup: () => Promise<void>;
 }> {
   const dir = await mkdtemp(join(tmpdir(), 'nearbytes-chat-service-'));
-  const storage = new FilesystemStorageBackend(dir);
+  const log = createFilesystemLog(dir);
   const crypto = createCryptoOperations();
   const now = createNow(startTime);
 
   return {
-    chatService: createChatService({ crypto, storage, now }),
-    fileService: createFileService({ log: createLog(storage, defaultPathMapper), crypto, now }),
+    chatService: createChatService({ crypto, log, now }),
+    fileService: createFileService({ log, crypto, now }),
     crypto,
-    storage,
+    log,
     cleanup: async () => {
       await rm(dir, { recursive: true, force: true });
     },

@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { parseCanonicalBlockRelativePath, parseCanonicalEventRelativePath } from 'nearbytes-log';
-import type { StorageWriteEvent } from 'nearbytes-storage';
+import type { StorageWriteEvent } from '../storage/writeEvents.js';
 import { writeFileAtomicallyWithRenameFallback } from '../utils/atomicWrite.js';
 import type {
   ProviderObservedObjectKind,

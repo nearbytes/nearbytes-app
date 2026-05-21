@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { VolumeWatchHub } from '../volumeWatchHub.js';
+import { createSingleSourceMultiRoot } from '../../test/singleSourceMultiRoot.js';
 
 describe('VolumeWatchHub', () => {
   const cleanups: string[] = [];
@@ -17,7 +18,7 @@ describe('VolumeWatchHub', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'nearbytes-volume-watch-'));
     cleanups.push(root);
     const volumeId = volumeIdA;
-    const hub = new VolumeWatchHub({} as never, root);
+    const hub = new VolumeWatchHub(createSingleSourceMultiRoot(root), root);
 
     const updates: string[] = [];
     const errors: Error[] = [];
@@ -51,7 +52,7 @@ describe('VolumeWatchHub', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'nearbytes-volume-watch-'));
     cleanups.push(root);
     const volumeId = volumeIdB;
-    const hub = new VolumeWatchHub({} as never, root);
+    const hub = new VolumeWatchHub(createSingleSourceMultiRoot(root), root);
 
     const updates: string[] = [];
     const errors: Error[] = [];

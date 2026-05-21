@@ -8,8 +8,7 @@ import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from 'nearbytes-files';
 import { type RootsConfig } from '../../config/roots.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
-import { defaultPathMapper } from 'nearbytes-storage';
-import { createLog } from 'nearbytes-log';
+import { createMultiRootLog } from '../../storage/multiRootLog.js';
 import { createApp } from '../app.js';
 
 describe('Desktop API token enforcement', () => {
@@ -62,13 +61,14 @@ describe('Desktop API token enforcement', () => {
 
     const storage = new MultiRootStorageBackend(rootsConfig);
     const crypto = createCryptoOperations();
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
-    const chatService = createChatService({ crypto, storage });
+    const fileService = createFileService({ log: createMultiRootLog(storage), crypto });
+    const log = createMultiRootLog(storage);
+    const chatService = createChatService({ crypto, log });
     app = createApp({
       fileService,
       chatService,
       crypto,
-      storage,
+      multiRoot: storage,
       corsOrigin: true,
       maxUploadBytes: 5 * 1024 * 1024,
       rootsConfigPath,

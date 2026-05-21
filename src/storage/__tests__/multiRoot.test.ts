@@ -6,7 +6,7 @@ import { createCryptoOperations } from 'nearbytes-crypto';
 import { type RootsConfig } from '../../config/roots.js';
 import { NEARBYTES_MARKER_FILE } from '../../config/sourceDiscovery.js';
 import { volumeIdFromPublicKey } from 'nearbytes-files';
-import { createEncryptedData, EMPTY_HASH, EventType, type EventPayload, type Hash } from 'nearbytes-crypto';
+import { createEncryptedData, EventType, type EventPayload, type Hash } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
 import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
 import { MultiRootStorageBackend, type MultiRootRuntimeSnapshot } from '../multiRoot.js';
@@ -31,12 +31,7 @@ async function createSignedStoredEvent(
   payload: EventPayload
 ): Promise<{ volumeId: string; eventHash: Hash; bytes: Uint8Array }> {
   const keyPair = await crypto.deriveKeys(createSecret(secretValue));
-  const storedEvent = await createSignedEvent(
-    crypto,
-    keyPair,
-    payload,
-    payload.hash === EMPTY_HASH ? [] : [payload.hash]
-  );
+  const storedEvent = await createSignedEvent(crypto, keyPair, payload, blockRefsFromPayload(payload));
   const eventHash = await crypto.computeHash(serializeEventEnvelope(storedEvent.envelope));
   return {
     volumeId: volumeIdFromPublicKey(keyPair.publicKey),
@@ -48,19 +43,28 @@ async function createSignedStoredEvent(
 function createCreateFilePayload(fileName: string, blockHash: Hash): EventPayload {
   return {
     type: EventType.CREATE_FILE,
-    fileName,
-    hash: blockHash,
-    encryptedKey: createEncryptedData(new Uint8Array(0)),
+    filename: fileName,
+    content: { protocol: 'nb.content.single.v1', blockHash },
+    wrappedKey: createEncryptedData(new Uint8Array(0)),
+    createdAt: 1,
   };
 }
 
 function createDeleteFilePayload(fileName: string): EventPayload {
   return {
     type: EventType.DELETE_FILE,
-    fileName,
-    hash: EMPTY_HASH,
-    encryptedKey: createEncryptedData(new Uint8Array(0)),
+    filename: fileName,
+    deletedAt: 1,
   };
+}
+
+function blockRefsFromPayload(payload: EventPayload): Hash[] {
+  if (payload.type !== EventType.CREATE_FILE) {
+    return [];
+  }
+  return payload.content.protocol === 'nb.content.single.v1'
+    ? [payload.content.blockHash]
+    : [payload.content.manifestHash];
 }
 
 function createConfig(args: {

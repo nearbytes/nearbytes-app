@@ -23,10 +23,9 @@
     "buffer": "^6.0.3",
     "idb": "^8.0.0",
     "lucide-svelte": "^0.577.0",
-    "nearbytes-crypto": "nearbytes/nearbytes-crypto#main",
-    "nearbytes-files": "nearbytes/nearbytes-files#main",
-    "nearbytes-log": "nearbytes/nearbytes-log#main",
-    "nearbytes-storage": "nearbytes/nearbytes-storage#main",
+    "nearbytes-crypto": "file:../../nearbytes-crypto",
+    "nearbytes-files": "file:../../nearbytes-files",
+    "nearbytes-log": "file:../../nearbytes-log",
     "svelte": "^5.0.0"
   },
   "devDependencies": {

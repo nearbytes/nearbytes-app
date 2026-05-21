@@ -12,7 +12,7 @@ import { reconcileDiscoveredSources } from '../config/sourceReconcile.js';
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { ChatService } from '../domain/chatService.js';
 import type { FileService } from 'nearbytes-files';
-import type { StorageBackend } from 'nearbytes-storage';
+import type { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { openVolume } from 'nearbytes-files';
 import { joinLinkSpaceToSecretString } from '../domain/joinLinkCodec.js';
 import {
@@ -27,8 +27,7 @@ import { JsonFileSecretStore } from '../integrations/secretStore.js';
 import { clearLanLatencyTraces, recordLanLatencyTrace } from '../integrations/lanLatencyTrace.js';
 import type { LocalNetworkSyncService } from '../integrations/localNetworkSync.js';
 import { isProviderEnabled } from '../config/appConfig.js';
-import { bytesToHex } from 'nearbytes-crypto';
-import { MultiRootStorageBackend, isMultiRootStorageBackend } from '../storage/multiRoot.js';
+import { bytesToHex, EventType } from 'nearbytes-crypto';
 import { ApiError } from './errors.js';
 import { openInFileManager as revealPathInFileManager } from './fileManager.js';
 import { encodeSecretToken, getSecretFromRequest, validateSecret } from './auth.js';
@@ -87,7 +86,7 @@ export interface RouteDependencies {
   readonly fileService: FileService;
   readonly chatService: ChatService;
   readonly crypto: CryptoOperations;
-  readonly storage: StorageBackend;
+  readonly multiRoot: MultiRootStorageBackend;
   readonly tokenKey?: Uint8Array;
   readonly sessionStore?: SecretSessionStore;
   readonly maxUploadBytes: number;
@@ -115,7 +114,7 @@ export interface RouteDependencies {
 export function createRoutes(deps: RouteDependencies): Router {
   const router = Router();
   const volumeEventBus = deps.volumeEventBus ?? new VolumeEventBus();
-  const watchHub = new VolumeWatchHub(deps.storage, deps.resolvedStorageDir, volumeEventBus);
+  const watchHub = new VolumeWatchHub(deps.multiRoot, deps.resolvedStorageDir, volumeEventBus);
   const sourceWatchHub = new SourceWatchHub();
   const managedShareRuntime =
     deps.integrationOptions?.integrationRuntime ??
@@ -134,17 +133,15 @@ export function createRoutes(deps: RouteDependencies): Router {
             // as the self-contained phone runtime so true MEGA push stays symmetric after refactors.
             ownerMirrorSource:
               deps.integrationOptions?.runtime?.mega?.ownerMirrorSource ??
-              (isMultiRootStorageBackend(deps.storage)
-                ? createStorageBackedMegaOwnerMirrorSource(deps.storage)
-                : undefined),
+              createStorageBackedMegaOwnerMirrorSource(deps.multiRoot),
           },
         })
       : null);
   const managedShareService =
     deps.managedShareService ??
-    (deps.rootsConfigPath && isMultiRootStorageBackend(deps.storage)
+    (deps.rootsConfigPath
       ? new ManagedShareService({
-          storage: deps.storage,
+          storage: deps.multiRoot,
           rootsConfigPath: deps.rootsConfigPath,
           ...createManagedShareNodeSupport({
             rootsConfigPath: deps.rootsConfigPath,
@@ -307,7 +304,7 @@ export function createRoutes(deps: RouteDependencies): Router {
 
   router.get('/config/roots', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
-    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const multiRootStorage = deps.multiRoot;
     const includeUsage = req.query.includeUsage === '1';
     void ensureNearbytesMarkers(multiRootStorage.getRootsConfig().sources).catch(() => undefined);
     const runtime = await multiRootStorage.getRuntimeSnapshot({ includeUsage });
@@ -352,7 +349,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     }
 
     await saveRootsConfig(deps.rootsConfigPath, nextConfig);
-    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const multiRootStorage = deps.multiRoot;
     multiRootStorage.updateRootsConfig(nextConfig);
     multiRootStorage.scheduleReconcileConfiguredVolumes();
     await ensureNearbytesMarkers(nextConfig.sources);
@@ -367,7 +364,7 @@ export function createRoutes(deps: RouteDependencies): Router {
 
   router.get('/config/roots/consolidate/:sourceId/plan', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
-    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const multiRootStorage = deps.multiRoot;
     const { sourceId } = parseWithSchema(consolidateRootParamSchema, req.params);
     const plan = await multiRootStorage.getConsolidationPlan(sourceId);
     res.json({ plan });
@@ -380,7 +377,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     }
 
     const { sourceId, targetId } = parseWithSchema(consolidateRootBodySchema, req.body);
-    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const multiRootStorage = deps.multiRoot;
     const consolidated = await multiRootStorage.consolidateRoot(sourceId, targetId);
     await saveRootsConfig(deps.rootsConfigPath, consolidated.config);
     await ensureNearbytesMarkers(consolidated.config.sources);
@@ -397,7 +394,7 @@ export function createRoutes(deps: RouteDependencies): Router {
   const openRootInFileManagerHandler = asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
     const { rootId } = parseWithSchema(openRootInFileManagerBodySchema, req.body);
-    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const multiRootStorage = deps.multiRoot;
     const source = getSourceById(multiRootStorage.getRootsConfig(), rootId);
     if (!source) {
       throw new ApiError(404, 'NOT_FOUND', `Source not found: ${rootId}`);
@@ -415,7 +412,7 @@ export function createRoutes(deps: RouteDependencies): Router {
 
   router.get('/config/roots/sources/:sourceId/repair', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
-    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const multiRootStorage = deps.multiRoot;
     const { sourceId } = parseWithSchema(sourceIdParamSchema, req.params);
     res.json({
       report: await multiRootStorage.inspectStorageLocation(sourceId),
@@ -424,7 +421,7 @@ export function createRoutes(deps: RouteDependencies): Router {
 
   router.post('/config/roots/sources/:sourceId/repair', asyncHandler(async (req, res) => {
     assertLocalConfigRequest(req);
-    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const multiRootStorage = deps.multiRoot;
     const { sourceId } = parseWithSchema(sourceIdParamSchema, req.params);
     const { action } = parseWithSchema(repairStorageLocationBodySchema, req.body);
     const result = await multiRootStorage.repairStorageLocation(sourceId, action);
@@ -683,7 +680,7 @@ export function createRoutes(deps: RouteDependencies): Router {
       input.volumeId?.trim().toLowerCase() ??
       (parsed.space.mode === 'volume-id'
         ? parsed.space.value.trim().toLowerCase()
-        : await getVolumeId(secret ?? '', deps.crypto, deps.storage));
+        : await getVolumeId(secret ?? '', deps.crypto));
     res.json(
       await service.openJoinLink(
         {
@@ -703,7 +700,7 @@ export function createRoutes(deps: RouteDependencies): Router {
       throw new ApiError(500, 'INTERNAL_ERROR', 'Roots config path is not configured');
     }
 
-    const multiRootStorage = getMultiRootStorageOrThrow(deps.storage);
+    const multiRootStorage = deps.multiRoot;
     const { knownVolumeIds } = parseWithSchema(reconcileDiscoveredSourcesBodySchema, req.body ?? {});
     const reconciled = await reconcileDiscoveredSources({
       currentConfig: multiRootStorage.getRootsConfig(),
@@ -993,7 +990,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     asyncHandler(async (req, res) => {
       const { secret } = parseWithSchema(openBodySchema, req.body);
       const validatedSecret = validateSecret(secret);
-      const volumeId = await getVolumeId(validatedSecret, deps.crypto, deps.storage);
+      const volumeId = await getVolumeId(validatedSecret, deps.crypto);
       await managedShareService?.rememberOpenedVolume(volumeId);
       const files = await deps.fileService.listFiles(validatedSecret);
 
@@ -1038,7 +1035,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     requireSecret(deps),
     asyncHandler(async (_req, res) => {
       const secret = res.locals.secret as string;
-      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+      const volumeId = await getVolumeId(secret, deps.crypto);
       const files = await deps.fileService.listFiles(secret);
       res.json({
         volumeId,
@@ -1050,7 +1047,7 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/watch/volume', requireSecret(deps), async (req, res, next) => {
     try {
       const secret = res.locals.secret as string;
-      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+      const volumeId = await getVolumeId(secret, deps.crypto);
 
       const subscription = watchHub.subscribe(
         volumeId,
@@ -1099,7 +1096,7 @@ export function createRoutes(deps: RouteDependencies): Router {
   router.get('/watch/volume-events', requireSecret(deps), async (req, res, next) => {
     try {
       const secret = res.locals.secret as string;
-      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+      const volumeId = await getVolumeId(secret, deps.crypto);
 
       const subscription = volumeEventBus.subscribe(
         volumeId,
@@ -1144,7 +1141,7 @@ export function createRoutes(deps: RouteDependencies): Router {
     requireSecret(deps),
     asyncHandler(async (req, res) => {
       const secret = res.locals.secret as string;
-      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+      const volumeId = await getVolumeId(secret, deps.crypto);
       const afterEventHash = typeof req.query.afterEventHash === 'string' ? req.query.afterEventHash : null;
       const timeline = await deps.fileService.getTimelineDelta(secret, afterEventHash);
       res.json({
@@ -1178,30 +1175,20 @@ export function createRoutes(deps: RouteDependencies): Router {
       const { hash } = parseWithSchema(fileHashParamSchema, req.params);
       const secret = res.locals.secret as string;
       const detail = await deps.fileService.getEvent(secret, hash);
-      const volumeId = await getVolumeId(secret, deps.crypto, deps.storage);
+      const volumeId = await getVolumeId(secret, deps.crypto);
 
       const expectedEventRelativePath = join('channels', volumeId, `${hash}.bin`);
-      const payloadHash = detail.decryptedPayload?.hash?.trim() ?? '';
+      const payloadHash = blockHashFromSerializedPayload(detail.decryptedPayload);
       const expectedDataRelativePath =
         /^[a-f0-9]{64}$/i.test(payloadHash) && !/^0+$/i.test(payloadHash)
           ? join('blocks', `${payloadHash}.bin`)
           : null;
 
-      const sourceEntries = isMultiRootStorageBackend(deps.storage)
-        ? getMultiRootStorageOrThrow(deps.storage).getRootsConfig().sources.map((source) => ({
-            rootId: source.id,
-            provider: source.provider,
-            path: source.path,
-          }))
-        : deps.resolvedStorageDir
-          ? [
-              {
-                rootId: null,
-                provider: 'local',
-                path: deps.resolvedStorageDir,
-              },
-            ]
-          : [];
+      const sourceEntries = deps.multiRoot.getRootsConfig().sources.map((source) => ({
+        rootId: source.id,
+        provider: source.provider,
+        path: source.path,
+      }));
 
       const locations = await Promise.all(
         sourceEntries.map(async (source) => {
@@ -1448,11 +1435,7 @@ function asyncHandler(handler: AsyncHandler): RequestHandler {
   };
 }
 
-async function getVolumeId(
-  secret: string,
-  crypto: CryptoOperations,
-  _storage: StorageBackend
-): Promise<string> {
+async function getVolumeId(secret: string, crypto: CryptoOperations): Promise<string> {
   const volume = await openVolume(validateSecret(secret), crypto);
   return bytesToHex(volume.publicKey);
 }
@@ -1513,13 +1496,6 @@ function extractRootsConfigBody(value: unknown): unknown {
     return value;
   }
   return (value as { config: unknown }).config;
-}
-
-function getMultiRootStorageOrThrow(storage: StorageBackend): MultiRootStorageBackend {
-  if (!isMultiRootStorageBackend(storage)) {
-    throw new ApiError(501, 'NOT_IMPLEMENTED', 'Multi-root storage is not enabled');
-  }
-  return storage;
 }
 
 function getManagedShareServiceOrThrow(
@@ -1648,16 +1624,7 @@ async function openInFileManager(targetPath: string): Promise<void> {
 }
 
 function getAllowedFileManagerRoots(deps: RouteDependencies): string[] {
-  if (isMultiRootStorageBackend(deps.storage)) {
-    return getMultiRootStorageOrThrow(deps.storage)
-      .getRootsConfig()
-      .sources
-      .map((source) => resolve(source.path));
-  }
-  if (deps.resolvedStorageDir) {
-    return [resolve(deps.resolvedStorageDir)];
-  }
-  return [];
+  return deps.multiRoot.getRootsConfig().sources.map((source) => resolve(source.path));
 }
 
 function normalizeComparablePath(value: string): string {
@@ -1672,4 +1639,23 @@ function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
   const normalizedRoot = normalizeComparablePath(rootPath);
   const normalizedTarget = normalizeComparablePath(targetPath);
   return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+}
+
+function blockHashFromSerializedPayload(payload: unknown): string {
+  if (typeof payload !== 'object' || payload === null) {
+    return '';
+  }
+  const record = payload as Record<string, unknown>;
+  if (record.type !== EventType.CREATE_FILE) {
+    return '';
+  }
+  const content = record.content;
+  if (typeof content !== 'object' || content === null) {
+    return '';
+  }
+  const descriptor = content as Record<string, unknown>;
+  if (descriptor.protocol !== 'nb.content.single.v1' || typeof descriptor.blockHash !== 'string') {
+    return '';
+  }
+  return descriptor.blockHash.trim();
 }

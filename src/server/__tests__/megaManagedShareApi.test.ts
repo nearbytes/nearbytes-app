@@ -8,8 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from 'nearbytes-files';
-import { defaultPathMapper } from 'nearbytes-storage';
-import { createLog } from 'nearbytes-log';
+import { createMultiRootLog } from '../../storage/multiRootLog.js';
 import { createSecret } from 'nearbytes-crypto';
 import { bytesToHex } from 'nearbytes-crypto';
 import type { RootsConfig } from '../../config/roots.js';
@@ -396,8 +395,9 @@ describe('MEGA managed share API', () => {
     await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
 
     const storage = new MultiRootStorageBackend(rootsConfig);
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
-    const chatService = createChatService({ crypto, storage });
+    const fileService = createFileService({ log: createMultiRootLog(storage), crypto });
+    const log = createMultiRootLog(storage);
+    const chatService = createChatService({ crypto, log });
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
       mega: {
@@ -421,7 +421,7 @@ describe('MEGA managed share API', () => {
       fileService,
       chatService,
       crypto,
-      storage,
+      multiRoot: storage,
       tokenKey: randomBytes(32),
       corsOrigin: true,
       maxUploadBytes: 5 * 1024 * 1024,
@@ -608,8 +608,9 @@ describe('MEGA managed share API', () => {
 
     const storage = new MultiRootStorageBackend(rootsConfig);
     const crypto = createCryptoOperations();
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
-    const chatService = createChatService({ crypto, storage });
+    const fileService = createFileService({ log: createMultiRootLog(storage), crypto });
+    const log = createMultiRootLog(storage);
+    const chatService = createChatService({ crypto, log });
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
       mega: {
@@ -633,7 +634,7 @@ describe('MEGA managed share API', () => {
       fileService,
       chatService,
       crypto,
-      storage,
+      multiRoot: storage,
       tokenKey: randomBytes(32),
       corsOrigin: true,
       maxUploadBytes: 5 * 1024 * 1024,
@@ -802,8 +803,9 @@ describe('MEGA managed share API', () => {
 
     const storage = new MultiRootStorageBackend(rootsConfig);
     const crypto = createCryptoOperations();
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
-    const chatService = createChatService({ crypto, storage });
+    const fileService = createFileService({ log: createMultiRootLog(storage), crypto });
+    const log = createMultiRootLog(storage);
+    const chatService = createChatService({ crypto, log });
     const runtime = createIntegrationRuntime({
       secretStore: createMemorySecretStore(),
       mega: {
@@ -827,7 +829,7 @@ describe('MEGA managed share API', () => {
       fileService,
       chatService,
       crypto,
-      storage,
+      multiRoot: storage,
       tokenKey: randomBytes(32),
       corsOrigin: true,
       maxUploadBytes: 5 * 1024 * 1024,

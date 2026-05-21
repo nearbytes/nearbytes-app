@@ -5,7 +5,7 @@ import { existsSync } from 'fs';
 import type { CryptoOperations } from 'nearbytes-crypto';
 import type { ChatService } from '../domain/chatService.js';
 import type { FileService } from 'nearbytes-files';
-import type { StorageBackend } from 'nearbytes-storage';
+import type { MultiRootStorageBackend } from '../storage/multiRoot.js';
 import { createRoutes } from './routes.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 import {
@@ -24,7 +24,7 @@ export interface AppDependencies {
   readonly fileService: FileService;
   readonly chatService: ChatService;
   readonly crypto: CryptoOperations;
-  readonly storage: StorageBackend;
+  readonly multiRoot: MultiRootStorageBackend;
   readonly tokenKey?: Uint8Array;
   readonly sessionStore?: SecretSessionStore;
   readonly corsOrigin: string | string[] | boolean;

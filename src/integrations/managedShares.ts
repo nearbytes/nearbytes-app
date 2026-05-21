@@ -19,7 +19,7 @@ import type {
   RootConsolidationResult,
   SourceConflictResolutionResult,
 } from '../storage/multiRoot.js';
-import type { StorageWriteEvent, StorageWriteListener } from 'nearbytes-storage';
+import type { StorageWriteEvent, StorageWriteListener } from '../storage/writeEvents.js';
 import {
   type ManagedShareMirrorEntry,
   type ManagedShareReceiveProbe,
@@ -311,7 +311,7 @@ export class ManagedShareService {
       }
       const sourceId =
         share.sourceId ?? nextConfig.sources.find((source) => source.integration?.managedShareId === share.id)?.id;
-      if (!sourceId) {
+      if (!sourceId || !nextConfig.sources.some((source) => source.id === sourceId)) {
         continue;
       }
       const updatedConfig = ensureVolumeAttachment(nextConfig, volumeId, sourceId);

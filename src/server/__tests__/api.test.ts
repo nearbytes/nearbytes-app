@@ -7,8 +7,8 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { createChatService } from '../../domain/chatService.js';
 import { createFileService } from 'nearbytes-files';
-import { FilesystemStorageBackend, defaultPathMapper } from 'nearbytes-storage';
-import { createLog } from 'nearbytes-log';
+import { createMultiRootLog } from '../../storage/multiRootLog.js';
+import { createSingleSourceMultiRoot } from '../../test/singleSourceMultiRoot.js';
 import { createApp } from '../app.js';
 
 const SECRET_OPEN = 'nearbytes-open-secret';
@@ -33,15 +33,16 @@ describe('Nearbytes API', () => {
     tokenKey = randomBytes(32);
 
     const crypto = createCryptoOperations();
-    const storage = new FilesystemStorageBackend(tempDir);
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
-    const chatService = createChatService({ crypto, storage });
+    const multiRoot = createSingleSourceMultiRoot(tempDir);
+    const log = createMultiRootLog(multiRoot);
+    const fileService = createFileService({ log, crypto });
+    const chatService = createChatService({ crypto, log });
 
     app = createApp({
       fileService,
       chatService,
       crypto,
-      storage,
+      multiRoot,
       tokenKey,
       corsOrigin: true,
       maxUploadBytes: 5 * 1024 * 1024,

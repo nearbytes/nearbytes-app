@@ -70,7 +70,7 @@ function toApiError(error: unknown): ApiError {
     return new ApiError(400, 'INVALID_REQUEST', error.message);
   }
 
-  if (error instanceof DecryptionError) {
+  if (isDecryptionError(error)) {
     return new ApiError(401, 'UNAUTHORIZED', 'Invalid secret or token');
   }
 
@@ -102,4 +102,11 @@ function toApiError(error: unknown): ApiError {
   }
 
   return new ApiError(500, 'INTERNAL_ERROR', 'Unexpected server error');
+}
+
+function isDecryptionError(error: unknown): boolean {
+  if (error instanceof DecryptionError) {
+    return true;
+  }
+  return error instanceof Error && error.name === 'DecryptionError';
 }

@@ -20,10 +20,10 @@ import {
   createRuntimeCoreServices,
   type RuntimeCoreServices,
 } from '../../../../src/runtime/coreServices.js';
-import { deserializeEvent } from 'nearbytes-log';
-import { createInMemoryPathRecordStore, normalizeStoragePath, PathRecordStorageBackend, type InMemoryPathRecordStore, type StoredPathRecord } from 'nearbytes-storage';
+import { createLogFromIo, defaultPathMapper, deserializeEvent, type Log, type LogIo } from 'nearbytes-log';
 import { createSecret, type Secret } from 'nearbytes-crypto';
-import { defaultPathMapper, type StorageBackend, type StorageWriteEvent, type StorageWriteListener } from 'nearbytes-storage';
+import { normalizeStoragePath } from '../../../../src/storage/pathUtils.js';
+import type { StorageWriteEvent, StorageWriteListener } from '../../../../src/storage/writeEvents.js';
 import type {
   AppConfig,
   AppConfigResponse,
@@ -139,6 +139,21 @@ declare global {
 
 interface EmbeddedPhoneRuntimeServices extends RuntimeCoreServices {}
 
+interface StoredPathRecord {
+  readonly path: string;
+  readonly data: Uint8Array;
+  readonly updatedAt: number;
+}
+
+interface InMemoryPathRecordStore {
+  readonly files: Map<string, StoredPathRecord>;
+  readonly directories: Set<string>;
+}
+
+function createInMemoryPathRecordStore(): InMemoryPathRecordStore {
+  return { files: new Map(), directories: new Set() };
+}
+
 interface InMemoryPathStore extends InMemoryPathRecordStore {
   settings: Map<string, { key: string; value: string; updatedAt: number }>;
 }
@@ -233,6 +248,7 @@ interface EmbeddedPhoneRuntimeMetrics {
 let dbPromise: Promise<IDBPDatabase | null> | null = null;
 let inMemoryStore: InMemoryPathStore | null = null;
 let servicesPromise: Promise<EmbeddedPhoneRuntimeServices> | null = null;
+let embeddedPhonePathIo: LogIo | null = null;
 let embeddedPhoneVolumeWatcherId = 1;
 let embeddedPhoneCommitSequence = 1;
 let embeddedPhoneCommitDrainPromise: Promise<void> | null = null;
@@ -491,8 +507,16 @@ function resolveEmbeddedPhoneVolumeDestinations(
   return Array.from(merged.values());
 }
 
-function createEmbeddedPhoneRuntimeStorage(): StorageBackend {
-  const storage = {
+async function getEmbeddedPhonePathIo(): Promise<LogIo> {
+  await getEmbeddedPhoneRuntimeServices();
+  if (!embeddedPhonePathIo) {
+    throw new Error('Embedded phone path I/O is not initialized');
+  }
+  return embeddedPhonePathIo;
+}
+
+function createEmbeddedPhoneLog(): Log {
+  const io: LogIo = {
     async writeFile(relativePath: string, data: Uint8Array): Promise<void> {
       const targets = await getEmbeddedPhoneWritableSourcesForRelativePath(relativePath);
       if (targets.length === 0) {
@@ -519,17 +543,6 @@ function createEmbeddedPhoneRuntimeStorage(): StorageBackend {
         }
       }
       throw new Error(`File not found: ${relativePath}`);
-    },
-    async readValidatedFile(
-      relativePath: string,
-      validate: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }>
-    ): Promise<Uint8Array> {
-      const bytes = await storage.readFile(relativePath);
-      const validation = await validate(bytes);
-      if (!validation.ok) {
-        throw new Error(validation.detail ?? `Validation failed for ${relativePath}`);
-      }
-      return bytes;
     },
     async listFiles(directory: string): Promise<string[]> {
       const sources = await getEmbeddedPhoneEnabledSources();
@@ -572,34 +585,9 @@ function createEmbeddedPhoneRuntimeStorage(): StorageBackend {
         })
       );
     },
-    async writeFileForChannel(relativePath: string, data: Uint8Array, _channelKeyHex: string): Promise<void> {
-      await storage.writeFile(relativePath, data);
-    },
-    async readValidatedFileForChannel(
-      relativePath: string,
-      _channelKeyHex: string,
-      validate: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }>
-    ): Promise<Uint8Array> {
-      return storage.readValidatedFile(relativePath, validate);
-    },
-    async listFilesAcrossRoots(directory: string): Promise<string[]> {
-      return storage.listFiles(directory);
-    },
-    async existsForChannel(relativePath: string, _channelKeyHex: string): Promise<boolean> {
-      return storage.exists(relativePath);
-    },
-  } satisfies StorageBackend & {
-    writeFileForChannel(path: string, data: Uint8Array, channelKeyHex: string): Promise<void>;
-    readValidatedFile(path: string, validate: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }>): Promise<Uint8Array>;
-    readValidatedFileForChannel(
-      path: string,
-      channelKeyHex: string,
-      validate: (data: Uint8Array) => Promise<{ ok: boolean; detail?: string }>
-    ): Promise<Uint8Array>;
-    listFilesAcrossRoots(directory: string): Promise<string[]>;
-    existsForChannel(path: string, channelKeyHex: string): Promise<boolean>;
   };
-  return storage;
+  embeddedPhonePathIo = io;
+  return createLogFromIo(io);
 }
 
 async function listStoredFileRecords(): Promise<StoredPathRecord[]> {
@@ -1479,26 +1467,23 @@ async function embeddedPhoneMirrorPathExists(path: string): Promise<boolean> {
   if (await getRecord(normalizedPath)) {
     return true;
   }
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
-  return storage.exists(normalizedPath);
+  const pathIo = await getEmbeddedPhonePathIo();
+  return pathIo.exists(normalizedPath);
 }
 
 const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
   async listMirrorFiles(share): Promise<readonly string[]> {
     const attachedVolumeIds = await resolveEmbeddedPhoneAttachedVolumeIds(share);
-    const { storage } = await getEmbeddedPhoneRuntimeServices();
+    const pathIo = await getEmbeddedPhonePathIo();
     const mirrorPaths = new Set<string>();
     const referencedBlockPaths = new Set<string>();
     for (const volumeId of attachedVolumeIds) {
-      const eventFiles =
-        'listFilesAcrossRoots' in storage && typeof storage.listFilesAcrossRoots === 'function'
-          ? await storage.listFilesAcrossRoots(`channels/${volumeId}`)
-          : await storage.listFiles(`channels/${volumeId}`);
+      const eventFiles = await pathIo.listFiles(`channels/${volumeId}`);
       for (const fileName of eventFiles) {
         const normalizedPath = normalizeStoragePath(`channels/${volumeId}/${fileName}`);
         mirrorPaths.add(normalizedPath);
         try {
-          const bytes = await storage.readFile(normalizedPath);
+          const bytes = await pathIo.readFile(normalizedPath);
           const serialized = JSON.parse(new TextDecoder().decode(bytes)) as import('nearbytes-crypto').SerializedEvent;
           const parsed = deserializeEvent(serialized);
           for (const blockHash of parsed.envelope.blockRefs) {
@@ -1526,8 +1511,8 @@ const embeddedPhoneMegaOwnerMirrorSource: MegaOwnerMirrorSource = {
     if (exactRecord) {
       return new Uint8Array(exactRecord.data);
     }
-    const { storage } = await getEmbeddedPhoneRuntimeServices();
-    return storage.readFile(normalizeStoragePath(relativePath));
+    const pathIo = await getEmbeddedPhonePathIo();
+    return pathIo.readFile(normalizeStoragePath(relativePath));
   },
 };
 
@@ -2553,9 +2538,8 @@ async function emitEmbeddedPhoneVolumeUpdate(
 async function getEmbeddedPhoneRuntimeServices(): Promise<EmbeddedPhoneRuntimeServices> {
   if (!servicesPromise) {
     servicesPromise = Promise.resolve().then(() => {
-      const storage = createEmbeddedPhoneRuntimeStorage();
       return createRuntimeCoreServices({
-        storage,
+        log: createEmbeddedPhoneLog(),
       }) satisfies EmbeddedPhoneRuntimeServices;
     });
   }
@@ -2972,11 +2956,8 @@ async function hasEmbeddedPhoneVolumeHistory(volumeId: string): Promise<boolean>
   if (!normalizedVolumeId) {
     return false;
   }
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
-  const eventFiles =
-    'listFilesAcrossRoots' in storage && typeof storage.listFilesAcrossRoots === 'function'
-      ? await storage.listFilesAcrossRoots(`channels/${normalizedVolumeId}`)
-      : await storage.listFiles(`channels/${normalizedVolumeId}`);
+  const pathIo = await getEmbeddedPhonePathIo();
+  const eventFiles = await pathIo.listFiles(`channels/${normalizedVolumeId}`);
   return eventFiles.length > 0;
 }
 
@@ -3339,14 +3320,14 @@ export async function seedEmbeddedPhoneStoredRecordForTests(path: string, data: 
 
 export async function embeddedPhoneHasLocalVolume(secret: string): Promise<boolean> {
   await ensureEmbeddedPhonePendingCommitsDrained();
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
-  return storage.exists(await getVolumeDirectory(secret));
+  const pathIo = await getEmbeddedPhonePathIo();
+  return pathIo.exists(await getVolumeDirectory(secret));
 }
 
 export async function embeddedPhoneHasReadableVolume(secret: string): Promise<boolean> {
   await ensureEmbeddedPhonePendingCommitsDrained();
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
-  if (await storage.exists(await getVolumeDirectory(secret))) {
+  const pathIo = await getEmbeddedPhonePathIo();
+  if (await pathIo.exists(await getVolumeDirectory(secret))) {
     return true;
   }
   return (await readBootstrappedEmbeddedPhoneMirrorInternal(secret, false)) !== null;
@@ -3363,7 +3344,7 @@ export async function embeddedPhoneGetEventStorageLocations(
   const blockHash = detail.event.envelope.blockRefs[0]?.trim().toLowerCase() ?? null;
   const eventPath = `channels/${volumeId}/${normalizedEventHash}.bin`;
   const dataPath = blockHash ? `blocks/${blockHash}.bin` : null;
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  const pathIo = await getEmbeddedPhonePathIo();
   const config = await readEmbeddedPhoneRootsConfigValue();
   const source = config.sources[0] ?? {
     id: EMBEDDED_PHONE_SOURCE_ID,
@@ -3383,8 +3364,8 @@ export async function embeddedPhoneGetEventStorageLocations(
         rootPath: source.path,
         eventPath,
         dataPath,
-        hasEventFile: await storage.exists(eventPath),
-        hasDataBlock: dataPath ? await storage.exists(dataPath) : true,
+        hasEventFile: await pathIo.exists(eventPath),
+        hasDataBlock: dataPath ? await pathIo.exists(dataPath) : true,
       },
     ],
   };
@@ -3613,13 +3594,13 @@ export async function embeddedPhoneGetLanVolumeInventory(volumeId: string): Prom
 }
 
 export async function embeddedPhoneReadLanEventBytes(volumeId: string, eventHash: string): Promise<Uint8Array> {
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
-  return storage.readFile(`channels/${volumeId.trim().toLowerCase()}/${eventHash.trim().toLowerCase()}.bin`);
+  const pathIo = await getEmbeddedPhonePathIo();
+  return pathIo.readFile(`channels/${volumeId.trim().toLowerCase()}/${eventHash.trim().toLowerCase()}.bin`);
 }
 
 export async function embeddedPhoneReadLanBlockBytes(blockHash: string): Promise<Uint8Array> {
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
-  return storage.readFile(`blocks/${blockHash.trim().toLowerCase()}.bin`);
+  const pathIo = await getEmbeddedPhonePathIo();
+  return pathIo.readFile(`blocks/${blockHash.trim().toLowerCase()}.bin`);
 }
 
 export async function embeddedPhoneImportLanEvent(
@@ -3633,12 +3614,12 @@ export async function embeddedPhoneImportLanEvent(
   if (!validation.ok) {
     throw new Error(validation.detail ?? `Invalid LAN event ${normalizedEventHash}`);
   }
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  const pathIo = await getEmbeddedPhonePathIo();
   const relativePath = `channels/${normalizedVolumeId}/${normalizedEventHash}.bin`;
-  if (await storage.exists(relativePath)) {
+  if (await pathIo.exists(relativePath)) {
     return false;
   }
-  await storage.writeFile(relativePath, bytes);
+  await pathIo.writeFile(relativePath, bytes);
   return true;
 }
 
@@ -3648,12 +3629,12 @@ export async function embeddedPhoneImportLanBlock(blockHash: string, bytes: Uint
   if (!validation.ok) {
     throw new Error(validation.detail ?? `Invalid LAN block ${normalizedBlockHash}`);
   }
-  const { storage } = await getEmbeddedPhoneRuntimeServices();
+  const pathIo = await getEmbeddedPhonePathIo();
   const relativePath = `blocks/${normalizedBlockHash}.bin`;
-  if (await storage.exists(relativePath)) {
+  if (await pathIo.exists(relativePath)) {
     return false;
   }
-  await storage.writeFile(relativePath, bytes);
+  await pathIo.writeFile(relativePath, bytes);
   return true;
 }
 

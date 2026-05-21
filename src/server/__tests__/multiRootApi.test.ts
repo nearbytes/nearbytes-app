@@ -13,8 +13,7 @@ import { bytesToHex } from 'nearbytes-crypto';
 import { type RootsConfig } from '../../config/roots.js';
 import type { TransportAdapter } from '../../integrations/adapters.js';
 import { MultiRootStorageBackend } from '../../storage/multiRoot.js';
-import { defaultPathMapper } from 'nearbytes-storage';
-import { createLog } from 'nearbytes-log';
+import { createMultiRootLog } from '../../storage/multiRootLog.js';
 import { createApp } from '../app.js';
 
 const SECRET = 'nearbytes-multi-root-secret';
@@ -402,14 +401,15 @@ describe('Nearbytes API (multi-root)', () => {
     await fs.writeFile(rootsConfigPath, `${JSON.stringify(rootsConfig, null, 2)}\n`, 'utf8');
 
     const storage = new MultiRootStorageBackend(rootsConfig);
-    const fileService = createFileService({ log: createLog(storage, defaultPathMapper), crypto });
-    const chatService = createChatService({ crypto, storage });
+    const fileService = createFileService({ log: createMultiRootLog(storage), crypto });
+    const log = createMultiRootLog(storage);
+    const chatService = createChatService({ crypto, log });
 
     app = createApp({
       fileService,
       chatService,
       crypto,
-      storage,
+      multiRoot: storage,
       tokenKey,
       corsOrigin: true,
       maxUploadBytes: 5 * 1024 * 1024,
@@ -541,12 +541,12 @@ describe('Nearbytes API (multi-root)', () => {
   it('reads event logs across sources and retrieves blocks when key data is split', async () => {
     const configRes = await request(app).get('/config/roots').expect(200);
     const configBody = typedBody<ConfigRootsResponseBody>(configRes);
-    const writableConfig = {
+    const writableConfig = pruneRootsConfigDestinations({
       ...configBody.config,
       sources: configBody.config.sources.map((source) =>
         source.id === 'src-backup-1' ? { ...source, writable: true } : source
       ),
-    };
+    });
     await request(app).put('/config/roots').send({ config: writableConfig }).expect(200);
 
     const openRes = await request(app).post('/open').send({ secret: SECRET }).expect(200);
@@ -898,3 +898,21 @@ describe('Nearbytes API (multi-root)', () => {
     expect(gdriveProvider?.setup?.config?.hasClientSecret).toBe(false);
   });
 });
+
+function pruneRootsConfigDestinations(config: RootsConfig): RootsConfig {
+  const sourceIds = new Set(config.sources.map((source) => source.id));
+  const prune = <T extends { sourceId: string }>(destinations: readonly T[]): T[] =>
+    destinations.filter((destination) => sourceIds.has(destination.sourceId));
+
+  return {
+    ...config,
+    defaultVolume: {
+      ...config.defaultVolume,
+      destinations: prune(config.defaultVolume.destinations),
+    },
+    volumes: config.volumes.map((volume) => ({
+      ...volume,
+      destinations: prune(volume.destinations),
+    })),
+  };
+}

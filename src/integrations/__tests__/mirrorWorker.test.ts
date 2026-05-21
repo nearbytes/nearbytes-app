@@ -4,7 +4,7 @@ import path from 'path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { volumeIdFromPublicKey } from 'nearbytes-files';
-import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
+import { EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
 import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
 import { MirrorWorker } from '../mirrorWorker.js';
@@ -75,10 +75,9 @@ async function createStoredDeleteEvent(secretValue: string, fileName: string): P
 }> {
   const keyPair = await crypto.deriveKeys(createSecret(secretValue));
   const payload = {
-    type: EventType.DELETE_FILE,
-    fileName,
-    hash: EMPTY_HASH,
-    encryptedKey: createEncryptedData(new Uint8Array(0)),
+    type: EventType.DELETE_FILE as const,
+    filename: fileName,
+    deletedAt: 1,
   };
   const storedEvent = await createSignedEvent(crypto, keyPair, payload, []);
   return {

@@ -1,13 +1,15 @@
-import { createSkeleton } from 'nearbytes-skeleton';
-import type { CryptoOperations } from 'nearbytes-crypto';
+import { createCryptoOperations, type CryptoOperations } from 'nearbytes-crypto';
 import { createChatService, type ChatService } from '../domain/chatService.js';
 import { createFileService, type FileService } from 'nearbytes-files';
-import type { StorageBackend, ChannelPathMapper } from 'nearbytes-storage';
+import type { Log } from 'nearbytes-log';
+import { defaultPathMapper, type ChannelPathMapper } from 'nearbytes-log';
+import type { MultiRootStorageBackend } from '../storage/multiRoot.js';
+import { createMultiRootLog } from '../storage/multiRootLog.js';
 import type { RuntimeVolumeEventPublisher } from './volumeEvents.js';
 
-// Shared service bundle per docs/specs/transport/shared-runtime-services-v0.1.md.
 export interface RuntimeCoreServiceOptions {
-  readonly storage: StorageBackend;
+  readonly multiRoot?: MultiRootStorageBackend;
+  readonly log?: Log;
   readonly crypto?: CryptoOperations;
   readonly pathMapper?: ChannelPathMapper;
   readonly now?: () => number;
@@ -16,28 +18,31 @@ export interface RuntimeCoreServiceOptions {
 
 export interface RuntimeCoreServices {
   readonly crypto: CryptoOperations;
-  readonly storage: StorageBackend;
+  readonly multiRoot?: MultiRootStorageBackend;
+  readonly log: Log;
   readonly fileService: FileService;
   readonly chatService: ChatService;
   readonly volumeEvents?: RuntimeVolumeEventPublisher;
 }
 
 export function createRuntimeCoreServices(options: RuntimeCoreServiceOptions): RuntimeCoreServices {
-  // The skeleton provides the canonical crypto + log wiring.
-  // It is environment-neutral: same call would work in a browser with an
-  // IndexedDB backend.  App-level services (fileService, chatService) are
-  // layered on top here, in the messy app layer where they belong.
-  const skeleton = createSkeleton(options.storage);
-  const crypto = options.crypto ?? skeleton.crypto;
-  const log = skeleton.log;
+  const crypto = options.crypto ?? createCryptoOperations();
+  const log =
+    options.log ??
+    (options.multiRoot
+      ? createMultiRootLog(options.multiRoot, options.pathMapper ?? defaultPathMapper)
+      : (() => {
+          throw new Error('createRuntimeCoreServices requires multiRoot or log');
+        })());
 
   return {
     crypto,
-    storage: options.storage,
+    multiRoot: options.multiRoot,
+    log,
     fileService: createFileService({ log, crypto, now: options.now }),
     chatService: createChatService({
       crypto,
-      storage: options.storage,
+      log,
       pathMapper: options.pathMapper,
       now: options.now,
     }),

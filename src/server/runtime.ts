@@ -88,23 +88,23 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     }
   }
 
-  const storage = new MultiRootStorageBackend(loaded.config);
-  await resumePendingSourceMoves(storage, loaded.configPath, logger);
+  const multiRoot = new MultiRootStorageBackend(loaded.config);
+  await resumePendingSourceMoves(multiRoot, loaded.configPath, logger);
   const volumeEventBus = new VolumeEventBus();
   const runtimeServices = createRuntimeCoreServices({
-    storage,
+    multiRoot,
     volumeEvents: volumeEventBus,
   });
   const primaryMainRoot =
-    storage
+    multiRoot
       .getRootsConfig()
       .defaultVolume.destinations
-      .map((destination) => storage.getRootsConfig().sources.find((source) => source.id === destination.sourceId))
+      .map((destination) => multiRoot.getRootsConfig().sources.find((source) => source.id === destination.sourceId))
       .find((source) => source?.enabled)?.path ?? defaultStorageDir;
 
-  await ensureBootstrapDirectories(storage, logger);
-  storage.startRepairMonitor();
-  void storage.reconcileConfiguredVolumes().catch((error) => {
+  await ensureBootstrapDirectories(multiRoot, logger);
+  multiRoot.startRepairMonitor();
+  void multiRoot.reconcileConfiguredVolumes().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`Warning: background storage reconcile failed during startup: ${message}`);
   });
@@ -125,12 +125,12 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
         // as the self-contained phone runtime so true MEGA push stays symmetric after refactors.
         ownerMirrorSource:
           options.integrationOptions?.runtime?.mega?.ownerMirrorSource ??
-          createStorageBackedMegaOwnerMirrorSource(storage),
+          createStorageBackedMegaOwnerMirrorSource(multiRoot),
       },
     });
 
   const managedShareService = new ManagedShareService({
-    storage,
+    storage: multiRoot,
     rootsConfigPath: loaded.configPath,
     ...createManagedShareNodeSupport({
       rootsConfigPath: loaded.configPath,
@@ -143,7 +143,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     adapters: options.integrationOptions?.adapters ?? createDefaultTransportAdapters(managedShareRuntime),
   });
   const localNetworkSyncService = isProviderEnabled('local-network')
-    ? new LocalNetworkSyncService(storage, {
+    ? new LocalNetworkSyncService(multiRoot, {
         storageDir: defaultStorageDir,
         volumeEvents: runtimeServices.volumeEvents,
       })
@@ -157,7 +157,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
     fileService: runtimeServices.fileService,
     chatService: runtimeServices.chatService,
     crypto: runtimeServices.crypto,
-    storage,
+    multiRoot,
     tokenKey,
     corsOrigin,
     maxUploadBytes,
@@ -182,7 +182,7 @@ export async function startApiRuntime(options: ApiRuntimeOptions = {}): Promise<
   }
 
   const stop = createStop(server, async () => {
-    storage.stopRepairMonitor();
+    multiRoot.stopRepairMonitor();
     if (localNetworkSyncService) {
       await localNetworkSyncService.stop();
     }

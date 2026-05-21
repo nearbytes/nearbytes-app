@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCryptoOperations } from 'nearbytes-crypto';
 import { volumeIdFromPublicKey } from 'nearbytes-files';
 import { serializeEvent, serializeEventEnvelope } from 'nearbytes-log';
-import { createEncryptedData, EMPTY_HASH, EventType } from 'nearbytes-crypto';
+import { createEncryptedData, EventType } from 'nearbytes-crypto';
 import { createSecret } from 'nearbytes-crypto';
 import { createSignedEvent } from 'nearbytes-log';
 import {
@@ -363,10 +363,9 @@ describe('MegaTransportAdapter', () => {
     const channelKeyPair = await cryptoOps.deriveKeys(createSecret('mega-native-channel'));
     const volumeId = volumeIdFromPublicKey(channelKeyPair.publicKey);
     const eventPayload = {
-      type: EventType.DELETE_FILE,
-      fileName: 'native-probe.txt',
-      hash: EMPTY_HASH,
-      encryptedKey: createEncryptedData(new Uint8Array(0)),
+      type: EventType.DELETE_FILE as const,
+      filename: 'native-probe.txt',
+      deletedAt: 1,
     };
     const storedEvent = await createSignedEvent(cryptoOps, channelKeyPair, eventPayload, []);
     const eventHash = await cryptoOps.computeHash(serializeEventEnvelope(storedEvent.envelope));
@@ -5128,10 +5127,9 @@ describe('MegaTransportAdapter', () => {
       cryptoOps,
       volumeKeyPair,
       {
-        type: EventType.DELETE_FILE,
-        fileName: 'runtime.txt',
-        hash: EMPTY_HASH,
-        encryptedKey: createEncryptedData(new Uint8Array(0)),
+        type: EventType.DELETE_FILE as const,
+        filename: 'runtime.txt',
+        deletedAt: 1,
       },
       [blockHash as any]
     );
@@ -5246,11 +5244,9 @@ describe('MegaTransportAdapter', () => {
       volumeKeyPair,
       {
         type: EventType.CREATE_FILE,
-        fileName: 'patched-embedded-phone-proof.txt',
-        hash: blockHash as any,
-        encryptedKey: createEncryptedData(new Uint8Array([1, 2, 3])),
-        contentType: 'b',
-        size: 30,
+        filename: 'patched-embedded-phone-proof.txt',
+        content: { protocol: 'nb.content.single.v1' as const, blockHash: blockHash as any },
+        wrappedKey: createEncryptedData(new Uint8Array([1, 2, 3])),
         mimeType: 'text/plain',
         createdAt: 1776717155573,
       },
@@ -5794,10 +5790,9 @@ describe('MegaTransportAdapter', () => {
       cryptoOps,
       volumeKeyPair,
       {
-        type: EventType.DELETE_FILE,
-        fileName: 'runtime.txt',
-        hash: EMPTY_HASH,
-        encryptedKey: createEncryptedData(new Uint8Array(0)),
+        type: EventType.DELETE_FILE as const,
+        filename: 'runtime.txt',
+        deletedAt: 1,
       },
       [blockHash as any]
     );
@@ -8339,10 +8334,9 @@ describe('MegaTransportAdapter', () => {
     const volumeKeyPair = await cryptoOps.deriveKeys(createSecret('mega-recipient-parent-refetch'));
     const volumeId = volumeIdFromPublicKey(volumeKeyPair.publicKey);
     const eventPayload = {
-      type: EventType.DELETE_FILE,
-      fileName: 'parent-refetch.txt',
-      hash: EMPTY_HASH,
-      encryptedKey: createEncryptedData(new Uint8Array(0)),
+      type: EventType.DELETE_FILE as const,
+      filename: 'parent-refetch.txt',
+      deletedAt: 1,
     };
     const storedEvent = await createSignedEvent(cryptoOps, volumeKeyPair, eventPayload, []);
     const eventHash = await cryptoOps.computeHash(serializeEventEnvelope(storedEvent.envelope));
