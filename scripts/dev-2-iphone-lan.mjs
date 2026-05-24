@@ -23,7 +23,7 @@ import {
   waitForHttpEndpoint,
 } from './lib/dev-orchestration.mjs';
 
-const desktopUiPort = 5177;
+const desktopUiPort = 6177;
 const phoneUiPort = readPort('NEARBYTES_DEV2_IPHONE_LAN_PHONE_UI_PORT', 5181);
 const startupTimeoutMs = readPort('NEARBYTES_DEV2_IPHONE_LAN_STARTUP_TIMEOUT_MS', 90_000);
 const desktopHome = trimOrDefault(process.env.NEARBYTES_DEV2_IPHONE_LAN_DESKTOP_HOME, '/tmp/nearbytes-dev-2-iphone-lan-desktop-home');

@@ -42,7 +42,7 @@ Current live stack details from the latest repro on 2026-04-20:
 
 - desktop API: `http://127.0.0.1:3000`
 - phone API: `http://127.0.0.1:3300`
-- desktop UI: `http://127.0.0.1:5177`
+- desktop UI: `http://127.0.0.1:6177`
 - phone UI: `http://127.0.0.1:5181`
 - volume secret: `Test4`
 - volume id: `0489eac69beb82ec9eb88b45d7ce29d5cce350f01c6f85922e23750841fa86944aceefcf9326aa4363e349d73049c9a126ce36cdd14407b6c1fe33d6288ed03101`

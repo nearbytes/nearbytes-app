@@ -281,7 +281,7 @@ function parseDevUiPort(url: string): number {
       // Fall back to the default dev port when the URL is malformed.
     }
   }
-  return 5177;
+  return 6177;
 }
 
 async function startDesktop(): Promise<void> {

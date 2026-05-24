@@ -1,6 +1,6 @@
 import { createCryptoOperations, type CryptoOperations } from 'nearbytes-crypto';
 import { createChatService, type ChatService } from '../domain/chatService.js';
-import { createFileService, type FileService } from 'nearbytes-files';
+import { createFileService, type FileService } from 'nearbytes-files/service';
 import type { Log } from 'nearbytes-log';
 import { defaultPathMapper, type ChannelPathMapper } from 'nearbytes-log';
 import type { MultiRootStorageBackend } from '../storage/multiRoot.js';

@@ -31,9 +31,9 @@ describe('runtimeTransport', () => {
         {
           protocol: 'http:',
           hostname: '127.0.0.1',
-          port: '5177',
+          port: '6177',
         },
-        '5177'
+        '6177'
       )
     ).toBe(true);
 
@@ -45,7 +45,7 @@ describe('runtimeTransport', () => {
           hostname: '127.0.0.1',
           port: '4173',
         },
-        '5177'
+        '6177'
       )
     ).toBe(false);
   });
@@ -63,9 +63,9 @@ describe('runtimeTransport', () => {
         {
           protocol: 'http:',
           hostname: 'localhost',
-          port: '5177',
+          port: '6177',
         },
-        '5177'
+        '6177'
       )
     ).toBe('');
   });

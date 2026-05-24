@@ -18,7 +18,7 @@ const desktopSessionPath =
   process.env.NEARBYTES_DESKTOP_SESSION_FILE && process.env.NEARBYTES_DESKTOP_SESSION_FILE.trim().length > 0
     ? path.resolve(process.env.NEARBYTES_DESKTOP_SESSION_FILE)
     : path.join(os.homedir(), '.nearbytes', 'desktop-session.json');
-const devUiPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
+const devUiPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 6177);
 const devUiUrl = `http://127.0.0.1:${devUiPort}`;
 
 await main();

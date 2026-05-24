@@ -36,7 +36,7 @@ loadDotEnvIfPresent(dotEnvPath);
 
 const localPort = readPositiveIntEnv('NEARBYTES_DEV2_LOCAL_PORT', 3200);
 const remotePort = readPositiveIntEnv('NEARBYTES_DEV2_REMOTE_PORT', 3201);
-const localUiPort = readPositiveIntEnv('NEARBYTES_DEV2_LOCAL_UI_PORT', 5177);
+const localUiPort = readPositiveIntEnv('NEARBYTES_DEV2_LOCAL_UI_PORT', 6177);
 const remoteUiPort = readPositiveIntEnv('NEARBYTES_DEV2_REMOTE_UI_PORT', 5182);
 const startupTimeoutMs = readPositiveIntEnv('NEARBYTES_DEV2_STARTUP_TIMEOUT_MS', 90_000);
 const localHome = trimOrDefault(process.env.NEARBYTES_DEV2_LOCAL_HOME, '/tmp/nearbytes-dev2-local-home');

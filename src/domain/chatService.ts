@@ -6,7 +6,7 @@ import { EventType } from 'nearbytes-crypto';
 import type { EventLogEntry, Log, ChannelPathMapper } from 'nearbytes-log';
 import { serializeEventEnvelope } from 'nearbytes-log';
 import { createSignedEvent, hydrateSignedEvent, loadEventLog, openChannel, verifyEventLog } from 'nearbytes-log';
-import { volumeIdFromPublicKey } from 'nearbytes-files';
+import { volumeIdFromPublicKey } from 'nearbytes-files/service';
 import {
   createChatMessage,
   createIdentityRecord,
@@ -23,7 +23,7 @@ import {
   type ChatMessage,
   type IdentityProfile,
   type IdentityRecord,
-} from 'nearbytes-files';
+} from 'nearbytes-files/chat';
 
 export interface PublishedIdentity {
   readonly eventHash: string;

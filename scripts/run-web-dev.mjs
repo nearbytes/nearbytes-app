@@ -23,7 +23,7 @@ const desktopSessionPath =
     ? path.resolve(process.env.NEARBYTES_DESKTOP_SESSION_FILE)
     : path.join(os.homedir(), '.nearbytes', 'desktop-session.json');
 const apiUrl = `http://127.0.0.1:${backendPort}/config/roots`;
-const devUiPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
+const devUiPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 6177);
 const devUiHost = '127.0.0.1';
 const devUiUrl = `http://${devUiHost}:${devUiPort}`;
 const rootsConfigPath = process.env.NEARBYTES_ROOTS_CONFIG?.trim() ? path.resolve(process.env.NEARBYTES_ROOTS_CONFIG) : null;

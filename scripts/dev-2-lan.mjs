@@ -19,7 +19,7 @@ import {
   waitForHealth,
 } from './lib/dev-orchestration.mjs';
 
-const desktopUiPort = 5177;
+const desktopUiPort = 6177;
 const remoteApiPort = readPort('NEARBYTES_DEV2_LAN_REMOTE_PORT', 3201);
 const remoteUiPort = readPort('NEARBYTES_DEV2_LAN_REMOTE_UI_PORT', 5182);
 const startupTimeoutMs = readPort('NEARBYTES_DEV2_LAN_STARTUP_TIMEOUT_MS', 90_000);

@@ -32,7 +32,7 @@ import {
 const dotEnvPath = path.join(repoRoot, '.env.e2e');
 loadDotEnvIfPresent(dotEnvPath);
 
-const desktopUiPort = 5177;
+const desktopUiPort = 6177;
 const phoneApiPort = readPort('NEARBYTES_DEV2_IPHONE_MEGA_PHONE_PORT', 3300);
 const phoneUiPort = readPort('NEARBYTES_DEV2_IPHONE_MEGA_PHONE_UI_PORT', 5181);
 const startupTimeoutMs = readPort('NEARBYTES_DEV2_IPHONE_MEGA_STARTUP_TIMEOUT_MS', 90_000);

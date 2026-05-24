@@ -112,7 +112,7 @@ function readInjectedRuntimeConfig(): DesktopRuntimeConfig | null {
 
 export function getConfiguredDesktopDevPort(): string {
   const configured = import.meta.env?.VITE_NEARBYTES_WEB_DEV_PORT;
-  return typeof configured === 'string' && configured.trim().length > 0 ? configured.trim() : '5177';
+  return typeof configured === 'string' && configured.trim().length > 0 ? configured.trim() : '6177';
 }
 
 export function useSameOriginDesktopProxy(

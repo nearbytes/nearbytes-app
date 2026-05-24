@@ -126,7 +126,7 @@ async function resolveMobileServerUrl() {
     return recordedUrl;
   }
 
-  return `http://127.0.0.1:${parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177)}`;
+  return `http://127.0.0.1:${parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 6177)}`;
 }
 
 async function readRecordedMobileServerUrl() {

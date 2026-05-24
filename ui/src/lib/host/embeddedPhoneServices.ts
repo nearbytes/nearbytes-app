@@ -15,7 +15,7 @@ import type { MegaOwnerMirrorSource } from '../../../../src/integrations/runtime
 import type { IntegrationStateSnapshot } from '../../../../src/integrations/store.js';
 import type { ProviderAccount, TransportState } from '../../../../src/integrations/types.js';
 import type { ChatService } from '../../../../src/domain/chatService.js';
-import type { FileService } from 'nearbytes-files';
+import type { FileService } from 'nearbytes-files/service';
 import {
   createRuntimeCoreServices,
   type RuntimeCoreServices,

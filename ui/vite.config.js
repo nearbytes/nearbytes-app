@@ -5,13 +5,20 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
 import { nearbytesDevApiProxy } from './devApiProxy.js';
 
-const devPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 5177);
+const devPort = parsePort(process.env.NEARBYTES_WEB_DEV_PORT, 6177);
 const gitCommit = (() => {
   try { return execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim(); }
   catch { return 'unknown'; }
 })();
 
+const nearbytesLogBrowser = path.resolve(process.cwd(), '../node_modules/nearbytes-log/dist/browser.js');
+
 export default defineConfig({
+  resolve: {
+    alias: {
+      'nearbytes-log': nearbytesLogBrowser,
+    },
+  },
   plugins: [
     nearbytesDevApiProxy(),
     svelte({
@@ -64,6 +71,9 @@ export default defineConfig({
   ],
   define: {
     __GIT_COMMIT__: JSON.stringify(gitCommit),
+  },
+  optimizeDeps: {
+    exclude: ['nearbytes-files', 'nearbytes-log', 'nearbytes-skeleton'],
   },
   server: {
     host: '127.0.0.1',
