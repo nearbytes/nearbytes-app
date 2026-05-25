@@ -58,8 +58,7 @@ describe('FileService', () => {
     const plaintext = Buffer.from('validated payload');
     const symmetricKey = await crypto.deriveSymKey(keyPair.privateKey);
     const encryptedData = await crypto.encryptSym(plaintext, symmetricKey);
-    const blobHash = await crypto.computeHash(encryptedData);
-    await backupChannelStorage.blocks.store(blobHash, encryptedData, false);
+    const blobHash = await backupChannelStorage.blocks.store(encryptedData, false);
 
     const payload = {
       type: EventType.CREATE_FILE,
@@ -536,8 +535,7 @@ async function appendLegacyVolumeKeyFile(
   const keyPair = await crypto.deriveKeys(normalizedSecret);
   const symmetricKey = await crypto.deriveSymKey(keyPair.privateKey);
   const encryptedData = await crypto.encryptSym(data, symmetricKey);
-  const blobHash = await crypto.computeHash(encryptedData);
-  await channelStorage.blocks.store(blobHash, encryptedData, true);
+  const blobHash = await channelStorage.blocks.store(encryptedData, true);
 
   const payload = {
     type: EventType.CREATE_FILE,
