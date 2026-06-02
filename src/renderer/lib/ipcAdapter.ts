@@ -3,10 +3,11 @@
  * preload bridge. Everything above this file is pure UI over typed methods.
  */
 import type {
-  NearbytesAdapter, SyncStatus, VolumeView
+  NearbytesAdapter, SyncStatus, VolumeView, Whoami
 } from 'nearbytes-components';
 import type { ProfileConfig, VolumeConfig } from 'nearbytes-skeleton';
 import type { ChatTimelineItem } from 'nearbytes-chat';
+import type { TimelineEvent } from 'nearbytes-files';
 import type { PushEvent } from '../../shared/ipc.js';
 
 function call<T>(api: string, method: string, ...args: unknown[]): Promise<T> {
@@ -45,6 +46,9 @@ export function createIpcAdapter(): NearbytesAdapter {
       add: (p, n) => call('file', 'add', p, n),
       get: (n, o) => call('file', 'get', n, o),
       remove: (n) => call('file', 'remove', n),
+      mkdir: (p) => call('file', 'mkdir', p),
+      rename: (f, t) => call('file', 'rename', f, t),
+      timeline: () => call<TimelineEvent[]>('file', 'timeline'),
       openExternally: (n) => call('file', 'openExternally', n)
     },
     chat: {
@@ -55,6 +59,8 @@ export function createIpcAdapter(): NearbytesAdapter {
       list: () => call<string[]>('friend', 'list'),
       add: (k) => call('friend', 'add', k),
       remove: (k) => call('friend', 'remove', k)
-    }
+    },
+    whoami: () => call<Whoami>('service', 'whoami'),
+    peers: () => call<ReadonlyArray<unknown>>('service', 'peers')
   };
 }

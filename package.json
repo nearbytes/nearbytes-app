@@ -20,7 +20,8 @@
     "nearbytes-files": "github:nearbytes/nearbytes-files",
     "nearbytes-log": "github:nearbytes/nearbytes-log",
     "nearbytes-skeleton": "github:nearbytes/nearbytes-skeleton",
-    "nearbytes-sync": "github:nearbytes/nearbytes-sync"
+    "nearbytes-sync": "github:nearbytes/nearbytes-sync",
+    "nearbytes-engine": "github:nearbytes/nearbytes-engine"
   },
   "resolutions": {
     "nearbytes-widgets": "github:nearbytes/nearbytes-widgets"

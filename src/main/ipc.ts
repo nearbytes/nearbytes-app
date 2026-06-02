@@ -6,13 +6,15 @@ type Handler = (svc: NearbytesService, args: ReadonlyArray<unknown>) => unknown;
 
 const ROUTES: Record<string, Handler> = {
   'service.status': (s) => s.status(),
+  'service.whoami': (s) => s.whoami(),
+  'service.peers': (s) => s.peers(),
   'profile.list': (s) => s.profileList(),
   'profile.active': (s) => s.activeProfile(),
   'profile.add': (s, a) => s.profileAdd(a[0] as string, a[1] as string),
   'profile.use': (s, a) => s.profileUse(a[0] as string),
   'profile.remove': (s, a) => s.profileRemove(a[0] as string),
-  'profile.publish': () => undefined,
-  'profile.publicKey': () => '',
+  'profile.publish': (s, a) => s.profilePublish(a[0] as string, a[1] as string | undefined, a[2] as string | undefined),
+  'profile.publicKey': (s, a) => s.profilePublicKey(a[0] as string | undefined),
   'hub.list': (s) => s.hubList(),
   'hub.active': (s) => s.hubActive(),
   'hub.add': (s, a) => s.hubAdd(a[0] as string, a[1] as string),
@@ -27,6 +29,9 @@ const ROUTES: Record<string, Handler> = {
   'file.add': (s, a) => s.fileAdd(a[0] as string, a[1] as string | undefined),
   'file.get': (s, a) => s.fileGet(a[0] as string, a[1] as string),
   'file.remove': (s, a) => s.fileRemove(a[0] as string),
+  'file.mkdir': (s, a) => s.fileMkdir(a[0] as string),
+  'file.rename': (s, a) => s.fileRename(a[0] as string, a[1] as string),
+  'file.timeline': (s) => s.fileTimeline(),
   'file.openExternally': (s, a) => s.fileOpenExternally(a[0] as string)
 };
 

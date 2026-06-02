@@ -1,141 +1,81 @@
 /**
- * NearbytesService — main-process owner of the NearBytes runtime.
+ * NearbytesService — main-process shell around the shared `nearbytes-engine`.
  *
- * Boots EXACTLY like nearbytes-cli does: read config → build the filesystem
- * skeleton (crypto + log + sync) → create the file service. Configurability
- * (profiles, hubs/volumes, friends) is persisted with the skeleton's own
- * `writeConfig` and applied to the live sync engine via `reloadSync`, so the
- * app's sync behaviour is identical to the CLI's.
- *
- * This is the explicit adapter boundary's server side. The renderer never sees
- * any of these Node objects — only the typed snapshots pushed via `emit`.
+ * It owns NO domain logic: profiles, hubs, friends, files, chat, sync — all of
+ * it lives in `NearbytesEngine`, the exact same core the CLI runs on. This
+ * class only bridges the engine's change stream onto Electron IPC pushes and
+ * adds the one genuinely UI-shell concern (open-in-OS via `shell.openPath`).
  */
-import {
-  readConfig,
-  writeConfig,
-  emptyConfig,
-  defaultDataDir,
-  createFilesystemSkeletonFromConfig,
-  type NearbytesConfig,
-  type NearbytesSkeleton,
-  type ProfileConfig,
-  type VolumeConfig,
-} from 'nearbytes-skeleton';
-import { createFileService, type FileService } from 'nearbytes-files';
+import { NearbytesEngine, type EngineEvent } from 'nearbytes-engine';
+import { join } from 'node:path';
+import { writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { shell } from 'electron';
 import type { PushEvent } from '../shared/ipc.js';
 
 export type Emit = (e: PushEvent) => void;
 
 export class NearbytesService {
-  private config: NearbytesConfig;
-  private skeleton!: NearbytesSkeleton;
-  private fileService!: FileService;
-  private activeHub: string | null = null;
-  private constructor(config: NearbytesConfig, private readonly emit: Emit) {
-    this.config = config;
-  }
+  private constructor(private readonly engine: NearbytesEngine, private readonly emit: Emit) {}
 
   static async boot(emit: Emit): Promise<NearbytesService> {
-    const config = await readConfig().catch(() => emptyConfig(defaultDataDir()));
-    const svc = new NearbytesService(config, emit);
-    svc.emitStatus('Starting NearBytes…', 'syncing');
-    svc.skeleton = await createFilesystemSkeletonFromConfig(config);
-    svc.fileService = createFileService({ log: svc.skeleton.log, crypto: svc.skeleton.crypto });
-    svc.skeleton.sync.onEvent(() => svc.emitStatus(svc.statusText(), 'online'));
-    svc.emitStatus(svc.statusText(), config.profiles.length === 0 ? 'offline' : 'online');
+    emit({ channel: 'status', payload: { text: 'Starting NearBytes…', kind: 'syncing', connectedPeers: 0, serving: false } });
+    const engine = await NearbytesEngine.boot();
+    const svc = new NearbytesService(engine, emit);
+    engine.on((e: EngineEvent) => svc.forward(e));
+    emit({ channel: 'status', payload: svc.statusPayload() });
     return svc;
   }
 
-  async destroy(): Promise<void> { await this.skeleton.destroy(); }
+  async destroy(): Promise<void> { await this.engine.destroy(); }
 
-  // ── status ────────────────────────────────────────────────────────────
-  private statusText(): string {
-    const snap = this.skeleton.sync.snapshot();
-    if (this.config.profiles.length === 0) return 'No profile — add one to enable sync';
-    const hub = this.activeHub ? ` · hub ${this.activeHub}` : '';
-    return `Profile ${this.config.activeProfile} · ${snap.connectedPeers} peer(s)${hub}`;
+  private statusPayload() {
+    const s = this.engine.status();
+    return { text: s.text, kind: s.serving ? 'online' : 'offline', connectedPeers: s.connectedPeers, serving: s.serving };
   }
-  private emitStatus(text: string, kind: string): void {
-    this.emit({ channel: 'status', payload: { text, kind, connectedPeers: this.skeleton?.sync.snapshot().connectedPeers ?? 0, serving: this.config.profiles.length > 0 } });
-  }
-  status() {
-    const snap = this.skeleton.sync.snapshot();
-    return { text: this.statusText(), connectedPeers: snap.connectedPeers, serving: this.config.profiles.length > 0 };
+  private forward(e: EngineEvent): void {
+    if (e.kind === 'status') this.emit({ channel: 'status', payload: { text: e.status.text, kind: e.status.serving ? 'online' : 'offline', connectedPeers: e.status.connectedPeers, serving: e.status.serving } });
+    else if (e.kind === 'volume') this.emit({ channel: 'volume', payload: e.view });
+    else if (e.kind === 'chat') this.emit({ channel: 'chat', payload: e.items });
   }
 
-  // ── persistence + live sync reconfiguration (CLI-identical) ────────────
-  private async persistAndReload(): Promise<void> {
-    await writeConfig(this.config);
-    await this.skeleton.reloadSync(this.config.friends, {
-      profiles: this.config.profiles,
-      activeProfile: this.config.activeProfile,
-    });
-    this.emitStatus(this.statusText(), this.config.profiles.length === 0 ? 'offline' : 'online');
+  // ── delegated 1:1 to the shared engine ──────────────────────────────────
+  status() { return this.engine.status(); }
+  whoami() { return this.engine.whoami(); }
+  peers() { return this.engine.peers(); }
+
+  profileList() { return this.engine.profileList(); }
+  activeProfile() { return this.engine.activeProfile(); }
+  profilePublicKey(name?: string) { return this.engine.profilePublicKey(name); }
+  profileAdd(name: string, secret: string) { return this.engine.profileAdd(name, secret); }
+  profileUse(name: string) { return this.engine.profileUse(name); }
+  profileRemove(name: string) { return this.engine.profileRemove(name); }
+  async profilePublish(_d: string, _b?: string, _as?: string) { throw new Error('profile publish: not yet implemented'); }
+
+  hubList() { return this.engine.hubList(); }
+  hubActive() { return this.engine.hubActive(); }
+  hubAdd(label: string, secret: string) { return this.engine.hubAdd(label, secret); }
+  hubForget(label: string) { return this.engine.hubForget(label); }
+  hubUse(label: string) { return this.engine.hubUse(label); }
+
+  friendList() { return this.engine.friendList(); }
+  friendAdd(key: string) { return this.engine.friendAdd(key); }
+  friendRemove(prefix: string) { return this.engine.friendRemove(prefix); }
+
+  fileView() { return this.engine.fileView(); }
+  fileAdd(localPath: string, name?: string) { return this.engine.fileAdd(localPath, name); }
+  fileGet(name: string, out: string) { return this.engine.fileGet(name, out); }
+  fileRemove(name: string) { return this.engine.fileRemove(name); }
+  fileMkdir(path: string) { return this.engine.fileMkdir(path); }
+  fileRename(from: string, to: string) { return this.engine.fileRename(from, to); }
+  fileTimeline() { return this.engine.fileTimeline(); }
+  async fileOpenExternally(name: string): Promise<void> {
+    const buf = await this.engine.fileBytes(name);
+    const out = join(tmpdir(), `nearbytes-${Date.now()}-${name.split('/').pop()}`);
+    await writeFile(out, buf);
+    await shell.openPath(out);
   }
 
-  // ── profiles ───────────────────────────────────────────────────────────
-  profileList(): ProfileConfig[] { return [...this.config.profiles]; }
-  activeProfile(): string | null { return this.config.activeProfile; }
-  async profileAdd(name: string, secret: string): Promise<void> {
-    if (this.config.profiles.some((p) => p.name === name)) throw new Error(`Profile ${name} exists`);
-    const profiles = [...this.config.profiles, { name, secret }];
-    const activeProfile = this.config.activeProfile ?? name;
-    this.config = { ...this.config, profiles, activeProfile };
-    await this.persistAndReload();
-  }
-  async profileUse(name: string): Promise<void> {
-    if (!this.config.profiles.some((p) => p.name === name)) throw new Error(`Unknown profile ${name}`);
-    this.config = { ...this.config, activeProfile: name };
-    await this.persistAndReload();
-  }
-  async profileRemove(name: string): Promise<void> {
-    const profiles = this.config.profiles.filter((p) => p.name !== name);
-    const activeProfile = this.config.activeProfile === name ? (profiles[0]?.name ?? null) : this.config.activeProfile;
-    this.config = { ...this.config, profiles, activeProfile };
-    await this.persistAndReload();
-  }
-
-  // ── hubs / volumes ───────────────────────────────────────────────────────
-  hubList(): VolumeConfig[] { return [...this.config.volumes]; }
-  hubActive(): string | null { return this.activeHub; }
-  async hubAdd(label: string, secret: string): Promise<void> {
-    if (this.config.volumes.some((v) => v.label === label)) throw new Error(`Hub ${label} exists`);
-    this.config = { ...this.config, volumes: [...this.config.volumes, { label, secret }] };
-    await writeConfig(this.config);
-  }
-  async hubForget(label: string): Promise<void> {
-    this.config = { ...this.config, volumes: this.config.volumes.filter((v) => v.label !== label) };
-    if (this.activeHub === label) this.activeHub = null;
-    await writeConfig(this.config);
-  }
-  async hubUse(label: string): Promise<void> {
-    if (!this.config.volumes.some((v) => v.label === label)) throw new Error(`Unknown hub ${label}`);
-    this.activeHub = label;
-    this.emitStatus(this.statusText(), 'online');
-    // Placeholder: materialize + push the active volume view (see CODING.md §1).
-    this.emit({ channel: 'volume', payload: { files: [], directories: [] } });
-  }
-
-  // ── friends ──────────────────────────────────────────────────────────────
-  friendList(): string[] { return [...this.config.friends]; }
-  async friendAdd(publicKeyHex: string): Promise<void> {
-    const key = publicKeyHex.trim().toLowerCase();
-    if (this.config.friends.includes(key)) return;
-    this.config = { ...this.config, friends: [...this.config.friends, key] };
-    await this.persistAndReload();
-  }
-  async friendRemove(prefix: string): Promise<void> {
-    const p = prefix.trim().toLowerCase();
-    this.config = { ...this.config, friends: this.config.friends.filter((f) => f !== p && !f.startsWith(p)) };
-    await this.persistAndReload();
-  }
-
-  // ── chat + files (scaffolded placeholders) ───────────────────────────────
-  chatRead(): unknown[] { return []; }
-  async chatSay(_body: string): Promise<void> { /* TODO: publishChatMessage via active hub log */ }
-  fileView(): { files: unknown[]; directories: unknown[] } { return { files: [], directories: [] }; }
-  async fileAdd(_path: string, _name?: string): Promise<void> { /* TODO: encrypt + store via fileService */ }
-  async fileGet(_name: string, _out: string): Promise<void> { /* TODO */ }
-  async fileRemove(_name: string): Promise<void> { /* TODO */ }
-  async fileOpenExternally(_name: string): Promise<void> { /* TODO: shell.openPath of materialized file */ }
+  chatRead() { return this.engine.chatRead(); }
+  chatSay(body: string) { return this.engine.chatSay(body); }
 }

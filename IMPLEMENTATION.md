@@ -134,11 +134,14 @@ runtime); the UI libs are bundled into the renderer.
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The main-process service is a faithful port of `context.ts`: same reactive
-volume cache, same `createFilesystemWatcher` invalidation, same
-`attachSyncInboundRefresh` behaviour, same writer-only downgrade when an
-`nbsync` daemon holds the lock. **Sync must behave identically to the CLI** —
-reuse the exact functions, do not re-implement replay/materialization.
+The main-process service owns **no** domain logic. All of it lives in the
+shared **`nearbytes-engine`** package (`NearbytesEngine` + runtime), the exact
+same core `nbf` runs on (see `nearbytes-specs/engineering/engine-layering-v1.md`).
+`src/main/service.ts` is a thin shell that wraps `NearbytesEngine`, bridges its
+`on(...)` change stream (`status`/`volume`/`chat`) onto IPC pushes, and adds the
+only UI-shell concern (`shell.openPath`). **Sync behaves identically to the CLI
+because it is literally the same code** — never re-implement replay/materialization
+or operation logic in the app; add or fix it in `nearbytes-engine`.
 
 ---
 
