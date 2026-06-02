@@ -17,11 +17,11 @@
   "dependencies": {
     "nearbytes-chat": "github:nearbytes/nearbytes-chat",
     "nearbytes-crypto": "github:nearbytes/nearbytes-crypto",
+    "nearbytes-engine": "github:nearbytes/nearbytes-engine",
     "nearbytes-files": "github:nearbytes/nearbytes-files",
     "nearbytes-log": "github:nearbytes/nearbytes-log",
     "nearbytes-skeleton": "github:nearbytes/nearbytes-skeleton",
-    "nearbytes-sync": "github:nearbytes/nearbytes-sync",
-    "nearbytes-engine": "github:nearbytes/nearbytes-engine"
+    "nearbytes-sync": "github:nearbytes/nearbytes-sync"
   },
   "resolutions": {
     "nearbytes-widgets": "github:nearbytes/nearbytes-widgets"
@@ -41,5 +41,10 @@
     "typescript": "^5.7.0",
     "vite": "^6.0.0"
   },
-  "packageManager": "yarn@4.15.0"
+  "packageManager": "yarn@4.15.0",
+  "dependenciesMeta": {
+    "electron": {
+      "built": true
+    }
+  }
 }

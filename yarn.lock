@@ -4373,18 +4373,22 @@ __metadata:
     electron-builder: "npm:^25.0.0"
     electron-vite: "npm:^3.0.0"
     nearbytes-chat: "github:nearbytes/nearbytes-chat"
-    nearbytes-components: "portal:../nearbytes-components"
+    nearbytes-components: "github:nearbytes/nearbytes-components"
     nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
+    nearbytes-engine: "github:nearbytes/nearbytes-engine"
     nearbytes-files: "github:nearbytes/nearbytes-files"
     nearbytes-log: "github:nearbytes/nearbytes-log"
     nearbytes-skeleton: "github:nearbytes/nearbytes-skeleton"
     nearbytes-sync: "github:nearbytes/nearbytes-sync"
-    nearbytes-widgets: "portal:../nearbytes-widgets"
+    nearbytes-widgets: "github:nearbytes/nearbytes-widgets"
     svelte: "npm:^5.20.0"
     svelte-check: "npm:^4.1.0"
     tailwindcss: "npm:^4.0.0"
     typescript: "npm:^5.7.0"
     vite: "npm:^6.0.0"
+  dependenciesMeta:
+    electron:
+      built: true
   languageName: unknown
   linkType: soft
 
@@ -4408,16 +4412,18 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nearbytes-components@portal:../nearbytes-components::locator=nearbytes-app%40workspace%3A.":
-  version: 0.0.0-use.local
-  resolution: "nearbytes-components@portal:../nearbytes-components::locator=nearbytes-app%40workspace%3A."
+"nearbytes-components@github:nearbytes/nearbytes-components":
+  version: 0.1.0
+  resolution: "nearbytes-components@https://github.com/nearbytes/nearbytes-components.git#commit=e80b1508fe649dc47e51c5b6f6da8ea4ca0e0145"
   dependencies:
     "@lucide/svelte": "npm:^0.482.0"
+    nearbytes-widgets: "github:nearbytes/nearbytes-widgets"
   peerDependencies:
     nearbytes-widgets: "*"
     svelte: ^5.0.0
+  checksum: 10c0/6b877b89df32d1351b0f83cd2dabd1578391e399f89c47765eaedc9efcf1f9f689d2e160fbaaf1e7b7923ce8d286ae3ce1dcc4190c57f76eb3f035271e9e2c5a
   languageName: node
-  linkType: soft
+  linkType: hard
 
 "nearbytes-crypto@github:nearbytes/nearbytes-crypto, nearbytes-crypto@github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145":
   version: 0.1.0
@@ -4425,6 +4431,20 @@ __metadata:
   dependencies:
     "@noble/curves": "npm:^1.9.7"
   checksum: 10c0/622a5c93b94744e438decf4ff5d8ab30b86ba1ed1b787b93f9317756f41815632b1e0bc17064ac1bfb706e8e727fbba2268b9c37d72b23510a9daeafe7ee2d10
+  languageName: node
+  linkType: hard
+
+"nearbytes-engine@github:nearbytes/nearbytes-engine":
+  version: 0.1.0
+  resolution: "nearbytes-engine@https://github.com/nearbytes/nearbytes-engine.git#commit=6afc0a1a66d12d577de1b0d4ce164b4fba771ffb"
+  dependencies:
+    nearbytes-chat: "github:nearbytes/nearbytes-chat"
+    nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
+    nearbytes-files: "github:nearbytes/nearbytes-files"
+    nearbytes-log: "github:nearbytes/nearbytes-log"
+    nearbytes-skeleton: "github:nearbytes/nearbytes-skeleton"
+    nearbytes-sync: "github:nearbytes/nearbytes-sync"
+  checksum: 10c0/296d6cfa4f04c8a980c5c88b9d6004913aa5098a60f79d2349be9ec0e2c81c5f72d0ccf5834c0b5d63239378464cbdabbc5cd6ebd9edb455c3a04d55564848bc
   languageName: node
   linkType: hard
 
@@ -4514,9 +4534,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nearbytes-widgets@portal:../nearbytes-widgets::locator=nearbytes-app%40workspace%3A.":
-  version: 0.0.0-use.local
-  resolution: "nearbytes-widgets@portal:../nearbytes-widgets::locator=nearbytes-app%40workspace%3A."
+"nearbytes-widgets@github:nearbytes/nearbytes-widgets":
+  version: 0.1.0
+  resolution: "nearbytes-widgets@https://github.com/nearbytes/nearbytes-widgets.git#commit=96b09f962cb81e8eabecaf21277af6455b694eca"
   dependencies:
     "@lucide/svelte": "npm:^0.482.0"
     bits-ui: "npm:^1.3.0"
@@ -4526,8 +4546,9 @@ __metadata:
     tailwind-variants: "npm:^1.0.0"
   peerDependencies:
     svelte: ^5.0.0
+  checksum: 10c0/f63b8bda56ad0de81733951f5d1a80d314eb7b1dd47f60ef215e4bee5081d5bbe6a0874cc40a0b977972e6b9aebe88d83428ad64bf9e3076bab709ca78665d9a
   languageName: node
-  linkType: soft
+  linkType: hard
 
 "negotiator@npm:^0.6.3":
   version: 0.6.4
