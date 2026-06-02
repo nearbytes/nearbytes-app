@@ -1,0 +1,15 @@
+appId: dev.nearbytes.app
+productName: NearBytes
+directories:
+  output: dist
+files:
+  - out/**/*
+  - package.json
+mac:
+  category: public.app-category.productivity
+  target: [dmg]
+win:
+  target: [nsis]
+linux:
+  target: [AppImage]
+  category: Utility

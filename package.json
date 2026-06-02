@@ -1,0 +1,44 @@
+{
+  "name": "nearbytes-app",
+  "version": "0.1.0",
+  "description": "NearBytes desktop app — Electron + Svelte 5, Finder-like Files + Chat UI.",
+  "type": "module",
+  "main": "out/main/index.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "svelte-check --tsconfig ./tsconfig.json",
+    "package": "electron-vite build && electron-builder"
+  },
+  "dependencies": {
+    "nearbytes-chat": "github:nearbytes/nearbytes-chat",
+    "nearbytes-crypto": "github:nearbytes/nearbytes-crypto",
+    "nearbytes-files": "github:nearbytes/nearbytes-files",
+    "nearbytes-log": "github:nearbytes/nearbytes-log",
+    "nearbytes-skeleton": "github:nearbytes/nearbytes-skeleton",
+    "nearbytes-sync": "github:nearbytes/nearbytes-sync"
+  },
+  "resolutions": {
+    "nearbytes-widgets": "github:nearbytes/nearbytes-widgets"
+  },
+  "devDependencies": {
+    "@lucide/svelte": "^0.482.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.0.0",
+    "electron-vite": "^3.0.0",
+    "nearbytes-components": "github:nearbytes/nearbytes-components",
+    "nearbytes-widgets": "github:nearbytes/nearbytes-widgets",
+    "svelte": "^5.20.0",
+    "svelte-check": "^4.1.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  },
+  "packageManager": "yarn@4.15.0"
+}
