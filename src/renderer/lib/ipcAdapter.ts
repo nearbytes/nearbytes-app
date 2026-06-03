@@ -48,6 +48,7 @@ export function createIpcAdapter(): NearbytesAdapter {
     file: {
       list: () => call<VolumeView>('file', 'list'),
       add: (p, n) => call('file', 'add', p, n),
+      addBytes: (n, d) => call('file', 'addBytes', n, d),
       get: (n, o) => call('file', 'get', n, o),
       remove: (n) => call('file', 'remove', n),
       mkdir: (p) => call('file', 'mkdir', p),

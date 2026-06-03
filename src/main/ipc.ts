@@ -32,6 +32,7 @@ const ROUTES: Record<string, Handler> = {
   'chat.say': (s, a) => s.chatSay(a[0] as string),
   'file.list': (s) => s.fileView(),
   'file.add': (s, a) => s.fileAdd(a[0] as string, a[1] as string | undefined),
+  'file.addBytes': (s, a) => s.fileAddBytes(a[0] as string, a[1] as Uint8Array),
   'file.get': (s, a) => s.fileGet(a[0] as string, a[1] as string),
   'file.remove': (s, a) => s.fileRemove(a[0] as string),
   'file.mkdir': (s, a) => s.fileMkdir(a[0] as string),

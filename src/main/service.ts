@@ -54,7 +54,7 @@ export class NearbytesService {
     return this.engine.profileUpdate(name, patch);
   }
   profileReorder(names: readonly string[]) { return this.engine.profileReorder(names); }
-  async profilePublish(_d: string, _b?: string, _as?: string) { throw new Error('profile publish: not yet implemented'); }
+  profilePublish(displayName: string, bio?: string, asProfile?: string) { return this.engine.profilePublish(displayName, bio, asProfile); }
 
   hubList() { return this.engine.hubList(); }
   hubActive() { return this.engine.hubActive(); }
@@ -73,6 +73,7 @@ export class NearbytesService {
 
   fileView() { return this.engine.fileView(); }
   fileAdd(localPath: string, name?: string) { return this.engine.fileAdd(localPath, name); }
+  fileAddBytes(name: string, data: Uint8Array) { return this.engine.fileAddBytes(name, Buffer.from(data)); }
   fileGet(name: string, out: string) { return this.engine.fileGet(name, out); }
   fileRemove(name: string) { return this.engine.fileRemove(name); }
   fileMkdir(path: string) { return this.engine.fileMkdir(path); }
