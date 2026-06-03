@@ -3,5 +3,35 @@
 @source '../../node_modules/nearbytes-widgets/dist';
 @source '../../node_modules/nearbytes-components/dist';
 
-html, body, #app { height: 100%; margin: 0; }
-body { font-family: var(--font-sans); background: var(--color-nb-bg); }
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-nb-bg);
+}
+
+/* Electron macOS hiddenInset — drag region + traffic-light safe area */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-traffic {
+  -webkit-app-region: drag;
+}

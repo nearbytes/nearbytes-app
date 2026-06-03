@@ -30,6 +30,8 @@ export function createIpcAdapter(): NearbytesAdapter {
       add: (n, s) => call('profile', 'add', n, s),
       use: (n) => call('profile', 'use', n),
       remove: (n) => call('profile', 'remove', n),
+      update: (n, patch) => call('profile', 'update', n, patch),
+      reorder: (names) => call('profile', 'reorder', names),
       publish: (d, b, as) => call('profile', 'publish', d, b, as),
       active: () => call('profile', 'active'),
       publicKey: (n) => call<string>('profile', 'publicKey', n)
@@ -39,6 +41,8 @@ export function createIpcAdapter(): NearbytesAdapter {
       add: (l, s) => call('hub', 'add', l, s),
       use: (l) => call('hub', 'use', l),
       forget: (l) => call('hub', 'forget', l),
+      update: (l, patch) => call('hub', 'update', l, patch),
+      reorder: (labels) => call('hub', 'reorder', labels),
       active: () => call('hub', 'active')
     },
     file: {
@@ -58,7 +62,8 @@ export function createIpcAdapter(): NearbytesAdapter {
     friend: {
       list: () => call<string[]>('friend', 'list'),
       add: (k) => call('friend', 'add', k),
-      remove: (k) => call('friend', 'remove', k)
+      remove: (k) => call('friend', 'remove', k),
+      reorder: (keys) => call('friend', 'reorder', keys)
     },
     whoami: () => call<Whoami>('service', 'whoami'),
     peers: () => call<ReadonlyArray<unknown>>('service', 'peers')

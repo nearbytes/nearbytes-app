@@ -50,6 +50,10 @@ export class NearbytesService {
   profileAdd(name: string, secret: string) { return this.engine.profileAdd(name, secret); }
   profileUse(name: string) { return this.engine.profileUse(name); }
   profileRemove(name: string) { return this.engine.profileRemove(name); }
+  profileUpdate(name: string, patch: { name?: string; secret?: string }) {
+    return this.engine.profileUpdate(name, patch);
+  }
+  profileReorder(names: readonly string[]) { return this.engine.profileReorder(names); }
   async profilePublish(_d: string, _b?: string, _as?: string) { throw new Error('profile publish: not yet implemented'); }
 
   hubList() { return this.engine.hubList(); }
@@ -57,10 +61,15 @@ export class NearbytesService {
   hubAdd(label: string, secret: string) { return this.engine.hubAdd(label, secret); }
   hubForget(label: string) { return this.engine.hubForget(label); }
   hubUse(label: string) { return this.engine.hubUse(label); }
+  hubUpdate(label: string, patch: { label?: string; secret?: string }) {
+    return this.engine.hubUpdate(label, patch);
+  }
+  hubReorder(labels: readonly string[]) { return this.engine.hubReorder(labels); }
 
   friendList() { return this.engine.friendList(); }
   friendAdd(key: string) { return this.engine.friendAdd(key); }
   friendRemove(prefix: string) { return this.engine.friendRemove(prefix); }
+  friendReorder(keys: readonly string[]) { return this.engine.friendReorder(keys); }
 
   fileView() { return this.engine.fileView(); }
   fileAdd(localPath: string, name?: string) { return this.engine.fileAdd(localPath, name); }

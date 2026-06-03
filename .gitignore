@@ -3,3 +3,10 @@ out
 dist
 .DS_Store
 *.tsbuildinfo
+
+# yarn berry caches/state
+.yarn/*
+!.yarn/releases
+!.yarn/patches
+!.yarn/plugins
+.pnp.*

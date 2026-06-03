@@ -6,13 +6,16 @@
   "main": "out/main/index.js",
   "license": "MIT",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "refresh": "node scripts/refresh.mjs",
+    "dev": "node scripts/refresh.mjs && electron-vite dev",
+    "dev:fast": "electron-vite dev",
+    "build": "node scripts/refresh.mjs && electron-vite build",
+    "build:fast": "electron-vite build",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "svelte-check --tsconfig ./tsconfig.json",
-    "package": "electron-vite build && electron-builder"
+    "package": "node scripts/refresh.mjs && electron-vite build && electron-builder"
   },
   "dependencies": {
     "nearbytes-chat": "github:nearbytes/nearbytes-chat",

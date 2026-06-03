@@ -4414,14 +4414,14 @@ __metadata:
 
 "nearbytes-components@github:nearbytes/nearbytes-components":
   version: 0.1.0
-  resolution: "nearbytes-components@https://github.com/nearbytes/nearbytes-components.git#commit=e80b1508fe649dc47e51c5b6f6da8ea4ca0e0145"
+  resolution: "nearbytes-components@https://github.com/nearbytes/nearbytes-components.git#commit=a59ed80931de65dcace8041f777f85e848e3c1a3"
   dependencies:
     "@lucide/svelte": "npm:^0.482.0"
     nearbytes-widgets: "github:nearbytes/nearbytes-widgets"
   peerDependencies:
     nearbytes-widgets: "*"
     svelte: ^5.0.0
-  checksum: 10c0/6b877b89df32d1351b0f83cd2dabd1578391e399f89c47765eaedc9efcf1f9f689d2e160fbaaf1e7b7923ce8d286ae3ce1dcc4190c57f76eb3f035271e9e2c5a
+  checksum: 10c0/6bf82c65828d8f4b74320012c97eb470737228a0efc21cecf4889d1645f316a11396ad1e8c0aa64625574ddfbc63a939908a459a95ca37ecd4790617f8f2096c
   languageName: node
   linkType: hard
 
@@ -4536,7 +4536,7 @@ __metadata:
 
 "nearbytes-widgets@github:nearbytes/nearbytes-widgets":
   version: 0.1.0
-  resolution: "nearbytes-widgets@https://github.com/nearbytes/nearbytes-widgets.git#commit=96b09f962cb81e8eabecaf21277af6455b694eca"
+  resolution: "nearbytes-widgets@https://github.com/nearbytes/nearbytes-widgets.git#commit=955d599da0513165443b46bcd999769b0eb68378"
   dependencies:
     "@lucide/svelte": "npm:^0.482.0"
     bits-ui: "npm:^1.3.0"
@@ -4546,7 +4546,7 @@ __metadata:
     tailwind-variants: "npm:^1.0.0"
   peerDependencies:
     svelte: ^5.0.0
-  checksum: 10c0/f63b8bda56ad0de81733951f5d1a80d314eb7b1dd47f60ef215e4bee5081d5bbe6a0874cc40a0b977972e6b9aebe88d83428ad64bf9e3076bab709ca78665d9a
+  checksum: 10c0/6d0f0c9d2d3f68a362c5d06ea36493cd8417cd5e17de599c2f68a1ecdffe002fd0e1eec567eaf1f9c2caa0601ce7b25cde130ae049ae036a19fb99b6ab2c5086
   languageName: node
   linkType: hard
 
