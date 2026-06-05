@@ -5,7 +5,11 @@
   "type": "module",
   "main": "out/main/index.js",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
+    "engines:check": "node scripts/ensure-engines.mjs --electron",
     "refresh": "node scripts/refresh.mjs",
     "dev": "node scripts/dev-bootstrap.mjs && electron-vite dev",
     "dev:fast": "electron-vite dev",
@@ -33,7 +37,7 @@
     "@lucide/svelte": "^0.482.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4.0.0",
-    "electron": "^34.0.0",
+    "electron": "^36.7.0",
     "electron-builder": "^25.0.0",
     "electron-vite": "^3.0.0",
     "nearbytes-components": "github:nearbytes/nearbytes-components",

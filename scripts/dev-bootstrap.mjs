@@ -20,6 +20,9 @@ const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 console.log('[dev] yarn install');
 run('yarn', ['install']);
 
+console.log('[dev] ensure engines');
+run('node', ['scripts/ensure-engines.mjs', '--electron']);
+
 if (pkg.scripts?.update) {
   console.log('[dev] yarn update');
   run('yarn', ['update']);
