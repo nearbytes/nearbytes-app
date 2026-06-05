@@ -35,8 +35,9 @@ function versionGte(actual, required) {
 const minNode = parseMinVersion(pkg.engines?.node);
 if (minNode && !versionGte(process.versions.node, minNode)) {
   console.error(
-    `[engines] Node ${process.versions.node} is too old; need >= ${minNode} ` +
-      `(see package.json engines.node).`,
+    `[engines] shell Node ${process.versions.node} is too old; need >= ${minNode} ` +
+      `(see package.json engines.node).\n` +
+      `  Tip: nvm use / fnm use (see .nvmrc) or install Node ${minNode}+.`,
   );
   process.exit(1);
 }
@@ -69,7 +70,8 @@ const probe = spawnSync(
 if (probe.status === 0) {
   const electronPkg = require('electron/package.json');
   console.log(
-    `[engines] ok — node ${process.versions.node}, electron ${electronPkg.version} (node:sqlite available)`,
+    `[engines] ok — shell node ${process.versions.node}, electron ${electronPkg.version} ` +
+      `(node:sqlite in Electron runtime)`,
   );
   process.exit(0);
 }
