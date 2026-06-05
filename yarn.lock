@@ -708,13 +708,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@noble/hashes@npm:1.4.0":
-  version: 1.4.0
-  resolution: "@noble/hashes@npm:1.4.0"
-  checksum: 10c0/8c3f005ee72e7b8f9cff756dfae1241485187254e3f743873e22073d63906863df5d4f13d441b7530ea614b7a093f0d889309f28b59850f33b66cb26a779a4a5
-  languageName: node
-  linkType: hard
-
 "@noble/hashes@npm:1.8.0":
   version: 1.8.0
   resolution: "@noble/hashes@npm:1.8.0"
@@ -739,160 +732,6 @@ __metadata:
     mkdirp: "npm:^1.0.4"
     rimraf: "npm:^3.0.2"
   checksum: 10c0/11b2151e6d1de6f6eb23128de5aa8a429fd9097d839a5190cb77aa47a6b627022c42d50fa7c47a00f1c9f8f0c1560092b09b061855d293fa0741a2a94cfb174d
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-cms@npm:^2.6.0, @peculiar/asn1-cms@npm:^2.7.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-cms@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    "@peculiar/asn1-x509": "npm:^2.7.0"
-    "@peculiar/asn1-x509-attr": "npm:^2.7.0"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/0a19106037905b4e1c40798be2c1e2858403c888c8b314955272856a9c741cb87d29d424dd93733ecf7b34cf90ede74b7067a6e407ebf8d330b3ad3575af5471
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-csr@npm:^2.6.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-csr@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    "@peculiar/asn1-x509": "npm:^2.7.0"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/4c8356a082e467fbd013f1108cfbac758ab6c435c20d4bdead690bcc98adbf2fa1c0293e9536491a19a2cee60730abdd4b95a433a6ab639b00c389f5fbb67880
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-ecc@npm:^2.6.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-ecc@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    "@peculiar/asn1-x509": "npm:^2.7.0"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/f720e22e9b689450b786056f00f67141ab9a9edd3620c0f10215b2795c288052521262958ddb6c59608b463a53f3e2960381fa8878eda24f142bf7b385573aea
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-pfx@npm:^2.7.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-pfx@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-cms": "npm:^2.7.0"
-    "@peculiar/asn1-pkcs8": "npm:^2.7.0"
-    "@peculiar/asn1-rsa": "npm:^2.7.0"
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/0270b1b221a482aef32bafc6231be146eada138a84ca7e3071909a86a7e34dc788cbce31721acc3c9ed60e78334ed503d9b9498ca4cbd37e02bdef64b7beedfb
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-pkcs8@npm:^2.7.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-pkcs8@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    "@peculiar/asn1-x509": "npm:^2.7.0"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/bdcd42465292c747888d9b63a51e0b0a7995a0acbc731f8c69f2a23b4ab99ca26a489dfd9508e7428482c748f094784407aa42c050d3c76812b65376c7b9146c
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-pkcs9@npm:^2.6.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-pkcs9@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-cms": "npm:^2.7.0"
-    "@peculiar/asn1-pfx": "npm:^2.7.0"
-    "@peculiar/asn1-pkcs8": "npm:^2.7.0"
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    "@peculiar/asn1-x509": "npm:^2.7.0"
-    "@peculiar/asn1-x509-attr": "npm:^2.7.0"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/ccf577be3e3b17a0f59bfe7e2dbd98c6735a2718dde98c2ab87a5ddd87ecd4acc77f1e916376036b4f7f72fe71ec2f2708f984f9e14cdbf583eae415c41a9e44
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-rsa@npm:^2.6.0, @peculiar/asn1-rsa@npm:^2.7.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-rsa@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    "@peculiar/asn1-x509": "npm:^2.7.0"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/14f6e3d658a8013bfdb6688f3a0fb19db6a54e18f328c144865991735a5394ab7b4d134fc15911c6904d6178d7a4564ee24e59265f8a68ff4619d429b91947c1
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-schema@npm:^2.6.0, @peculiar/asn1-schema@npm:^2.7.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-schema@npm:2.7.0"
-  dependencies:
-    "@peculiar/utils": "npm:^2.0.2"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/6d799b62e8e9d7eed63a3044201ced4efef923011216c17da017a568bdb3c0f56abcea24d41df24916d1731e4a6920f8d84176f3e044f44f6541c83ae31fe670
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-x509-attr@npm:^2.7.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-x509-attr@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    "@peculiar/asn1-x509": "npm:^2.7.0"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/c76633785874f08d3b667bae30c09efac4f83c11cbb9bf39c83f9b89df11753b1b2e8071a3e168ff1549cf6f30cf008c759bf95d1836e312cc1254355c0a62a6
-  languageName: node
-  linkType: hard
-
-"@peculiar/asn1-x509@npm:^2.6.0, @peculiar/asn1-x509@npm:^2.7.0":
-  version: 2.7.0
-  resolution: "@peculiar/asn1-x509@npm:2.7.0"
-  dependencies:
-    "@peculiar/asn1-schema": "npm:^2.7.0"
-    "@peculiar/utils": "npm:^2.0.2"
-    asn1js: "npm:^3.0.6"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/095d1b5fd0dfb9ba9cffe5ce9fad31173f5184896d7d51270bc174745c5c6720f37ec83c8ac7b1b6db7100a94c550045d9ad37ce8f162d19cc93ebce6620f625
-  languageName: node
-  linkType: hard
-
-"@peculiar/utils@npm:^2.0.2":
-  version: 2.0.3
-  resolution: "@peculiar/utils@npm:2.0.3"
-  dependencies:
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/e111a51c83334d6ff3c96b993ed0d718210620f3ad176853a4bf229f1cf4cd14e9388075318351b188862d34d2192d80f206f6bea53aa1459df3ec638cbcdbd5
-  languageName: node
-  linkType: hard
-
-"@peculiar/x509@npm:^1.14.2":
-  version: 1.14.3
-  resolution: "@peculiar/x509@npm:1.14.3"
-  dependencies:
-    "@peculiar/asn1-cms": "npm:^2.6.0"
-    "@peculiar/asn1-csr": "npm:^2.6.0"
-    "@peculiar/asn1-ecc": "npm:^2.6.0"
-    "@peculiar/asn1-pkcs9": "npm:^2.6.0"
-    "@peculiar/asn1-rsa": "npm:^2.6.0"
-    "@peculiar/asn1-schema": "npm:^2.6.0"
-    "@peculiar/asn1-x509": "npm:^2.6.0"
-    pvtsutils: "npm:^1.3.6"
-    reflect-metadata: "npm:^0.2.2"
-    tslib: "npm:^2.8.1"
-    tsyringe: "npm:^4.10.0"
-  checksum: 10c0/949231ca9daf84534bfe255f28a856df497302fed294d227c6a28e50f5cfb67ed1d91afe6db787b88294ce042295243dbcb44455fe2efa5ed07428a74392eec9
   languageName: node
   linkType: hard
 
@@ -1648,17 +1487,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"asn1js@npm:^3.0.6":
-  version: 3.0.10
-  resolution: "asn1js@npm:3.0.10"
-  dependencies:
-    pvtsutils: "npm:^1.3.6"
-    pvutils: "npm:^1.1.5"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/04056106522e4d0db4eb992299bb76d73438bfd59ffd975ac9c1f15d14e7326161dad383c54a5ccfa203b73ae7b7bf4668f42c2fed01e1f4bf79a58de71e4dc6
-  languageName: node
-  linkType: hard
-
 "assert-plus@npm:^1.0.0":
   version: 1.0.0
   resolution: "assert-plus@npm:1.0.0"
@@ -2114,13 +1942,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bytestreamjs@npm:^2.0.1":
-  version: 2.0.1
-  resolution: "bytestreamjs@npm:2.0.1"
-  checksum: 10c0/edd66b7ca3f94aae99a1009304a42d82ca4c2085eb934192ff47a81f59215c975dc9d3cd8f23c40a2f43ef5b2fa6f01ace70b10ad247766cec6ec641b89eab48
-  languageName: node
-  linkType: hard
-
 "cac@npm:^6.7.14":
   version: 6.7.14
   resolution: "cac@npm:6.7.14"
@@ -2338,13 +2159,6 @@ __metadata:
   dependencies:
     delayed-stream: "npm:~1.0.0"
   checksum: 10c0/0dbb829577e1b1e839fa82b40c07ffaf7de8a09b935cadd355a73652ae70a88b4320db322f6634a4ad93424292fa80973ac6480986247f1734a1137debf271d5
-  languageName: node
-  linkType: hard
-
-"commander@npm:^12.0.0":
-  version: 12.1.0
-  resolution: "commander@npm:12.1.0"
-  checksum: 10c0/6e1996680c083b3b897bfc1cfe1c58dfbcd9842fd43e1aaf8a795fbc237f65efcc860a3ef457b318e73f29a4f4a28f6403c3d653d021d960e4632dd45bde54a9
   languageName: node
   linkType: hard
 
@@ -4394,149 +4208,100 @@ __metadata:
 
 "nearbytes-chat@github:nearbytes/nearbytes-chat":
   version: 0.1.0
-  resolution: "nearbytes-chat@https://github.com/nearbytes/nearbytes-chat.git#commit=776ac3797807b287154116fa3076598270100701"
+  resolution: "nearbytes-chat@https://github.com/nearbytes/nearbytes-chat.git#commit=43841f5ffd37ff870801c54d155dba645f2eec75"
   dependencies:
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-    nearbytes-log: "github:nearbytes/nearbytes-log#0dc0519007bc1f8a9bfc3c52922387cc45fb7162"
-  checksum: 10c0/217ea654b48fb4a272fcd4cdf76145394a05dfaac0163686d34ac5b3f2018c251233e7367496c88988578e6be94ad0d9b4ce81a1c16861684a5639b58b4baf14
-  languageName: node
-  linkType: hard
-
-"nearbytes-chat@github:nearbytes/nearbytes-chat#046f5db1f6c93b32ab4def35f6388e445bd625d1":
-  version: 0.1.0
-  resolution: "nearbytes-chat@https://github.com/nearbytes/nearbytes-chat.git#commit=046f5db1f6c93b32ab4def35f6388e445bd625d1"
-  dependencies:
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-    nearbytes-log: "github:nearbytes/nearbytes-log#0dc0519007bc1f8a9bfc3c52922387cc45fb7162"
-  checksum: 10c0/adca19e97943476bda0dd9bd9ffc2c2d4fd7256a5f26655feb95412dcfae38c34661654d24d909c2a14ea37a515b654187d2d358effae45c23f0c3bd5241e53f
+    nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
+    nearbytes-log: "github:nearbytes/nearbytes-log"
+  checksum: 10c0/90db44290dd1a9ccf88a3894b22ff5263c54a2c055bf67334f892b789a3ee1c2981ea4c9c9e780675e7a709b7a36a971ac8de2266c8101c9058e3923365403bf
   languageName: node
   linkType: hard
 
 "nearbytes-components@github:nearbytes/nearbytes-components":
   version: 0.1.0
-  resolution: "nearbytes-components@https://github.com/nearbytes/nearbytes-components.git#commit=8d0d0829b80989b0f188ae7bf2a53d5b2e552758"
+  resolution: "nearbytes-components@https://github.com/nearbytes/nearbytes-components.git#commit=973664aade393c75453316980f12926b262fedbb"
   dependencies:
     "@lucide/svelte": "npm:^0.482.0"
     nearbytes-widgets: "github:nearbytes/nearbytes-widgets"
   peerDependencies:
     nearbytes-widgets: "*"
     svelte: ^5.0.0
-  checksum: 10c0/50f982882bedc9254947cc1132ab1825e2fa401d5200d62feb0a2388f58ac0bcf6de04f11140fdbce878579500044964aed9f61f6e41d480e91848fa1684d2c3
+  checksum: 10c0/8bb75cf33141bd3369d990bfce1362d38c401fc8b41de6d9043b4ec3191c9cfae3b63e07c69c440a030ebc3b2daa0dc19cdffee6e4dcd21bcc74b195b436e3ec
   languageName: node
   linkType: hard
 
-"nearbytes-crypto@github:nearbytes/nearbytes-crypto, nearbytes-crypto@github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145":
+"nearbytes-crypto@github:nearbytes/nearbytes-crypto":
   version: 0.1.0
-  resolution: "nearbytes-crypto@https://github.com/nearbytes/nearbytes-crypto.git#commit=6859719510764702844882b8488b35ab31f20145"
+  resolution: "nearbytes-crypto@https://github.com/nearbytes/nearbytes-crypto.git#commit=8980b21c68a8bf1abe54b5983f372a9f14abadd7"
   dependencies:
     "@noble/curves": "npm:^1.9.7"
-  checksum: 10c0/622a5c93b94744e438decf4ff5d8ab30b86ba1ed1b787b93f9317756f41815632b1e0bc17064ac1bfb706e8e727fbba2268b9c37d72b23510a9daeafe7ee2d10
+  checksum: 10c0/2ebe6f1ad3089898547c537caa0b4af4c01aab052d0ca6113e1b2d5ac4cf1e0c475dfa7b0ab2d46835aa252fe23242ea7cf458396e29b8556025dba5076e6ed3
   languageName: node
   linkType: hard
 
 "nearbytes-engine@github:nearbytes/nearbytes-engine":
   version: 0.1.0
-  resolution: "nearbytes-engine@https://github.com/nearbytes/nearbytes-engine.git#commit=53dd4c70c7fd88f5074ba9504a1bf88ff695614d"
+  resolution: "nearbytes-engine@https://github.com/nearbytes/nearbytes-engine.git#commit=1b50ba895eef9ddf31a54bac948c7890d5edfd93"
   dependencies:
     nearbytes-chat: "github:nearbytes/nearbytes-chat"
     nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
     nearbytes-files: "github:nearbytes/nearbytes-files"
     nearbytes-log: "github:nearbytes/nearbytes-log"
     nearbytes-skeleton: "github:nearbytes/nearbytes-skeleton"
-    nearbytes-sync: "github:nearbytes/nearbytes-sync#3634a043b4755d632ff24aff75d389d314a3eb32"
-  checksum: 10c0/55a3fa9d76686acb147ea2c40e24b60026b433bf69945eaae5ceff8abc2098696afb0a695a8d3eb9bc4ffd0bb3937b58de8bcc5ba7d7d72edd66e8367aa99974
+    nearbytes-sync: "github:nearbytes/nearbytes-sync"
+  checksum: 10c0/9f3ba63bbfb40e29d97f41b26bbba4546e601fe9254592d4b1a7f1d747d6ecef878c863d605db96fa6a337b21a6153cb9de7ef12954e4d448520707bfee4c546
   languageName: node
   linkType: hard
 
 "nearbytes-files@github:nearbytes/nearbytes-files":
   version: 0.1.0
-  resolution: "nearbytes-files@https://github.com/nearbytes/nearbytes-files.git#commit=cbc91fa5db825c227c782ff55bdd98083b73ab35"
+  resolution: "nearbytes-files@https://github.com/nearbytes/nearbytes-files.git#commit=263f706379ddd9229d2c680099df0c571691d79f"
   dependencies:
-    commander: "npm:^12.0.0"
-    nearbytes-chat: "github:nearbytes/nearbytes-chat#046f5db1f6c93b32ab4def35f6388e445bd625d1"
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-    nearbytes-log: "github:nearbytes/nearbytes-log#0dc0519007bc1f8a9bfc3c52922387cc45fb7162"
-    nearbytes-skeleton: "github:nearbytes/nearbytes-skeleton#0158931decd927508d1532e8c3ed7c9dcee2825a"
-    selfsigned: "npm:^5.5.0"
-  bin:
-    nbf: dist/cli/index.js
-  checksum: 10c0/99943f7328d2a4c64dc6fd898a57c5f266739b40aaded041c40e594cf04c5316c0d9cc02c430c4be7bf17cd1551e66f23b91fd684e3eab6c16744cbdbdfb6fec
+    nearbytes-chat: "github:nearbytes/nearbytes-chat"
+    nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
+    nearbytes-log: "github:nearbytes/nearbytes-log"
+    nearbytes-skeleton: "github:nearbytes/nearbytes-skeleton"
+  checksum: 10c0/faa956ad3987761b077f1938f56e89d442158e2fdbdf8900afcff47c99e2ee2364d16c9bcbdef3fbea21e6ae0b20b5368c5ef83fd23098a52764c9a3482da056
   languageName: node
   linkType: hard
 
-"nearbytes-log@github:nearbytes/nearbytes-log#96d579f37b8c9d74d19a62f8019dd415e82b079e":
+"nearbytes-log@github:nearbytes/nearbytes-log":
   version: 0.1.0
-  resolution: "nearbytes-log@https://github.com/nearbytes/nearbytes-log.git#commit=96d579f37b8c9d74d19a62f8019dd415e82b079e"
+  resolution: "nearbytes-log@https://github.com/nearbytes/nearbytes-log.git#commit=f1215ba71c102e8c380fd2a729dc7cc81bc7ebc9"
   dependencies:
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-  checksum: 10c0/d473ca69eb8d1748f441305723830fe2eb5aef7cd6a2006a16b7c416380f4bd65bb4f7ded95e6de7ba48f0ecd7b65a44d5cd192fad9b35cb17930f74787bc7cd
-  languageName: node
-  linkType: hard
-
-"nearbytes-log@github:nearbytes/nearbytes-log, nearbytes-log@github:nearbytes/nearbytes-log#0dc0519007bc1f8a9bfc3c52922387cc45fb7162":
-  version: 0.1.0
-  resolution: "nearbytes-log@https://github.com/nearbytes/nearbytes-log.git#commit=0dc0519007bc1f8a9bfc3c52922387cc45fb7162"
-  dependencies:
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-  checksum: 10c0/4e12cde2c44a8a5c59d3dba4b15cdcef4cbd0b4b7d047d23f03b9c3a6c73698133f002fca0cfd0f9a8b8854d067e254a08f3cf74df7a6760030f48df071f56a9
+    nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
+  checksum: 10c0/fa81d5e7b8d01ca0d4642718367dec3486b427b51d69d5c16c0602e3211f811ff997da96ea68d877b2380eb7426cc35cf08c7a8825820fe86688168c15775447
   languageName: node
   linkType: hard
 
 "nearbytes-skeleton@github:nearbytes/nearbytes-skeleton":
   version: 0.1.0
-  resolution: "nearbytes-skeleton@https://github.com/nearbytes/nearbytes-skeleton.git#commit=376fc9345d4c4c4bf20e6c44810c44de895298f6"
+  resolution: "nearbytes-skeleton@https://github.com/nearbytes/nearbytes-skeleton.git#commit=42d42aa8e3c88ca2e3f316529c9a110486077b51"
   dependencies:
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-    nearbytes-log: "github:nearbytes/nearbytes-log#0dc0519007bc1f8a9bfc3c52922387cc45fb7162"
-    nearbytes-sync: "github:nearbytes/nearbytes-sync#3585fb66fe2bd6ed4b59036f63b46c1af1083df3"
-  checksum: 10c0/24da797e41e331a22eb593afb46c2aacf711f87526128d6320082de7555c255cabc19403696d860fe68d4f607be8f79e9062212e01c69285aa368fbe0458934d
+    nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
+    nearbytes-log: "github:nearbytes/nearbytes-log"
+    nearbytes-sync: "github:nearbytes/nearbytes-sync"
+  checksum: 10c0/b578511eb2d41983bcf05c0c7131713155625e54fc798e796c6c825a604db863272ef103b47faf64cba5dd7aeb6a238842bad5f8af8bd5950923c65048e5a0f6
   languageName: node
   linkType: hard
 
-"nearbytes-skeleton@github:nearbytes/nearbytes-skeleton#0158931decd927508d1532e8c3ed7c9dcee2825a":
+"nearbytes-sync@github:nearbytes/nearbytes-sync":
   version: 0.1.0
-  resolution: "nearbytes-skeleton@https://github.com/nearbytes/nearbytes-skeleton.git#commit=0158931decd927508d1532e8c3ed7c9dcee2825a"
-  dependencies:
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-    nearbytes-log: "github:nearbytes/nearbytes-log#0dc0519007bc1f8a9bfc3c52922387cc45fb7162"
-    nearbytes-sync: "github:nearbytes/nearbytes-sync#3585fb66fe2bd6ed4b59036f63b46c1af1083df3"
-  checksum: 10c0/b726ce07cd0a60311cd86790d94ea0b059b164f373f8ed506694a266ad391b6657d9783a2d6be3ee4799f64d7f84ee78badf21404f8fda6e477dae492c21689a
-  languageName: node
-  linkType: hard
-
-"nearbytes-sync@github:nearbytes/nearbytes-sync#3585fb66fe2bd6ed4b59036f63b46c1af1083df3":
-  version: 0.1.0
-  resolution: "nearbytes-sync@https://github.com/nearbytes/nearbytes-sync.git#commit=3585fb66fe2bd6ed4b59036f63b46c1af1083df3"
+  resolution: "nearbytes-sync@https://github.com/nearbytes/nearbytes-sync.git#commit=394901a9eb1098f2008a91391617fa7613910b4e"
   dependencies:
     bonjour-service: "npm:^1.2.1"
     chokidar: "npm:^4.0.3"
     hyperswarm: "npm:^4.8.2"
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-    nearbytes-log: "github:nearbytes/nearbytes-log#96d579f37b8c9d74d19a62f8019dd415e82b079e"
+    nearbytes-crypto: "github:nearbytes/nearbytes-crypto"
+    nearbytes-log: "github:nearbytes/nearbytes-log"
   bin:
     nbsync: ./bin/nbsync.mjs
-  checksum: 10c0/26e46fd65fdd0e4da2bdfd0739ca83de4c5fddfcc3b663d74cf2e7ede0d69f0cfee1b0b58983861b6f0bcdc08984f8a1960f997f9bad1791b2b306e39bd06eb7
-  languageName: node
-  linkType: hard
-
-"nearbytes-sync@github:nearbytes/nearbytes-sync, nearbytes-sync@github:nearbytes/nearbytes-sync#3634a043b4755d632ff24aff75d389d314a3eb32":
-  version: 0.1.0
-  resolution: "nearbytes-sync@https://github.com/nearbytes/nearbytes-sync.git#commit=3634a043b4755d632ff24aff75d389d314a3eb32"
-  dependencies:
-    bonjour-service: "npm:^1.2.1"
-    chokidar: "npm:^4.0.3"
-    hyperswarm: "npm:^4.8.2"
-    nearbytes-crypto: "github:nearbytes/nearbytes-crypto#6859719510764702844882b8488b35ab31f20145"
-    nearbytes-log: "github:nearbytes/nearbytes-log#96d579f37b8c9d74d19a62f8019dd415e82b079e"
-  bin:
-    nbsync: ./bin/nbsync.mjs
-  checksum: 10c0/e2b29685c44557099f3786760387a272d007217b7a908513830b3f4c7e9be782bae9502981c06fb711b31ffb7c45b7f8aa01698d56d37907a124a42a998bf75b
+  checksum: 10c0/f1c6c4964ba3c13b5a8c89470777aae340043fa1a1abd1df33dbf6c3325c3655b2063681b47970a3660cce13b60770c3dfa3b30e8adfee713004a8d5162f289d
   languageName: node
   linkType: hard
 
 "nearbytes-widgets@github:nearbytes/nearbytes-widgets":
   version: 0.1.0
-  resolution: "nearbytes-widgets@https://github.com/nearbytes/nearbytes-widgets.git#commit=58ba0abbc967ee5591c9dc3b6540811127bde60e"
+  resolution: "nearbytes-widgets@https://github.com/nearbytes/nearbytes-widgets.git#commit=3a14965d35882cd88e1c270ea710dee19f9fa697"
   dependencies:
     "@lucide/svelte": "npm:^0.482.0"
     bits-ui: "npm:^1.3.0"
@@ -4546,7 +4311,7 @@ __metadata:
     tailwind-variants: "npm:^1.0.0"
   peerDependencies:
     svelte: ^5.0.0
-  checksum: 10c0/1e58c050da845f2c3a11b372eba91f35a3bdb0ee6c577aeaedfc7c82a5d6cc733b81ee1378ba4d732b1612f3758a64ef09f69d6230ec50644065e66c1f5c14f9
+  checksum: 10c0/c93a8053b8ceec68fe75fa9ba99cf584e8e656b450dce760bbf8b25f39e30f51fc034c4a8ebd101fd812552032ec04a53f9b5e3bae00feb7bac22b7c4a99f257
   languageName: node
   linkType: hard
 
@@ -4833,20 +4598,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"pkijs@npm:^3.3.3":
-  version: 3.4.0
-  resolution: "pkijs@npm:3.4.0"
-  dependencies:
-    "@noble/hashes": "npm:1.4.0"
-    asn1js: "npm:^3.0.6"
-    bytestreamjs: "npm:^2.0.1"
-    pvtsutils: "npm:^1.3.6"
-    pvutils: "npm:^1.1.3"
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/33cfab9283702782ae228bd2d4a51b1e9b2e0d6e2141207f29ee95716101ac4fe6e6821882da5f5eca28c74be3964b181b09e95cbbb757b2bd9dca918a5765fd
-  languageName: node
-  linkType: hard
-
 "plist@npm:^3.0.4, plist@npm:^3.0.5, plist@npm:^3.1.0":
   version: 3.1.1
   resolution: "plist@npm:3.1.1"
@@ -4930,22 +4681,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"pvtsutils@npm:^1.3.6":
-  version: 1.3.6
-  resolution: "pvtsutils@npm:1.3.6"
-  dependencies:
-    tslib: "npm:^2.8.1"
-  checksum: 10c0/b1b42646370505ccae536dcffa662303b2c553995211330c8e39dec9ab8c197585d7751c2c5b9ab2f186feda0219d9bb23c34ee1e565573be96450f79d89a13c
-  languageName: node
-  linkType: hard
-
-"pvutils@npm:^1.1.3, pvutils@npm:^1.1.5":
-  version: 1.1.5
-  resolution: "pvutils@npm:1.1.5"
-  checksum: 10c0/e968b07b78a58fec9377fe7aa6342c8cfa21c8fb4afc4e51e1489bd42bec6dc71b8a52541d0aede0aea17adec7ca3f89f29f56efdc31d0083cc02e9bb5721bcf
-  languageName: node
-  linkType: hard
-
 "queue-tick@npm:^1.0.0":
   version: 1.0.1
   resolution: "queue-tick@npm:1.0.1"
@@ -4995,13 +4730,6 @@ __metadata:
   dependencies:
     b4a: "npm:^1.3.1"
   checksum: 10c0/249e2d5d4258086a90d0fc802dbcd4a0553d976c3ff5b5893303733bd4099dde8bdf4ac0e3ca4fddcf74cc9a9181aa59d83d59de6af77ab7c5ea4a254ef41f9e
-  languageName: node
-  linkType: hard
-
-"reflect-metadata@npm:^0.2.2":
-  version: 0.2.2
-  resolution: "reflect-metadata@npm:0.2.2"
-  checksum: 10c0/1cd93a15ea291e420204955544637c264c216e7aac527470e393d54b4bb075f10a17e60d8168ec96600c7e0b9fcc0cb0bb6e91c3fbf5b0d8c9056f04e6ac1ec2
   languageName: node
   linkType: hard
 
@@ -5243,16 +4971,6 @@ __metadata:
   version: 1.6.0
   resolution: "sax@npm:1.6.0"
   checksum: 10c0/e5593f4a91eb25761a688c4d96902e4e95a0dd6017bc65146b6f21236e3d715cf893333b76bc758923c9574c2fb5a7a76c3a81e96ea15432f2624f906c027c1e
-  languageName: node
-  linkType: hard
-
-"selfsigned@npm:^5.5.0":
-  version: 5.5.0
-  resolution: "selfsigned@npm:5.5.0"
-  dependencies:
-    "@peculiar/x509": "npm:^1.14.2"
-    pkijs: "npm:^3.3.3"
-  checksum: 10c0/a31e9d928e22cd6f4e14759a099feba79d9d789c852c7cf65ff8e2f62d7f6313fe477639590e7ed06115b4516a4bebbe0dec5d072a2d01cc372a9cfd58eb893b
   languageName: node
   linkType: hard
 
@@ -5785,26 +5503,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tslib@npm:^1.9.3":
-  version: 1.14.1
-  resolution: "tslib@npm:1.14.1"
-  checksum: 10c0/69ae09c49eea644bc5ebe1bca4fa4cc2c82b7b3e02f43b84bd891504edf66dbc6b2ec0eef31a957042de2269139e4acff911e6d186a258fb14069cd7f6febce2
-  languageName: node
-  linkType: hard
-
 "tslib@npm:^2.4.0, tslib@npm:^2.8.0, tslib@npm:^2.8.1":
   version: 2.8.1
   resolution: "tslib@npm:2.8.1"
   checksum: 10c0/9c4759110a19c53f992d9aae23aac5ced636e99887b51b9e61def52611732872ff7668757d4e4c61f19691e36f4da981cd9485e869b4a7408d689f6bf1f14e62
-  languageName: node
-  linkType: hard
-
-"tsyringe@npm:^4.10.0":
-  version: 4.10.0
-  resolution: "tsyringe@npm:4.10.0"
-  dependencies:
-    tslib: "npm:^1.9.3"
-  checksum: 10c0/918594b4dfac97beb8be2c041c6ec45f078ef3768ed4edfe35ae2c709ab503e2e6b454b2b37e692c658572d1972a428fbfdbc0a2b42fee727a83c1c685fbe5e1
   languageName: node
   linkType: hard
 
