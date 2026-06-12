@@ -12,6 +12,7 @@
     "engines:check": "node scripts/ensure-engines.mjs --electron",
     "refresh": "node scripts/refresh.mjs",
     "dev": "node scripts/dev-bootstrap.mjs && electron-vite dev",
+    "dev-local": "NEARBYTES_LOCAL_DEPS=1 node scripts/dev-bootstrap.mjs && electron-vite dev",
     "dev:fast": "electron-vite dev",
     "build": "node scripts/dev-bootstrap.mjs && electron-vite build",
     "build:fast": "electron-vite build",

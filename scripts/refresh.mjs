@@ -10,6 +10,11 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+if (process.env.NEARBYTES_LOCAL_DEPS === '1' || process.env.NEARBYTES_LOCAL_DEPS === 'true') {
+  console.log('[refresh] NEARBYTES_LOCAL_DEPS set — skip github re-resolve');
+  process.exit(0);
+}
+
 function nearbytesDescriptors() {
   const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
   const out = new Set();
