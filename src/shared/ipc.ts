@@ -6,7 +6,7 @@ export const IPC = {
 
 /** A namespaced adapter call: `${api}.${method}(...args)`. */
 export interface InvokeRequest {
-  readonly api: 'profile' | 'hub' | 'file' | 'chat' | 'friend' | 'service';
+  readonly api: 'profile' | 'hub' | 'volume' | 'file' | 'chat' | 'friend' | 'service';
   readonly method: string;
   readonly args: ReadonlyArray<unknown>;
 }

@@ -42,6 +42,10 @@ export async function hydrate(app: AppState, adapter: NearbytesAdapter): Promise
   adapter.onActiveVolume((v) => {
     app.files.items = [...v.files];
     app.files.directories = [...v.directories];
+    app.timeline.cursorHash = v.cursorHash;
+    if (app.files.selectedPath !== null && !v.files.some((f) => f.path === app.files.selectedPath)) {
+      app.files.selectedPath = null;
+    }
   });
   adapter.onChat((items) => { app.chat.items = [...items]; });
 }

@@ -45,6 +45,11 @@ export function createIpcAdapter(): NearbytesAdapter {
       reorder: (labels) => call('hub', 'reorder', labels),
       active: () => call('hub', 'active')
     },
+    volume: {
+      get: () => call<string | null>('volume', 'cursor'),
+      goto: (hash) => call<VolumeView>('volume', 'goto', hash),
+      live: () => call<VolumeView>('volume', 'live')
+    },
     file: {
       list: () => call<VolumeView>('file', 'list'),
       add: (p, n) => call('file', 'add', p, n),

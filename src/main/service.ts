@@ -71,6 +71,10 @@ export class NearbytesService {
   friendRemove(prefix: string) { return this.engine.friendRemove(prefix); }
   friendReorder(keys: readonly string[]) { return this.engine.friendReorder(keys); }
 
+  timelineCursor() { return this.engine.timelineCursor(); }
+  timelineGoto(eventHash: string) { return this.engine.timelineGoto(eventHash); }
+  timelineLive() { return this.engine.timelineLive(); }
+
   fileView() { return this.engine.fileView(); }
   fileAdd(localPath: string, name?: string) { return this.engine.fileAdd(localPath, name); }
   fileAddBytes(name: string, data: Uint8Array) { return this.engine.fileAddBytes(name, Buffer.from(data)); }
