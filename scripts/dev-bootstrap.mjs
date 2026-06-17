@@ -4,39 +4,37 @@
  * Wired from `yarn dev` in consumer repos.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { maybeReexecNvmrc } from './maybe-reexec-nvmrc.mjs';
+import { runNode, runYarn } from './toolchain.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-
-function run(cmd, args) {
-  const r = spawnSync(cmd, args, { cwd: root, stdio: 'inherit', shell: true, env: process.env });
-  if (r.status !== 0) process.exit(r.status ?? 1);
-}
+const entry = fileURLToPath(import.meta.url);
+maybeReexecNvmrc(entry);
+const root = resolve(dirname(entry), '..');
 
 const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 
 const linkLocal = resolve(root, '../nearbytes-engine/scripts/link-local-deps.mjs');
 if (existsSync(linkLocal)) {
   console.log('[dev] link local nearbytes deps');
-  run('node', [linkLocal]);
+  runNode(root, [linkLocal]);
 }
 
 console.log('[dev] yarn install');
-run('yarn', ['install']);
+runYarn(root, ['install']);
 
 console.log('[dev] ensure engines');
-run('node', ['scripts/ensure-engines.mjs', '--electron']);
+runNode(root, ['scripts/ensure-engines.mjs', '--electron']);
 
 if (pkg.scripts?.update) {
   console.log('[dev] yarn update');
-  run('yarn', ['update']);
+  runYarn(root, ['update']);
 }
 
 if (pkg.scripts?.refresh) {
   console.log('[dev] yarn refresh');
-  run('yarn', ['refresh']);
+  runYarn(root, ['refresh']);
 }
 
 console.log('[dev] bootstrap done.');

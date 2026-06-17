@@ -37,7 +37,7 @@ if (minNode && !versionGte(process.versions.node, minNode)) {
   console.error(
     `[engines] shell Node ${process.versions.node} is too old; need >= ${minNode} ` +
       `(see package.json engines.node).\n` +
-      `  Tip: nvm use / fnm use (see .nvmrc) or install Node ${minNode}+.`,
+      `  Tip: yarn dev auto-installs Node from .nvmrc under .local/toolchain, or use fnm/nvm.`,
   );
   process.exit(1);
 }
