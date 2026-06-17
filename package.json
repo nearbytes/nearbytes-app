@@ -11,13 +11,13 @@
   "scripts": {
     "engines:check": "node scripts/ensure-engines.mjs --electron",
     "refresh": "node scripts/refresh.mjs",
-    "dev": "node scripts/dev-bootstrap.mjs && electron-vite dev",
-    "dev-local": "NEARBYTES_LOCAL_DEPS=1 node scripts/dev-bootstrap.mjs && electron-vite dev",
-    "dev:fast": "electron-vite dev",
+    "dev": "node scripts/dev-bootstrap.mjs && node scripts/electron-vite-runner.mjs dev",
+    "dev-local": "NEARBYTES_LOCAL_DEPS=1 node scripts/dev-bootstrap.mjs && node scripts/electron-vite-runner.mjs dev",
+    "dev:fast": "node scripts/electron-vite-runner.mjs dev",
     "build": "node scripts/dev-bootstrap.mjs && electron-vite build",
     "build:fast": "electron-vite build",
-    "preview": "electron-vite preview",
-    "start": "electron-vite preview",
+    "preview": "node scripts/electron-vite-runner.mjs preview",
+    "start": "node scripts/electron-vite-runner.mjs preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "svelte-check --tsconfig ./tsconfig.json",
     "package": "node scripts/dev-bootstrap.mjs && electron-vite build && electron-builder"
