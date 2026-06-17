@@ -9,6 +9,13 @@ import { IPC, type PushEvent } from '../shared/ipc.js';
 let win: BrowserWindow | null = null;
 let service: NearbytesService | null = null;
 
+// Linux dev environments without setuid sandbox (common on remote/ephemeral hosts)
+// need this to launch Electron without root-owned chrome-sandbox.
+if (process.platform === 'linux' && !app.isPackaged && process.env.NEARBYTES_ELECTRON_SANDBOX !== '1') {
+  app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-setuid-sandbox');
+}
+
 function emit(e: PushEvent): void {
   win?.webContents.send(IPC.event, e);
 }
