@@ -6,7 +6,7 @@ export const IPC = {
 
 /** A namespaced adapter call: `${api}.${method}(...args)`. */
 export interface InvokeRequest {
-  readonly api: 'profile' | 'hub' | 'volume' | 'file' | 'chat' | 'friend' | 'service';
+  readonly api: 'profile' | 'hub' | 'volume' | 'file' | 'chat' | 'friend' | 'service' | 'debug';
   readonly method: string;
   readonly args: ReadonlyArray<unknown>;
 }
@@ -15,4 +15,5 @@ export interface InvokeRequest {
 export type PushEvent =
   | { readonly channel: 'status'; readonly payload: unknown }
   | { readonly channel: 'volume'; readonly payload: unknown }
-  | { readonly channel: 'chat'; readonly payload: unknown };
+  | { readonly channel: 'chat'; readonly payload: unknown }
+  | { readonly channel: 'syncTrace'; readonly payload: unknown };

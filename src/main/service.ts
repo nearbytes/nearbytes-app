@@ -12,10 +12,13 @@ import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { shell } from 'electron';
 import type { PushEvent } from '../shared/ipc.js';
+import { startSyncTrace, stopSyncTrace, syncTraceSnapshot } from './syncTrace.js';
 
 export type Emit = (e: PushEvent) => void;
 
 export class NearbytesService {
+  private traceActive = false;
+
   private constructor(private readonly engine: NearbytesEngine, private readonly emit: Emit) {}
 
   static async boot(emit: Emit): Promise<NearbytesService> {
@@ -92,4 +95,18 @@ export class NearbytesService {
 
   chatRead() { return this.engine.chatRead(); }
   chatSay(body: string) { return this.engine.chatSay(body); }
+
+  // ── sync protocol debug trace (off by default; on only while a debug
+  //    modal is open) ───────────────────────────────────────────────────
+  async syncTraceStart(): Promise<readonly unknown[]> {
+    if (!this.traceActive) {
+      await startSyncTrace(this.engine, (batch) => this.emit({ channel: 'syncTrace', payload: batch }));
+      this.traceActive = true;
+    }
+    return syncTraceSnapshot();
+  }
+  syncTraceStop(): void {
+    stopSyncTrace(this.engine);
+    this.traceActive = false;
+  }
 }
