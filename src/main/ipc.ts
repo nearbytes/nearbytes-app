@@ -19,6 +19,7 @@ const ROUTES: Record<string, Handler> = {
   'profile.reorder': (s, a) => s.profileReorder(a[0] as string[]),
   'profile.publish': (s, a) => s.profilePublish(a[0] as string, a[1] as string | undefined, a[2] as string | undefined),
   'profile.publicKey': (s, a) => s.profilePublicKey(a[0] as string | undefined),
+  'profile.directory': (s) => s.identityDirectory(),
   'hub.list': (s) => s.hubList(),
   'hub.active': (s) => s.hubActive(),
   'hub.add': (s, a) => s.hubAdd(a[0] as string, a[1] as string),

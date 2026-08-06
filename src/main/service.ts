@@ -69,6 +69,8 @@ export class NearbytesService {
   }
   hubReorder(labels: readonly string[]) { return this.engine.hubReorder(labels); }
 
+  identityDirectory() { return this.engine.identityDirectory(); }
+
   friendList() { return this.engine.friendList(); }
   friendAdd(key: string) { return this.engine.friendAdd(key); }
   friendRemove(prefix: string) { return this.engine.friendRemove(prefix); }

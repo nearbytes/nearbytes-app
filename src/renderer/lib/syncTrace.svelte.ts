@@ -6,17 +6,34 @@ export interface SyncFrame {
   readonly at: number;
   readonly assoc: string;
   readonly dir: 'out' | 'in' | 'local';
-  readonly phase: 'discovery' | 'handshake' | 'attach' | 'anti-entropy' | 'closed';
+  readonly phase:
+    | 'config'
+    | 'discovery'
+    | 'transport'
+    | 'handshake'
+    | 'session'
+    | 'anti-entropy'
+    | 'block'
+    | 'closed';
   readonly level: SyncDebugLevel;
   readonly msg: string;
   readonly detail: string;
   readonly outcome?: 'ok' | 'rejected' | 'suppressed' | 'missing-local' | 'failed';
   readonly bytes?: number;
+  /** Full protocol-significant payload (TRACE-15/24) — `detail` is a trimmed display rendering of this. */
+  readonly data?: Readonly<Record<string, unknown>>;
+  /** Remote profile public key (lower-case hex), when known — which peer this frame is about. */
+  readonly remoteProfile?: string;
 }
+
+/** Renderer-side bound; must match MAX_FRAMES in main/syncTrace.ts (TRACE-61). */
+const MAX_FRAMES = 2000;
 
 export function createSyncTraceClient() {
   let frames = $state<SyncFrame[]>([]);
   let active = $state(false);
+  // TRACE-61: overflow must be observable, never a silent truncation.
+  let dropped = $state(0);
   let unsubscribe: (() => void) | undefined;
 
   async function start(): Promise<void> {
@@ -29,7 +46,9 @@ export function createSyncTraceClient() {
     frames = [...backlog];
     unsubscribe = window.nb.on((e) => {
       if (e.channel === 'syncTrace') {
-        frames = [...frames, ...(e.payload as SyncFrame[])].slice(-2000);
+        const merged = [...frames, ...(e.payload as SyncFrame[])];
+        if (merged.length > MAX_FRAMES) dropped += merged.length - MAX_FRAMES;
+        frames = merged.slice(-MAX_FRAMES);
       }
     });
     active = true;
@@ -45,11 +64,13 @@ export function createSyncTraceClient() {
 
   function clear(): void {
     frames = [];
+    dropped = 0;
   }
 
   return {
     get frames() { return frames; },
     get active() { return active; },
+    get dropped() { return dropped; },
     start,
     stop,
     clear,
