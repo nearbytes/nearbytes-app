@@ -8,4 +8,4 @@
 # To release: push all the dependency repos first, then bump the counter below
 # and push this. That way servants restart once, on a complete set, instead of
 # repeatedly on half-released combinations.
-nudge: 3
+nudge: 4
