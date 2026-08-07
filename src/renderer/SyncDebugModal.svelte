@@ -137,7 +137,10 @@
       return bad > 0 ? String(bad) : String(friends.length);
     } },
     { id: 'frames', label: 'Frames', badge: () => String(visible.length) },
-    { id: 'unmatched', label: 'Unmatched', badge: () => String(corr.unmatched.length) },
+    { id: 'unmatched', label: 'Unmatched', badge: () => {
+      const overdue = corr.unmatched.filter((u) => u.kind === 'overdue').length;
+      return overdue > 0 ? String(overdue) : String(corr.unmatched.length);
+    } },
     { id: 'objects', label: 'Objects', badge: () => String(objects.length) },
     { id: 'invariants', label: 'Invariants', badge: () => {
       const v = invariants.filter((i) => i.state === 'violated').length;
@@ -356,8 +359,10 @@
       <!-- ── UNMATCHED ───────────────────────────────────────────── -->
       {:else if tab === 'unmatched'}
         <div class="mb-3 font-sans text-[11px] text-neutral-500">
-          Requests sent with no correlated response (TRACE-32). In anti-entropy the defect is almost always the message
-          that never arrived, which a chronological log cannot show.
+          Requests sent with no correlated response (TRACE-32). <span class="text-amber-400">overdue</span> means a reply
+          is owed — the peer announced the object, so silence is a broken promise (SYNC-18a).
+          <span class="text-neutral-400">unanswerable</span> means it never announced it, so SYNC-18 permits silence and
+          no reply is coming; those are normal for a partial replica and are not faults.
         </div>
         {#if corr.unmatched.length === 0}
           <div class="rounded border border-emerald-900/60 bg-emerald-950/20 py-6 text-center font-sans text-emerald-400">
@@ -366,11 +371,12 @@
           </div>
         {:else}
           <div class="flex gap-2 border-b border-neutral-800 pb-1 text-[10px] uppercase tracking-wider text-neutral-500">
-            <span class="w-24">age</span><span class="w-32">request</span><span class="w-28">layer</span><span class="w-24">key</span><span>id</span>
+            <span class="w-24">age</span><span class="w-28">kind</span><span class="w-32">request</span><span class="w-28">layer</span><span class="w-24">key</span><span>id</span>
           </div>
           {#each corr.unmatched as u (u.assoc + u.corrId + u.at)}
             <div class="flex gap-2 py-0.5">
-              <span class={`w-24 ${u.ageMs > 30_000 ? 'text-red-400' : u.ageMs > 5_000 ? 'text-amber-400' : 'text-neutral-400'}`}>{fmtAge(u.ageMs)}</span>
+              <span class={`w-24 ${u.kind === 'unanswerable' ? 'text-neutral-600' : u.ageMs > 30_000 ? 'text-red-400' : u.ageMs > 5_000 ? 'text-amber-400' : 'text-neutral-400'}`}>{fmtAge(u.ageMs)}</span>
+              <span class={`w-28 ${u.kind === 'unanswerable' ? 'text-neutral-600' : 'text-amber-400'}`}>{u.kind}</span>
               <span class="w-32 font-semibold">{u.msg}</span>
               <span class="w-28 text-neutral-500">{u.layer}</span>
               <span class="w-24 text-neutral-500">{u.corrKind}</span>

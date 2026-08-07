@@ -134,6 +134,16 @@ export interface PendingRequest {
   readonly assoc: string;
   readonly at: number;
   readonly ageMs: number;
+  /**
+   * `overdue` — a response is owed. `unanswerable` — the peer never announced
+   * this object, so SYNC-18 licenses silence and no reply is coming.
+   *
+   * Without this split every want for a block a partial replica simply does
+   * not hold would age to red, and the view would report correct protocol
+   * behaviour as a fault — burying the wants that genuinely are broken
+   * promises (SYNC-18a).
+   */
+  readonly kind: 'overdue' | 'unanswerable';
 }
 
 export interface CorrelationReport {
@@ -165,6 +175,15 @@ const RESPONSE_MSGS = new Set([
 ]);
 
 export function correlate(frames: readonly SyncFrame[], now = Date.now()): CorrelationReport {
+  // Hashes the peer advertised. A want against one of these is owed a reply;
+  // a want against anything else may legitimately go unanswered (SYNC-18).
+  const announcedByPeer = new Set<string>();
+  for (const f of frames) {
+    const hashes = f.data?.['hashes'];
+    if (f.msg === 'have' && f.dir === 'in' && Array.isArray(hashes)) {
+      for (const h of hashes) if (typeof h === 'string') announcedByPeer.add(h);
+    }
+  }
   const open = new Map<string, SyncFrame>();
   const rtts: number[] = [];
   let matched = 0;
@@ -188,16 +207,21 @@ export function correlate(frames: readonly SyncFrame[], now = Date.now()): Corre
   }
 
   const unmatched: PendingRequest[] = [...open.values()]
-    .map((f) => ({
-      corrId: (corrIdOf(f) ?? '').slice(0, 16),
-      corrKind: String(f.data?.['corrKind'] ?? corrKindOf(f) ?? '—'),
-      msg: f.msg,
-      layer: f.phase,
-      assoc: f.assoc,
-      at: f.at,
-      ageMs: now - f.at,
-    }))
-    .sort((a, b) => b.ageMs - a.ageMs);
+    .map((f) => {
+      const id = corrIdOf(f) ?? '';
+      const isHashWant = corrKindOf(f) === 'hash';
+      return {
+        corrId: id.slice(0, 16),
+        corrKind: String(f.data?.['corrKind'] ?? corrKindOf(f) ?? '—'),
+        msg: f.msg,
+        layer: f.phase,
+        assoc: f.assoc,
+        at: f.at,
+        ageMs: now - f.at,
+        kind: (isHashWant && !announcedByPeer.has(id) ? 'unanswerable' : 'overdue') as PendingRequest['kind'],
+      };
+    })
+    .sort((a, b) => (a.kind === b.kind ? b.ageMs - a.ageMs : a.kind === 'overdue' ? -1 : 1));
 
   rtts.sort((a, b) => a - b);
   const medianRttMs = rtts.length === 0 ? null : (rtts[Math.floor(rtts.length / 2)] ?? null);
@@ -410,6 +434,66 @@ const INVARIANTS: InvariantDef[] = [
       const cutoff = Date.now() - 60_000;
       for (const [key, at] of open) {
         if (at < cutoff) out.push({ at, detail: `delta ${key.split('::')[1]?.slice(0, 12)}… never terminated` });
+      }
+      return out;
+    },
+  },
+  {
+    id: 'SYNC-18a',
+    rule: 'an announced block is served when wanted',
+    checks: 'a peer announced have(H), we wanted H, and nothing ever arrived',
+    run: (frames) => {
+      // SYNC-18 permits silence for a block the sender never claimed to hold.
+      // It does not permit silence for one it advertised: announcing have(H)
+      // is a promise, and an unanswered want against that promise is a fault,
+      // not the normal absence of a partial replica.
+      const announced = new Map<string, number>(); // hash -> first announce
+      const wanted = new Map<string, number>();
+      const arrived = new Set<string>();
+      for (const f of frames) {
+        const hashes = f.data?.['hashes'];
+        if (f.msg === 'have' && f.dir === 'in' && Array.isArray(hashes)) {
+          for (const h of hashes) if (typeof h === 'string' && !announced.has(h)) announced.set(h, f.at);
+        }
+        if ((f.msg === 'want' && f.dir === 'out') || f.msg === 'want-armed') {
+          const list = Array.isArray(hashes) ? hashes : [f.data?.['hash']];
+          for (const h of list) if (typeof h === 'string' && !wanted.has(h)) wanted.set(h, f.at);
+        }
+        const single = f.data?.['hash'];
+        if (f.msg === 'block-received' && typeof single === 'string') arrived.add(single);
+      }
+      const cutoff = Date.now() - 60_000;
+      const out: { at: number; detail: string }[] = [];
+      for (const [hash, wantAt] of wanted) {
+        if (arrived.has(hash) || !announced.has(hash) || wantAt >= cutoff) continue;
+        out.push({ at: wantAt, detail: `peer announced ${hash.slice(0, 12)}… then never served it` });
+      }
+      return out;
+    },
+  },
+  {
+    id: 'SYNC-18b',
+    rule: 'we serve what we announce',
+    checks: 'we advertised have(H) and then reported H as missing locally',
+    run: (frames) => {
+      // The mirror of SYNC-18a, aimed at ourselves: announcing a ref we cannot
+      // subsequently produce strands the peer exactly as a broken promise from
+      // them would strand us.
+      const weAnnounced = new Set<string>();
+      const out: { at: number; detail: string }[] = [];
+      for (const f of frames) {
+        const hashes = f.data?.['hashes'];
+        if (f.msg === 'have' && f.dir === 'out' && Array.isArray(hashes)) {
+          for (const h of hashes) if (typeof h === 'string') weAnnounced.add(h);
+        }
+        const missing = f.data?.['missingHashes'];
+        if (f.msg === 'want-served' && Array.isArray(missing)) {
+          for (const h of missing) {
+            if (typeof h === 'string' && weAnnounced.has(h)) {
+              out.push({ at: f.at, detail: `we announced ${h.slice(0, 12)}… but could not serve it` });
+            }
+          }
+        }
       }
       return out;
     },
