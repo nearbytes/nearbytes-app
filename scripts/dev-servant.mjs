@@ -13,16 +13,24 @@
  *   make the next `git pull --ff-only` fail forever. The lockfile is therefore
  *   discarded before pulling — a servant re-resolves on every cycle anyway, so
  *   local lock churn carries no information worth keeping.
- * - Dependency updates are detected from the resolved commit of each *floating*
- *   dependency versus its remote HEAD, because this app pins nothing: a push to
- *   `nearbytes-sync` changes nothing in this repo's own git history and would
- *   otherwise go unnoticed. Pinned deps are excluded — see `floatingDeps`.
+ * - By default only *this* repo's branch head is polled: one `git ls-remote` per
+ *   cycle rather than one per dependency. That is not merely cheaper, it is more
+ *   correct. Releasing touches several repos in sequence, and a servant watching
+ *   every dependency restarts on each intermediate push — repeatedly, on
+ *   half-released combinations. Watching one ref makes an update atomic and
+ *   deliberate: push everything, then nudge once.
+ * - Nudging needs no code change. Bump `servant-nudge` in this repo and push;
+ *   any commit on the watched branch is a trigger. Because an update always runs
+ *   `yarn refresh`, one nudge picks up every dependency pushed since the last.
+ * - Set NEARBYTES_SERVANT_WATCH=deps to also poll each floating dependency's
+ *   HEAD. Useful on a developer machine, wasteful on an unattended one.
  * - Every network and git failure is logged and swallowed. A servant that exits
  *   on a flaky DHCP lease is worse than one that keeps serving stale code.
  *
  * Env:
  *   NEARBYTES_SERVANT_INTERVAL_MS  poll interval (default 5000)
  *   NEARBYTES_SERVANT_CHILD        yarn script to run (default dev:fast)
+ *   NEARBYTES_SERVANT_WATCH        `self` (default) or `deps`
  */
 import { spawn, execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -44,6 +52,7 @@ let consecutiveFailures = 0;
 let timer = null;
 const CHILD_SCRIPT = process.env['NEARBYTES_SERVANT_CHILD'] ?? 'dev:fast';
 const GITHUB_ORG = 'nearbytes';
+const WATCH_DEPS = (process.env['NEARBYTES_SERVANT_WATCH'] ?? 'self') === 'deps';
 
 const stamp = () => new Date().toISOString().slice(11, 19);
 const log = (msg) => console.log(`[servant ${stamp()}] ${msg}`);
@@ -118,7 +127,7 @@ async function upstreamChanges() {
     if (consecutiveFailures === 0) log(`self check failed: ${err.message.split('\n')[0]}`);
   }
 
-  const deps = await floatingDeps();
+  const deps = WATCH_DEPS ? await floatingDeps() : new Map();
   await Promise.all(
     [...deps.entries()].map(async ([repo, locked]) => {
       try {
@@ -215,6 +224,6 @@ function schedule() {
   }, delay);
 }
 
-log(`watching ${GITHUB_ORG}/* every ${Math.round(INTERVAL / 1000)}s — Ctrl-C to stop`);
+log(`watching ${WATCH_DEPS ? `${GITHUB_ORG}/* (self + deps)` : 'this repo'} every ${Math.round(INTERVAL / 1000)}s — Ctrl-C to stop`);
 startChild();
 schedule();

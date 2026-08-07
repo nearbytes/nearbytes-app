@@ -1,0 +1,11 @@
+# Nudge file for `yarn dev:servant`.
+#
+# Servants poll only this repo's branch head, so any commit here triggers
+# pull -> yarn refresh -> restart on every machine running one. Because the
+# update re-resolves dependencies, one nudge picks up everything pushed to
+# nearbytes-* since the last nudge.
+#
+# To release: push all the dependency repos first, then bump the counter below
+# and push this. That way servants restart once, on a complete set, instead of
+# repeatedly on half-released combinations.
+nudge: 1
