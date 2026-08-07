@@ -4240,7 +4240,7 @@ __metadata:
 
 "nearbytes-engine@github:nearbytes/nearbytes-engine":
   version: 0.1.0
-  resolution: "nearbytes-engine@https://github.com/nearbytes/nearbytes-engine.git#commit=ea1251cc34b6ae996856c87f793686eb16b1214a"
+  resolution: "nearbytes-engine@https://github.com/nearbytes/nearbytes-engine.git#commit=df3534cab71ff7b13ad26c3c747b74b8e076b590"
   dependencies:
     nearbytes-chat: "https://github.com/nearbytes/nearbytes-chat.git#commit=e650c1720b00902c0f98a14af78435ba39526b37"
     nearbytes-crypto: "https://github.com/nearbytes/nearbytes-crypto.git#commit=9b2c1936589d2d8b049f0ca39e76513eba4ded9a"
@@ -4248,7 +4248,7 @@ __metadata:
     nearbytes-log: "https://github.com/nearbytes/nearbytes-log.git#commit=31fb75e3877ef762566216a0ceace294329d6295"
     nearbytes-skeleton: "https://github.com/nearbytes/nearbytes-skeleton.git#commit=9531ab1a0fd89b12f977f32220697b5b886c64a4"
     nearbytes-sync: "https://github.com/nearbytes/nearbytes-sync.git#commit=74b29f87a70aabc2ea7e5529476d0330a77346af"
-  checksum: 10c0/57cb33655efc3ec0ca1ff276fe4fc6f6384aa2afefcc76df39d50c5d398c5ac00770a58924a5885330c6ba438836a64e9a34a9c9f5d3f41a11c64813b06e898b
+  checksum: 10c0/82fa81db8d7f0670935ad90c14e2602c70ea70838821b70c0eb38e05d4223894d28b750bb3b7c7452d71d6267b81d15c5d7e7aaddd5413fce616ac29af890620
   languageName: node
   linkType: hard
 
