@@ -48,6 +48,9 @@ type SyncEventLike = {
   readonly remoteProfilePublicKey?: string;
   readonly toProfile?: string;
   readonly fromProfile?: string;
+  /** Object identity — required for want↔arrival correlation and the object inspector. */
+  readonly blockHash?: string;
+  readonly eventHash?: string;
 };
 
 type RtWithSync = {
@@ -198,14 +201,25 @@ function handleSyncEvent(event: SyncEventLike, live = true): void {
       break;
     case 'block-sent':
     case 'block-received':
-    case 'event-received':
+    case 'event-received': {
+      // The object hash is what closes the want-armed ↔ arrival pair and what
+      // the object inspector keys on. Without it every want stays outstanding
+      // forever and no object ever reaches `arrived`.
+      const hash = event.blockHash ?? event.eventHash;
       pushFrame({
         seq: seq++, at: now, assoc,
         dir: event.kind === 'block-sent' ? 'out' : 'in',
-        phase: 'block', level: 'debug', msg: event.kind, detail: `${event.bytes ?? 0} B`,
+        phase: 'block', level: 'debug', msg: event.kind,
+        detail: hash === undefined
+          ? `${event.bytes ?? 0} B`
+          : `hash=${hash.slice(0, 12)}… bytes=${event.bytes ?? 0}`,
         outcome: 'ok', bytes: event.bytes, remoteProfile,
+        ...(hash !== undefined
+          ? { data: { hash, bytes: event.bytes ?? 0, corrId: hash, corrKind: 'hash' } }
+          : {}),
       }, live);
       break;
+    }
   }
 }
 

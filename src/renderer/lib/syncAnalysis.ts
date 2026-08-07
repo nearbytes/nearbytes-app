@@ -150,12 +150,15 @@ export interface CorrelationReport {
  * want that never produced a block.
  */
 const REQUEST_MSGS = new Set(['hello', 'delta', 'subscribe', 'want', 'want-armed', 'attach']);
+// `want-served` is deliberately absent: it reports answering the *remote's*
+// want, so it is not a response to anything we sent.
 const RESPONSE_MSGS = new Set([
   'hello-accepted',
   'hello-rejected',
   'hello-timeout',
   'have',
   'block-received',
+  'event-received',
   'want-satisfied',
   'want-timeout',
   'data',
