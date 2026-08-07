@@ -492,6 +492,7 @@ const STATE_BY_MSG: Record<string, AssocState> = {
   'block-received': 'live',
   conn: 'live',
   'want-timeout': 'stalled',
+  'session-stall': 'stalled',
   stall: 'stalled',
   disconnect: 'stalled',
 };
@@ -628,6 +629,11 @@ export function friendStatuses(frames: readonly SyncFrame[]): FriendStatus[] {
       case 'hello-accepted': r.handshakes += 1; break;
       case 'hello-rejected': r.rejects += 1; break;
       case 'stall': case 'want-timeout': r.stalls += 1; break;
+      // `session-rotation` is the healthy periodic re-dial, not a fault —
+      // counting it would make every long-lived peer look permanently sick.
+      case 'session-stall':
+        if (f.data?.['reason'] !== 'session-rotation') r.stalls += 1;
+        break;
       default: break;
     }
   }
