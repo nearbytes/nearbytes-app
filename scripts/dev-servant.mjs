@@ -21,7 +21,7 @@
  *   on a flaky DHCP lease is worse than one that keeps serving stale code.
  *
  * Env:
- *   NEARBYTES_SERVANT_INTERVAL_MS  poll interval (default 60000)
+ *   NEARBYTES_SERVANT_INTERVAL_MS  poll interval (default 5000)
  *   NEARBYTES_SERVANT_CHILD        yarn script to run (default dev:fast)
  */
 import { spawn, execFile } from 'node:child_process';
@@ -32,7 +32,16 @@ import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const INTERVAL = Number(process.env['NEARBYTES_SERVANT_INTERVAL_MS'] ?? 60_000);
+const INTERVAL = Number(process.env['NEARBYTES_SERVANT_INTERVAL_MS'] ?? 5_000);
+/**
+ * Each cycle spawns one `git ls-remote` per watched repo, so a tight interval
+ * is real network and battery cost on an unattended laptop. Consecutive
+ * failures (offline, DHCP flap, GitHub throttling) back the interval off
+ * geometrically instead of hammering, and reset the moment a check succeeds.
+ */
+const MAX_BACKOFF_MS = 5 * 60_000;
+let consecutiveFailures = 0;
+let timer = null;
 const CHILD_SCRIPT = process.env['NEARBYTES_SERVANT_CHILD'] ?? 'dev:fast';
 const GITHUB_ORG = 'nearbytes';
 
@@ -96,6 +105,7 @@ async function floatingDeps() {
 
 async function upstreamChanges() {
   const reasons = [];
+  let failed = false;
 
   try {
     const localHead = await git(['rev-parse', 'HEAD']);
@@ -104,7 +114,8 @@ async function upstreamChanges() {
     const head = await remoteHead(originUrl, `refs/heads/${branch === 'HEAD' ? 'main' : branch}`);
     if (head && head !== localHead) reasons.push(`self ${localHead.slice(0, 7)}→${head.slice(0, 7)}`);
   } catch (err) {
-    log(`self check failed: ${err.message.split('\n')[0]}`);
+    failed = true;
+    if (consecutiveFailures === 0) log(`self check failed: ${err.message.split('\n')[0]}`);
   }
 
   const deps = await floatingDeps();
@@ -114,11 +125,12 @@ async function upstreamChanges() {
         const head = await remoteHead(`https://github.com/${GITHUB_ORG}/${repo}.git`);
         if (head && head !== locked) reasons.push(`${repo} ${locked.slice(0, 7)}→${head.slice(0, 7)}`);
       } catch {
-        /* transient; try again next cycle */
+        failed = true; /* transient; retried on the next cycle */
       }
     }),
   );
 
+  consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
   return reasons;
 }
 
@@ -187,11 +199,22 @@ async function tick() {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     stopping = true;
+    if (timer !== null) clearTimeout(timer);
     log('shutting down');
     void stopChild().then(() => process.exit(0));
   });
 }
 
+function schedule() {
+  const delay = Math.min(INTERVAL * 2 ** Math.max(0, consecutiveFailures - 1), MAX_BACKOFF_MS);
+  if (consecutiveFailures === 3) log(`upstream unreachable — backing off to ${Math.round(delay / 1000)}s`);
+  timer = setTimeout(() => {
+    void tick()
+      .catch((e) => log(`cycle error: ${e.message}`))
+      .finally(() => { if (!stopping) schedule(); });
+  }, delay);
+}
+
 log(`watching ${GITHUB_ORG}/* every ${Math.round(INTERVAL / 1000)}s — Ctrl-C to stop`);
 startChild();
-setInterval(() => { void tick().catch((e) => log(`cycle error: ${e.message}`)); }, INTERVAL);
+schedule();
