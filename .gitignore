@@ -10,3 +10,4 @@ dist
 !.yarn/patches
 !.yarn/plugins
 .pnp.*
+out-test/

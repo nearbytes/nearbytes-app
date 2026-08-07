@@ -21,7 +21,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "svelte-check --tsconfig ./tsconfig.json",
     "package": "node scripts/dev-bootstrap.mjs && electron-vite build && electron-builder",
-    "dev:servant": "node scripts/dev-servant.mjs"
+    "dev:servant": "node scripts/dev-servant.mjs",
+    "test": "tsc src/renderer/lib/syncAnalysis.ts --outDir out-test --module esnext --target es2022 --moduleResolution bundler --skipLibCheck && node --test test/*.test.mjs"
   },
   "dependencies": {
     "nearbytes-chat": "github:nearbytes/nearbytes-chat",

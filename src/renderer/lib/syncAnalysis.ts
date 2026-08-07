@@ -12,7 +12,7 @@
  * panel that disappears when idle cannot be distinguished from a panel that is
  * broken, which is precisely the failure mode this debugger exists to remove.
  */
-import type { SyncFrame } from './syncTrace.svelte.js';
+import type { SyncFrame } from './syncFrame.js';
 
 // ── layers ────────────────────────────────────────────────────────────────
 
